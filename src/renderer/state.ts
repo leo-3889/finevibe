@@ -254,6 +254,27 @@ class AppState {
     return session;
   }
 
+  addRemoteSession(projectId: string, hostSessionName: string, shareMode: 'readonly' | 'readwrite'): SessionRecord | undefined {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return undefined;
+
+    const session: SessionRecord = {
+      id: crypto.randomUUID(),
+      name: `Remote: ${hostSessionName}`,
+      type: 'remote-terminal',
+      remoteHostName: hostSessionName,
+      shareMode,
+      cliSessionId: null,
+      createdAt: new Date().toISOString(),
+    };
+    project.sessions.push(session);
+    project.activeSessionId = session.id;
+    this.persist();
+    this.emit('session-added', { projectId, session });
+    this.emit('session-changed');
+    return session;
+  }
+
   addFileReaderSession(projectId: string, filePath: string, lineNumber?: number): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
