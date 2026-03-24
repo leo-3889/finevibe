@@ -1,12 +1,5 @@
 import { appState, ProjectRecord } from '../state.js';
 import { isUnread, onChange as onUnreadChange } from '../session-unread.js';
-import type { ProviderId } from '../../shared/types.js';
-
-/** Config dir for a session's pinned profile (provider-matched), or undefined for default ~/.claude. */
-function sessionConfigDir(session: { profileId?: string }, providerId: ProviderId): string | undefined {
-  if (!session.profileId) return undefined;
-  return appState.profiles.find((p) => p.id === session.profileId && p.providerId === providerId)?.configDir;
-}
 import {
   createTerminalPane,
   attachToContainer,
@@ -15,9 +8,6 @@ import {
   fitAllVisible,
   setFocused,
   spawnTerminal,
-  setPendingPrompt,
-  setPendingSystemPrompt,
-  setPendingCliName,
   destroyTerminal,
   getTerminalInstance,
 } from './terminal-pane.js';
@@ -30,7 +20,6 @@ import {
   getInspectorInstance,
   disconnectInspector,
 } from './mcp-inspector.js';
-import { isInspectorOpen } from './session-inspector.js';
 import {
   createFileViewerPane,
   destroyFileViewerPane,
@@ -48,114 +37,9 @@ import {
   getFileReaderInstance,
   setFileReaderLine,
 } from './file-reader.js';
-import {
-  getRemoteTerminalInstance,
-  destroyRemoteTerminal,
-  attachRemoteToContainer,
-  showRemotePane,
-  hideAllRemotePanes,
-} from './remote-terminal-pane.js';
-import {
-  createBrowserTabPane,
-  destroyBrowserTabPane,
-  showBrowserTabPane,
-  hideAllBrowserTabPanes,
-  attachBrowserTabToContainer,
-  getBrowserTabInstance,
-} from './browser-tab-pane.js';
-import {
-  createProjectTabPane,
-  destroyProjectTabPane,
-  showProjectTabPane,
-  hideAllProjectTabPanes,
-  attachProjectTabToContainer,
-  getProjectTabInstance,
-} from './project-tab/pane.js';
-import {
-  createKanbanPane,
-  destroyKanbanPane,
-  showKanbanPane,
-  hideAllKanbanPanes,
-  attachKanbanToContainer,
-  getKanbanInstance,
-} from './kanban/pane.js';
-import {
-  createTeamPane,
-  destroyTeamPane,
-  showTeamPane,
-  hideAllTeamPanes,
-  attachTeamToContainer,
-  getTeamInstance,
-} from './team/pane.js';
 import { quickNewSession } from './tab-bar.js';
-import { isCliSession } from '../session-utils.js';
-import { isInRelativeOrder } from './pane-order.js';
-import { shouldFocusPane, type PaneFocusMemo } from './pane-focus.js';
 
 const container = document.getElementById('terminal-container')!;
-
-/** Set the container's layout class while preserving the inspector-open class if active. */
-function setContainerClass(cls: string): void {
-  const hasInspector = isInspectorOpen();
-  container.className = cls;
-  if (hasInspector) container.classList.add('inspector-open');
-}
-
-const paneInstanceFor: Record<string, (id: string) => { element: HTMLElement } | undefined> = {
-  'file-reader': getFileReaderInstance,
-  'diff-viewer': getFileViewerInstance,
-  'mcp-inspector': getInspectorInstance,
-  'remote-terminal': getRemoteTerminalInstance,
-  'browser-tab': getBrowserTabInstance,
-  'project-tab': getProjectTabInstance,
-  kanban: getKanbanInstance,
-  team: getTeamInstance,
-};
-
-/** The pane element backing a session, whatever its type, once it has been created. */
-function paneElementFor(session: { id: string; type?: string }): HTMLElement | undefined {
-  return (paneInstanceFor[session.type ?? ''] ?? getTerminalInstance)(session.id)?.element;
-}
-
-/**
- * Lay `els` out inside `target` in that order — but only when they are not already
- * in it. `appendChild` on a node that is already a child removes and re-inserts it,
- * which blurs whatever is focused inside and collapses an in-progress selection, so
- * every attach* helper leaves a placed pane alone and ordering is corrected here.
- *
- * Only *relative* order is compared: hidden panes stay in the container interleaved
- * with the laid-out ones. Entries that are missing, or that a caller re-homed
- * elsewhere afterwards, are dropped — keeping one would fail the check forever and
- * re-append every pane on every render.
- */
-function ensurePaneOrder(target: HTMLElement, els: readonly (HTMLElement | null | undefined)[]): void {
-  const wanted = els.filter((el): el is HTMLElement => !!el && el.parentElement === target);
-  if (isInRelativeOrder(Array.from(target.children), wanted)) return;
-  for (const el of wanted) target.appendChild(el);
-}
-
-/**
- * Drop the swarm grid wrapper, leaving its panes detached — callers re-attach
- * whatever must be visible, and a hidden pane is re-homed the next time it is shown.
- */
-function removeSwarmWrapper(): void {
-  container.querySelector('.swarm-grid-wrapper')?.remove();
-}
-
-let lastFocusedPane: PaneFocusMemo | null = null;
-
-/** Move DOM focus into a pane, if this render is one that has any business doing so. */
-function focusPane(project: ProjectRecord, sessionId: string): void {
-  // Don't steal focus from an active tab rename input
-  if (document.querySelector('#tab-list .tab-name input')) return;
-
-  const activeEl = document.activeElement;
-  const target: PaneFocusMemo = { projectId: project.id, sessionId };
-  if (!shouldFocusPane(lastFocusedPane, target, !activeEl || activeEl === document.body)) return;
-
-  lastFocusedPane = target;
-  setFocused(sessionId);
-}
 
 export function initSplitLayout(): void {
   appState.on('state-loaded', renderLayout);
@@ -191,66 +75,28 @@ export function initSplitLayout(): void {
 }
 
 function onSessionAdded(data: unknown): void {
-  const { projectId, session } = data as { projectId: string; session: { id: string; type?: string; cliSessionId: string | null; providerId?: string; args?: string; envVars?: string; profileId?: string; cwd?: string; diffFilePath?: string; diffArea?: string; worktreePath?: string; fileReaderPath?: string; fileReaderLine?: number; browserTabUrl?: string } };
-  // Resolve the session's own project, not the active one: external control
-  // (vibeyard-ctl new-session) adds sessions to projects that are not in focus,
-  // and the pane must get that project's cwd/id and its pending prompt.
-  const project = appState.projects.find((p) => p.id === projectId);
+  const { session } = data as { projectId: string; session: { id: string; type?: string; cliSessionId: string | null; providerId?: string; args?: string; diffFilePath?: string; diffArea?: string; worktreePath?: string; fileReaderPath?: string; fileReaderLine?: number } };
+  const project = appState.activeProject;
   if (!project) return;
-  // Only the active project is laid out. A pane for a background project is
-  // created hidden and detached; renderLayout attaches it when the project is shown.
-  const isActive = appState.activeProject?.id === project.id;
-  const relayout = (): void => { if (isActive) renderLayout(); };
 
   if (session.type === 'file-reader') {
     createFileReaderPane(session.id, session.fileReaderPath || '', session.fileReaderLine);
-    relayout();
+    renderLayout();
   } else if (session.type === 'diff-viewer') {
     createFileViewerPane(session.id, session.diffFilePath || '', session.diffArea || '', session.worktreePath);
-    relayout();
+    renderLayout();
   } else if (session.type === 'mcp-inspector') {
     createInspectorPane(session.id);
-    relayout();
-  } else if (session.type === 'remote-terminal') {
-    // Remote terminal pane is created by share-manager before session-added fires
-    relayout();
-  } else if (session.type === 'browser-tab') {
-    createBrowserTabPane(session.id, session.browserTabUrl);
-    relayout();
-  } else if (session.type === 'project-tab') {
-    createProjectTabPane(session.id, projectId);
-    relayout();
-  } else if (session.type === 'kanban') {
-    createKanbanPane(session.id, projectId);
-    relayout();
-  } else if (session.type === 'team') {
-    createTeamPane(session.id, projectId);
-    relayout();
+    renderLayout();
   } else {
     // Create and spawn immediately
-    const cliProviderId = (session.providerId as ProviderId) || 'claude';
-    const configDir = sessionConfigDir(session, cliProviderId);
-    createTerminalPane(session.id, project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', cliProviderId, project.id, session.envVars || '', configDir);
-    const pending = appState.consumePendingInitialPrompt(project.id, session.id);
-    if (pending) {
-      setPendingPrompt(session.id, pending);
-    }
-    const pendingSys = appState.consumePendingSystemPrompt(project.id, session.id);
-    if (pendingSys) {
-      setPendingSystemPrompt(session.id, pendingSys);
-    }
-    const pendingCliName = appState.consumePendingCliName(project.id, session.id);
-    if (pendingCliName) {
-      setPendingCliName(session.id, pendingCliName);
-    }
-    relayout();
+    createTerminalPane(session.id, project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', (session.providerId as import('../../shared/types').ProviderId) || 'claude', project.id);
+    renderLayout();
 
-    // Spawn after layout is rendered so terminal has dimensions. A background
-    // project's pane spawns too (the prompt is a startup arg, so the agent
-    // starts working now); it is fitted when its project is first shown.
+    // Spawn after layout is rendered so terminal has dimensions
     requestAnimationFrame(() => {
       spawnTerminal(session.id);
-      if (isActive) fitAllVisible();
+      fitAllVisible();
     });
   }
 }
@@ -264,16 +110,6 @@ function onSessionRemoved(data: unknown): void {
   } else if (getInspectorInstance(sessionId)) {
     disconnectInspector(sessionId);
     destroyInspectorPane(sessionId);
-  } else if (getRemoteTerminalInstance(sessionId)) {
-    destroyRemoteTerminal(sessionId);
-  } else if (getBrowserTabInstance(sessionId)) {
-    destroyBrowserTabPane(sessionId);
-  } else if (getProjectTabInstance(sessionId)) {
-    destroyProjectTabPane(sessionId);
-  } else if (getKanbanInstance(sessionId)) {
-    destroyKanbanPane(sessionId);
-  } else if (getTeamInstance(sessionId)) {
-    destroyTeamPane(sessionId);
   } else {
     destroyTerminal(sessionId);
   }
@@ -285,23 +121,13 @@ export function renderLayout(): void {
 
   if (!project || project.sessions.length === 0) {
     hideAllPanes();
-    hideAllInspectorPanes();
-    hideAllFileViewerPanes();
-    hideAllFileReaderPanes();
-    hideAllRemotePanes();
-    hideAllBrowserTabPanes();
-    hideAllProjectTabPanes();
-    hideAllKanbanPanes();
-    hideAllTeamPanes();
-    setContainerClass('');
+    container.className = '';
     showEmptyState(project);
     return;
   }
 
   removeEmptyState();
-  // Filler cells hold nothing, so they are cheap to rebuild. The grid wrapper is
-  // not dropped here: it is reused across renders (removing it would detach every
-  // pane inside it), and the mode dispatch below decides when it has to go.
+  container.querySelectorAll('.swarm-grid-wrapper').forEach(el => el.remove());
   container.querySelectorAll('.swarm-empty-cell').forEach(el => el.remove());
 
   // Ensure all sessions have their respective instances
@@ -318,29 +144,9 @@ export function renderLayout(): void {
       if (!getInspectorInstance(session.id)) {
         createInspectorPane(session.id);
       }
-    } else if (session.type === 'remote-terminal') {
-      // Remote terminal instances are created by share-manager, skip here
-    } else if (session.type === 'browser-tab') {
-      if (!getBrowserTabInstance(session.id)) {
-        createBrowserTabPane(session.id, session.browserTabUrl);
-      }
-    } else if (session.type === 'project-tab') {
-      if (!getProjectTabInstance(session.id)) {
-        createProjectTabPane(session.id, project.id);
-      }
-    } else if (session.type === 'kanban') {
-      if (!getKanbanInstance(session.id)) {
-        createKanbanPane(session.id, project.id);
-      }
-    } else if (session.type === 'team') {
-      if (!getTeamInstance(session.id)) {
-        createTeamPane(session.id, project.id);
-      }
     } else {
       if (!getTerminalInstance(session.id)) {
-        const cliProviderId = session.providerId || 'claude';
-        const configDir = sessionConfigDir(session, cliProviderId);
-        createTerminalPane(session.id, project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', cliProviderId, project.id, session.envVars || '', configDir);
+        createTerminalPane(session.id, project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', session.providerId || 'claude', project.id);
       }
     }
   }
@@ -349,27 +155,19 @@ export function renderLayout(): void {
   hideAllInspectorPanes();
   hideAllFileViewerPanes();
   hideAllFileReaderPanes();
-  hideAllRemotePanes();
-  hideAllBrowserTabPanes();
-  hideAllProjectTabPanes();
-  hideAllKanbanPanes();
-  hideAllTeamPanes();
 
   if (project.layout.mode === 'swarm' && project.layout.splitPanes.length >= 1) {
-    renderSwarmMode(project); // owns the grid wrapper, including dropping it
+    renderSwarmMode(project);
+  } else if (project.layout.mode === 'split' && project.layout.splitPanes.length > 1) {
+    renderSplitMode(project);
   } else {
-    removeSwarmWrapper();
-    if (project.layout.mode === 'split' && project.layout.splitPanes.length > 1) {
-      renderSplitMode(project);
-    } else {
-      renderTabMode(project);
-    }
+    renderTabMode(project);
   }
 
   requestAnimationFrame(fitAllVisible);
 }
 
-/** Attach and show a non-CLI session pane. */
+/** Attach and show a non-CLI session pane (file-reader, diff-viewer, mcp-inspector). */
 function attachNonCliPane(session: { id: string; type?: string; fileReaderLine?: number }, target: HTMLElement, inSplit: boolean): void {
   if (session.type === 'file-reader') {
     attachFileReaderToContainer(session.id, target);
@@ -383,26 +181,11 @@ function attachNonCliPane(session: { id: string; type?: string; fileReaderLine?:
   } else if (session.type === 'mcp-inspector') {
     attachInspectorToContainer(session.id, target);
     showInspectorPane(session.id, inSplit);
-  } else if (session.type === 'remote-terminal') {
-    attachRemoteToContainer(session.id, target);
-    showRemotePane(session.id, inSplit);
-  } else if (session.type === 'browser-tab') {
-    attachBrowserTabToContainer(session.id, target);
-    showBrowserTabPane(session.id, inSplit);
-  } else if (session.type === 'project-tab') {
-    attachProjectTabToContainer(session.id, target);
-    showProjectTabPane(session.id, inSplit);
-  } else if (session.type === 'kanban') {
-    attachKanbanToContainer(session.id, target);
-    showKanbanPane(session.id, inSplit);
-  } else if (session.type === 'team') {
-    attachTeamToContainer(session.id, target);
-    showTeamPane(session.id, inSplit);
   }
 }
 
 function renderTabMode(project: ProjectRecord): void {
-  setContainerClass('');
+  container.className = '';
   container.style.gridTemplateColumns = '';
   container.style.gridTemplateRows = '';
 
@@ -410,15 +193,14 @@ function renderTabMode(project: ProjectRecord): void {
   if (!activeId) return;
 
   const activeSession = project.sessions.find(s => s.id === activeId);
-  if (activeSession && !isCliSession(activeSession)) {
+  if (activeSession?.type && activeSession.type !== 'claude') {
     attachNonCliPane(activeSession, container, false);
     return;
   }
 
   attachToContainer(activeId, container);
   showPane(activeId, false);
-
-  focusPane(project, activeId);
+  setFocused(activeId);
 
   const instance = getTerminalInstance(activeId);
   if (instance && !instance.spawned && !instance.exited) {
@@ -431,41 +213,33 @@ function renderTabMode(project: ProjectRecord): void {
 
 /** Attach, show, and ensure-spawn for each pane in the list. */
 function showPanes(project: ProjectRecord, target: HTMLElement = container): void {
-  const laidOut: (HTMLElement | undefined)[] = [];
-
   for (const paneId of project.layout.splitPanes) {
     const session = project.sessions.find(s => s.id === paneId);
-    let el: HTMLElement | undefined;
-
-    if (session && !isCliSession(session)) {
+    if (session?.type && session.type !== 'claude') {
       attachNonCliPane(session, target, true);
-      el = paneElementFor(session);
-    } else {
-      attachToContainer(paneId, target);
-      showPane(paneId, true);
-
-      const instance = getTerminalInstance(paneId);
-      if (instance && !instance.spawned && !instance.exited) {
-        requestAnimationFrame(() => spawnTerminal(paneId));
-      }
-      el = instance?.element;
+      continue;
     }
 
-    laidOut.push(el);
-  }
+    attachToContainer(paneId, target);
+    showPane(paneId, true);
 
-  ensurePaneOrder(target, laidOut);
+    const instance = getTerminalInstance(paneId);
+    if (instance && !instance.spawned && !instance.exited) {
+      requestAnimationFrame(() => spawnTerminal(paneId));
+    }
+  }
 }
 
 function focusActivePane(project: ProjectRecord): void {
-  const paneId = project.activeSessionId && project.layout.splitPanes.includes(project.activeSessionId)
-    ? project.activeSessionId
-    : project.layout.splitPanes[0];
-  if (paneId) focusPane(project, paneId);
+  if (project.activeSessionId && project.layout.splitPanes.includes(project.activeSessionId)) {
+    setFocused(project.activeSessionId);
+  } else if (project.layout.splitPanes.length > 0) {
+    setFocused(project.layout.splitPanes[0]);
+  }
 }
 
 function renderSplitMode(project: ProjectRecord): void {
-  setContainerClass(`split-${project.layout.splitDirection}`);
+  container.className = `split-${project.layout.splitDirection}`;
   container.style.gridTemplateColumns = '';
   container.style.gridTemplateRows = '';
   showPanes(project);
@@ -478,49 +252,24 @@ function renderSwarmMode(project: ProjectRecord): void {
   const rows = Math.ceil(count / cols);
 
   const activeSession = project.sessions.find(s => s.id === project.activeSessionId);
-  const nonCliSession = (activeSession && !isCliSession(activeSession))
-    ? activeSession
-    : [...project.sessions].reverse().find(s => !isCliSession(s));
+  const isNonCliActive = activeSession?.type && activeSession.type !== 'claude';
 
-  const hasInspector = isInspectorOpen();
+  container.className = 'swarm-mode';
 
-  setContainerClass('swarm-mode');
-
-  const needsWrapper = nonCliSession || hasInspector;
-
-  if (needsWrapper) {
-    const colParts: string[] = ['1fr'];
-    if (nonCliSession) colParts.push('1fr');
-    if (hasInspector) colParts.push('var(--inspector-width, 350px)');
-
-    container.style.gridTemplateColumns = colParts.join(' ');
+  if (isNonCliActive) {
+    container.style.gridTemplateColumns = '1fr 1fr';
     container.style.gridTemplateRows = '1fr';
 
-    // Reuse the wrapper across renders: rebuilding it would detach — and so blur
-    // and de-select — every pane inside it on every state change.
-    let gridWrapper = container.querySelector<HTMLElement>('.swarm-grid-wrapper');
-    if (!gridWrapper) {
-      gridWrapper = document.createElement('div');
-      gridWrapper.className = 'swarm-grid-wrapper';
-      container.appendChild(gridWrapper);
-    }
+    const gridWrapper = document.createElement('div');
+    gridWrapper.className = 'swarm-grid-wrapper';
     gridWrapper.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     gridWrapper.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    container.appendChild(gridWrapper);
 
     showPanes(project, gridWrapper);
     appendEmptyCells(cols * rows - count, gridWrapper);
-
-    if (nonCliSession) attachNonCliPane(nonCliSession, container, true);
-
-    // Grid placement follows DOM order: wrapper, then the non-CLI pane, then the
-    // inspector. Hidden panes are display:none and stay wherever they were left.
-    ensurePaneOrder(container, [
-      gridWrapper,
-      nonCliSession ? paneElementFor(nonCliSession) : null,
-      hasInspector ? container.querySelector<HTMLElement>('#session-inspector') : null,
-    ]);
+    attachNonCliPane(activeSession, container, true);
   } else {
-    removeSwarmWrapper();
     container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
     showPanes(project);
@@ -558,9 +307,6 @@ function updateSwarmPaneStyles(project: ProjectRecord): void {
   }
 }
 
-const plusIcon =
-  '<svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="2.5" x2="7" y2="11.5"/><line x1="2.5" y1="7" x2="11.5" y2="7"/></svg>';
-
 function showEmptyState(project: ProjectRecord | undefined): void {
   removeEmptyState();
   const el = document.createElement('div');
@@ -571,23 +317,10 @@ function showEmptyState(project: ProjectRecord | undefined): void {
       <div class="hint">Create a project with the + button in the sidebar</div>
     `;
   } else {
-    const title = document.createElement('div');
-    title.className = 'empty-state-title';
-    title.textContent = 'Ready when you are';
-
-    const hint = document.createElement('div');
-    hint.className = 'hint';
-    const name = document.createElement('span');
-    name.className = 'empty-state-project';
-    name.textContent = project.name;
-    hint.append('No sessions running in ', name, ' yet.');
-
-    const cta = document.createElement('button');
-    cta.className = 'btn-primary empty-state-cta';
-    cta.innerHTML = `${plusIcon}<span>Start a session</span>`;
-    cta.addEventListener('click', () => quickNewSession());
-
-    el.append(title, hint, cta);
+    el.innerHTML = `
+      <div>No sessions in "${project.name}"</div>
+      <div class="hint">Create a session with the + button in the tab bar</div>
+    `;
   }
   container.appendChild(el);
 }

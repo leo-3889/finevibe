@@ -63,27 +63,12 @@ jobs:
 
           Generate release notes and prepend them to CHANGELOG.md:
           - Find the previous version tag: run 'git tag --list "v*" --sort=-version:refname'. The previous tag is the first tag that is NOT v${{ steps.version.outputs.version }}. If no previous tag exists, use the root commit.
-          - Collect commits between the previous tag and HEAD using 'git log <range> --pretty=format:"%H %s" --no-merges'.
-          - Filter out commits that are NOT user-facing (changelog is for end users of the app, not contributors). For each commit, inspect its changed files via 'git show --name-only --pretty=format: <sha>'. Exclude a commit if ALL of its changed files fall within these paths/patterns:
-            - '.github/' (workflows, actions, issue templates, PR templates)
-            - '.claude/', '.codex/' (agent/tooling config)
-            - Repo meta/docs: 'README.md', 'CLAUDE.md', 'AGENTS.md', 'MARKETING.md', 'CHANGELOG.md', 'LICENSE', any other top-level '*.md'
-            - Lint/format/CI config: '.eslintrc*', '.prettierrc*', '.editorconfig', '.nvmrc', '.gitignore', '.gitattributes'
-          - Also exclude commits whose subject starts with (case-insensitive): 'ci:', 'ci(', 'chore(ci', 'docs:', 'docs(', 'build(ci', 'release:', 'release(', 'chore(release'.
-          - If a commit touches BOTH excluded paths and app code (e.g. 'src/'), keep it — it's user-facing.
-          - From the remaining commits, categorize by subject prefix:
+          - Collect commits between the previous tag and HEAD using 'git log <range> --pretty=format:"%s" --no-merges'.
+          - Categorize commits:
             - Features: commits starting with add, feat, implement, introduce, support (case-insensitive)
             - Fixes: commits starting with fix, resolve, patch, correct (case-insensitive)
             - Changes: everything else
           - Strip the prefix keyword and capitalize the first letter of each entry.
-          - Consolidate entries that describe the same new feature area. The audience is end users skimming a release blurb, not contributors auditing the diff:
-            - Identify "headline" Features — entries that introduce a brand-new tab, panel, modal, board, or major capability for this release.
-            - For each headline feature, drop Fix entries scoped to that same area. A brand-new feature has no prior shipped version, so in-development fixes are not user-visible bug fixes — they are part of building the feature.
-            - For each headline feature, drop Change entries that describe a sub-aspect of building it out (sub-modal layouts, internal naming, follow-on UI tweaks). Keep a Change only when it is a meaningful evolution of an already-shipped capability.
-            - Drop Feature entries that are sub-pieces of a larger headline feature (e.g. if "Team tab" is the headline, drop "Team install-as-agent flag", "Search filter in team browse modal", "Team marketplace grouped by domain").
-            - When multiple Feature entries name the same area, fold them into one concise headline. Trim trailing "and X and Y" clauses that just enumerate sub-pieces — keep the user-visible capability, drop the implementation detail.
-            - Use the changed file paths from earlier 'git show --name-only' results as a grouping signal: entries whose changed files substantially overlap are likely the same area.
-            - Apply conservatively. When unsure whether two entries describe the same area, prefer to group/drop rather than over-list.
           - Format as: '## [${{ steps.version.outputs.version }}] - <YYYY-MM-DD>' followed by sections (Features, Fixes, Changes). Omit empty sections.
           - If CHANGELOG.md doesn't exist, create it with header '# Changelog' and a blank line.
           - Prepend the new entry after the header. Do NOT duplicate if one for this version already exists.
@@ -154,7 +139,7 @@ jobs:
           name: release-notes
 
       - name: Build and publish
-        run: npm run build && npx electron-builder --publish always --arm64 --x64
+        run: npm run build && npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -167,83 +152,3 @@ jobs:
         run: gh release edit "${{ needs.prepare.outputs.tag }}" --notes-file RELEASE_NOTES.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-linux:
-    needs: [prepare]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Download release notes
-        uses: actions/download-artifact@v4
-        with:
-          name: release-notes
-
-      - name: Build and publish
-        run: npm run build && npx electron-builder --linux --publish always --x64
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-windows:
-    needs: [prepare]
-    # Pinned to windows-2022: the windows-latest image (now windows-2025)
-    # breaks node-gyp's Visual Studio detection when compiling node-pty.
-    runs-on: windows-2022
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Download release notes
-        uses: actions/download-artifact@v4
-        with:
-          name: release-notes
-
-      - name: Build and publish
-        run: npm run build && npx electron-builder --win --publish always --x64
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish-npm:
-    needs: [prepare, build, build-linux, build-windows]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 18
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Publish to npm
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

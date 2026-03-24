@@ -24,12 +24,10 @@ vi.mock('./session-context.js', () => ({
 }));
 
 import { appState, _resetForTesting as resetAppState } from './state';
-import { applyCliSessionName } from './session-title';
+import { parseTitle, clearSession, _resetForTesting } from './session-title';
 
 beforeEach(() => {
-  // Restore spies: a second vi.spyOn of an already-spied method returns the
-  // existing spy, so call counts would leak between tests.
-  vi.restoreAllMocks();
+  _resetForTesting();
   resetAppState();
   uuidCounter = 0;
 });
@@ -41,125 +39,88 @@ function addProjectAndSession(sessionName = 'Session 1') {
   return { project, session };
 }
 
-function nameOf(projectId: string, sessionId: string): string {
-  const project = appState.projects.find((p) => p.id === projectId)!;
-  return project.sessions.find((s) => s.id === sessionId)!.name;
-}
-
-describe('applyCliSessionName', () => {
-  it('adopts the CLI title as the tab name', () => {
+describe('parseTitle', () => {
+  it('extracts title from a valid separator line', () => {
     const { project, session } = addProjectAndSession();
-    applyCliSessionName(session.id, 'Remove time frame limitation');
-    expect(nameOf(project.id, session.id)).toBe('Remove time frame limitation');
+    parseTitle(session.id, '───────────── my-conversation-title ──');
+    const updated = project.sessions.find((s) => s.id === session.id)!;
+    expect(updated.name).toBe('my-conversation-title');
   });
 
-  it('trims surrounding whitespace', () => {
+  it('handles ANSI-wrapped separator lines', () => {
     const { project, session } = addProjectAndSession();
-    applyCliSessionName(session.id, '  Fix the flaky test \n');
-    expect(nameOf(project.id, session.id)).toBe('Fix the flaky test');
+    parseTitle(session.id, '\x1b[90m───────────── styled-title ──\x1b[0m');
+    const updated = project.sessions.find((s) => s.id === session.id)!;
+    expect(updated.name).toBe('styled-title');
   });
 
-  it('ignores an empty or whitespace-only name', () => {
+  it('ignores data without separator pattern', () => {
     const { project, session } = addProjectAndSession();
-    applyCliSessionName(session.id, '   ');
-    expect(nameOf(project.id, session.id)).toBe('Session 1');
+    parseTitle(session.id, 'Hello, how can I help you?');
+    const updated = project.sessions.find((s) => s.id === session.id)!;
+    expect(updated.name).toBe('Session 1');
   });
 
-  it('does not overwrite a name the user set in Vibeyard', () => {
+  it('does not extract text spanning across separate separator lines', () => {
     const { project, session } = addProjectAndSession();
-    appState.renameSession(project.id, session.id, 'my careful name', true);
-
-    applyCliSessionName(session.id, 'An AI-generated title');
-
-    expect(nameOf(project.id, session.id)).toBe('my careful name');
+    parseTitle(session.id, '────────────────────\r\n› i got a feedback from a user\r\n────────────────────');
+    const updated = project.sessions.find((s) => s.id === session.id)!;
+    expect(updated.name).toBe('Session 1');
   });
 
-  it('does nothing when auto-titling is disabled', () => {
+  it('ignores plain separator lines without a title', () => {
+    const { project, session } = addProjectAndSession();
+    parseTitle(session.id, '────────────────────────────────────────────────────');
+    const updated = project.sessions.find((s) => s.id === session.id)!;
+    expect(updated.name).toBe('Session 1');
+    // Should still be able to pick up a real title later
+    parseTitle(session.id, '───────────── real-title ──');
+    expect(project.sessions.find((s) => s.id === session.id)!.name).toBe('real-title');
+  });
+
+  it('skips rename when userRenamed is true', () => {
+    const { project, session } = addProjectAndSession();
+    appState.renameSession(project.id, session.id, 'My Custom Name', true);
+    parseTitle(session.id, '───────────── auto-title ──');
+    const updated = project.sessions.find((s) => s.id === session.id)!;
+    expect(updated.name).toBe('My Custom Name');
+  });
+
+  it('stops scanning after first title found', () => {
+    const { project, session } = addProjectAndSession();
+    parseTitle(session.id, '───────────── first-title ──');
+    parseTitle(session.id, '───────────── second-title ──');
+    const updated = project.sessions.find((s) => s.id === session.id)!;
+    expect(updated.name).toBe('first-title');
+  });
+
+  it('respects autoTitleEnabled preference', () => {
     const { project, session } = addProjectAndSession();
     appState.setPreference('autoTitleEnabled', false);
-
-    applyCliSessionName(session.id, 'An AI-generated title');
-
-    expect(nameOf(project.id, session.id)).toBe('Session 1');
+    parseTitle(session.id, '───────────── should-not-apply ──');
+    const updated = project.sessions.find((s) => s.id === session.id)!;
+    expect(updated.name).toBe('Session 1');
   });
+});
 
-  it('truncates to the maximum session name length', () => {
+describe('clearSession', () => {
+  it('allows re-scanning after clear', () => {
     const { project, session } = addProjectAndSession();
-    applyCliSessionName(session.id, 'x'.repeat(200));
-    expect(nameOf(project.id, session.id)).toHaveLength(60);
+    parseTitle(session.id, '───────────── first-title ──');
+    expect(project.sessions.find((s) => s.id === session.id)!.name).toBe('first-title');
+    clearSession(session.id);
+    parseTitle(session.id, '───────────── second-title ──');
+    expect(project.sessions.find((s) => s.id === session.id)!.name).toBe('second-title');
   });
+});
 
-  it('applies a repeated identical name only once', () => {
+describe('_resetForTesting', () => {
+  it('clears all state', () => {
     const { project, session } = addProjectAndSession();
-    const spy = vi.spyOn(appState, 'renameSession');
-
-    applyCliSessionName(session.id, 'Same title');
-    applyCliSessionName(session.id, 'Same title');
-    applyCliSessionName(session.id, 'Same title');
-
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(nameOf(project.id, session.id)).toBe('Same title');
-  });
-
-  it('applies a changed name', () => {
-    const { project, session } = addProjectAndSession();
-    applyCliSessionName(session.id, 'First title');
-    applyCliSessionName(session.id, 'Second title');
-    expect(nameOf(project.id, session.id)).toBe('Second title');
-  });
-
-  it('ignores a title belonging to a different CLI session', () => {
-    // A stale .name survives /clear until the next statusLine render deletes
-    // it; resyncAllSessions re-reads every file on window activate.
-    const { project, session } = addProjectAndSession();
-    appState.updateSessionCliId(project.id, session.id, 'cli-new');
-
-    applyCliSessionName(session.id, 'Title from the cleared conversation', 'cli-old');
-
-    expect(nameOf(project.id, session.id)).toBe('Session 1');
-  });
-
-  it('applies a title matching the current CLI session', () => {
-    const { project, session } = addProjectAndSession();
-    appState.updateSessionCliId(project.id, session.id, 'cli-new');
-
-    applyCliSessionName(session.id, 'Current title', 'cli-new');
-
-    expect(nameOf(project.id, session.id)).toBe('Current title');
-  });
-
-  it('applies a title when the session has no CLI id yet', () => {
-    const { project, session } = addProjectAndSession();
-    applyCliSessionName(session.id, 'Early title', 'cli-1');
-    expect(nameOf(project.id, session.id)).toBe('Early title');
-  });
-
-  it('is a no-op for an unknown session id', () => {
-    addProjectAndSession();
-    expect(() => applyCliSessionName('does-not-exist', 'Title')).not.toThrow();
-  });
-
-  it('re-applies a name after the tab is reset (e.g. /clear)', () => {
-    const { project, session } = addProjectAndSession();
-    applyCliSessionName(session.id, 'Same title');
-    appState.renameSession(project.id, session.id, 'Session 2');
-
-    applyCliSessionName(session.id, 'Same title');
-
-    expect(nameOf(project.id, session.id)).toBe('Same title');
-  });
-
-  it('applies an over-long title only once', () => {
-    // The dedupe compares against the stored name, which renameSession
-    // truncates — so it must compare against the truncated form too.
-    const { project, session } = addProjectAndSession();
-    const spy = vi.spyOn(appState, 'renameSession');
-    const long = 'y'.repeat(200);
-
-    applyCliSessionName(session.id, long);
-    applyCliSessionName(session.id, long);
-
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(nameOf(project.id, session.id)).toHaveLength(60);
+    parseTitle(session.id, '───────────── a-title ──');
+    _resetForTesting();
+    // After reset, same session can be titled again
+    parseTitle(session.id, '───────────── new-title ──');
+    expect(project.sessions.find((s) => s.id === session.id)!.name).toBe('new-title');
   });
 });

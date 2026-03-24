@@ -2,17 +2,30 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import { STATUS_DIR, getStatusLineScriptPath } from './hook-status';
-import { statusCmd as mkStatusCmd, stopStatusCmd as mkStopStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, captureToolFailureCmd as mkCaptureToolFailureCmd, installEventScript, wrapPythonHookCmd, installHookScripts } from './hook-commands';
 import { readJsonSafe, readDirSafe } from './fs-utils';
-import { parseFrontmatter } from './frontmatter';
-import { getSupportedHookEvents as computeSupportedHookEvents } from './claude-hook-versions';
-import { getClaudeVersion } from './providers/claude-version';
-import { resolveBinary } from './providers/resolve-binary';
-import { TOKEN_TRUNCATION_KEY, TOKEN_TRUNCATION_SENTINEL } from '../shared/constants';
-import { pyLiteral } from '../shared/python';
-import type { McpServer, Agent, Skill, Command, ClaudeConfig, InspectorEvent, InspectorEventType } from '../shared/types';
+import type { McpServer, Agent, Skill, Command, ClaudeConfig } from '../shared/types';
 
 export type { McpServer, Agent, Skill, Command, ClaudeConfig } from '../shared/types';
+
+/** Parse YAML-ish frontmatter from an .md file (between --- delimiters) */
+function parseFrontmatter(filePath: string): Record<string, string> {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (!match) return {};
+    const result: Record<string, string> = {};
+    for (const line of match[1].split('\n')) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx === -1) continue;
+      const key = line.slice(0, colonIdx).trim();
+      const value = line.slice(colonIdx + 1).trim();
+      result[key] = value;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
 
 /** Read MCP servers from settings.json mcpServers key and .mcp.json files */
 function readMcpServers(settingsPath: string, mcpJsonPath: string, scope: 'user' | 'project'): McpServer[] {
@@ -146,95 +159,11 @@ function getEnabledPlugins(): Set<string> {
   return new Set(Object.entries(enabled).filter(([, v]) => v).map(([k]) => k));
 }
 
-/**
- * Hook-payload fields copied verbatim into an inspector event, when present.
- *
- * Every name here is taken from a per-event input schema in the Claude Code
- * hooks reference — an invented name costs nothing at write time and silently
- * renders a blank timeline row forever, which is exactly how `config_key`,
- * `question` and `answer` survived here for so long.
- *
- * `reason` is intentionally shared across events (SessionEnd and
- * PermissionDenied), which is safe because the consuming timeline branch is
- * selected by `ev.type`, not by field presence.
- *
- * Beware nested keys when reading the docs: an Elicitation example carries
- * `requested_schema.properties.username.type`, which reads like top-level
- * `type`/`username` fields. Neither exists. Elicitation's real discriminator is
- * `mode` ('form' | 'url').
- *
- * Deliberately NOT copied: `cwd` (a common field on every event, so it bloats
- * all 25 event types with a value that is constant per session),
- * `requested_schema` / `properties` (unbounded MCP JSON Schema),
- * `compact_summary` / `custom_instructions` (potentially huge),
- * `background_tasks` / `session_crons` (consumed by stop_status_writer.py).
- */
-const INSPECTOR_FIELDS = [
-  // tool events
-  'duration_ms',
-  // subagent + turn events
-  'agent_id', 'agent_type', 'agent_transcript_path', 'last_assistant_message',
-  // prompt / notification
-  'prompt', 'message', 'title', 'notification_type',
-  // lifecycle discriminators
-  'reason', 'error_details',
-  // tasks + teams
-  'task_id', 'task_subject', 'teammate_name',
-  // filesystem / config / worktree
-  'worktree_path', 'file_path', 'event', 'new_cwd',
-  // MCP elicitation
-  'mcp_server_name', 'action',
-] as const;
-
-/**
- * Compile-time guard that every captured field has a home on `InspectorEvent`.
- * Hand-mirroring the two lists is what let `config_key`/`question`/`answer`
- * survive for months; this makes at least the internal half of that drift a
- * type error. (It cannot check the half that actually broke — whether the name
- * exists in Claude Code's payload — so the docblock above stays load-bearing.)
- */
-const _inspectorFieldsAreTyped: readonly (keyof InspectorEvent)[] = INSPECTOR_FIELDS;
-void _inspectorFieldsAreTyped;
-
-/**
- * Cap on a copied string field. `last_assistant_message` arrives on every Stop
- * and SubagentStop and was previously written verbatim into `.events`, read
- * back whole, sent over IPC and held in the renderer — while the timeline only
- * ever displays 500 characters of it.
- */
-const INSPECTOR_FIELD_MAX_CHARS = 2000;
-
-/** Per-hook timeout (seconds) requested for SessionEnd. See its use site. */
-const SESSION_END_TIMEOUT_SEC = 5;
-
 export const HOOK_MARKER = '# vibeyard-hook';
-
-/** The default Claude config dir (~/.claude). Profiles override this via CLAUDE_CONFIG_DIR. */
-export function defaultClaudeDir(): string {
-  return path.join(homedir(), '.claude');
-}
-
-/**
- * Return the set of Claude Code hook events supported by the currently
- * installed `claude` CLI binary. If the version cannot be detected, returns
- * the safe (empty) baseline so no unsupported hooks are written.
- */
-export function getSupportedHookEvents(): Set<string> {
-  const binary = resolveBinary('claude', { path: null });
-  const version = getClaudeVersion(binary);
-  return computeSupportedHookEvents(version);
-}
 
 interface HookHandler {
   type: string;
   command: string;
-  /**
-   * Per-hook timeout in seconds. Only set where the event's default is too
-   * tight: SessionEnd hooks share a 1.5s budget, which a cold Python start can
-   * blow through, and Claude Code raises the budget to the highest configured
-   * per-hook timeout.
-   */
-  timeout?: number;
 }
 
 interface HookMatcherEntry {
@@ -251,8 +180,8 @@ function isIdeHook(h: HookHandler): boolean {
 /**
  * Read and clean Claude settings, returning the settings object and cleaned hooks.
  */
-function prepareSettings(configDir: string = defaultClaudeDir()): { settings: Record<string, unknown>; cleaned: HooksConfig } {
-  const settingsPath = path.join(configDir, 'settings.json');
+function prepareSettings(): { settings: Record<string, unknown>; cleaned: HooksConfig } {
+  const settingsPath = path.join(homedir(), '.claude', 'settings.json');
   let settings: Record<string, unknown> = {};
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
@@ -279,198 +208,44 @@ function prepareSettings(configDir: string = defaultClaudeDir()): { settings: Re
   return { settings, cleaned };
 }
 
-function writeSettings(settings: Record<string, unknown>, configDir: string = defaultClaudeDir()): void {
-  const settingsPath = path.join(configDir, 'settings.json');
+function writeSettings(settings: Record<string, unknown>): void {
+  const settingsPath = path.join(homedir(), '.claude', 'settings.json');
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 }
 
 /**
  * Install only the hooks portion of Claude Code settings (additive, non-destructive).
- * Pass `configDir` to target a profile's config dir instead of the default ~/.claude.
  */
-export function installHooksOnly(configDir: string = defaultClaudeDir()): void {
-  const { settings, cleaned } = prepareSettings(configDir);
+export function installHooksOnly(): void {
+  const { settings, cleaned } = prepareSettings();
 
-  const supportedEvents = getSupportedHookEvents();
-
-  installHookScripts();
-
-  const statusCmd = (event: string, status: string) =>
-    mkStatusCmd(event, status, 'CLAUDE_IDE_SESSION_ID', HOOK_MARKER);
-
-  // Subagent-aware Stop status command: only writes 'completed' when no
-  // subagents are in flight (the main agent fires spurious top-level Stop hooks
-  // while waiting on parallel Task subagents). Reads the counter maintained by
-  // captureEventCmd below.
-  const stopStatusCmd = () => mkStopStatusCmd('CLAUDE_IDE_SESSION_ID', HOOK_MARKER);
+  const statusCmd = (status: string) =>
+    `sh -c 'mkdir -p ${STATUS_DIR} && echo ${status} > ${STATUS_DIR}/$CLAUDE_IDE_SESSION_ID.status ${HOOK_MARKER}'`;
 
   // Hook to capture Claude's session ID from the hook input JSON (stdin)
-  const captureSessionIdCmd = mkCaptureSessionIdCmd('CLAUDE_IDE_SESSION_ID', HOOK_MARKER);
+  const captureSessionIdCmd =
+    `sh -c 'input=$(cat); sid=$(echo "$input" | /usr/bin/python3 -c "import sys,json; print(json.load(sys.stdin).get(\\"session_id\\",\\"\\"))" 2>/dev/null); if [ -n "$sid" ]; then mkdir -p ${STATUS_DIR} && echo "$sid" > ${STATUS_DIR}/$CLAUDE_IDE_SESSION_ID.sessionid; fi ${HOOK_MARKER}'`;
 
   // Hook to capture tool failure details (tool_name, tool_input, error) for missing-tool detection.
   // Uses a random suffix to avoid filename collisions when multiple tools fail rapidly.
-  const captureToolFailureCmd = mkCaptureToolFailureCmd('CLAUDE_IDE_SESSION_ID', HOOK_MARKER);
-
-  // Hook to capture inspector events (tool names, cost snapshots, timestamps) into a JSONL log.
-  // Each hook event appends one JSON line to STATUS_DIR/{sessionId}.events
-  const captureEventCmd = (hookEvent: string, eventType: string) => {
-    // In-flight subagent counter mutation, injected ONLY into the scripts for
-    // the four events that affect it. All subagents share the parent's
-    // CLAUDE_IDE_SESSION_ID, so a single <sid>.subagents file tracks the whole
-    // session.
-    //
-    // FALLBACK. Claude Code now reports in-flight work directly on the Stop
-    // payload as `background_tasks`, and stop_status_writer.py prefers it — but
-    // consults this counter whenever that payload reports nothing holding, i.e.
-    // an empty *or* absent `background_tasks`. An empty array is not proof of an
-    // idle session (see the stop_status_writer.py comment in hook-commands.ts),
-    // so the counter still has to be maintained on every CLI version.
-    //
-    // The read-modify-write is NOT locked: parallel subagent lifecycle hooks
-    // are separate processes and can race, so the counter may transiently
-    // drift. That is tolerated by design — the renderer arms a completion
-    // backstop whenever a Stop resolves to 'working' (see session-activity.ts),
-    // so an over-count can never wedge the session and an under-count degrades
-    // to at worst a single stale over-notification.
-    let counterSnippet = '';
-    if (hookEvent === 'SubagentStart' || hookEvent === 'SubagentStop') {
-      const op = hookEvent === 'SubagentStart' ? 'n=n+1' : 'n=max(0,n-1)';
-      counterSnippet = `
-_sf=os.path.join(status_dir,sid+".subagents")
-n=0
-try:
- with open(_sf) as _f:
-  n=int(json.load(_f).get("n",0))
-except:
- pass
-${op}
-with open(_sf,"w") as _f:
- json.dump({"n":n,"t":int(time.time()*1000)},_f)`;
-    } else if (hookEvent === 'SessionStart') {
-      // Reset the counter for a genuinely new/resumed session. Skip auto-compact
-      // (source=="compact"), which fires SessionStart mid-turn and would drop a
-      // live in-flight count, causing a premature completion.
-      counterSnippet = `
-if d.get("source")!="compact":
- _sf=os.path.join(status_dir,sid+".subagents")
- with open(_sf,"w") as _f:
-  json.dump({"n":0,"t":int(time.time()*1000)},_f)`;
-    } else if (hookEvent === 'PostToolUse') {
-      // A subagent's tool activity keeps the counter timestamp fresh so a
-      // slow-but-active subagent never trips the Stop writer's staleness guard.
-      // Never create a counter file for a plain (non-subagent) session.
-      counterSnippet = `
-if d.get("agent_id"):
- _sf=os.path.join(status_dir,sid+".subagents")
- try:
-  with open(_sf) as _f:
-   _c=json.load(_f)
-  _c["t"]=int(time.time()*1000)
-  with open(_sf,"w") as _f:
-   json.dump(_c,_f)
- except:
-  pass`;
-    }
-    // An oversized Read no longer fails: Claude Code truncates it and returns a
-    // successful PostToolUse flagged with TOKEN_TRUNCATION_KEY. Detect that one
-    // structured flag and synthesize the record large-file-detector.ts expects.
-    // Gated here in TS rather than with a `"${hookEvent}"=="PostToolUse"` compare
-    // inside the Python, so the other 24 scripts don't carry a dead branch.
-    //
-    // Scoped to tool_name == "Read" deliberately: a generic "capture every
-    // tool_response" rule would mean a file write + fs event + IPC per tool call.
-    const truncationSnippet = hookEvent === 'PostToolUse' ? `
-if tn=="Read":
- _tr=d.get("tool_response")
- _fi=_tr.get("file") if isinstance(_tr,dict) else None
- if isinstance(_fi,dict) and _fi.get(${pyLiteral(TOKEN_TRUNCATION_KEY)}):
-  import random,string as st
-  _msg=${pyLiteral(TOKEN_TRUNCATION_SENTINEL)}+": read returned "+str(_fi.get("numLines",0))+" of "+str(_fi.get("totalLines",0))+" lines"
-  sfx="".join(random.choices(st.ascii_lowercase,k=6))
-  json.dump({"tool_name":tn,"tool_input":d.get("tool_input",{}),"error":_msg},open(os.path.join(status_dir,sid+"-"+sfx+".toolfailure"),"w"))` : '';
-
-    const pyCode = `import sys,json,os,time
-try:
- d=json.load(sys.stdin)
-except:
- sys.exit(0)
-sid=os.environ.get("CLAUDE_IDE_SESSION_ID","")
-if not sid:
- sys.exit(0)
-cs=d.get("cost",{})
-cw=d.get("context_window",{})
-e={"type":"${eventType}","timestamp":int(time.time()*1000),"hookEvent":"${hookEvent}"}
-tn=d.get("tool_name","")
-if tn:
- e["tool_name"]=tn
-ti=d.get("tool_input")
-if ti:
- e["tool_input"]=ti
-er=d.get("error","")
-if er:
- e["error"]=er
-for fld in ${pyLiteral(INSPECTOR_FIELDS)}:
- if fld not in d:
-  continue
- v=d[fld]
- if v is None or v=="" or v==[] or v=={}:
-  continue
- if isinstance(v,str) and len(v)>${INSPECTOR_FIELD_MAX_CHARS}:
-  v=v[:${INSPECTOR_FIELD_MAX_CHARS}]+"..."
- e[fld]=v
-if cs:
- e["cost_snapshot"]={k:cs[k] for k in ("total_cost_usd","total_duration_ms") if k in cs}
-if cw:
- tt=cw.get("total_input_tokens",0)+cw.get("total_output_tokens",0)
- e["context_snapshot"]={
-  "total_tokens":tt,
-  "context_window_size":cw.get("context_window_size",200000),
-  "used_percentage":cw.get("used_percentage",0)
- }
-status_dir=${pyLiteral(STATUS_DIR)}${truncationSnippet}${counterSnippet}
-with open(os.path.join(status_dir,sid+".events"),"a") as f:
- f.write(json.dumps(e)+"\\n")
-`;
-    const scriptName = `claude_event_${hookEvent}.py`;
-    installEventScript(scriptName, pyCode);
-    return wrapPythonHookCmd(scriptName, pyCode, HOOK_MARKER);
-  };
+  const captureToolFailureCmd =
+    `sh -c 'cat | /usr/bin/python3 -c "import sys,json,os,random,string; d=json.load(sys.stdin); sid=os.environ.get(\\"CLAUDE_IDE_SESSION_ID\\",\\"\\"); tn=d.get(\\"tool_name\\",\\"\\"); ti=d.get(\\"tool_input\\",{}); err=d.get(\\"error\\",\\"\\"); sfx=\\"\\".join(random.choices(string.ascii_lowercase,k=6)); json.dump({\\"tool_name\\":tn,\\"tool_input\\":ti,\\"error\\":err},open(f\\"${STATUS_DIR}/\\"+sid+\\"-\\"+sfx+\\".toolfailure\\",\\"w\\")) if sid and tn else None" 2>/dev/null ${HOOK_MARKER}'`;
 
   // Add our hooks for each event type
   const ideEvents: Record<string, string> = {
     SessionStart: 'waiting',
     UserPromptSubmit: 'working',
     PostToolUse: 'working',
-    // A failed tool still means the turn is running. This writer is statusCmd,
-    // a plain `sh -c echo` that cannot read stdin, so it also writes 'working'
-    // for an is_interrupt (user-abort) failure; the renderer's interrupt latch
-    // swallows that (see session-activity.ts, `interrupted` guard).
     PostToolUseFailure: 'working',
     Stop: 'completed',
     StopFailure: 'waiting',
-    PermissionRequest: 'input',
-  };
-
-  const eventTypeMap: Record<string, InspectorEventType> = {
-    SessionStart: 'session_start',
-    UserPromptSubmit: 'user_prompt',
-    PostToolUse: 'tool_use',
-    PostToolUseFailure: 'tool_failure',
-    Stop: 'stop',
-    StopFailure: 'stop_failure',
-    PermissionRequest: 'permission_request',
+    PermissionRequest: 'permission',
   };
 
   for (const [event, status] of Object.entries(ideEvents)) {
-    if (!supportedEvents.has(event)) continue;
     const existing = cleaned[event] ?? [];
-    // Stop fires spuriously each time the main agent pauses on parallel
-    // subagents; use the subagent-aware writer when the counter is available
-    // (SubagentStart supported). Older CLIs keep the naive Stop->completed path.
-    const useStopWriter = event === 'Stop' && supportedEvents.has('SubagentStart');
-    const statusCommand = useStopWriter ? stopStatusCmd() : statusCmd(event, status);
-    const hooks: HookHandler[] = [{ type: 'command', command: statusCommand }];
+    const hooks: HookHandler[] = [{ type: 'command', command: statusCmd(status) }];
     // Capture Claude session ID on session start and prompt submission
     if (event === 'SessionStart' || event === 'UserPromptSubmit') {
       hooks.push({ type: 'command', command: captureSessionIdCmd });
@@ -479,8 +254,6 @@ with open(os.path.join(status_dir,sid+".events"),"a") as f:
     if (event === 'PostToolUseFailure') {
       hooks.push({ type: 'command', command: captureToolFailureCmd });
     }
-    // Capture inspector event log for session inspection
-    hooks.push({ type: 'command', command: captureEventCmd(event, eventTypeMap[event]) });
     existing.push({
       matcher: '',
       hooks,
@@ -488,55 +261,15 @@ with open(os.path.join(status_dir,sid+".events"),"a") as f:
     cleaned[event] = existing;
   }
 
-  // Inspector-only hooks: log to .events file without changing session status
-  const inspectorOnlyEvents: Record<string, InspectorEventType> = {
-    PreToolUse: 'pre_tool_use',
-    PermissionDenied: 'permission_denied',
-    SubagentStart: 'subagent_start',
-    SubagentStop: 'subagent_stop',
-    Notification: 'notification',
-    PreCompact: 'pre_compact',
-    PostCompact: 'post_compact',
-    SessionEnd: 'session_end',
-    TaskCreated: 'task_created',
-    TaskCompleted: 'task_completed',
-    // WorktreeCreate intentionally omitted: CC >= 2.1.50 treats it as a
-    // path-replacement hook that must create the worktree and print the path.
-    // An observer hook breaks worktree creation; let CC's built-in handler run.
-    WorktreeRemove: 'worktree_remove',
-    CwdChanged: 'cwd_changed',
-    FileChanged: 'file_changed',
-    ConfigChange: 'config_change',
-    Elicitation: 'elicitation',
-    ElicitationResult: 'elicitation_result',
-    InstructionsLoaded: 'instructions_loaded',
-    TeammateIdle: 'teammate_idle',
-  };
-
-  for (const [event, eventType] of Object.entries(inspectorOnlyEvents)) {
-    if (!supportedEvents.has(event)) continue;
-    const existing = cleaned[event] ?? [];
-    const handler: HookHandler = { type: 'command', command: captureEventCmd(event, eventType) };
-    // SessionEnd hooks share a 1.5s budget by default — tight enough that a
-    // cold Python start (notably on Windows) can miss it and silently drop the
-    // final event. Claude Code raises the budget to the highest configured
-    // per-hook timeout, so asking for 5s buys headroom without delaying exit:
-    // the budget is a ceiling, not a wait.
-    if (event === 'SessionEnd') handler.timeout = SESSION_END_TIMEOUT_SEC;
-    existing.push({ matcher: '', hooks: [handler] });
-    cleaned[event] = existing;
-  }
-
   settings.hooks = cleaned;
-  writeSettings(settings, configDir);
+  writeSettings(settings);
 }
 
 /**
  * Install only the statusLine setting (exclusive — overwrites any existing value).
- * Pass `configDir` to target a profile's config dir instead of the default ~/.claude.
  */
-export function installStatusLine(configDir: string = defaultClaudeDir()): void {
-  const settingsPath = path.join(configDir, 'settings.json');
+export function installStatusLine(): void {
+  const settingsPath = path.join(homedir(), '.claude', 'settings.json');
   let settings: Record<string, unknown> = {};
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
@@ -549,7 +282,7 @@ export function installStatusLine(configDir: string = defaultClaudeDir()): void 
     command: getStatusLineScriptPath(),
   };
 
-  writeSettings(settings, configDir);
+  writeSettings(settings);
 }
 
 /**

@@ -21,10 +21,6 @@ const listeners: GitStatusCallback[] = [];
 const worktreeChangeListeners: WorktreeChangeCallback[] = [];
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let polling = false;
-// Set when poll() is called while a poll is already in flight. The running
-// poll loops once more so a request triggered mid-flight (e.g. a project
-// switch) is never silently dropped — it re-reads the now-active project.
-let repollRequested = false;
 
 // Worktree cache: projectId → GitWorktree[]
 const worktreeCache = new Map<string, GitWorktree[]>();
@@ -33,7 +29,6 @@ const sessionWorktreeMap = new Map<string, string>();
 // Manual override: projectId → worktree path
 const manualOverride = new Map<string, string>();
 let worktreePollCounter = 0;
-let unwatchGitChanged: (() => void) | null = null;
 
 async function refreshWorktrees(projectId: string, projectPath: string): Promise<void> {
   try {
@@ -87,49 +82,35 @@ async function detectSessionWorktree(sessionId: string): Promise<void> {
 }
 
 async function poll(): Promise<void> {
-  if (!appState.activeProject) return;
-  // A poll is already running. Flag a re-poll so it picks up the latest active
-  // project when it finishes, instead of dropping this request on the floor.
-  if (polling) {
-    repollRequested = true;
-    return;
-  }
+  const project = appState.activeProject;
+  if (!project || polling) return;
 
   polling = true;
   try {
-    do {
-      repollRequested = false;
+    // Refresh worktree list every 3rd poll (~30s)
+    worktreePollCounter++;
+    if (worktreePollCounter % 3 === 1) {
+      await refreshWorktrees(project.id, project.path);
+    }
 
-      // Re-read each iteration: the active project may have changed while the
-      // previous iteration was awaiting (that's why we looped).
-      const project = appState.activeProject;
-      if (!project) break;
+    // Detect active session's worktree
+    const activeSession = appState.activeSession;
+    if (activeSession && activeSession.type !== 'diff-viewer' && activeSession.type !== 'file-reader' && activeSession.type !== 'mcp-inspector') {
+      await detectSessionWorktree(activeSession.id);
+    }
 
-      // Refresh worktree list every 3rd poll (~30s)
-      worktreePollCounter++;
-      if (worktreePollCounter % 3 === 1) {
-        await refreshWorktrees(project.id, project.path);
-      }
+    // Query git status using the resolved worktree path
+    const gitPath = getActiveGitPath(project.id);
+    const status = await window.vibeyard.git.getStatus(gitPath) as GitStatus;
+    const cacheKey = `${project.id}:${gitPath}`;
+    const prev = cache.get(cacheKey);
+    cache.set(cacheKey, status);
+    // Also set by projectId for backward compatibility
+    cache.set(project.id, status);
 
-      // Detect active session's worktree
-      const activeSession = appState.activeSession;
-      if (activeSession && activeSession.type !== 'diff-viewer' && activeSession.type !== 'file-reader' && activeSession.type !== 'mcp-inspector') {
-        await detectSessionWorktree(activeSession.id);
-      }
-
-      // Query git status using the resolved worktree path
-      const gitPath = getActiveGitPath(project.id);
-      const status = await window.vibeyard.git.getStatus(gitPath) as GitStatus;
-      const cacheKey = `${project.id}:${gitPath}`;
-      const prev = cache.get(cacheKey);
-      cache.set(cacheKey, status);
-      // Also set by projectId for backward compatibility
-      cache.set(project.id, status);
-
-      if (!prev || JSON.stringify(prev) !== JSON.stringify(status)) {
-        for (const cb of listeners) cb(project.id, status);
-      }
-    } while (repollRequested);
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(status)) {
+      for (const cb of listeners) cb(project.id, status);
+    }
   } catch {
     // Ignore errors
   } finally {
@@ -139,13 +120,6 @@ async function poll(): Promise<void> {
 
 export function getGitStatus(projectId: string): GitStatus | null {
   return cache.get(projectId) ?? null;
-}
-
-/** Total uncommitted changes for a project, or null when it's not a git repo. */
-export function gitChangeCount(projectId: string): number | null {
-  const status = getGitStatus(projectId);
-  if (!status || !status.isGitRepo) return null;
-  return status.staged + status.modified + status.untracked + status.conflicted;
 }
 
 export function getWorktrees(projectId: string): GitWorktree[] | null {
@@ -183,8 +157,6 @@ export function setActiveWorktree(projectId: string, path: string | null): void 
   for (const cb of worktreeChangeListeners) cb();
 }
 
-export { poll as refreshGitStatus };
-
 export function onChange(callback: GitStatusCallback): void {
   listeners.push(callback);
 }
@@ -197,7 +169,7 @@ function startInterval(): void {
   if (pollTimer) return; // Already polling
   if (document.hidden || !appState.activeProject) return; // No reason to poll
   poll();
-  pollTimer = setInterval(poll, 60_000);
+  pollTimer = setInterval(poll, 10_000);
 }
 
 function stopInterval(): void {
@@ -210,16 +182,6 @@ function stopInterval(): void {
 export function startPolling(): void {
   startInterval();
 
-  // Subscribe to main-process file system watcher push events (once)
-  if (!unwatchGitChanged) {
-    unwatchGitChanged = window.vibeyard.git.onChanged(() => poll());
-  }
-
-  // Start watcher for current project
-  if (appState.activeProject) {
-    window.vibeyard.git.watchProject(appState.activeProject.path);
-  }
-
   // Pause/resume when window visibility changes
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
@@ -229,22 +191,15 @@ export function startPolling(): void {
     }
   });
 
-  // Watch + poll the active project, or stop when there is none. Fired on
-  // project switch and on initial load — 'state-loaded' matters because a bare
-  // project (active project, no session) emits only that event, so without it
-  // the git panel would stay hidden until a session starts.
-  const onActiveProjectChanged = () => {
+  // Immediate poll on project/session changes; manage interval lifecycle
+  appState.on('project-changed', () => {
     worktreePollCounter = 0; // Force worktree refresh on project switch
     if (!appState.activeProject) {
       stopInterval();
-      return;
+    } else {
+      startInterval();
     }
-    window.vibeyard.git.watchProject(appState.activeProject.path);
-    startInterval(); // ensure the periodic timer is running
-    poll(); // immediate refresh — startInterval() no-ops when a timer already exists
-  };
-  appState.on('state-loaded', onActiveProjectChanged);
-  appState.on('project-changed', onActiveProjectChanged);
+  });
   appState.on('session-added', () => poll());
 
   // Detect worktree on session change
@@ -273,20 +228,4 @@ export function startPolling(): void {
 
 export function stopPolling(): void {
   stopInterval();
-}
-
-// Test-only: clear all module-level state so each test starts from a clean
-// slate (the production module is a long-lived singleton).
-export function _resetForTesting(): void {
-  stopInterval();
-  polling = false;
-  repollRequested = false;
-  worktreePollCounter = 0;
-  unwatchGitChanged = null;
-  cache.clear();
-  worktreeCache.clear();
-  sessionWorktreeMap.clear();
-  manualOverride.clear();
-  listeners.length = 0;
-  worktreeChangeListeners.length = 0;
 }

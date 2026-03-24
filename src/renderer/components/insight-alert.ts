@@ -2,7 +2,8 @@ import { onAlert, dismissInsight } from '../session-insights.js';
 import { appState } from '../state.js';
 import type { InsightResult } from '../insights/types.js';
 import { showAlertBanner, removeAlertBanner } from './alert-banner.js';
-import { setPendingPrompt } from './terminal-pane.js';
+
+let pendingActionTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function initInsightAlert(): void {
   onAlert((projectId, results) => {
@@ -10,6 +11,17 @@ export function initInsightAlert(): void {
     if (!result) return;
     requestAnimationFrame(() => showInsightBanner(projectId, result));
   });
+
+  appState.on('session-removed', () => {
+    clearPendingAction();
+  });
+}
+
+function clearPendingAction(): void {
+  if (pendingActionTimer !== null) {
+    clearTimeout(pendingActionTimer);
+    pendingActionTimer = null;
+  }
 }
 
 function handleInsightAction(result: InsightResult): void {
@@ -18,12 +30,17 @@ function handleInsightAction(result: InsightResult): void {
   const project = appState.activeProject;
   if (!project) return;
 
-  const session = appState.addPlanSession(project.id, 'Fix Pre-Context');
+  const prompt = result.action.prompt;
+  const session = appState.addSession(project.id, 'Fix Pre-Context');
   if (!session) return;
 
   removeAlertBanner();
 
-  setPendingPrompt(session.id, result.action.prompt);
+  clearPendingAction();
+  pendingActionTimer = setTimeout(() => {
+    pendingActionTimer = null;
+    window.vibeyard.pty.write(session.id, prompt + '\r');
+  }, 2000);
 }
 
 function showInsightBanner(projectId: string, result: InsightResult): void {

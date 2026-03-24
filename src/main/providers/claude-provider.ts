@@ -1,49 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import type { BrowserWindow } from 'electron';
-import type { CliProvider, TranscriptDescriptor } from './provider';
-import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import type { CliProvider } from './provider';
+import type { CliProviderMeta, ClaudeConfig, SettingsValidationResult } from '../../shared/types';
 import { getFullPath } from '../pty-manager';
 import { installStatusLineScript, cleanupAll as cleanupHookStatus } from '../hook-status';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { installHooksOnly, installStatusLine, getClaudeConfig } from '../claude-cli';
 import { guardedInstall, validateSettings, reinstallSettings } from '../settings-guard';
-import { resolveBinary, validateBinaryExists } from './resolve-binary';
-import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR, UUID_RE } from './transcript-utils';
-import { writeAgentFile, deleteAgentFile } from './agent-files';
-import { loadState } from '../store';
 
-const binaryCache = { path: null as string | null };
-
-/** Enumerate every on-disk transcript under one `.../projects` root, tagged with its profile. */
-async function scanProjectsRoot(root: string, profileId?: string): Promise<TranscriptDescriptor[]> {
-  let entries: fs.Dirent[];
-  try {
-    entries = await fs.promises.readdir(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const out: TranscriptDescriptor[] = [];
-  for (const slugEntry of entries) {
-    if (!slugEntry.isDirectory()) continue;
-    const slug = slugEntry.name;
-    const slugPath = path.join(root, slug);
-    let files: string[];
-    try {
-      files = await fs.promises.readdir(slugPath);
-    } catch {
-      continue;
-    }
-    for (const file of files) {
-      if (!file.endsWith('.jsonl')) continue;
-      const cliSessionId = file.slice(0, -6);
-      if (!UUID_RE.test(cliSessionId)) continue;
-      out.push({ cliSessionId, transcriptPath: path.join(slugPath, file), projectSlug: slug, profileId });
-    }
-  }
-  return out;
-}
+let cachedBinaryPath: string | null = null;
 
 export class ClaudeProvider implements CliProvider {
   readonly meta: CliProviderMeta = {
@@ -57,33 +25,110 @@ export class ClaudeProvider implements CliProvider {
       hookStatus: true,
       configReading: true,
       shiftEnterNewline: true,
-      pendingPromptTrigger: 'startup-arg',
-      planModeArg: '--permission-mode plan',
-      systemPromptInjection: true,
     },
     defaultContextWindowSize: 200_000,
   };
 
   resolveBinaryPath(): string {
-    return resolveBinary('claude', binaryCache);
+    if (cachedBinaryPath) return cachedBinaryPath;
+
+    const fullPath = getFullPath();
+
+    // Check common locations directly
+    const candidates = [
+      '/usr/local/bin/claude',
+      '/opt/homebrew/bin/claude',
+      path.join(os.homedir(), '.local', 'bin', 'claude'),
+      path.join(os.homedir(), '.npm-global', 'bin', 'claude'),
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(candidate)) {
+          cachedBinaryPath = candidate;
+          return candidate;
+        }
+      } catch {}
+    }
+
+    // Try `which` with augmented PATH
+    try {
+      const resolved = execSync('which claude', {
+        env: { ...process.env, PATH: fullPath },
+        encoding: 'utf-8',
+        timeout: 3000,
+      }).trim();
+      if (resolved) {
+        cachedBinaryPath = resolved;
+        return resolved;
+      }
+    } catch (err) {
+      console.warn('Failed to resolve claude path via which:', err);
+    }
+
+    cachedBinaryPath = 'claude';
+    return 'claude';
   }
 
-  validatePrerequisites(): boolean {
-    return validateBinaryExists('claude');
+  validatePrerequisites(): { ok: boolean; message: string } {
+    const home = os.homedir();
+    const candidates = [
+      '/usr/local/bin/claude',
+      '/opt/homebrew/bin/claude',
+      path.join(home, '.local', 'bin', 'claude'),
+      path.join(home, '.npm-global', 'bin', 'claude'),
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(candidate)) return { ok: true, message: '' };
+      } catch {}
+    }
+
+    // Try `which` with augmented PATH
+    try {
+      const currentPath = process.env.PATH || '';
+      const extraDirs = [
+        '/usr/local/bin',
+        '/opt/homebrew/bin',
+        path.join(home, '.local', 'bin'),
+        path.join(home, '.npm-global', 'bin'),
+        '/usr/local/sbin',
+        '/opt/homebrew/sbin',
+      ];
+      const pathSet = new Set(currentPath.split(':'));
+      for (const dir of extraDirs) {
+        pathSet.add(dir);
+      }
+      const augmentedPath = Array.from(pathSet).join(':');
+
+      const resolved = execSync('which claude', {
+        env: { ...process.env, PATH: augmentedPath },
+        encoding: 'utf-8',
+        timeout: 3000,
+      }).trim();
+      if (resolved) return { ok: true, message: '' };
+    } catch {}
+
+    return {
+      ok: false,
+      message:
+        'Claude CLI not found.\n\n' +
+        'Vibeyard requires the Claude Code CLI to be installed.\n\n' +
+        'Install it with:\n' +
+        '  npm install -g @anthropic-ai/claude-code\n\n' +
+        'After installing, restart Vibeyard.',
+    };
   }
 
-  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(sessionId: string, baseEnv: Record<string, string>): Record<string, string> {
     const env = { ...baseEnv };
     delete env.CLAUDE_CODE; // avoid subprocess detection conflicts
     env.CLAUDE_IDE_SESSION_ID = sessionId;
     env.PATH = getFullPath();
-    // Profile support: point Claude Code at an isolated config dir (separate
-    // credentials/license, settings, hooks, transcripts). Absent = default ~/.claude.
-    if (opts?.configDir) env.CLAUDE_CONFIG_DIR = opts.configDir;
     return env;
   }
 
-  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string; cliName?: string }): string[] {
+  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string }): string[] {
     const args: string[] = [];
     if (opts.cliSessionId) {
       if (opts.isResume) {
@@ -92,25 +137,13 @@ export class ClaudeProvider implements CliProvider {
         args.push('--session-id', opts.cliSessionId);
       }
     }
-    if (opts.cliName) {
-      // One argv element (never via extraArgs, which is whitespace-split), so
-      // names with spaces/quotes/$ reach Claude intact. Sets the name that
-      // ListAgents/SendMessage address this session by.
-      args.push('--name', opts.cliName);
-    }
-    if (opts.systemPrompt) {
-      args.push('--append-system-prompt', opts.systemPrompt);
-    }
-    if (opts.initialPrompt) {
-      args.push(opts.initialPrompt);
-    }
     if (opts.extraArgs) {
       args.push(...opts.extraArgs.split(/\s+/).filter(Boolean));
     }
     return args;
   }
 
-  async installHooks(win?: BrowserWindow | null, _projectPath?: string): Promise<void> {
+  async installHooks(win?: BrowserWindow | null): Promise<void> {
     await guardedInstall(win ?? null);
   }
 
@@ -124,21 +157,19 @@ export class ClaudeProvider implements CliProvider {
   }
 
   startConfigWatcher(win: BrowserWindow, projectPath: string): void {
-    startConfigWatch(win, projectPath, 'claude');
+    startConfigWatch(win, projectPath);
   }
 
   stopConfigWatcher(): void {
     stopConfigWatch();
   }
 
-  async getConfig(projectPath: string): Promise<ProviderConfig> {
+  async getConfig(projectPath: string): Promise<ClaudeConfig | null> {
     return getClaudeConfig(projectPath);
   }
 
-  validateSettings(_projectPath?: string, configDir?: string): SettingsValidationResult {
-    // For a profile session, validate the profile's config dir (where spawnPty
-    // installed hooks + statusLine), not the default ~/.claude.
-    return validateSettings(configDir);
+  validateSettings(): SettingsValidationResult {
+    return validateSettings();
   }
 
   reinstallSettings(): void {
@@ -148,81 +179,6 @@ export class ClaudeProvider implements CliProvider {
 
   getShiftEnterSequence(): string | null {
     return '\x1b[13;2u';
-  }
-
-  getTranscriptPath(cliSessionId: string, projectPath: string, configDir?: string): string | null {
-    // Claude encodes the project path by replacing any non-alphanumeric char with '-'
-    const slug = projectPath.replace(/[^a-zA-Z0-9]/g, '-');
-    const root = configDir ?? path.join(os.homedir(), '.claude');
-    const filePath = path.join(root, 'projects', slug, `${cliSessionId}.jsonl`);
-    return fs.existsSync(filePath) ? filePath : null;
-  }
-
-  async discoverTranscripts(): Promise<TranscriptDescriptor[]> {
-    // Search the default config dir plus every claude profile's config dir, so
-    // global session search surfaces transcripts created under an isolated profile.
-    // Each root carries its profileId (undefined = default ~/.claude) so resume
-    // can reopen against the right config dir.
-    const defaultRoot = path.join(os.homedir(), '.claude', 'projects');
-    const roots = new Map<string, string | undefined>([[defaultRoot, undefined]]);
-    try {
-      for (const profile of loadState().profiles ?? []) {
-        if (profile.providerId === 'claude') {
-          const root = path.join(profile.configDir, 'projects');
-          if (!roots.has(root)) roots.set(root, profile.id);
-        }
-      }
-    } catch {
-      // Profiles unavailable — fall back to the default root only.
-    }
-    const out: TranscriptDescriptor[] = [];
-    for (const [root, profileId] of roots) {
-      out.push(...await scanProjectsRoot(root, profileId));
-    }
-    return out;
-  }
-
-  async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {
-    const content = await fs.promises.readFile(transcriptPath, 'utf8');
-    const texts: string[] = [];
-    let cwd = '';
-    let totalChars = 0;
-    for (const line of content.split('\n')) {
-      if (!line.trim() || totalChars >= MAX_INDEX_CHARS_PER_SESSION) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (!cwd && entry.cwd) cwd = entry.cwd;
-        if (entry.type !== 'user' || !entry.message?.content) continue;
-        const c = entry.message.content;
-        let text = '';
-        if (typeof c === 'string') {
-          text = c;
-        } else if (Array.isArray(c)) {
-          for (const block of c) {
-            if (block.type === 'text') text += block.text + '\n';
-          }
-        }
-        if (text) {
-          texts.push(text.trim());
-          totalChars += text.length;
-        }
-      } catch {
-        // partial-write tolerance: skip malformed lines
-      }
-    }
-    return { text: texts.join(TRANSCRIPT_TEXT_SEPARATOR), cwd };
-  }
-
-  agentsDir(): string {
-    return path.join(os.homedir(), '.claude', 'agents');
-  }
-
-  async installAgent(slug: string, content: string): Promise<{ filePath: string }> {
-    return writeAgentFile(this.agentsDir(), slug, content);
-  }
-
-  async removeAgent(slug: string): Promise<void> {
-    return deleteAgentFile(this.agentsDir(), slug);
   }
 
   parseCostFromOutput(rawText: string): { totalCostUsd: number } | null {
@@ -241,5 +197,5 @@ export class ClaudeProvider implements CliProvider {
 
 /** @internal Test-only: reset cached binary path */
 export function _resetCachedPath(): void {
-  binaryCache.path = null;
+  cachedBinaryPath = null;
 }

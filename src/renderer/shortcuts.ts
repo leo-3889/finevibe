@@ -1,5 +1,4 @@
 import { appState } from './state.js';
-import { isMac } from './platform.js';
 
 export interface ShortcutDef {
   id: string;
@@ -17,7 +16,7 @@ interface ShortcutDefault {
 }
 
 export const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
-  { id: 'new-session', label: 'New Session', category: 'Sessions', defaultKeys: 'CmdOrCtrl+T' },
+  { id: 'new-session', label: 'New Session', category: 'Sessions', defaultKeys: 'CmdOrCtrl+S' },
   { id: 'new-session-alt', label: 'New Session (Alt)', category: 'Sessions', defaultKeys: 'CmdOrCtrl+Shift+N' },
   { id: 'new-project', label: 'New Project', category: 'Sessions', defaultKeys: 'CmdOrCtrl+Shift+P' },
   { id: 'goto-session-1', label: 'Go to Session 1', category: 'Sessions', defaultKeys: 'CmdOrCtrl+1' },
@@ -31,27 +30,17 @@ export const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'goto-session-9', label: 'Go to Session 9', category: 'Sessions', defaultKeys: 'CmdOrCtrl+9' },
   { id: 'next-session', label: 'Next Session', category: 'Sessions', defaultKeys: 'CmdOrCtrl+Shift+]' },
   { id: 'prev-session', label: 'Previous Session', category: 'Sessions', defaultKeys: 'CmdOrCtrl+Shift+[' },
-  { id: 'tab-back', label: 'Back (Tab History)', category: 'Sessions', defaultKeys: 'CmdOrCtrl+[' },
-  { id: 'tab-forward', label: 'Forward (Tab History)', category: 'Sessions', defaultKeys: 'CmdOrCtrl+]' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'Panels', defaultKeys: 'CmdOrCtrl+B' },
   { id: 'toggle-split', label: 'Toggle Split Mode', category: 'Panels', defaultKeys: 'CmdOrCtrl+\\' },
   { id: 'project-terminal', label: 'Project Terminal', category: 'Panels', defaultKeys: 'Ctrl+`' },
-  { id: 'project-terminal-alt', label: 'Project Terminal (Alt)', category: 'Panels', defaultKeys: 'CmdOrCtrl+J' },
   { id: 'debug-panel', label: 'Debug Panel', category: 'Panels', defaultKeys: 'CmdOrCtrl+Shift+D' },
   { id: 'git-panel', label: 'Git Panel', category: 'Panels', defaultKeys: 'CmdOrCtrl+Shift+G' },
   { id: 'quick-open', label: 'Quick Open File', category: 'Search & Help', defaultKeys: 'CmdOrCtrl+P' },
-  { id: 'session-search', label: 'Search All Sessions', category: 'Search & Help', defaultKeys: 'CmdOrCtrl+Shift+F' },
   { id: 'find-in-terminal', label: 'Find', category: 'Search & Help', defaultKeys: 'CmdOrCtrl+F' },
-  { id: 'goto-line', label: 'Go to Line', category: 'Search & Help', defaultKeys: 'CmdOrCtrl+L' },
   { id: 'help', label: 'Help', category: 'Search & Help', defaultKeys: 'F1' },
-  { id: 'close-session', label: 'Close Session', category: 'Sessions', defaultKeys: 'CmdOrCtrl+W' },
-  { id: 'toggle-inspector', label: 'Toggle Session Inspector', category: 'Panels', defaultKeys: 'CmdOrCtrl+Shift+I' },
-  { id: 'zoom-in', label: 'Zoom In', category: 'View', defaultKeys: 'CmdOrCtrl+=' },
-  { id: 'zoom-out', label: 'Zoom Out', category: 'View', defaultKeys: 'CmdOrCtrl+-' },
-  { id: 'zoom-reset', label: 'Reset Zoom', category: 'View', defaultKeys: 'CmdOrCtrl+0' },
-  { id: 'browser-reload', label: 'Reload Page', category: 'Browser', defaultKeys: 'CmdOrCtrl+R' },
-  { id: 'browser-hard-reload', label: 'Hard Reload (Bypass Cache)', category: 'Browser', defaultKeys: 'CmdOrCtrl+Shift+R' },
 ];
+
+const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 
 /** Convert accelerator string to platform-specific display string */
 export function displayKeys(accelerator: string): string {
@@ -234,16 +223,6 @@ export class ShortcutManager {
         shortcut.handler();
         return true;
       }
-    }
-    return false;
-  }
-
-  /** Check if a keyboard event matches any registered shortcut (without executing) */
-  matchesAnyShortcut(e: KeyboardEvent): boolean {
-    const overrides = appState.preferences.keybindings ?? {};
-    for (const shortcut of this.shortcuts) {
-      const keys = overrides[shortcut.id] ?? shortcut.defaultKeys;
-      if (matchesAccelerator(e, keys)) return true;
     }
     return false;
   }

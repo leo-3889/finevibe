@@ -1,25 +1,16 @@
-import { appState, ProjectRecord } from '../state.js';
-import { onChange as onGitStatusChange, gitChangeCount, getActiveGitPath, getWorktrees, setActiveWorktree, onWorktreeChange } from '../git-status.js';
+import { appState } from '../state.js';
+import { onChange as onGitStatusChange, getGitStatus, getActiveGitPath, getWorktrees, setActiveWorktree, onWorktreeChange } from '../git-status.js';
 import { onChange as onStatusChange } from '../session-activity.js';
 import { showFileViewer } from './file-viewer.js';
-import { areaLabel } from '../dom-utils.js';
-import type { GitFileEntry } from '../types.js';
+import type { GitFileEntry, GitWorktree } from '../types.js';
 
 const MAX_FILES = 100;
 
+let collapsed = false;
 let lastCountKey = '';
 let lastFilesKey = '';
-// git path whose changes are currently rendered — drives the cold-load loader
-let displayedGitPath: string | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let activeContextMenu: HTMLElement | null = null;
-
-// The git panel is a persistent DOM node reparented into the active project card
-// whenever its "Git" tab is open. Keeping a single node (rather than rebuilding
-// it on every sidebar render) preserves the rendered file rows + scroll position
-// and lets loadFiles' cold-load/skip logic work across re-renders.
-let gitPanelEl: HTMLElement | null = null;
-let mountedProjectId: string | null = null;
 
 function hideGitContextMenu(): void {
   if (activeContextMenu) {
@@ -75,7 +66,9 @@ function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPa
 
   if (entry.area !== 'staged' && entry.area !== 'conflicted') {
     menu.appendChild(createMenuItem('Discard Changes', async () => {
-      const msg = discardConfirmMessage(entry);
+      const msg = entry.area === 'untracked'
+        ? `Delete untracked file "${entry.path}"?`
+        : `Discard changes to "${entry.path}"? This cannot be undone.`;
       if (confirm(msg)) {
         await window.vibeyard.git.discardFile(gitPath, entry.path, entry.area);
         afterAction();
@@ -109,14 +102,6 @@ function esc(s: string): string {
   return d.innerHTML;
 }
 
-function discardConfirmMessage(entry: GitFileEntry): string {
-  if (entry.area !== 'untracked') {
-    return `Discard changes to "${entry.path}"? This cannot be undone.`;
-  }
-  const kind = entry.path.endsWith('/') ? 'folder' : 'file';
-  return `Delete untracked ${kind} "${entry.path}"?`;
-}
-
 function statusBadge(entry: GitFileEntry): string {
   const letterMap: Record<string, string> = {
     added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: '?', conflicted: 'U',
@@ -137,6 +122,15 @@ function createActionButton(title: string, icon: string, onClick: (e: Event) => 
   return btn;
 }
 
+function groupLabel(area: string): string {
+  switch (area) {
+    case 'staged': return 'Staged';
+    case 'working': return 'Changes';
+    case 'untracked': return 'Untracked';
+    case 'conflicted': return 'Conflicted';
+    default: return area;
+  }
+}
 
 function shortPath(fullPath: string): string {
   const parts = fullPath.split('/');
@@ -176,8 +170,18 @@ function renderWorktreeSelector(container: HTMLElement, project: { id: string; p
 
   wrapper.appendChild(select);
 
-  // Sits at the top of the mount, above the file list.
-  container.insertBefore(wrapper, container.firstChild);
+  // Insert after header
+  const header = container.querySelector('.config-section-header');
+  if (header && header.nextSibling) {
+    container.querySelector('.config-section')!.insertBefore(wrapper, header.nextSibling);
+  }
+}
+
+function applyGitPanelVisibility(): void {
+  const container = document.getElementById('git-panel');
+  if (!container) return;
+  const visible = appState.preferences.sidebarViews?.gitPanel ?? true;
+  container.classList.toggle('hidden', !visible);
 }
 
 /** Debounced refresh — coalesces rapid-fire events into a single render */
@@ -185,78 +189,114 @@ function scheduleRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
-    refreshMounted();
+    refresh();
   }, 100);
 }
 
-/**
- * Mount the persistent git panel node into `container` (the active project
- * card's `.project-panel-git`) and (re)load its contents. Reparenting the same
- * node keeps its DOM state intact across sidebar re-renders.
- */
-export function mountGitPanel(project: ProjectRecord, container: HTMLElement): void {
-  const isNewMount = !gitPanelEl || mountedProjectId !== project.id;
-  if (!gitPanelEl) {
-    gitPanelEl = document.createElement('div');
-    gitPanelEl.className = 'git-panel-mount';
-  }
-  mountedProjectId = project.id;
-  container.appendChild(gitPanelEl);
-  // Reparenting preserves the existing rows; only (re)load on first mount or a
-  // project switch. Live updates arrive via the git-status subscriptions, so a
-  // plain sidebar re-render must not trigger a redundant getFiles IPC.
-  if (isNewMount) refreshMounted();
-}
+async function refresh(): Promise<void> {
+  const container = document.getElementById('git-panel');
+  if (!container) return;
 
-/** Detach the panel and stop background reloads (the tab was closed). */
-export function closeGitPanel(): void {
-  mountedProjectId = null;
-  if (gitPanelEl) gitPanelEl.remove();
-}
+  applyGitPanelVisibility();
 
-/** Rebuild/update the mounted panel's contents for the active project. */
-function refreshMounted(): void {
-  // Guard on mount state, not DOM connectivity: mountGitPanel renders the node
-  // before the sidebar attaches it to the document, so isConnected is still
-  // false on the first paint. mountedProjectId is null only when the tab is
-  // closed, which is exactly when background refreshes should no-op.
-  if (!gitPanelEl || mountedProjectId === null) return;
   const project = appState.activeProject;
-  if (!project || project.id !== mountedProjectId) return;
-
-  const worktrees = getWorktrees(project.id);
-  if (worktrees && worktrees.length > 1) {
-    renderWorktreeSelector(gitPanelEl, project);
-  } else {
-    const selector = gitPanelEl.querySelector('.git-worktree-selector');
-    if (selector) selector.remove();
-  }
-
-  let body = gitPanelEl.querySelector('.git-panel-body') as HTMLElement | null;
-  if (!body) {
-    body = document.createElement('div');
-    body.className = 'config-section-body git-panel-body';
-    gitPanelEl.appendChild(body);
-  }
-
-  const total = gitChangeCount(project.id);
-  if (total === null || total === 0) {
-    body.innerHTML = '<div class="config-empty">No uncommitted changes</div>';
-    lastFilesKey = '';
-    displayedGitPath = null;
+  if (!project) {
+    container.innerHTML = '';
     return;
   }
 
-  loadFiles(body, getActiveGitPath(project.id));
+  const status = getGitStatus(project.id);
+  if (!status || !status.isGitRepo) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const total = status.staged + status.modified + status.untracked + status.conflicted;
+  if (total === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const activeGitPath = getActiveGitPath(project.id);
+  const worktrees = getWorktrees(project.id);
+  const hasMultipleWorktrees = worktrees && worktrees.length > 1;
+
+  // Find active worktree branch for header
+  let headerSuffix = '';
+  if (hasMultipleWorktrees) {
+    const activeWt = worktrees!.find(w => w.path === activeGitPath);
+    if (activeWt?.branch) {
+      headerSuffix = ` · ${esc(activeWt.branch)}`;
+    }
+  }
+
+  const headerHTML = `<span class="config-section-toggle ${collapsed ? 'collapsed' : ''}">&#x25BC;</span>Git Changes${headerSuffix}<span class="config-section-count">${total}</span>`;
+
+  // Try to update existing section in-place instead of rebuilding
+  const existingSection = container.querySelector('.config-section');
+  if (existingSection) {
+    // Update header in-place
+    const existingHeader = existingSection.querySelector('.config-section-header');
+    if (existingHeader) {
+      existingHeader.innerHTML = headerHTML;
+    }
+
+    // Update worktree selector
+    if (hasMultipleWorktrees) {
+      renderWorktreeSelector(container, project);
+    } else {
+      const selector = container.querySelector('.git-worktree-selector');
+      if (selector) selector.remove();
+    }
+
+    // Reload files if expanded
+    if (!collapsed) {
+      const body = existingSection.querySelector('.config-section-body') as HTMLElement | null;
+      if (body) loadFiles(body, activeGitPath);
+    }
+    return;
+  }
+
+  // First render — build from scratch
+  const section = document.createElement('div');
+  section.className = 'config-section';
+
+  const header = document.createElement('div');
+  header.className = 'config-section-header';
+  header.innerHTML = headerHTML;
+
+  const body = document.createElement('div');
+  body.className = `config-section-body${collapsed ? ' hidden' : ''}`;
+
+  header.addEventListener('click', () => {
+    collapsed = !collapsed;
+    const toggle = header.querySelector('.config-section-toggle')!;
+    toggle.classList.toggle('collapsed');
+    body.classList.toggle('hidden');
+    // Fetch files on expand
+    if (!collapsed) loadFiles(body, activeGitPath);
+  });
+
+  section.appendChild(header);
+  section.appendChild(body);
+
+  container.innerHTML = '';
+  container.appendChild(section);
+
+  // Add worktree selector if multiple worktrees
+  if (hasMultipleWorktrees) {
+    renderWorktreeSelector(container, project);
+  }
+
+  if (!collapsed) {
+    loadFiles(body, activeGitPath);
+  }
 }
 
 async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
-  // Show a loader on cold load only — first ever, or when switching to a
-  // different project/worktree (stale rows from the previous path are still
-  // showing). Background refreshes of the same path stay silent.
-  if (!body.hasChildNodes() || gitPath !== displayedGitPath) {
-    body.innerHTML = '<div class="config-loading git-loading"><span class="git-loading-spinner"></span>Loading changes…</div>';
-    lastFilesKey = '';
+  // Show loading only on first load (when body is empty)
+  if (!body.hasChildNodes()) {
+    body.innerHTML = '<div class="config-loading">Loading...</div>';
   }
 
   let files: GitFileEntry[];
@@ -265,7 +305,6 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
   } catch {
     body.innerHTML = '';
     lastFilesKey = '';
-    displayedGitPath = null;
     return;
   }
 
@@ -273,9 +312,8 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
   const filesKey = JSON.stringify(files);
   if (filesKey === lastFilesKey) return;
   lastFilesKey = filesKey;
-  displayedGitPath = gitPath;
 
-  const fragment = document.createDocumentFragment();
+  body.innerHTML = '';
 
   // Group by area in display order
   const order: string[] = ['conflicted', 'staged', 'working', 'untracked'];
@@ -293,8 +331,8 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
 
     const groupHeader = document.createElement('div');
     groupHeader.className = 'git-group-header';
-    groupHeader.textContent = `${areaLabel(area)} (${group.length})`;
-    fragment.appendChild(groupHeader);
+    groupHeader.textContent = `${groupLabel(area)} (${group.length})`;
+    body.appendChild(groupHeader);
 
     for (const entry of group) {
       if (rendered >= MAX_FILES) break;
@@ -314,7 +352,9 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
       } else {
         if (entry.area !== 'conflicted') {
           actions.appendChild(createActionButton('Discard Changes', '↩', async () => {
-            const msg = discardConfirmMessage(entry);
+            const msg = entry.area === 'untracked'
+              ? `Delete untracked file "${entry.path}"?`
+              : `Discard changes to "${entry.path}"? This cannot be undone.`;
             if (confirm(msg)) {
               await window.vibeyard.git.discardFile(gitPath, entry.path, entry.area);
               afterAction();
@@ -335,7 +375,7 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
         e.stopPropagation();
         showGitFileContextMenu(e.clientX, e.clientY, entry, gitPath);
       });
-      fragment.appendChild(item);
+      body.appendChild(item);
       rendered++;
     }
     if (rendered >= MAX_FILES) break;
@@ -346,11 +386,44 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
     const overflow = document.createElement('div');
     overflow.className = 'config-empty';
     overflow.textContent = `and ${remaining} more...`;
-    fragment.appendChild(overflow);
+    body.appendChild(overflow);
   }
+}
 
-  body.innerHTML = '';
-  body.appendChild(fragment);
+export function scrollToGitPanel(): void {
+  const container = document.getElementById('git-panel');
+  if (!container || !container.firstElementChild) return;
+  container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // Expand if collapsed
+  if (collapsed) {
+    collapsed = false;
+    const toggle = container.querySelector('.config-section-toggle');
+    const body = container.querySelector('.config-section-body');
+    if (toggle) toggle.classList.remove('collapsed');
+    if (body) {
+      body.classList.remove('hidden');
+      const project = appState.activeProject;
+      if (project) loadFiles(body as HTMLElement, getActiveGitPath(project.id));
+    }
+  }
+}
+
+export function toggleGitPanel(): void {
+  const container = document.getElementById('git-panel');
+  if (!container || !container.firstElementChild) return;
+
+  container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  collapsed = !collapsed;
+  const toggle = container.querySelector('.config-section-toggle');
+  const body = container.querySelector('.config-section-body');
+  if (toggle) toggle.classList.toggle('collapsed');
+  if (body) {
+    body.classList.toggle('hidden');
+    if (!collapsed) {
+      const project = appState.activeProject;
+      if (project) loadFiles(body as HTMLElement, getActiveGitPath(project.id));
+    }
+  }
 }
 
 export function initGitPanel(): void {
@@ -367,14 +440,14 @@ export function initGitPanel(): void {
     if (key !== lastCountKey) {
       lastCountKey = key;
       lastFilesKey = '';
-      refreshMounted();
+      refresh();
     }
   });
 
-  // Refresh on session working → waiting transition (don't clear lastFilesKey —
-  // poll() in git-status.ts handles that when status actually changes)
+  // Refresh on session working → waiting transition
   onStatusChange((_sessionId, status) => {
     if (status === 'waiting' || status === 'completed') {
+      lastFilesKey = '';
       scheduleRefresh();
     }
   });
@@ -382,15 +455,7 @@ export function initGitPanel(): void {
   // Refresh when worktree list or active worktree changes
   onWorktreeChange(() => { lastFilesKey = ''; scheduleRefresh(); });
 
-  appState.on('session-changed', () => { scheduleRefresh(); });
-}
-
-// --- Test-only exports ---
-export const _test = { loadFiles };
-export function _resetForTesting(): void {
-  lastCountKey = '';
-  lastFilesKey = '';
-  displayedGitPath = null;
-  gitPanelEl = null;
-  mountedProjectId = null;
+  // Auto-switch on session change
+  appState.on('session-changed', () => { lastFilesKey = ''; scheduleRefresh(); });
+  appState.on('preferences-changed', () => applyGitPanelVisibility());
 }

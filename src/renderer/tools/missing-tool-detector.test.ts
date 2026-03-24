@@ -41,20 +41,8 @@ describe('classifyError', () => {
     expect(classifyError('Command exited with non-zero status code 127', baseTool)).toBe('not-found');
   });
 
-  it('classifies "sh: /usr/bin/thing: not found" as not-found', () => {
-    expect(classifyError('sh: /usr/bin/thing: not found', baseTool)).toBe('not-found');
-  });
-
-  it('does not classify "repository: not found" as not-found', () => {
-    expect(classifyError('repository: not found', baseTool)).toBe('other');
-  });
-
-  it('classifies Windows cmd.exe "not recognized" as not-found', () => {
-    expect(classifyError("'gh' is not recognized as an internal or external command", baseTool)).toBe('not-found');
-  });
-
-  it('classifies Windows PowerShell "not recognized" as not-found', () => {
-    expect(classifyError("The term 'gh' is not recognized as the name of a cmdlet", baseTool)).toBe('not-found');
+  it('classifies "/usr/bin/thing: not found" as not-found', () => {
+    expect(classifyError('/usr/bin/thing: not found', baseTool)).toBe('not-found');
   });
 
   it('classifies "Permission denied" as permission-denied', () => {
@@ -75,22 +63,6 @@ describe('classifyError', () => {
 
   it('does not classify auth error when tool has no authPatterns', () => {
     expect(classifyError('To get started with GitHub CLI, please run: gh auth login', baseTool)).toBe('other');
-  });
-
-  it('classifies "sh: gh: not found" as not-found', () => {
-    expect(classifyError('sh: gh: not found', baseTool)).toBe('not-found');
-  });
-
-  it('does not classify GitHub API 404 as not-found', () => {
-    expect(classifyError('Exit code 1 --- {"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}', baseTool)).toBe('other');
-  });
-
-  it('does not classify HTTP 404 as not-found', () => {
-    expect(classifyError('Not Found (HTTP 404)', baseTool)).toBe('other');
-  });
-
-  it('does not classify "gh: Not Found (HTTP 404)" as not-found', () => {
-    expect(classifyError('Exit code 1 gh: Not Found (HTTP 404) base64: stdin: (null): error decoding base64 input stream', baseTool)).toBe('other');
   });
 
   it('classifies generic errors as other', () => {

@@ -1,5 +1,4 @@
 import { appState } from '../state.js';
-import { pushModal } from './modal-manager.js';
 
 let cleanupFn: (() => void) | null = null;
 let onAddedFn: (() => void) | null = null;
@@ -17,8 +16,8 @@ function getOverlay(): HTMLElement {
       <div class="modal-title">Add MCP Server</div>
       <div id="mcp-add-body" class="modal-body mcp-add-body"></div>
       <div class="modal-actions">
-        <button id="mcp-add-cancel" class="btn-secondary">Cancel</button>
-        <button id="mcp-add-confirm" class="btn-primary">Add</button>
+        <button id="mcp-add-cancel" class="modal-btn">Cancel</button>
+        <button id="mcp-add-confirm" class="modal-btn primary">Add</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -98,16 +97,15 @@ export function showMcpAddModal(onAdded: () => void): void {
   const handleConfirm = () => submit(overlay);
   const handleKeydown = (e: Event) => {
     const ke = e as KeyboardEvent;
-    if (ke.key === 'Enter' && !(e.target instanceof HTMLTextAreaElement)) { ke.preventDefault(); submit(overlay); }
+    if (ke.key === 'Escape') { ke.preventDefault(); closeMcpAddModal(); }
+    else if (ke.key === 'Enter' && !(e.target instanceof HTMLTextAreaElement)) { ke.preventDefault(); submit(overlay); }
   };
 
-  const unregisterEsc = pushModal({ onEscape: handleCancel });
   cancel.addEventListener('click', handleCancel);
   confirm.addEventListener('click', handleConfirm);
   overlay.addEventListener('keydown', handleKeydown);
 
   cleanupFn = () => {
-    unregisterEsc();
     cancel.removeEventListener('click', handleCancel);
     confirm.removeEventListener('click', handleConfirm);
     overlay.removeEventListener('keydown', handleKeydown);

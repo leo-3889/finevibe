@@ -1,10 +1,9 @@
-export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource } from '../shared/types.js';
-import type { CostData, ProviderConfig, GitWorktree, McpResult, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource } from '../shared/types.js';
-import type { CtlCommand, CtlResult } from '../shared/ctl-protocol.js';
+export type { McpServer, Agent, Skill, Command, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus } from '../shared/types.js';
+import type { CostData, ClaudeConfig, GitWorktree, McpResult, ProviderId, CliProviderMeta, StatsCache, ReadinessResult } from '../shared/types.js';
 
 export interface VibeyardApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, cliName?: string): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -14,46 +13,24 @@ export interface VibeyardApi {
     onExit(callback: (sessionId: string, exitCode: number, signal?: number) => void): () => void;
   };
   session: {
-    transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): Promise<boolean>;
-    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): boolean;
-    onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
+    onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting') => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     /** @deprecated Use onCliSessionId */
     onClaudeSessionId(callback: (sessionId: string, claudeSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
-    onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
-    resyncStatus(): void;
-  };
-  ctl: {
-    onCommand(callback: (reqId: string, callerId: string, command: CtlCommand) => void): () => void;
-    reply(reqId: string, result: CtlResult): void;
-    setEnabled(enabled: boolean): void;
-    rendererReady(): void;
   };
   fs: {
     isDirectory(path: string): Promise<boolean>;
-    expandPath(path: string): Promise<string>;
-    listDirs(dirPath: string, prefix?: string): Promise<string[]>;
     browseDirectory(): Promise<string | null>;
     listFiles(cwd: string, query: string): Promise<string[]>;
-    topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
-    exists(filePath: string): Promise<boolean>;
     readFile(filePath: string): Promise<string>;
-    readImage(filePath: string): Promise<{ dataUrl: string } | null>;
-    showInFolder(targetPath: string): Promise<{ ok: boolean; error?: string }>;
-    watchDir(dirPath: string): void;
-    unwatchDir(dirPath: string): void;
-    onFsChange(callback: (changes: FsChange[]) => void): () => void;
   };
   store: {
     load(): Promise<unknown>;
     save(state: unknown): Promise<void>;
   };
-  profiles: {
-    provision(profileId: string, customPath?: string): Promise<{ configDir: string; managed: boolean }>;
-  };
   provider: {
-    getConfig(providerId: ProviderId, projectPath: string): Promise<ProviderConfig>;
+    getConfig(providerId: ProviderId, projectPath: string): Promise<ClaudeConfig>;
     getMeta(providerId: ProviderId): Promise<CliProviderMeta>;
     listProviders(): Promise<CliProviderMeta[]>;
     watchProject(providerId: ProviderId, projectPath: string): void;
@@ -61,15 +38,13 @@ export interface VibeyardApi {
   };
   /** @deprecated Use provider namespace */
   claude: {
-    getConfig(projectPath: string): Promise<ProviderConfig>;
+    getConfig(projectPath: string): Promise<ClaudeConfig>;
   };
   git: {
     getStatus(path: string): Promise<unknown>;
     getFiles(path: string): Promise<unknown>;
     getDiff(path: string, file: string, area: string): Promise<string>;
     getWorktrees(path: string): Promise<GitWorktree[]>;
-    watchProject(path: string): void;
-    onChanged(callback: () => void): () => void;
   };
   update: {
     checkNow(): Promise<void>;
@@ -80,17 +55,8 @@ export interface VibeyardApi {
     onError(cb: (info: { message: string }) => void): () => void;
   };
   app: {
-    focus(): void;
     getVersion(): Promise<string>;
-    openExternal(url: string): Promise<void>;
     onQuitting(callback: () => void): () => void;
-  };
-  chromeImport: {
-    listProfiles(): Promise<ChromeProfile[]>;
-    run(options: ChromeImportOptions): Promise<ChromeImportResult>;
-    onProgress(callback: (progress: ChromeImportProgress) => void): () => void;
-    summary(): Promise<{ cookieCount: number; lastImportedAt: number }>;
-    clearCookies(): Promise<void>;
   };
   mcp: {
     connect(id: string, url: string): Promise<McpResult>;
@@ -103,13 +69,10 @@ export interface VibeyardApi {
     getPrompt(id: string, name: string, args: Record<string, string>): Promise<McpResult>;
   };
   readiness: {
-    analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
+    analyze(projectPath: string): Promise<ReadinessResult>;
   };
   stats: {
     getCache(): Promise<StatsCache | null>;
-  };
-  clipboard: {
-    write(text: string, source?: ClipboardSource): Promise<void>;
   };
   menu: {
     onNewProject(callback: () => void): () => void;
@@ -119,7 +82,6 @@ export interface VibeyardApi {
     onPrevSession(callback: () => void): () => void;
     onGotoSession(callback: (index: number) => void): () => void;
     onToggleDebug(callback: () => void): () => void;
-    onToggleInspector(callback: () => void): () => void;
-    onCloseSession(callback: () => void): () => void;
+    onUsageStats(callback: () => void): () => void;
   };
 }

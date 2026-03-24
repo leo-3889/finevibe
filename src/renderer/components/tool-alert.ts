@@ -2,13 +2,25 @@ import { onToolAlert, type ToolAlert, type FailureReason } from '../tools/missin
 import { dismissInsight } from '../session-insights.js';
 import { appState } from '../state.js';
 import { showAlertBanner, removeAlertBanner } from './alert-banner.js';
-import { setPendingPrompt } from './terminal-pane.js';
+
+let pendingActionTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function initToolAlert(): void {
   onToolAlert((alert) => {
     if (appState.activeSession?.id !== alert.sessionId) return;
     requestAnimationFrame(() => showToolBanner(alert));
   });
+
+  appState.on('session-removed', () => {
+    clearPendingAction();
+  });
+}
+
+function clearPendingAction(): void {
+  if (pendingActionTimer !== null) {
+    clearTimeout(pendingActionTimer);
+    pendingActionTimer = null;
+  }
 }
 
 type AlertableReason = Exclude<FailureReason, 'other'>;
@@ -44,12 +56,16 @@ function handleFixAction(alert: ToolAlert): void {
   const config = bannerConfig[alert.reason as AlertableReason];
   const prompt = config.prompt(alert.tool.name, alert.tool.command, alert.tool.description);
 
-  const session = appState.addPlanSession(project.id, `Fix ${alert.tool.name}`);
+  const session = appState.addSession(project.id, `Fix ${alert.tool.name}`);
   if (!session) return;
 
   removeAlertBanner();
 
-  setPendingPrompt(session.id, prompt);
+  clearPendingAction();
+  pendingActionTimer = setTimeout(() => {
+    pendingActionTimer = null;
+    window.vibeyard.pty.write(session.id, prompt + '\r');
+  }, 2000);
 }
 
 function showToolBanner(alert: ToolAlert): void {

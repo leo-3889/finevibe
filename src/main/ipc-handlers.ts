@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, app, dialog, shell, clipboard } from 'electron';
+import { ipcMain, BrowserWindow, app, dialog, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -7,34 +7,13 @@ import { spawnPty, spawnShellPty, writePty, resizePty, killPty, isSilencedExit, 
 import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { loadState, saveState, PersistedState } from './store';
-import { startWatching, cleanupSessionStatus, resyncAllSessions } from './hook-status';
-import { startCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from './codex-session-watcher';
-import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
-import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
-import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
+import { startWatching, cleanupSessionStatus } from './hook-status';
+import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile } from './git-status';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
-import { createAppMenu } from './menu';
-import { createCtlServer, type CtlServer } from './ctl-server';
-import { resolveCtlToken } from './ctl-tokens';
-import { CTL_COMMANDS_DIR, CTL_COMMANDS_ROOT } from './ctl-paths';
-import type { CtlResult } from '../shared/ctl-protocol';
-import { getProvider, getProviderMeta, getAllProviderMetas, getAllProviders } from './providers/registry';
-import { buildHandoffPrompt } from './providers/resume-handoff';
-import { searchSessions } from './session-deep-search';
-import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile } from '../shared/types';
-import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
+import { getProvider, getProviderMeta, getAllProviderMetas } from './providers/registry';
+import type { ProviderId, GitFileEntry, SettingsValidationResult } from '../shared/types';
 import { analyzeReadiness } from './readiness/analyzer';
-import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
-import { expandUserPath, isBinaryBuffer, isLikelyBinaryFile, isMacPackagePath, BINARY_SNIFF_BYTES } from './fs-utils';
-import { isLinux, isMac, isWin } from './platform';
-import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
-import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource } from '../shared/types';
-import { shouldWarnStatusLine } from './settings-guard';
-import { buildVibeyardignoreMatcher } from './vibeyardignore';
-import { setCloseConfirmed } from './close-state';
-import { provisionProfileDir } from './profiles';
-import { getKeychainIsolationStatus } from './claude-keychain';
 
 /**
  * Check if a resolved path is within one of the known project directories.
@@ -42,31 +21,6 @@ import { getKeychainIsolationStatus } from './claude-keychain';
 function isWithinKnownProject(resolvedPath: string): boolean {
   const state = loadState();
   return state.projects.some(p => resolvedPath.startsWith(p.path + path.sep) || resolvedPath === p.path);
-}
-
-/**
- * Envelope for fs handlers that act on a path: resolve it, refuse anything
- * outside a known project (stricter than isAllowedReadPath — never config dirs
- * like ~/.claude or ~/.codex), and turn a throw into `{ ok: false, error }`.
- * `act` may return a non-empty error string to report a failure of its own.
- */
-async function withProjectPath(
-  channel: string,
-  targetPath: string,
-  act: (resolved: string) => Promise<string | void>
-): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const resolved = path.resolve(targetPath);
-    if (!isWithinKnownProject(resolved)) {
-      console.warn(`${channel} blocked: ${resolved} is not within a known project`);
-      return { ok: false, error: 'Path is not within a known project' };
-    }
-    const error = await act(resolved);
-    return error ? { ok: false, error } : { ok: true };
-  } catch (err) {
-    console.warn(`${channel} failed:`, err);
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
 }
 
 /**
@@ -79,20 +33,17 @@ function isAllowedReadPath(resolvedPath: string): boolean {
     return true;
   }
 
-  // Allow known config files/directories used by supported CLIs
+  // Allow known config files/directories used by Claude CLI
   const home = os.homedir();
   const allowedPaths = [
     path.join(home, '.claude.json'),
     path.join(home, '.mcp.json'),
     path.join(home, '.claude') + path.sep,
-    path.join(home, '.codex') + path.sep,
-    path.join(home, '.gemini') + path.sep,
-    path.join(home, '.copilot') + path.sep,
   ];
 
-  if (isMac) {
+  if (process.platform === 'darwin') {
     allowedPaths.push('/Library/Application Support/ClaudeCode/');
-  } else if (isWin) {
+  } else if (process.platform === 'win32') {
     allowedPaths.push('C:\\Program Files\\ClaudeCode\\');
   } else {
     allowedPaths.push('/etc/claude-code/');
@@ -101,47 +52,6 @@ function isAllowedReadPath(resolvedPath: string): boolean {
   return allowedPaths.some(allowed => resolvedPath === allowed || resolvedPath.startsWith(allowed));
 }
 
-/**
- * Enumerate files in a project root. Prefers `git ls-files` (respects .gitignore);
- * falls back to a depth- and count-limited recursive walk when not a git repo.
- * Returns repo-relative paths.
- */
-function enumerateProjectFiles(resolvedCwd: string): string[] {
-  try {
-    const output = execSync('git ls-files --cached --others --exclude-standard', {
-      cwd: resolvedCwd,
-      encoding: 'utf-8',
-      timeout: 5000,
-    });
-    return output.split('\n').filter(Boolean);
-  } catch {
-    const files: string[] = [];
-    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '__pycache__']);
-    const MAX_DEPTH = 5;
-    const MAX_FILES = 5000;
-    function walk(dir: string, depth: number): void {
-      if (depth > MAX_DEPTH || files.length >= MAX_FILES) return;
-      let entries: fs.Dirent[];
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-      for (const entry of entries) {
-        if (files.length >= MAX_FILES) return;
-        if (IGNORE.has(entry.name) || entry.name.startsWith('.')) continue;
-        const rel = path.relative(resolvedCwd, path.join(dir, entry.name));
-        if (entry.isDirectory()) {
-          walk(path.join(dir, entry.name), depth + 1);
-        } else {
-          files.push(rel);
-        }
-      }
-    }
-    walk(resolvedCwd, 0);
-    return files;
-  }
-}
-
-let ctlServer: CtlServer | null = null;
-export function getCtlServer(): CtlServer | null { return ctlServer; }
-
 let hookWatcherStarted = false;
 
 export function resetHookWatcher(): void {
@@ -149,7 +59,7 @@ export function resetHookWatcher(): void {
 }
 
 export function registerIpcHandlers(): void {
-  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string, cliName?: string) => {
+  ipcMain.handle('pty:create', (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude') => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
 
@@ -159,24 +69,24 @@ export function registerIpcHandlers(): void {
       hookWatcherStarted = true;
     }
 
+    // Validate provider settings and warn renderer if missing/tampered
     const provider = getProvider(providerId);
-
-    // For Codex sessions without a cliSessionId, start watching history.jsonl
-    if (providerId === 'codex' && !cliSessionId) {
-      startCodexSessionWatcher(win);
-      registerPendingCodexSession(sessionId);
+    const validation = provider.validateSettings();
+    if (validation.statusLine !== 'vibeyard' || validation.hooks !== 'complete') {
+      win.webContents.send('settings:warning', {
+        sessionId,
+        statusLine: validation.statusLine,
+        hooks: validation.hooks,
+      });
     }
 
-    await spawnPty(
+    spawnPty(
       sessionId,
       cwd,
       cliSessionId,
       isResume,
       extraArgs,
       providerId,
-      initialPrompt,
-      systemPrompt,
-      envVars,
       (data) => {
         const w = BrowserWindow.getAllWindows()[0];
         if (w && !w.isDestroyed()) {
@@ -185,37 +95,13 @@ export function registerIpcHandlers(): void {
       },
       (exitCode, signal) => {
         cleanupSessionStatus(sessionId);
-        unregisterCodexSession(sessionId);
         if (isSilencedExit(sessionId)) return; // old PTY killed for re-spawn
         const w = BrowserWindow.getAllWindows()[0];
         if (w && !w.isDestroyed()) {
           w.webContents.send('pty:exit', sessionId, exitCode, signal);
         }
-      },
-      configDir,
-      cliName
-    );
-
-    // Validate after spawnPty — Copilot installs per-project hooks there, so
-    // validating earlier would see an empty config on a project's first spawn.
-    if (provider.meta.capabilities.hookStatus) {
-      const validation = provider.validateSettings(cwd, configDir);
-      const prefs = loadState().preferences;
-      const statusLineIssue = shouldWarnStatusLine(
-        validation.statusLine,
-        prefs.statusLineConsent,
-        prefs.statusLineConsentCommand,
-        validation.foreignStatusLineCommand,
-      );
-      const hooksIssue = validation.hooks !== 'complete';
-      if (statusLineIssue || hooksIssue) {
-        win.webContents.send('settings:warning', {
-          sessionId,
-          statusLine: statusLineIssue ? validation.statusLine : 'vibeyard',
-          hooks: validation.hooks,
-        });
       }
-    }
+    );
   });
 
   ipcMain.handle('pty:createShell', (_event, sessionId: string, cwd: string) => {
@@ -252,46 +138,11 @@ export function registerIpcHandlers(): void {
     killPty(sessionId);
   });
 
-  ipcMain.handle('fs:isDirectory', (_event, filePath: string) => {
+  ipcMain.handle('fs:isDirectory', (_event, path: string) => {
     try {
-      return fs.statSync(expandUserPath(filePath)).isDirectory();
+      return fs.statSync(path).isDirectory();
     } catch {
       return false;
-    }
-  });
-
-  ipcMain.handle('fs:expandPath', (_event, filePath: string): string => {
-    return expandUserPath(filePath);
-  });
-
-  ipcMain.handle('fs:listDirs', (_event, dirPath: string, prefix?: string) => {
-    try {
-      const expanded = expandUserPath(dirPath);
-      const entries = fs.readdirSync(expanded, { withFileTypes: true });
-      const lowerPrefix = prefix?.toLowerCase();
-      return entries
-        .filter(e => e.isDirectory() && !e.name.startsWith('.') && (!lowerPrefix || e.name.toLowerCase().startsWith(lowerPrefix)))
-        .map(e => path.join(expanded, e.name))
-        .sort((a, b) => a.localeCompare(b))
-        .slice(0, 20);
-    } catch {
-      return [];
-    }
-  });
-
-  ipcMain.handle('fs:listDir', (_event, dirPath: string) => {
-    try {
-      const expanded = expandUserPath(dirPath);
-      if (!isAllowedReadPath(expanded)) return [];
-      const entries = fs.readdirSync(expanded, { withFileTypes: true });
-      // Renderer sorts via sortEntries(); keep main process cheap.
-      return entries.map(e => ({
-        name: e.name,
-        path: path.join(expanded, e.name),
-        isDirectory: e.isDirectory(),
-      }));
-    } catch {
-      return [];
     }
   });
 
@@ -301,32 +152,6 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('store:save', (_event, state: PersistedState) => {
     saveState(state);
-  });
-
-  // Provision (create) a profile's config dir. Returns the resolved absolute
-  // path and whether it is the auto-managed location.
-  ipcMain.handle('profiles:provision', (_event, profileId: string, customPath?: string) => {
-    const configDir = provisionProfileDir(profileId, customPath);
-    return { configDir, managed: !customPath?.trim() };
-  });
-
-  // Report whether the installed Claude Code build can isolate per-profile
-  // logins on this platform (macOS keychain namespacing). Drives the profile
-  // guardrail in the UI.
-  ipcMain.handle('profiles:keychainStatus', () => {
-    return getKeychainIsolationStatus();
-  });
-
-  ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {
-    createAppMenu(debugMode);
-  });
-
-  ipcMain.handle('clipboard:write', (_event, text: string, source?: ClipboardSource) => {
-    clipboard.writeText(text);
-    // On Linux a selection-driven copy also populates the X11 PRIMARY selection
-    // so middle-click paste works. An explicit copy must not — it would clobber
-    // whatever the user has selected in another window.
-    if (source === 'selection' && isLinux) clipboard.writeText(text, 'selection');
   });
 
   ipcMain.handle('provider:getConfig', async (_event, providerId: ProviderId, projectPath: string) => {
@@ -355,80 +180,9 @@ export function registerIpcHandlers(): void {
     return getAllProviderMetas();
   });
 
-  ipcMain.handle('session:buildResumeWithPrompt', async (
-    _event,
-    sourceProviderId: ProviderId,
-    sourceCliSessionId: string | null,
-    projectPath: string,
-    sessionName: string,
-    configDir?: string,
-  ) => {
-    const sourceProvider = getProvider(sourceProviderId);
-    const fromProviderLabel = sourceProvider.meta.displayName;
-    let transcriptPath: string | null = null;
-    if (sourceCliSessionId && sourceProvider.getTranscriptPath) {
-      try {
-        transcriptPath = sourceProvider.getTranscriptPath(sourceCliSessionId, projectPath, configDir);
-      } catch (err) {
-        console.warn('getTranscriptPath failed:', err);
-      }
-    }
-    return buildHandoffPrompt({ fromProviderLabel, sessionName, transcriptPath });
-  });
-
-  // Whether a resumable transcript actually exists on disk for a given CLI session.
-  // Fail-open (return true) when we cannot determine it, so resume/archive is never
-  // wrongly blocked for providers we can't introspect.
-  const transcriptExists = (
-    providerId: ProviderId,
-    cliSessionId: string | null,
-    projectPath: string,
-    configDir?: string,
-  ): boolean => {
-    if (!cliSessionId) return true;
-    try {
-      const provider = getProvider(providerId);
-      if (!provider.getTranscriptPath) return true;
-      // getTranscriptPath returns null when the transcript is absent (every provider
-      // verifies existence on disk), so a non-null path means the transcript exists.
-      return provider.getTranscriptPath(cliSessionId, projectPath, configDir) !== null;
-    } catch (err) {
-      console.warn('transcriptExists check failed:', err);
-      return true;
-    }
-  };
-  ipcMain.handle('session:transcriptExists', (_event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string) =>
-    transcriptExists(providerId, cliSessionId, projectPath, configDir));
-  // Synchronous variant: the renderer gates session archiving on this at close time,
-  // where the surrounding remove/persist/emit logic must stay synchronous.
-  ipcMain.on('session:transcriptExistsSync', (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string) => {
-    event.returnValue = transcriptExists(providerId, cliSessionId, projectPath, configDir);
-  });
-
-  ipcMain.handle('session:deepSearch', (_event, query: string) => {
-    return searchSessions(query);
-  });
-
   ipcMain.handle('provider:checkBinary', (_event, providerId: ProviderId = 'claude') => {
     const provider = getProvider(providerId);
     return provider.validatePrerequisites();
-  });
-
-  ipcMain.handle('provider:installAgent', async (_event, slug: string, content: string) => {
-    const targets = getAllProviders().filter((p) => p.installAgent && p.validatePrerequisites());
-    return Promise.all(targets.map(async (p) => {
-      try {
-        const r = await p.installAgent!(slug, content);
-        return { providerId: p.meta.id, ok: true, filePath: r.filePath };
-      } catch (err) {
-        return { providerId: p.meta.id, ok: false, error: String((err as Error)?.message ?? err) };
-      }
-    }));
-  });
-
-  ipcMain.handle('provider:removeAgent', async (_event, slug: string) => {
-    const targets = getAllProviders().filter((p) => p.removeAgent);
-    await Promise.all(targets.map((p) => p.removeAgent!(slug).catch(() => undefined)));
   });
 
   ipcMain.handle('fs:browseDirectory', async () => {
@@ -439,132 +193,7 @@ export function registerIpcHandlers(): void {
     return result.filePaths[0];
   });
 
-  // Replay every status file. The hook scripts write only on change, so a
-  // title already on disk produces no further fs event — without this, turning
-  // "Auto-name sessions" back on would leave existing tabs unnamed until their
-  // title happened to change.
-  ipcMain.on('session:resyncStatus', () => {
-    const w = BrowserWindow.getAllWindows()[0];
-    if (w) resyncAllSessions(w);
-  });
-
-  ipcMain.on('app:focus', () => {
-    app.focus({ steal: true });
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
-  });
-
-  ipcMain.on('app:closeConfirmed', () => {
-    setCloseConfirmed(true);
-    app.quit();
-  });
-
   ipcMain.handle('app:getVersion', () => app.getVersion());
-  ipcMain.handle('app:getBrowserPreloadPath', () =>
-    path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js')
-  );
-
-  const MAX_SCREENSHOT_BYTES = 50 * 1024 * 1024;
-  const MAX_SCREENSHOT_B64_LEN = Math.ceil((MAX_SCREENSHOT_BYTES * 4) / 3);
-  const SCREENSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-  let screenshotsPruned = false;
-
-  async function pruneOldScreenshots(dir: string): Promise<void> {
-    try {
-      const entries = await fs.promises.readdir(dir);
-      const now = Date.now();
-      await Promise.all(entries.map(async (name) => {
-        const full = path.join(dir, name);
-        try {
-          const stat = await fs.promises.stat(full);
-          if (now - stat.mtimeMs > SCREENSHOT_MAX_AGE_MS) {
-            await fs.promises.unlink(full);
-          }
-        } catch (err) {
-          console.warn('Failed to prune screenshot', full, err);
-        }
-      }));
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.warn('Failed to read screenshots dir for pruning', err);
-      }
-    }
-  }
-
-  ipcMain.handle('browser:saveScreenshot', async (_event, sessionId: string, dataUrl: string) => {
-    const PREFIX = 'data:image/png;base64,';
-    if (typeof dataUrl !== 'string' || !dataUrl.startsWith(PREFIX)) {
-      throw new Error('Invalid screenshot data URL');
-    }
-    const b64 = dataUrl.slice(PREFIX.length);
-    if (b64.length > MAX_SCREENSHOT_B64_LEN) {
-      throw new Error('Screenshot data exceeds size limit');
-    }
-    const buffer = Buffer.from(b64, 'base64');
-    const dir = path.join(os.tmpdir(), 'vibeyard-screenshots');
-    await fs.promises.mkdir(dir, { recursive: true });
-    if (!screenshotsPruned) {
-      screenshotsPruned = true;
-      void pruneOldScreenshots(dir);
-    }
-    const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const filePath = path.join(dir, `draw-${safeId}-${Date.now()}.png`);
-    await fs.promises.writeFile(filePath, buffer);
-    return filePath;
-  });
-  ipcMain.handle('chromeImport:listProfiles', () => listChromeProfiles());
-
-  ipcMain.handle('chromeImport:run', async (event, options: ChromeImportOptions) => {
-    const send = (p: ChromeImportProgress) => {
-      try {
-        event.sender.send('chromeImport:progress', p);
-      } catch {
-        // sender may have gone away
-      }
-    };
-    const result = await runChromeImport(options, send);
-    if (result.ok || result.cookieCount > 0) {
-      try {
-        const state = loadState();
-        state.preferences.chromeImport = {
-          lastImportedAt: Date.now(),
-          profileId: options.profileId,
-          cookieCount: result.cookieCount,
-          skippedV11: result.skippedV11,
-        };
-        saveState(state);
-      } catch (err) {
-        console.warn('Failed to persist chromeImport summary', err);
-      }
-    }
-    return result;
-  });
-
-  ipcMain.handle('chromeImport:summary', async () => {
-    const cookieCount = await getCookieCount();
-    const state = loadState();
-    return {
-      cookieCount,
-      lastImportedAt: state.preferences.chromeImport?.lastImportedAt ?? 0,
-    };
-  });
-
-  ipcMain.handle('chromeImport:clearCookies', async () => {
-    await clearImportedCookies();
-    try {
-      const state = loadState();
-      if (state.preferences.chromeImport) {
-        delete state.preferences.chromeImport;
-        saveState(state);
-      }
-    } catch (err) {
-      console.warn('Failed to clear chromeImport summary', err);
-    }
-  });
-
   ipcMain.handle('app:openExternal', (_event, url: string) => {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
@@ -575,46 +204,17 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('git:getStatus', (_event, projectPath: string) => getGitStatus(projectPath));
 
-  ipcMain.handle('git:getRemoteUrl', (_event, projectPath: string) => getGitRemoteUrl(projectPath));
-
   ipcMain.handle('git:getFiles', (_event, projectPath: string) => getGitFiles(projectPath));
 
   ipcMain.handle('git:getDiff', (_event, projectPath: string, filePath: string, area: string) => getGitDiff(projectPath, filePath, area));
 
   ipcMain.handle('git:getWorktrees', (_event, projectPath: string) => getGitWorktrees(projectPath));
 
-  ipcMain.handle('git:stageFile', async (_event, projectPath: string, filePath: string) => {
-    await gitStageFile(projectPath, filePath);
-    notifyGitChanged();
-  });
+  ipcMain.handle('git:stageFile', (_event, projectPath: string, filePath: string) => gitStageFile(projectPath, filePath));
 
-  ipcMain.handle('git:unstageFile', async (_event, projectPath: string, filePath: string) => {
-    await gitUnstageFile(projectPath, filePath);
-    notifyGitChanged();
-  });
+  ipcMain.handle('git:unstageFile', (_event, projectPath: string, filePath: string) => gitUnstageFile(projectPath, filePath));
 
-  ipcMain.handle('git:discardFile', async (_event, projectPath: string, filePath: string, area: string) => {
-    await gitDiscardFile(projectPath, filePath, area as GitFileEntry['area']);
-    notifyGitChanged();
-  });
-
-  ipcMain.on('git:watchProject', (_event, projectPath: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (!win) return;
-    startGitWatcher(win, projectPath);
-  });
-
-  ipcMain.handle('git:listBranches', (_event, projectPath: string) => listGitBranches(projectPath));
-
-  ipcMain.handle('git:checkoutBranch', async (_event, projectPath: string, branch: string) => {
-    await checkoutGitBranch(projectPath, branch);
-    notifyGitChanged();
-  });
-
-  ipcMain.handle('git:createBranch', async (_event, projectPath: string, branch: string) => {
-    await createGitBranch(projectPath, branch);
-    notifyGitChanged();
-  });
+  ipcMain.handle('git:discardFile', (_event, projectPath: string, filePath: string, area: string) => gitDiscardFile(projectPath, filePath, area as GitFileEntry['area']));
 
   ipcMain.handle('git:openInEditor', (_event, projectPath: string, filePath: string) => {
     const fullPath = path.join(projectPath, filePath);
@@ -629,22 +229,37 @@ export function registerIpcHandlers(): void {
       if (!isWithinKnownProject(resolvedCwd)) {
         return [];
       }
-      let files = enumerateProjectFiles(resolvedCwd);
+      let files: string[];
+      try {
+        const output = execSync('git ls-files', { cwd: resolvedCwd, encoding: 'utf-8', timeout: 5000 });
+        files = output.split('\n').filter(Boolean);
+      } catch {
+        // Not a git repo — fallback to recursive readdir with depth limit
+        files = [];
+        const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '__pycache__']);
+        const MAX_DEPTH = 5;
+        const MAX_FILES = 5000;
+        function walk(dir: string, depth: number): void {
+          if (depth > MAX_DEPTH || files.length >= MAX_FILES) return;
+          let entries: fs.Dirent[];
+          try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+          for (const entry of entries) {
+            if (files.length >= MAX_FILES) return;
+            if (IGNORE.has(entry.name) || entry.name.startsWith('.')) continue;
+            const rel = path.relative(resolvedCwd, path.join(dir, entry.name));
+            if (entry.isDirectory()) {
+              walk(path.join(dir, entry.name), depth + 1);
+            } else {
+              files.push(rel);
+            }
+          }
+        }
+        walk(resolvedCwd, 0);
+      }
 
       if (query) {
         const lower = query.toLowerCase();
-        const exact: string[] = [];
-        const startsWith: string[] = [];
-        const nameContains: string[] = [];
-        const pathContains: string[] = [];
-        for (const f of files) {
-          const fileName = path.basename(f).toLowerCase();
-          if (fileName === lower) exact.push(f);
-          else if (fileName.startsWith(lower)) startsWith.push(f);
-          else if (fileName.includes(lower)) nameContains.push(f);
-          else if (f.toLowerCase().includes(lower)) pathContains.push(f);
-        }
-        files = [...exact, ...startsWith, ...nameContains, ...pathContains];
+        files = files.filter(f => f.toLowerCase().includes(lower));
       }
       return files.slice(0, 50);
     } catch (err) {
@@ -653,172 +268,19 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:topFilesByTokens', async (_event, cwd: string, limit: number): Promise<TopFilesResult> => {
-    try {
-      const resolvedCwd = path.resolve(cwd);
-      if (!isWithinKnownProject(resolvedCwd)) {
-        return { ok: false };
-      }
-      const clampedLimit = Math.max(1, Math.min(100, Math.floor(limit) || 10));
-      const isIgnored = buildVibeyardignoreMatcher(resolvedCwd);
-      const relFiles = enumerateProjectFiles(resolvedCwd).filter((rel) => !isIgnored(rel));
-
-      const results: TopFile[] = [];
-      let scanned = 0;
-      let skipped = 0;
-
-      // Pooled async scan: one fd per file, fstat → sniff → read remainder using the same fd.
-      // Keeps the main loop responsive for PTY traffic during multi-second scans on large repos.
-      const CONCURRENCY = 16;
-      let cursor = 0;
-
-      async function processOne(rel: string): Promise<void> {
-        const abs = path.join(resolvedCwd, rel);
-        let handle: fs.promises.FileHandle;
-        try { handle = await fs.promises.open(abs, 'r'); } catch { skipped++; return; }
-        try {
-          const stat = await handle.stat();
-          if (!stat.isFile() || stat.size > TOKEN_COUNT_MAX_CHARS) { skipped++; return; }
-
-          const buf = Buffer.alloc(stat.size);
-          if (stat.size > 0) {
-            await handle.read(buf, 0, stat.size, 0);
-          }
-          if (isBinaryBuffer(buf.subarray(0, Math.min(stat.size, BINARY_SNIFF_BYTES)))) {
-            skipped++;
-            return;
-          }
-          const tokens = estimateTokens(buf.toString('utf-8'));
-          results.push({ path: rel, tokens, size: stat.size });
-          scanned++;
-        } finally {
-          await handle.close().catch(() => {});
-        }
-      }
-
-      const workers = Array.from({ length: Math.min(CONCURRENCY, relFiles.length) }, async () => {
-        while (cursor < relFiles.length) {
-          const rel = relFiles[cursor++];
-          try { await processOne(rel); } catch { skipped++; }
-        }
-      });
-      await Promise.all(workers);
-
-      results.sort((a, b) => b.tokens - a.tokens);
-      return { ok: true, files: results.slice(0, clampedLimit), scanned, skipped };
-    } catch (err) {
-      console.warn('fs:topFilesByTokens failed:', err);
-      return { ok: false };
-    }
-  });
-
-  ipcMain.handle('fs:exists', (_event, filePath: string): boolean => {
-    try {
-      const resolved = path.resolve(filePath);
-      if (!isAllowedReadPath(resolved)) return false;
-      return fs.existsSync(resolved);
-    } catch {
-      return false;
-    }
-  });
-
-  ipcMain.handle('fs:stat', (_event, filePath: string): FileStatResult => {
-    try {
-      const resolved = path.resolve(filePath);
-      if (!isAllowedReadPath(resolved)) {
-        return { ok: false };
-      }
-      const s = fs.statSync(resolved);
-      return { ok: true, size: s.size, mtimeMs: s.mtimeMs };
-    } catch {
-      return { ok: false };
-    }
-  });
-
-  ipcMain.handle('fs:readFile', (_event, filePath: string): ReadFileResult => {
+  ipcMain.handle('fs:readFile', (_event, filePath: string) => {
     try {
       // Security: resolve to absolute and check it's within a known project directory
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) {
         console.warn(`fs:readFile blocked: ${resolved} is not within an allowed path`);
-        return { ok: false, reason: 'error' };
+        return '';
       }
-      // Sniff the head before slurping the whole file so a multi-MB binary
-      // (e.g. build artifacts in build/) doesn't get allocated just to be discarded.
-      if (isLikelyBinaryFile(resolved)) {
-        return { ok: false, reason: 'binary' };
-      }
-      return { ok: true, content: fs.readFileSync(resolved, 'utf-8') };
+      return fs.readFileSync(resolved, 'utf-8');
     } catch (err) {
       console.warn('fs:readFile failed:', err);
-      return { ok: false, reason: 'error' };
+      return '';
     }
-  });
-
-  const IMAGE_MIME_BY_EXT: Record<string, string> = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.bmp': 'image/bmp',
-    '.ico': 'image/x-icon',
-    '.svg': 'image/svg+xml',
-  };
-  const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-
-  ipcMain.handle('fs:readImage', (_event, filePath: string) => {
-    try {
-      const resolved = path.resolve(filePath);
-      if (!isAllowedReadPath(resolved)) {
-        console.warn(`fs:readImage blocked: ${resolved} is not within an allowed path`);
-        return null;
-      }
-      const mime = IMAGE_MIME_BY_EXT[path.extname(resolved).toLowerCase()];
-      if (!mime) return null;
-      const stat = fs.statSync(resolved);
-      if (stat.size > MAX_IMAGE_BYTES) {
-        console.warn(`fs:readImage rejected: ${resolved} exceeds ${MAX_IMAGE_BYTES} bytes`);
-        return null;
-      }
-      const buf = fs.readFileSync(resolved);
-      return { dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
-    } catch (err) {
-      console.warn('fs:readImage failed:', err);
-      return null;
-    }
-  });
-
-  ipcMain.handle('fs:trashItem', (_event, filePath: string) =>
-    withProjectPath('fs:trashItem', filePath, (resolved) => shell.trashItem(resolved)));
-
-  ipcMain.handle('fs:showInFolder', (_event, targetPath: string) =>
-    withProjectPath('fs:showInFolder', targetPath, async (resolved) => {
-      // lstat, not stat: a symlink must never be followed here. isWithinKnownProject
-      // is a string-prefix check on the link's own path, so opening its target would
-      // walk straight out of the project (workspace node_modules links, a link into
-      // ~/.claude). Revealing the link itself in its parent is always in-bounds.
-      const stats = await fs.promises.lstat(resolved);
-      if (stats.isDirectory() && !(isMac && isMacPackagePath(resolved))) {
-        // Open the folder itself so the file manager shows its contents.
-        // openPath resolves to '' on success, or a message on failure.
-        return shell.openPath(resolved);
-      }
-      // Files, symlinks and macOS packages: reveal in the parent, selected.
-      shell.showItemInFolder(resolved);
-    }));
-
-  ipcMain.on('fs:watchDir', (event, dirPath: string) => {
-    const resolved = path.resolve(dirPath);
-    if (!isAllowedReadPath(resolved)) return;
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (win) setFileWatcherWindow(win);
-    watchDir(resolved);
-  });
-
-  ipcMain.on('fs:unwatchDir', (_event, dirPath: string) => {
-    const resolved = path.resolve(dirPath);
-    unwatchDir(resolved);
   });
 
   ipcMain.handle('stats:getCache', () => {
@@ -831,16 +293,7 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) => analyzeReadiness(projectPath, excludedProviders));
-
-  ipcMain.handle('github:isAvailable', () => isGhAvailable());
-  ipcMain.handle('github:detectRepo', (_event, projectPath: string) => detectRepo(projectPath));
-  ipcMain.handle('github:listPRs', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
-    listPullRequests(repo, { state, max })
-  );
-  ipcMain.handle('github:listIssues', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
-    listIssues(repo, { state, max })
-  );
+  ipcMain.handle('readiness:analyze', (_event, projectPath: string) => analyzeReadiness(projectPath));
 
   ipcMain.handle('update:checkNow', () => checkForUpdates());
   ipcMain.handle('update:install', () => quitAndInstall());
@@ -882,19 +335,4 @@ export function registerIpcHandlers(): void {
   });
 
   registerMcpHandlers();
-
-  ctlServer = createCtlServer({
-    commandsRoot: CTL_COMMANDS_ROOT,
-    commandsDir: CTL_COMMANDS_DIR,
-    resolveToken: resolveCtlToken,
-    dispatch: (reqId, callerId, command) => {
-      const w = BrowserWindow.getAllWindows()[0];
-      if (w && !w.isDestroyed()) w.webContents.send('ctl:command', reqId, callerId, command);
-    },
-  });
-  ipcMain.on('ctl:setEnabled', (_event, enabled: boolean) => {
-    if (enabled) ctlServer?.start(); else ctlServer?.stop();
-  });
-  ipcMain.on('ctl:rendererReady', () => ctlServer?.onRendererReady());
-  ipcMain.on('ctl:reply', (_event, reqId: string, result: CtlResult) => ctlServer?.reply(reqId, result));
 }

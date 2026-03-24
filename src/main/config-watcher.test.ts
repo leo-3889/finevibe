@@ -15,10 +15,7 @@ vi.mock('electron', () => ({
 }));
 
 import * as fs from 'fs';
-import * as path from 'path';
 import { startConfigWatcher, stopConfigWatcher } from './config-watcher';
-
-const n = (p: string) => p.replace(/\\/g, '/');
 
 const mockSend = vi.fn();
 function createMockWin(destroyed = false) {
@@ -38,12 +35,12 @@ beforeEach(() => {
   mockSend.mockClear();
 
   vi.mocked(fs.watchFile).mockImplementation((filePath: any, _opts: any, cb: any) => {
-    watchFileCallbacks.set(n(String(filePath)), cb);
+    watchFileCallbacks.set(filePath, cb);
     return {} as any;
   });
   vi.mocked(fs.unwatchFile).mockImplementation(vi.fn() as any);
   vi.mocked(fs.watch).mockImplementation((dirPath: any, _opts: any, cb: any) => {
-    watchDirCallbacks.set(n(String(dirPath)), cb);
+    watchDirCallbacks.set(dirPath, cb);
     return { close: mockClose, on: vi.fn().mockReturnThis() } as any;
   });
 
@@ -170,36 +167,5 @@ describe('config-watcher', () => {
     const win = createMockWin();
     // Should not throw
     expect(() => startConfigWatcher(win, '/projects/test')).not.toThrow();
-  });
-
-  it('watches codex config files and directories for a project', () => {
-    const win = createMockWin();
-    vi.mocked(fs.watchFile).mockClear();
-    vi.mocked(fs.watch).mockClear();
-    startConfigWatcher(win, '/projects/test', 'codex');
-
-    expect(fs.watchFile).toHaveBeenCalledTimes(2);
-    expect(watchFileCallbacks.has('/home/testuser/.codex/config.toml')).toBe(true);
-    expect(watchFileCallbacks.has('/projects/test/.codex/config.toml')).toBe(true);
-
-    expect(fs.watch).toHaveBeenCalledTimes(4);
-    expect(watchDirCallbacks.has('/home/testuser/.codex/agents')).toBe(true);
-    expect(watchDirCallbacks.has('/home/testuser/.codex/skills')).toBe(true);
-    expect(watchDirCallbacks.has('/projects/test/.codex/agents')).toBe(true);
-    expect(watchDirCallbacks.has('/projects/test/.codex/skills')).toBe(true);
-  });
-
-  it('restarts watchers when switching providers for the same project', () => {
-    const win = createMockWin();
-    startConfigWatcher(win, '/projects/test');
-
-    vi.mocked(fs.watchFile).mockClear();
-    vi.mocked(fs.watch).mockClear();
-
-    startConfigWatcher(win, '/projects/test', 'codex');
-
-    expect(fs.watchFile).toHaveBeenCalledTimes(2);
-    expect(fs.watch).toHaveBeenCalledTimes(4);
-    expect(watchFileCallbacks.has('/home/testuser/.codex/config.toml')).toBe(true);
   });
 });

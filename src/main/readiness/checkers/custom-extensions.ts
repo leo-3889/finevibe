@@ -1,7 +1,7 @@
 import * as path from 'path';
-import type { ReadinessCheck } from '../../../shared/types';
-import type { ReadinessCheckProducer, TaggedCheck, AnalysisContext } from '../types';
-import { dirExists, readDirSafe } from '../utils';
+import type { ReadinessCategory, ReadinessCheck } from '../../../shared/types';
+import type { ReadinessChecker } from '../types';
+import { dirExists, readDirSafe, buildCategory } from '../utils';
 
 function checkCustomCommands(projectPath: string): ReadinessCheck {
   const commandsDir = path.join(projectPath, '.claude', 'commands');
@@ -15,9 +15,6 @@ function checkCustomCommands(projectPath: string): ReadinessCheck {
     score: has ? 100 : 0,
     maxScore: 100,
     fixPrompt: has ? undefined : 'Create custom slash commands for this project. Create .claude/commands/ directory and add .md files that define reusable prompts for common tasks like code review, testing, deployment, etc. Each file becomes a /project:<command-name> slash command.',
-    effort: 'medium',
-    impact: 40,
-    rationale: 'Slash commands turn repeated multi-step prompts into one-line invocations. They\'re optional, but in any project where you find yourself pasting the same instructions repeatedly, codifying them saves real keystrokes and keeps prompts consistent.',
   };
 }
 
@@ -36,9 +33,6 @@ function checkCustomSkills(projectPath: string): ReadinessCheck {
     score: has ? 100 : 0,
     maxScore: 100,
     fixPrompt: has ? undefined : 'Create custom skills for this project. Create .claude/skills/ directory with subdirectories, each containing a skill definition that extends Claude\'s capabilities for project-specific tasks.',
-    effort: 'high',
-    impact: 35,
-    rationale: 'Skills bundle domain expertise (e.g., "review a PR our way") that the AI auto-loads only when relevant. They\'re higher effort to author well, but pay off when the same workflow repeats across many sessions.',
   };
 }
 
@@ -54,20 +48,21 @@ function checkCustomAgents(projectPath: string): ReadinessCheck {
     score: has ? 100 : 0,
     maxScore: 100,
     fixPrompt: has ? undefined : 'Create custom agent definitions for this project. Create .claude/agents/ directory and add .md files that define specialized agents for tasks like testing, code review, or deployment.',
-    effort: 'medium',
-    impact: 40,
-    rationale: 'Subagents let the main Claude delegate focused tasks (search, review, planning) without polluting the main context. Useful for repetitive structured work; not necessary for every project.',
   };
 }
 
-export const customExtensionsProducer: ReadinessCheckProducer = {
-  providerId: 'claude',
+export const customExtensionsChecker: ReadinessChecker = {
+  id: 'custom-extensions',
+  name: 'Custom Extensions',
+  weight: 0.3,
 
-  produce(projectPath: string, _ctx: AnalysisContext): TaggedCheck[] {
-    return [
+  async analyze(projectPath: string): Promise<ReadinessCategory> {
+    const checks = [
       checkCustomCommands(projectPath),
       checkCustomSkills(projectPath),
       checkCustomAgents(projectPath),
-    ].map(check => ({ category: 'optimizations', check }));
+    ];
+
+    return buildCategory(this.id, this.name, this.weight, checks);
   },
 };

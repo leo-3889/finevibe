@@ -1,63 +1,15 @@
 import { appState } from '../state.js';
-import { areaLabel } from '../dom-utils.js';
-import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
-import { isAbsolutePath, dirname, samePath } from '../../shared/platform.js';
 
 interface FileViewerInstance {
   element: HTMLElement;
   filePath: string;
   area: string;
   worktreePath?: string;
-  resolvedPath: string | null;
   loaded: boolean;
 }
 
 const instances = new Map<string, FileViewerInstance>();
-let unwatchFileChanged: (() => void) | null = null;
-const pendingReloads = new Set<string>();
-let removeSelectionListener: (() => void) | null = null;
-
-function isSelectionInsideFileViewer(sessionId: string): boolean {
-  const instance = instances.get(sessionId);
-  if (!instance) return false;
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
-  const body = instance.element.querySelector('.file-viewer-body');
-  if (!body) return false;
-  const range = sel.getRangeAt(0);
-  return body.contains(range.startContainer);
-}
-
-function flushPendingReloads(): void {
-  const ids = [...pendingReloads];
-  pendingReloads.clear();
-  for (const id of ids) {
-    const inst = instances.get(id);
-    if (inst) {
-      inst.loaded = false;
-      loadDiff(inst, id);
-    }
-  }
-  // Remove listener when no longer needed
-  if (removeSelectionListener) {
-    removeSelectionListener();
-    removeSelectionListener = null;
-  }
-}
-
-function onSelectionChange(): void {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-    if (pendingReloads.size > 0) flushPendingReloads();
-  }
-}
-
-function ensureSelectionListener(): void {
-  if (removeSelectionListener) return;
-  document.addEventListener('selectionchange', onSelectionChange);
-  removeSelectionListener = () => document.removeEventListener('selectionchange', onSelectionChange);
-}
 
 function escapeHtml(s: string): string {
   const d = document.createElement('div');
@@ -90,65 +42,27 @@ function parseDiffLines(diff: string): HTMLElement {
   return content;
 }
 
-function resolveFilePath(instance: FileViewerInstance): string {
-  const project = appState.activeProject;
-  const basePath = instance.worktreePath ?? project?.path ?? '';
-  return isAbsolutePath(instance.filePath)
-    ? instance.filePath
-    : `${basePath}/${instance.filePath}`;
-}
-
-let loadGeneration = 0;
-
-async function loadDiff(instance: FileViewerInstance, sessionId: string): Promise<void> {
+async function loadDiff(instance: FileViewerInstance): Promise<void> {
   if (instance.loaded) return;
 
   const project = appState.activeProject;
   if (!project) return;
 
-  if (instance.area === 'untracked') {
-    if (await closeSessionIfFileMissing(sessionId, resolveFilePath(instance))) return;
-  }
-
   const body = instance.element.querySelector('.file-viewer-body')!;
-  const isFirstLoad = !body.hasChildNodes();
-
-  if (isFirstLoad) {
-    const loading = document.createElement('div');
-    loading.className = 'file-viewer-content';
-    loading.innerHTML = '<div class="diff-line context">Loading diff...</div>';
-    body.appendChild(loading);
-  }
-
-  const gen = ++loadGeneration;
+  body.innerHTML = '';
+  const loading = document.createElement('div');
+  loading.className = 'file-viewer-content';
+  loading.innerHTML = '<div class="diff-line context">Loading diff...</div>';
+  body.appendChild(loading);
 
   try {
     const diff = await window.vibeyard.git.getDiff(instance.worktreePath ?? project.path, instance.filePath, instance.area);
-    if (gen !== loadGeneration) return; // superseded by a newer load
     body.innerHTML = '';
     body.appendChild(parseDiffLines(diff));
     instance.loaded = true;
   } catch {
-    if (gen !== loadGeneration) return;
-    body.innerHTML = '';
-    const err = document.createElement('div');
-    err.className = 'file-viewer-content';
-    err.innerHTML = '<div class="diff-line context">Failed to load diff</div>';
-    body.appendChild(err);
+    loading.innerHTML = '<div class="diff-line context">Failed to load diff</div>';
   }
-}
-
-function ensureFileChangedListener(): void {
-  if (unwatchFileChanged) return;
-  unwatchFileChanged = window.vibeyard.fs.onFsChange((changes) => {
-    for (const change of changes) {
-      for (const [sessionId, instance] of instances) {
-        if (instance.resolvedPath && samePath(instance.resolvedPath, change.path) && instance.loaded) {
-          reloadFileViewer(sessionId);
-        }
-      }
-    }
-  });
 }
 
 export function createFileViewerPane(sessionId: string, filePath: string, area: string, worktreePath?: string): void {
@@ -156,8 +70,6 @@ export function createFileViewerPane(sessionId: string, filePath: string, area: 
 
   const el = document.createElement('div');
   el.className = 'file-viewer-pane';
-  el.dataset.sessionId = sessionId;
-  el.dataset.paneKind = 'file-viewer';
   el.style.display = 'none';
 
   // Header
@@ -170,7 +82,7 @@ export function createFileViewerPane(sessionId: string, filePath: string, area: 
 
   const areaBadge = document.createElement('span');
   areaBadge.className = `file-viewer-area-badge ${area}`;
-  areaBadge.textContent = areaLabel(area);
+  areaBadge.textContent = area;
 
   header.appendChild(pathSpan);
   header.appendChild(areaBadge);
@@ -181,21 +93,13 @@ export function createFileViewerPane(sessionId: string, filePath: string, area: 
   body.className = 'file-viewer-body';
   el.appendChild(body);
 
-  const instance: FileViewerInstance = { element: el, filePath, area, worktreePath, resolvedPath: null, loaded: false };
+  const instance: FileViewerInstance = { element: el, filePath, area, worktreePath, loaded: false };
   instances.set(sessionId, instance);
 }
 
 export function destroyFileViewerPane(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
-  if (instance.resolvedPath) {
-    window.vibeyard.fs.unwatchDir(dirname(instance.resolvedPath));
-  }
-  pendingReloads.delete(sessionId);
-  if (pendingReloads.size === 0 && removeSelectionListener) {
-    removeSelectionListener();
-    removeSelectionListener = null;
-  }
   destroySearchBar(sessionId);
   instance.element.remove();
   instances.delete(sessionId);
@@ -207,17 +111,7 @@ export function showFileViewerPane(sessionId: string, isSplit: boolean): void {
   instance.element.style.display = 'flex';
   if (isSplit) instance.element.classList.add('split');
   else instance.element.classList.remove('split');
-
-  // Watch the parent directory (not the file inode) so atomic save/replace is
-  // still caught — a direct file watch dies when the inode is swapped.
-  if (!instance.resolvedPath) {
-    const fullPath = resolveFilePath(instance);
-    instance.resolvedPath = fullPath;
-    ensureFileChangedListener();
-    window.vibeyard.fs.watchDir(dirname(fullPath));
-  }
-
-  loadDiff(instance, sessionId);
+  loadDiff(instance);
 }
 
 export function hideAllFileViewerPanes(): void {
@@ -249,11 +143,6 @@ export function showFileViewer(filePath: string, area: string, worktreePath?: st
 export function reloadFileViewer(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
-  if (isSelectionInsideFileViewer(sessionId)) {
-    pendingReloads.add(sessionId);
-    ensureSelectionListener();
-    return;
-  }
   instance.loaded = false;
-  loadDiff(instance, sessionId);
+  loadDiff(instance);
 }

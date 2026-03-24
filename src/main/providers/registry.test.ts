@@ -14,7 +14,6 @@ const fakeMeta: CliProviderMeta = {
     hookStatus: false,
     configReading: false,
     shiftEnterNewline: false,
-    pendingPromptTrigger: 'session-start',
   },
   defaultContextWindowSize: 128_000,
 };
@@ -23,16 +22,14 @@ function makeFakeProvider(meta: CliProviderMeta): CliProvider {
   return {
     meta,
     resolveBinaryPath: () => '/usr/bin/fake',
-    validatePrerequisites: () => true,
+    validatePrerequisites: () => ({ ok: true, message: '' }),
     buildEnv: (_sid, env) => env,
     buildArgs: () => [],
-    installHooks: async () => {},
+    installHooks: () => {},
     installStatusScripts: () => {},
     cleanup: () => {},
-    getConfig: async () => ({ mcpServers: [], agents: [], skills: [], commands: [] }),
+    getConfig: async () => null,
     getShiftEnterSequence: () => null,
-    validateSettings: () => ({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} }),
-    reinstallSettings: () => {},
   };
 }
 
@@ -47,29 +44,11 @@ describe('initProviders', () => {
     expect(provider).toBeDefined();
     expect(provider.meta.id).toBe('claude');
   });
-
-  it('registers the Codex provider', () => {
-    const provider = getProvider('codex');
-    expect(provider).toBeDefined();
-    expect(provider.meta.id).toBe('codex');
-  });
-
-  it('registers the Copilot provider', () => {
-    const provider = getProvider('copilot');
-    expect(provider).toBeDefined();
-    expect(provider.meta.id).toBe('copilot');
-  });
 });
 
 describe('getProvider', () => {
-  it('registers the Gemini provider', () => {
-    const provider = getProvider('gemini');
-    expect(provider).toBeDefined();
-    expect(provider.meta.id).toBe('gemini');
-  });
-
   it('throws for unknown provider ID', () => {
-    expect(() => getProvider('unknown-provider' as any)).toThrow('Unknown CLI provider: unknown-provider');
+    expect(() => getProvider('gemini')).toThrow('Unknown CLI provider: gemini');
   });
 });
 
@@ -85,11 +64,9 @@ describe('getAllProviders', () => {
   it('returns all registered providers', () => {
     registerProvider(makeFakeProvider(fakeMeta));
     const all = getAllProviders();
-    expect(all.length).toBe(4);
+    expect(all.length).toBe(2);
     const ids = all.map(p => p.meta.id);
     expect(ids).toContain('claude');
-    expect(ids).toContain('codex');
-    expect(ids).toContain('gemini');
     expect(ids).toContain('copilot');
   });
 });
@@ -106,9 +83,7 @@ describe('getAllProviderMetas', () => {
   it('returns meta array for all providers', () => {
     registerProvider(makeFakeProvider(fakeMeta));
     const metas = getAllProviderMetas();
-    expect(metas.length).toBe(4);
-    expect(metas.map(m => m.id)).toContain('codex');
-    expect(metas.map(m => m.id)).toContain('gemini');
+    expect(metas.length).toBe(2);
     expect(metas.map(m => m.id)).toContain('copilot');
   });
 });

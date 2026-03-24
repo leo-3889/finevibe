@@ -6,7 +6,6 @@ import {
   onChange,
   restoreCost,
   removeSession,
-  formatTokens,
   _resetForTesting,
 } from './session-cost';
 
@@ -233,49 +232,5 @@ describe('removeSession', () => {
     setCostData('s1', { cost: { total_cost_usd: 1.0 }, context_window: {} });
     removeSession('s1');
     expect(getCost('s1')).toBeNull();
-  });
-});
-
-describe('onChange unsubscribe', () => {
-  it('stops receiving callbacks after unsubscribe', () => {
-    const cb = vi.fn();
-    const unsub = onChange(cb);
-
-    setCostData('s1', { cost: { total_cost_usd: 1.0 }, context_window: {} });
-    expect(cb).toHaveBeenCalledTimes(1);
-
-    unsub();
-    setCostData('s1', { cost: { total_cost_usd: 2.0 }, context_window: {} });
-    expect(cb).toHaveBeenCalledTimes(1); // no new calls after unsub
-  });
-
-  it('only removes the specific subscriber', () => {
-    const cb1 = vi.fn();
-    const cb2 = vi.fn();
-    const unsub1 = onChange(cb1);
-    onChange(cb2);
-
-    unsub1();
-    setCostData('s1', { cost: { total_cost_usd: 1.0 }, context_window: {} });
-
-    expect(cb1).not.toHaveBeenCalled();
-    expect(cb2).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('formatTokens', () => {
-  it('returns integer string for values < 1000', () => {
-    expect(formatTokens(0)).toBe('0');
-    expect(formatTokens(999)).toBe('999');
-  });
-  it('returns "k" abbreviation for thousands', () => {
-    expect(formatTokens(1000)).toBe('1k');
-    expect(formatTokens(1500)).toBe('1.5k');
-    expect(formatTokens(12_345)).toBe('12.3k');
-  });
-  it('returns "m" abbreviation for millions', () => {
-    expect(formatTokens(1_000_000)).toBe('1m');
-    expect(formatTokens(1_500_000)).toBe('1.5m');
-    expect(formatTokens(2_345_678)).toBe('2.35m');
   });
 });

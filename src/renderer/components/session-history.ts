@@ -1,228 +1,147 @@
-import { appState, ArchivedSession, ProjectRecord } from '../state.js';
-import { loadProviderAvailability } from '../provider-availability.js';
-import { buildResumeWithProviderItems } from './resume-with-provider-menu.js';
-import { showConfirmDialog } from './modal.js';
-import type { ProviderId } from '../../shared/types.js';
+import { appState, ArchivedSession } from '../state.js';
 
 const MAX_VISIBLE = 50;
-const PROVIDER_LABELS: Record<string, string> = {
-  claude: 'Claude Code',
-  codex: 'Codex CLI',
-  copilot: 'GitHub Copilot',
-  gemini: 'Gemini CLI',
-};
 
-interface ProjectFilterState {
-  searchText: string;
-  bookmarkOnly: boolean;
+let container: HTMLElement;
+let searchInput: HTMLInputElement;
+let listEl: HTMLElement;
+let collapsed = true;
+let bookmarkFilterActive = false;
+
+function applyHistoryVisibility(): void {
+  if (!container) return;
+  const featureEnabled = appState.preferences.sessionHistoryEnabled;
+  const sidebarVisible = appState.preferences.sidebarViews?.sessionHistory ?? true;
+  container.classList.toggle('hidden', !featureEnabled || !sidebarVisible);
 }
-
-const filterStateByProject = new Map<string, ProjectFilterState>();
-const activePanels = new Map<string, Map<string, HTMLElement>>();
-const DEFAULT_INSTANCE_KEY = 'sidebar';
-
-let historyContextMenu: HTMLElement | null = null;
-
-function hideHistoryContextMenu(): void {
-  if (historyContextMenu) {
-    historyContextMenu.remove();
-    historyContextMenu = null;
-  }
-}
-
-function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, archived: ArchivedSession): void {
-  hideHistoryContextMenu();
-
-  const menu = document.createElement('div');
-  menu.className = 'tab-context-menu';
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-
-  if (archived.cliSessionId) {
-    const resumeItem = document.createElement('div');
-    resumeItem.className = 'tab-context-menu-item';
-    resumeItem.textContent = 'Resume';
-    resumeItem.addEventListener('click', (e) => {
-      e.stopPropagation();
-      hideHistoryContextMenu();
-      void appState.resumeFromHistorySafe(project.id, archived.id);
-    });
-    menu.appendChild(resumeItem);
-  }
-
-  const resumeWithItems = buildResumeWithProviderItems(
-    (archived.providerId || 'claude') as ProviderId,
-    (targetId) => {
-      hideHistoryContextMenu();
-      appState.resumeWithProvider(project.id, { archivedSessionId: archived.id }, targetId);
-    },
-  );
-  for (const el of resumeWithItems) menu.appendChild(el);
-
-  if (menu.firstChild) {
-    const separator = document.createElement('div');
-    separator.className = 'tab-context-menu-separator';
-    menu.appendChild(separator);
-  }
-
-  const removeItem = document.createElement('div');
-  removeItem.className = 'tab-context-menu-item danger';
-  removeItem.textContent = 'Remove from history';
-  removeItem.addEventListener('click', (e) => {
-    e.stopPropagation();
-    hideHistoryContextMenu();
-    appState.removeHistoryEntry(project.id, archived.id);
-  });
-  menu.appendChild(removeItem);
-
-  document.body.appendChild(menu);
-  historyContextMenu = menu;
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
-  if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
-}
-
-function getFilterState(projectId: string): ProjectFilterState {
-  let state = filterStateByProject.get(projectId);
-  if (!state) {
-    state = { searchText: '', bookmarkOnly: false };
-    filterStateByProject.set(projectId, state);
-  }
-  return state;
-}
-
-let listenersAttached = false;
 
 export function initSessionHistory(): void {
-  if (listenersAttached) return;
-  listenersAttached = true;
+  container = document.getElementById('session-history')!;
+  render();
 
-  appState.on('history-changed', rerenderAll);
-  if (typeof document.addEventListener === 'function') {
-    document.addEventListener('click', hideHistoryContextMenu);
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideHistoryContextMenu(); });
-  }
+  appState.on('history-changed', onHistoryChanged);
+  appState.on('project-changed', render);
+  appState.on('state-loaded', render);
+  appState.on('preferences-changed', () => applyHistoryVisibility());
 }
 
-function rerenderAll(): void {
-  for (const [projectId, panels] of activePanels) {
-    const project = appState.projects.find(p => p.id === projectId);
-    if (!project) continue;
-    for (const [instanceKey, container] of panels) {
-      renderSessionHistory(project, container, instanceKey);
+function onHistoryChanged(): void {
+  applyHistoryVisibility();
+
+  const project = appState.activeProject;
+  if (!collapsed && listEl && project) {
+    const history = appState.getSessionHistory(project.id);
+    // Update the count badge in the header
+    const countEl = container.querySelector('.config-section-count');
+    if (countEl) {
+      countEl.textContent = String(history.length);
+    } else if (history.length > 0) {
+      const header = container.querySelector('.config-section-header');
+      if (header) {
+        const span = document.createElement('span');
+        span.className = 'config-section-count';
+        span.textContent = String(history.length);
+        header.appendChild(span);
+      }
     }
+    renderList(history);
+    return;
   }
+
+  render();
 }
 
-export function renderSessionHistory(
-  project: ProjectRecord,
-  container: HTMLElement,
-  instanceKey: string = DEFAULT_INSTANCE_KEY,
-): void {
-  let panels = activePanels.get(project.id);
-  if (!panels) {
-    panels = new Map();
-    activePanels.set(project.id, panels);
-  }
-  panels.set(instanceKey, container);
+function render(): void {
+  applyHistoryVisibility();
 
-  const history = appState.getSessionHistory(project.id);
-  const filter = getFilterState(project.id);
+  const project = appState.activeProject;
+  const history = project ? appState.getSessionHistory(project.id) : [];
+
+  if (!project) {
+    container.innerHTML = '';
+    return;
+  }
 
   container.innerHTML = '';
+
+  // Header
+  const header = document.createElement('div');
+  header.className = 'config-section-header';
+  header.innerHTML = `
+    <span class="config-section-toggle ${collapsed ? 'collapsed' : ''}">&#x25BC;</span>
+    <span>History</span>
+    ${history.length > 0 ? `<span class="config-section-count">${history.length}</span>` : ''}
+  `;
+  header.addEventListener('click', () => {
+    collapsed = !collapsed;
+    render();
+  });
+  container.appendChild(header);
+
+  if (collapsed) return;
+
+  const body = document.createElement('div');
+  body.className = 'history-body';
 
   if (history.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'history-empty';
     empty.textContent = 'No session history yet';
-    container.appendChild(empty);
+    body.appendChild(empty);
+    container.appendChild(body);
     return;
   }
 
-  const searchInput = document.createElement('input');
+  // Search
+  searchInput = document.createElement('input');
   searchInput.className = 'history-search';
   searchInput.type = 'text';
   searchInput.placeholder = 'Filter history...';
-  searchInput.value = filter.searchText;
-  searchInput.addEventListener('input', () => {
-    filter.searchText = searchInput.value;
-    renderList(project, container, history, filter);
-  });
-  container.appendChild(searchInput);
+  searchInput.addEventListener('input', () => renderList(history));
+  body.appendChild(searchInput);
 
+  // Bookmark filter
   const bookmarkFilter = document.createElement('button');
   const applyFilterState = () => {
-    bookmarkFilter.className = `history-bookmark-filter${filter.bookmarkOnly ? ' active' : ''}`;
-    bookmarkFilter.textContent = filter.bookmarkOnly ? '★ Bookmarked' : '☆ Bookmarked';
+    bookmarkFilter.className = `history-bookmark-filter${bookmarkFilterActive ? ' active' : ''}`;
+    bookmarkFilter.textContent = bookmarkFilterActive ? '★ Bookmarked' : '☆ Bookmarked';
   };
   applyFilterState();
   bookmarkFilter.addEventListener('click', () => {
-    filter.bookmarkOnly = !filter.bookmarkOnly;
+    bookmarkFilterActive = !bookmarkFilterActive;
     applyFilterState();
-    renderList(project, container, history, filter);
+    renderList(history);
   });
-
+  // Clear button
   const clearBtn = document.createElement('button');
   clearBtn.className = 'history-clear-btn';
   clearBtn.textContent = 'Clear History';
   clearBtn.addEventListener('click', () => {
-    showConfirmDialog(
-      'Clear session history',
-      `Clear all non-bookmarked sessions for "${project.name}"? Bookmarked sessions will be kept. This cannot be undone.`,
-      {
-        confirmLabel: 'Clear',
-        onConfirm: () => appState.clearSessionHistory(project.id),
-      },
-    );
+    if (!project) return;
+    appState.clearSessionHistory(project.id);
   });
 
   const actions = document.createElement('div');
   actions.className = 'history-actions';
   actions.appendChild(bookmarkFilter);
   actions.appendChild(clearBtn);
-  container.appendChild(actions);
+  body.appendChild(actions);
 
-  const listEl = document.createElement('div');
+  // List
+  listEl = document.createElement('div');
   listEl.className = 'history-list';
-  container.appendChild(listEl);
+  body.appendChild(listEl);
 
-  renderList(project, container, history, filter);
+  container.appendChild(body);
+  renderList(history);
 }
 
-export function closeSessionHistory(projectId: string, instanceKey?: string): void {
-  const panels = activePanels.get(projectId);
-  if (!panels) return;
-  if (instanceKey === undefined) {
-    for (const container of panels.values()) container.innerHTML = '';
-    activePanels.delete(projectId);
-    return;
-  }
-  const container = panels.get(instanceKey);
-  if (container) container.innerHTML = '';
-  panels.delete(instanceKey);
-  if (panels.size === 0) activePanels.delete(projectId);
-}
-
-export function clearProjectState(projectId: string): void {
-  filterStateByProject.delete(projectId);
-  activePanels.delete(projectId);
-}
-
-function renderList(
-  project: ProjectRecord,
-  container: HTMLElement,
-  history: ArchivedSession[],
-  filter: ProjectFilterState,
-): void {
-  const listEl = container.querySelector('.history-list') as HTMLElement | null;
-  if (!listEl) return;
-
-  const needle = filter.searchText.toLowerCase();
+function renderList(history: ArchivedSession[]): void {
+  const filter = searchInput?.value.toLowerCase() || '';
   const filtered = history
-    .filter((a) => a.name.toLowerCase().includes(needle))
-    .filter((a) => !filter.bookmarkOnly || a.bookmarked)
-    .slice()
-    .reverse();
+    .filter((a) => a.name.toLowerCase().includes(filter))
+    .filter((a) => !bookmarkFilterActive || a.bookmarked)
+    .reverse(); // newest first
 
   listEl.innerHTML = '';
 
@@ -234,15 +153,12 @@ function renderList(
     if (archived.cliSessionId) {
       item.style.cursor = 'pointer';
       item.addEventListener('click', () => {
-        void appState.resumeFromHistorySafe(project.id, archived.id);
+        const project = appState.activeProject;
+        if (project) {
+          appState.resumeFromHistory(project.id, archived.id);
+        }
       });
     }
-    item.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      loadProviderAvailability().catch(() => {});
-      showHistoryContextMenu(e.clientX, e.clientY, project, archived);
-    });
 
     const info = document.createElement('div');
     info.className = 'history-item-info';
@@ -262,7 +178,6 @@ function renderList(
     if (archived.cost) {
       parts.push(`$${archived.cost.totalCostUsd.toFixed(2)}`);
     }
-    parts.push(getProviderLabel(archived.providerId));
     details.textContent = parts.join(' · ');
     info.appendChild(details);
 
@@ -277,9 +192,25 @@ function renderList(
     bookmarkBtn.title = archived.bookmarked ? 'Remove bookmark' : 'Bookmark session';
     bookmarkBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      appState.toggleBookmark(project.id, archived.id);
+      const project = appState.activeProject;
+      if (project) {
+        appState.toggleBookmark(project.id, archived.id);
+      }
     });
     actions.appendChild(bookmarkBtn);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'history-remove-btn';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.title = 'Remove from history';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const project = appState.activeProject;
+      if (project) {
+        appState.removeHistoryEntry(project.id, archived.id);
+      }
+    });
+    actions.appendChild(removeBtn);
 
     item.appendChild(actions);
 
@@ -309,8 +240,4 @@ function formatDate(iso: string): string {
     return `${diffDays}d ago`;
   }
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
-
-function getProviderLabel(providerId: string): string {
-  return PROVIDER_LABELS[providerId] ?? providerId;
 }

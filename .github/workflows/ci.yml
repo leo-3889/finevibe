@@ -10,9 +10,7 @@ jobs:
   build-and-test:
     strategy:
       matrix:
-        # windows-2022 (not windows-latest/windows-2025): the 2025 image
-        # breaks node-gyp's Visual Studio detection when compiling node-pty.
-        os: [macos-latest, ubuntu-latest, windows-2022]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
 
     steps:

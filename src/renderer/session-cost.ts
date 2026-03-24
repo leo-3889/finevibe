@@ -94,23 +94,13 @@ export function getAggregateCost(): CostInfo {
   return aggregate;
 }
 
-export function onChange(callback: CostChangeCallback): () => void {
+export function onChange(callback: CostChangeCallback): void {
   listeners.push(callback);
-  return () => {
-    const idx = listeners.indexOf(callback);
-    if (idx !== -1) listeners.splice(idx, 1);
-  };
 }
 
 /** Restore cost from persisted session data (used on startup, silent — no listeners notified) */
 export function restoreCost(sessionId: string, cost: CostInfo): void {
   costs.set(sessionId, cost);
-}
-
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2).replace(/\.?0+$/, '') + 'm';
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  return String(n);
 }
 
 export function removeSession(sessionId: string): void {

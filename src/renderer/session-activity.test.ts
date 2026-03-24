@@ -1,6 +1,7 @@
 import {
   initSession,
   setHookStatus,
+  notifyPtyData,
   notifyInterrupt,
   setIdle,
   removeSession,
@@ -10,7 +11,12 @@ import {
 } from './session-activity';
 
 beforeEach(() => {
+  vi.useFakeTimers();
   _resetForTesting();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('initSession', () => {
@@ -34,9 +40,31 @@ describe('setHookStatus', () => {
     expect(getStatus('s1')).toBe('working');
   });
 
-  it('ignores hook events for unknown sessions', () => {
+  it('auto-inits session if not present', () => {
     setHookStatus('s1', 'working');
-    expect(getStatus('s1')).toBe('idle');
+    expect(getStatus('s1')).toBe('working');
+  });
+
+  it('transitions to waiting after staleness timeout', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working');
+
+    vi.advanceTimersByTime(119_999);
+    expect(getStatus('s1')).toBe('working');
+
+    vi.advanceTimersByTime(1);
+    expect(getStatus('s1')).toBe('waiting');
+  });
+
+  it('clears staleness timer on new status', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working');
+
+    vi.advanceTimersByTime(60_000);
+    setHookStatus('s1', 'waiting');
+
+    vi.advanceTimersByTime(120_000);
+    expect(getStatus('s1')).toBe('waiting');
   });
 
   it('sets completed status', () => {
@@ -45,10 +73,10 @@ describe('setHookStatus', () => {
     expect(getStatus('s1')).toBe('completed');
   });
 
-  it('sets input status', () => {
+  it('sets permission status', () => {
     initSession('s1');
-    setHookStatus('s1', 'input');
-    expect(getStatus('s1')).toBe('input');
+    setHookStatus('s1', 'permission');
+    expect(getStatus('s1')).toBe('permission');
   });
 
   it('does not overwrite completed with waiting', () => {
@@ -75,11 +103,50 @@ describe('setHookStatus', () => {
   });
 });
 
+describe('notifyPtyData', () => {
+  it('resets staleness timer when working', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working');
+
+    vi.advanceTimersByTime(100_000);
+    notifyPtyData('s1');
+
+    // Should reset the 120s timer
+    vi.advanceTimersByTime(100_000);
+    expect(getStatus('s1')).toBe('working');
+
+    vi.advanceTimersByTime(20_000);
+    expect(getStatus('s1')).toBe('waiting');
+  });
+
+  it('does nothing when not working', () => {
+    initSession('s1');
+    // Status is 'waiting', notifyPtyData should be a no-op
+    notifyPtyData('s1');
+    expect(getStatus('s1')).toBe('waiting');
+  });
+
+  it('does nothing for unknown session', () => {
+    notifyPtyData('unknown');
+    expect(getStatus('unknown')).toBe('idle');
+  });
+});
+
 describe('notifyInterrupt', () => {
   it('transitions from working to waiting', () => {
     initSession('s1');
     setHookStatus('s1', 'working');
     notifyInterrupt('s1');
+    expect(getStatus('s1')).toBe('waiting');
+  });
+
+  it('clears staleness timer', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    notifyInterrupt('s1');
+
+    // Timer should be cleared — no spurious transition after 120s
+    vi.advanceTimersByTime(120_000);
     expect(getStatus('s1')).toBe('waiting');
   });
 
@@ -105,19 +172,8 @@ describe('notifyInterrupt', () => {
     expect(getStatus('s1')).toBe('waiting');
 
     // A stale PostToolUse 'working' hook arrives after the interrupt
-    setHookStatus('s1', 'working', 'PostToolUse');
-    expect(getStatus('s1')).toBe('waiting');
-  });
-
-  it('allows UserPromptSubmit to override interrupted state', () => {
-    initSession('s1');
     setHookStatus('s1', 'working');
-    notifyInterrupt('s1');
     expect(getStatus('s1')).toBe('waiting');
-
-    // User submits a new prompt — should clear interrupted and transition to working
-    setHookStatus('s1', 'working', 'UserPromptSubmit');
-    expect(getStatus('s1')).toBe('working');
   });
 
   it('clears interrupted flag on non-working hook status', () => {
@@ -136,10 +192,14 @@ describe('notifyInterrupt', () => {
 });
 
 describe('setIdle', () => {
-  it('sets idle status', () => {
+  it('overrides to idle and clears timer', () => {
     initSession('s1');
     setHookStatus('s1', 'working');
     setIdle('s1');
+    expect(getStatus('s1')).toBe('idle');
+
+    // Timer should be cleared — no transition after 120s
+    vi.advanceTimersByTime(120_000);
     expect(getStatus('s1')).toBe('idle');
   });
 
@@ -155,102 +215,18 @@ describe('getStatus', () => {
 });
 
 describe('removeSession', () => {
-  it('removes session', () => {
+  it('removes session and clears timer', () => {
     initSession('s1');
     setHookStatus('s1', 'working');
     removeSession('s1');
     expect(getStatus('s1')).toBe('idle'); // defaults to idle when not found
+
+    // Timer should be cleared
+    vi.advanceTimersByTime(120_000);
+    expect(getStatus('s1')).toBe('idle');
   });
 
   it('does nothing for unknown session', () => {
     removeSession('unknown'); // should not throw
-  });
-});
-
-describe('onChange unsubscribe', () => {
-  it('stops receiving callbacks after unsubscribe', () => {
-    initSession('s1');
-    const cb = vi.fn();
-    const unsub = onChange(cb);
-
-    setHookStatus('s1', 'working');
-    expect(cb).toHaveBeenCalledTimes(1);
-
-    unsub();
-    setHookStatus('s1', 'waiting');
-    expect(cb).toHaveBeenCalledTimes(1); // no new calls after unsub
-  });
-
-  it('only removes the specific subscriber', () => {
-    initSession('s1');
-    const cb1 = vi.fn();
-    const cb2 = vi.fn();
-    const unsub1 = onChange(cb1);
-    onChange(cb2);
-
-    unsub1();
-    setHookStatus('s1', 'working');
-
-    expect(cb1).not.toHaveBeenCalled();
-    expect(cb2).toHaveBeenCalledTimes(1);
-  });
-});
-
-// The subagent-aware Stop hook writes `Stop:working` (not `completed`) while it
-// believes subagents are in flight. If that signal is wrong the session must
-// still eventually complete — these cover the renderer backstop that guarantees it.
-describe('Stop-resolved-working fallback', () => {
-  beforeEach(() => { vi.useFakeTimers(); });
-  afterEach(() => { vi.useRealTimers(); });
-
-  it('completes a session left in working by a Stop, after silence', () => {
-    initSession('s1');
-    setHookStatus('s1', 'working', 'UserPromptSubmit');
-    // A Stop that resolved to working (subagents believed in flight).
-    setHookStatus('s1', 'working', 'Stop');
-    expect(getStatus('s1')).toBe('working');
-
-    vi.advanceTimersByTime(10 * 60 * 1000);
-    expect(getStatus('s1')).toBe('completed');
-  });
-
-  it('does not fire the fallback when a real completion arrives first', () => {
-    initSession('s1');
-    setHookStatus('s1', 'working', 'Stop');
-    setHookStatus('s1', 'completed', 'Stop');
-    expect(getStatus('s1')).toBe('completed');
-
-    // The completion cancelled the fallback; it must not re-fire later.
-    const cb = vi.fn();
-    onChange(cb);
-    vi.advanceTimersByTime(10 * 60 * 1000);
-    expect(cb).not.toHaveBeenCalled();
-    expect(getStatus('s1')).toBe('completed');
-  });
-
-  it('is cancelled by ongoing subagent activity (a later working hook)', () => {
-    initSession('s1');
-    setHookStatus('s1', 'working', 'Stop');
-    // A subagent tool finishes: PostToolUse working — activity, resets the timer.
-    vi.advanceTimersByTime(9 * 60 * 1000);
-    setHookStatus('s1', 'working', 'PostToolUse');
-    // Original 10-min mark passes without a fire because it was reset.
-    vi.advanceTimersByTime(2 * 60 * 1000);
-    expect(getStatus('s1')).toBe('working');
-  });
-
-  it('only arms for Stop, not for a plain working hook', () => {
-    initSession('s1');
-    setHookStatus('s1', 'working', 'PostToolUse');
-    vi.advanceTimersByTime(10 * 60 * 1000);
-    expect(getStatus('s1')).toBe('working');
-  });
-
-  it('is cleared when the session goes idle before firing', () => {
-    initSession('s1');
-    setHookStatus('s1', 'working', 'Stop');
-    setIdle('s1');
-    vi.advanceTimersByTime(10 * 60 * 1000);
-    expect(getStatus('s1')).toBe('idle');
   });
 });

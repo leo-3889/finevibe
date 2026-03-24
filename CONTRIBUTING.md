@@ -36,8 +36,6 @@ No lint tooling is configured yet (planned). For now:
 
 ## Pull Request Workflow
 
-**Before you start:** for anything beyond a small bugfix, typo, or doc change, please open an issue (or comment on an existing one) first to confirm the change is wanted and agree on the approach. This saves you from building something we can't merge.
-
 1. Fork the repository
 2. Create a feature branch from `main`
 3. Make your changes and add tests where appropriate
@@ -46,10 +44,10 @@ No lint tooling is configured yet (planned). For now:
 
 ## Reporting Issues
 
-We use [GitHub issue templates](https://github.com/elirantutia/vibeyard/issues/new/choose) to streamline reports. Pick the template that fits:
+When filing a bug report, please include:
 
-- **Bug Report** — for something broken or not working as expected. The template asks for your OS, Vibeyard version, CLI provider/version, reproduction steps, and expected vs actual behavior.
-- **Feature Request** — for suggesting a new feature or improvement. Describe the idea, motivation, and any alternatives you've considered.
-- **Documentation Issue** — for reporting errors, gaps, or unclear sections in the docs.
-
-Blank issues are disabled — please use one of the templates above.
+- **OS version** (e.g., macOS 15.3)
+- **Vibeyard version** (from the app's title bar or `package.json`)
+- **Claude Code CLI version** (`claude --version`)
+- **Steps to reproduce**
+- **Expected vs actual behavior**

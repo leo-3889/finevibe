@@ -4,7 +4,6 @@ import {
   onChange,
   restoreContext,
   removeSession,
-  getContextSeverity,
   _resetForTesting,
 } from './session-context';
 
@@ -124,47 +123,5 @@ describe('removeSession', () => {
     setContextData('s1', { total_input_tokens: 100 });
     removeSession('s1');
     expect(getContext('s1')).toBeNull();
-  });
-});
-
-describe('onChange unsubscribe', () => {
-  it('stops receiving callbacks after unsubscribe', () => {
-    const cb = vi.fn();
-    const unsub = onChange(cb);
-
-    setContextData('s1', { total_input_tokens: 100 });
-    expect(cb).toHaveBeenCalledTimes(1);
-
-    unsub();
-    setContextData('s1', { total_input_tokens: 200 });
-    expect(cb).toHaveBeenCalledTimes(1); // no new calls after unsub
-  });
-
-  it('only removes the specific subscriber', () => {
-    const cb1 = vi.fn();
-    const cb2 = vi.fn();
-    const unsub1 = onChange(cb1);
-    onChange(cb2);
-
-    unsub1();
-    setContextData('s1', { total_input_tokens: 100 });
-
-    expect(cb1).not.toHaveBeenCalled();
-    expect(cb2).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('getContextSeverity', () => {
-  it('returns empty string below 70', () => {
-    expect(getContextSeverity(0)).toBe('');
-    expect(getContextSeverity(69.9)).toBe('');
-  });
-  it('returns warning between 70 and 89', () => {
-    expect(getContextSeverity(70)).toBe('warning');
-    expect(getContextSeverity(89.9)).toBe('warning');
-  });
-  it('returns critical at 90 and above', () => {
-    expect(getContextSeverity(90)).toBe('critical');
-    expect(getContextSeverity(100)).toBe('critical');
   });
 });

@@ -31,7 +31,7 @@ export function getGitStatus(cwd: string): Promise<GitStatus> {
   return new Promise((resolve) => {
     execFile(
       'git',
-      ['status', '--porcelain=v2', '--branch', '--untracked-files=all'],
+      ['status', '--porcelain=v2', '--branch'],
       { cwd, timeout: 5000 },
       (err, stdout) => {
         if (err) {
@@ -136,7 +136,7 @@ export function getGitFiles(cwd: string): Promise<GitFileEntry[]> {
   return new Promise((resolve) => {
     execFile(
       'git',
-      ['status', '--porcelain=v2', '--untracked-files=all'],
+      ['status', '--porcelain=v2'],
       { cwd, timeout: 5000, maxBuffer: 1024 * 1024 },
       (err, stdout) => {
         if (err) {
@@ -194,43 +194,6 @@ function execGit(cwd: string, args: string[]): Promise<void> {
   });
 }
 
-function execGitWithOutput(cwd: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve(stdout);
-    });
-  });
-}
-
-export interface GitBranch {
-  name: string;
-  current: boolean;
-}
-
-export async function listGitBranches(cwd: string): Promise<GitBranch[]> {
-  const stdout = await execGitWithOutput(cwd, ['branch', '--list']);
-  const branches: GitBranch[] = [];
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trimEnd();
-    if (!trimmed) continue;
-    const current = trimmed.startsWith('* ');
-    const name = trimmed.slice(2);
-    // Skip detached HEAD entries like "(HEAD detached at ...)"
-    if (name.startsWith('(')) continue;
-    branches.push({ name, current });
-  }
-  return branches;
-}
-
-export async function checkoutGitBranch(cwd: string, branch: string): Promise<void> {
-  await execGit(cwd, ['checkout', branch]);
-}
-
-export async function createGitBranch(cwd: string, branch: string): Promise<void> {
-  await execGit(cwd, ['checkout', '-b', branch]);
-}
-
 export function gitStageFile(cwd: string, filePath: string): Promise<void> {
   return execGit(cwd, ['add', '--', filePath]);
 }
@@ -242,7 +205,7 @@ export function gitUnstageFile(cwd: string, filePath: string): Promise<void> {
 export function gitDiscardFile(cwd: string, filePath: string, area: GitFileEntry['area']): Promise<void> {
   if (area === 'untracked') {
     const fullPath = path.join(cwd, filePath);
-    return fs.promises.rm(fullPath, { recursive: true, force: true });
+    return fs.promises.unlink(fullPath);
   }
   return execGit(cwd, ['checkout', '--', filePath]);
 }
@@ -294,19 +257,5 @@ export function getGitWorktrees(cwd: string): Promise<GitWorktree[]> {
         resolve(worktrees);
       }
     );
-  });
-}
-
-export function getGitRemoteUrl(cwd: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile('git', ['remote', 'get-url', 'origin'], { cwd }, (err, stdout) => {
-      if (err) { resolve(null); return; }
-      const raw = stdout.trim();
-      // Normalize SSH (git@github.com:owner/repo.git) to HTTPS
-      const ssh = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
-      if (ssh) { resolve(`https://${ssh[1]}/${ssh[2]}`); return; }
-      // Strip trailing .git from HTTPS URLs
-      resolve(raw.replace(/\.git$/, '') || null);
-    });
   });
 }

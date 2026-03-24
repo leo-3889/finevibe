@@ -1,5 +1,4 @@
 import { escapeHtml } from './dom-search-backend.js';
-import { pushModal } from './modal-manager.js';
 
 let cleanupFn: (() => void) | null = null;
 let pendingResolve: ((choice: 'replace' | 'keep') => void) | null = null;
@@ -17,8 +16,8 @@ function getOverlay(): HTMLElement {
       <div class="modal-title">Settings Conflict</div>
       <div class="modal-body statusline-conflict-body"></div>
       <div class="modal-actions">
-        <button id="statusline-conflict-keep" class="btn-secondary">Keep Existing</button>
-        <button id="statusline-conflict-replace" class="btn-primary">Replace</button>
+        <button id="statusline-conflict-keep" class="modal-btn">Keep Existing</button>
+        <button id="statusline-conflict-replace" class="modal-btn primary">Replace</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -67,15 +66,18 @@ export function showStatusLineConflictModal(foreignCommand: string): Promise<'re
 
     const handleKeep = () => close('keep');
     const handleReplace = () => close('replace');
+    const handleKeydown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); close('keep'); }
+    };
 
-    const unregisterEsc = pushModal({ onEscape: handleKeep });
     keepBtn.addEventListener('click', handleKeep);
     replaceBtn.addEventListener('click', handleReplace);
+    document.addEventListener('keydown', handleKeydown);
 
     cleanupFn = () => {
-      unregisterEsc();
       keepBtn.removeEventListener('click', handleKeep);
       replaceBtn.removeEventListener('click', handleReplace);
+      document.removeEventListener('keydown', handleKeydown);
     };
 
     requestAnimationFrame(() => keepBtn.focus());

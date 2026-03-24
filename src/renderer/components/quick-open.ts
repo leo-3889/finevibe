@@ -1,5 +1,4 @@
 import { appState } from '../state.js';
-import { openFileReaderChecked } from '../open-file-reader.js';
 
 let overlay: HTMLElement | null = null;
 let input: HTMLInputElement | null = null;
@@ -12,14 +11,6 @@ function escapeHtml(s: string): string {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
-}
-
-function parseQuery(raw: string): { fileQuery: string; lineNumber?: number } {
-  const m = /^(.*):(\d+)$/.exec(raw);
-  if (m && m[1].length > 0) {
-    return { fileQuery: m[1], lineNumber: parseInt(m[2], 10) };
-  }
-  return { fileQuery: raw };
 }
 
 function createOverlay(): void {
@@ -59,9 +50,9 @@ async function searchFiles(): Promise<void> {
   const project = appState.activeProject;
   if (!project || !input) return;
 
-  const { fileQuery } = parseQuery(input.value);
+  const query = input.value;
   try {
-    results = await window.vibeyard.fs.listFiles(project.path, fileQuery);
+    results = await window.vibeyard.fs.listFiles(project.path, query);
   } catch {
     results = [];
   }
@@ -151,8 +142,7 @@ function selectFile(): void {
   const project = appState.activeProject;
   if (!project) return;
 
-  const { lineNumber } = parseQuery(input?.value ?? '');
-  void openFileReaderChecked(project.id, filePath, lineNumber);
+  appState.addFileReaderSession(project.id, filePath);
   hideQuickOpen();
 }
 

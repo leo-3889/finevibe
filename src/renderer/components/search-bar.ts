@@ -1,12 +1,4 @@
-import { SearchAddon } from '@xterm/addon-search';
-import { Terminal } from '@xterm/xterm';
 import { getSearchAddon, getTerminalInstance } from './terminal-pane.js';
-import { getShellTerminalInstance } from './project-terminal.js';
-
-export interface SearchResultState {
-  currentIndex: number;
-  totalCount: number;
-}
 
 export interface SearchBackend {
   findNext(query: string, options: { caseSensitive: boolean; regex: boolean }): void;
@@ -14,124 +6,45 @@ export interface SearchBackend {
   clearDecorations(): void;
   getContainer(): HTMLElement;
   focus(): void;
-  getResultState(): SearchResultState;
-  subscribe(listener: (state: SearchResultState) => void): () => void;
 }
 
-interface TerminalLike {
-  element: HTMLElement;
-  terminal: Terminal;
-  searchAddon: SearchAddon;
-}
-
-type InstanceResolver = (sessionId: string) => TerminalLike | undefined;
-
-export class XtermSearchBackend implements SearchBackend {
-  private resultState: SearchResultState = { currentIndex: -1, totalCount: 0 };
-  private listeners = new Set<(state: SearchResultState) => void>();
-  private disposeSearchResultsListener: (() => void) | null = null;
-
-  constructor(private sessionId: string, private resolve: InstanceResolver) {}
+export class TerminalSearchBackend implements SearchBackend {
+  constructor(private sessionId: string) {}
 
   findNext(query: string, options: { caseSensitive: boolean; regex: boolean }): void {
-    this.ensureSubscription();
-    this.resolve(this.sessionId)?.searchAddon.findNext(query, this.getSearchOptions(options));
+    const addon = getSearchAddon(this.sessionId);
+    if (addon) addon.findNext(query, options);
   }
 
   findPrevious(query: string, options: { caseSensitive: boolean; regex: boolean }): void {
-    this.ensureSubscription();
-    this.resolve(this.sessionId)?.searchAddon.findPrevious(query, this.getSearchOptions(options));
+    const addon = getSearchAddon(this.sessionId);
+    if (addon) addon.findPrevious(query, options);
   }
 
   clearDecorations(): void {
-    this.resolve(this.sessionId)?.searchAddon.clearDecorations();
-    this.updateResultState({ currentIndex: -1, totalCount: 0 });
+    const addon = getSearchAddon(this.sessionId);
+    if (addon) addon.clearDecorations();
   }
 
   getContainer(): HTMLElement {
-    return this.resolve(this.sessionId)!.element;
+    const instance = getTerminalInstance(this.sessionId);
+    return instance!.element;
   }
 
   focus(): void {
-    this.resolve(this.sessionId)?.terminal.focus();
-  }
-
-  getResultState(): SearchResultState {
-    return this.resultState;
-  }
-
-  subscribe(listener: (state: SearchResultState) => void): () => void {
-    this.ensureSubscription();
-    this.listeners.add(listener);
-    listener(this.resultState);
-    return () => {
-      this.listeners.delete(listener);
-      if (this.listeners.size === 0) {
-        this.disposeSearchResultsListener?.();
-        this.disposeSearchResultsListener = null;
-      }
-    };
-  }
-
-  private ensureSubscription(): void {
-    if (this.disposeSearchResultsListener) return;
-    const instance = this.resolve(this.sessionId);
-    const disposer = instance?.searchAddon.onDidChangeResults((event) => {
-      this.updateResultState({ currentIndex: event.resultIndex, totalCount: event.resultCount });
-    });
-    this.disposeSearchResultsListener = () => disposer?.dispose();
-  }
-
-  private getSearchOptions(options: { caseSensitive: boolean; regex: boolean }) {
-    return {
-      ...options,
-      decorations: {
-        matchBackground: 'rgba(255, 200, 0, 0.3)',
-        activeMatchBackground: 'rgba(255, 200, 0, 0.6)',
-        matchBorder: 'rgba(255, 200, 0, 0.45)',
-        activeMatchBorder: 'rgba(255, 200, 0, 0.8)',
-        matchOverviewRuler: 'rgba(255, 200, 0, 0.45)',
-        activeMatchColorOverviewRuler: 'rgba(255, 200, 0, 0.8)',
-      },
-    };
-  }
-
-  private updateResultState(state: SearchResultState): void {
-    this.resultState = state;
-    for (const listener of this.listeners) {
-      listener(state);
-    }
+    const instance = getTerminalInstance(this.sessionId);
+    if (instance) instance.terminal.focus();
   }
 }
 
-export function TerminalSearchBackend(sessionId: string): XtermSearchBackend {
-  return new XtermSearchBackend(sessionId, (id) => {
-    const instance = getTerminalInstance(id);
-    if (!instance) return undefined;
-    const searchAddon = getSearchAddon(id);
-    if (!searchAddon) return undefined;
-    return { element: instance.element, terminal: instance.terminal, searchAddon };
-  });
-}
-
-export function ShellTerminalSearchBackend(sessionId: string): XtermSearchBackend {
-  return new XtermSearchBackend(sessionId, (id) => getShellTerminalInstance(id));
-}
-
-const searchBars = new Map<string, { bar: HTMLDivElement; backend: SearchBackend; unsubscribe: () => void }>();
+const searchBars = new Map<string, { bar: HTMLDivElement; backend: SearchBackend }>();
 
 export function showSearchBar(sessionId: string, backend: SearchBackend): void {
   const existing = searchBars.get(sessionId);
   if (existing) {
-    existing.unsubscribe();
     existing.backend = backend;
     existing.bar.classList.remove('hidden');
     const input = existing.bar.querySelector('input') as HTMLInputElement;
-    const resultCount = existing.bar.querySelector('.search-result-count') as HTMLSpanElement;
-    existing.unsubscribe = backend.subscribe((state) => {
-      resultCount.textContent = formatSearchResultText(input.value, state);
-      resultCount.classList.toggle('empty', input.value !== '' && state.totalCount === 0);
-    });
     input.focus();
     input.select();
     return;
@@ -144,9 +57,6 @@ export function showSearchBar(sessionId: string, backend: SearchBackend): void {
   input.type = 'text';
   input.placeholder = 'Search...';
   input.spellcheck = false;
-
-  const resultCount = document.createElement('span');
-  resultCount.className = 'search-result-count';
 
   const matchCaseBtn = document.createElement('button');
   matchCaseBtn.className = 'search-toggle-btn';
@@ -174,7 +84,6 @@ export function showSearchBar(sessionId: string, backend: SearchBackend): void {
   closeBtn.title = 'Close (Escape)';
 
   bar.appendChild(input);
-  bar.appendChild(resultCount);
   bar.appendChild(matchCaseBtn);
   bar.appendChild(regexBtn);
   bar.appendChild(prevBtn);
@@ -182,6 +91,8 @@ export function showSearchBar(sessionId: string, backend: SearchBackend): void {
   bar.appendChild(closeBtn);
 
   backend.getContainer().appendChild(bar);
+  searchBars.set(sessionId, { bar, backend });
+
   let caseSensitive = false;
   let regex = false;
 
@@ -189,18 +100,9 @@ export function showSearchBar(sessionId: string, backend: SearchBackend): void {
     return { caseSensitive, regex };
   }
 
-  function renderResultState(state: SearchResultState) {
-    resultCount.textContent = formatSearchResultText(input.value, state);
-    resultCount.classList.toggle('empty', input.value !== '' && state.totalCount === 0);
-  }
-
-  const unsubscribe = backend.subscribe(renderResultState);
-  searchBars.set(sessionId, { bar, backend, unsubscribe });
-
   function doSearch() {
     if (!input.value) {
       backend.clearDecorations();
-      renderResultState(backend.getResultState());
       return;
     }
     backend.findNext(input.value, getOptions());
@@ -265,7 +167,6 @@ export function hideSearchBar(sessionId: string): void {
 export function destroySearchBar(sessionId: string): void {
   const entry = searchBars.get(sessionId);
   if (!entry) return;
-  entry.unsubscribe();
   entry.backend.clearDecorations();
   entry.bar.remove();
   searchBars.delete(sessionId);
@@ -274,10 +175,4 @@ export function destroySearchBar(sessionId: string): void {
 export function isSearchBarVisible(sessionId: string): boolean {
   const entry = searchBars.get(sessionId);
   return !!entry && !entry.bar.classList.contains('hidden');
-}
-
-export function formatSearchResultText(query: string, state: SearchResultState): string {
-  if (!query) return '';
-  if (state.totalCount === 0) return 'No results';
-  return `${Math.max(state.currentIndex + 1, 1)} of ${state.totalCount}`;
 }

@@ -1,20 +1,12 @@
-import { createCustomSelect } from './custom-select.js';
-import { pushModal } from './modal-manager.js';
-
 export interface FieldDef {
   label: string;
   id: string;
-  type?: 'text' | 'checkbox' | 'select' | 'textarea';
+  type?: 'text' | 'checkbox';
   placeholder?: string;
   defaultValue?: string;
-  rows?: number;
-  maxLength?: number;
-  options?: { value: string; label: string; disabled?: boolean }[];
   buttonLabel?: string;
   onButtonClick?: (input: HTMLInputElement) => void;
   onChange?: (checked: boolean) => void;
-  /** Fired when a `select` field's value changes (the new value). */
-  onSelectChange?: (value: string) => void;
 }
 
 const overlay = document.getElementById('modal-overlay')!;
@@ -22,14 +14,6 @@ const titleEl = document.getElementById('modal-title')!;
 const bodyEl = document.getElementById('modal-body')!;
 const btnCancel = document.getElementById('modal-cancel')!;
 const btnConfirm = document.getElementById('modal-confirm')!;
-
-/** Register a teardown callback for resources injected into the open modal
- *  (e.g. a custom-select created outside the standard FieldDef flow). Runs
- *  when the modal closes. */
-export function registerModalCleanup(fn: () => void): void {
-  if (!(overlay as any)._selectCleanups) (overlay as any)._selectCleanups = [];
-  (overlay as any)._selectCleanups.push(fn);
-}
 
 export function setModalError(fieldId: string, message: string): void {
   const existing = bodyEl.querySelector(`#modal-error-${fieldId}`);
@@ -52,34 +36,13 @@ export function closeModal(): void {
   cleanup();
 }
 
-const DEFAULT_CONFIRM_LABEL = 'Create';
-
-export interface ModalOptions {
-  confirmLabel?: string;
-}
-
-function resetFooter(): void {
-  btnConfirm.style.display = '';
-  btnConfirm.style.background = '';
-  btnConfirm.style.borderColor = '';
-  const footer = document.getElementById('modal-actions');
-  if (!footer) return;
-  for (const el of Array.from(footer.children)) {
-    if (el !== btnCancel && el !== btnConfirm) el.remove();
-  }
-}
-
 export function showModal(
   title: string,
   fields: FieldDef[],
-  onConfirm: (values: Record<string, string>) => void | Promise<void>,
-  options?: ModalOptions,
+  onConfirm: (values: Record<string, string>) => void | Promise<void>
 ): void {
   titleEl.textContent = title;
-  btnConfirm.textContent = options?.confirmLabel ?? DEFAULT_CONFIRM_LABEL;
   bodyEl.innerHTML = '';
-  btnCancel.textContent = 'Cancel';
-  resetFooter();
 
   for (const field of fields) {
     const div = document.createElement('div');
@@ -100,21 +63,6 @@ export function showModal(
       }
       div.appendChild(input);
       div.appendChild(label);
-    } else if (field.type === 'textarea') {
-      div.appendChild(label);
-      const textarea = document.createElement('textarea');
-      textarea.id = `modal-${field.id}`;
-      textarea.placeholder = field.placeholder ?? '';
-      textarea.value = field.defaultValue ?? '';
-      textarea.rows = field.rows ?? 3;
-      if (field.maxLength) textarea.maxLength = field.maxLength;
-      div.appendChild(textarea);
-    } else if (field.type === 'select') {
-      div.appendChild(label);
-      const sel = createCustomSelect(`modal-${field.id}`, field.options ?? [], field.defaultValue, field.onSelectChange);
-      div.appendChild(sel.element);
-      if (!(overlay as any)._selectCleanups) (overlay as any)._selectCleanups = [];
-      (overlay as any)._selectCleanups.push(() => sel.destroy());
     } else {
       input.type = 'text';
       input.placeholder = field.placeholder ?? '';
@@ -157,12 +105,8 @@ export function showModal(
   const handleConfirm = async () => {
     const values: Record<string, string> = {};
     for (const field of fields) {
-      const el = document.getElementById(`modal-${field.id}`) as HTMLInputElement | HTMLSelectElement;
-      if (field.type === 'checkbox') {
-        values[field.id] = String((el as HTMLInputElement)?.checked ?? false);
-      } else {
-        values[field.id] = el?.value ?? '';
-      }
+      const input = document.getElementById(`modal-${field.id}`) as HTMLInputElement;
+      values[field.id] = field.type === 'checkbox' ? String(input?.checked ?? false) : (input?.value ?? '');
     }
     await onConfirm(values);
   };
@@ -172,84 +116,24 @@ export function showModal(
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && !(e.target instanceof HTMLTextAreaElement)) {
-      e.preventDefault();
-      handleConfirm();
-    }
-  };
-
-  // ESC is handled by the centralized modal manager (capture phase) so it works
-  // over a focused terminal and never leaks to the PTY.
-  const unregisterEsc = pushModal({ onEscape: handleCancel });
-
-  btnConfirm.addEventListener('click', handleConfirm);
-  btnCancel.addEventListener('click', handleCancel);
-  document.addEventListener('keydown', handleKeydown);
-
-  // Store for cleanup
-  (overlay as any)._cleanup = () => {
-    unregisterEsc();
-    btnConfirm.removeEventListener('click', handleConfirm);
-    btnCancel.removeEventListener('click', handleCancel);
-    document.removeEventListener('keydown', handleKeydown);
-  };
-}
-
-export function showConfirmDialog(
-  title: string,
-  message: string,
-  options: {
-    confirmLabel?: string;
-    cancelLabel?: string;
-    onConfirm: () => void;
-  }
-): void {
-  titleEl.textContent = title;
-  bodyEl.innerHTML = '';
-  btnConfirm.textContent = options.confirmLabel ?? 'Confirm';
-  btnCancel.textContent = options.cancelLabel ?? 'Cancel';
-  resetFooter();
-
-  const messageEl = document.createElement('div');
-  messageEl.className = 'modal-message';
-  messageEl.textContent = message;
-  bodyEl.appendChild(messageEl);
-
-  overlay.classList.remove('hidden');
-
-  requestAnimationFrame(() => {
-    btnCancel.focus();
-  });
-
-  cleanup();
-
-  const handleConfirm = () => {
-    options.onConfirm();
-    closeModal();
-  };
-
-  const handleCancel = () => {
-    closeModal();
-  };
-
-  const handleKeydown = (e: KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       handleConfirm();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleCancel();
     }
   };
 
-  const unregisterEsc = pushModal({ onEscape: handleCancel });
-
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);
-  document.addEventListener('keydown', handleKeydown);
+  overlay.addEventListener('keydown', handleKeydown);
 
+  // Store for cleanup
   (overlay as any)._cleanup = () => {
-    unregisterEsc();
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
-    document.removeEventListener('keydown', handleKeydown);
+    overlay.removeEventListener('keydown', handleKeydown);
   };
 }
 
@@ -258,88 +142,4 @@ function cleanup(): void {
     (overlay as any)._cleanup();
     (overlay as any)._cleanup = null;
   }
-  if ((overlay as any)._selectCleanups) {
-    for (const fn of (overlay as any)._selectCleanups) fn();
-    (overlay as any)._selectCleanups = null;
-  }
 }
-
-export function showPropertiesDialog(
-  title: string,
-  rows: Array<{ label: string; value: string; mono?: boolean }>,
-): void {
-  titleEl.textContent = title;
-  bodyEl.innerHTML = '';
-  btnConfirm.textContent = 'OK';
-  resetFooter();
-  btnCancel.style.display = 'none';
-
-  const list = document.createElement('dl');
-  list.className = 'modal-properties';
-  for (const row of rows) {
-    const dt = document.createElement('dt');
-    dt.textContent = row.label;
-    const dd = document.createElement('dd');
-    if (row.mono) dd.classList.add('mono');
-    dd.textContent = row.value;
-    list.appendChild(dt);
-    list.appendChild(dd);
-  }
-  bodyEl.appendChild(list);
-
-  overlay.classList.remove('hidden');
-
-  requestAnimationFrame(() => { btnConfirm.focus(); });
-
-  cleanup();
-
-  const handleClose = () => closeModal();
-  const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleClose();
-    }
-  };
-
-  const unregisterEsc = pushModal({ onEscape: handleClose });
-
-  btnConfirm.addEventListener('click', handleClose);
-  document.addEventListener('keydown', handleKeydown);
-
-  (overlay as any)._cleanup = () => {
-    unregisterEsc();
-    btnConfirm.removeEventListener('click', handleClose);
-    document.removeEventListener('keydown', handleKeydown);
-    btnCancel.style.display = '';
-  };
-}
-
-export function showConfirmModal(
-  title: string,
-  message: string,
-  onConfirm: () => void,
-  options?: { confirmLabel?: string; danger?: boolean }
-): void {
-  const label = options?.confirmLabel ?? 'Delete';
-  const fields: FieldDef[] = [];
-
-  showModal(title, fields, () => {
-    onConfirm();
-    closeModal();
-  }, { confirmLabel: label });
-
-  // Replace the empty body with the message text
-  bodyEl.innerHTML = '';
-  const msgEl = document.createElement('p');
-  msgEl.style.cssText = 'font-size:13px;color:var(--text-secondary);margin:0;line-height:1.5;';
-  msgEl.textContent = message;
-  bodyEl.appendChild(msgEl);
-
-  // Style the confirm button as danger if requested
-  if (options?.danger !== false) {
-    const btnConfirm = document.getElementById('modal-confirm')!;
-    btnConfirm.style.background = 'var(--accent)';
-    btnConfirm.style.borderColor = 'var(--accent)';
-  }
-}
-

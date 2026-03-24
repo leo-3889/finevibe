@@ -1,7 +1,7 @@
 import { app, Menu, BrowserWindow } from 'electron';
-import { isMac, isWin } from './platform';
 
-export function createAppMenu(debugMode = false): void {
+export function createAppMenu(): void {
+  const isMac = process.platform === 'darwin';
 
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{
@@ -18,45 +18,20 @@ export function createAppMenu(debugMode = false): void {
         {
           label: 'New Project',
           accelerator: 'CmdOrCtrl+Shift+P',
-          registerAccelerator: false,
           click: () => sendToRenderer('menu:new-project'),
         },
         {
           label: 'New Session',
           accelerator: 'CmdOrCtrl+Shift+N',
-          registerAccelerator: false,
           click: () => sendToRenderer('menu:new-session'),
         },
         { type: 'separator' },
-        isMac ? {
-          label: 'Close Session',
-          accelerator: 'CmdOrCtrl+W',
-          registerAccelerator: false,
-          click: () => sendToRenderer('menu:close-session'),
-        } : { role: 'quit' as const },
-        ...(isMac ? [{
-          label: 'Close Window',
-          accelerator: 'CmdOrCtrl+Shift+W',
-          click: () => { BrowserWindow.getFocusedWindow()?.close(); },
-        }] : []),
+        isMac ? { role: 'close' as const } : { role: 'quit' as const },
       ],
     },
     {
       label: 'Edit',
-      // On Windows, role-based items register Ctrl+C/V/X/Z/A as global
-      // accelerators which steal keystrokes from xterm.js terminals.
-      // Use custom items without accelerators — Chromium still handles
-      // these shortcuts natively in regular DOM inputs/textareas.
-      submenu: isWin ? [
-        { label: 'Undo', click: () => focusedContents()?.undo() },
-        { label: 'Redo', click: () => focusedContents()?.redo() },
-        { type: 'separator' as const },
-        { label: 'Cut', click: () => focusedContents()?.cut() },
-        { label: 'Copy', click: () => focusedContents()?.copy() },
-        { label: 'Paste', click: () => focusedContents()?.paste() },
-        { label: 'Delete', click: () => focusedContents()?.delete() },
-        { label: 'Select All', click: () => focusedContents()?.selectAll() },
-      ] : [
+      submenu: [
         { role: 'undo' as const },
         { role: 'redo' as const },
         { type: 'separator' as const },
@@ -74,42 +49,49 @@ export function createAppMenu(debugMode = false): void {
         {
           label: 'Toggle Split Mode',
           accelerator: 'CmdOrCtrl+\\',
-          registerAccelerator: false,
           click: () => sendToRenderer('menu:toggle-split'),
         },
         { type: 'separator' },
         {
-          label: 'Toggle Session Inspector',
-          accelerator: 'CmdOrCtrl+Shift+I',
-          registerAccelerator: false,
-          click: () => sendToRenderer('menu:toggle-inspector'),
+          label: 'Usage Stats',
+          accelerator: 'CmdOrCtrl+Shift+U',
+          click: () => sendToRenderer('menu:usage-stats'),
         },
-        ...(debugMode ? [
-          {
-            label: 'Toggle Debug Panel',
-            accelerator: 'CmdOrCtrl+Shift+D',
-            registerAccelerator: false,
-            click: () => sendToRenderer('menu:toggle-debug'),
-          },
-          { type: 'separator' as const },
-          { role: 'toggleDevTools' as const },
-          {
-            label: 'Reload Main Window',
-            accelerator: 'CmdOrCtrl+Alt+R',
-            registerAccelerator: false,
-            click: () => BrowserWindow.getFocusedWindow()?.reload(),
-          },
-        ] : []),
+        {
+          label: 'Toggle Debug Panel',
+          accelerator: 'CmdOrCtrl+Shift+D',
+          click: () => sendToRenderer('menu:toggle-debug'),
+        },
+        { type: 'separator' },
+        { role: 'toggleDevTools' as const },
+        { role: 'reload' as const },
+      ],
+    },
+    {
+      label: 'Sessions',
+      submenu: [
+        {
+          label: 'Next Session',
+          accelerator: 'CmdOrCtrl+Shift+]',
+          click: () => sendToRenderer('menu:next-session'),
+        },
+        {
+          label: 'Previous Session',
+          accelerator: 'CmdOrCtrl+Shift+[',
+          click: () => sendToRenderer('menu:prev-session'),
+        },
+        { type: 'separator' },
+        ...Array.from({ length: 9 }, (_, i) => ({
+          label: `Session ${i + 1}`,
+          accelerator: `CmdOrCtrl+${i + 1}`,
+          click: () => sendToRenderer('menu:goto-session', i),
+        })),
       ],
     },
   ];
 
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
-}
-
-function focusedContents(): Electron.WebContents | undefined {
-  return BrowserWindow.getFocusedWindow()?.webContents;
 }
 
 function sendToRenderer(channel: string, ...args: unknown[]): void {
