@@ -246,10 +246,21 @@ export function getFocusedSessionId(): string | null {
 
 export function setFocused(sessionId: string): void {
   focusedSessionId = sessionId;
+
+  // Only move DOM focus if it's currently on a session terminal (or nothing).
+  // This prevents stealing focus from the project terminal panel, search bar, modals, etc.
+  const activeEl = document.activeElement;
+  const shouldFocusTerminal =
+    !activeEl ||
+    activeEl === document.body ||
+    !!activeEl.closest('.terminal-pane');
+
   for (const [id, instance] of instances) {
     if (id === sessionId) {
       instance.element.classList.add('focused');
-      instance.terminal.focus();
+      if (shouldFocusTerminal) {
+        instance.terminal.focus();
+      }
     } else {
       instance.element.classList.remove('focused');
     }
