@@ -91,10 +91,11 @@ function startRename(tab: HTMLElement, project: ProjectRecord, session: SessionR
     if (committed) return;
     committed = true;
     const newName = input.value.trim();
+    input.remove();
     if (newName && newName !== session.name) {
       appState.renameSession(project.id, session.id, newName, true);
     } else {
-      nameSpan.textContent = session.name;
+      render();
     }
   };
 
@@ -104,7 +105,9 @@ function startRename(tab: HTMLElement, project: ProjectRecord, session: SessionR
       commit();
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      nameSpan.textContent = session.name;
+      committed = true;
+      input.remove();
+      render();
     }
   });
 
@@ -256,6 +259,7 @@ function hideTabContextMenu(): void {
 }
 
 function render(): void {
+  if (tabListEl.querySelector('.tab-name input')) return;
   tabListEl.innerHTML = '';
   const project = appState.activeProject;
   if (!project) return;

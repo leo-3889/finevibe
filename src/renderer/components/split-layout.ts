@@ -200,7 +200,11 @@ function renderTabMode(project: ProjectRecord): void {
 
   attachToContainer(activeId, container);
   showPane(activeId, false);
-  setFocused(activeId);
+
+  // Don't steal focus from an active tab rename input
+  if (!document.querySelector('#tab-list .tab-name input')) {
+    setFocused(activeId);
+  }
 
   const instance = getTerminalInstance(activeId);
   if (instance && !instance.spawned && !instance.exited) {
@@ -231,6 +235,9 @@ function showPanes(project: ProjectRecord, target: HTMLElement = container): voi
 }
 
 function focusActivePane(project: ProjectRecord): void {
+  // Don't steal focus from an active tab rename input
+  if (document.querySelector('#tab-list .tab-name input')) return;
+
   if (project.activeSessionId && project.layout.splitPanes.includes(project.activeSessionId)) {
     setFocused(project.activeSessionId);
   } else if (project.layout.splitPanes.length > 0) {
