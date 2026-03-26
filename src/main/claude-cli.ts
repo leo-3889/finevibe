@@ -240,7 +240,7 @@ export function installHooksOnly(): void {
     PostToolUseFailure: 'working',
     Stop: 'completed',
     StopFailure: 'waiting',
-    PermissionRequest: 'permission',
+    PermissionRequest: 'input',
   };
 
   for (const [event, status] of Object.entries(ideEvents)) {

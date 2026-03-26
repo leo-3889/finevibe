@@ -65,7 +65,7 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
       const colonIdx = raw.indexOf(':');
       const hookName = colonIdx !== -1 ? raw.slice(0, colonIdx) : '';
       const content = colonIdx !== -1 ? raw.slice(colonIdx + 1) : raw;
-      if (content === 'working' || content === 'waiting' || content === 'completed' || content === 'permission') {
+      if (content === 'working' || content === 'waiting' || content === 'completed' || content === 'input') {
         if (!win.isDestroyed()) {
           win.webContents.send('session:hookStatus', sessionId, content, hookName);
         }

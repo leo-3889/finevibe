@@ -15,7 +15,7 @@ export interface VibeyardApi {
     onExit(callback: (sessionId: string, exitCode: number, signal?: number) => void): () => void;
   };
   session: {
-    onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'permission', hookName: string) => void): () => void;
+    onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     /** @deprecated Use onCliSessionId instead */
     onClaudeSessionId(callback: (sessionId: string, claudeSessionId: string) => void): () => void;
@@ -135,7 +135,7 @@ const api: VibeyardApi = {
   session: {
     onHookStatus: (callback) =>
       onChannel('session:hookStatus', (sessionId, status, hookName) =>
-        callback(sessionId as string, status as 'working' | 'waiting' | 'completed' | 'permission', (hookName as string) || '')),
+        callback(sessionId as string, status as 'working' | 'waiting' | 'completed' | 'input', (hookName as string) || '')),
     onCliSessionId: (callback) =>
       onChannel('session:cliSessionId', (sessionId, cliSessionId) =>
         callback(sessionId as string, cliSessionId as string)),

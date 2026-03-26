@@ -16,7 +16,7 @@ export function init(): void {
     const prev = prevStatus.get(sessionId);
     prevStatus.set(sessionId, status);
 
-    if (prev === 'working' && (status === 'waiting' || status === 'completed' || status === 'permission')) {
+    if (prev === 'working' && (status === 'waiting' || status === 'completed' || status === 'input')) {
       // Find which project this session belongs to
       const project = appState.projects.find(p => p.sessions.some(s => s.id === sessionId));
       if (project && !(sessionId === project.activeSessionId && project.id === appState.activeProjectId)) {

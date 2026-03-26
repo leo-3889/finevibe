@@ -326,7 +326,7 @@ body.debug-panel-open #app {
   background: #34a853;
 }
 
-.tab-status.permission {
+.tab-status.input {
   background: #e67e22;
   animation: pulse 1.2s ease-in-out infinite;
 }

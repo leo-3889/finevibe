@@ -1,4 +1,4 @@
-export type SessionStatus = 'working' | 'waiting' | 'idle' | 'completed' | 'permission';
+export type SessionStatus = 'working' | 'waiting' | 'idle' | 'completed' | 'input';
 
 type StatusChangeCallback = (sessionId: string, status: SessionStatus) => void;
 
@@ -20,7 +20,7 @@ function setStatus(sessionId: string, status: SessionStatus): void {
 /**
  * Called when a hook-based status event is received from the main process.
  */
-export function setHookStatus(sessionId: string, status: 'working' | 'waiting' | 'completed' | 'permission'): void {
+export function setHookStatus(sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input'): void {
   let state = sessions.get(sessionId);
   if (!state) { initSession(sessionId); state = sessions.get(sessionId)!; }
 

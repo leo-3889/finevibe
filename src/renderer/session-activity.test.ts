@@ -45,10 +45,10 @@ describe('setHookStatus', () => {
     expect(getStatus('s1')).toBe('completed');
   });
 
-  it('sets permission status', () => {
+  it('sets input status', () => {
     initSession('s1');
-    setHookStatus('s1', 'permission');
-    expect(getStatus('s1')).toBe('permission');
+    setHookStatus('s1', 'input');
+    expect(getStatus('s1')).toBe('input');
   });
 
   it('does not overwrite completed with waiting', () => {
