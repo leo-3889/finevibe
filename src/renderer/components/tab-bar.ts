@@ -221,7 +221,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
 
   const copySessionIdItem = document.createElement('div');
   copySessionIdItem.className = 'tab-context-menu-item' + (!hasCliSession ? ' disabled' : '');
-  copySessionIdItem.textContent = 'Copy Session ID';
+  copySessionIdItem.textContent = 'Copy CLI Session ID';
   if (hasCliSession) {
     copySessionIdItem.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -230,10 +230,20 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
     });
   }
 
+  const copyInternalIdItem = document.createElement('div');
+  copyInternalIdItem.className = 'tab-context-menu-item';
+  copyInternalIdItem.textContent = 'Copy Internal ID';
+  copyInternalIdItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideTabContextMenu();
+    navigator.clipboard.writeText(session.id);
+  });
+
   menu.appendChild(renameItem);
   menu.appendChild(moveLeftItem);
   menu.appendChild(moveRightItem);
   menu.appendChild(moveSeparator);
+  menu.appendChild(copyInternalIdItem);
   menu.appendChild(copySessionIdItem);
   menu.appendChild(sessionSeparator);
   menu.appendChild(closeItem);
