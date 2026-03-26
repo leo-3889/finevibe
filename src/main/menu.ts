@@ -67,25 +67,23 @@ export function createAppMenu(debugMode = false): void {
           { role: 'toggleDevTools' as const },
           { role: 'reload' as const },
         ] : []),
-      ],
-    },
-    {
-      label: 'Sessions',
-      submenu: [
+        // Hidden session-switching shortcuts (no visible menu)
         {
           label: 'Next Session',
           accelerator: 'CmdOrCtrl+Shift+]',
+          visible: false,
           click: () => sendToRenderer('menu:next-session'),
         },
         {
           label: 'Previous Session',
           accelerator: 'CmdOrCtrl+Shift+[',
+          visible: false,
           click: () => sendToRenderer('menu:prev-session'),
         },
-        { type: 'separator' },
         ...Array.from({ length: 9 }, (_, i) => ({
           label: `Session ${i + 1}`,
           accelerator: `CmdOrCtrl+${i + 1}`,
+          visible: false,
           click: () => sendToRenderer('menu:goto-session', i),
         })),
       ],
