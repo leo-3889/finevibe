@@ -100,14 +100,24 @@ describe('hook-status', () => {
   });
 
   describe('file change handling', () => {
-    it('.status with valid content sends session:hookStatus', () => {
+    it('.status with valid content sends session:hookStatus (legacy format)', () => {
       const win = createMockWin();
       startWatching(win);
 
       vi.mocked(fs.readFileSync).mockReturnValue('working');
       watchCallback!('change', 'abc123.status');
 
-      expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'abc123', 'working');
+      expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'abc123', 'working', '');
+    });
+
+    it('.status with hook name sends session:hookStatus with hook name', () => {
+      const win = createMockWin();
+      startWatching(win);
+
+      vi.mocked(fs.readFileSync).mockReturnValue('PostToolUse:working');
+      watchCallback!('change', 'abc123.status');
+
+      expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'abc123', 'working', 'PostToolUse');
     });
 
     it('.status with invalid content does not send', () => {
@@ -237,7 +247,7 @@ describe('hook-status', () => {
 
       resyncAllSessions(win);
 
-      expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 's1', 'waiting');
+      expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 's1', 'waiting', '');
       expect(mockSend).toHaveBeenCalledWith('session:cliSessionId', 's2', 'claude-sess-1');
       expect(mockSend).toHaveBeenCalledWith('session:claudeSessionId', 's2', 'claude-sess-1');
       expect(mockSend).toHaveBeenCalledWith('session:costData', 's3', { cost: {} });

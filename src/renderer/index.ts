@@ -4,7 +4,7 @@ import { initTabBar } from './components/tab-bar.js';
 import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
 import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay } from './components/terminal-pane.js';
-import { setIdle, setHookStatus, notifyPtyData, notifyInterrupt } from './session-activity.js';
+import { setIdle, setHookStatus, notifyInterrupt } from './session-activity.js';
 import { parseCost, setCostData, onChange as onCostChange } from './session-cost.js';
 import { parseTitle, clearSession as clearTitleSession } from './session-title.js';
 import { setContextData, onChange as onContextChange } from './session-context.js';
@@ -26,6 +26,7 @@ import { initReadinessSection } from './components/readiness-section.js';
 import { initToolDetector } from './tools/missing-tool-detector.js';
 import { initToolAlert } from './components/tool-alert.js';
 import { initSettingsGuard } from './components/settings-guard-ui.js';
+import { checkWhatsNew } from './components/whats-new-dialog.js';
 
 let isQuitting = false;
 window.vibeyard.app.onQuitting(() => { isQuitting = true; });
@@ -41,8 +42,6 @@ async function main(): Promise<void> {
       parseTitle(sessionId, data);
       if (data.includes('Interrupted')) {
         notifyInterrupt(sessionId);
-      } else {
-        notifyPtyData(sessionId);
       }
     }
   });
@@ -64,8 +63,8 @@ async function main(): Promise<void> {
     appState.updateSessionContext(sessionId, info);
   });
 
-  window.vibeyard.session.onHookStatus((sessionId, status) => {
-    logDebugEvent('hookStatus', sessionId, status);
+  window.vibeyard.session.onHookStatus((sessionId, status, hookName) => {
+    logDebugEvent('hookStatus', sessionId, hookName ? `${hookName}: ${status}` : status);
     setHookStatus(sessionId, status);
   });
 
@@ -150,6 +149,8 @@ async function main(): Promise<void> {
   if (appState.preferences.debugMode) {
     setDebugVisible(true);
   }
+
+  checkWhatsNew();
 }
 
 main().catch(console.error);

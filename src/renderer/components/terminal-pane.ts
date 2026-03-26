@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import { initSession, removeSession } from '../session-activity.js';
 import { markFreshSession } from '../session-insights.js';
 import { removeSession as removeCostSession, type CostInfo } from '../session-cost.js';
@@ -78,6 +79,13 @@ export function createTerminalPane(
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
     cursorBlink: true,
     allowProposedApi: true,
+    linkHandler: {
+      activate: (event, uri) => {
+        if (event.metaKey || event.ctrlKey) {
+          window.vibeyard.app.openExternal(uri);
+        }
+      },
+    },
   });
 
   const fitAddon = new FitAddon();
@@ -85,6 +93,12 @@ export function createTerminalPane(
 
   const searchAddon = new SearchAddon();
   terminal.loadAddon(searchAddon);
+
+  terminal.loadAddon(new WebLinksAddon((event, url) => {
+    if (event.metaKey || event.ctrlKey) {
+      window.vibeyard.app.openExternal(url);
+    }
+  }));
 
   // Let Cmd+F bubble up to the document listener instead of being consumed by xterm
   terminal.attachCustomKeyEventHandler((e) => {

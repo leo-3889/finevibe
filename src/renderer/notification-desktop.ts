@@ -12,7 +12,7 @@ function getSessionName(sessionId: string): string {
 }
 
 function bodyForStatus(name: string, status: SessionStatus): string {
-  if (status === 'permission') return `${name} needs permission to continue`;
+  if (status === 'input') return `${name} needs your input to continue`;
   if (status === 'completed') return `${name} has completed`;
   return `${name} is waiting for input`;
 }
@@ -49,7 +49,7 @@ export function initNotificationDesktop(): void {
 
     if (!appState.preferences.notificationsDesktop) return;
     if (prev !== 'working') return;
-    if (status !== 'waiting' && status !== 'completed' && status !== 'permission') return;
+    if (status !== 'waiting' && status !== 'completed' && status !== 'input') return;
     if (document.hasFocus() && sessionId === appState.activeProject?.activeSessionId) return;
 
     showNotification(sessionId, status);

@@ -45,7 +45,7 @@ export function initNotificationSound(): void {
 
     // Don't notify for the session the user is currently looking at
     const activeId = appState.activeProject?.activeSessionId;
-    if (prev === 'working' && (status === 'waiting' || status === 'completed' || status === 'permission') && appState.preferences.soundOnSessionWaiting && sessionId !== activeId) {
+    if (prev === 'working' && (status === 'waiting' || status === 'completed' || status === 'input') && appState.preferences.soundOnSessionWaiting && sessionId !== activeId) {
       playNotificationSound();
     }
   });
