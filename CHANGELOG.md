@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.12] - 2026-03-26
+
+### Features
+- File system watcher for real-time git panel updates
+- Current model name to session status line
+- GitHub stars badge and star CTA to README
+
+### Fixes
+- Session terminal stealing focus from project terminal panel
+- Tab rename losing focus when other sessions update
+
+### Changes
+- Update failure notification banner
+
 ## [0.2.11] - 2026-03-24
 
 ### Features
