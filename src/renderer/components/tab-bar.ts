@@ -306,6 +306,14 @@ function render(): void {
       }
     });
 
+    // Middle-click to close
+    tab.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        appState.removeSession(project.id, session.id);
+      }
+    });
+
     // Double-click to rename
     tab.addEventListener('dblclick', () => startRename(tab, project, session));
 
