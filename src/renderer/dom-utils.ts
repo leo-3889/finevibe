@@ -5,6 +5,13 @@ export function esc(s: string): string {
   return el.innerHTML;
 }
 
+const AREA_LABELS: Record<string, string> = { staged: 'Staged', working: 'Changes', untracked: 'Untracked', conflicted: 'Conflicted' };
+
+/** Return a user-friendly label for a git area value. */
+export function areaLabel(area: string): string {
+  return AREA_LABELS[area] || area;
+}
+
 /** Return a CSS color for a 0-100 readiness score. */
 export function scoreColor(score: number): string {
   if (score >= 70) return '#34a853';

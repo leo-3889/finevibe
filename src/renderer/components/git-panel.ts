@@ -2,6 +2,7 @@ import { appState } from '../state.js';
 import { onChange as onGitStatusChange, getGitStatus, getActiveGitPath, getWorktrees, setActiveWorktree, onWorktreeChange } from '../git-status.js';
 import { onChange as onStatusChange } from '../session-activity.js';
 import { showFileViewer } from './file-viewer.js';
+import { areaLabel } from '../dom-utils.js';
 import type { GitFileEntry, GitWorktree } from '../types.js';
 
 const MAX_FILES = 100;
@@ -122,15 +123,6 @@ function createActionButton(title: string, icon: string, onClick: (e: Event) => 
   return btn;
 }
 
-function groupLabel(area: string): string {
-  switch (area) {
-    case 'staged': return 'Staged';
-    case 'working': return 'Changes';
-    case 'untracked': return 'Untracked';
-    case 'conflicted': return 'Conflicted';
-    default: return area;
-  }
-}
 
 function shortPath(fullPath: string): string {
   const parts = fullPath.split('/');
@@ -331,7 +323,7 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
 
     const groupHeader = document.createElement('div');
     groupHeader.className = 'git-group-header';
-    groupHeader.textContent = `${groupLabel(area)} (${group.length})`;
+    groupHeader.textContent = `${areaLabel(area)} (${group.length})`;
     body.appendChild(groupHeader);
 
     for (const entry of group) {
