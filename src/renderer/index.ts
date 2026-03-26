@@ -63,8 +63,8 @@ async function main(): Promise<void> {
     appState.updateSessionContext(sessionId, info);
   });
 
-  window.vibeyard.session.onHookStatus((sessionId, status) => {
-    logDebugEvent('hookStatus', sessionId, status);
+  window.vibeyard.session.onHookStatus((sessionId, status, hookName) => {
+    logDebugEvent('hookStatus', sessionId, hookName ? `${hookName}: ${status}` : status);
     setHookStatus(sessionId, status);
   });
 
