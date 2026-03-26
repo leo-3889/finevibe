@@ -105,8 +105,19 @@ describe('notifyInterrupt', () => {
     expect(getStatus('s1')).toBe('waiting');
 
     // A stale PostToolUse 'working' hook arrives after the interrupt
-    setHookStatus('s1', 'working');
+    setHookStatus('s1', 'working', 'PostToolUse');
     expect(getStatus('s1')).toBe('waiting');
+  });
+
+  it('allows UserPromptSubmit to override interrupted state', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    notifyInterrupt('s1');
+    expect(getStatus('s1')).toBe('waiting');
+
+    // User submits a new prompt — should clear interrupted and transition to working
+    setHookStatus('s1', 'working', 'UserPromptSubmit');
+    expect(getStatus('s1')).toBe('working');
   });
 
   it('clears interrupted flag on non-working hook status', () => {

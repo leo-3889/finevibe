@@ -65,7 +65,7 @@ async function main(): Promise<void> {
 
   window.vibeyard.session.onHookStatus((sessionId, status, hookName) => {
     logDebugEvent('hookStatus', sessionId, hookName ? `${hookName}: ${status}` : status);
-    setHookStatus(sessionId, status);
+    setHookStatus(sessionId, status, hookName);
   });
 
   window.vibeyard.session.onCliSessionId((sessionId, cliSessionId) => {
