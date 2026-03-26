@@ -14,7 +14,7 @@ import { initNotificationDesktop } from './notification-desktop.js';
 import { init as initSessionUnread } from './session-unread.js';
 import { initProjectTerminal, handleShellPtyData, handleShellPtyExit, isShellSessionId } from './components/project-terminal.js';
 import { startPolling as startGitPolling } from './git-status.js';
-import { initDebugPanel, logDebugEvent, setDebugVisible } from './components/debug-panel.js';
+import { initDebugPanel, logDebugEvent } from './components/debug-panel.js';
 import { initGitPanel } from './components/git-panel.js';
 import { disconnectInspector } from './components/mcp-inspector.js';
 import { initUpdateBanner } from './components/update-banner.js';
@@ -143,11 +143,6 @@ async function main(): Promise<void> {
   // Auto-open new project modal when no projects exist
   if (appState.projects.length === 0) {
     promptNewProject();
-  }
-
-  // Show debug panel if preference is enabled
-  if (appState.preferences.debugMode) {
-    setDebugVisible(true);
   }
 
   checkWhatsNew();

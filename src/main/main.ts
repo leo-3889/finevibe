@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, powerMonitor, shell } from 'electron';
 import * as path from 'path';
 import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
 import { killAllPtys } from './pty-manager';
-import { flushState } from './store';
+import { flushState, loadState } from './store';
 import { createAppMenu } from './menu';
 import { restartAndResync } from './hook-status';
 import { initProviders, getAllProviders } from './providers/registry';
@@ -74,7 +74,8 @@ app.whenReady().then(async () => {
   }
 
   registerIpcHandlers();
-  createAppMenu();
+  const state = loadState();
+  createAppMenu(state.preferences?.debugMode ?? false);
   createWindow();
 
   // Install hooks and status scripts for all providers (after window creation so dialogs can attach)

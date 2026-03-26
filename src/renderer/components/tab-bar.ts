@@ -210,42 +210,45 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
     });
   }
 
-  const moveSeparator = document.createElement('div');
-  moveSeparator.className = 'tab-context-menu-separator';
-
-  const sessionSeparator = document.createElement('div');
-  sessionSeparator.className = 'tab-context-menu-separator';
-
-  const cliSessionId = session.cliSessionId;
-  const hasCliSession = !!cliSessionId;
-
-  const copySessionIdItem = document.createElement('div');
-  copySessionIdItem.className = 'tab-context-menu-item' + (!hasCliSession ? ' disabled' : '');
-  copySessionIdItem.textContent = 'Copy CLI Session ID';
-  if (hasCliSession) {
-    copySessionIdItem.addEventListener('click', (e) => {
-      e.stopPropagation();
-      hideTabContextMenu();
-      navigator.clipboard.writeText(cliSessionId);
-    });
-  }
-
-  const copyInternalIdItem = document.createElement('div');
-  copyInternalIdItem.className = 'tab-context-menu-item';
-  copyInternalIdItem.textContent = 'Copy Internal ID';
-  copyInternalIdItem.addEventListener('click', (e) => {
-    e.stopPropagation();
-    hideTabContextMenu();
-    navigator.clipboard.writeText(session.id);
-  });
-
   menu.appendChild(renameItem);
   menu.appendChild(moveLeftItem);
   menu.appendChild(moveRightItem);
+
+  if (appState.preferences.debugMode) {
+    const sessionSeparator = document.createElement('div');
+    sessionSeparator.className = 'tab-context-menu-separator';
+
+    const cliSessionId = session.cliSessionId;
+    const hasCliSession = !!cliSessionId;
+
+    const copySessionIdItem = document.createElement('div');
+    copySessionIdItem.className = 'tab-context-menu-item' + (!hasCliSession ? ' disabled' : '');
+    copySessionIdItem.textContent = 'Copy CLI Session ID';
+    if (hasCliSession) {
+      copySessionIdItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hideTabContextMenu();
+        navigator.clipboard.writeText(cliSessionId);
+      });
+    }
+
+    const copyInternalIdItem = document.createElement('div');
+    copyInternalIdItem.className = 'tab-context-menu-item';
+    copyInternalIdItem.textContent = 'Copy Internal ID';
+    copyInternalIdItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideTabContextMenu();
+      navigator.clipboard.writeText(session.id);
+    });
+
+    menu.appendChild(sessionSeparator);
+    menu.appendChild(copyInternalIdItem);
+    menu.appendChild(copySessionIdItem);
+  }
+
+  const moveSeparator = document.createElement('div');
+  moveSeparator.className = 'tab-context-menu-separator';
   menu.appendChild(moveSeparator);
-  menu.appendChild(copyInternalIdItem);
-  menu.appendChild(copySessionIdItem);
-  menu.appendChild(sessionSeparator);
   menu.appendChild(closeItem);
   menu.appendChild(separator);
   menu.appendChild(closeAllItem);

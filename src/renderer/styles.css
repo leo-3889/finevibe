@@ -1704,6 +1704,27 @@ body.debug-panel-open #app {
   outline: none;
 }
 
+.debug-session-filter-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.debug-session-input {
+  width: 160px;
+}
+
+.debug-session-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.debug-session-clear {
+  padding: 1px 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+
 .debug-btn {
   background: var(--bg-primary);
   border: 1px solid var(--border);

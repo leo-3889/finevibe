@@ -1,6 +1,6 @@
 import { app, Menu, BrowserWindow } from 'electron';
 
-export function createAppMenu(): void {
+export function createAppMenu(debugMode = false): void {
   const isMac = process.platform === 'darwin';
 
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -57,14 +57,16 @@ export function createAppMenu(): void {
           accelerator: 'CmdOrCtrl+Shift+U',
           click: () => sendToRenderer('menu:usage-stats'),
         },
-        {
-          label: 'Toggle Debug Panel',
-          accelerator: 'CmdOrCtrl+Shift+D',
-          click: () => sendToRenderer('menu:toggle-debug'),
-        },
-        { type: 'separator' },
-        { role: 'toggleDevTools' as const },
-        { role: 'reload' as const },
+        ...(debugMode ? [
+          {
+            label: 'Toggle Debug Panel',
+            accelerator: 'CmdOrCtrl+Shift+D',
+            click: () => sendToRenderer('menu:toggle-debug'),
+          },
+          { type: 'separator' as const },
+          { role: 'toggleDevTools' as const },
+          { role: 'reload' as const },
+        ] : []),
       ],
     },
     {

@@ -103,6 +103,7 @@ export interface VibeyardApi {
     onGotoSession(callback: (index: number) => void): () => void;
     onToggleDebug(callback: () => void): () => void;
     onUsageStats(callback: () => void): () => void;
+    rebuild(debugMode: boolean): Promise<void>;
   };
 }
 
@@ -229,6 +230,7 @@ const api: VibeyardApi = {
     onGotoSession: (cb) => onChannel('menu:goto-session', (index) => cb(index as number)),
     onToggleDebug: (cb) => onChannel('menu:toggle-debug', cb),
     onUsageStats: (cb) => onChannel('menu:usage-stats', cb),
+    rebuild: (debugMode) => ipcRenderer.invoke('menu:rebuild', debugMode),
   },
 };
 
