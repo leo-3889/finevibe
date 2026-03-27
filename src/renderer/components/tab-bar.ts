@@ -350,6 +350,14 @@ function render(): void {
       }
     });
 
+    // Middle-click to close
+    tab.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        appState.removeSession(project.id, session.id);
+      }
+    });
+
     // Double-click to rename
     tab.addEventListener('dblclick', () => startRename(tab, project, session));
 
@@ -458,6 +466,7 @@ function renderGitStatus(): void {
 export function quickNewSession(): void {
   const project = appState.activeProject;
   if (!project) return;
+  (document.activeElement as HTMLElement)?.blur?.();
   const sessionNum = project.sessions.length + 1;
   appState.addSession(project.id, `Session ${sessionNum}`);
 }

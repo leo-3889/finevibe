@@ -181,6 +181,8 @@ export interface PersistedState {
   sidebarWidth?: number;
   sidebarCollapsed?: boolean;
   lastSeenVersion?: string;
+  appLaunchCount?: number;
+  starPromptDismissed?: boolean;
 }
 
 // --- AI Readiness ---

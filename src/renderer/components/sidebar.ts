@@ -1,10 +1,11 @@
-import { appState } from '../state.js';
+import { appState, ProjectRecord } from '../state.js';
 import { showModal, setModalError, closeModal } from './modal.js';
 import { showPreferencesModal } from './preferences-modal.js';
 import { onChange as onCostChange, getAggregateCost } from '../session-cost.js';
 import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unread.js';
 
 const projectListEl = document.getElementById('project-list')!;
+let activeProjectContextMenu: HTMLElement | null = null;
 const btnAddProject = document.getElementById('btn-add-project')!;
 const btnPreferences = document.getElementById('btn-preferences')!;
 const sidebarEl = document.getElementById('sidebar')!;
@@ -53,10 +54,14 @@ export function initSidebar(): void {
   onUnreadChange(render);
   appState.on('preferences-changed', () => applyCostFooterVisibility());
 
+  document.addEventListener('click', hideProjectContextMenu);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideProjectContextMenu(); });
+
   render();
 }
 
 function render(): void {
+  hideProjectContextMenu();
   projectListEl.innerHTML = '';
 
   for (const project of appState.projects) {
@@ -80,12 +85,12 @@ function render(): void {
     });
 
     el.querySelector('.project-delete')!.addEventListener('click', () => {
-      const historyCount = project.sessionHistory?.length ?? 0;
-      const message = historyCount > 0
-        ? `This project has ${historyCount} session(s) in history. Removing it will delete all history. Continue?`
-        : `Remove project "${project.name}"?`;
-      if (!confirm(message)) return;
-      appState.removeProject(project.id);
+      confirmRemoveProject(project);
+    });
+
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showProjectContextMenu(e.clientX, e.clientY, project);
     });
 
     projectListEl.appendChild(el);
@@ -172,6 +177,66 @@ function renderCostFooter(): void {
     sidebarFooterEl.classList.remove('hidden');
   } else {
     sidebarFooterEl.classList.add('hidden');
+  }
+}
+
+function confirmRemoveProject(project: ProjectRecord): void {
+  const historyCount = project.sessionHistory?.length ?? 0;
+  const message = historyCount > 0
+    ? `This project has ${historyCount} session(s) in history. Removing it will delete all history. Continue?`
+    : `Remove project "${project.name}"?`;
+  if (!confirm(message)) return;
+  appState.removeProject(project.id);
+}
+
+function showProjectContextMenu(x: number, y: number, project: ProjectRecord): void {
+  hideProjectContextMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'tab-context-menu';
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  const hasSessions = project.sessions.length > 0;
+
+  const closeAllItem = document.createElement('div');
+  closeAllItem.className = 'tab-context-menu-item' + (!hasSessions ? ' disabled' : '');
+  closeAllItem.textContent = 'Close All Sessions';
+  if (hasSessions) {
+    closeAllItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideProjectContextMenu();
+      appState.removeAllSessions(project.id);
+    });
+  }
+
+  const separator = document.createElement('div');
+  separator.className = 'tab-context-menu-separator';
+
+  const removeItem = document.createElement('div');
+  removeItem.className = 'tab-context-menu-item';
+  removeItem.textContent = 'Remove Project';
+  removeItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideProjectContextMenu();
+    confirmRemoveProject(project);
+  });
+
+  menu.appendChild(closeAllItem);
+  menu.appendChild(separator);
+  menu.appendChild(removeItem);
+  document.body.appendChild(menu);
+  activeProjectContextMenu = menu;
+
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+  if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+}
+
+function hideProjectContextMenu(): void {
+  if (activeProjectContextMenu) {
+    activeProjectContextMenu.remove();
+    activeProjectContextMenu = null;
   }
 }
 

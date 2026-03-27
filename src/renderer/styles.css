@@ -3532,3 +3532,44 @@ select.mcp-form-input {
   color: var(--text-primary);
 }
 
+/* Star prompt dialog */
+.star-prompt-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.star-prompt-icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+}
+
+.star-prompt-message {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  margin-bottom: 20px;
+  max-width: 320px;
+}
+
+.star-prompt-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.star-prompt-dont-ask {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.star-prompt-dont-ask:hover {
+  color: var(--text-primary);
+}
+

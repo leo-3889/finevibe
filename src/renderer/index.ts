@@ -29,6 +29,7 @@ import { initSettingsGuard } from './components/settings-guard-ui.js';
 import { checkWhatsNew } from './components/whats-new-dialog.js';
 import { initShareManager, forwardPtyData, endShare, cleanupAllShares } from './sharing/share-manager.js';
 import { isSharing } from './sharing/peer-host.js';
+import { checkStarPrompt } from './components/star-prompt-dialog.js';
 
 let isQuitting = false;
 window.vibeyard.app.onQuitting(() => {
@@ -160,6 +161,7 @@ async function main(): Promise<void> {
   }
 
   checkWhatsNew();
+  checkStarPrompt();
 }
 
 main().catch(console.error);
