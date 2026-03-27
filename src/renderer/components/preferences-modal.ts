@@ -58,6 +58,7 @@ export function showPreferencesModal(): void {
   let historyCheckbox: HTMLInputElement | null = null;
   let insightsCheckbox: HTMLInputElement | null = null;
   let autoTitleCheckbox: HTMLInputElement | null = null;
+  let debugModeCheckbox: HTMLInputElement | null = null;
   let sidebarCheckboxes: { configSections: HTMLInputElement; gitPanel: HTMLInputElement; sessionHistory: HTMLInputElement; costFooter: HTMLInputElement; readinessSection: HTMLInputElement } | null = null;
   let activeRecorder: { cleanup: () => void } | null = null;
 
@@ -273,11 +274,27 @@ export function showPreferencesModal(): void {
         ' \u2014 and if you find it useful, give it a star!',
       );
 
+      const debugRow = document.createElement('div');
+      debugRow.className = 'modal-toggle-field';
+
+      const debugLabel = document.createElement('label');
+      debugLabel.htmlFor = 'pref-debug-mode';
+      debugLabel.textContent = 'Debug Mode';
+
+      debugModeCheckbox = document.createElement('input');
+      debugModeCheckbox.type = 'checkbox';
+      debugModeCheckbox.id = 'pref-debug-mode';
+      debugModeCheckbox.checked = appState.preferences.debugMode;
+
+      debugRow.appendChild(debugLabel);
+      debugRow.appendChild(debugModeCheckbox);
+
       aboutDiv.appendChild(appName);
       aboutDiv.appendChild(versionLine);
       aboutDiv.appendChild(updateRow);
       aboutDiv.appendChild(linksDiv);
       aboutDiv.appendChild(communityDiv);
+      aboutDiv.appendChild(debugRow);
       content.appendChild(aboutDiv);
 
       window.vibeyard.app.getVersion().then((ver) => {
@@ -590,6 +607,10 @@ export function showPreferencesModal(): void {
     }
     if (autoTitleCheckbox) {
       appState.setPreference('autoTitleEnabled', autoTitleCheckbox.checked);
+    }
+    if (debugModeCheckbox && debugModeCheckbox.checked !== appState.preferences.debugMode) {
+      appState.setPreference('debugMode', debugModeCheckbox.checked);
+      window.vibeyard.menu.rebuild(debugModeCheckbox.checked);
     }
     if (sidebarCheckboxes) {
       appState.setPreference('sidebarViews', {
