@@ -85,6 +85,11 @@ class AppState {
         }
       }
     }
+    if (!this.state.starPromptDismissed) {
+      this.state.appLaunchCount = (this.state.appLaunchCount ?? 0) + 1;
+      this.persist();
+    }
+
     this.emit('state-loaded');
   }
 
@@ -150,6 +155,19 @@ class AppState {
 
   setLastSeenVersion(version: string): void {
     this.state.lastSeenVersion = version;
+    this.persist();
+  }
+
+  get appLaunchCount(): number {
+    return this.state.appLaunchCount ?? 0;
+  }
+
+  get starPromptDismissed(): boolean {
+    return this.state.starPromptDismissed ?? false;
+  }
+
+  dismissStarPrompt(): void {
+    this.state.starPromptDismissed = true;
     this.persist();
   }
 
