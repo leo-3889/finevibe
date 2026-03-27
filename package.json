@@ -12,6 +12,9 @@
   "bugs": {
     "url": "https://github.com/elirantutia/vibeyard/issues"
   },
+  "bin": {
+    "vibeyard": "bin/vibeyard.js"
+  },
   "keywords": [
     "electron",
     "ide",
@@ -22,20 +25,21 @@
     "developer-tools"
   ],
   "files": [
+    "bin/",
     "README.md",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=24"
+    "node": ">=18"
   },
-  "main": "dist/main/main/main.js",
+  "main": "./dist/main/main/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json && npm run build:renderer && npm run copy-assets",
     "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=iife --target=es2022 --sourcemap --loader:.ts=ts",
     "copy-assets": "cp src/renderer/index.html dist/renderer/ && cp src/renderer/styles.css dist/renderer/ && cp node_modules/@xterm/xterm/css/xterm.css dist/renderer/xterm.css && cp build/icon.png dist/renderer/icon.png && cp CHANGELOG.md dist/renderer/",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron .",
-    "postinstall": "electron-builder install-app-deps",
+    "postinstall": "test -f node_modules/electron-builder/package.json && electron-builder install-app-deps || true",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "test": "vitest run",
