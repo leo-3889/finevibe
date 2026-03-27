@@ -115,7 +115,14 @@ jobs:
 
   build:
     needs: [prepare]
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            os: macos-latest
+          - arch: x64
+            os: macos-13
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -139,7 +146,7 @@ jobs:
           name: release-notes
 
       - name: Build and publish
-        run: npm run build && npx electron-builder --publish always
+        run: npm run build && npx electron-builder --publish always --arch ${{ matrix.arch }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -149,6 +156,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Update release notes
+        if: matrix.arch == 'arm64'
         run: gh release edit "${{ needs.prepare.outputs.tag }}" --notes-file RELEASE_NOTES.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
