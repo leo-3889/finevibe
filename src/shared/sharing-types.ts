@@ -10,7 +10,10 @@ export type ShareMessage =
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'end' }
   | { type: 'ping' }
-  | { type: 'pong' };
+  | { type: 'pong' }
+  | { type: 'auth-challenge'; challenge: string }
+  | { type: 'auth-response'; response: string }
+  | { type: 'auth-result'; ok: boolean; reason?: string };
 
 // Host-side state for an active share.
 export interface ActiveShare {
