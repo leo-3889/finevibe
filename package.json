@@ -1,6 +1,6 @@
 {
   "name": "vibeyard",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "description": "A terminal-centric IDE for AI-powered CLI tools, built on Electron",
   "author": "Eliran Tutia",
   "license": "MIT",
