@@ -45,6 +45,16 @@ export function showShareDialog(sessionId: string): void {
   modeGroup.appendChild(readonlyRadio);
   modeGroup.appendChild(readwriteRadio);
   modeSection.appendChild(modeGroup);
+
+  const rwWarning = document.createElement('div');
+  rwWarning.className = 'share-notice share-notice-danger hidden';
+  rwWarning.textContent = 'Read-write mode allows the peer to type into your terminal and execute commands. Only share with people you trust.';
+  modeSection.appendChild(rwWarning);
+
+  modeGroup.addEventListener('change', (e) => {
+    rwWarning.classList.toggle('hidden', (e.target as HTMLInputElement).value !== 'readwrite');
+  });
+
   dialog.appendChild(modeSection);
 
   // Status area

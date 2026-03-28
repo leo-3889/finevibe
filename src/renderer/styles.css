@@ -3379,6 +3379,18 @@ select.mcp-form-input {
   margin-bottom: 16px;
 }
 
+.share-notice-danger {
+  color: #f4b400;
+  background: rgba(255, 180, 0, 0.12);
+  border-color: rgba(255, 180, 0, 0.35);
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.share-notice.hidden {
+  display: none;
+}
+
 .share-section {
   margin-bottom: 16px;
 }
