@@ -109,14 +109,11 @@ export function showJoinDialog(): void {
     offerTextarea.readOnly = true;
 
     try {
-      const { answer } = await joinRemoteSession(project.id, offer);
+      const { answer } = await joinRemoteSession(project.id, offer, closeJoinDialog);
 
       answerTextarea.value = answer;
       answerSection.classList.remove('hidden');
-      // joinRemoteSession resolves after the data channel init is received,
-      // meaning the connection is already established at this point.
-      statusEl.textContent = 'Connected! Remote session is now active.';
-      statusEl.classList.add('share-status-connected');
+      statusEl.textContent = 'Send the response code to the host. The session will appear once they connect.';
 
       closeBtn.textContent = 'Close';
     } catch (err) {

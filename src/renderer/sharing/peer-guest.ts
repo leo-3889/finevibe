@@ -2,7 +2,7 @@
 // Uses native RTCPeerConnection (available in Electron's Chromium).
 
 import type { ShareMode, ShareMessage } from '../../shared/sharing-types.js';
-import { ICE_CONFIG, sendMessage, waitForIceGathering } from './webrtc-utils.js';
+import { ICE_CONFIG, sendMessage, waitForIceGathering, encodeConnectionCode, decodeConnectionCode } from './webrtc-utils.js';
 
 export interface InitData {
   scrollback: string;
@@ -41,8 +41,9 @@ export function joinShare(offer: string): { guestId: string; handle: JoinHandle 
   let initCb: ((data: InitData) => void) | null = null;
   let dataCb: ((payload: string) => void) | null = null;
   let resizeCb: ((cols: number, rows: number) => void) | null = null;
-  let disconnectedCb: EventCallback | null = null;
+  const disconnectedCbs: EventCallback[] = [];
   let endCb: EventCallback | null = null;
+  let disconnectFired = false;
 
   const pc = new RTCPeerConnection(ICE_CONFIG);
 
@@ -98,18 +99,20 @@ export function joinShare(offer: string): { guestId: string; handle: JoinHandle 
       }
     };
 
-    dc.onclose = () => {
-      guestPeer.connected = false;
-      cleanupGuest(guestId);
-      disconnectedCb?.();
-    };
+    dc.onclose = handleDisconnect;
+  };
+
+  const handleDisconnect = () => {
+    if (disconnectFired) return;
+    disconnectFired = true;
+    guestPeer.connected = false;
+    cleanupGuest(guestId);
+    for (const cb of disconnectedCbs) cb();
   };
 
   pc.oniceconnectionstatechange = () => {
     if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-      guestPeer.connected = false;
-      cleanupGuest(guestId);
-      disconnectedCb?.();
+      handleDisconnect();
     }
   };
 
@@ -117,12 +120,12 @@ export function joinShare(offer: string): { guestId: string; handle: JoinHandle 
     guestId,
     handle: {
       async getAnswer(): Promise<string> {
-        const desc = JSON.parse(atob(offer)) as RTCSessionDescriptionInit;
+        const desc = decodeConnectionCode(offer, 'offer');
         await pc.setRemoteDescription(new RTCSessionDescription(desc));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         await waitForIceGathering(pc);
-        return btoa(JSON.stringify(pc.localDescription));
+        return encodeConnectionCode(pc.localDescription);
       },
       sendInput(data: string): void {
         if (guestPeer.mode !== 'readwrite' || !guestPeer.connected || !guestPeer.dc) return;
@@ -141,7 +144,7 @@ export function joinShare(offer: string): { guestId: string; handle: JoinHandle 
         resizeCb = cb;
       },
       onDisconnected(cb: EventCallback): void {
-        disconnectedCb = cb;
+        disconnectedCbs.push(cb);
       },
       onEnd(cb: EventCallback): void {
         endCb = cb;

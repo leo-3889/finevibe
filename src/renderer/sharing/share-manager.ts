@@ -14,6 +14,7 @@ import {
 
 const shareHandles = new Map<string, ShareHandle>();
 const guestHandles = new Map<string, JoinHandle>();
+const pendingJoinHandles = new Set<JoinHandle>();
 
 // Listeners notified when sharing state changes (start/stop/connect/disconnect)
 type ShareChangeListener = () => void;
@@ -75,46 +76,60 @@ export function forwardResize(sessionId: string, cols: number, rows: number): vo
 
 // --- Guest side ---
 
-export async function joinRemoteSession(projectId: string, offer: string): Promise<{ sessionId: string; answer: string }> {
+export async function joinRemoteSession(projectId: string, offer: string, onConnected?: () => void): Promise<{ answer: string }> {
   const { handle } = joinShare(offer);
   const answer = await handle.getAnswer();
 
-  return new Promise((resolve) => {
-    handle.onInit((initData: InitData) => {
-      const session = appState.addRemoteSession(projectId, initData.sessionName, initData.mode);
-      if (!session) throw new Error('Failed to create remote session');
+  pendingJoinHandles.add(handle);
 
-      const localSessionId = session.id;
-      guestHandles.set(localSessionId, handle);
+  // Set up init handler to create the remote session once the connection is established.
+  // This happens asynchronously after the host accepts our answer.
+  handle.onInit((initData: InitData) => {
+    if (!pendingJoinHandles.has(handle)) return;
+    pendingJoinHandles.delete(handle);
 
-      createRemoteTerminalPane(localSessionId, initData.mode, initData.cols, initData.rows, (data: string) => {
-        handle.sendInput(data);
-      });
+    const localSessionId = crypto.randomUUID();
+    guestHandles.set(localSessionId, handle);
 
-      if (initData.scrollback) {
-        writeRemoteData(localSessionId, initData.scrollback);
-      }
-
-      handle.onData((payload: string) => {
-        writeRemoteData(localSessionId, payload);
-      });
-
-      // TODO: implement remote terminal resizing
-      handle.onResize((_cols: number, _rows: number) => {});
-
-      handle.onEnd(() => {
-        showRemoteEndOverlay(localSessionId);
-        guestHandles.delete(localSessionId);
-      });
-
-      handle.onDisconnected(() => {
-        showRemoteEndOverlay(localSessionId);
-        guestHandles.delete(localSessionId);
-      });
-
-      resolve({ sessionId: localSessionId, answer });
+    // Create the terminal pane BEFORE adding to state, because addRemoteSession
+    // triggers a layout render that needs the pane to already exist.
+    createRemoteTerminalPane(localSessionId, initData.mode, initData.cols, initData.rows, (data: string) => {
+      handle.sendInput(data);
     });
+
+    if (initData.scrollback) {
+      writeRemoteData(localSessionId, initData.scrollback);
+    }
+
+    const session = appState.addRemoteSession(projectId, localSessionId, initData.sessionName, initData.mode);
+    if (!session) {
+      console.error('Failed to create remote session');
+      destroyRemoteTerminal(localSessionId);
+      guestHandles.delete(localSessionId);
+      handle.disconnect();
+      return;
+    }
+
+    onConnected?.();
+
+    handle.onData((payload: string) => {
+      writeRemoteData(localSessionId, payload);
+    });
+
+    const cleanup = () => {
+      if (!guestHandles.has(localSessionId)) return;
+      showRemoteEndOverlay(localSessionId);
+      guestHandles.delete(localSessionId);
+    };
+
+    handle.onDisconnected(cleanup);
   });
+
+  handle.onDisconnected(() => {
+    pendingJoinHandles.delete(handle);
+  });
+
+  return { answer };
 }
 
 export function disconnectRemoteSession(sessionId: string): void {
@@ -155,10 +170,15 @@ export function cleanupAllShares(): void {
   for (const [sessionId] of guestHandles) {
     disconnectRemoteSession(sessionId);
   }
+  for (const handle of pendingJoinHandles) {
+    handle.disconnect();
+  }
+  pendingJoinHandles.clear();
 }
 
 export function _resetForTesting(): void {
   shareHandles.clear();
   guestHandles.clear();
+  pendingJoinHandles.clear();
   shareChangeListeners.length = 0;
 }

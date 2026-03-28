@@ -4,7 +4,7 @@
 import type { ShareMode, ShareMessage } from '../../shared/sharing-types.js';
 import { getTerminalInstance } from '../components/terminal-pane.js';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { ICE_CONFIG, sendMessage, waitForIceGathering } from './webrtc-utils.js';
+import { ICE_CONFIG, sendMessage, waitForIceGathering, encodeConnectionCode, decodeConnectionCode } from './webrtc-utils.js';
 
 interface HostPeer {
   sessionId: string;
@@ -42,8 +42,9 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
   const serializeAddon = new SerializeAddon();
   instance.terminal.loadAddon(serializeAddon);
 
-  let connectedCb: EventCallback | null = null;
-  let disconnectedCb: EventCallback | null = null;
+  const connectedCbs: EventCallback[] = [];
+  const disconnectedCbs: EventCallback[] = [];
+  let disconnectFired = false;
 
   const pc = new RTCPeerConnection(ICE_CONFIG);
   const dc = pc.createDataChannel('terminal', { ordered: true });
@@ -97,7 +98,7 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
       sendMessage(dc, { type: 'ping' });
     }, KEEPALIVE_INTERVAL);
 
-    connectedCb?.();
+    for (const cb of connectedCbs) cb();
   };
 
   dc.onmessage = (event: MessageEvent) => {
@@ -115,17 +116,19 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
     }
   };
 
-  dc.onclose = () => {
+  const handleDisconnect = () => {
+    if (disconnectFired) return;
+    disconnectFired = true;
     hostPeer.connected = false;
     cleanup(sessionId);
-    disconnectedCb?.();
+    for (const cb of disconnectedCbs) cb();
   };
+
+  dc.onclose = handleDisconnect;
 
   pc.oniceconnectionstatechange = () => {
     if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-      hostPeer.connected = false;
-      cleanup(sessionId);
-      disconnectedCb?.();
+      handleDisconnect();
     }
   };
 
@@ -134,20 +137,20 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitForIceGathering(pc);
-      return btoa(JSON.stringify(pc.localDescription));
+      return encodeConnectionCode(pc.localDescription);
     },
     acceptAnswer(answer: string): void {
-      const desc = JSON.parse(atob(answer)) as RTCSessionDescriptionInit;
+      const desc = decodeConnectionCode(answer, 'answer');
       pc.setRemoteDescription(new RTCSessionDescription(desc));
     },
     stop(): void {
       stopShare(sessionId);
     },
     onConnected(cb: EventCallback): void {
-      connectedCb = cb;
+      connectedCbs.push(cb);
     },
     onDisconnected(cb: EventCallback): void {
-      disconnectedCb = cb;
+      disconnectedCbs.push(cb);
     },
   };
 }

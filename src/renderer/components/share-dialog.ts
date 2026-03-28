@@ -139,22 +139,7 @@ export function showShareDialog(sessionId: string): void {
       statusEl.textContent = 'Waiting for peer to connect...';
 
       handle.onConnected(() => {
-        statusEl.textContent = 'Peer connected!';
-        statusEl.classList.add('share-status-connected');
-        answerSection.classList.add('hidden');
-        offerSection.classList.add('hidden');
-
-        // Replace close button with stop sharing
-        closeBtn.textContent = 'Stop Sharing';
-        closeBtn.onclick = () => {
-          endShare(sessionId);
-          closeShareDialog();
-        };
-      });
-
-      handle.onDisconnected(() => {
-        statusEl.textContent = 'Peer disconnected';
-        statusEl.classList.remove('share-status-connected');
+        closeShareDialog();
       });
 
       connectBtn.addEventListener('click', () => {
@@ -165,8 +150,8 @@ export function showShareDialog(sessionId: string): void {
           connectBtn.disabled = true;
           connectBtn.textContent = 'Connecting...';
           statusEl.textContent = 'Establishing connection...';
-        } catch {
-          statusEl.textContent = 'Invalid response code';
+        } catch (err) {
+          statusEl.textContent = err instanceof Error ? err.message : 'Invalid response code';
         }
       });
     } catch (err) {

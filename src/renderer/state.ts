@@ -272,12 +272,12 @@ class AppState {
     return session;
   }
 
-  addRemoteSession(projectId: string, hostSessionName: string, shareMode: 'readonly' | 'readwrite'): SessionRecord | undefined {
+  addRemoteSession(projectId: string, sessionId: string, hostSessionName: string, shareMode: 'readonly' | 'readwrite'): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
     const session: SessionRecord = {
-      id: crypto.randomUUID(),
+      id: sessionId,
       name: `Remote: ${hostSessionName}`,
       type: 'remote-terminal',
       remoteHostName: hostSessionName,
