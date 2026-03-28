@@ -22,6 +22,12 @@ export function showShareDialog(sessionId: string): void {
   title.textContent = 'Share Session';
   dialog.appendChild(title);
 
+  // Privacy disclosure
+  const notice = document.createElement('div');
+  notice.className = 'share-notice';
+  notice.textContent = 'Your full terminal scrollback history will be shared with the peer.';
+  dialog.appendChild(notice);
+
   // Step 1: Choose mode
   const modeSection = document.createElement('div');
   modeSection.className = 'share-section';

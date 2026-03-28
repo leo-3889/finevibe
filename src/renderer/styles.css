@@ -3369,6 +3369,16 @@ select.mcp-form-input {
   color: var(--text-primary);
 }
 
+.share-notice {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: rgba(255, 180, 0, 0.08);
+  border: 1px solid rgba(255, 180, 0, 0.25);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 16px;
+}
+
 .share-section {
   margin-bottom: 16px;
 }
