@@ -121,7 +121,7 @@ jobs:
           - arch: arm64
             os: macos-latest
           - arch: x64
-            os: macos-13
+            os: macos-latest
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -146,7 +146,7 @@ jobs:
           name: release-notes
 
       - name: Build and publish
-        run: npm run build && npx electron-builder --publish always --arch ${{ matrix.arch }}
+        run: npm run build && npx electron-builder --publish always --${{ matrix.arch }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
