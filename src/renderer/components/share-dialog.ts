@@ -2,8 +2,10 @@
 
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { shareSession, acceptShareAnswer, endShare } from '../sharing/share-manager.js';
+import { isSharing, isConnected } from '../sharing/peer-host.js';
 
 let activeOverlay: HTMLElement | null = null;
+let pendingShareSessionId: string | null = null;
 
 export function showShareDialog(sessionId: string): void {
   closeShareDialog();
@@ -128,6 +130,8 @@ export function showShareDialog(sessionId: string): void {
     startBtn.textContent = 'Generating code...';
     statusEl.textContent = 'Generating connection code...';
 
+    pendingShareSessionId = sessionId;
+
     try {
       const { offer, handle } = await shareSession(sessionId, mode);
 
@@ -155,6 +159,10 @@ export function showShareDialog(sessionId: string): void {
         }
       });
     } catch (err) {
+      if (pendingShareSessionId && isSharing(pendingShareSessionId)) {
+        endShare(pendingShareSessionId);
+      }
+      pendingShareSessionId = null;
       statusEl.textContent = `Error: ${err instanceof Error ? err.message : 'Unknown error'}`;
       startBtn.disabled = false;
       startBtn.textContent = 'Start Sharing';
@@ -167,6 +175,10 @@ export function closeShareDialog(): void {
     activeOverlay.remove();
     activeOverlay = null;
   }
+  if (pendingShareSessionId && isSharing(pendingShareSessionId) && !isConnected(pendingShareSessionId)) {
+    endShare(pendingShareSessionId);
+  }
+  pendingShareSessionId = null;
 }
 
 function createRadio(name: string, value: string, labelText: string, checked: boolean): HTMLElement {
