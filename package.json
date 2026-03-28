@@ -53,9 +53,7 @@
     "files": [
       "dist/main/**/*",
       "dist/preload/**/*",
-      "dist/renderer/**/*",
-      "node_modules/**/*",
-      "!node_modules/electron/**"
+      "dist/renderer/**/*"
     ],
     "mac": {
       "target": [
