@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.16] - 2026-03-28
+
+### Features
+
+- Npm global install instructions to README
+
+### Fixes
+
+- Remove explicit node_modules from electron-builder bundle to exclude dev dependencies
+- Exclude per-arch arrays from electron-builder mac targets to prevent duplicate builds
+
 ## [0.2.15] - 2026-03-28
 
 ### Features
