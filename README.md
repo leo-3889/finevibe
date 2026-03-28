@@ -29,6 +29,7 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 
 ## Highlights
 
+- **P2P session sharing** — share live terminal sessions with teammates over encrypted peer-to-peer connections (WebRTC), with read-only or read-write modes and PIN-based authentication
 - **Multi-session management** — run multiple agent sessions per project, each in its own PTY
 - **Swarm mode** — grid view of all sessions at once, spin up new ones with `Cmd+\`
 - **Cost & context tracking** — real-time spend, token usage, and context window monitoring per session
