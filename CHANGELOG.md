@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.17] - 2026-03-28
+
+### Fixes
+
+- Build both mac architectures in single job so latest-mac.yml contains both
+
 ## [0.2.16] - 2026-03-28
 
 ### Features
