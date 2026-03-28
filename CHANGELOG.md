@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.15] - 2026-03-28
+
+### Features
+
+- P2P session sharing to README highlights
+
+### Fixes
+
+- Exclude build artifacts from electron-builder bundle
+
 ## [0.2.14] - 2026-03-28
 
 ### Fixes
