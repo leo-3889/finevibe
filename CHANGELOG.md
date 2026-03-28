@@ -4,50 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.17] - 2026-03-28
 
-### Fixes
-
-- Build both mac architectures in single job so latest-mac.yml contains both
-
-## [0.2.16] - 2026-03-28
-
 ### Features
 
-- Npm global install instructions to README
-
-### Fixes
-
-- Remove explicit node_modules from electron-builder bundle to exclude dev dependencies
-- Exclude per-arch arrays from electron-builder mac targets to prevent duplicate builds
-
-## [0.2.15] - 2026-03-28
-
-### Features
-
-- P2P session sharing to README highlights
-
-### Fixes
-
-- Exclude build artifacts from electron-builder bundle
-
-## [0.2.14] - 2026-03-28
-
-### Fixes
-
-- Arch artifacts in release
-
-### Changes
-
-- CHANGELOG.md
-
-## [0.2.13] - 2026-03-28
-
-### Features
-
+- P2P session sharing via WebRTC
 - CLI launcher for npm global install (npm i -g vibeyard)
 - MacOS Intel (x64) builds alongside ARM64
 - Middle-click to close session tabs
 - Right-click context menu to project items in sidebar
-- P2P session sharing via WebRTC
 - Debug mode preference toggle and gate dev-only UI behind it
 - Copy internal ID option to session tab context menu
 - Hook event name to debug panel hookStatus output
