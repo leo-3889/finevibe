@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.14] - 2026-03-28
+
+### Fixes
+
+- Arch artifacts in release
+
+### Changes
+
+- CHANGELOG.md
+
 ## [0.2.13] - 2026-03-28
 
 ### Features
