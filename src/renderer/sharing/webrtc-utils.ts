@@ -1,6 +1,7 @@
 // Shared WebRTC utilities for P2P session sharing.
 
 import type { ShareMessage } from '../../shared/sharing-types.js';
+import { encryptPayload, decryptPayload } from './share-crypto.js';
 
 export const ICE_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -12,16 +13,16 @@ export function sendMessage(dc: RTCDataChannel, msg: ShareMessage): void {
   }
 }
 
-export function encodeConnectionCode(desc: RTCSessionDescription | null): string {
-  return btoa(JSON.stringify(desc));
+export async function encodeConnectionCode(desc: RTCSessionDescription | null, passphrase: string): Promise<string> {
+  return encryptPayload(JSON.stringify(desc), passphrase);
 }
 
-export function decodeConnectionCode(code: string, expectedType?: 'offer' | 'answer'): RTCSessionDescriptionInit {
+export async function decodeConnectionCode(code: string, expectedType: 'offer' | 'answer' | undefined, passphrase: string): Promise<RTCSessionDescriptionInit> {
   let decoded: string;
   try {
-    decoded = atob(code);
+    decoded = await decryptPayload(code, passphrase);
   } catch {
-    throw new Error('Invalid connection code: not valid base64');
+    throw new Error('Invalid connection code: could not decrypt (wrong passphrase?)');
   }
 
   let parsed: unknown;

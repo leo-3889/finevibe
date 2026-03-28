@@ -2,6 +2,8 @@
 
 import { joinRemoteSession } from '../sharing/share-manager.js';
 import { appState } from '../state.js';
+import { DecryptionError, validatePin } from '../sharing/share-crypto.js';
+import { createPinInput } from '../dom-utils.js';
 
 let activeOverlay: HTMLElement | null = null;
 
@@ -23,12 +25,20 @@ export function showJoinDialog(): void {
   title.textContent = 'Join Remote Session';
   dialog.appendChild(title);
 
-  // Offer input
+  // Offer input section (PIN + code paste together)
   const offerSection = document.createElement('div');
   offerSection.className = 'share-section';
 
+  const pinLabel = document.createElement('div');
+  pinLabel.className = 'share-label';
+  pinLabel.textContent = 'Enter the PIN from the host';
+  offerSection.appendChild(pinLabel);
+
+  const pinInput = createPinInput();
+  offerSection.appendChild(pinInput);
+
   const offerLabel = document.createElement('div');
-  offerLabel.className = 'share-label';
+  offerLabel.className = 'share-label share-label-spaced';
   offerLabel.textContent = 'Paste the host\'s connection code';
   offerSection.appendChild(offerLabel);
 
@@ -100,16 +110,26 @@ export function showJoinDialog(): void {
 
   // Join flow
   joinBtn.addEventListener('click', async () => {
+    const pin = pinInput.value.trim();
+    const pinError = validatePin(pin);
+    if (pinError) {
+      statusEl.textContent = pinError;
+      return;
+    }
     const offer = offerTextarea.value.trim();
-    if (!offer) return;
+    if (!offer) {
+      statusEl.textContent = 'Please paste the connection code from the host.';
+      return;
+    }
 
     joinBtn.disabled = true;
     joinBtn.textContent = 'Connecting...';
     statusEl.textContent = 'Generating response code...';
     offerTextarea.readOnly = true;
+    pinInput.readOnly = true;
 
     try {
-      const { answer } = await joinRemoteSession(project.id, offer, closeJoinDialog);
+      const { answer } = await joinRemoteSession(project.id, offer, pin, closeJoinDialog);
 
       answerTextarea.value = answer;
       answerSection.classList.remove('hidden');
@@ -117,10 +137,15 @@ export function showJoinDialog(): void {
 
       closeBtn.textContent = 'Close';
     } catch (err) {
-      statusEl.textContent = `Error: ${err instanceof Error ? err.message : 'Invalid code'}`;
+      if (err instanceof DecryptionError) {
+        statusEl.textContent = 'Could not decrypt connection code. Check the PIN and try again.';
+      } else {
+        statusEl.textContent = `Error: ${err instanceof Error ? err.message : 'Invalid code'}`;
+      }
       joinBtn.disabled = false;
       joinBtn.textContent = 'Join';
       offerTextarea.readOnly = false;
+      pinInput.readOnly = false;
     }
   });
 }

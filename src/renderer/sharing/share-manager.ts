@@ -35,8 +35,8 @@ export interface ShareResult {
   handle: ShareHandle;
 }
 
-export async function shareSession(sessionId: string, mode: ShareMode): Promise<ShareResult> {
-  const handle = startShare(sessionId, mode);
+export async function shareSession(sessionId: string, mode: ShareMode, passphrase: string): Promise<ShareResult> {
+  const handle = startShare(sessionId, mode, passphrase);
   shareHandles.set(sessionId, handle);
   notifyShareChange();
 
@@ -54,10 +54,10 @@ export async function shareSession(sessionId: string, mode: ShareMode): Promise<
   return { offer, handle };
 }
 
-export function acceptShareAnswer(sessionId: string, answer: string): void {
+export async function acceptShareAnswer(sessionId: string, answer: string): Promise<void> {
   const handle = shareHandles.get(sessionId);
   if (!handle) throw new Error(`No active share for session ${sessionId}`);
-  handle.acceptAnswer(answer);
+  await handle.acceptAnswer(answer);
 }
 
 export function endShare(sessionId: string): void {
@@ -76,8 +76,8 @@ export function forwardResize(sessionId: string, cols: number, rows: number): vo
 
 // --- Guest side ---
 
-export async function joinRemoteSession(projectId: string, offer: string, onConnected?: () => void): Promise<{ answer: string }> {
-  const { handle } = joinShare(offer);
+export async function joinRemoteSession(projectId: string, offer: string, passphrase: string, onConnected?: () => void): Promise<{ answer: string }> {
+  const { handle } = joinShare(offer, passphrase);
   const answer = await handle.getAnswer();
 
   pendingJoinHandles.add(handle);

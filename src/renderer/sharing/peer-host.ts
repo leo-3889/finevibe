@@ -5,13 +5,18 @@ import type { ShareMode, ShareMessage } from '../../shared/sharing-types.js';
 import { getTerminalInstance } from '../components/terminal-pane.js';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { ICE_CONFIG, sendMessage, waitForIceGathering, encodeConnectionCode, decodeConnectionCode } from './webrtc-utils.js';
+import { generateChallenge, computeChallengeResponse, bytesToHex, hexToBytes } from './share-crypto.js';
 
 interface HostPeer {
   sessionId: string;
   mode: ShareMode;
+  passphrase: string;
   pc: RTCPeerConnection;
   dc: RTCDataChannel;
   connected: boolean;
+  authState: 'none' | 'pending' | 'verified';
+  authChallenge: Uint8Array | null;
+  authTimeout: ReturnType<typeof setTimeout> | null;
   keepaliveTimer: ReturnType<typeof setInterval> | null;
   missedPongs: number;
   serializeAddon: SerializeAddon;
@@ -22,18 +27,20 @@ const hostPeers = new Map<string, HostPeer>();
 const KEEPALIVE_INTERVAL = 30_000;
 const MAX_MISSED_PONGS = 3;
 const CHUNK_SIZE = 64 * 1024;
+const AUTH_TIMEOUT = 10_000;
 
 type EventCallback = () => void;
 
 export interface ShareHandle {
   getOffer(): Promise<string>;
-  acceptAnswer(answer: string): void;
+  acceptAnswer(answer: string): Promise<void>;
   stop(): void;
   onConnected(cb: EventCallback): void;
   onDisconnected(cb: EventCallback): void;
+  onAuthFailed(cb: (reason: string) => void): void;
 }
 
-export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
+export function startShare(sessionId: string, mode: ShareMode, passphrase: string): ShareHandle {
   stopShare(sessionId);
 
   const instance = getTerminalInstance(sessionId);
@@ -44,6 +51,7 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
 
   const connectedCbs: EventCallback[] = [];
   const disconnectedCbs: EventCallback[] = [];
+  const authFailedCbs: ((reason: string) => void)[] = [];
   let disconnectFired = false;
 
   const pc = new RTCPeerConnection(ICE_CONFIG);
@@ -52,9 +60,13 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
   const hostPeer: HostPeer = {
     sessionId,
     mode,
+    passphrase,
     pc,
     dc,
     connected: false,
+    authState: 'none',
+    authChallenge: null,
+    authTimeout: null,
     keepaliveTimer: null,
     missedPongs: 0,
     serializeAddon,
@@ -62,9 +74,7 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
 
   hostPeers.set(sessionId, hostPeer);
 
-  dc.onopen = () => {
-    hostPeer.connected = true;
-
+  function sendInitAndStartKeepalive(): void {
     const scrollback = serializeAddon.serialize();
     const { cols, rows } = instance.terminal;
     const sessionName = instance.sessionId;
@@ -99,6 +109,23 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
     }, KEEPALIVE_INTERVAL);
 
     for (const cb of connectedCbs) cb();
+  }
+
+  dc.onopen = () => {
+    hostPeer.connected = true;
+
+    // Start auth handshake — do not send session data until verified
+    const challenge = generateChallenge();
+    hostPeer.authChallenge = challenge;
+    hostPeer.authState = 'pending';
+    sendMessage(dc, { type: 'auth-challenge', challenge: bytesToHex(challenge) });
+
+    hostPeer.authTimeout = setTimeout(() => {
+      if (hostPeer.authState !== 'verified') {
+        for (const cb of authFailedCbs) cb('Authentication timed out');
+        stopShare(sessionId);
+      }
+    }, AUTH_TIMEOUT);
   };
 
   dc.onmessage = (event: MessageEvent) => {
@@ -108,6 +135,29 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
     } catch {
       return;
     }
+
+    // Auth handshake
+    if (hostPeer.authState === 'pending' && msg.type === 'auth-response') {
+      computeChallengeResponse(hostPeer.authChallenge!, passphrase).then((expected) => {
+        if (hostPeer.authTimeout) {
+          clearTimeout(hostPeer.authTimeout);
+          hostPeer.authTimeout = null;
+        }
+        if (expected === msg.response) {
+          hostPeer.authState = 'verified';
+          sendMessage(dc, { type: 'auth-result', ok: true });
+          sendInitAndStartKeepalive();
+        } else {
+          sendMessage(dc, { type: 'auth-result', ok: false, reason: 'Passphrase mismatch' });
+          for (const cb of authFailedCbs) cb('Passphrase mismatch');
+          stopShare(sessionId);
+        }
+      });
+      return;
+    }
+
+    // Ignore all non-auth messages until verified
+    if (hostPeer.authState !== 'verified') return;
 
     if (msg.type === 'input' && mode === 'readwrite') {
       window.vibeyard.pty.write(sessionId, msg.payload);
@@ -137,11 +187,11 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitForIceGathering(pc);
-      return encodeConnectionCode(pc.localDescription);
+      return encodeConnectionCode(pc.localDescription, passphrase);
     },
-    acceptAnswer(answer: string): void {
-      const desc = decodeConnectionCode(answer, 'answer');
-      pc.setRemoteDescription(new RTCSessionDescription(desc));
+    async acceptAnswer(answer: string): Promise<void> {
+      const desc = await decodeConnectionCode(answer, 'answer', passphrase);
+      await pc.setRemoteDescription(new RTCSessionDescription(desc));
     },
     stop(): void {
       stopShare(sessionId);
@@ -151,6 +201,9 @@ export function startShare(sessionId: string, mode: ShareMode): ShareHandle {
     },
     onDisconnected(cb: EventCallback): void {
       disconnectedCbs.push(cb);
+    },
+    onAuthFailed(cb: (reason: string) => void): void {
+      authFailedCbs.push(cb);
     },
   };
 }
@@ -197,6 +250,10 @@ function cleanup(sessionId: string): void {
   if (hostPeer.keepaliveTimer) {
     clearInterval(hostPeer.keepaliveTimer);
     hostPeer.keepaliveTimer = null;
+  }
+  if (hostPeer.authTimeout) {
+    clearTimeout(hostPeer.authTimeout);
+    hostPeer.authTimeout = null;
   }
   hostPeer.serializeAddon.dispose();
   hostPeers.delete(sessionId);

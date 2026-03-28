@@ -3379,14 +3379,6 @@ select.mcp-form-input {
   margin-bottom: 16px;
 }
 
-.share-notice-danger {
-  color: #f4b400;
-  background: rgba(255, 180, 0, 0.12);
-  border-color: rgba(255, 180, 0, 0.35);
-  margin-top: 10px;
-  margin-bottom: 0;
-}
-
 .share-notice.hidden {
   display: none;
 }
@@ -3396,6 +3388,10 @@ select.mcp-form-input {
 }
 
 .share-section.hidden {
+  display: none;
+}
+
+.share-phase.hidden {
   display: none;
 }
 
@@ -3438,6 +3434,29 @@ select.mcp-form-input {
 }
 
 .share-code:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.share-label-spaced {
+  margin-top: 12px;
+}
+
+.share-pin-input {
+  width: 120px;
+  padding: 8px 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 18px;
+  letter-spacing: 4px;
+  text-align: center;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.share-pin-input:focus {
   outline: 1px solid var(--accent);
   border-color: var(--accent);
 }

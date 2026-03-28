@@ -18,3 +18,18 @@ export function scoreColor(score: number): string {
   if (score >= 40) return '#f4b400';
   return '#e94560';
 }
+
+/** Create a numeric PIN input field (4–8 digits). */
+export function createPinInput(): HTMLInputElement {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.className = 'share-pin-input';
+  input.placeholder = 'PIN';
+  input.maxLength = 8;
+  input.autocomplete = 'off';
+  input.addEventListener('input', () => {
+    input.value = input.value.replace(/\D/g, '');
+  });
+  return input;
+}

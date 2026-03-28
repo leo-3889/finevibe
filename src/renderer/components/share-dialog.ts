@@ -3,6 +3,8 @@
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { shareSession, acceptShareAnswer, endShare } from '../sharing/share-manager.js';
 import { isSharing, isConnected } from '../sharing/peer-host.js';
+import { validatePin } from '../sharing/share-crypto.js';
+import { createPinInput } from '../dom-utils.js';
 
 let activeOverlay: HTMLElement | null = null;
 let pendingShareSessionId: string | null = null;
@@ -17,18 +19,28 @@ export function showShareDialog(sessionId: string): void {
   const dialog = document.createElement('div');
   dialog.className = 'share-dialog';
 
+  let selectedMode: ShareMode = 'readonly';
+
   // Title
   const title = document.createElement('h3');
   title.textContent = 'Share Session';
   dialog.appendChild(title);
 
-  // Privacy disclosure
+  // ── Phase 1: Permission + Disclaimers ──
+
+  const phase1 = document.createElement('div');
+  phase1.className = 'share-phase';
+
   const notice = document.createElement('div');
   notice.className = 'share-notice';
   notice.textContent = 'Your full terminal scrollback history will be shared with the peer.';
-  dialog.appendChild(notice);
+  phase1.appendChild(notice);
 
-  // Step 1: Choose mode
+  const rwWarning = document.createElement('div');
+  rwWarning.className = 'share-notice hidden';
+  rwWarning.textContent = 'Read-write mode allows the peer to type into your terminal and execute commands. Only share with people you trust.';
+  phase1.appendChild(rwWarning);
+
   const modeSection = document.createElement('div');
   modeSection.className = 'share-section';
 
@@ -46,23 +58,33 @@ export function showShareDialog(sessionId: string): void {
   modeGroup.appendChild(readwriteRadio);
   modeSection.appendChild(modeGroup);
 
-  const rwWarning = document.createElement('div');
-  rwWarning.className = 'share-notice share-notice-danger hidden';
-  rwWarning.textContent = 'Read-write mode allows the peer to type into your terminal and execute commands. Only share with people you trust.';
-  modeSection.appendChild(rwWarning);
-
   modeGroup.addEventListener('change', (e) => {
-    rwWarning.classList.toggle('hidden', (e.target as HTMLInputElement).value !== 'readwrite');
+    const value = (e.target as HTMLInputElement).value as ShareMode;
+    selectedMode = value;
+    rwWarning.classList.toggle('hidden', value !== 'readwrite');
   });
 
-  dialog.appendChild(modeSection);
+  phase1.appendChild(modeSection);
+  dialog.appendChild(phase1);
 
-  // Status area
-  const statusEl = document.createElement('div');
-  statusEl.className = 'share-status';
-  dialog.appendChild(statusEl);
+  // ── Phase 2: PIN + Codes ──
 
-  // Step 2: Offer code (hidden initially)
+  const phase2 = document.createElement('div');
+  phase2.className = 'share-phase hidden';
+
+  const pinSection = document.createElement('div');
+  pinSection.className = 'share-section';
+
+  const pinLabel = document.createElement('div');
+  pinLabel.className = 'share-label';
+  pinLabel.textContent = 'Choose a PIN (4–8 digits) to share with your peer';
+
+  const pinInput = createPinInput();
+  pinSection.appendChild(pinLabel);
+  pinSection.appendChild(pinInput);
+  phase2.appendChild(pinSection);
+
+  // Offer code (hidden until generated)
   const offerSection = document.createElement('div');
   offerSection.className = 'share-section hidden';
 
@@ -86,9 +108,9 @@ export function showShareDialog(sessionId: string): void {
     setTimeout(() => { copyOfferBtn.textContent = 'Copy Code'; }, 1500);
   });
   offerSection.appendChild(copyOfferBtn);
-  dialog.appendChild(offerSection);
+  phase2.appendChild(offerSection);
 
-  // Step 3: Answer code (hidden initially)
+  // Answer code (hidden until offer generated)
   const answerSection = document.createElement('div');
   answerSection.className = 'share-section hidden';
 
@@ -102,45 +124,110 @@ export function showShareDialog(sessionId: string): void {
   answerTextarea.rows = 3;
   answerTextarea.placeholder = 'Paste response code here...';
   answerSection.appendChild(answerTextarea);
+  phase2.appendChild(answerSection);
 
-  const connectBtn = document.createElement('button');
-  connectBtn.className = 'share-btn';
-  connectBtn.textContent = 'Connect';
-  answerSection.appendChild(connectBtn);
-  dialog.appendChild(answerSection);
+  dialog.appendChild(phase2);
 
-  // Action buttons
+  // Status area
+  const statusEl = document.createElement('div');
+  statusEl.className = 'share-status';
+  dialog.appendChild(statusEl);
+
+  // ── Action buttons (always at bottom) ──
+
   const actions = document.createElement('div');
   actions.className = 'share-actions';
-
-  const startBtn = document.createElement('button');
-  startBtn.className = 'share-btn';
-  startBtn.textContent = 'Start Sharing';
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'share-btn share-btn-secondary';
   closeBtn.textContent = 'Cancel';
   closeBtn.addEventListener('click', closeShareDialog);
 
+  const backBtn = document.createElement('button');
+  backBtn.className = 'share-btn share-btn-secondary hidden';
+  backBtn.textContent = 'Back';
+
+  const nextBtn = document.createElement('button');
+  nextBtn.className = 'share-btn';
+  nextBtn.textContent = 'Next';
+
+  const startBtn = document.createElement('button');
+  startBtn.className = 'share-btn hidden';
+  startBtn.textContent = 'Start Sharing';
+
+  const connectBtn = document.createElement('button');
+  connectBtn.className = 'share-btn hidden';
+  connectBtn.textContent = 'Connect';
+  connectBtn.disabled = true;
+
   actions.appendChild(closeBtn);
+  actions.appendChild(backBtn);
+  actions.appendChild(nextBtn);
   actions.appendChild(startBtn);
+  actions.appendChild(connectBtn);
   dialog.appendChild(actions);
 
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
-  // Handle Escape
-  const handleKeydown = (e: KeyboardEvent) => {
+  // ── Phase navigation ──
+
+  nextBtn.addEventListener('click', () => {
+    phase1.classList.add('hidden');
+    phase2.classList.remove('hidden');
+    nextBtn.classList.add('hidden');
+    backBtn.classList.remove('hidden');
+    startBtn.classList.remove('hidden');
+    pinInput.focus();
+  });
+
+  backBtn.addEventListener('click', () => {
+    phase2.classList.add('hidden');
+    phase1.classList.remove('hidden');
+    backBtn.classList.add('hidden');
+    startBtn.classList.add('hidden');
+    nextBtn.classList.remove('hidden');
+    statusEl.textContent = '';
+  });
+
+  // Enable Connect only when answer code is entered
+  answerTextarea.addEventListener('input', () => {
+    connectBtn.disabled = !answerTextarea.value.trim();
+  });
+
+  // Connect handler (registered once, guarded by disabled state)
+  connectBtn.addEventListener('click', async () => {
+    const answer = answerTextarea.value.trim();
+    if (!answer) return;
+    try {
+      await acceptShareAnswer(sessionId, answer);
+      connectBtn.disabled = true;
+      connectBtn.textContent = 'Connecting...';
+      answerTextarea.readOnly = true;
+      statusEl.textContent = 'Establishing connection...';
+    } catch (err) {
+      statusEl.textContent = err instanceof Error ? err.message : 'Invalid response code';
+    }
+  });
+
+  // ── Handle Escape ──
+
+  overlay.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key === 'Escape') closeShareDialog();
-  };
-  overlay.addEventListener('keydown', handleKeydown);
+  });
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) closeShareDialog();
   });
 
-  // Start sharing flow
+  // ── Start sharing flow ──
+
   startBtn.addEventListener('click', async () => {
-    const mode: ShareMode = (document.querySelector('input[name="share-mode"]:checked') as HTMLInputElement)?.value as ShareMode || 'readonly';
+    const pin = pinInput.value.trim();
+    const pinError = validatePin(pin);
+    if (pinError) {
+      statusEl.textContent = pinError;
+      return;
+    }
 
     startBtn.disabled = true;
     startBtn.textContent = 'Generating code...';
@@ -149,30 +236,28 @@ export function showShareDialog(sessionId: string): void {
     pendingShareSessionId = sessionId;
 
     try {
-      const { offer, handle } = await shareSession(sessionId, mode);
+      const { offer, handle } = await shareSession(sessionId, selectedMode, pin);
 
+      pinInput.readOnly = true;
+      pinLabel.textContent = 'Share this PIN with your peer';
       offerTextarea.value = offer;
       offerSection.classList.remove('hidden');
       answerSection.classList.remove('hidden');
-      modeSection.classList.add('hidden');
       startBtn.classList.add('hidden');
+      backBtn.classList.add('hidden');
+      connectBtn.classList.remove('hidden');
       statusEl.textContent = 'Waiting for peer to connect...';
 
       handle.onConnected(() => {
         closeShareDialog();
       });
 
-      connectBtn.addEventListener('click', () => {
-        const answer = answerTextarea.value.trim();
-        if (!answer) return;
-        try {
-          acceptShareAnswer(sessionId, answer);
-          connectBtn.disabled = true;
-          connectBtn.textContent = 'Connecting...';
-          statusEl.textContent = 'Establishing connection...';
-        } catch (err) {
-          statusEl.textContent = err instanceof Error ? err.message : 'Invalid response code';
-        }
+      handle.onAuthFailed((reason: string) => {
+        statusEl.textContent = `Authentication failed: ${reason}`;
+        connectBtn.disabled = false;
+        connectBtn.textContent = 'Connect';
+        answerTextarea.value = '';
+        answerTextarea.readOnly = false;
       });
     } catch (err) {
       if (pendingShareSessionId && isSharing(pendingShareSessionId)) {

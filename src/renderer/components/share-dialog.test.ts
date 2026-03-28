@@ -17,6 +17,12 @@ vi.mock('../sharing/share-manager.js', () => ({
   endShare: (...args: unknown[]) => mockEndShare(...args),
 }));
 
+// Mock share-crypto
+vi.mock('../sharing/share-crypto.js', () => ({
+  validatePin: () => null,
+  DecryptionError: class DecryptionError extends Error {},
+}));
+
 // Minimal DOM stubs so share-dialog can create elements without jsdom
 const elementStubs = new Map<string, Record<string, unknown>>();
 function makeElement(): Record<string, unknown> {
@@ -103,6 +109,7 @@ describe('share-dialog cleanup on close', () => {
     let onConnectedCb: (() => void) | undefined;
     const mockHandle = {
       onConnected: (cb: () => void) => { onConnectedCb = cb; },
+      onAuthFailed: () => {},
     };
     mockShareSession.mockResolvedValue({ offer: 'test-offer', handle: mockHandle });
 
@@ -110,7 +117,7 @@ describe('share-dialog cleanup on close', () => {
     clickButton('Start Sharing');
 
     await vi.waitFor(() => {
-      expect(mockShareSession).toHaveBeenCalledWith('session-1', 'readonly');
+      expect(mockShareSession).toHaveBeenCalledWith('session-1', 'readonly', expect.any(String));
     });
 
     // Sharing is active but not connected
@@ -125,6 +132,7 @@ describe('share-dialog cleanup on close', () => {
     let onConnectedCb: (() => void) | undefined;
     const mockHandle = {
       onConnected: (cb: () => void) => { onConnectedCb = cb; },
+      onAuthFailed: () => {},
     };
     mockShareSession.mockResolvedValue({ offer: 'test-offer', handle: mockHandle });
 
