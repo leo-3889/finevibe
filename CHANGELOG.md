@@ -6,10 +6,6 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- Back support to share wizard
-- Security warning when selecting read-write mode in share dialog
-- Scrollback privacy disclosure to share dialog
-- Star prompt dialog after 10 app launches
 - CLI launcher for npm global install (npm i -g vibeyard)
 - MacOS Intel (x64) builds alongside ARM64
 - Middle-click to close session tabs
@@ -23,8 +19,6 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
-- Share indicator persisting after dialog closed without completing connection
-- P2P session sharing deadlock and connection lifecycle
 - Auto-focus terminal when creating new session via + button
 - Session status stuck on waiting after interrupt by passing hookName to setHookStatus
 - Diff viewer badge showing raw "working" instead of "Changes"
