@@ -1,6 +1,6 @@
 import { app, Menu, BrowserWindow } from 'electron';
 
-export function createAppMenu(): void {
+export function createAppMenu(debugMode = false): void {
   const isMac = process.platform === 'darwin';
 
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -57,33 +57,33 @@ export function createAppMenu(): void {
           accelerator: 'CmdOrCtrl+Shift+U',
           click: () => sendToRenderer('menu:usage-stats'),
         },
-        {
-          label: 'Toggle Debug Panel',
-          accelerator: 'CmdOrCtrl+Shift+D',
-          click: () => sendToRenderer('menu:toggle-debug'),
-        },
-        { type: 'separator' },
-        { role: 'toggleDevTools' as const },
-        { role: 'reload' as const },
-      ],
-    },
-    {
-      label: 'Sessions',
-      submenu: [
+        ...(debugMode ? [
+          {
+            label: 'Toggle Debug Panel',
+            accelerator: 'CmdOrCtrl+Shift+D',
+            click: () => sendToRenderer('menu:toggle-debug'),
+          },
+          { type: 'separator' as const },
+          { role: 'toggleDevTools' as const },
+          { role: 'reload' as const },
+        ] : []),
+        // Hidden session-switching shortcuts (no visible menu)
         {
           label: 'Next Session',
           accelerator: 'CmdOrCtrl+Shift+]',
+          visible: false,
           click: () => sendToRenderer('menu:next-session'),
         },
         {
           label: 'Previous Session',
           accelerator: 'CmdOrCtrl+Shift+[',
+          visible: false,
           click: () => sendToRenderer('menu:prev-session'),
         },
-        { type: 'separator' },
         ...Array.from({ length: 9 }, (_, i) => ({
           label: `Session ${i + 1}`,
           accelerator: `CmdOrCtrl+${i + 1}`,
+          visible: false,
           click: () => sendToRenderer('menu:goto-session', i),
         })),
       ],

@@ -85,6 +85,11 @@ class AppState {
         }
       }
     }
+    if (!this.state.starPromptDismissed) {
+      this.state.appLaunchCount = (this.state.appLaunchCount ?? 0) + 1;
+      this.persist();
+    }
+
     this.emit('state-loaded');
   }
 
@@ -141,6 +146,28 @@ class AppState {
     const project = this.activeProject;
     if (!project) return;
     project.terminalPanelHeight = height;
+    this.persist();
+  }
+
+  get lastSeenVersion(): string | undefined {
+    return this.state.lastSeenVersion;
+  }
+
+  setLastSeenVersion(version: string): void {
+    this.state.lastSeenVersion = version;
+    this.persist();
+  }
+
+  get appLaunchCount(): number {
+    return this.state.appLaunchCount ?? 0;
+  }
+
+  get starPromptDismissed(): boolean {
+    return this.state.starPromptDismissed ?? false;
+  }
+
+  dismissStarPrompt(): void {
+    this.state.starPromptDismissed = true;
     this.persist();
   }
 
@@ -234,6 +261,27 @@ class AppState {
       diffFilePath: filePath,
       diffArea: area,
       ...(worktreePath ? { worktreePath } : {}),
+      cliSessionId: null,
+      createdAt: new Date().toISOString(),
+    };
+    project.sessions.push(session);
+    project.activeSessionId = session.id;
+    this.persist();
+    this.emit('session-added', { projectId, session });
+    this.emit('session-changed');
+    return session;
+  }
+
+  addRemoteSession(projectId: string, sessionId: string, hostSessionName: string, shareMode: 'readonly' | 'readwrite'): SessionRecord | undefined {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return undefined;
+
+    const session: SessionRecord = {
+      id: sessionId,
+      name: `Remote: ${hostSessionName}`,
+      type: 'remote-terminal',
+      remoteHostName: hostSessionName,
+      shareMode,
       cliSessionId: null,
       createdAt: new Date().toISOString(),
     };

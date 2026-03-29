@@ -68,7 +68,7 @@ export interface ContextWindowInfo {
 export interface SessionRecord {
   id: string;
   name: string;
-  type?: 'claude' | 'mcp-inspector' | 'diff-viewer' | 'file-reader';
+  type?: 'claude' | 'mcp-inspector' | 'diff-viewer' | 'file-reader' | 'remote-terminal';
   providerId?: ProviderId;
   args?: string;
   cliSessionId: string | null;
@@ -84,6 +84,8 @@ export interface SessionRecord {
   userRenamed?: boolean;
   cost?: CostInfo;
   contextWindow?: ContextWindowInfo;
+  remoteHostName?: string;
+  shareMode?: 'readonly' | 'readwrite';
 }
 
 export interface ArchivedSession {
@@ -178,6 +180,9 @@ export interface PersistedState {
   preferences: Preferences;
   sidebarWidth?: number;
   sidebarCollapsed?: boolean;
+  lastSeenVersion?: string;
+  appLaunchCount?: number;
+  starPromptDismissed?: boolean;
 }
 
 // --- AI Readiness ---

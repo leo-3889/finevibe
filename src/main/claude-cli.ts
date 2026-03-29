@@ -220,8 +220,8 @@ function writeSettings(settings: Record<string, unknown>): void {
 export function installHooksOnly(): void {
   const { settings, cleaned } = prepareSettings();
 
-  const statusCmd = (status: string) =>
-    `sh -c 'mkdir -p ${STATUS_DIR} && echo ${status} > ${STATUS_DIR}/$CLAUDE_IDE_SESSION_ID.status ${HOOK_MARKER}'`;
+  const statusCmd = (event: string, status: string) =>
+    `sh -c 'mkdir -p ${STATUS_DIR} && echo ${event}:${status} > ${STATUS_DIR}/$CLAUDE_IDE_SESSION_ID.status ${HOOK_MARKER}'`;
 
   // Hook to capture Claude's session ID from the hook input JSON (stdin)
   const captureSessionIdCmd =
@@ -240,12 +240,12 @@ export function installHooksOnly(): void {
     PostToolUseFailure: 'working',
     Stop: 'completed',
     StopFailure: 'waiting',
-    PermissionRequest: 'permission',
+    PermissionRequest: 'input',
   };
 
   for (const [event, status] of Object.entries(ideEvents)) {
     const existing = cleaned[event] ?? [];
-    const hooks: HookHandler[] = [{ type: 'command', command: statusCmd(status) }];
+    const hooks: HookHandler[] = [{ type: 'command', command: statusCmd(event, status) }];
     // Capture Claude session ID on session start and prompt submission
     if (event === 'SessionStart' || event === 'UserPromptSubmit') {
       hooks.push({ type: 'command', command: captureSessionIdCmd });

@@ -12,6 +12,7 @@ import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, g
 import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
+import { createAppMenu } from './menu';
 import { getProvider, getProviderMeta, getAllProviderMetas } from './providers/registry';
 import type { ProviderId, GitFileEntry, SettingsValidationResult } from '../shared/types';
 import { analyzeReadiness } from './readiness/analyzer';
@@ -153,6 +154,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('store:save', (_event, state: PersistedState) => {
     saveState(state);
+  });
+
+  ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {
+    createAppMenu(debugMode);
   });
 
   ipcMain.handle('provider:getConfig', async (_event, providerId: ProviderId, projectPath: string) => {

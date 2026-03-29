@@ -6,6 +6,10 @@ import { onChange as onGitStatusChange, getGitStatus, type GitStatus } from '../
 import { isUnread, onChange as onUnreadChange } from '../session-unread.js';
 import { showHelpDialog } from './help-dialog.js';
 import { scrollToGitPanel } from './git-panel.js';
+import { showShareDialog } from './share-dialog.js';
+import { showJoinDialog } from './join-dialog.js';
+import { isSharing } from '../sharing/peer-host.js';
+import { endShare, onShareChange } from '../sharing/share-manager.js';
 
 const tabListEl = document.getElementById('tab-list')!;
 const gitStatusEl = document.getElementById('git-status')!;
@@ -45,6 +49,7 @@ export function initTabBar(): void {
   });
   appState.on('session-changed', render);
   appState.on('layout-changed', render);
+  onShareChange(render);
 
   onStatusChange((sessionId, status) => {
     const prev = prevStatus.get(sessionId);
@@ -210,32 +215,80 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
     });
   }
 
-  const moveSeparator = document.createElement('div');
-  moveSeparator.className = 'tab-context-menu-separator';
+  // Share menu items — only for CLI sessions (not special types)
+  const isCliSession = !session.type || session.type === 'claude';
+  const isRemote = session.type === 'remote-terminal';
+  const currentlySharing = isSharing(session.id);
 
-  const sessionSeparator = document.createElement('div');
-  sessionSeparator.className = 'tab-context-menu-separator';
+  const shareSeparator = document.createElement('div');
+  shareSeparator.className = 'tab-context-menu-separator';
 
-  const cliSessionId = session.cliSessionId;
-  const hasCliSession = !!cliSessionId;
-
-  const copySessionIdItem = document.createElement('div');
-  copySessionIdItem.className = 'tab-context-menu-item' + (!hasCliSession ? ' disabled' : '');
-  copySessionIdItem.textContent = 'Copy Session ID';
-  if (hasCliSession) {
-    copySessionIdItem.addEventListener('click', (e) => {
+  const shareItem = document.createElement('div');
+  shareItem.className = 'tab-context-menu-item' + (!isCliSession || currentlySharing ? ' disabled' : '');
+  shareItem.textContent = 'Share Session\u2026';
+  if (isCliSession && !currentlySharing) {
+    shareItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideTabContextMenu();
-      navigator.clipboard.writeText(cliSessionId);
+      showShareDialog(session.id);
+    });
+  }
+
+  const stopShareItem = document.createElement('div');
+  stopShareItem.className = 'tab-context-menu-item' + (!currentlySharing ? ' disabled' : '');
+  stopShareItem.textContent = 'Stop Sharing';
+  if (currentlySharing) {
+    stopShareItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideTabContextMenu();
+      endShare(session.id);
     });
   }
 
   menu.appendChild(renameItem);
   menu.appendChild(moveLeftItem);
   menu.appendChild(moveRightItem);
+
+  if (appState.preferences.debugMode) {
+    const sessionSeparator = document.createElement('div');
+    sessionSeparator.className = 'tab-context-menu-separator';
+
+    const cliSessionId = session.cliSessionId;
+    const hasCliSession = !!cliSessionId;
+
+    const copySessionIdItem = document.createElement('div');
+    copySessionIdItem.className = 'tab-context-menu-item' + (!hasCliSession ? ' disabled' : '');
+    copySessionIdItem.textContent = 'Copy CLI Session ID';
+    if (hasCliSession) {
+      copySessionIdItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hideTabContextMenu();
+        navigator.clipboard.writeText(cliSessionId);
+      });
+    }
+
+    const copyInternalIdItem = document.createElement('div');
+    copyInternalIdItem.className = 'tab-context-menu-item';
+    copyInternalIdItem.textContent = 'Copy Internal ID';
+    copyInternalIdItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideTabContextMenu();
+      navigator.clipboard.writeText(session.id);
+    });
+
+    menu.appendChild(sessionSeparator);
+    menu.appendChild(copyInternalIdItem);
+    menu.appendChild(copySessionIdItem);
+  }
+
+  const moveSeparator = document.createElement('div');
+  moveSeparator.className = 'tab-context-menu-separator';
   menu.appendChild(moveSeparator);
-  menu.appendChild(copySessionIdItem);
-  menu.appendChild(sessionSeparator);
+  if (isCliSession || isRemote) {
+    menu.appendChild(shareSeparator);
+    if (!currentlySharing) menu.appendChild(shareItem);
+    if (currentlySharing) menu.appendChild(stopShareItem);
+  }
   menu.appendChild(closeItem);
   menu.appendChild(separator);
   menu.appendChild(closeAllItem);
@@ -271,16 +324,20 @@ function render(): void {
     const isMcp = session.type === 'mcp-inspector';
     const isDiff = session.type === 'diff-viewer';
     const isFileReader = session.type === 'file-reader';
-    const isSpecial = isMcp || isDiff || isFileReader;
-    tab.className = 'tab-item' + (isActive ? ' active' : '') + (unread ? ' unread' : '');
+    const isRemoteTab = session.type === 'remote-terminal';
+    const isSpecial = isMcp || isDiff || isFileReader || isRemoteTab;
+    const sharing = isSharing(session.id);
+    tab.className = 'tab-item' + (isActive ? ' active' : '') + (unread ? ' unread' : '') + (sharing ? ' tab-sharing' : '') + (isRemoteTab ? ' tab-remote' : '');
     tab.dataset.sessionId = session.id;
     tab.draggable = true;
-    tab.title = isDiff ? `Diff: ${session.diffFilePath || session.name}` : isMcp ? `MCP Inspector` : isFileReader ? `File: ${session.fileReaderPath || session.name}` : buildTooltip(getStatus(session.id), session.cliSessionId);
-    const namePrefix = isDiff ? '<span class="tab-diff-badge">DIFF</span> ' : isMcp ? '<span class="tab-mcp-badge">MCP</span> ' : isFileReader ? '<span class="tab-file-badge">FILE</span> ' : '';
+    tab.title = isDiff ? `Diff: ${session.diffFilePath || session.name}` : isMcp ? `MCP Inspector` : isFileReader ? `File: ${session.fileReaderPath || session.name}` : isRemoteTab ? `Remote: ${session.remoteHostName || session.name}` : buildTooltip(getStatus(session.id), session.cliSessionId);
+    const namePrefix = isDiff ? '<span class="tab-diff-badge">DIFF</span> ' : isMcp ? '<span class="tab-mcp-badge">MCP</span> ' : isFileReader ? '<span class="tab-file-badge">FILE</span> ' : isRemoteTab ? '<span class="tab-remote-badge">P2P</span> ' : '';
+    const shareIndicator = sharing ? '<span class="tab-share-indicator" title="Sharing"></span>' : '';
     const statusDot = isSpecial ? '' : `<span class="tab-status ${getStatus(session.id)}"></span>`;
     tab.innerHTML = `
       ${statusDot}
       <span class="tab-name">${namePrefix}${esc(session.name)}</span>
+      ${shareIndicator}
       <span class="tab-close" title="Close session">&times;</span>
     `;
 
@@ -290,6 +347,14 @@ function render(): void {
       if (tab.querySelector('.tab-name input')) return;
       if (session.id !== project.activeSessionId) {
         appState.setActiveSession(project.id, session.id);
+      }
+    });
+
+    // Middle-click to close
+    tab.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        appState.removeSession(project.id, session.id);
       }
     });
 
@@ -401,6 +466,7 @@ function renderGitStatus(): void {
 export function quickNewSession(): void {
   const project = appState.activeProject;
   if (!project) return;
+  (document.activeElement as HTMLElement)?.blur?.();
   const sessionNum = project.sessions.length + 1;
   appState.addSession(project.id, `Session ${sessionNum}`);
 }
@@ -431,8 +497,22 @@ function showAddSessionContextMenu(x: number, y: number): void {
     promptNewSession();
   });
 
+  const joinSeparator = document.createElement('div');
+  joinSeparator.className = 'tab-context-menu-separator';
+
+  const joinItem = document.createElement('div');
+  joinItem.className = 'tab-context-menu-item';
+  joinItem.textContent = 'Join Remote Session\u2026';
+  joinItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideTabContextMenu();
+    showJoinDialog();
+  });
+
   menu.appendChild(quickItem);
   menu.appendChild(customItem);
+  menu.appendChild(joinSeparator);
+  menu.appendChild(joinItem);
   document.body.appendChild(menu);
   activeContextMenu = menu;
 

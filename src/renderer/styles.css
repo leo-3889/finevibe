@@ -326,7 +326,7 @@ body.debug-panel-open #app {
   background: #34a853;
 }
 
-.tab-status.permission {
+.tab-status.input {
   background: #e67e22;
   animation: pulse 1.2s ease-in-out infinite;
 }
@@ -1704,6 +1704,27 @@ body.debug-panel-open #app {
   outline: none;
 }
 
+.debug-session-filter-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.debug-session-input {
+  width: 160px;
+}
+
+.debug-session-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.debug-session-clear {
+  padding: 1px 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+
 .debug-btn {
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -1866,6 +1887,52 @@ body.debug-panel-open #app {
   font-size: 11px;
   color: var(--text-secondary);
   white-space: nowrap;
+}
+
+/* What's New dialog */
+.whats-new-container {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.whats-new-date {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.whats-new-section {
+  margin-bottom: 12px;
+}
+
+.whats-new-section-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.whats-new-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.whats-new-list li {
+  font-size: 13px;
+  color: var(--text-primary);
+  padding: 3px 0;
+  padding-left: 16px;
+  position: relative;
+}
+
+.whats-new-list li::before {
+  content: '\2022';
+  position: absolute;
+  left: 4px;
+  color: var(--text-secondary);
 }
 
 /* MCP Inspector */
@@ -3267,5 +3334,283 @@ select.mcp-form-input {
 
 .readiness-fix-btn:hover {
   opacity: 0.9;
+}
+
+/* ============= P2P Session Sharing ============= */
+
+/* Share overlay (covers entire screen) */
+.share-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.share-dialog {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  width: 460px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.share-dialog h3 {
+  margin: 0 0 16px;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.share-notice {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: rgba(255, 180, 0, 0.08);
+  border: 1px solid rgba(255, 180, 0, 0.25);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 16px;
+}
+
+.share-notice.hidden {
+  display: none;
+}
+
+.share-section {
+  margin-bottom: 16px;
+}
+
+.share-section.hidden {
+  display: none;
+}
+
+.share-phase.hidden {
+  display: none;
+}
+
+.share-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.share-radio-group {
+  display: flex;
+  gap: 16px;
+}
+
+.share-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.share-radio-label input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+.share-code {
+  width: 100%;
+  padding: 8px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  resize: vertical;
+  box-sizing: border-box;
+  word-break: break-all;
+}
+
+.share-code:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.share-label-spaced {
+  margin-top: 12px;
+}
+
+.share-pin-input {
+  width: 120px;
+  padding: 8px 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 18px;
+  letter-spacing: 4px;
+  text-align: center;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.share-pin-input:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.share-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+  min-height: 20px;
+}
+
+.share-status-connected {
+  color: #0f9b58;
+}
+
+.share-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.share-btn {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--accent);
+  color: #fff;
+}
+
+.share-btn:hover {
+  opacity: 0.9;
+}
+
+.share-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.share-btn.hidden {
+  display: none;
+}
+
+.share-btn-secondary {
+  background: var(--bg-tertiary, #333);
+  color: var(--text-primary);
+}
+
+.share-btn-secondary:hover {
+  background: var(--bg-hover, #444);
+}
+
+/* Tab sharing indicator */
+.tab-sharing {
+  border-bottom: 2px solid #0f9b58;
+}
+
+.tab-share-indicator {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0f9b58;
+  margin-left: 4px;
+  animation: share-pulse 2s ease-in-out infinite;
+}
+
+@keyframes share-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Remote session tab badge */
+.tab-remote-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(15, 155, 88, 0.2);
+  color: #0f9b58;
+}
+
+.tab-remote {
+  border-left: 2px solid #0f9b58;
+}
+
+/* Remote terminal status bar */
+.remote-status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 8px;
+}
+
+.remote-mode-label {
+  font-size: 11px;
+  color: #0f9b58;
+}
+
+.remote-disconnect-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.remote-disconnect-btn:hover {
+  background: var(--bg-tertiary, #333);
+  color: var(--text-primary);
+}
+
+/* Star prompt dialog */
+.star-prompt-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.star-prompt-icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+}
+
+.star-prompt-message {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  margin-bottom: 20px;
+  max-width: 320px;
+}
+
+.star-prompt-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.star-prompt-dont-ask {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.star-prompt-dont-ask:hover {
+  color: var(--text-primary);
 }
 

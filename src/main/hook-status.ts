@@ -60,10 +60,14 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
     const filePath = path.join(STATUS_DIR, filename);
 
     try {
-      const content = fs.readFileSync(filePath, 'utf-8').trim();
-      if (content === 'working' || content === 'waiting' || content === 'completed' || content === 'permission') {
+      const raw = fs.readFileSync(filePath, 'utf-8').trim();
+      // Format: "HookEvent:status" (e.g. "PostToolUse:working") or legacy plain status
+      const colonIdx = raw.indexOf(':');
+      const hookName = colonIdx !== -1 ? raw.slice(0, colonIdx) : '';
+      const content = colonIdx !== -1 ? raw.slice(colonIdx + 1) : raw;
+      if (content === 'working' || content === 'waiting' || content === 'completed' || content === 'input') {
         if (!win.isDestroyed()) {
-          win.webContents.send('session:hookStatus', sessionId, content);
+          win.webContents.send('session:hookStatus', sessionId, content, hookName);
         }
       }
     } catch {

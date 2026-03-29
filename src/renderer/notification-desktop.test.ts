@@ -94,13 +94,13 @@ describe('notification-desktop', () => {
     expect(notificationInstances[0].options.body).toBe('Background Session has completed');
   });
 
-  it('should notify on working → permission', () => {
+  it('should notify on working → input', () => {
     initSession('bg-session');
     setHookStatus('bg-session', 'working');
-    setHookStatus('bg-session', 'permission');
+    setHookStatus('bg-session', 'input');
 
     expect(notificationInstances).toHaveLength(1);
-    expect(notificationInstances[0].options.body).toBe('Background Session needs permission to continue');
+    expect(notificationInstances[0].options.body).toBe('Background Session needs your input to continue');
   });
 
   it('should not notify when preference is disabled', () => {

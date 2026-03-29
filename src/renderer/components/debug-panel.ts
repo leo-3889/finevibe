@@ -1,4 +1,5 @@
 import { stripAnsi } from '../ansi';
+import { appState } from '../state.js';
 import { fitAllVisible } from './terminal-pane.js';
 
 interface DebugEvent {
@@ -9,12 +10,14 @@ interface DebugEvent {
 }
 
 const MAX_EVENTS = 500;
+const NO_MATCH = '__no_match__';
 const events: DebugEvent[] = [];
 let visible = false;
 let panel: HTMLElement | null = null;
 let logEl: HTMLElement | null = null;
 let autoScroll = true;
 let filterType = '';
+let filterSessionId = '';
 let countInterval: ReturnType<typeof setInterval> | null = null;
 let countBar: HTMLElement | null = null;
 
@@ -43,6 +46,40 @@ function shortSessionId(id: string): string {
   return id.length > 12 ? id.slice(0, 8) + '..' : id;
 }
 
+function getSessionName(sessionId: string): string {
+  for (const project of appState.projects) {
+    const session = project.sessions.find(s => s.id === sessionId);
+    if (session) return session.name;
+  }
+  return shortSessionId(sessionId);
+}
+
+function resolveSessionFilter(query: string): string {
+  if (!query) return '';
+  for (const project of appState.projects) {
+    if (project.sessions.some(s => s.id === query)) return query;
+  }
+  // Events may reference sessions no longer in appState
+  if (events.some(e => e.sessionId === query)) return query;
+  const lowerQuery = query.toLowerCase();
+  for (const project of appState.projects) {
+    for (const session of project.sessions) {
+      if (session.name.toLowerCase().includes(lowerQuery)) return session.id;
+    }
+  }
+  const prefixMatch = events.find(e => e.sessionId.startsWith(query));
+  if (prefixMatch) return prefixMatch.sessionId;
+  return NO_MATCH;
+}
+
+function getFilteredEvents(): DebugEvent[] {
+  return events.filter(e => {
+    if (filterType && e.type !== filterType) return false;
+    if (filterSessionId && e.sessionId !== filterSessionId) return false;
+    return true;
+  });
+}
+
 function formatData(data: unknown): string {
   if (data === undefined) return '';
   if (typeof data === 'string') return stripAnsi(data);
@@ -53,9 +90,8 @@ function formatData(data: unknown): string {
   }
 }
 
-function appendEventRow(ev: DebugEvent): void {
+function renderEventRow(ev: DebugEvent): void {
   if (!logEl) return;
-  if (filterType && ev.type !== filterType) return;
 
   const row = document.createElement('div');
   row.className = 'debug-event-row';
@@ -96,12 +132,17 @@ function appendEventRow(ev: DebugEvent): void {
   }
 }
 
+function appendEventRow(ev: DebugEvent): void {
+  if (filterType && ev.type !== filterType) return;
+  if (filterSessionId && ev.sessionId !== filterSessionId) return;
+  renderEventRow(ev);
+}
+
 function renderAllEvents(): void {
   if (!logEl) return;
   logEl.innerHTML = '';
-  const filtered = filterType ? events.filter(e => e.type === filterType) : events;
-  for (const ev of filtered) {
-    appendEventRow(ev);
+  for (const ev of getFilteredEvents()) {
+    renderEventRow(ev);
   }
 }
 
@@ -140,6 +181,32 @@ function createPanel(): HTMLElement {
     renderAllEvents();
   });
   controls.appendChild(select);
+
+  // Session filter input
+  const sessionFilterWrap = document.createElement('div');
+  sessionFilterWrap.className = 'debug-session-filter-wrap';
+
+  const sessionInput = document.createElement('input');
+  sessionInput.type = 'text';
+  sessionInput.className = 'debug-filter debug-session-input';
+  sessionInput.placeholder = 'Filter by session ID';
+  sessionInput.addEventListener('input', () => {
+    filterSessionId = resolveSessionFilter(sessionInput.value.trim());
+    renderAllEvents();
+  });
+  sessionFilterWrap.appendChild(sessionInput);
+
+  const clearInputBtn = document.createElement('button');
+  clearInputBtn.className = 'debug-btn debug-session-clear';
+  clearInputBtn.innerHTML = '&times;';
+  clearInputBtn.title = 'Clear session filter';
+  clearInputBtn.addEventListener('click', () => {
+    sessionInput.value = '';
+    filterSessionId = '';
+    renderAllEvents();
+  });
+  sessionFilterWrap.appendChild(clearInputBtn);
+  controls.appendChild(sessionFilterWrap);
 
   // Auto-scroll toggle
   const scrollBtn = document.createElement('button');
@@ -197,8 +264,11 @@ export function setDebugVisible(show: boolean): void {
     renderAllEvents();
     if (!countInterval && countBar) {
       const updateCount = () => {
-        const filtered = filterType ? events.filter(e => e.type === filterType) : events;
-        countBar!.textContent = `${filtered.length} events${filterType ? ` (filtered: ${filterType})` : ''}`;
+        const filtered = getFilteredEvents();
+        const filters: string[] = [];
+        if (filterType) filters.push(filterType);
+        if (filterSessionId && filterSessionId !== NO_MATCH) filters.push(getSessionName(filterSessionId));
+        countBar!.textContent = `${filtered.length} events${filters.length ? ` (filtered: ${filters.join(', ')})` : ''}`;
       };
       updateCount();
       countInterval = setInterval(updateCount, 500);

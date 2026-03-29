@@ -1,8 +1,8 @@
-import { app, BrowserWindow, dialog, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, powerMonitor, shell } from 'electron';
 import * as path from 'path';
 import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
 import { killAllPtys } from './pty-manager';
-import { flushState } from './store';
+import { flushState, loadState } from './store';
 import { createAppMenu } from './menu';
 import { restartAndResync } from './hook-status';
 import { initProviders, getAllProviders } from './providers/registry';
@@ -29,6 +29,21 @@ function createWindow(): void {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', '..', 'renderer', 'index.html'));
+
+  // Open external links in default browser instead of inside the app
+  const isHttpUrl = (url: string) => url.startsWith('http://') || url.startsWith('https://');
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isHttpUrl(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file://')) {
+      event.preventDefault();
+      if (isHttpUrl(url)) shell.openExternal(url);
+    }
+  });
 
   mainWindow.on('close', () => {
     flushState();
@@ -59,7 +74,8 @@ app.whenReady().then(async () => {
   }
 
   registerIpcHandlers();
-  createAppMenu();
+  const state = loadState();
+  createAppMenu(state.preferences?.debugMode ?? false);
   createWindow();
 
   // Install hooks and status scripts for all providers (after window creation so dialogs can attach)

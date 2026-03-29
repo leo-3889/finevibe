@@ -29,6 +29,7 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 
 ## Highlights
 
+- **P2P session sharing** — share live terminal sessions with teammates over encrypted peer-to-peer connections (WebRTC), with read-only or read-write modes and PIN-based authentication
 - **Multi-session management** — run multiple agent sessions per project, each in its own PTY
 - **Swarm mode** — grid view of all sessions at once, spin up new ones with `Cmd+\`
 - **Cost & context tracking** — real-time spend, token usage, and context window monitoring per session
@@ -41,11 +42,20 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 
 ## Install
 
+Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
+
 ### macOS
 
 Download the latest `.dmg` from [GitHub Releases](https://github.com/elirantutia/vibeyard/releases), drag to Applications, and launch. Signed and notarized by Apple.
 
-Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
+### npm (macOS)
+
+```bash
+npm i -g vibeyard
+vibeyard
+```
+
+On first run, the app is automatically downloaded and launched. No extra steps needed.
 
 ### Build from Source
 

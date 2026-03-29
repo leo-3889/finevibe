@@ -1,12 +1,9 @@
-export type SessionStatus = 'working' | 'waiting' | 'idle' | 'completed' | 'permission';
-
-const STALENESS_TIMEOUT_MS = 120_000;
+export type SessionStatus = 'working' | 'waiting' | 'idle' | 'completed' | 'input';
 
 type StatusChangeCallback = (sessionId: string, status: SessionStatus) => void;
 
 interface SessionState {
   status: SessionStatus;
-  stalenessTimer: ReturnType<typeof setTimeout> | null;
   interrupted: boolean;
 }
 
@@ -23,16 +20,16 @@ function setStatus(sessionId: string, status: SessionStatus): void {
 /**
  * Called when a hook-based status event is received from the main process.
  */
-export function setHookStatus(sessionId: string, status: 'working' | 'waiting' | 'completed' | 'permission'): void {
+export function setHookStatus(sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName?: string): void {
   let state = sessions.get(sessionId);
   if (!state) { initSession(sessionId); state = sessions.get(sessionId)!; }
-
-  if (state.stalenessTimer !== null) clearTimeout(state.stalenessTimer);
-  state.stalenessTimer = null;
 
   // Don't let Stop/StopFailure ('waiting') overwrite a just-set 'completed' status.
   // Completed is sticky until a new prompt ('working') or PTY exit ('idle').
   if (status === 'waiting' && state.status === 'completed') return;
+
+  // UserPromptSubmit is a deliberate new user action — always clears the interrupt flag.
+  if (hookName === 'UserPromptSubmit') state.interrupted = false;
 
   // Ignore stale 'working' hooks that arrive after an interrupt (e.g. PostToolUse
   // firing after the user pressed Escape and we already transitioned to 'waiting').
@@ -42,42 +39,16 @@ export function setHookStatus(sessionId: string, status: 'working' | 'waiting' |
   if (status !== 'working') state.interrupted = false;
 
   setStatus(sessionId, status);
-
-  if (status === 'working') {
-    state.stalenessTimer = setTimeout(() => {
-      state.stalenessTimer = null;
-      setStatus(sessionId, 'waiting');
-    }, STALENESS_TIMEOUT_MS);
-  }
 }
 
 export function initSession(sessionId: string): void {
-  sessions.set(sessionId, { status: 'waiting', stalenessTimer: null, interrupted: false });
+  sessions.set(sessionId, { status: 'waiting', interrupted: false });
   for (const cb of listeners) cb(sessionId, 'waiting');
-}
-
-/**
- * Called when PTY data is received — keeps the session in "working" state
- * as a fallback in case fs.watch misses hook status file changes.
- * Only extends an existing "working" state; does NOT upgrade from "waiting".
- */
-export function notifyPtyData(sessionId: string): void {
-  const state = sessions.get(sessionId);
-  if (!state || state.status !== 'working') return;
-
-  // Reset the staleness timer since we're still receiving output
-  if (state.stalenessTimer !== null) clearTimeout(state.stalenessTimer);
-  state.stalenessTimer = setTimeout(() => {
-    state.stalenessTimer = null;
-    setStatus(sessionId, 'waiting');
-  }, STALENESS_TIMEOUT_MS);
 }
 
 export function notifyInterrupt(sessionId: string): void {
   const state = sessions.get(sessionId);
   if (!state || state.status !== 'working') return;
-  if (state.stalenessTimer !== null) clearTimeout(state.stalenessTimer);
-  state.stalenessTimer = null;
   state.interrupted = true;
   setStatus(sessionId, 'waiting');
 }
@@ -85,15 +56,10 @@ export function notifyInterrupt(sessionId: string): void {
 export function setIdle(sessionId: string): void {
   const state = sessions.get(sessionId);
   if (!state) return;
-  if (state.stalenessTimer !== null) clearTimeout(state.stalenessTimer);
-  state.stalenessTimer = null;
   setStatus(sessionId, 'idle');
 }
 
 export function removeSession(sessionId: string): void {
-  const state = sessions.get(sessionId);
-  if (!state) return;
-  if (state.stalenessTimer !== null) clearTimeout(state.stalenessTimer);
   sessions.delete(sessionId);
 }
 
@@ -107,9 +73,6 @@ export function onChange(callback: StatusChangeCallback): void {
 
 /** @internal Test-only: reset all module state */
 export function _resetForTesting(): void {
-  for (const state of sessions.values()) {
-    if (state.stalenessTimer !== null) clearTimeout(state.stalenessTimer);
-  }
   sessions.clear();
   listeners.length = 0;
 }

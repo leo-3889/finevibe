@@ -37,6 +37,13 @@ import {
   getFileReaderInstance,
   setFileReaderLine,
 } from './file-reader.js';
+import {
+  getRemoteTerminalInstance,
+  destroyRemoteTerminal,
+  attachRemoteToContainer,
+  showRemotePane,
+  hideAllRemotePanes,
+} from './remote-terminal-pane.js';
 import { quickNewSession } from './tab-bar.js';
 
 const container = document.getElementById('terminal-container')!;
@@ -88,6 +95,9 @@ function onSessionAdded(data: unknown): void {
   } else if (session.type === 'mcp-inspector') {
     createInspectorPane(session.id);
     renderLayout();
+  } else if (session.type === 'remote-terminal') {
+    // Remote terminal pane is created by share-manager before session-added fires
+    renderLayout();
   } else {
     // Create and spawn immediately
     createTerminalPane(session.id, project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', (session.providerId as import('../../shared/types').ProviderId) || 'claude', project.id);
@@ -110,6 +120,8 @@ function onSessionRemoved(data: unknown): void {
   } else if (getInspectorInstance(sessionId)) {
     disconnectInspector(sessionId);
     destroyInspectorPane(sessionId);
+  } else if (getRemoteTerminalInstance(sessionId)) {
+    destroyRemoteTerminal(sessionId);
   } else {
     destroyTerminal(sessionId);
   }
@@ -144,6 +156,8 @@ export function renderLayout(): void {
       if (!getInspectorInstance(session.id)) {
         createInspectorPane(session.id);
       }
+    } else if (session.type === 'remote-terminal') {
+      // Remote terminal instances are created by share-manager, skip here
     } else {
       if (!getTerminalInstance(session.id)) {
         createTerminalPane(session.id, project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', session.providerId || 'claude', project.id);
@@ -155,6 +169,7 @@ export function renderLayout(): void {
   hideAllInspectorPanes();
   hideAllFileViewerPanes();
   hideAllFileReaderPanes();
+  hideAllRemotePanes();
 
   if (project.layout.mode === 'swarm' && project.layout.splitPanes.length >= 1) {
     renderSwarmMode(project);
@@ -181,6 +196,9 @@ function attachNonCliPane(session: { id: string; type?: string; fileReaderLine?:
   } else if (session.type === 'mcp-inspector') {
     attachInspectorToContainer(session.id, target);
     showInspectorPane(session.id, inSplit);
+  } else if (session.type === 'remote-terminal') {
+    attachRemoteToContainer(session.id, target);
+    showRemotePane(session.id, inSplit);
   }
 }
 

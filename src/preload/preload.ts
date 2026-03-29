@@ -15,7 +15,7 @@ export interface VibeyardApi {
     onExit(callback: (sessionId: string, exitCode: number, signal?: number) => void): () => void;
   };
   session: {
-    onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'permission') => void): () => void;
+    onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     /** @deprecated Use onCliSessionId instead */
     onClaudeSessionId(callback: (sessionId: string, claudeSessionId: string) => void): () => void;
@@ -104,6 +104,7 @@ export interface VibeyardApi {
     onGotoSession(callback: (index: number) => void): () => void;
     onToggleDebug(callback: () => void): () => void;
     onUsageStats(callback: () => void): () => void;
+    rebuild(debugMode: boolean): Promise<void>;
   };
 }
 
@@ -135,8 +136,8 @@ const api: VibeyardApi = {
   },
   session: {
     onHookStatus: (callback) =>
-      onChannel('session:hookStatus', (sessionId, status) =>
-        callback(sessionId as string, status as 'working' | 'waiting' | 'completed' | 'permission')),
+      onChannel('session:hookStatus', (sessionId, status, hookName) =>
+        callback(sessionId as string, status as 'working' | 'waiting' | 'completed' | 'input', (hookName as string) || '')),
     onCliSessionId: (callback) =>
       onChannel('session:cliSessionId', (sessionId, cliSessionId) =>
         callback(sessionId as string, cliSessionId as string)),
@@ -231,6 +232,7 @@ const api: VibeyardApi = {
     onGotoSession: (cb) => onChannel('menu:goto-session', (index) => cb(index as number)),
     onToggleDebug: (cb) => onChannel('menu:toggle-debug', cb),
     onUsageStats: (cb) => onChannel('menu:usage-stats', cb),
+    rebuild: (debugMode) => ipcRenderer.invoke('menu:rebuild', debugMode),
   },
 };
 

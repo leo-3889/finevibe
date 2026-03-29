@@ -79,6 +79,13 @@ export function createTerminalPane(
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
     cursorBlink: true,
     allowProposedApi: true,
+    linkHandler: {
+      activate: (event, uri) => {
+        if (event.metaKey || event.ctrlKey) {
+          window.vibeyard.app.openExternal(uri);
+        }
+      },
+    },
   });
 
   const fitAddon = new FitAddon();
@@ -87,10 +94,11 @@ export function createTerminalPane(
   const searchAddon = new SearchAddon();
   terminal.loadAddon(searchAddon);
 
-  const webLinksAddon = new WebLinksAddon((_, url) => {
-    window.vibeyard.app.openExternal(url);
-  });
-  terminal.loadAddon(webLinksAddon);
+  terminal.loadAddon(new WebLinksAddon((event, url) => {
+    if (event.metaKey || event.ctrlKey) {
+      window.vibeyard.app.openExternal(url);
+    }
+  }));
 
   // Let Cmd+F bubble up to the document listener instead of being consumed by xterm
   terminal.attachCustomKeyEventHandler((e) => {

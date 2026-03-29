@@ -1,4 +1,5 @@
 import { appState } from '../state.js';
+import { areaLabel } from '../dom-utils.js';
 import { destroySearchBar } from './search-bar.js';
 
 interface FileViewerInstance {
@@ -82,7 +83,7 @@ export function createFileViewerPane(sessionId: string, filePath: string, area: 
 
   const areaBadge = document.createElement('span');
   areaBadge.className = `file-viewer-area-badge ${area}`;
-  areaBadge.textContent = area;
+  areaBadge.textContent = areaLabel(area);
 
   header.appendChild(pathSpan);
   header.appendChild(areaBadge);

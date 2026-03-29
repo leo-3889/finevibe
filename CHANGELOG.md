@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.17] - 2026-03-28
+
+### Features
+
+- P2P session sharing via WebRTC
+- CLI launcher for npm global install (npm i -g vibeyard)
+- MacOS Intel (x64) builds alongside ARM64
+- Middle-click to close session tabs
+- Right-click context menu to project items in sidebar
+- Debug mode preference toggle and gate dev-only UI behind it
+- Copy internal ID option to session tab context menu
+- Hook event name to debug panel hookStatus output
+- Cmd+Click to open terminal URLs in default browser
+- What's New dialog on startup after app update
+
+### Fixes
+
+- Auto-focus terminal when creating new session via + button
+- Session status stuck on waiting after interrupt by passing hookName to setHookStatus
+- Diff viewer badge showing raw "working" instead of "Changes"
+
+### Changes
+
+- Sessions menu from menu bar, keep shortcuts as hidden items
+- Session status 'permission' to 'input' for broader user-input semantics
+- Session activity staleness timeout
+
 ## [0.2.12] - 2026-03-26
 
 ### Features
