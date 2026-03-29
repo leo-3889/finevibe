@@ -2,29 +2,13 @@ import { onLargeFileAlert, type LargeFileAlert } from '../tools/large-file-detec
 import { dismissInsight } from '../session-insights.js';
 import { appState } from '../state.js';
 import { showAlertBanner, removeAlertBanner } from './alert-banner.js';
-
-let pendingActionTimer: ReturnType<typeof setTimeout> | null = null;
+import { setPendingPrompt } from './terminal-pane.js';
 
 export function initLargeFileAlert(): void {
   onLargeFileAlert((alert) => {
     if (appState.activeSession?.id !== alert.sessionId) return;
     requestAnimationFrame(() => showLargeFileBanner(alert));
   });
-
-  appState.on('session-removed', () => {
-    clearPendingAction();
-  });
-
-  appState.on('session-changed', () => {
-    clearPendingAction();
-  });
-}
-
-function clearPendingAction(): void {
-  if (pendingActionTimer !== null) {
-    clearTimeout(pendingActionTimer);
-    pendingActionTimer = null;
-  }
 }
 
 function getFilename(filePath: string): string {
@@ -43,11 +27,7 @@ function handleSplitAction(alert: LargeFileAlert): void {
 
   removeAlertBanner();
 
-  clearPendingAction();
-  pendingActionTimer = setTimeout(() => {
-    pendingActionTimer = null;
-    window.vibeyard.pty.write(session.id, prompt + '\r');
-  }, 2000);
+  setPendingPrompt(session.id, prompt);
 }
 
 function showLargeFileBanner(alert: LargeFileAlert): void {
