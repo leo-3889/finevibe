@@ -7,10 +7,12 @@ interface FileViewerInstance {
   filePath: string;
   area: string;
   worktreePath?: string;
+  resolvedPath: string | null;
   loaded: boolean;
 }
 
 const instances = new Map<string, FileViewerInstance>();
+let unwatchFileChanged: (() => void) | null = null;
 
 function escapeHtml(s: string): string {
   const d = document.createElement('div');
@@ -43,6 +45,14 @@ function parseDiffLines(diff: string): HTMLElement {
   return content;
 }
 
+function resolveFilePath(instance: FileViewerInstance): string {
+  const project = appState.activeProject;
+  const basePath = instance.worktreePath ?? project?.path ?? '';
+  return instance.filePath.startsWith('/')
+    ? instance.filePath
+    : `${basePath}/${instance.filePath}`;
+}
+
 async function loadDiff(instance: FileViewerInstance): Promise<void> {
   if (instance.loaded) return;
 
@@ -64,6 +74,17 @@ async function loadDiff(instance: FileViewerInstance): Promise<void> {
   } catch {
     loading.innerHTML = '<div class="diff-line context">Failed to load diff</div>';
   }
+}
+
+function ensureFileChangedListener(): void {
+  if (unwatchFileChanged) return;
+  unwatchFileChanged = window.vibeyard.fs.onFileChanged((changedPath: string) => {
+    for (const [sessionId, instance] of instances) {
+      if (instance.resolvedPath === changedPath && instance.loaded) {
+        reloadFileViewer(sessionId);
+      }
+    }
+  });
 }
 
 export function createFileViewerPane(sessionId: string, filePath: string, area: string, worktreePath?: string): void {
@@ -94,13 +115,16 @@ export function createFileViewerPane(sessionId: string, filePath: string, area: 
   body.className = 'file-viewer-body';
   el.appendChild(body);
 
-  const instance: FileViewerInstance = { element: el, filePath, area, worktreePath, loaded: false };
+  const instance: FileViewerInstance = { element: el, filePath, area, worktreePath, resolvedPath: null, loaded: false };
   instances.set(sessionId, instance);
 }
 
 export function destroyFileViewerPane(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
+  if (instance.resolvedPath) {
+    window.vibeyard.fs.unwatchFile(instance.resolvedPath);
+  }
   destroySearchBar(sessionId);
   instance.element.remove();
   instances.delete(sessionId);
@@ -112,6 +136,15 @@ export function showFileViewerPane(sessionId: string, isSplit: boolean): void {
   instance.element.style.display = 'flex';
   if (isSplit) instance.element.classList.add('split');
   else instance.element.classList.remove('split');
+
+  // Start watching the file for external changes
+  if (!instance.resolvedPath) {
+    const fullPath = resolveFilePath(instance);
+    instance.resolvedPath = fullPath;
+    ensureFileChangedListener();
+    window.vibeyard.fs.watchFile(fullPath);
+  }
+
   loadDiff(instance);
 }
 
