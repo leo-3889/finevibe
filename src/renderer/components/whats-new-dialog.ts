@@ -83,6 +83,7 @@ function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
 
   bodyEl.appendChild(container);
 
+  const prevConfirmText = btnConfirm.textContent;
   btnConfirm.textContent = 'Got it';
   overlay.classList.remove('hidden');
 
@@ -91,8 +92,14 @@ function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
     (overlay as any)._cleanup = null;
   }
 
-  const prevConfirmText = btnConfirm.textContent;
+  const cleanup = () => {
+    btnConfirm.removeEventListener('click', close);
+    document.removeEventListener('keydown', handleKeydown);
+    (overlay as any)._cleanup = null;
+  };
+
   const close = () => {
+    cleanup();
     closeModal();
     modal.classList.remove('modal-wide');
     btnCancel.style.display = '';
@@ -107,14 +114,9 @@ function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
   };
 
   btnConfirm.addEventListener('click', close);
-  btnCancel.addEventListener('click', close);
   document.addEventListener('keydown', handleKeydown);
 
-  (overlay as any)._cleanup = () => {
-    btnConfirm.removeEventListener('click', close);
-    btnCancel.removeEventListener('click', close);
-    document.removeEventListener('keydown', handleKeydown);
-  };
+  (overlay as any)._cleanup = cleanup;
 }
 
 function buildSection(title: string, items: string[]): HTMLElement {
