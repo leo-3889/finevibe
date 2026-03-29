@@ -26,7 +26,16 @@ export function createAppMenu(debugMode = false): void {
           click: () => sendToRenderer('menu:new-session'),
         },
         { type: 'separator' },
-        isMac ? { role: 'close' as const } : { role: 'quit' as const },
+        isMac ? {
+          label: 'Close Session',
+          accelerator: 'CmdOrCtrl+W',
+          click: () => sendToRenderer('menu:close-session'),
+        } : { role: 'quit' as const },
+        ...(isMac ? [{
+          label: 'Close Window',
+          accelerator: 'CmdOrCtrl+Shift+W',
+          click: () => { BrowserWindow.getFocusedWindow()?.close(); },
+        }] : []),
       ],
     },
     {

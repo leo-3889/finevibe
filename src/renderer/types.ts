@@ -85,5 +85,6 @@ export interface VibeyardApi {
     onGotoSession(callback: (index: number) => void): () => void;
     onToggleDebug(callback: () => void): () => void;
     onUsageStats(callback: () => void): () => void;
+    onCloseSession(callback: () => void): () => void;
   };
 }

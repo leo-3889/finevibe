@@ -23,6 +23,11 @@ export function initKeybindings(): void {
   window.vibeyard.menu.onPrevSession(() => appState.cycleSession(-1));
   window.vibeyard.menu.onGotoSession((index) => appState.gotoSession(index));
   window.vibeyard.menu.onToggleDebug(() => toggleDebugPanel());
+  window.vibeyard.menu.onCloseSession(() => {
+    const project = appState.activeProject;
+    const session = appState.activeSession;
+    if (project && session) appState.removeSession(project.id, session.id);
+  });
 
   // Register shortcut handlers
   shortcutManager.registerHandler('new-session', () => quickNewSession());
