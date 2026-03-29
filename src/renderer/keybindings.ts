@@ -5,7 +5,8 @@ import { toggleProjectTerminal } from './components/project-terminal.js';
 import { toggleDebugPanel } from './components/debug-panel.js';
 import { showHelpDialog } from './components/help-dialog.js';
 import { getFocusedSessionId } from './components/terminal-pane.js';
-import { showSearchBar, TerminalSearchBackend } from './components/search-bar.js';
+import { showSearchBar, TerminalSearchBackend, ShellTerminalSearchBackend } from './components/search-bar.js';
+import { getActiveShellSessionId } from './components/project-terminal.js';
 import { toggleGitPanel } from './components/git-panel.js';
 import { showQuickOpen } from './components/quick-open.js';
 import { shortcutManager } from './shortcuts.js';
@@ -45,6 +46,16 @@ export function initKeybindings(): void {
   shortcutManager.registerHandler('git-panel', () => toggleGitPanel());
   shortcutManager.registerHandler('quick-open', () => showQuickOpen());
   shortcutManager.registerHandler('find-in-terminal', () => {
+    const shellPanel = document.getElementById('project-terminal-panel');
+    if (shellPanel && !shellPanel.classList.contains('hidden') &&
+        shellPanel.contains(document.activeElement)) {
+      const shellSessionId = getActiveShellSessionId();
+      if (shellSessionId) {
+        showSearchBar(shellSessionId, ShellTerminalSearchBackend(shellSessionId));
+        return;
+      }
+    }
+
     const session = appState.activeSession;
     if (!session) return;
 
@@ -62,7 +73,7 @@ export function initKeybindings(): void {
       showSearchBar(session.id, new DomSearchBackend(body, '.diff-line'));
     } else {
       const sessionId = getFocusedSessionId();
-      if (sessionId) showSearchBar(sessionId, new TerminalSearchBackend(sessionId));
+      if (sessionId) showSearchBar(sessionId, TerminalSearchBackend(sessionId));
     }
   });
   shortcutManager.registerHandler('help', () => showHelpDialog());

@@ -1,12 +1,15 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { SearchAddon } from '@xterm/addon-search';
 import { appState } from '../state.js';
 import { fitAllVisible } from './terminal-pane.js';
+import { destroySearchBar, hideSearchBar } from './search-bar.js';
 
 interface ShellTerminalInstance {
   terminal: Terminal;
   fitAddon: FitAddon;
+  searchAddon: SearchAddon;
   element: HTMLDivElement;
   projectId: string;
   sessionId: string;
@@ -33,6 +36,7 @@ function ensureShell(projectId: string, projectPath: string): ShellTerminalInsta
   const element = document.createElement('div');
   element.style.width = '100%';
   element.style.height = '100%';
+  element.style.position = 'relative';
 
   const terminal = new Terminal({
     theme: {
@@ -58,11 +62,22 @@ function ensureShell(projectId: string, projectPath: string): ShellTerminalInsta
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
 
+  const searchAddon = new SearchAddon();
+  terminal.loadAddon(searchAddon);
+
+  terminal.attachCustomKeyEventHandler((e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+      return false;
+    }
+    return true;
+  });
+
   const sessionId = shellSessionId(projectId);
 
   const instance: ShellTerminalInstance = {
     terminal,
     fitAddon,
+    searchAddon,
     element,
     projectId,
     sessionId,
@@ -136,6 +151,10 @@ function showPanel(projectId: string): void {
 }
 
 function hidePanel(): void {
+  if (currentProjectId) {
+    const instance = shells.get(currentProjectId);
+    if (instance) hideSearchBar(instance.sessionId);
+  }
   panelEl.classList.add('hidden');
   resizeHandleEl.classList.add('hidden');
   requestAnimationFrame(() => fitAllVisible());
@@ -210,6 +229,7 @@ function isShellSessionId(sessionId: string): boolean {
 function destroyShell(projectId: string): void {
   const instance = shells.get(projectId);
   if (!instance) return;
+  destroySearchBar(instance.sessionId);
   window.vibeyard.pty.kill(instance.sessionId);
   instance.terminal.dispose();
   instance.element.remove();
@@ -313,6 +333,17 @@ export function initProjectTerminal(): void {
     }
   });
   resizeObserver.observe(containerEl);
+}
+
+export function getShellTerminalInstance(sessionId: string): ShellTerminalInstance | undefined {
+  const projectId = sessionId.replace('shell-', '');
+  return shells.get(projectId);
+}
+
+export function getActiveShellSessionId(): string | null {
+  if (!currentProjectId || panelEl.classList.contains('hidden')) return null;
+  const instance = shells.get(currentProjectId);
+  return instance?.sessionId ?? null;
 }
 
 export { isShellSessionId };
