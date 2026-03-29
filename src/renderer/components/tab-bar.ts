@@ -1,11 +1,10 @@
 import { appState, MAX_SESSION_NAME_LENGTH, type ProjectRecord, type SessionRecord } from '../state.js';
-import { showModal, closeModal, FieldDef } from './modal.js';
+import { showModal, closeModal, setModalError, FieldDef } from './modal.js';
 import { onChange as onStatusChange, getStatus, type SessionStatus } from '../session-activity.js';
-import { onChange as onGitStatusChange, getGitStatus, type GitStatus } from '../git-status.js';
+import { onChange as onGitStatusChange, getGitStatus, getActiveGitPath, refreshGitStatus } from '../git-status.js';
 
 import { isUnread, onChange as onUnreadChange } from '../session-unread.js';
 import { showHelpDialog } from './help-dialog.js';
-import { scrollToGitPanel } from './git-panel.js';
 import { showShareDialog } from './share-dialog.js';
 import { showJoinDialog } from './join-dialog.js';
 import { isSharing } from '../sharing/peer-host.js';
@@ -35,7 +34,7 @@ export function initTabBar(): void {
   btnAddMcpInspector.addEventListener('click', promptNewMcpInspector);
   btnToggleSwarm.addEventListener('click', () => appState.toggleSwarm());
   btnHelp.addEventListener('click', () => showHelpDialog());
-  gitStatusEl.addEventListener('click', () => scrollToGitPanel());
+  gitStatusEl.addEventListener('click', (e) => showBranchContextMenu(e));
 
   appState.on('state-loaded', render);
   appState.on('project-changed', render);
@@ -461,6 +460,126 @@ function renderGitStatus(): void {
   if (status.conflicted > 0) parts.push(`<span class="git-conflicted">!${status.conflicted}</span>`);
 
   gitStatusEl.innerHTML = parts.join(' ');
+}
+
+async function showBranchContextMenu(e: MouseEvent): Promise<void> {
+  e.stopPropagation();
+  hideTabContextMenu();
+
+  const project = appState.activeProject;
+  if (!project) return;
+
+  const status = getGitStatus(project.id);
+  if (!status || !status.isGitRepo) return;
+
+  const gitPath = getActiveGitPath(project.id);
+
+  const menu = document.createElement('div');
+  menu.className = 'tab-context-menu';
+
+  // Position below the git status element
+  const elRect = gitStatusEl.getBoundingClientRect();
+  menu.style.left = `${elRect.left}px`;
+  menu.style.top = `${elRect.bottom + 4}px`;
+
+  // Show loading
+  const loadingItem = document.createElement('div');
+  loadingItem.className = 'tab-context-menu-item disabled';
+  loadingItem.textContent = 'Loading branches\u2026';
+  menu.appendChild(loadingItem);
+
+  document.body.appendChild(menu);
+  activeContextMenu = menu;
+
+  try {
+    const branches = await window.vibeyard.git.listBranches(gitPath);
+
+    // Menu was dismissed during loading
+    if (activeContextMenu !== menu) return;
+
+    menu.innerHTML = '';
+
+    for (const branch of branches) {
+      const item = document.createElement('div');
+      item.className = 'tab-context-menu-item' + (branch.current ? ' active' : '');
+      item.textContent = (branch.current ? '\u2713 ' : '  ') + branch.name;
+      if (!branch.current) {
+        item.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          hideTabContextMenu();
+          switchBranch(gitPath, branch.name);
+        });
+      }
+      menu.appendChild(item);
+    }
+
+    // Separator + Create New Branch
+    const separator = document.createElement('div');
+    separator.className = 'tab-context-menu-separator';
+    menu.appendChild(separator);
+
+    const createItem = document.createElement('div');
+    createItem.className = 'tab-context-menu-item';
+    createItem.textContent = 'Create New Branch\u2026';
+    createItem.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      hideTabContextMenu();
+      promptCreateBranch(gitPath);
+    });
+    menu.appendChild(createItem);
+
+    // Adjust if off-screen
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+    if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+  } catch {
+    if (activeContextMenu !== menu) return;
+    menu.innerHTML = '';
+    const errItem = document.createElement('div');
+    errItem.className = 'tab-context-menu-item disabled';
+    errItem.textContent = 'Failed to load branches';
+    menu.appendChild(errItem);
+  }
+}
+
+async function switchBranch(gitPath: string, branchName: string): Promise<void> {
+  const project = appState.activeProject;
+  const freshStatus = project ? getGitStatus(project.id) : null;
+  const dirty = freshStatus ? freshStatus.staged + freshStatus.modified + freshStatus.conflicted : 0;
+  if (dirty > 0) {
+    const confirmed = confirm(`You have uncommitted changes. Switch to "${branchName}" anyway?`);
+    if (!confirmed) return;
+  }
+
+  try {
+    await window.vibeyard.git.checkoutBranch(gitPath, branchName);
+    refreshGitStatus();
+  } catch (err) {
+    alert(`Failed to switch branch: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+function promptCreateBranch(gitPath: string): void {
+  showModal('Create New Branch', [
+    { label: 'Branch name', id: 'branch-name', placeholder: 'feature/my-branch' },
+  ], async (values) => {
+    const name = values['branch-name']?.trim();
+    if (!name) {
+      setModalError('branch-name', 'Branch name is required');
+      return;
+    }
+    if (/\s/.test(name)) {
+      setModalError('branch-name', 'Branch name cannot contain spaces');
+      return;
+    }
+    try {
+      await window.vibeyard.git.createBranch(gitPath, name);
+      closeModal();
+      refreshGitStatus();
+    } catch (err) {
+      setModalError('branch-name', err instanceof Error ? err.message : 'Failed to create branch');
+    }
+  });
 }
 
 export function quickNewSession(): void {

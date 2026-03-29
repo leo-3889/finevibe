@@ -1559,11 +1559,16 @@ body.debug-panel-open #app {
   cursor: pointer;
 }
 
-.tab-context-menu-item:hover:not(.disabled) {
+.tab-context-menu-item:hover:not(.disabled):not(.active) {
   background: var(--bg-hover);
 }
 
 .tab-context-menu-item.disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.tab-context-menu-item.active {
   color: var(--text-muted);
   cursor: default;
 }

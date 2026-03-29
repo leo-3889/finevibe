@@ -1,4 +1,7 @@
+import { SearchAddon } from '@xterm/addon-search';
+import { Terminal } from '@xterm/xterm';
 import { getSearchAddon, getTerminalInstance } from './terminal-pane.js';
+import { getShellTerminalInstance } from './project-terminal.js';
 
 export interface SearchBackend {
   findNext(query: string, options: { caseSensitive: boolean; regex: boolean }): void;
@@ -8,33 +11,50 @@ export interface SearchBackend {
   focus(): void;
 }
 
-export class TerminalSearchBackend implements SearchBackend {
-  constructor(private sessionId: string) {}
+interface TerminalLike {
+  element: HTMLElement;
+  terminal: Terminal;
+  searchAddon: SearchAddon;
+}
+
+type InstanceResolver = (sessionId: string) => TerminalLike | undefined;
+
+export class XtermSearchBackend implements SearchBackend {
+  constructor(private sessionId: string, private resolve: InstanceResolver) {}
 
   findNext(query: string, options: { caseSensitive: boolean; regex: boolean }): void {
-    const addon = getSearchAddon(this.sessionId);
-    if (addon) addon.findNext(query, options);
+    this.resolve(this.sessionId)?.searchAddon.findNext(query, options);
   }
 
   findPrevious(query: string, options: { caseSensitive: boolean; regex: boolean }): void {
-    const addon = getSearchAddon(this.sessionId);
-    if (addon) addon.findPrevious(query, options);
+    this.resolve(this.sessionId)?.searchAddon.findPrevious(query, options);
   }
 
   clearDecorations(): void {
-    const addon = getSearchAddon(this.sessionId);
-    if (addon) addon.clearDecorations();
+    this.resolve(this.sessionId)?.searchAddon.clearDecorations();
   }
 
   getContainer(): HTMLElement {
-    const instance = getTerminalInstance(this.sessionId);
-    return instance!.element;
+    return this.resolve(this.sessionId)!.element;
   }
 
   focus(): void {
-    const instance = getTerminalInstance(this.sessionId);
-    if (instance) instance.terminal.focus();
+    this.resolve(this.sessionId)?.terminal.focus();
   }
+}
+
+export function TerminalSearchBackend(sessionId: string): XtermSearchBackend {
+  return new XtermSearchBackend(sessionId, (id) => {
+    const instance = getTerminalInstance(id);
+    if (!instance) return undefined;
+    const searchAddon = getSearchAddon(id);
+    if (!searchAddon) return undefined;
+    return { element: instance.element, terminal: instance.terminal, searchAddon };
+  });
+}
+
+export function ShellTerminalSearchBackend(sessionId: string): XtermSearchBackend {
+  return new XtermSearchBackend(sessionId, (id) => getShellTerminalInstance(id));
 }
 
 const searchBars = new Map<string, { bar: HTMLDivElement; backend: SearchBackend }>();

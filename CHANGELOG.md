@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.18] - 2026-03-29
+
+### Features
+
+- Ctrl+F search support in project shell terminal
+- Git branch switcher menu when clicking branch name in status bar
+- Cmd+W closes active session, Cmd+Shift+W closes window
+- Make GitHub issue/PR references clickable in terminals
+- Make URLs clickable in Claude Code session terminals
+
+### Changes
+
+- Update package-lock.json to add peer dependencies for several packages
+- Clean up CHANGELOG.md by removing old versions
+
 ## [0.2.17] - 2026-03-28
 
 ### Features
