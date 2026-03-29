@@ -158,6 +158,8 @@ export function setActiveWorktree(projectId: string, path: string | null): void 
   for (const cb of worktreeChangeListeners) cb();
 }
 
+export { poll as refreshGitStatus };
+
 export function onChange(callback: GitStatusCallback): void {
   listeners.push(callback);
 }

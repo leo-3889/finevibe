@@ -8,7 +8,7 @@ import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { loadState, saveState, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus } from './hook-status';
-import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl } from './git-status';
+import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
@@ -237,6 +237,18 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
     startGitWatcher(win, projectPath);
+  });
+
+  ipcMain.handle('git:listBranches', (_event, projectPath: string) => listGitBranches(projectPath));
+
+  ipcMain.handle('git:checkoutBranch', async (_event, projectPath: string, branch: string) => {
+    await checkoutGitBranch(projectPath, branch);
+    notifyGitChanged();
+  });
+
+  ipcMain.handle('git:createBranch', async (_event, projectPath: string, branch: string) => {
+    await createGitBranch(projectPath, branch);
+    notifyGitChanged();
   });
 
   ipcMain.handle('git:openInEditor', (_event, projectPath: string, filePath: string) => {

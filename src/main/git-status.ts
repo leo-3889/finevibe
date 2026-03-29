@@ -194,6 +194,43 @@ function execGit(cwd: string, args: string[]): Promise<void> {
   });
 }
 
+function execGitWithOutput(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
+    });
+  });
+}
+
+export interface GitBranch {
+  name: string;
+  current: boolean;
+}
+
+export async function listGitBranches(cwd: string): Promise<GitBranch[]> {
+  const stdout = await execGitWithOutput(cwd, ['branch', '--list']);
+  const branches: GitBranch[] = [];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trimEnd();
+    if (!trimmed) continue;
+    const current = trimmed.startsWith('* ');
+    const name = trimmed.slice(2);
+    // Skip detached HEAD entries like "(HEAD detached at ...)"
+    if (name.startsWith('(')) continue;
+    branches.push({ name, current });
+  }
+  return branches;
+}
+
+export async function checkoutGitBranch(cwd: string, branch: string): Promise<void> {
+  await execGit(cwd, ['checkout', branch]);
+}
+
+export async function createGitBranch(cwd: string, branch: string): Promise<void> {
+  await execGit(cwd, ['checkout', '-b', branch]);
+}
+
 export function gitStageFile(cwd: string, filePath: string): Promise<void> {
   return execGit(cwd, ['add', '--', filePath]);
 }
