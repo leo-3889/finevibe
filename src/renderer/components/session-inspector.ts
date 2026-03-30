@@ -47,7 +47,8 @@ export function openInspector(sessionId: string): void {
     const container = document.getElementById('terminal-container')!;
     container.appendChild(inspectorPanel);
     container.classList.add('inspector-open');
-    requestAnimationFrame(() => fitAllVisible());
+    // Dynamic import to avoid circular dependency (split-layout imports from session-inspector)
+    import('./split-layout.js').then(m => m.renderLayout());
   }
 
   renderActiveTab();
@@ -67,7 +68,8 @@ export function closeInspector(): void {
   inspectorPanel = null;
   inspectedSessionId = null;
 
-  requestAnimationFrame(() => fitAllVisible());
+  // Dynamic import to avoid circular dependency (split-layout imports from session-inspector)
+  import('./split-layout.js').then(m => m.renderLayout());
 }
 
 export function toggleInspector(): void {

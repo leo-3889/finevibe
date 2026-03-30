@@ -289,10 +289,18 @@ function renderSwarmMode(project: ProjectRecord): void {
     ? activeSession
     : [...project.sessions].reverse().find(s => s.type && s.type !== 'claude');
 
+  const hasInspector = isInspectorOpen();
+
   setContainerClass('swarm-mode');
 
-  if (nonCliSession) {
-    container.style.gridTemplateColumns = '1fr 1fr';
+  const needsWrapper = nonCliSession || hasInspector;
+
+  if (needsWrapper) {
+    const colParts: string[] = ['1fr'];
+    if (nonCliSession) colParts.push('1fr');
+    if (hasInspector) colParts.push('var(--inspector-width, 350px)');
+
+    container.style.gridTemplateColumns = colParts.join(' ');
     container.style.gridTemplateRows = '1fr';
 
     const gridWrapper = document.createElement('div');
@@ -303,7 +311,17 @@ function renderSwarmMode(project: ProjectRecord): void {
 
     showPanes(project, gridWrapper);
     appendEmptyCells(cols * rows - count, gridWrapper);
-    attachNonCliPane(nonCliSession, container, true);
+
+    if (nonCliSession) {
+      attachNonCliPane(nonCliSession, container, true);
+    }
+
+    if (hasInspector) {
+      const inspectorEl = container.querySelector('#session-inspector');
+      if (inspectorEl) {
+        container.appendChild(inspectorEl);
+      }
+    }
   } else {
     container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;

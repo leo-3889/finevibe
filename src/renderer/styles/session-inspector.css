@@ -2,15 +2,15 @@
    Session Inspector Panel
    ============================================ */
 
-#terminal-container.inspector-open {
+#terminal-container.inspector-open:not(.swarm-mode) {
   display: grid !important;
   grid-template-columns: 1fr var(--inspector-width, 350px);
 }
 
-#terminal-container.inspector-open .terminal-pane,
-#terminal-container.inspector-open .file-viewer-pane,
-#terminal-container.inspector-open .file-reader-pane,
-#terminal-container.inspector-open .remote-terminal-pane {
+#terminal-container.inspector-open:not(.swarm-mode) .terminal-pane,
+#terminal-container.inspector-open:not(.swarm-mode) .file-viewer-pane,
+#terminal-container.inspector-open:not(.swarm-mode) .file-reader-pane,
+#terminal-container.inspector-open:not(.swarm-mode) .remote-terminal-pane {
   grid-column: 1;
   position: relative;
   top: auto;
