@@ -88,7 +88,10 @@ export function toggleInspector(): void {
 export function initSessionInspector(): void {
   // Auto-follow active session
   appState.on('session-changed', () => {
-    if (!isInspectorOpen()) return;
+    if (!isInspectorOpen()) {
+      reopenOnNextSession = false;
+      return;
+    }
     const project = appState.activeProject;
     if (project?.activeSessionId && project.activeSessionId !== inspectedSessionId) {
       const session = project.sessions.find(s => s.id === project.activeSessionId);
@@ -98,6 +101,11 @@ export function initSessionInspector(): void {
         renderActiveTab();
       }
     }
+  });
+
+  // Reset reopen flag when switching projects
+  appState.on('project-changed', () => {
+    reopenOnNextSession = false;
   });
 
   // Clear inspector events when /clear resets the CLI session
