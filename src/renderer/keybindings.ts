@@ -10,7 +10,7 @@ import { getActiveShellSessionId } from './components/project-terminal.js';
 import { toggleGitPanel } from './components/git-panel.js';
 import { showQuickOpen } from './components/quick-open.js';
 import { shortcutManager } from './shortcuts.js';
-import { getFileReaderInstance } from './components/file-reader.js';
+import { getFileReaderInstance, showGoToLineBar } from './components/file-reader.js';
 import { getFileViewerInstance } from './components/file-viewer.js';
 import { DomSearchBackend } from './components/dom-search-backend.js';
 
@@ -75,6 +75,12 @@ export function initKeybindings(): void {
     } else {
       const sessionId = getFocusedSessionId();
       if (sessionId) showSearchBar(sessionId, TerminalSearchBackend(sessionId));
+    }
+  });
+  shortcutManager.registerHandler('goto-line', () => {
+    const session = appState.activeSession;
+    if (session?.type === 'file-reader') {
+      showGoToLineBar(session.id);
     }
   });
   shortcutManager.registerHandler('help', () => showHelpDialog());

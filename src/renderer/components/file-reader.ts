@@ -133,6 +133,7 @@ export function destroyFileReaderPane(sessionId: string): void {
     window.vibeyard.fs.unwatchFile(instance.resolvedPath);
   }
   destroySearchBar(sessionId);
+  destroyGoToLineBar(sessionId);
   instance.element.remove();
   instances.delete(sessionId);
 }
@@ -205,4 +206,78 @@ export function attachFileReaderToContainer(sessionId: string, container: HTMLEl
 
 export function getFileReaderInstance(sessionId: string): FileReaderInstance | undefined {
   return instances.get(sessionId);
+}
+
+const goToLineBars = new Map<string, { bar: HTMLDivElement; input: HTMLInputElement }>();
+
+export function showGoToLineBar(sessionId: string): void {
+  const instance = instances.get(sessionId);
+  if (!instance) return;
+
+  const existing = goToLineBars.get(sessionId);
+  if (existing) {
+    existing.bar.classList.remove('hidden');
+    existing.input.focus();
+    existing.input.select();
+    return;
+  }
+
+  const bar = document.createElement('div');
+  bar.className = 'goto-line-bar';
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '1';
+  input.placeholder = 'Go to line...';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'search-nav-btn search-close-btn';
+  closeBtn.textContent = '\u2715';
+  closeBtn.title = 'Close (Escape)';
+
+  bar.appendChild(input);
+  bar.appendChild(closeBtn);
+
+  instance.element.appendChild(bar);
+  goToLineBars.set(sessionId, { bar, input });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const line = parseInt(input.value, 10);
+      if (line > 0) {
+        setFileReaderLine(sessionId, line);
+      }
+      hideGoToLineBar(sessionId);
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      hideGoToLineBar(sessionId);
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'l') {
+      e.preventDefault();
+      input.select();
+    }
+  });
+
+  closeBtn.addEventListener('click', () => hideGoToLineBar(sessionId));
+
+  input.focus();
+}
+
+export function hideGoToLineBar(sessionId: string): void {
+  const entry = goToLineBars.get(sessionId);
+  if (!entry) return;
+  entry.bar.classList.add('hidden');
+  const instance = instances.get(sessionId);
+  if (instance) {
+    instance.element.querySelector('.file-reader-body')?.focus();
+  }
+}
+
+function destroyGoToLineBar(sessionId: string): void {
+  const entry = goToLineBars.get(sessionId);
+  if (!entry) return;
+  entry.bar.remove();
+  goToLineBars.delete(sessionId);
 }
