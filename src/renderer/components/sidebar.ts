@@ -115,18 +115,103 @@ export function promptNewProject(): void {
     },
   ], async (values) => {
     const name = values['project-name']?.trim();
-    const path = values['project-path']?.trim();
-    if (!name || !path) return;
+    const rawPath = values['project-path']?.trim();
+    if (!name || !rawPath) return;
 
-    const isDir = await window.vibeyard.fs.isDirectory(path);
+    const projectPath = await window.vibeyard.fs.expandPath(rawPath);
+    const isDir = await window.vibeyard.fs.isDirectory(projectPath);
     if (!isDir) {
       setModalError('project-path', 'Directory does not exist');
       return;
     }
 
     closeModal();
-    appState.addProject(name, path);
+    appState.addProject(name, projectPath);
   });
+
+  // Attach path autocomplete to the rendered input
+  const pathInput = document.getElementById('modal-project-path') as HTMLInputElement | null;
+  if (pathInput) {
+    const fieldRow = pathInput.parentElement!;
+    fieldRow.style.position = 'relative';
+    fieldRow.style.flexWrap = 'wrap';
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'path-autocomplete-dropdown';
+    fieldRow.appendChild(dropdown);
+
+    let activeIndex = -1;
+
+    const hideDropdown = () => {
+      dropdown.innerHTML = '';
+      dropdown.classList.remove('visible');
+      activeIndex = -1;
+    };
+
+    const showSuggestions = (dirs: string[], dirPart: string) => {
+      dropdown.innerHTML = '';
+      activeIndex = -1;
+      if (dirs.length === 0) { hideDropdown(); return; }
+      for (const dir of dirs) {
+        const item = document.createElement('div');
+        item.className = 'path-autocomplete-item';
+        item.textContent = dirPart + (dir.split('/').pop() ?? '');
+        item.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          pathInput.value = item.textContent!;
+          hideDropdown();
+        });
+        dropdown.appendChild(item);
+      }
+      dropdown.classList.add('visible');
+    };
+
+    pathInput.addEventListener('input', async () => {
+      const value = pathInput.value;
+      const lastSlash = value.lastIndexOf('/');
+      if (lastSlash === -1) { hideDropdown(); return; }
+
+      const dirPart = value.substring(0, lastSlash + 1);
+      const namePart = value.substring(lastSlash + 1).toLowerCase();
+
+      const dirs = await window.vibeyard.fs.listDirs(dirPart);
+      const filtered = namePart
+        ? dirs.filter(d => (d.split('/').pop() ?? '').toLowerCase().startsWith(namePart))
+        : dirs;
+
+      showSuggestions(filtered, dirPart);
+    });
+
+    pathInput.addEventListener('keydown', (e) => {
+      const items = dropdown.querySelectorAll<HTMLElement>('.path-autocomplete-item');
+      if (!items.length) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        items[activeIndex]?.classList.remove('active');
+        activeIndex = Math.min(activeIndex + 1, items.length - 1);
+        items[activeIndex].classList.add('active');
+        items[activeIndex].scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        items[activeIndex]?.classList.remove('active');
+        activeIndex = Math.max(activeIndex - 1, 0);
+        items[activeIndex].classList.add('active');
+        items[activeIndex].scrollIntoView({ block: 'nearest' });
+      } else if ((e.key === 'Enter' || e.key === 'Tab') && activeIndex >= 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        pathInput.value = items[activeIndex].textContent!;
+        hideDropdown();
+      } else if (e.key === 'Escape') {
+        hideDropdown();
+      }
+    });
+
+    pathInput.addEventListener('blur', () => {
+      setTimeout(hideDropdown, 100);
+    });
+  }
 }
 
 function initResizeHandle(): void {
