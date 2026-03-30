@@ -250,6 +250,49 @@
   margin: 4px 0;
 }
 
+/* Branch search input */
+.branch-search-input {
+  -webkit-appearance: none;
+  width: calc(100% - 16px);
+  margin: 8px;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+}
+
+.branch-search-input:focus {
+  border-color: var(--accent);
+}
+
+.branch-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Scrollable branch list */
+.branch-list-container {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.branch-list-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.branch-list-container::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+/* Keyboard navigation highlight */
+.tab-context-menu-item.keyboard-active {
+  background: var(--bg-hover);
+}
+
 /* Tab drag reorder */
 .tab-item.dragging {
   opacity: 0.4;

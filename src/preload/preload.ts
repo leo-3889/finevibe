@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent } from '../shared/types';
 
 export type { CostData } from '../shared/types';
 
@@ -21,12 +21,16 @@ export interface VibeyardApi {
     onClaudeSessionId(callback: (sessionId: string, claudeSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onToolFailure(callback: (sessionId: string, data: ToolFailureData) => void): () => void;
+    onInspectorEvents(callback: (sessionId: string, events: InspectorEvent[]) => void): () => void;
   };
   fs: {
     isDirectory(path: string): Promise<boolean>;
     browseDirectory(): Promise<string | null>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     readFile(filePath: string): Promise<string>;
+    watchFile(filePath: string): void;
+    unwatchFile(filePath: string): void;
+    onFileChanged(callback: (filePath: string) => void): () => void;
   };
   store: {
     load(): Promise<unknown>;
@@ -154,12 +158,18 @@ const api: VibeyardApi = {
     onToolFailure: (callback) =>
       onChannel('session:toolFailure', (sessionId, data) =>
         callback(sessionId as string, data as ToolFailureData)),
+    onInspectorEvents: (callback) =>
+      onChannel('session:inspectorEvents', (sessionId, events) =>
+        callback(sessionId as string, events as InspectorEvent[])),
   },
   fs: {
     isDirectory: (path) => ipcRenderer.invoke('fs:isDirectory', path),
     browseDirectory: () => ipcRenderer.invoke('fs:browseDirectory'),
     listFiles: (cwd: string, query: string) => ipcRenderer.invoke('fs:listFiles', cwd, query),
     readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
+    watchFile: (filePath: string) => ipcRenderer.send('fs:watchFile', filePath),
+    unwatchFile: (filePath: string) => ipcRenderer.send('fs:unwatchFile', filePath),
+    onFileChanged: (callback: (filePath: string) => void) => onChannel('fs:fileChanged', (filePath) => callback(filePath as string)),
   },
   provider: {
     getConfig: (providerId, projectPath) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath),

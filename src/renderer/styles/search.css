@@ -1,5 +1,6 @@
-/* Search bar */
-.search-bar {
+/* Shared overlay bar base */
+.search-bar,
+.goto-line-bar {
   position: absolute;
   top: 4px;
   right: 16px;
@@ -14,11 +15,13 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
-.search-bar.hidden {
+.search-bar.hidden,
+.goto-line-bar.hidden {
   display: none;
 }
 
-.search-bar input {
+.search-bar input,
+.goto-line-bar input {
   padding: 4px 8px;
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -26,11 +29,15 @@
   color: var(--text-primary);
   font-size: 13px;
   outline: none;
-  width: 200px;
 }
 
-.search-bar input:focus {
+.search-bar input:focus,
+.goto-line-bar input:focus {
   border-color: var(--accent);
+}
+
+.search-bar input {
+  width: 200px;
 }
 
 .search-toggle-btn,
@@ -75,4 +82,16 @@
   background: rgba(255, 200, 0, 0.6);
   outline: 1px solid rgba(255, 200, 0, 0.8);
   border-radius: 2px;
+}
+
+/* Go to line bar overrides */
+.goto-line-bar input {
+  width: 120px;
+  -moz-appearance: textfield;
+}
+
+.goto-line-bar input::-webkit-inner-spin-button,
+.goto-line-bar input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
