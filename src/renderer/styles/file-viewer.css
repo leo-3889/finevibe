@@ -345,6 +345,7 @@
 .file-reader-body {
   flex: 1;
   overflow-y: auto;
+  outline: none;
 }
 
 .file-reader-body::-webkit-scrollbar {
