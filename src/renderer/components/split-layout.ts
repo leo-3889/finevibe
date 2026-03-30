@@ -277,11 +277,13 @@ function renderSwarmMode(project: ProjectRecord): void {
   const rows = Math.ceil(count / cols);
 
   const activeSession = project.sessions.find(s => s.id === project.activeSessionId);
-  const isNonCliActive = activeSession?.type && activeSession.type !== 'claude';
+  const nonCliSession = (activeSession?.type && activeSession.type !== 'claude')
+    ? activeSession
+    : [...project.sessions].reverse().find(s => s.type && s.type !== 'claude');
 
   container.className = 'swarm-mode';
 
-  if (isNonCliActive) {
+  if (nonCliSession) {
     container.style.gridTemplateColumns = '1fr 1fr';
     container.style.gridTemplateRows = '1fr';
 
@@ -293,7 +295,7 @@ function renderSwarmMode(project: ProjectRecord): void {
 
     showPanes(project, gridWrapper);
     appendEmptyCells(cols * rows - count, gridWrapper);
-    attachNonCliPane(activeSession, container, true);
+    attachNonCliPane(nonCliSession, container, true);
   } else {
     container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
