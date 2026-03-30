@@ -53,6 +53,8 @@ function resolveFilePath(instance: FileViewerInstance): string {
     : `${basePath}/${instance.filePath}`;
 }
 
+let loadGeneration = 0;
+
 async function loadDiff(instance: FileViewerInstance): Promise<void> {
   if (instance.loaded) return;
 
@@ -60,19 +62,30 @@ async function loadDiff(instance: FileViewerInstance): Promise<void> {
   if (!project) return;
 
   const body = instance.element.querySelector('.file-viewer-body')!;
-  body.innerHTML = '';
-  const loading = document.createElement('div');
-  loading.className = 'file-viewer-content';
-  loading.innerHTML = '<div class="diff-line context">Loading diff...</div>';
-  body.appendChild(loading);
+  const isFirstLoad = !body.hasChildNodes();
+
+  if (isFirstLoad) {
+    const loading = document.createElement('div');
+    loading.className = 'file-viewer-content';
+    loading.innerHTML = '<div class="diff-line context">Loading diff...</div>';
+    body.appendChild(loading);
+  }
+
+  const gen = ++loadGeneration;
 
   try {
     const diff = await window.vibeyard.git.getDiff(instance.worktreePath ?? project.path, instance.filePath, instance.area);
+    if (gen !== loadGeneration) return; // superseded by a newer load
     body.innerHTML = '';
     body.appendChild(parseDiffLines(diff));
     instance.loaded = true;
   } catch {
-    loading.innerHTML = '<div class="diff-line context">Failed to load diff</div>';
+    if (gen !== loadGeneration) return;
+    body.innerHTML = '';
+    const err = document.createElement('div');
+    err.className = 'file-viewer-content';
+    err.innerHTML = '<div class="diff-line context">Failed to load diff</div>';
+    body.appendChild(err);
   }
 }
 
