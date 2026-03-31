@@ -2,7 +2,7 @@
 
 // --- Provider ---
 
-export type ProviderId = 'claude' | 'copilot' | 'gemini';
+export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini';
 
 export interface CliProviderCapabilities {
   sessionResume: boolean;
@@ -36,13 +36,14 @@ export interface GitFileEntry {
   area: 'staged' | 'working' | 'untracked' | 'conflicted';
 }
 
-// --- Claude Config ---
+// --- Provider Config ---
 
 export interface McpServer { name: string; url: string; status: string; scope: 'user' | 'project'; filePath: string }
 export interface Agent { name: string; model: string; category: 'plugin' | 'built-in'; scope: 'user' | 'project'; filePath: string }
 export interface Skill { name: string; description: string; scope: 'user' | 'project'; filePath: string }
 export interface Command { name: string; description: string; scope: 'user' | 'project'; filePath: string }
-export interface ClaudeConfig { mcpServers: McpServer[]; agents: Agent[]; skills: Skill[]; commands: Command[] }
+export interface ProviderConfig { mcpServers: McpServer[]; agents: Agent[]; skills: Skill[]; commands: Command[] }
+export type ClaudeConfig = ProviderConfig;
 
 // --- Cost / Context (shared with renderer modules) ---
 
@@ -143,6 +144,7 @@ export interface Preferences {
   sessionHistoryEnabled: boolean;
   insightsEnabled: boolean;
   autoTitleEnabled: boolean;
+  defaultProvider?: ProviderId;
   statusLineConsent?: 'granted' | 'declined' | null;
   keybindings?: Record<string, string>;
   sidebarViews?: {
@@ -197,6 +199,7 @@ export interface ReadinessCheck {
   score: number;
   maxScore: number;
   fixPrompt?: string;
+  providerIds?: ProviderId[];
 }
 
 export interface ReadinessCategory {

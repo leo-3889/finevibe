@@ -1,4 +1,5 @@
 import { appState, MAX_SESSION_NAME_LENGTH, type ProjectRecord, type SessionRecord } from '../state.js';
+import type { ProviderId } from '../../shared/types.js';
 import { showModal, closeModal, setModalError, FieldDef } from './modal.js';
 import { onChange as onStatusChange, getStatus, type SessionStatus } from '../session-activity.js';
 import { onChange as onGitStatusChange, getGitStatus, getActiveGitPath, refreshGitStatus } from '../git-status.js';
@@ -10,6 +11,7 @@ import { showJoinDialog } from './join-dialog.js';
 import { isSharing } from '../sharing/peer-host.js';
 import { endShare, onShareChange } from '../sharing/share-manager.js';
 import { openInspector, isInspectorOpen, getInspectedSessionId, closeInspector } from './session-inspector.js';
+import { loadProviderAvailability, hasMultipleAvailableProviders, getProviderAvailabilitySnapshot, getProviderCapabilities } from '../provider-availability.js';
 
 const tabListEl = document.getElementById('tab-list')!;
 const gitStatusEl = document.getElementById('git-status')!;
@@ -36,6 +38,11 @@ export function initTabBar(): void {
   btnToggleSwarm.addEventListener('click', () => appState.toggleSwarm());
   btnHelp.addEventListener('click', () => showHelpDialog());
   gitStatusEl.addEventListener('click', (e) => showBranchContextMenu(e));
+
+  // Icons only distinguish providers when multiple are installed
+  loadProviderAvailability().then(() => {
+    if (hasMultipleAvailableProviders()) render();
+  }).catch(() => {});
 
   appState.on('state-loaded', render);
   appState.on('project-changed', render);
@@ -218,6 +225,8 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   // Share menu items — only for CLI sessions (not special types)
   const isCliSession = !session.type || session.type === 'claude';
   const isRemote = session.type === 'remote-terminal';
+  const providerCapabilities = getProviderCapabilities(session.providerId || 'claude');
+  const canInspect = isCliSession && providerCapabilities?.hookStatus !== false;
   const currentlySharing = isSharing(session.id);
 
   const shareSeparator = document.createElement('div');
@@ -284,9 +293,9 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   // Inspect item — only for CLI sessions
   const inspectItem = document.createElement('div');
   const isCurrentlyInspecting = isInspectorOpen() && getInspectedSessionId() === session.id;
-  inspectItem.className = 'tab-context-menu-item' + (!isCliSession ? ' disabled' : '');
+  inspectItem.className = 'tab-context-menu-item' + (!canInspect ? ' disabled' : '');
   inspectItem.textContent = isCurrentlyInspecting ? 'Close Inspector' : 'Inspect';
-  if (isCliSession) {
+  if (canInspect) {
     inspectItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideTabContextMenu();
@@ -306,7 +315,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
     if (!currentlySharing) menu.appendChild(shareItem);
     if (currentlySharing) menu.appendChild(stopShareItem);
   }
-  if (isCliSession) {
+  if (canInspect) {
     const inspectSeparator = document.createElement('div');
     inspectSeparator.className = 'tab-context-menu-separator';
     menu.appendChild(inspectSeparator);
@@ -354,7 +363,9 @@ function render(): void {
     tab.dataset.sessionId = session.id;
     tab.draggable = true;
     tab.title = isDiff ? `Diff: ${session.diffFilePath || session.name}` : isMcp ? `MCP Inspector` : isFileReader ? `File: ${session.fileReaderPath || session.name}` : isRemoteTab ? `Remote: ${session.remoteHostName || session.name}` : buildTooltip(getStatus(session.id), session.cliSessionId);
-    const namePrefix = isDiff ? '<span class="tab-diff-badge">DIFF</span> ' : isMcp ? '<span class="tab-mcp-badge">MCP</span> ' : isFileReader ? '<span class="tab-file-badge">FILE</span> ' : isRemoteTab ? '<span class="tab-remote-badge">P2P</span> ' : '';
+    const providerId = session.providerId || 'claude';
+    const providerIcon = hasMultipleAvailableProviders() ? `<img class="tab-provider-icon" src="assets/providers/${providerId}.png" alt="${providerId}" onerror="this.style.display='none'"> ` : '';
+    const namePrefix = isDiff ? '<span class="tab-diff-badge">DIFF</span> ' : isMcp ? '<span class="tab-mcp-badge">MCP</span> ' : isFileReader ? '<span class="tab-file-badge">FILE</span> ' : isRemoteTab ? '<span class="tab-remote-badge">P2P</span> ' : !isSpecial ? providerIcon : '';
     const shareIndicator = sharing ? '<span class="tab-share-indicator" title="Sharing"></span>' : '';
     const statusDot = isSpecial ? '' : `<span class="tab-status ${getStatus(session.id)}"></span>`;
     tab.innerHTML = `
@@ -756,11 +767,19 @@ function showAddSessionContextMenu(x: number, y: number): void {
   if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
 }
 
-export function promptNewSession(): void {
+export async function promptNewSession(): Promise<void> {
   const project = appState.activeProject;
   if (!project) return;
 
   const sessionNum = project.sessions.length + 1;
+
+  let providerSnapshot = getProviderAvailabilitySnapshot();
+  if (!providerSnapshot) {
+    await loadProviderAvailability();
+    providerSnapshot = getProviderAvailabilitySnapshot();
+  }
+  const providers = providerSnapshot?.providers ?? [];
+  const availabilityMap = providerSnapshot?.availability ?? new Map();
 
   const fields: FieldDef[] = [
     { label: 'Name', id: 'session-name', placeholder: `Session ${sessionNum}`, defaultValue: `Session ${sessionNum}` },
@@ -773,6 +792,21 @@ export function promptNewSession(): void {
     },
   ];
 
+  if (providers.length > 1) {
+    const preferred = appState.preferences.defaultProvider ?? 'claude';
+    const firstAvailable = (availabilityMap.get(preferred) ? preferred : providers.find(p => availabilityMap.get(p.id))?.id) ?? 'claude';
+    fields.unshift({
+      label: 'Provider',
+      id: 'provider',
+      type: 'select',
+      defaultValue: firstAvailable,
+      options: providers.map(p => {
+        const available = availabilityMap.get(p.id);
+        return { value: p.id, label: available ? p.displayName : `${p.displayName} (not installed)`, disabled: !available };
+      }),
+    });
+  }
+
   showModal('New Session', fields, (values) => {
     const name = values['session-name']?.trim();
     if (name) {
@@ -780,7 +814,8 @@ export function promptNewSession(): void {
       const args = values['session-args']?.trim() || undefined;
       const keepArgs = values['keep-args'] === 'true';
       project.defaultArgs = keepArgs ? (args || undefined) : undefined;
-      appState.addSession(project.id, name, args);
+      const providerId = (values['provider'] || 'claude') as ProviderId;
+      appState.addSession(project.id, name, args, providerId);
     }
   });
 }

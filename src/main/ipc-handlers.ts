@@ -8,6 +8,7 @@ import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { loadState, saveState, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus } from './hook-status';
+import { startCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from './codex-session-watcher';
 import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
 import { watchFile as watchFileForChanges, unwatchFile as unwatchFileForChanges, setFileWatcherWindow } from './file-watcher';
@@ -37,12 +38,13 @@ function isAllowedReadPath(resolvedPath: string): boolean {
     return true;
   }
 
-  // Allow known config files/directories used by Claude CLI
+  // Allow known config files/directories used by supported CLIs
   const home = os.homedir();
   const allowedPaths = [
     path.join(home, '.claude.json'),
     path.join(home, '.mcp.json'),
     path.join(home, '.claude') + path.sep,
+    path.join(home, '.codex') + path.sep,
   ];
 
   if (process.platform === 'darwin') {
@@ -75,13 +77,21 @@ export function registerIpcHandlers(): void {
 
     // Validate provider settings and warn renderer if missing/tampered
     const provider = getProvider(providerId);
-    const validation = provider.validateSettings();
-    if (validation.statusLine !== 'vibeyard' || validation.hooks !== 'complete') {
-      win.webContents.send('settings:warning', {
-        sessionId,
-        statusLine: validation.statusLine,
-        hooks: validation.hooks,
-      });
+    if (provider.meta.capabilities.hookStatus) {
+      const validation = provider.validateSettings();
+      if (validation.statusLine !== 'vibeyard' || validation.hooks !== 'complete') {
+        win.webContents.send('settings:warning', {
+          sessionId,
+          statusLine: validation.statusLine,
+          hooks: validation.hooks,
+        });
+      }
+    }
+
+    // For Codex sessions without a cliSessionId, start watching history.jsonl
+    if (providerId === 'codex' && !cliSessionId) {
+      startCodexSessionWatcher(win);
+      registerPendingCodexSession(sessionId);
     }
 
     spawnPty(
@@ -99,6 +109,7 @@ export function registerIpcHandlers(): void {
       },
       (exitCode, signal) => {
         cleanupSessionStatus(sessionId);
+        unregisterCodexSession(sessionId);
         if (isSilencedExit(sessionId)) return; // old PTY killed for re-spawn
         const w = BrowserWindow.getAllWindows()[0];
         if (w && !w.isDestroyed()) {

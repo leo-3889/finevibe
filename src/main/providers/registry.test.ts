@@ -25,11 +25,13 @@ function makeFakeProvider(meta: CliProviderMeta): CliProvider {
     validatePrerequisites: () => ({ ok: true, message: '' }),
     buildEnv: (_sid, env) => env,
     buildArgs: () => [],
-    installHooks: () => {},
+    installHooks: async () => {},
     installStatusScripts: () => {},
     cleanup: () => {},
-    getConfig: async () => null,
+    getConfig: async () => ({ mcpServers: [], agents: [], skills: [], commands: [] }),
     getShiftEnterSequence: () => null,
+    validateSettings: () => ({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} }),
+    reinstallSettings: () => {},
   };
 }
 
@@ -43,6 +45,12 @@ describe('initProviders', () => {
     const provider = getProvider('claude');
     expect(provider).toBeDefined();
     expect(provider.meta.id).toBe('claude');
+  });
+
+  it('registers the Codex provider', () => {
+    const provider = getProvider('codex');
+    expect(provider).toBeDefined();
+    expect(provider.meta.id).toBe('codex');
   });
 });
 
@@ -64,9 +72,10 @@ describe('getAllProviders', () => {
   it('returns all registered providers', () => {
     registerProvider(makeFakeProvider(fakeMeta));
     const all = getAllProviders();
-    expect(all.length).toBe(2);
+    expect(all.length).toBe(3);
     const ids = all.map(p => p.meta.id);
     expect(ids).toContain('claude');
+    expect(ids).toContain('codex');
     expect(ids).toContain('copilot');
   });
 });
@@ -83,7 +92,8 @@ describe('getAllProviderMetas', () => {
   it('returns meta array for all providers', () => {
     registerProvider(makeFakeProvider(fakeMeta));
     const metas = getAllProviderMetas();
-    expect(metas.length).toBe(2);
+    expect(metas.length).toBe(3);
+    expect(metas.map(m => m.id)).toContain('codex');
     expect(metas.map(m => m.id)).toContain('copilot');
   });
 });
