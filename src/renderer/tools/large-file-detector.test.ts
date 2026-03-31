@@ -36,10 +36,10 @@ describe('handleToolFailure', () => {
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
 
     expect(alerts).toHaveLength(1);
-    expect(alerts[0].filePath).toBe('/path/to/styles.css');
+    expect(alerts[0].filePath).toBe('/tmp/test/styles.css');
     expect(alerts[0].projectId).toBe(projectId);
     expect(alerts[0].sessionId).toBe(session.id);
   });
@@ -53,7 +53,7 @@ describe('handleToolFailure', () => {
 
     handleToolFailure(session.id, {
       tool_name: 'Bash',
-      tool_input: { command: 'cat /path/to/styles.css' },
+      tool_input: { command: 'cat /tmp/test/styles.css' },
       error: 'File content (28897 tokens) exceeds maximum allowed tokens (10000).',
     });
 
@@ -69,7 +69,7 @@ describe('handleToolFailure', () => {
 
     handleToolFailure(session.id, {
       tool_name: 'Read',
-      tool_input: { file_path: '/path/to/missing.txt' },
+      tool_input: { file_path: '/tmp/test/missing.txt' },
       error: 'ENOENT: no such file or directory',
     });
 
@@ -83,8 +83,8 @@ describe('handleToolFailure', () => {
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
 
     expect(alerts).toHaveLength(1);
   });
@@ -96,12 +96,12 @@ describe('handleToolFailure', () => {
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
-    handleToolFailure(session.id, makeReadFailure('/path/to/bundle.js'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/bundle.js'));
 
     expect(alerts).toHaveLength(2);
-    expect(alerts[0].filePath).toBe('/path/to/styles.css');
-    expect(alerts[1].filePath).toBe('/path/to/bundle.js');
+    expect(alerts[0].filePath).toBe('/tmp/test/styles.css');
+    expect(alerts[1].filePath).toBe('/tmp/test/bundle.js');
   });
 
   it('alerts for same file in different sessions', () => {
@@ -112,22 +112,46 @@ describe('handleToolFailure', () => {
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure(s1.id, makeReadFailure('/path/to/styles.css'));
-    handleToolFailure(s2.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(s1.id, makeReadFailure('/tmp/test/styles.css'));
+    handleToolFailure(s2.id, makeReadFailure('/tmp/test/styles.css'));
 
     expect(alerts).toHaveLength(2);
+  });
+
+  it('does not alert for files outside the project path', () => {
+    const projectId = setupProject();
+    const session = appState.addSession(projectId, 'Session 1')!;
+
+    const alerts: LargeFileAlert[] = [];
+    onLargeFileAlert((alert) => alerts.push(alert));
+
+    handleToolFailure(session.id, makeReadFailure('/Users/someone/.claude/projects/-foo/tool-results/b2r1bcdof.txt'));
+
+    expect(alerts).toHaveLength(0);
+  });
+
+  it('does not alert for files in .claude/ within the project', () => {
+    const projectId = setupProject();
+    const session = appState.addSession(projectId, 'Session 1')!;
+
+    const alerts: LargeFileAlert[] = [];
+    onLargeFileAlert((alert) => alerts.push(alert));
+
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/.claude/settings.json'));
+
+    expect(alerts).toHaveLength(0);
   });
 
   it('does not alert when insight is dismissed', () => {
     const projectId = setupProject();
     const session = appState.addSession(projectId, 'Session 1')!;
 
-    appState.dismissInsight(projectId, 'large-file-read:/path/to/styles.css');
+    appState.dismissInsight(projectId, 'large-file-read:/tmp/test/styles.css');
 
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
 
     expect(alerts).toHaveLength(0);
   });
@@ -141,7 +165,7 @@ describe('handleToolFailure', () => {
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
 
     expect(alerts).toHaveLength(0);
 
@@ -152,7 +176,7 @@ describe('handleToolFailure', () => {
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure('orphan-session', makeReadFailure('/path/to/styles.css'));
+    handleToolFailure('orphan-session', makeReadFailure('/tmp/test/styles.css'));
 
     expect(alerts).toHaveLength(0);
   });
@@ -180,7 +204,7 @@ describe('handleToolFailure', () => {
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
     expect(alerts).toHaveLength(1);
 
     // Simulate session removal
@@ -188,7 +212,7 @@ describe('handleToolFailure', () => {
 
     // Same file in re-created session with same id should alert again
     const session2 = appState.addSession(projectId, 'Session 2')!;
-    handleToolFailure(session2.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(session2.id, makeReadFailure('/tmp/test/styles.css'));
     expect(alerts).toHaveLength(2);
   });
 
@@ -199,7 +223,7 @@ describe('handleToolFailure', () => {
     const alerts: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts.push(alert));
 
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
     expect(alerts).toHaveLength(1);
 
     _resetForTesting();
@@ -207,7 +231,7 @@ describe('handleToolFailure', () => {
     const alerts2: LargeFileAlert[] = [];
     onLargeFileAlert((alert) => alerts2.push(alert));
 
-    handleToolFailure(session.id, makeReadFailure('/path/to/styles.css'));
+    handleToolFailure(session.id, makeReadFailure('/tmp/test/styles.css'));
     expect(alerts2).toHaveLength(1);
   });
 });
