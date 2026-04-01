@@ -2,13 +2,8 @@ import { appState } from '../state.js';
 import { closeModal } from './modal.js';
 import { esc, scoreColor } from '../dom-utils.js';
 import { setPendingPrompt } from './terminal-pane.js';
-import type { ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ProviderId } from '../../shared/types.js';
-
-const PROVIDER_LABELS: Partial<Record<ProviderId, string>> = {
-  claude: 'Claude',
-  codex: 'Codex',
-  gemini: 'Gemini',
-};
+import { loadProviderMetas, getCachedProviderMetas, getProviderDisplayName } from '../provider-availability.js';
+import type { ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus } from '../../shared/types.js';
 
 const overlay = document.getElementById('modal-overlay')!;
 const modal = document.getElementById('modal')!;
@@ -80,7 +75,7 @@ function renderCategory(category: ReadinessCategory): HTMLElement {
       for (const pid of check.providerIds) {
         const tag = document.createElement('span');
         tag.className = 'readiness-provider-tag';
-        tag.textContent = PROVIDER_LABELS[pid] ?? pid;
+        tag.textContent = getProviderDisplayName(pid);
         name.appendChild(tag);
       }
     }
@@ -120,7 +115,7 @@ function renderCategory(category: ReadinessCategory): HTMLElement {
   return section;
 }
 
-export function showReadinessModal(result: ReadinessResult): void {
+export async function showReadinessModal(result: ReadinessResult): Promise<void> {
   titleEl.textContent = 'AI Readiness';
   bodyEl.innerHTML = '';
   modal.classList.add('modal-wide');
@@ -141,41 +136,46 @@ export function showReadinessModal(result: ReadinessResult): void {
   `;
   container.appendChild(scoreSection);
 
-  // Provider filter
-  const filterSection = document.createElement('div');
-  filterSection.className = 'readiness-filter-section';
+  // Provider filter — only shown when multiple providers are available
+  await loadProviderMetas();
+  const metas = getCachedProviderMetas();
 
-  const filterLabel = document.createElement('span');
-  filterLabel.className = 'readiness-filter-label';
-  filterLabel.textContent = 'Include:';
-  filterSection.appendChild(filterLabel);
+  if (metas.length > 1) {
+    const filterSection = document.createElement('div');
+    filterSection.className = 'readiness-filter-section';
 
-  const excluded = new Set(appState.preferences.readinessExcludedProviders ?? []);
+    const filterLabel = document.createElement('span');
+    filterLabel.className = 'readiness-filter-label';
+    filterLabel.textContent = 'Include:';
+    filterSection.appendChild(filterLabel);
 
-  for (const [id, displayName] of Object.entries(PROVIDER_LABELS) as [ProviderId, string][]) {
-    const label = document.createElement('label');
-    label.className = 'readiness-filter-toggle';
+    const excluded = new Set(appState.preferences.readinessExcludedProviders ?? []);
 
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = !excluded.has(id);
-    cb.addEventListener('change', () => {
-      const current = new Set(appState.preferences.readinessExcludedProviders ?? []);
-      if (cb.checked) {
-        current.delete(id);
-      } else {
-        current.add(id);
-      }
-      appState.setPreference('readinessExcludedProviders', [...current]);
-    });
+    for (const meta of metas) {
+      const label = document.createElement('label');
+      label.className = 'readiness-filter-toggle';
 
-    const text = document.createTextNode(displayName);
-    label.appendChild(cb);
-    label.appendChild(text);
-    filterSection.appendChild(label);
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !excluded.has(meta.id);
+      cb.addEventListener('change', () => {
+        const current = new Set(appState.preferences.readinessExcludedProviders ?? []);
+        if (cb.checked) {
+          current.delete(meta.id);
+        } else {
+          current.add(meta.id);
+        }
+        appState.setPreference('readinessExcludedProviders', [...current]);
+      });
+
+      const text = document.createTextNode(meta.displayName);
+      label.appendChild(cb);
+      label.appendChild(text);
+      filterSection.appendChild(label);
+    }
+
+    container.appendChild(filterSection);
   }
-
-  container.appendChild(filterSection);
 
   // Categories
   for (const category of result.categories) {
