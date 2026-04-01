@@ -231,6 +231,15 @@ export function registerIpcHandlers(): void {
     return result.filePaths[0];
   });
 
+  ipcMain.on('app:focus', () => {
+    app.focus({ steal: true });
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+
   ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('app:openExternal', (_event, url: string) => {
     const parsed = new URL(url);

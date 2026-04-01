@@ -27,13 +27,13 @@ function showNotification(sessionId: string, status: SessionStatus): void {
   });
 
   notification.onclick = () => {
-    window.focus();
+    window.vibeyard.app.focus();
     const project = appState.projects.find(p =>
       p.sessions.some(s => s.id === sessionId),
     );
     if (project) {
       appState.setActiveProject(project.id);
-      appState.setActiveSession(sessionId);
+      appState.setActiveSession(project.id, sessionId);
     }
   };
 }

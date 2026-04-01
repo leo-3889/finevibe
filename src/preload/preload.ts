@@ -75,6 +75,7 @@ export interface VibeyardApi {
     onError(cb: (info: { message: string }) => void): () => void;
   };
   app: {
+    focus(): void;
     getVersion(): Promise<string>;
     openExternal(url: string): Promise<void>;
     onQuitting(callback: () => void): () => void;
@@ -216,6 +217,7 @@ const api: VibeyardApi = {
     onError: (cb) => onChannel('update:error', (info) => cb(info as { message: string })),
   },
   app: {
+    focus: () => { ipcRenderer.send('app:focus'); },
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
     onQuitting: (cb: () => void) => onChannel('app:quitting', cb),

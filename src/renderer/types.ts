@@ -62,7 +62,9 @@ export interface VibeyardApi {
     onError(cb: (info: { message: string }) => void): () => void;
   };
   app: {
+    focus(): void;
     getVersion(): Promise<string>;
+    openExternal(url: string): Promise<void>;
     onQuitting(callback: () => void): () => void;
   };
   mcp: {
