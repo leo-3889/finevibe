@@ -12,7 +12,6 @@ const SENSITIVE_FILE_PATTERNS = [
   'service-account*.json',
   '*.secret', 'secrets.yaml', 'secrets.yml', 'secrets.json',
   '*secret*.json', '*secret*.yaml', '*secret*.yml',
-  '.npmrc', '.pypirc',
   'token.json', 'tokens.json',
   '.htpasswd', 'shadow',
   'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
