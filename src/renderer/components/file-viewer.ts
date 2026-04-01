@@ -13,6 +13,49 @@ interface FileViewerInstance {
 
 const instances = new Map<string, FileViewerInstance>();
 let unwatchFileChanged: (() => void) | null = null;
+const pendingReloads = new Set<string>();
+let removeSelectionListener: (() => void) | null = null;
+
+function isSelectionInsideFileViewer(sessionId: string): boolean {
+  const instance = instances.get(sessionId);
+  if (!instance) return false;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+  const body = instance.element.querySelector('.file-viewer-body');
+  if (!body) return false;
+  const range = sel.getRangeAt(0);
+  return body.contains(range.startContainer);
+}
+
+function flushPendingReloads(): void {
+  const ids = [...pendingReloads];
+  pendingReloads.clear();
+  for (const id of ids) {
+    const inst = instances.get(id);
+    if (inst) {
+      inst.loaded = false;
+      loadDiff(inst);
+    }
+  }
+  // Remove listener when no longer needed
+  if (removeSelectionListener) {
+    removeSelectionListener();
+    removeSelectionListener = null;
+  }
+}
+
+function onSelectionChange(): void {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+    if (pendingReloads.size > 0) flushPendingReloads();
+  }
+}
+
+function ensureSelectionListener(): void {
+  if (removeSelectionListener) return;
+  document.addEventListener('selectionchange', onSelectionChange);
+  removeSelectionListener = () => document.removeEventListener('selectionchange', onSelectionChange);
+}
 
 function escapeHtml(s: string): string {
   const d = document.createElement('div');
@@ -138,6 +181,7 @@ export function destroyFileViewerPane(sessionId: string): void {
   if (instance.resolvedPath) {
     window.vibeyard.fs.unwatchFile(instance.resolvedPath);
   }
+  pendingReloads.delete(sessionId);
   destroySearchBar(sessionId);
   instance.element.remove();
   instances.delete(sessionId);
@@ -190,6 +234,11 @@ export function showFileViewer(filePath: string, area: string, worktreePath?: st
 export function reloadFileViewer(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
+  if (isSelectionInsideFileViewer(sessionId)) {
+    pendingReloads.add(sessionId);
+    ensureSelectionListener();
+    return;
+  }
   instance.loaded = false;
   loadDiff(instance);
 }
