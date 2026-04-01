@@ -11,6 +11,14 @@ type LargeFileAlertCallback = (alert: LargeFileAlert) => void;
 
 const TOKEN_LIMIT_RE = /file content \(\d+ tokens\) exceeds maximum allowed tokens/i;
 
+function isProjectFile(filePath: string, projectPath: string): boolean {
+  const base = projectPath.endsWith('/') ? projectPath : projectPath + '/';
+  if (!filePath.startsWith(base)) return false;
+  const relative = filePath.slice(base.length);
+  if (relative === '.claude' || relative.startsWith('.claude/')) return false;
+  return true;
+}
+
 const alertedPerSession = new Map<string, Set<string>>();
 const alertListeners: LargeFileAlertCallback[] = [];
 
@@ -37,6 +45,8 @@ export function handleToolFailure(sessionId: string, data: ToolFailureData): voi
 
   const project = appState.projects.find(p => p.sessions.some(s => s.id === sessionId));
   if (!project) return;
+
+  if (!isProjectFile(filePath, project.path)) return;
 
   const insightId = `large-file-read:${filePath}`;
   if (appState.isInsightDismissed(project.id, insightId)) return;

@@ -230,6 +230,8 @@
   word-break: break-all;
   max-height: 200px;
   overflow-y: auto;
+  user-select: text;
+  cursor: text;
 }
 
 .inspector-error-text {

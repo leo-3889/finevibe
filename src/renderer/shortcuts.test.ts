@@ -196,8 +196,8 @@ describe('ShortcutManager', () => {
     const mgr = new ShortcutManager();
     const handler = vi.fn();
     mgr.registerHandler('new-session', handler);
-    // CmdOrCtrl+S on Mac = metaKey + 's'
-    const e = makeKeyEvent({ key: 's', metaKey: true });
+    // CmdOrCtrl+T on Mac = metaKey + 't'
+    const e = makeKeyEvent({ key: 't', metaKey: true });
     const matched = mgr.matchEvent(e);
     expect(matched).toBe(true);
     expect(handler).toHaveBeenCalled();
@@ -214,7 +214,7 @@ describe('ShortcutManager', () => {
     const { ShortcutManager } = await import('./shortcuts');
     const mgr = new ShortcutManager();
     mgr.registerHandler('new-session', vi.fn());
-    const e = makeKeyEvent({ key: 's', metaKey: true });
+    const e = makeKeyEvent({ key: 't', metaKey: true });
     mgr.matchEvent(e);
     expect(e.preventDefault).toHaveBeenCalled();
   });
@@ -238,7 +238,7 @@ describe('ShortcutManager', () => {
   it('getKeys returns default keys when no override', async () => {
     const { ShortcutManager } = await import('./shortcuts');
     const mgr = new ShortcutManager();
-    expect(mgr.getKeys('new-session')).toBe('CmdOrCtrl+S');
+    expect(mgr.getKeys('new-session')).toBe('CmdOrCtrl+T');
   });
 
   it('getKeys returns override when set in appState', async () => {

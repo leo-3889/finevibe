@@ -305,3 +305,14 @@
 .tab-item.drag-over-right {
   box-shadow: inset -3px 0 0 var(--accent);
 }
+
+/* Provider icon in tab */
+.tab-provider-icon {
+  width: 14px;
+  height: 14px;
+  vertical-align: middle;
+  border-radius: 3px;
+  margin-right: 2px;
+  position: relative;
+  top: -1px;
+}

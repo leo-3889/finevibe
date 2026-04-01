@@ -1,9 +1,12 @@
+import { createCustomSelect } from './custom-select.js';
+
 export interface FieldDef {
   label: string;
   id: string;
-  type?: 'text' | 'checkbox';
+  type?: 'text' | 'checkbox' | 'select';
   placeholder?: string;
   defaultValue?: string;
+  options?: { value: string; label: string; disabled?: boolean }[];
   buttonLabel?: string;
   onButtonClick?: (input: HTMLInputElement) => void;
   onChange?: (checked: boolean) => void;
@@ -63,6 +66,12 @@ export function showModal(
       }
       div.appendChild(input);
       div.appendChild(label);
+    } else if (field.type === 'select') {
+      div.appendChild(label);
+      const sel = createCustomSelect(`modal-${field.id}`, field.options ?? [], field.defaultValue);
+      div.appendChild(sel.element);
+      if (!(overlay as any)._selectCleanups) (overlay as any)._selectCleanups = [];
+      (overlay as any)._selectCleanups.push(() => sel.destroy());
     } else {
       input.type = 'text';
       input.placeholder = field.placeholder ?? '';
@@ -105,8 +114,12 @@ export function showModal(
   const handleConfirm = async () => {
     const values: Record<string, string> = {};
     for (const field of fields) {
-      const input = document.getElementById(`modal-${field.id}`) as HTMLInputElement;
-      values[field.id] = field.type === 'checkbox' ? String(input?.checked ?? false) : (input?.value ?? '');
+      const el = document.getElementById(`modal-${field.id}`) as HTMLInputElement | HTMLSelectElement;
+      if (field.type === 'checkbox') {
+        values[field.id] = String((el as HTMLInputElement)?.checked ?? false);
+      } else {
+        values[field.id] = el?.value ?? '';
+      }
     }
     await onConfirm(values);
   };
@@ -142,4 +155,9 @@ function cleanup(): void {
     (overlay as any)._cleanup();
     (overlay as any)._cleanup = null;
   }
+  if ((overlay as any)._selectCleanups) {
+    for (const fn of (overlay as any)._selectCleanups) fn();
+    (overlay as any)._selectCleanups = null;
+  }
 }
+

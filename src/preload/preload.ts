@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig } from '../shared/types';
 
 export type { CostData } from '../shared/types';
 
@@ -25,6 +25,8 @@ export interface VibeyardApi {
   };
   fs: {
     isDirectory(path: string): Promise<boolean>;
+    expandPath(path: string): Promise<string>;
+    listDirs(dirPath: string): Promise<string[]>;
     browseDirectory(): Promise<string | null>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     readFile(filePath: string): Promise<string>;
@@ -37,7 +39,7 @@ export interface VibeyardApi {
     save(state: unknown): Promise<void>;
   };
   provider: {
-    getConfig(providerId: ProviderId, projectPath: string): Promise<unknown>;
+    getConfig(providerId: ProviderId, projectPath: string): Promise<ProviderConfig>;
     getMeta(providerId: ProviderId): Promise<CliProviderMeta>;
     listProviders(): Promise<CliProviderMeta[]>;
     checkBinary(providerId?: ProviderId): Promise<{ ok: boolean; message: string }>;
@@ -46,7 +48,7 @@ export interface VibeyardApi {
   };
   /** @deprecated Use provider namespace instead */
   claude: {
-    getConfig(projectPath: string): Promise<unknown>;
+    getConfig(projectPath: string): Promise<ProviderConfig>;
   };
   git: {
     getStatus(path: string): Promise<unknown>;
@@ -164,6 +166,8 @@ const api: VibeyardApi = {
   },
   fs: {
     isDirectory: (path) => ipcRenderer.invoke('fs:isDirectory', path),
+    expandPath: (path: string) => ipcRenderer.invoke('fs:expandPath', path),
+    listDirs: (dirPath: string) => ipcRenderer.invoke('fs:listDirs', dirPath),
     browseDirectory: () => ipcRenderer.invoke('fs:browseDirectory'),
     listFiles: (cwd: string, query: string) => ipcRenderer.invoke('fs:listFiles', cwd, query),
     readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
