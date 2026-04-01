@@ -93,7 +93,7 @@ export interface VibeyardApi {
     removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string): Promise<{ success: boolean; error?: string }>;
   };
   readiness: {
-    analyze(projectPath: string): Promise<ReadinessResult>;
+    analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
   };
   stats: {
     getCache(): Promise<StatsCache | null>;
@@ -235,7 +235,7 @@ const api: VibeyardApi = {
     removeServer: (name: string, filePath: string, scope: 'user' | 'project', projectPath?: string) => ipcRenderer.invoke('mcp:removeServer', name, filePath, scope, projectPath),
   },
   readiness: {
-    analyze: (projectPath: string) => ipcRenderer.invoke('readiness:analyze', projectPath),
+    analyze: (projectPath: string, excludedProviders?: string[]) => ipcRenderer.invoke('readiness:analyze', projectPath, excludedProviders),
   },
   stats: {
     getCache: () => ipcRenderer.invoke('stats:getCache'),

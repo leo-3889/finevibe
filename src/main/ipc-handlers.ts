@@ -393,7 +393,7 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('readiness:analyze', (_event, projectPath: string) => analyzeReadiness(projectPath));
+  ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) => analyzeReadiness(projectPath, excludedProviders));
 
   ipcMain.handle('update:checkNow', () => checkForUpdates());
   ipcMain.handle('update:install', () => quitAndInstall());

@@ -4,10 +4,9 @@ import { esc, scoreColor } from '../dom-utils.js';
 import { setPendingPrompt } from './terminal-pane.js';
 import type { ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ProviderId } from '../../shared/types.js';
 
-const PROVIDER_LABELS: Record<ProviderId, string> = {
+const PROVIDER_LABELS: Partial<Record<ProviderId, string>> = {
   claude: 'Claude',
   codex: 'Codex',
-  copilot: 'Copilot',
   gemini: 'Gemini',
 };
 
@@ -142,6 +141,42 @@ export function showReadinessModal(result: ReadinessResult): void {
   `;
   container.appendChild(scoreSection);
 
+  // Provider filter
+  const filterSection = document.createElement('div');
+  filterSection.className = 'readiness-filter-section';
+
+  const filterLabel = document.createElement('span');
+  filterLabel.className = 'readiness-filter-label';
+  filterLabel.textContent = 'Include:';
+  filterSection.appendChild(filterLabel);
+
+  const excluded = new Set(appState.preferences.readinessExcludedProviders ?? []);
+
+  for (const [id, displayName] of Object.entries(PROVIDER_LABELS) as [ProviderId, string][]) {
+    const label = document.createElement('label');
+    label.className = 'readiness-filter-toggle';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !excluded.has(id);
+    cb.addEventListener('change', () => {
+      const current = new Set(appState.preferences.readinessExcludedProviders ?? []);
+      if (cb.checked) {
+        current.delete(id);
+      } else {
+        current.add(id);
+      }
+      appState.setPreference('readinessExcludedProviders', [...current]);
+    });
+
+    const text = document.createTextNode(displayName);
+    label.appendChild(cb);
+    label.appendChild(text);
+    filterSection.appendChild(label);
+  }
+
+  container.appendChild(filterSection);
+
   // Categories
   for (const category of result.categories) {
     container.appendChild(renderCategory(category));
@@ -172,11 +207,23 @@ export function showReadinessModal(result: ReadinessResult): void {
     }
   };
 
+  const unsubReadiness = appState.on('readiness-changed', () => {
+    // Defer to avoid infinite loop: showReadinessModal unsubscribes/resubscribes
+    // during Set.forEach iteration, which would re-trigger the new listener
+    setTimeout(() => {
+      const project = appState.activeProject;
+      if (project?.readiness && !overlay.classList.contains('hidden')) {
+        showReadinessModal(project.readiness);
+      }
+    }, 0);
+  });
+
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);
   document.addEventListener('keydown', handleKeydown);
 
   (overlay as any)._cleanup = () => {
+    unsubReadiness();
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
     document.removeEventListener('keydown', handleKeydown);

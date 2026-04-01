@@ -78,7 +78,7 @@ export interface VibeyardApi {
     getPrompt(id: string, name: string, args: Record<string, string>): Promise<McpResult>;
   };
   readiness: {
-    analyze(projectPath: string): Promise<ReadinessResult>;
+    analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
   };
   stats: {
     getCache(): Promise<StatsCache | null>;

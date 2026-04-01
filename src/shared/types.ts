@@ -147,6 +147,7 @@ export interface Preferences {
   defaultProvider?: ProviderId;
   statusLineConsent?: 'granted' | 'declined' | null;
   keybindings?: Record<string, string>;
+  readinessExcludedProviders?: ProviderId[];
   sidebarViews?: {
     configSections: boolean;
     gitPanel: boolean;
