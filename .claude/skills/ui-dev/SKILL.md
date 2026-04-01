@@ -175,6 +175,18 @@ Always provide a `destroy()` method that removes event listeners and DOM nodes. 
 - Use `classList.toggle()` / `classList.add()` / `classList.remove()` for conditional classes
 - Use `element.dataset.*` for data attributes
 
+### Text selection preservation
+Components that re-render periodically (timers, event-driven updates) must check for active text selection before wiping the DOM. Destroying DOM nodes while the user is selecting text clears their selection. Guard re-renders like this:
+
+```typescript
+const sel = window.getSelection();
+if (sel && sel.rangeCount > 0 && !sel.isCollapsed && container.contains(sel.anchorNode)) {
+  return; // skip render — user is selecting text
+}
+```
+
+Also ensure clickable containers that hold selectable text use `stopPropagation()` on the text element to prevent click-to-select from triggering the parent's click handler, and set `user-select: text; cursor: text;` in CSS.
+
 ## CSS File Organization
 
 Add styles to the appropriate existing CSS file — do not create new CSS files unless introducing a wholly new component area:

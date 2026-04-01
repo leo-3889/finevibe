@@ -186,7 +186,13 @@ export function initSessionInspector(): void {
   onInspectorChange((sessionId) => {
     if (sessionId !== inspectedSessionId) return;
     if (updateTimer) clearTimeout(updateTimer);
-    updateTimer = setTimeout(() => renderActiveTab(), 200);
+    updateTimer = setTimeout(() => {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && !sel.isCollapsed && inspectorPanel?.contains(sel.anchorNode)) {
+        return; // don't destroy DOM while user is selecting text
+      }
+      renderActiveTab();
+    }, 200);
   });
 
   // Keyboard shortcut: Cmd+Shift+I
@@ -685,6 +691,7 @@ function emptyMessage(fallback: string): string {
 function createToolInputEl(toolInput: unknown): HTMLPreElement {
   const el = document.createElement('pre');
   el.className = 'inspector-tool-input';
+  el.addEventListener('click', (e) => e.stopPropagation());
   const text = JSON.stringify(toolInput, null, 2);
   el.textContent = text.length > 2000 ? text.slice(0, 2000) + '\n...' : text;
   return el;
