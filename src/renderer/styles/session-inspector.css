@@ -196,6 +196,41 @@
 .inspector-badge-notify { background: rgba(255,152,0,0.2); color: #ffb74d; }
 .inspector-badge-default { background: var(--bg-tertiary); color: var(--text-muted); }
 
+/* --- Agent group nesting --- */
+
+.inspector-agent-group {
+  border-left: 2px solid rgba(0,188,212,0.3);
+  border-radius: 3px;
+  margin: 1px 0;
+}
+
+.inspector-agent-header {
+  background: rgba(0,188,212,0.05);
+  cursor: pointer;
+}
+
+.inspector-agent-header:hover {
+  background: rgba(0,188,212,0.1);
+}
+
+.inspector-agent-running {
+  border-left-color: rgba(0,188,212,0.6);
+  border-left-style: dashed;
+}
+
+.inspector-agent-toggle {
+  font-size: 8px;
+  color: var(--text-muted);
+  width: 10px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.inspector-agent-children {
+  padding-left: 14px;
+}
+
+
 .inspector-desc {
   color: var(--text-primary);
   flex: 1;

@@ -302,6 +302,32 @@ function renderActiveTab(): void {
 
 // --- Timeline View ---
 
+/**
+ * Map subagent_start index → end index.
+ * End is the matching subagent_stop index, or events.length for agents still running.
+ */
+function buildAgentSpans(events: InspectorEvent[], startIdx: number): Map<number, number> {
+  const spans = new Map<number, number>();
+  const openStarts = new Map<string, number>();
+  for (let i = startIdx; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type === 'subagent_start' && ev.agent_id) {
+      openStarts.set(ev.agent_id, i);
+    } else if (ev.type === 'subagent_stop' && ev.agent_id) {
+      const startI = openStarts.get(ev.agent_id);
+      if (startI !== undefined) {
+        spans.set(startI, i);
+        openStarts.delete(ev.agent_id);
+      }
+    }
+  }
+  // Open agents (still running) span to end of events
+  for (const startI of openStarts.values()) {
+    spans.set(startI, events.length);
+  }
+  return spans;
+}
+
 function renderTimeline(container: HTMLElement): void {
   const events = getEvents(inspectedSessionId!);
   if (events.length === 0) {
@@ -325,9 +351,120 @@ function renderTimeline(container: HTMLElement): void {
     list.appendChild(loadMore);
   }
 
-  for (let i = startIdx; i < events.length; i++) {
-    const ev = events[i];
-    if (ev.type === 'status_update') continue;
+  const agentSpans = buildAgentSpans(events, startIdx);
+  // Stop indices are skipped — their info merges into the agent group header
+  const stopIndices = new Set(agentSpans.values());
+
+  /** Render events from `from` to `to` (exclusive), appending to `parent`. */
+  function renderEvents(from: number, to: number, parent: HTMLElement): void {
+    for (let i = from; i < to; i++) {
+      const ev = events[i];
+      if (ev.type === 'status_update') continue;
+      if (stopIndices.has(i)) continue; // skip subagent_stop — merged into header
+
+      // If this is a subagent_start with a matched stop, render as a group
+      const stopIdx = agentSpans.get(i);
+      if (ev.type === 'subagent_start' && stopIdx !== undefined) {
+        renderAgentGroup(i, stopIdx, parent);
+        i = stopIdx; // skip past the agent span (loop will i++)
+        continue;
+      }
+
+      parent.appendChild(renderEventRow(i, ev));
+    }
+  }
+
+  /** Render a collapsible agent group: header row + nested children. */
+  function renderAgentGroup(startI: number, stopI: number, parent: HTMLElement): void {
+    const startEv = events[startI];
+    const isRunning = stopI >= events.length;
+    const stopEv = isRunning ? null : events[stopI];
+    const now = Date.now();
+    const duration = isRunning
+      ? now - startEv.timestamp
+      : stopEv!.timestamp - startEv.timestamp;
+    const childEnd = isRunning ? events.length : stopI;
+    const childCount = countChildEvents(startI + 1, childEnd);
+
+    const group = document.createElement('div');
+    group.className = 'inspector-agent-group';
+    if (isRunning) group.classList.add('inspector-agent-running');
+
+    // Header row
+    const row = document.createElement('div');
+    row.className = 'inspector-timeline-row inspector-agent-header';
+
+    const timeEl = document.createElement('span');
+    timeEl.className = 'inspector-time';
+    timeEl.textContent = formatRelativeTime(startEv.timestamp - sessionStart);
+
+    const badge = document.createElement('span');
+    badge.className = 'inspector-badge inspector-badge-agent';
+    badge.textContent = isRunning ? 'Agent\u2026' : 'Agent';
+
+    const toggleEl = document.createElement('span');
+    toggleEl.className = 'inspector-agent-toggle';
+    const groupKey = `agent-group:${startEv.agent_id || startI}`;
+    if (isRunning) expandedRows.add(groupKey);
+    toggleEl.textContent = expandedRows.has(groupKey) ? '\u25BC' : '\u25B6';
+
+    const desc = document.createElement('span');
+    desc.className = 'inspector-desc';
+    const parts = [agentLabel(startEv)];
+    parts.push(formatDuration(duration));
+    if (childCount > 0) parts.push(`${childCount} action${childCount !== 1 ? 's' : ''}`);
+    desc.textContent = parts.join(' \u00B7 ');
+
+    row.appendChild(timeEl);
+    row.appendChild(badge);
+    row.appendChild(toggleEl);
+    row.appendChild(desc);
+
+    group.appendChild(row);
+
+    // Children: subagent_start as first, inner events, subagent_stop as last
+    if (expandedRows.has(groupKey)) {
+      const children = document.createElement('div');
+      children.className = 'inspector-agent-children';
+      children.appendChild(renderEventRow(startI, startEv));
+      renderEvents(startI + 1, childEnd, children);
+      if (stopEv) children.appendChild(renderEventRow(stopI, stopEv));
+      group.appendChild(children);
+    }
+
+    row.addEventListener('click', () => {
+      if (expandedRows.has(groupKey)) {
+        expandedRows.delete(groupKey);
+      } else {
+        expandedRows.add(groupKey);
+      }
+      toggleEl.textContent = expandedRows.has(groupKey) ? '\u25BC' : '\u25B6';
+      const existing = group.querySelector('.inspector-agent-children');
+      if (existing) {
+        existing.remove();
+      } else {
+        const children = document.createElement('div');
+        children.className = 'inspector-agent-children';
+        children.appendChild(renderEventRow(startI, startEv));
+        renderEvents(startI + 1, childEnd, children);
+        if (stopEv) children.appendChild(renderEventRow(stopI, stopEv));
+        group.appendChild(children);
+      }
+    });
+
+    parent.appendChild(group);
+  }
+
+  function countChildEvents(from: number, to: number): number {
+    let count = 0;
+    for (let i = from; i < to; i++) {
+      if (events[i].type !== 'status_update' && !stopIndices.has(i)) count++;
+    }
+    return count;
+  }
+
+  /** Render a single event row (non-agent-group). */
+  function renderEventRow(i: number, ev: InspectorEvent): HTMLDivElement {
     const row = document.createElement('div');
     row.className = 'inspector-timeline-row';
 
@@ -359,6 +496,7 @@ function renderTimeline(container: HTMLElement): void {
     } else if (ev.type === 'permission_request') {
       desc.textContent = 'Waiting for permission';
     } else if (ev.type === 'subagent_start') {
+      // Unmatched start (agent still running) — render inline
       desc.textContent = `Agent started: ${agentLabel(ev)}`;
     } else if (ev.type === 'subagent_stop') {
       const duration = findAgentDuration(events, i);
@@ -423,7 +561,7 @@ function renderTimeline(container: HTMLElement): void {
         () => createToolInputEl(ev.tool_input!));
     }
 
-    // Expandable agent detail
+    // Expandable agent detail (for unmatched agent events only)
     if (isAgentEvent(ev)) {
       const duration = ev.type === 'subagent_stop' ? findAgentDuration(events, i) : null;
       makeExpandable(row, `${ev.timestamp}:${ev.type}:${ev.agent_id || ''}`, '.inspector-agent-detail',
@@ -437,8 +575,10 @@ function renderTimeline(container: HTMLElement): void {
       row.appendChild(errorEl);
     }
 
-    list.appendChild(row);
+    return row;
   }
+
+  renderEvents(startIdx, events.length, list);
 
   container.appendChild(list);
 
@@ -814,8 +954,8 @@ function badgeLabel(type: string): string {
     case 'session_start': return 'Start';
     case 'session_end': return 'End';
     case 'permission_request': return 'Input';
-    case 'subagent_start': return 'Agent+';
-    case 'subagent_stop': return 'Agent-';
+    case 'subagent_start': return 'Agent';
+    case 'subagent_stop': return 'Agent';
     case 'notification': return 'Notify';
     case 'pre_compact': return 'Compact';
     case 'post_compact': return 'Compact';
