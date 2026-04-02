@@ -65,6 +65,18 @@ describe('classifyError', () => {
     expect(classifyError('To get started with GitHub CLI, please run: gh auth login', baseTool)).toBe('other');
   });
 
+  it('classifies "sh: gh: not found" as not-found', () => {
+    expect(classifyError('sh: gh: not found', baseTool)).toBe('not-found');
+  });
+
+  it('does not classify GitHub API 404 as not-found', () => {
+    expect(classifyError('Exit code 1 --- {"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}', baseTool)).toBe('other');
+  });
+
+  it('does not classify HTTP 404 as not-found', () => {
+    expect(classifyError('Not Found (HTTP 404)', baseTool)).toBe('other');
+  });
+
   it('classifies generic errors as other', () => {
     expect(classifyError("error: pathspec 'foo' did not match any file(s)", baseTool)).toBe('other');
   });
