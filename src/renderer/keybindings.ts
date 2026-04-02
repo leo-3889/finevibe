@@ -10,7 +10,7 @@ import { getActiveShellSessionId } from './components/project-terminal.js';
 import { toggleGitPanel } from './components/git-panel.js';
 import { showQuickOpen } from './components/quick-open.js';
 import { shortcutManager } from './shortcuts.js';
-import { getFileReaderInstance, showGoToLineBar } from './components/file-reader.js';
+import { getFileReaderInstance, getFileReaderTextSelector, showGoToLineBar } from './components/file-reader.js';
 import { getFileViewerInstance } from './components/file-viewer.js';
 import { DomSearchBackend } from './components/dom-search-backend.js';
 import { toggleInspector } from './components/session-inspector.js';
@@ -67,7 +67,7 @@ export function initKeybindings(): void {
       if (!instance) return;
       const body = instance.element.querySelector('.file-reader-body') as HTMLElement;
       if (!body) return;
-      showSearchBar(session.id, new DomSearchBackend(body, '.file-reader-line-text'));
+      showSearchBar(session.id, new DomSearchBackend(body, getFileReaderTextSelector(session.id)));
     } else if (session.type === 'diff-viewer') {
       const instance = getFileViewerInstance(session.id);
       if (!instance) return;
