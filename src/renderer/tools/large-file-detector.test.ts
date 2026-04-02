@@ -376,11 +376,7 @@ describe('handleToolFailure', () => {
 
     // Simulates a payload written by the fixed PostToolUse hook path
     // (no is_error flag, just the raw error string in the error field)
-    await handleToolFailure(session.id, {
-      tool_name: 'Read',
-      tool_input: { file_path: '/tmp/test/large.ts' },
-      error: 'File content (10339 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.',
-    });
+    await handleToolFailure(session.id, makeReadFailure('/tmp/test/large.ts'));
 
     expect(alerts).toHaveLength(1);
     expect(alerts[0].filePath).toBe('/tmp/test/large.ts');
