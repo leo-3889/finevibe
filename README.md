@@ -37,6 +37,7 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 - **AI Readiness Score** — see how well-prepared your project is for AI-assisted coding, with one-click fixes
 - **Session resume** — pick up where you left off, even after restarting the app
 - **Smart alerts** — detects missing tools, context bloat, and session health issues
+- **Session status indicators** — color-coded dots on each tab show real-time session state (working, waiting, input needed, completed), with optional desktop notifications
 - **Keyboard-driven** — full shortcut support, built for speed
 
 > Built for Claude Code today. More AI CLI providers coming soon.
