@@ -6,6 +6,7 @@ export const inspectorState = {
   resizing: false,
   reopenOnNextSession: false,
   expandedRows: new Set<string>(),
+  autoExpandedAgentGroups: new Set<string>(),
   autoScroll: true,
   programmaticScroll: false,
 };

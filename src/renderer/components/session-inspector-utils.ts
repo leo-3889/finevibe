@@ -6,6 +6,7 @@ import { inspectorState } from './session-inspector-state-ui.js';
 
 export function resetUIState(): void {
   inspectorState.expandedRows.clear();
+  inspectorState.autoExpandedAgentGroups.clear();
   inspectorState.autoScroll = true;
 }
 

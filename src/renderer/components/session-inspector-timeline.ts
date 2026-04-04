@@ -18,30 +18,75 @@ import {
   escapeHtml,
 } from './session-inspector-utils.js';
 
+export interface AgentSpan {
+  agentId: string;
+  startIdx: number;
+  stopIdx: number;          // events.length if still running
+  isRunning: boolean;
+  parentAgentId: string | null;
+  childEventIndices: number[]; // sorted event indices belonging to this agent
+}
+
+export interface AgentModel {
+  spans: Map<string, AgentSpan>;       // agentId → span
+  eventOwner: Map<number, string>;     // event index → owning agentId
+  stopIndices: Set<number>;            // all stop event indices (to skip in rendering)
+  startToAgent: Map<number, string>;   // startIdx → agentId (for render dispatch)
+}
+
 /**
- * Map subagent_start index → end index.
- * End is the matching subagent_stop index, or events.length for agents still running.
+ * Build an agent model that pairs agent lifecycles by `agent_id` and assigns
+ * child events based on each event's own `agent_id`.
  */
-function buildAgentSpans(events: InspectorEvent[], startIdx: number): Map<number, number> {
-  const spans = new Map<number, number>();
-  const openStarts = new Map<string, number>();
+export function buildAgentModel(events: InspectorEvent[], startIdx: number): AgentModel {
+  const spans = new Map<string, AgentSpan>();
+  const startToAgent = new Map<number, string>();
+  const openAgents = new Map<string, AgentSpan>();
+
   for (let i = startIdx; i < events.length; i++) {
     const ev = events[i];
+
     if (ev.type === 'subagent_start' && ev.agent_id) {
-      openStarts.set(ev.agent_id, i);
+      const span: AgentSpan = {
+        agentId: ev.agent_id,
+        startIdx: i,
+        stopIdx: events.length,
+        isRunning: true,
+        parentAgentId: null,
+        childEventIndices: [],
+      };
+      spans.set(ev.agent_id, span);
+      startToAgent.set(i, ev.agent_id);
+      openAgents.set(ev.agent_id, span);
     } else if (ev.type === 'subagent_stop' && ev.agent_id) {
-      const startI = openStarts.get(ev.agent_id);
-      if (startI !== undefined) {
-        spans.set(startI, i);
-        openStarts.delete(ev.agent_id);
+      const span = openAgents.get(ev.agent_id);
+      if (span) {
+        span.stopIdx = i;
+        span.isRunning = false;
+        openAgents.delete(ev.agent_id);
+      }
+    } else if (ev.agent_id) {
+      const owner = spans.get(ev.agent_id);
+      if (owner) {
+        owner.childEventIndices.push(i);
       }
     }
   }
-  // Open agents (still running) span to end of events
-  for (const startI of openStarts.values()) {
-    spans.set(startI, events.length);
+
+  for (const span of spans.values()) {
+    span.childEventIndices.sort((a, b) => a - b);
   }
-  return spans;
+
+  const stopIndices = new Set<number>();
+  const eventOwner = new Map<number, string>();
+  for (const span of spans.values()) {
+    if (!span.isRunning) stopIndices.add(span.stopIdx);
+    for (const idx of span.childEventIndices) {
+      eventOwner.set(idx, span.agentId);
+    }
+  }
+
+  return { spans, eventOwner, stopIndices, startToAgent };
 }
 
 export function renderTimeline(container: HTMLElement): void {
@@ -55,6 +100,7 @@ export function renderTimeline(container: HTMLElement): void {
   list.className = 'inspector-timeline';
 
   const sessionStart = events[0].timestamp;
+  const sessionId = inspectorState.inspectedSessionId!;
   const costDeltas = getCostDeltas(inspectorState.inspectedSessionId!);
   const deltaMap = new Map(costDeltas.map(d => [d.index, d.delta]));
 
@@ -67,23 +113,25 @@ export function renderTimeline(container: HTMLElement): void {
     list.appendChild(loadMore);
   }
 
-  const agentSpans = buildAgentSpans(events, startIdx);
-  // Stop indices are skipped — their info merges into the agent group header
-  const stopIndices = new Set(agentSpans.values());
+  const model = buildAgentModel(events, startIdx);
+  const { spans: agentSpans, stopIndices, startToAgent } = model;
+  const renderedIndices = new Set<number>();
 
   /** Render events from `from` to `to` (exclusive), appending to `parent`. */
   function renderEvents(from: number, to: number, parent: HTMLElement): void {
     for (let i = from; i < to; i++) {
+      if (renderedIndices.has(i)) continue;
       const ev = events[i];
       if (ev.type === 'status_update') continue;
       if (stopIndices.has(i)) continue; // skip subagent_stop — merged into header
 
-      // If this is a subagent_start with a matched stop, render as a group
-      const stopIdx = agentSpans.get(i);
-      if (ev.type === 'subagent_start' && stopIdx !== undefined) {
-        renderAgentGroup(i, stopIdx, parent);
-        i = stopIdx; // skip past the agent span (loop will i++)
-        continue;
+      const agentId = startToAgent.get(i);
+      if (ev.type === 'subagent_start' && agentId) {
+        const span = agentSpans.get(agentId);
+        if (span) {
+          renderAgentGroup(agentId, parent);
+          continue;
+        }
       }
 
       parent.appendChild(renderEventRow(i, ev));
@@ -91,16 +139,21 @@ export function renderTimeline(container: HTMLElement): void {
   }
 
   /** Render a collapsible agent group: header row + nested children. */
-  function renderAgentGroup(startI: number, stopI: number, parent: HTMLElement): void {
-    const startEv = events[startI];
-    const isRunning = stopI >= events.length;
-    const stopEv = isRunning ? null : events[stopI];
+  function renderAgentGroup(agentId: string, parent: HTMLElement): void {
+    const span = agentSpans.get(agentId)!;
+    const startEv = events[span.startIdx];
+    const { isRunning } = span;
+    const stopEv = isRunning ? null : events[span.stopIdx];
     const now = Date.now();
     const duration = isRunning
       ? now - startEv.timestamp
       : stopEv!.timestamp - startEv.timestamp;
-    const childEnd = isRunning ? events.length : stopI;
-    const childCount = countChildEvents(startI + 1, childEnd);
+    const childCount = countChildEvents(span);
+
+    // Mark all span indices as rendered
+    renderedIndices.add(span.startIdx);
+    if (!isRunning) renderedIndices.add(span.stopIdx);
+    for (const idx of span.childEventIndices) renderedIndices.add(idx);
 
     const group = document.createElement('div');
     group.className = 'inspector-agent-group';
@@ -120,8 +173,14 @@ export function renderTimeline(container: HTMLElement): void {
 
     const toggleEl = document.createElement('span');
     toggleEl.className = 'inspector-agent-toggle';
-    const groupKey = `agent-group:${startEv.agent_id || startI}`;
-    if (isRunning) inspectorState.expandedRows.add(groupKey);
+    const groupKey = `agent-group:${agentId}`;
+    const autoExpandKey = `${sessionId}:${groupKey}`;
+    if (isRunning
+      && !inspectorState.expandedRows.has(groupKey)
+      && !inspectorState.autoExpandedAgentGroups.has(autoExpandKey)) {
+      inspectorState.expandedRows.add(groupKey);
+      inspectorState.autoExpandedAgentGroups.add(autoExpandKey);
+    }
     toggleEl.textContent = inspectorState.expandedRows.has(groupKey) ? '\u25BC' : '\u25B6';
 
     const desc = document.createElement('span');
@@ -138,14 +197,20 @@ export function renderTimeline(container: HTMLElement): void {
 
     group.appendChild(row);
 
-    // Children: subagent_start as first, inner events, subagent_stop as last
-    if (inspectorState.expandedRows.has(groupKey)) {
+    // Children: subagent_start as first, owned child events, subagent_stop as last
+    const renderChildren = () => {
       const children = document.createElement('div');
       children.className = 'inspector-agent-children';
-      children.appendChild(renderEventRow(startI, startEv));
-      renderEvents(startI + 1, childEnd, children);
-      if (stopEv) children.appendChild(renderEventRow(stopI, stopEv));
-      group.appendChild(children);
+      children.appendChild(renderEventRow(span.startIdx, startEv));
+      for (const idx of span.childEventIndices) {
+        children.appendChild(renderEventRow(idx, events[idx]));
+      }
+      if (stopEv) children.appendChild(renderEventRow(span.stopIdx, stopEv));
+      return children;
+    };
+
+    if (inspectorState.expandedRows.has(groupKey)) {
+      group.appendChild(renderChildren());
     }
 
     row.addEventListener('click', () => {
@@ -159,22 +224,17 @@ export function renderTimeline(container: HTMLElement): void {
       if (existing) {
         existing.remove();
       } else {
-        const children = document.createElement('div');
-        children.className = 'inspector-agent-children';
-        children.appendChild(renderEventRow(startI, startEv));
-        renderEvents(startI + 1, childEnd, children);
-        if (stopEv) children.appendChild(renderEventRow(stopI, stopEv));
-        group.appendChild(children);
+        group.appendChild(renderChildren());
       }
     });
 
     parent.appendChild(group);
   }
 
-  function countChildEvents(from: number, to: number): number {
+  function countChildEvents(span: AgentSpan): number {
     let count = 0;
-    for (let i = from; i < to; i++) {
-      if (events[i].type !== 'status_update' && !stopIndices.has(i)) count++;
+    for (const idx of span.childEventIndices) {
+      if (events[idx].type !== 'status_update') count++;
     }
     return count;
   }
