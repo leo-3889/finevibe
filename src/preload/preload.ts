@@ -5,7 +5,7 @@ export type { CostData } from '../shared/types';
 
 export interface VibeyardApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -26,7 +26,7 @@ export interface VibeyardApi {
   fs: {
     isDirectory(path: string): Promise<boolean>;
     expandPath(path: string): Promise<string>;
-    listDirs(dirPath: string): Promise<string[]>;
+    listDirs(dirPath: string, prefix?: string): Promise<string[]>;
     browseDirectory(): Promise<string | null>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     readFile(filePath: string): Promise<string>;
@@ -75,8 +75,10 @@ export interface VibeyardApi {
     onError(cb: (info: { message: string }) => void): () => void;
   };
   app: {
+    focus(): void;
     getVersion(): Promise<string>;
     openExternal(url: string): Promise<void>;
+    getBrowserPreloadPath(): Promise<string>;
     onQuitting(callback: () => void): () => void;
   };
   mcp: {
@@ -92,7 +94,7 @@ export interface VibeyardApi {
     removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string): Promise<{ success: boolean; error?: string }>;
   };
   readiness: {
-    analyze(projectPath: string): Promise<ReadinessResult>;
+    analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
   };
   stats: {
     getCache(): Promise<StatsCache | null>;
@@ -113,6 +115,7 @@ export interface VibeyardApi {
     onGotoSession(callback: (index: number) => void): () => void;
     onToggleDebug(callback: () => void): () => void;
     onUsageStats(callback: () => void): () => void;
+    onToggleInspector(callback: () => void): () => void;
     onCloseSession(callback: () => void): () => void;
     rebuild(debugMode: boolean): Promise<void>;
   };
@@ -126,8 +129,8 @@ function onChannel(channel: string, callback: (...args: unknown[]) => void): () 
 
 const api: VibeyardApi = {
   pty: {
-    create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId) =>
-      ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude'),
+    create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt) =>
+      ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt),
     createShell: (sessionId, cwd) =>
       ipcRenderer.invoke('pty:createShell', sessionId, cwd),
     write: (sessionId, data) =>
@@ -167,7 +170,7 @@ const api: VibeyardApi = {
   fs: {
     isDirectory: (path) => ipcRenderer.invoke('fs:isDirectory', path),
     expandPath: (path: string) => ipcRenderer.invoke('fs:expandPath', path),
-    listDirs: (dirPath: string) => ipcRenderer.invoke('fs:listDirs', dirPath),
+    listDirs: (dirPath: string, prefix?: string) => ipcRenderer.invoke('fs:listDirs', dirPath, prefix),
     browseDirectory: () => ipcRenderer.invoke('fs:browseDirectory'),
     listFiles: (cwd: string, query: string) => ipcRenderer.invoke('fs:listFiles', cwd, query),
     readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
@@ -215,8 +218,10 @@ const api: VibeyardApi = {
     onError: (cb) => onChannel('update:error', (info) => cb(info as { message: string })),
   },
   app: {
+    focus: () => { ipcRenderer.send('app:focus'); },
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
+    getBrowserPreloadPath: () => ipcRenderer.invoke('app:getBrowserPreloadPath'),
     onQuitting: (cb: () => void) => onChannel('app:quitting', cb),
   },
   mcp: {
@@ -232,7 +237,7 @@ const api: VibeyardApi = {
     removeServer: (name: string, filePath: string, scope: 'user' | 'project', projectPath?: string) => ipcRenderer.invoke('mcp:removeServer', name, filePath, scope, projectPath),
   },
   readiness: {
-    analyze: (projectPath: string) => ipcRenderer.invoke('readiness:analyze', projectPath),
+    analyze: (projectPath: string, excludedProviders?: string[]) => ipcRenderer.invoke('readiness:analyze', projectPath, excludedProviders),
   },
   stats: {
     getCache: () => ipcRenderer.invoke('stats:getCache'),
@@ -253,6 +258,7 @@ const api: VibeyardApi = {
     onGotoSession: (cb) => onChannel('menu:goto-session', (index) => cb(index as number)),
     onToggleDebug: (cb) => onChannel('menu:toggle-debug', cb),
     onUsageStats: (cb) => onChannel('menu:usage-stats', cb),
+    onToggleInspector: (cb) => onChannel('menu:toggle-inspector', cb),
     onCloseSession: (cb) => onChannel('menu:close-session', cb),
     rebuild: (debugMode) => ipcRenderer.invoke('menu:rebuild', debugMode),
   },

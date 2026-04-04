@@ -1,5 +1,8 @@
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { appState } from '../state.js';
 import { destroySearchBar } from './search-bar.js';
+import { escapeHtml } from './dom-search-backend.js';
 
 interface FileReaderInstance {
   element: HTMLElement;
@@ -7,16 +10,16 @@ interface FileReaderInstance {
   resolvedPath: string | null;
   loaded: boolean;
   targetLine?: number;
+  viewMode: 'raw' | 'rendered';
+  rawContent?: string;
+}
+
+function isMarkdownFile(filePath: string): boolean {
+  return /\.(md|markdown|mdown|mkd|mdx)$/i.test(filePath);
 }
 
 const instances = new Map<string, FileReaderInstance>();
 let unwatchFileChanged: (() => void) | null = null;
-
-function escapeHtml(s: string): string {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
 
 function renderFileContent(content: string): HTMLElement {
   const wrapper = document.createElement('div');
@@ -43,6 +46,29 @@ function renderFileContent(content: string): HTMLElement {
   return wrapper;
 }
 
+function renderMarkdownContent(content: string): HTMLElement {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'file-reader-content file-reader-markdown';
+  const rawHtml = marked.parse(content, { async: false }) as string;
+  wrapper.innerHTML = DOMPurify.sanitize(rawHtml);
+  return wrapper;
+}
+
+function renderBody(instance: FileReaderInstance): void {
+  const body = instance.element.querySelector('.file-reader-body')!;
+  // Preserve text selection if user is selecting
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount > 0 && !sel.isCollapsed && body.contains(sel.anchorNode)) {
+    return;
+  }
+  body.innerHTML = '';
+  if (instance.viewMode === 'rendered') {
+    body.appendChild(renderMarkdownContent(instance.rawContent!));
+  } else {
+    body.appendChild(renderFileContent(instance.rawContent!));
+  }
+}
+
 function resolveFilePath(instance: FileReaderInstance): string {
   const project = appState.activeProject;
   if (instance.filePath.startsWith('/')) return instance.filePath;
@@ -65,10 +91,11 @@ async function loadFile(instance: FileReaderInstance): Promise<void> {
   try {
     const fullPath = resolveFilePath(instance);
     const content = await window.vibeyard.fs.readFile(fullPath);
+    instance.rawContent = content;
     body.innerHTML = '';
-    body.appendChild(renderFileContent(content));
+    renderBody(instance);
     instance.loaded = true;
-    if (instance.targetLine) {
+    if (instance.targetLine && instance.viewMode === 'raw') {
       scrollToLine(instance);
     }
   } catch {
@@ -115,6 +142,44 @@ export function createFileReaderPane(sessionId: string, filePath: string, target
 
   header.appendChild(pathSpan);
   header.appendChild(badge);
+
+  const isMd = isMarkdownFile(filePath);
+  const instance: FileReaderInstance = {
+    element: el, filePath, resolvedPath: null, loaded: false, targetLine,
+    viewMode: isMd ? 'rendered' : 'raw',
+  };
+
+  if (isMd) {
+    const toggleGroup = document.createElement('div');
+    toggleGroup.className = 'file-reader-view-toggle';
+
+    const renderedBtn = document.createElement('button');
+    renderedBtn.className = 'search-toggle-btn active';
+    renderedBtn.textContent = 'Rendered';
+    renderedBtn.title = 'Rendered Markdown';
+
+    const rawBtn = document.createElement('button');
+    rawBtn.className = 'search-toggle-btn';
+    rawBtn.textContent = 'Raw';
+    rawBtn.title = 'Raw Text';
+
+    const setMode = (mode: 'raw' | 'rendered') => {
+      instance.viewMode = mode;
+      renderedBtn.classList.toggle('active', mode === 'rendered');
+      rawBtn.classList.toggle('active', mode === 'raw');
+      if (instance.rawContent !== undefined) {
+        renderBody(instance);
+      }
+    };
+
+    renderedBtn.addEventListener('click', () => setMode('rendered'));
+    rawBtn.addEventListener('click', () => setMode('raw'));
+
+    toggleGroup.appendChild(renderedBtn);
+    toggleGroup.appendChild(rawBtn);
+    header.appendChild(toggleGroup);
+  }
+
   el.appendChild(header);
 
   // Scrollable body
@@ -122,7 +187,6 @@ export function createFileReaderPane(sessionId: string, filePath: string, target
   body.className = 'file-reader-body';
   el.appendChild(body);
 
-  const instance: FileReaderInstance = { element: el, filePath, resolvedPath: null, loaded: false, targetLine };
   instances.set(sessionId, instance);
 }
 
@@ -208,11 +272,24 @@ export function getFileReaderInstance(sessionId: string): FileReaderInstance | u
   return instances.get(sessionId);
 }
 
+const MARKDOWN_TEXT_SELECTOR = [
+  'p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'td', 'th', 'pre', 'blockquote',
+].map((tag) => `.file-reader-markdown ${tag}`).join(', ');
+
+const RAW_TEXT_SELECTOR = '.file-reader-line-text';
+
+export function getFileReaderTextSelector(sessionId: string): string {
+  const instance = instances.get(sessionId);
+  if (!instance) return RAW_TEXT_SELECTOR;
+  return instance.viewMode === 'rendered' ? MARKDOWN_TEXT_SELECTOR : RAW_TEXT_SELECTOR;
+}
+
 const goToLineBars = new Map<string, { bar: HTMLDivElement; input: HTMLInputElement }>();
 
 export function showGoToLineBar(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
+  if (instance.viewMode === 'rendered') return;
 
   const existing = goToLineBars.get(sessionId);
   if (existing) {

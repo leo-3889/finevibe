@@ -194,7 +194,43 @@
 .inspector-badge-task { background: rgba(38,198,166,0.2); color: #26c6a6; }
 .inspector-badge-system { background: rgba(120,144,176,0.18); color: #90a4ae; }
 .inspector-badge-notify { background: rgba(255,152,0,0.2); color: #ffb74d; }
+.inspector-badge-mcp { background: rgba(255,255,255,0.08); color: #7dd3fc; border: 1px solid rgba(125,211,252,0.35); }
 .inspector-badge-default { background: var(--bg-tertiary); color: var(--text-muted); }
+
+/* --- Agent group nesting --- */
+
+.inspector-agent-group {
+  border-left: 2px solid rgba(0,188,212,0.3);
+  border-radius: 3px;
+  margin: 1px 0;
+}
+
+.inspector-agent-header {
+  background: rgba(0,188,212,0.05);
+  cursor: pointer;
+}
+
+.inspector-agent-header:hover {
+  background: rgba(0,188,212,0.1);
+}
+
+.inspector-agent-running {
+  border-left-color: rgba(0,188,212,0.6);
+  border-left-style: dashed;
+}
+
+.inspector-agent-toggle {
+  font-size: 8px;
+  color: var(--text-muted);
+  width: 10px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.inspector-agent-children {
+  padding-left: 14px;
+}
+
 
 .inspector-desc {
   color: var(--text-primary);
@@ -217,11 +253,44 @@
   font-family: monospace;
 }
 
-.inspector-tool-input {
+.inspector-tool-detail {
   width: 100%;
   margin-top: 4px;
   padding: 6px 8px;
   background: var(--bg-primary);
+  border-radius: 3px;
+  border-left: 2px solid #7dd3fc;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  user-select: text;
+  cursor: text;
+}
+
+.inspector-tool-detail-row {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  font-family: monospace;
+}
+
+.inspector-tool-detail-label {
+  color: var(--text-muted);
+  min-width: 65px;
+  flex-shrink: 0;
+}
+
+.inspector-tool-detail-value {
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.inspector-tool-input {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
   border-radius: 3px;
   color: var(--text-secondary);
   font-size: 10px;
@@ -232,6 +301,41 @@
   overflow-y: auto;
   user-select: text;
   cursor: text;
+}
+
+.inspector-agent-detail {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: var(--bg-primary);
+  border-radius: 3px;
+  border-left: 2px solid #4dd0e1;
+  font-size: 10px;
+  font-family: monospace;
+  max-height: 300px;
+  overflow-y: auto;
+  user-select: text;
+  cursor: text;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.inspector-agent-detail-row {
+  display: flex;
+  gap: 8px;
+}
+
+.inspector-agent-detail-label {
+  color: var(--text-muted);
+  min-width: 65px;
+  flex-shrink: 0;
+}
+
+.inspector-agent-detail-value {
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .inspector-error-text {

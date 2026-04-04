@@ -152,9 +152,10 @@ describe('notification-desktop', () => {
 
   it('should focus app and switch session on notification click', () => {
     const focusSpy = vi.fn();
-    (globalThis as any).window = { focus: focusSpy };
-    // Also ensure the module's window.focus works
-    vi.stubGlobal('focus', focusSpy);
+    (globalThis as any).window = {
+      focus: focusSpy,
+      vibeyard: { app: { focus: focusSpy } },
+    };
 
     initSession('bg-session');
     setHookStatus('bg-session', 'working');
@@ -164,7 +165,7 @@ describe('notification-desktop', () => {
     notificationInstances[0].onclick!();
 
     expect(mockAppState.setActiveProject).toHaveBeenCalledWith('proj-1');
-    expect(mockAppState.setActiveSession).toHaveBeenCalledWith('bg-session');
+    expect(mockAppState.setActiveSession).toHaveBeenCalledWith('proj-1', 'bg-session');
   });
 
   it('should not notify when Notification permission is not granted', () => {

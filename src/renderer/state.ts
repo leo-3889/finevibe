@@ -2,6 +2,7 @@ import type { VibeyardApi } from './types.js';
 import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult } from '../shared/types.js';
 import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
+import { getProviderCapabilities } from './provider-availability.js';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession } from '../shared/types.js';
 
@@ -39,6 +40,7 @@ const defaultPreferences: Preferences = {
   sessionHistoryEnabled: true,
   insightsEnabled: true,
   autoTitleEnabled: true,
+  readinessExcludedProviders: [],
   sidebarViews: { configSections: true, gitPanel: true, sessionHistory: true, costFooter: true, readinessSection: true },
 };
 
@@ -206,13 +208,31 @@ class AppState {
   }
 
   removeProject(id: string): void {
+    const project = this.state.projects.find((p) => p.id === id);
+    const sessions = project?.sessions ?? [];
+
     this.state.projects = this.state.projects.filter((p) => p.id !== id);
     if (this.state.activeProjectId === id) {
       this.state.activeProjectId = this.state.projects[0]?.id ?? null;
     }
     this.persist();
+    for (const session of sessions) {
+      this.emit('session-removed', { projectId: id, sessionId: session.id });
+    }
     this.emit('project-removed', id);
     this.emit('project-changed');
+  }
+
+  addPlanSession(projectId: string, name: string): SessionRecord | undefined {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return undefined;
+    const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
+    const providerId = activeSession?.providerId ?? this.state.preferences.defaultProvider ?? 'claude';
+    const caps = getProviderCapabilities(providerId);
+    const planArg = caps?.planModeArg ?? '';
+    const base = project.defaultArgs ?? '';
+    const args = [base, planArg].filter(Boolean).join(' ').trim() || undefined;
+    return this.addSession(projectId, name, args, providerId);
   }
 
   addSession(projectId: string, name: string, args?: string, providerId?: ProviderId): SessionRecord | undefined {
@@ -284,6 +304,43 @@ class AppState {
       type: 'remote-terminal',
       remoteHostName: hostSessionName,
       shareMode,
+      cliSessionId: null,
+      createdAt: new Date().toISOString(),
+    };
+    project.sessions.push(session);
+    project.activeSessionId = session.id;
+    this.persist();
+    this.emit('session-added', { projectId, session });
+    this.emit('session-changed');
+    return session;
+  }
+
+  addBrowserTabSession(projectId: string, url?: string): SessionRecord | undefined {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return undefined;
+
+    // If a browser-tab with the same URL already exists, switch to it
+    if (url) {
+      const existing = project.sessions.find(
+        (s) => s.type === 'browser-tab' && s.browserTabUrl === url
+      );
+      if (existing) {
+        project.activeSessionId = existing.id;
+        this.persist();
+        this.emit('session-changed');
+        return existing;
+      }
+    }
+
+    let name = 'Browser';
+    if (url) {
+      try { name = new URL(url).hostname || url; } catch { name = url; }
+    }
+    const session: SessionRecord = {
+      id: crypto.randomUUID(),
+      name,
+      type: 'browser-tab',
+      browserTabUrl: url,
       cliSessionId: null,
       createdAt: new Date().toISOString(),
     };
@@ -517,6 +574,10 @@ class AppState {
   /** @deprecated Use updateSessionCliId */
   updateSessionClaudeId(projectId: string, sessionId: string, claudeSessionId: string): void {
     this.updateSessionCliId(projectId, sessionId, claudeSessionId);
+  }
+
+  hasSession(sessionId: string): boolean {
+    return this.findSessionById(sessionId) !== undefined;
   }
 
   private findSessionById(sessionId: string): SessionRecord | undefined {

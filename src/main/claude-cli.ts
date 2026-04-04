@@ -255,7 +255,7 @@ if ti:
 er=d.get(\\"error\\",\\"\\")
 if er:
  e[\\"error\\"]=er
-for fld in (\\"agent_id\\",\\"message\\",\\"task_id\\",\\"worktree_path\\",\\"cwd\\",\\"file_path\\",\\"config_key\\",\\"question\\",\\"answer\\"):
+for fld in (\\"agent_id\\",\\"agent_type\\",\\"last_assistant_message\\",\\"agent_transcript_path\\",\\"message\\",\\"task_id\\",\\"worktree_path\\",\\"cwd\\",\\"file_path\\",\\"config_key\\",\\"question\\",\\"answer\\"):
  v=d.get(fld,\\"\\")
  if v:
   e[fld]=v
@@ -268,6 +268,13 @@ if cw:
   \\"context_window_size\\":cw.get(\\"context_window_size\\",200000),
   \\"used_percentage\\":cw.get(\\"used_percentage\\",0)
  }
+if tn and \\"${hookEvent}\\"==\\"PostToolUse\\":
+ import random,string as st
+ tr=d.get(\\"tool_result\\",\\"\\") or d.get(\\"tool_response\\",\\"\\")
+ fe=tr if isinstance(tr,str) else json.dumps(tr) if tr else \\"\\"
+ if fe:
+  sfx=\\"\\".join(random.choices(st.ascii_lowercase,k=6))
+  json.dump({\\"tool_name\\":tn,\\"tool_input\\":d.get(\\"tool_input\\",{}),\\"error\\":fe},open(f\\"${STATUS_DIR}/\\"+sid+\\"-\\"+sfx+\\".toolfailure\\",\\"w\\"))
 with open(f\\"${STATUS_DIR}/\\"+sid+\\".events\\",\\"a\\") as f:
  f.write(json.dumps(e)+\\"\\\\n\\")
 " 2>/dev/null ${HOOK_MARKER}'`;
@@ -316,6 +323,7 @@ with open(f\\"${STATUS_DIR}/\\"+sid+\\".events\\",\\"a\\") as f:
   // Inspector-only hooks: log to .events file without changing session status
   const inspectorOnlyEvents: Record<string, InspectorEventType> = {
     PreToolUse: 'pre_tool_use',
+    PermissionDenied: 'permission_denied',
     SubagentStart: 'subagent_start',
     SubagentStop: 'subagent_stop',
     Notification: 'notification',

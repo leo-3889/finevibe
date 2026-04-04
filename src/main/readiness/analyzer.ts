@@ -1,4 +1,4 @@
-import type { ReadinessResult } from '../../shared/types';
+import type { ReadinessResult, ProviderId } from '../../shared/types';
 import type { ReadinessCheckProducer, TaggedCheck, TopCategory } from './types';
 import { getAvailableProviderIds } from '../providers/registry';
 import { computeCategoryScore, getTrackedFiles } from './utils';
@@ -28,11 +28,12 @@ const CATEGORIES: { id: TopCategory; name: string; weight: number }[] = [
   { id: 'optimizations', name: 'Optimizations', weight: 0.20 },
 ];
 
-export async function analyzeReadiness(projectPath: string): Promise<ReadinessResult> {
+export async function analyzeReadiness(projectPath: string, excludedProviders?: ProviderId[]): Promise<ReadinessResult> {
   const availableIds = new Set(getAvailableProviderIds());
+  const excludedSet = new Set(excludedProviders ?? []);
 
   const activeProducers = allProducers.filter(
-    p => !p.providerId || availableIds.has(p.providerId)
+    p => !p.providerId || (availableIds.has(p.providerId) && !excludedSet.has(p.providerId))
   );
 
   const ctx = { trackedFiles: getTrackedFiles(projectPath) };
@@ -48,6 +49,9 @@ export async function analyzeReadiness(projectPath: string): Promise<ReadinessRe
       }
     }
     return tagged;
+  }).filter(t => {
+    if (!t.check.providerIds || t.check.providerIds.length === 0) return true;
+    return t.check.providerIds.some(pid => !excludedSet.has(pid));
   });
 
   const grouped = new Map<TopCategory, TaggedCheck[]>();

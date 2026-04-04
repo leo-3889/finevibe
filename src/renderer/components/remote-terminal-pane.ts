@@ -59,7 +59,7 @@ export function createRemoteTerminalPane(
       background: '#000000',
       foreground: '#e0e0e0',
       cursor: '#e94560',
-      selectionBackground: '#e9456040',
+      selectionBackground: '#ff6b85a6',
       black: '#000000',
       red: '#e94560',
       green: '#0f9b58',

@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { ProviderId } from '../shared/types';
 import { getProvider } from './providers/registry';
+import { registerSession } from './hook-status';
 
 interface PtyInstance {
   process: pty.IPty;
@@ -67,6 +68,7 @@ export function spawnPty(
   isResume: boolean,
   extraArgs: string,
   providerId: ProviderId,
+  initialPrompt: string | undefined,
   onData: (data: string) => void,
   onExit: (exitCode: number, signal?: number) => void
 ): void {
@@ -76,9 +78,11 @@ export function spawnPty(
     killPty(sessionId);
   }
 
+  registerSession(sessionId);
+
   const provider = getProvider(providerId);
   const env = provider.buildEnv(sessionId, { ...process.env } as Record<string, string>);
-  const args = provider.buildArgs({ cliSessionId, isResume, extraArgs });
+  const args = provider.buildArgs({ cliSessionId, isResume, extraArgs, initialPrompt });
   const shell = provider.resolveBinaryPath();
 
   const ptyProcess = pty.spawn(shell, args, {

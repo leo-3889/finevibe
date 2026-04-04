@@ -2,14 +2,9 @@ import { appState } from '../state.js';
 import { closeModal } from './modal.js';
 import { esc, scoreColor } from '../dom-utils.js';
 import { setPendingPrompt } from './terminal-pane.js';
-import type { ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ProviderId } from '../../shared/types.js';
-
-const PROVIDER_LABELS: Record<ProviderId, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-  copilot: 'Copilot',
-  gemini: 'Gemini',
-};
+import { promptNewSession } from './tab-bar.js';
+import { loadProviderMetas, getCachedProviderMetas, getProviderDisplayName } from '../provider-availability.js';
+import type { ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus } from '../../shared/types.js';
 
 const overlay = document.getElementById('modal-overlay')!;
 const modal = document.getElementById('modal')!;
@@ -35,12 +30,21 @@ function handleFix(check: ReadinessCheck): void {
   const project = appState.activeProject;
   if (!project) return;
 
-  const session = appState.addSession(project.id, `Fix: ${check.name}`);
+  const session = appState.addPlanSession(project.id, `Fix: ${check.name}`);
   if (!session) return;
 
   closeReadinessModal();
 
   setPendingPrompt(session.id, check.fixPrompt!);
+}
+
+function handleFixCustomSession(check: ReadinessCheck): void {
+  if (!check.fixPrompt) return;
+
+  promptNewSession((session) => {
+    closeReadinessModal();
+    setPendingPrompt(session.id, check.fixPrompt!);
+  });
 }
 
 function renderCategory(category: ReadinessCategory): HTMLElement {
@@ -81,7 +85,7 @@ function renderCategory(category: ReadinessCategory): HTMLElement {
       for (const pid of check.providerIds) {
         const tag = document.createElement('span');
         tag.className = 'readiness-provider-tag';
-        tag.textContent = PROVIDER_LABELS[pid] ?? pid;
+        tag.textContent = getProviderDisplayName(pid);
         name.appendChild(tag);
       }
     }
@@ -97,6 +101,9 @@ function renderCategory(category: ReadinessCategory): HTMLElement {
     row.appendChild(info);
 
     if (check.fixPrompt && check.status !== 'pass') {
+      const fixGroup = document.createElement('div');
+      fixGroup.className = 'readiness-fix-group';
+
       const fixBtn = document.createElement('button');
       fixBtn.className = 'readiness-fix-btn';
       fixBtn.textContent = 'Fix';
@@ -104,7 +111,19 @@ function renderCategory(category: ReadinessCategory): HTMLElement {
         e.stopPropagation();
         handleFix(check);
       });
-      row.appendChild(fixBtn);
+
+      const customBtn = document.createElement('button');
+      customBtn.className = 'readiness-fix-dropdown-btn';
+      customBtn.textContent = '\u25BC';
+      customBtn.title = 'Fix in custom session';
+      customBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleFixCustomSession(check);
+      });
+
+      fixGroup.appendChild(fixBtn);
+      fixGroup.appendChild(customBtn);
+      row.appendChild(fixGroup);
     }
 
     body.appendChild(row);
@@ -121,7 +140,7 @@ function renderCategory(category: ReadinessCategory): HTMLElement {
   return section;
 }
 
-export function showReadinessModal(result: ReadinessResult): void {
+export async function showReadinessModal(result: ReadinessResult): Promise<void> {
   titleEl.textContent = 'AI Readiness';
   bodyEl.innerHTML = '';
   modal.classList.add('modal-wide');
@@ -141,6 +160,47 @@ export function showReadinessModal(result: ReadinessResult): void {
     <div class="readiness-score-date">Scanned ${new Date(result.scannedAt).toLocaleString()}</div>
   `;
   container.appendChild(scoreSection);
+
+  // Provider filter — only shown when multiple providers are available
+  await loadProviderMetas();
+  const metas = getCachedProviderMetas();
+
+  if (metas.length > 1) {
+    const filterSection = document.createElement('div');
+    filterSection.className = 'readiness-filter-section';
+
+    const filterLabel = document.createElement('span');
+    filterLabel.className = 'readiness-filter-label';
+    filterLabel.textContent = 'Include:';
+    filterSection.appendChild(filterLabel);
+
+    const excluded = new Set(appState.preferences.readinessExcludedProviders ?? []);
+
+    for (const meta of metas) {
+      const label = document.createElement('label');
+      label.className = 'readiness-filter-toggle';
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !excluded.has(meta.id);
+      cb.addEventListener('change', () => {
+        const current = new Set(appState.preferences.readinessExcludedProviders ?? []);
+        if (cb.checked) {
+          current.delete(meta.id);
+        } else {
+          current.add(meta.id);
+        }
+        appState.setPreference('readinessExcludedProviders', [...current]);
+      });
+
+      const text = document.createTextNode(meta.displayName);
+      label.appendChild(cb);
+      label.appendChild(text);
+      filterSection.appendChild(label);
+    }
+
+    container.appendChild(filterSection);
+  }
 
   // Categories
   for (const category of result.categories) {
@@ -172,11 +232,23 @@ export function showReadinessModal(result: ReadinessResult): void {
     }
   };
 
+  const unsubReadiness = appState.on('readiness-changed', () => {
+    // Defer to avoid infinite loop: showReadinessModal unsubscribes/resubscribes
+    // during Set.forEach iteration, which would re-trigger the new listener
+    setTimeout(() => {
+      const project = appState.activeProject;
+      if (project?.readiness && !overlay.classList.contains('hidden')) {
+        showReadinessModal(project.readiness);
+      }
+    }, 0);
+  });
+
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);
   document.addEventListener('keydown', handleKeydown);
 
   (overlay as any)._cleanup = () => {
+    unsubReadiness();
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
     document.removeEventListener('keydown', handleKeydown);
@@ -188,4 +260,3 @@ function closeReadinessModal(): void {
   modal.classList.remove('modal-wide');
   btnConfirm.textContent = 'Create';
 }
-

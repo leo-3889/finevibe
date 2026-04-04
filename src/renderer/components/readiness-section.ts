@@ -6,6 +6,7 @@ import type { ReadinessResult } from '../../shared/types.js';
 const container = document.getElementById('readiness-section')!;
 let collapsed = true;
 let scanning = false;
+let lastExcludedKey = '';
 
 export function initReadinessSection(): void {
   appState.on('state-loaded', () => {
@@ -17,7 +18,14 @@ export function initReadinessSection(): void {
     autoScanIfNeeded();
   });
   appState.on('readiness-changed', render);
-  appState.on('preferences-changed', applyVisibility);
+  appState.on('preferences-changed', () => {
+    applyVisibility();
+    const newKey = (appState.preferences.readinessExcludedProviders ?? []).join(',');
+    if (newKey !== lastExcludedKey) {
+      lastExcludedKey = newKey;
+      autoScanIfNeeded();
+    }
+  });
   render();
 }
 
@@ -43,7 +51,8 @@ async function runScan(silent = false): Promise<void> {
   if (!silent) render();
 
   try {
-    const result = await window.vibeyard.readiness.analyze(project.path);
+    const excluded = appState.preferences.readinessExcludedProviders ?? [];
+    const result = await window.vibeyard.readiness.analyze(project.path, excluded.length > 0 ? excluded : undefined);
     appState.setProjectReadiness(project.id, result);
   } catch (err) {
     console.warn('Readiness scan failed:', err);

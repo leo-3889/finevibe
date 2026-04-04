@@ -3,7 +3,7 @@ import type { CostData, ProviderConfig, GitWorktree, McpResult, ProviderId, CliP
 
 export interface VibeyardApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -22,7 +22,7 @@ export interface VibeyardApi {
   fs: {
     isDirectory(path: string): Promise<boolean>;
     expandPath(path: string): Promise<string>;
-    listDirs(dirPath: string): Promise<string[]>;
+    listDirs(dirPath: string, prefix?: string): Promise<string[]>;
     browseDirectory(): Promise<string | null>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     readFile(filePath: string): Promise<string>;
@@ -62,7 +62,9 @@ export interface VibeyardApi {
     onError(cb: (info: { message: string }) => void): () => void;
   };
   app: {
+    focus(): void;
     getVersion(): Promise<string>;
+    openExternal(url: string): Promise<void>;
     onQuitting(callback: () => void): () => void;
   };
   mcp: {
@@ -76,7 +78,7 @@ export interface VibeyardApi {
     getPrompt(id: string, name: string, args: Record<string, string>): Promise<McpResult>;
   };
   readiness: {
-    analyze(projectPath: string): Promise<ReadinessResult>;
+    analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
   };
   stats: {
     getCache(): Promise<StatsCache | null>;
@@ -90,6 +92,7 @@ export interface VibeyardApi {
     onGotoSession(callback: (index: number) => void): () => void;
     onToggleDebug(callback: () => void): () => void;
     onUsageStats(callback: () => void): () => void;
+    onToggleInspector(callback: () => void): () => void;
     onCloseSession(callback: () => void): () => void;
   };
 }

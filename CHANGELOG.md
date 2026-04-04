@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.22] - 2026-04-04
+
+### Features
+
+- Browser tab session type for embedded web UI editing
+- Tests for terminal-pane pending prompt injection via startup arg
+- Pending prompt inject via startup arg and fix-in-custom-session button in readiness modal
+- Mcp usage badges in session inspector timeline
+- Nested agent actions in session inspector timeline
+- Enhanced agent info to session inspector
+- Search match counter
+- Markdown rendering support in file reader pane
+- Session status indicators to README highlights
+- Plan mode to fix sessions so CLI plans before implementing
+- Provider filter to AI readiness analysis
+
+### Fixes
+
+- Parallel agent grouping in session inspector timeline
+- Large-file alert not triggering for Read tool token-limit errors
+- Large-file split alert not triggering and add file exclusions
+- Tool alert misclassifying API 404 errors as "not installed"
+- Text selection in git diff panel disappearing on file changes
+- Readiness modal provider filter to only show registered providers
+- External CLI sessions triggering notifications from Vibeyard
+- Notification click to activate session and focus app window
+- Session inspector shortcut to use Cmd+Shift+I on Mac via menu accelerator
+- Path autocomplete showing only first 20 dirs before filtering
+- Auto-fill project name from path when typing or using autocomplete
+
+### Changes
+
+- Split session-inspector into focused modules
+- Use makeReadFailure helper in test for consistency
+- Terminal selection visibility
+- .npmrc and .pypirc from readiness sensitive file patterns
+- Readme with session inspector feature in highlights
+
 ## [0.2.21] - 2026-04-01
 
 ### Features

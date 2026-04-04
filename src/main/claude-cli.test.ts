@@ -419,7 +419,7 @@ describe('installHooks', () => {
     expect(vibeyardHookCount).toBe(2);
   });
 
-  it('installs all 25 hook events (7 core + 18 inspector-only)', () => {
+  it('installs all 26 hook events (7 core + 19 inspector-only)', () => {
     mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
     installHooks();
@@ -435,7 +435,7 @@ describe('installHooks', () => {
 
     // Inspector-only 18 hooks
     const inspectorEvents = [
-      'PreToolUse', 'SubagentStart', 'SubagentStop', 'Notification',
+      'PreToolUse', 'PermissionDenied', 'SubagentStart', 'SubagentStop', 'Notification',
       'PreCompact', 'PostCompact', 'SessionEnd', 'TaskCreated', 'TaskCompleted',
       'WorktreeCreate', 'WorktreeRemove', 'CwdChanged', 'FileChanged',
       'ConfigChange', 'Elicitation', 'ElicitationResult', 'InstructionsLoaded',
@@ -445,7 +445,7 @@ describe('installHooks', () => {
       expect(hookEvents).toContain(event);
     }
 
-    expect(hookEvents).toHaveLength(25);
+    expect(hookEvents).toHaveLength(26);
 
     // Core hooks should have status writer + event logger (at least 2 hooks)
     for (const event of coreEvents) {
@@ -454,6 +454,23 @@ describe('installHooks', () => {
       expect(allHooks.some((h: { command: string }) => h.command.includes('.status'))).toBe(true);
       expect(allHooks.some((h: { command: string }) => h.command.includes('.events'))).toBe(true);
     }
+
+    // PostToolUseFailure should include dedicated tool failure capture
+    const failureHooks = written.hooks.PostToolUseFailure
+      .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks);
+    expect(failureHooks.some((h: { command: string }) =>
+      h.command.includes('.toolfailure') && h.command.includes('d.get(\\"error\\"')
+    )).toBe(true);
+
+    // PostToolUse event cmd should write .toolfailure for any non-empty result (no is_error dependency)
+    const toolUseHooks = written.hooks.PostToolUse
+      .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks);
+    expect(toolUseHooks.some((h: { command: string }) =>
+      h.command.includes('.toolfailure') &&
+      !h.command.includes('is_error') &&
+      h.command.includes('tool_result') &&
+      h.command.includes('tool_response')
+    )).toBe(true);
 
     // Inspector-only hooks should have only event logger (no status writer)
     for (const event of inspectorEvents) {

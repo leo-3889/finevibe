@@ -65,7 +65,7 @@ export function resetHookWatcher(): void {
 }
 
 export function registerIpcHandlers(): void {
-  ipcMain.handle('pty:create', (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude') => {
+  ipcMain.handle('pty:create', (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
 
@@ -101,6 +101,7 @@ export function registerIpcHandlers(): void {
       isResume,
       extraArgs,
       providerId,
+      initialPrompt,
       (data) => {
         const w = BrowserWindow.getAllWindows()[0];
         if (w && !w.isDestroyed()) {
@@ -165,13 +166,15 @@ export function registerIpcHandlers(): void {
     return expandUserPath(filePath);
   });
 
-  ipcMain.handle('fs:listDirs', (_event, dirPath: string) => {
+  ipcMain.handle('fs:listDirs', (_event, dirPath: string, prefix?: string) => {
     try {
       const expanded = expandUserPath(dirPath);
       const entries = fs.readdirSync(expanded, { withFileTypes: true });
+      const lowerPrefix = prefix?.toLowerCase();
       return entries
-        .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+        .filter(e => e.isDirectory() && !e.name.startsWith('.') && (!lowerPrefix || e.name.toLowerCase().startsWith(lowerPrefix)))
         .map(e => path.join(expanded, e.name))
+        .sort((a, b) => a.localeCompare(b))
         .slice(0, 20);
     } catch {
       return [];
@@ -229,7 +232,19 @@ export function registerIpcHandlers(): void {
     return result.filePaths[0];
   });
 
+  ipcMain.on('app:focus', () => {
+    app.focus({ steal: true });
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+
   ipcMain.handle('app:getVersion', () => app.getVersion());
+  ipcMain.handle('app:getBrowserPreloadPath', () =>
+    path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js')
+  );
   ipcMain.handle('app:openExternal', (_event, url: string) => {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
@@ -382,7 +397,7 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('readiness:analyze', (_event, projectPath: string) => analyzeReadiness(projectPath));
+  ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) => analyzeReadiness(projectPath, excludedProviders));
 
   ipcMain.handle('update:checkNow', () => checkForUpdates());
   ipcMain.handle('update:install', () => quitAndInstall());

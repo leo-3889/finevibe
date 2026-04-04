@@ -38,6 +38,10 @@ export function getProviderAvailabilitySnapshot(): {
   };
 }
 
+export function getCachedProviderMetas(): CliProviderMeta[] {
+  return cachedProviders ?? [];
+}
+
 export function getProviderCapabilities(providerId: ProviderId): CliProviderCapabilities | null {
   if (!cachedProviders) return null;
   return cachedProviders.find(provider => provider.id === providerId)?.capabilities ?? null;

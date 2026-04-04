@@ -3,6 +3,7 @@
 // --- Provider ---
 
 export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini';
+export type PendingPromptTrigger = 'session-start' | 'first-output' | 'startup-arg';
 
 export interface CliProviderCapabilities {
   sessionResume: boolean;
@@ -11,6 +12,8 @@ export interface CliProviderCapabilities {
   hookStatus: boolean;
   configReading: boolean;
   shiftEnterNewline: boolean;
+  pendingPromptTrigger: PendingPromptTrigger;
+  planModeArg?: string;
 }
 
 export interface CliProviderMeta {
@@ -69,7 +72,7 @@ export interface ContextWindowInfo {
 export interface SessionRecord {
   id: string;
   name: string;
-  type?: 'claude' | 'mcp-inspector' | 'diff-viewer' | 'file-reader' | 'remote-terminal';
+  type?: 'claude' | 'mcp-inspector' | 'diff-viewer' | 'file-reader' | 'remote-terminal' | 'browser-tab';
   providerId?: ProviderId;
   args?: string;
   cliSessionId: string | null;
@@ -87,6 +90,7 @@ export interface SessionRecord {
   contextWindow?: ContextWindowInfo;
   remoteHostName?: string;
   shareMode?: 'readonly' | 'readwrite';
+  browserTabUrl?: string;
 }
 
 export interface ArchivedSession {
@@ -147,6 +151,7 @@ export interface Preferences {
   defaultProvider?: ProviderId;
   statusLineConsent?: 'granted' | 'declined' | null;
   keybindings?: Record<string, string>;
+  readinessExcludedProviders?: ProviderId[];
   sidebarViews?: {
     configSections: boolean;
     gitPanel: boolean;
@@ -251,6 +256,7 @@ export type InspectorEventType =
   | 'session_start' | 'user_prompt' | 'tool_use' | 'tool_failure'
   | 'stop' | 'stop_failure' | 'permission_request'
   // Inspector-only events
+  | 'permission_denied'
   | 'pre_tool_use'
   | 'subagent_start' | 'subagent_stop'
   | 'notification'
@@ -274,6 +280,9 @@ export interface InspectorEvent {
   cost_snapshot?: { total_cost_usd: number; total_duration_ms: number };
   context_snapshot?: { total_tokens: number; context_window_size: number; used_percentage: number };
   agent_id?: string;
+  agent_type?: string;
+  last_assistant_message?: string;
+  agent_transcript_path?: string;
   message?: string;
   task_id?: string;
   worktree_path?: string;
