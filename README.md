@@ -15,7 +15,7 @@
 
 <p align="center">
   <strong>The IDE built for AI coding agents.</strong><br/>
-  Manage multiple agent sessions, run them in parallel, track costs, and never lose context — starting with Claude Code.
+  Manage multiple agent sessions, run them in parallel, track costs, and never lose context — with Claude Code, Codex CLI, and Gemini CLI.
 </p>
 
 ---
@@ -35,8 +35,7 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 ## Highlights
 
 - **P2P session sharing** — share live terminal sessions with teammates over encrypted peer-to-peer connections (WebRTC), with read-only or read-write modes and PIN-based authentication
-- **Multi-session management** — run multiple agent sessions per project, each in its own PTY
-- **Swarm mode** — grid view of all sessions at once, spin up new ones with `Cmd+\`
+- **Multi-session management** — run multiple agent sessions per project, each in its own PTY; use swarm mode for a grid view of all sessions at once and spin up new ones with `Cmd+\`
 - **Cost & context tracking** — real-time spend, token usage, and context window monitoring per session
 - **Session inspector** — real-time session telemetry with timeline, cost breakdown, tool usage stats, and context window monitoring (`Cmd+Shift+I`)
 - **AI Readiness Score** — see how well-prepared your project is for AI-assisted coding, with one-click fixes
@@ -46,11 +45,11 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 - **Embedded browser tab** — open any URL (e.g. `localhost:3000`) in a session tab, toggle element inspection to click any DOM element, and send AI editing instructions with the exact selector, text content, and page URL as context
 - **Keyboard-driven** — full shortcut support, built for speed
 
-> Built for Claude Code today. More AI CLI providers coming soon.
+> Supports Claude Code, OpenAI Codex CLI, and Gemini CLI. More AI CLI providers coming soon.
 
 ## Install
 
-Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
+Requires at least one supported CLI installed and authenticated: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
 ### macOS
 
