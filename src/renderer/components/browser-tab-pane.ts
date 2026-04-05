@@ -271,6 +271,10 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   const viewportContainer = document.createElement('div');
   viewportContainer.className = 'browser-viewport-container responsive';
 
+  const dragOverlay = document.createElement('div');
+  dragOverlay.className = 'browser-drag-overlay';
+  viewportContainer.appendChild(dragOverlay);
+
   const webview = document.createElement('webview') as unknown as WebviewElement;
   webview.className = 'browser-webview';
   webview.setAttribute('allowpopups', '');

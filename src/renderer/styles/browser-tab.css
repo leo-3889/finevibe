@@ -103,12 +103,29 @@
 
 /* Viewport container */
 .browser-viewport-container {
+  position: relative;
   flex: 1;
   overflow: auto;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   background: var(--bg-primary);
+}
+
+.browser-drag-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  cursor: col-resize;
+}
+
+body.sidebar-resizing .browser-drag-overlay {
+  display: block;
+}
+
+body.sidebar-resizing .browser-webview {
+  pointer-events: none;
 }
 
 .browser-viewport-container.responsive {
