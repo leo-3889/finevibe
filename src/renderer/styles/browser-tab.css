@@ -215,6 +215,67 @@ body.sidebar-resizing .browser-webview {
   background: var(--bg-hover);
 }
 
+.browser-viewport-item-custom {
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.browser-viewport-custom {
+  display: none;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border);
+}
+
+.browser-viewport-custom-input {
+  width: 54px;
+  height: 24px;
+  padding: 0 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  -webkit-appearance: none;
+}
+
+.browser-viewport-custom-input:focus {
+  border-color: var(--accent);
+}
+
+.browser-viewport-custom-input::-webkit-inner-spin-button,
+.browser-viewport-custom-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.browser-viewport-custom-sep {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.browser-viewport-custom-apply {
+  height: 24px;
+  padding: 0 10px;
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.browser-viewport-custom-apply:hover {
+  opacity: 0.9;
+}
+
 /* Inspect Panel */
 .browser-inspect-panel {
   flex-direction: column;

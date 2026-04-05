@@ -252,6 +252,40 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     viewportDropdown.appendChild(item);
   }
 
+  const customItem = document.createElement('div');
+  customItem.className = 'browser-viewport-item browser-viewport-item-custom';
+  customItem.textContent = 'Custom\u2026';
+  viewportDropdown.appendChild(customItem);
+
+  const customForm = document.createElement('div');
+  customForm.className = 'browser-viewport-custom';
+
+  const customWInput = document.createElement('input');
+  customWInput.type = 'number';
+  customWInput.className = 'browser-viewport-custom-input';
+  customWInput.placeholder = 'W';
+  customWInput.min = '1';
+
+  const customSep = document.createElement('span');
+  customSep.className = 'browser-viewport-custom-sep';
+  customSep.textContent = '\u00D7';
+
+  const customHInput = document.createElement('input');
+  customHInput.type = 'number';
+  customHInput.className = 'browser-viewport-custom-input';
+  customHInput.placeholder = 'H';
+  customHInput.min = '1';
+
+  const customApplyBtn = document.createElement('button');
+  customApplyBtn.className = 'browser-viewport-custom-apply';
+  customApplyBtn.textContent = 'Apply';
+
+  customForm.appendChild(customWInput);
+  customForm.appendChild(customSep);
+  customForm.appendChild(customHInput);
+  customForm.appendChild(customApplyBtn);
+  viewportDropdown.appendChild(customForm);
+
   viewportWrapper.appendChild(viewportBtn);
   viewportWrapper.appendChild(viewportDropdown);
 
@@ -355,6 +389,7 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     if (viewportDropdown.classList.contains('visible')) {
       closeViewportDropdown(instance);
     } else {
+      customForm.style.display = 'none';
       openViewportDropdown(instance);
     }
   });
@@ -365,6 +400,24 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     }
   };
   document.addEventListener('mousedown', instance.viewportOutsideClickHandler);
+
+  customItem.addEventListener('click', () => {
+    customForm.style.display = 'flex';
+    customWInput.focus();
+  });
+
+  function applyCustomSize(): void {
+    const w = parseInt(customWInput.value, 10);
+    const h = parseInt(customHInput.value, 10);
+    if (w > 0 && h > 0) {
+      applyViewport(instance, { label: 'Custom', width: w, height: h });
+      closeViewportDropdown(instance);
+    }
+  }
+
+  customApplyBtn.addEventListener('click', applyCustomSize);
+  customWInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') applyCustomSize(); });
+  customHInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') applyCustomSize(); });
 
   inspectBtn.addEventListener('click', () => toggleInspectMode(instance));
 
