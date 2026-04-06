@@ -1,15 +1,44 @@
 import { appState } from '../state.js';
 import { promptNewSession } from './tab-bar.js';
 import { setPendingPrompt } from './terminal-pane.js';
+import { shortcutManager } from '../shortcuts.js';
+
+interface SelectorOption {
+  type: 'qa' | 'attr' | 'id' | 'css';
+  label: string;
+  value: string;
+}
+
+type ActiveSelector = SelectorOption;
 
 interface ElementInfo {
   tagName: string;
   id: string;
   classes: string[];
   textContent: string;
-  selector: string;
+  selectors: SelectorOption[];
+  activeSelector: ActiveSelector;
   pageUrl: string;
 }
+
+interface FlowStep {
+  type: 'click' | 'navigate' | 'expect';
+  tagName?: string;
+  textContent?: string;
+  selectors?: SelectorOption[];
+  activeSelector?: SelectorOption;
+  pageUrl?: string;
+  url?: string;
+}
+
+interface FlowPickerMetadata {
+  tagName: string;
+  textContent: string;
+  selectors: SelectorOption[];
+  pageUrl: string;
+}
+
+type FlowPickerAction = 'click' | 'record' | 'click-and-record';
 
 interface ViewportPreset {
   label: string;
@@ -51,6 +80,17 @@ interface BrowserTabInstance {
   selectedElement: ElementInfo | null;
   currentViewport: ViewportPreset;
   viewportOutsideClickHandler: (e: MouseEvent) => void;
+  recordBtn: HTMLButtonElement;
+  flowPanel: HTMLDivElement;
+  flowPanelLabel: HTMLSpanElement;
+  flowStepsList: HTMLDivElement;
+  flowInputRow: HTMLDivElement;
+  flowInstructionInput: HTMLTextAreaElement;
+  flowMode: boolean;
+  flowSteps: FlowStep[];
+  flowPickerOverlay: HTMLDivElement;
+  flowPickerMenu: HTMLDivElement;
+  flowPickerPending: FlowPickerMetadata | null;
 }
 
 const instances = new Map<string, BrowserTabInstance>();
@@ -77,6 +117,7 @@ function navigateTo(instance: BrowserTabInstance, url: string): void {
 function toggleInspectMode(instance: BrowserTabInstance): void {
   instance.inspectMode = !instance.inspectMode;
   instance.inspectBtn.classList.toggle('active', instance.inspectMode);
+  instance.recordBtn.disabled = instance.inspectMode;
   if (instance.inspectMode) {
     instance.webview.send('enter-inspect-mode');
   } else {
@@ -115,6 +156,43 @@ function closeViewportDropdown(instance: BrowserTabInstance): void {
   instance.viewportDropdown.classList.remove('visible');
 }
 
+function buildSelectorOptions(
+  selectors: SelectorOption[],
+  activeSelector: SelectorOption | undefined,
+  onActivate: (sel: SelectorOption) => void
+): HTMLElement {
+  const container = document.createElement('div');
+  const optionEls: HTMLElement[] = [];
+
+  for (let i = 0; i < selectors.length; i++) {
+    const sel = selectors[i];
+    const row = document.createElement('div');
+    row.className = 'inspect-selector-option';
+    if (sel === activeSelector) row.classList.add('active');
+
+    const badge = document.createElement('span');
+    badge.className = `selector-badge selector-badge-${sel.type}`;
+    badge.textContent = sel.type;
+
+    const valueSpan = document.createElement('span');
+    valueSpan.className = 'selector-value';
+    valueSpan.textContent = sel.value;
+
+    row.appendChild(badge);
+    row.appendChild(valueSpan);
+    optionEls.push(row);
+    container.appendChild(row);
+
+    row.addEventListener('click', () => {
+      optionEls.forEach((el) => el.classList.remove('active'));
+      optionEls[i].classList.add('active');
+      onActivate(sel);
+    });
+  }
+
+  return container;
+}
+
 function showElementInfo(instance: BrowserTabInstance, info: ElementInfo): void {
   instance.selectedElement = info;
   instance.inspectPanel.style.display = 'flex';
@@ -135,10 +213,18 @@ function showElementInfo(instance: BrowserTabInstance, info: ElementInfo): void 
     instance.elementInfoEl.appendChild(textLine);
   }
 
-  const selectorLine = document.createElement('div');
-  selectorLine.className = 'inspect-selector-line';
-  selectorLine.textContent = info.selector;
-  instance.elementInfoEl.appendChild(selectorLine);
+  const selectorLabel = document.createElement('div');
+  selectorLabel.className = 'inspect-selector-label';
+  selectorLabel.textContent = 'Selector';
+  instance.elementInfoEl.appendChild(selectorLabel);
+
+  const selectorOptions = buildSelectorOptions(
+    info.selectors,
+    info.activeSelector,
+    (sel) => { instance.selectedElement!.activeSelector = sel; }
+  );
+  selectorOptions.className = 'inspect-selector-options';
+  instance.elementInfoEl.appendChild(selectorOptions);
 
   instance.instructionInput.value = '';
   instance.instructionInput.focus();
@@ -155,7 +241,7 @@ function buildPrompt(instance: BrowserTabInstance): string | null {
 
   return (
     `Regarding the <${info.tagName}> element at ${info.pageUrl}${vpCtx} ` +
-    `(selector: '${info.selector}'` +
+    `(selector: '${info.activeSelector.value}'` +
     (info.textContent ? `, text: '${info.textContent}'` : '') +
     `): ${instruction}`
   );
@@ -168,6 +254,186 @@ function dismissInspect(instance: BrowserTabInstance): void {
   if (instance.inspectMode) {
     toggleInspectMode(instance);
   }
+}
+
+function renderFlowSteps(instance: BrowserTabInstance): void {
+  const list = instance.flowStepsList;
+  list.innerHTML = '';
+
+  instance.flowSteps.forEach((step, i) => {
+    const row = document.createElement('div');
+    row.className = 'flow-step';
+
+    const num = document.createElement('span');
+    num.className = 'flow-step-number';
+    num.textContent = `${i + 1}.`;
+
+    const content = document.createElement('div');
+    content.className = 'flow-step-content';
+
+    if (step.type === 'click' || step.type === 'expect') {
+      const header = document.createElement('div');
+      header.className = 'flow-step-header';
+      const typeBadge = document.createElement('span');
+      typeBadge.className = `flow-step-type-badge flow-step-type-badge-${step.type}`;
+      typeBadge.textContent = step.type;
+      const tag = document.createElement('span');
+      tag.className = 'flow-step-tag';
+      tag.textContent = `<${step.tagName}>`;
+      const desc = document.createElement('span');
+      desc.textContent = step.textContent ? ` "${step.textContent}"` : '';
+      header.appendChild(typeBadge);
+      header.appendChild(tag);
+      header.appendChild(desc);
+      content.appendChild(header);
+
+      if (step.selectors?.length) {
+        const selectorOptions = buildSelectorOptions(
+          step.selectors,
+          step.activeSelector,
+          (sel) => { step.activeSelector = sel; }
+        );
+        selectorOptions.className = 'flow-step-selectors';
+        content.appendChild(selectorOptions);
+      }
+    } else {
+      const urlSpan = document.createElement('span');
+      urlSpan.className = 'flow-step-url';
+      urlSpan.textContent = `\u2192 ${step.url}`;
+      content.appendChild(urlSpan);
+    }
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'flow-step-remove';
+    removeBtn.textContent = '\u00D7';
+    removeBtn.title = 'Remove step';
+    removeBtn.addEventListener('click', () => {
+      instance.flowSteps.splice(i, 1);
+      renderFlowSteps(instance);
+    });
+
+    row.appendChild(num);
+    row.appendChild(content);
+    row.appendChild(removeBtn);
+    list.appendChild(row);
+  });
+
+  const hasSteps = instance.flowSteps.length > 0;
+  instance.flowPanel.style.display = (instance.flowMode || hasSteps) ? 'flex' : 'none';
+  instance.flowInputRow.style.display = hasSteps ? 'flex' : 'none';
+  instance.flowPanelLabel.textContent = `Flow (${instance.flowSteps.length} steps)`;
+}
+
+function showFlowPicker(instance: BrowserTabInstance, metadata: FlowPickerMetadata, x: number, y: number): void {
+  const webviewRect = (instance.webview as unknown as HTMLElement).getBoundingClientRect();
+  const paneRect = instance.element.getBoundingClientRect();
+  let left = webviewRect.left - paneRect.left + x;
+  let top = webviewRect.top - paneRect.top + y;
+
+  instance.flowPickerPending = metadata;
+  instance.flowPickerMenu.style.left = `${left}px`;
+  instance.flowPickerMenu.style.top = `${top}px`;
+  instance.flowPickerOverlay.style.display = 'block';
+
+  // Clamp after display so we can read actual rendered dimensions
+  const menuRect = instance.flowPickerMenu.getBoundingClientRect();
+  const paneWidth = paneRect.width;
+  const paneHeight = paneRect.height;
+  if (left + menuRect.width > paneWidth) left = paneWidth - menuRect.width - 8;
+  if (top + menuRect.height > paneHeight) top = paneHeight - menuRect.height - 8;
+  if (left < 8) left = 8;
+  if (top < 8) top = 8;
+  instance.flowPickerMenu.style.left = `${left}px`;
+  instance.flowPickerMenu.style.top = `${top}px`;
+}
+
+function dismissFlowPicker(instance: BrowserTabInstance): void {
+  instance.flowPickerOverlay.style.display = 'none';
+  instance.flowPickerPending = null;
+}
+
+function addFlowStep(instance: BrowserTabInstance, step: FlowStep): void {
+  instance.flowSteps.push(step);
+  renderFlowSteps(instance);
+}
+
+function toggleFlowMode(instance: BrowserTabInstance): void {
+  instance.flowMode = !instance.flowMode;
+  instance.recordBtn.classList.toggle('active', instance.flowMode);
+  instance.recordBtn.textContent = instance.flowMode ? '\u25A0 Stop' : '\u25CF Record';
+
+  if (instance.flowMode) {
+    instance.inspectBtn.disabled = true;
+    instance.webview.send('enter-flow-mode');
+    instance.flowPanel.style.display = 'flex';
+  } else {
+    instance.inspectBtn.disabled = false;
+    instance.webview.send('exit-flow-mode');
+    if (instance.flowSteps.length === 0) {
+      instance.flowPanel.style.display = 'none';
+    }
+  }
+}
+
+function clearFlow(instance: BrowserTabInstance): void {
+  instance.flowSteps = [];
+  instance.flowInstructionInput.value = '';
+  renderFlowSteps(instance);
+}
+
+function dismissFlow(instance: BrowserTabInstance): void {
+  if (instance.flowMode) toggleFlowMode(instance);
+  clearFlow(instance);
+}
+
+function buildFlowPrompt(instance: BrowserTabInstance): string | null {
+  if (instance.flowSteps.length === 0) return null;
+  const instruction = instance.flowInstructionInput.value.trim();
+  if (!instruction) return null;
+
+  const lines = instance.flowSteps.map((step, i) => {
+    const n = i + 1;
+    if (step.type === 'click' || step.type === 'expect') {
+      const tag = `<${step.tagName}>`;
+      const text = step.textContent ? ` "${step.textContent}"` : '';
+      const at = step.pageUrl ? ` at ${step.pageUrl}` : '';
+      const sel = step.activeSelector ? `\n   selector: '${step.activeSelector.value}'` : '';
+      const verb = step.type === 'expect' ? 'Assert/Expect' : 'Click';
+      return `${n}. ${verb}: ${tag}${text}${at}${sel}`;
+    } else {
+      return `${n}. Navigate to: ${step.url}`;
+    }
+  });
+
+  return (
+    `Recorded browser flow (${instance.flowSteps.length} steps):\n` +
+    lines.join('\n') +
+    `\n\nInstructions: ${instruction}`
+  );
+}
+
+function sendFlowToNewSession(instance: BrowserTabInstance): void {
+  const instruction = instance.flowInstructionInput.value.trim();
+  const prompt = buildFlowPrompt(instance);
+  if (!prompt) return;
+  const project = appState.activeProject;
+  if (!project) return;
+
+  const newSession = appState.addSession(project.id, `Flow: ${instruction.slice(0, 30)}`);
+  if (newSession) {
+    setPendingPrompt(newSession.id, prompt);
+  }
+  dismissFlow(instance);
+}
+
+function sendFlowToCustomSession(instance: BrowserTabInstance): void {
+  const prompt = buildFlowPrompt(instance);
+  if (!prompt) return;
+
+  promptNewSession((session) => {
+    setPendingPrompt(session.id, prompt);
+    dismissFlow(instance);
+  });
 }
 
 function sendToNewSession(instance: BrowserTabInstance): void {
@@ -295,6 +561,11 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   inspectBtn.className = 'browser-inspect-btn';
   inspectBtn.textContent = 'Inspect Element';
 
+  const recordBtn = document.createElement('button');
+  recordBtn.className = 'browser-record-btn';
+  recordBtn.textContent = '\u25CF Record';
+  recordBtn.title = 'Record browser flow';
+
   toolbar.appendChild(backBtn);
   toolbar.appendChild(fwdBtn);
   toolbar.appendChild(reloadBtn);
@@ -302,6 +573,7 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   toolbar.appendChild(goBtn);
   toolbar.appendChild(viewportWrapper);
   toolbar.appendChild(inspectBtn);
+  toolbar.appendChild(recordBtn);
   el.appendChild(toolbar);
 
   const viewportContainer = document.createElement('div');
@@ -380,6 +652,88 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   inspectPanel.appendChild(inputRow);
   el.appendChild(inspectPanel);
 
+  // Flow Panel
+  const flowPanel = document.createElement('div');
+  flowPanel.className = 'browser-flow-panel';
+  flowPanel.style.display = 'none';
+
+  const flowHeader = document.createElement('div');
+  flowHeader.className = 'flow-panel-header';
+
+  const flowLabel = document.createElement('span');
+  flowLabel.className = 'flow-panel-label';
+  flowLabel.textContent = 'Flow (0 steps)';
+
+  const flowClearBtn = document.createElement('button');
+  flowClearBtn.className = 'flow-panel-clear-btn';
+  flowClearBtn.textContent = 'Clear';
+
+  flowHeader.appendChild(flowLabel);
+  flowHeader.appendChild(flowClearBtn);
+  flowPanel.appendChild(flowHeader);
+
+  const flowStepsList = document.createElement('div');
+  flowStepsList.className = 'flow-steps-list';
+  flowPanel.appendChild(flowStepsList);
+
+  const flowInputRow = document.createElement('div');
+  flowInputRow.className = 'flow-input-row';
+  flowInputRow.style.display = 'none';
+
+  const flowInstructionInput = document.createElement('textarea');
+  flowInstructionInput.className = 'flow-instruction-input';
+  flowInstructionInput.placeholder = 'Describe what to do with this flow\u2026';
+  flowInstructionInput.rows = 2;
+
+  const flowSubmitGroup = document.createElement('div');
+  flowSubmitGroup.className = 'inspect-submit-group';
+
+  const flowSubmitBtn = document.createElement('button');
+  flowSubmitBtn.className = 'inspect-submit-btn';
+  flowSubmitBtn.textContent = 'Send to AI';
+
+  const flowCustomBtn = document.createElement('button');
+  flowCustomBtn.className = 'inspect-dropdown-btn';
+  flowCustomBtn.textContent = '\u25BC';
+  flowCustomBtn.title = 'Send to custom session';
+
+  flowSubmitGroup.appendChild(flowSubmitBtn);
+  flowSubmitGroup.appendChild(flowCustomBtn);
+  flowInputRow.appendChild(flowInstructionInput);
+  flowInputRow.appendChild(flowSubmitGroup);
+  flowPanel.appendChild(flowInputRow);
+  el.appendChild(flowPanel);
+
+  // Flow action picker popup
+  const flowPickerOverlay = document.createElement('div');
+  flowPickerOverlay.className = 'flow-picker-overlay';
+  flowPickerOverlay.style.display = 'none';
+
+  const flowPickerMenu = document.createElement('div');
+  flowPickerMenu.className = 'flow-picker-menu';
+
+  const pickerOptions: { label: string; sub: string; action: FlowPickerAction }[] = [
+    { label: 'Click',          sub: 'Navigate without recording', action: 'click' },
+    { label: 'Record',         sub: 'Capture without clicking',   action: 'record' },
+    { label: 'Click + Record', sub: 'Click and add step',         action: 'click-and-record' },
+  ];
+  for (const opt of pickerOptions) {
+    const item = document.createElement('button');
+    item.className = 'flow-picker-item';
+    item.dataset['action'] = opt.action;
+    const labelEl = document.createElement('span');
+    labelEl.className = 'flow-picker-label';
+    labelEl.textContent = opt.label;
+    const subEl = document.createElement('span');
+    subEl.className = 'flow-picker-sub';
+    subEl.textContent = opt.sub;
+    item.appendChild(labelEl);
+    item.appendChild(subEl);
+    flowPickerMenu.appendChild(item);
+  }
+  flowPickerOverlay.appendChild(flowPickerMenu);
+  el.appendChild(flowPickerOverlay);
+
   const instance: BrowserTabInstance = {
     element: el,
     webview,
@@ -396,8 +750,32 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     selectedElement: null,
     currentViewport: VIEWPORT_PRESETS[0],
     viewportOutsideClickHandler: () => {},
+    recordBtn,
+    flowPanel,
+    flowPanelLabel: flowLabel,
+    flowStepsList,
+    flowInputRow,
+    flowInstructionInput,
+    flowMode: false,
+    flowSteps: [],
+    flowPickerOverlay,
+    flowPickerMenu,
+    flowPickerPending: null,
   };
   instances.set(sessionId, instance);
+
+  webview.addEventListener('before-input-event', ((e: CustomEvent & { preventDefault(): void; input: { type: string; key: string; shift: boolean; control: boolean; alt: boolean; meta: boolean } }) => {
+    if (e.input.type !== 'keyDown') return;
+    const synthetic = {
+      key: e.input.key,
+      ctrlKey: e.input.control,
+      metaKey: e.input.meta,
+      shiftKey: e.input.shift,
+      altKey: e.input.alt,
+      preventDefault: () => e.preventDefault(),
+    } as KeyboardEvent;
+    shortcutManager.matchEvent(synthetic);
+  }) as EventListener);
 
   // Preload must be set before src to ensure the inspect script is injected
   getPreloadPath().then((p) => {
@@ -450,6 +828,35 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   customHInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') applyCustomSize(); });
 
   inspectBtn.addEventListener('click', () => toggleInspectMode(instance));
+  recordBtn.addEventListener('click', () => toggleFlowMode(instance));
+  flowClearBtn.addEventListener('click', () => clearFlow(instance));
+  flowSubmitBtn.addEventListener('click', () => sendFlowToNewSession(instance));
+  flowCustomBtn.addEventListener('click', () => sendFlowToCustomSession(instance));
+
+  flowPickerMenu.addEventListener('click', (e: MouseEvent) => {
+    const item = (e.target as HTMLElement).closest<HTMLButtonElement>('.flow-picker-item');
+    if (!item || !instance.flowPickerPending) return;
+    const action = item.dataset['action'] as FlowPickerAction;
+    const metadata = instance.flowPickerPending;
+    dismissFlowPicker(instance);
+    if (action === 'click' || action === 'click-and-record') {
+      instance.webview.send('flow-do-click', metadata.selectors[0]?.value ?? '');
+    }
+    if (action === 'record' || action === 'click-and-record') {
+      addFlowStep(instance, {
+        type: action === 'record' ? 'expect' : 'click',
+        tagName: metadata.tagName,
+        textContent: metadata.textContent,
+        selectors: metadata.selectors,
+        activeSelector: metadata.selectors[0],
+        pageUrl: metadata.pageUrl,
+      });
+    }
+  });
+
+  flowPickerOverlay.addEventListener('click', (e: MouseEvent) => {
+    if (e.target === flowPickerOverlay) dismissFlowPicker(instance);
+  });
 
   submitBtn.addEventListener('click', () => sendToNewSession(instance));
   customBtn.addEventListener('click', () => sendToCustomSession(instance));
@@ -457,19 +864,32 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     if (e.key === 'Enter') sendToNewSession(instance);
   });
 
+  function recordNavigationStep(url: string): void {
+    const lastStep = instance.flowSteps[instance.flowSteps.length - 1];
+    if (lastStep?.type === 'navigate' && lastStep.url === url) return;
+    addFlowStep(instance, { type: 'navigate', url });
+  }
+
   webview.addEventListener('did-navigate', ((e: CustomEvent) => {
     urlInput.value = e.url;
     newTabPage.style.display = 'none';
     appState.updateSessionBrowserTabUrl(sessionId, e.url);
+    if (instance.flowMode) recordNavigationStep(e.url);
   }) as EventListener);
   webview.addEventListener('did-navigate-in-page', ((e: CustomEvent) => {
     urlInput.value = e.url;
     appState.updateSessionBrowserTabUrl(sessionId, e.url);
+    if (instance.flowMode) recordNavigationStep(e.url);
   }) as EventListener);
 
   webview.addEventListener('ipc-message', ((e: CustomEvent) => {
     if (e.channel === 'element-selected') {
-      showElementInfo(instance, e.args[0] as ElementInfo);
+      const metadata = e.args[0] as Omit<ElementInfo, 'activeSelector'>;
+      const info: ElementInfo = { ...metadata, activeSelector: metadata.selectors[0] };
+      showElementInfo(instance, info);
+    } else if (e.channel === 'flow-element-picked') {
+      const { metadata, x, y } = e.args[0] as { metadata: FlowPickerMetadata; x: number; y: number };
+      showFlowPicker(instance, metadata, x, y);
     }
   }) as EventListener);
 }
@@ -501,6 +921,9 @@ export function destroyBrowserTabPane(sessionId: string): void {
   document.removeEventListener('mousedown', instance.viewportOutsideClickHandler);
   if (instance.inspectMode) {
     instance.webview.send('exit-inspect-mode');
+  }
+  if (instance.flowMode) {
+    instance.webview.send('exit-flow-mode');
   }
   // Ensure the webview guest process shuts down
   instance.webview.stop();

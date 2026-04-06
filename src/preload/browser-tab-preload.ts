@@ -5,7 +5,17 @@
  */
 import { ipcRenderer } from 'electron';
 
+interface SelectorOption {
+  type: 'qa' | 'attr' | 'id' | 'css';
+  label: string;
+  value: string;
+}
+
+const QA_ATTRS = ['data-testid', 'data-qa', 'data-cy', 'data-test', 'data-automation', 'qaTag'];
+
 let inspectMode = false;
+let flowMode = false;
+let suppressNextFlowClick = false;
 let highlightOverlay: HTMLDivElement | null = null;
 
 function ensureOverlay(): HTMLDivElement {
@@ -34,7 +44,7 @@ function hideOverlay(): void {
   if (highlightOverlay) highlightOverlay.style.display = 'none';
 }
 
-function buildSelector(el: Element): string {
+function buildCssPath(el: Element): string {
   const parts: string[] = [];
   let current: Element | null = el;
   while (current && current !== document.body && current !== document.documentElement) {
@@ -60,6 +70,29 @@ function buildSelector(el: Element): string {
   return parts.join(' > ');
 }
 
+function buildAllSelectors(el: Element): SelectorOption[] {
+  const options: SelectorOption[] = [];
+
+  const qaSet = new Set(QA_ATTRS);
+  for (const attr of QA_ATTRS) {
+    const val = el.getAttribute(attr);
+    if (val) options.push({ type: 'qa', label: attr, value: `[${attr}="${val}"]` });
+  }
+
+  for (const attr of el.getAttributeNames()) {
+    if (attr.startsWith('data-') && !qaSet.has(attr)) {
+      const val = el.getAttribute(attr);
+      if (val) options.push({ type: 'attr', label: attr, value: `[${attr}="${val}"]` });
+    }
+  }
+
+  if (el.id) options.push({ type: 'id', label: 'id', value: `#${el.id}` });
+
+  options.push({ type: 'css', label: 'css', value: buildCssPath(el) });
+
+  return options;
+}
+
 function getElementMetadata(el: Element) {
   const text = (el.textContent || '').trim();
   return {
@@ -67,20 +100,20 @@ function getElementMetadata(el: Element) {
     id: el.id || '',
     classes: Array.from(el.classList),
     textContent: text.length > 150 ? text.slice(0, 150) + '\u2026' : text,
-    selector: buildSelector(el),
+    selectors: buildAllSelectors(el),
     pageUrl: window.location.href,
   };
 }
 
 function onMouseOver(e: MouseEvent): void {
-  if (!inspectMode) return;
+  if (!inspectMode && !flowMode) return;
   const target = e.target as Element;
   if (target === highlightOverlay) return;
   positionOverlay(target);
 }
 
 function onMouseOut(_e: MouseEvent): void {
-  if (!inspectMode) return;
+  if (!inspectMode && !flowMode) return;
   hideOverlay();
 }
 
@@ -93,6 +126,41 @@ function onClick(e: MouseEvent): void {
   if (target === highlightOverlay) return;
   const metadata = getElementMetadata(target);
   ipcRenderer.sendToHost('element-selected', metadata);
+}
+
+function onFlowClick(e: MouseEvent): void {
+  if (!flowMode) return;
+  if (suppressNextFlowClick) {
+    suppressNextFlowClick = false;
+    return;
+  }
+  const target = e.target as Element;
+  if (target === highlightOverlay) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+  ipcRenderer.sendToHost('flow-element-picked', {
+    metadata: getElementMetadata(target),
+    x: e.clientX,
+    y: e.clientY,
+  });
+}
+
+function enterFlowMode(): void {
+  flowMode = true;
+  document.addEventListener('mouseover', onMouseOver, true);
+  document.addEventListener('mouseout', onMouseOut, true);
+  document.addEventListener('click', onFlowClick, true);
+  document.body.style.cursor = 'crosshair';
+}
+
+function exitFlowMode(): void {
+  flowMode = false;
+  document.removeEventListener('mouseover', onMouseOver, true);
+  document.removeEventListener('mouseout', onMouseOut, true);
+  document.removeEventListener('click', onFlowClick, true);
+  hideOverlay();
+  document.body.style.cursor = '';
 }
 
 function enterInspectMode(): void {
@@ -114,3 +182,12 @@ function exitInspectMode(): void {
 
 ipcRenderer.on('enter-inspect-mode', () => enterInspectMode());
 ipcRenderer.on('exit-inspect-mode', () => exitInspectMode());
+ipcRenderer.on('enter-flow-mode', () => enterFlowMode());
+ipcRenderer.on('exit-flow-mode', () => exitFlowMode());
+ipcRenderer.on('flow-do-click', (_event, selector: string) => {
+  const el = document.querySelector(selector);
+  if (el instanceof HTMLElement) {
+    suppressNextFlowClick = true;
+    el.click();
+  }
+});

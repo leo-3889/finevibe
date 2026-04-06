@@ -112,6 +112,12 @@
   color: #fff;
 }
 
+.browser-inspect-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 /* Viewport container */
 .browser-viewport-container {
   position: relative;
@@ -358,10 +364,93 @@ body.sidebar-resizing .browser-webview {
   max-width: 100%;
 }
 
-.inspect-selector-line {
-  color: var(--text-muted, var(--text-secondary));
+.inspect-selector-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-top: 4px;
+  margin-bottom: 1px;
+  padding-left: 2px;
+}
+
+.inspect-selector-options {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.inspect-selector-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 5px 3px 6px;
+  border-left: 2px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
   font-size: 11px;
-  opacity: 0.7;
+  color: var(--text-secondary);
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.inspect-selector-option::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-muted);
+  background: transparent;
+  flex-shrink: 0;
+  transition: border-color 0.1s, background 0.1s;
+}
+
+.inspect-selector-option:hover {
+  background: var(--bg-hover);
+}
+
+.inspect-selector-option:hover::before {
+  border-color: var(--text-secondary);
+}
+
+.inspect-selector-option.active {
+  background: rgba(233, 69, 96, 0.07);
+  border-left-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.inspect-selector-option.active::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.selector-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.inspect-selector-option.active .selector-badge {
+  background: var(--accent);
+  color: #fff;
+}
+
+.selector-badge-qa { color: #4caf50; }
+.inspect-selector-option.active .selector-badge-qa { color: #fff; }
+
+.selector-badge-attr { color: #6aa0d8; }
+.inspect-selector-option.active .selector-badge-attr { color: #fff; }
+
+.selector-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .inspect-input-row {
@@ -423,6 +512,243 @@ body.sidebar-resizing .browser-webview {
 
 .inspect-dropdown-btn:hover {
   opacity: 0.9;
+}
+
+/* Record Flow Button */
+.browser-record-btn {
+  height: 26px;
+  padding: 0 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.browser-record-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.browser-record-btn.active {
+  background: #e5534b;
+  border-color: #e5534b;
+  color: #fff;
+}
+
+.browser-record-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Flow Panel */
+.browser-flow-panel {
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.flow-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.flow-panel-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.flow-panel-clear-btn {
+  height: 20px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.flow-panel-clear-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Flow Steps List */
+.flow-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  max-height: 150px;
+}
+
+.flow-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+}
+
+.flow-step-number {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  opacity: 0.6;
+  min-width: 18px;
+}
+
+.flow-step-content {
+  flex: 1;
+  color: var(--text-secondary);
+  word-break: break-all;
+  min-width: 0;
+}
+
+.flow-step-header {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.flow-step-selectors {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 3px;
+}
+
+.flow-step-tag {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.flow-step-url {
+  color: var(--text-secondary);
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.flow-step-remove {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.4;
+}
+
+.flow-step-remove:hover {
+  color: #e5534b;
+  opacity: 1;
+}
+
+/* Flow Input Row */
+.flow-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.flow-instruction-input {
+  flex: 1;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  resize: none;
+  line-height: 1.4;
+}
+
+.flow-instruction-input:focus {
+  border-color: var(--accent);
+}
+
+/* Flow Step Type Badges */
+.flow-step-type-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+.flow-step-type-badge-click {
+  background: rgba(74, 158, 255, 0.15);
+  color: #4a9eff;
+}
+
+.flow-step-type-badge-expect {
+  background: rgba(78, 201, 125, 0.15);
+  color: #4ec97d;
+}
+
+/* Flow Action Picker Popup */
+.flow-picker-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+}
+
+.flow-picker-menu {
+  position: absolute;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  min-width: 190px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.flow-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.flow-picker-item:hover {
+  background: var(--bg-hover);
+}
+
+.flow-picker-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.flow-picker-sub {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 1px;
 }
 
 /* Tab badge */
