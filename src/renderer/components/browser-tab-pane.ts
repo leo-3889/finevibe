@@ -460,9 +460,11 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   webview.addEventListener('did-navigate', ((e: CustomEvent) => {
     urlInput.value = e.url;
     newTabPage.style.display = 'none';
+    appState.updateSessionBrowserTabUrl(sessionId, e.url);
   }) as EventListener);
   webview.addEventListener('did-navigate-in-page', ((e: CustomEvent) => {
     urlInput.value = e.url;
+    appState.updateSessionBrowserTabUrl(sessionId, e.url);
   }) as EventListener);
 
   webview.addEventListener('ipc-message', ((e: CustomEvent) => {
