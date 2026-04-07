@@ -918,18 +918,19 @@ export function hideAllBrowserTabPanes(): void {
 export function destroyBrowserTabPane(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
-  document.removeEventListener('mousedown', instance.viewportOutsideClickHandler);
-  if (instance.inspectMode) {
-    instance.webview.send('exit-inspect-mode');
-  }
-  if (instance.flowMode) {
-    instance.webview.send('exit-flow-mode');
-  }
-  // Ensure the webview guest process shuts down
-  instance.webview.stop();
-  instance.webview.src = 'about:blank';
-  instance.element.remove();
+  // Delete from the map first so errors below can't leave a half-destroyed instance around.
   instances.delete(sessionId);
+
+  document.removeEventListener('mousedown', instance.viewportOutsideClickHandler);
+
+  // <webview> calls throw if it isn't attached + dom-ready yet. Guard each
+  // one individually so a failure can't skip instance.element.remove() below.
+  try { if (instance.inspectMode) instance.webview.send('exit-inspect-mode'); } catch {}
+  try { if (instance.flowMode) instance.webview.send('exit-flow-mode'); } catch {}
+  try { instance.webview.stop(); } catch {}
+  try { instance.webview.src = 'about:blank'; } catch {}
+
+  instance.element.remove();
 }
 
 export function getBrowserTabInstance(sessionId: string): BrowserTabInstance | undefined {
