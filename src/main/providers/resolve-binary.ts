@@ -58,20 +58,8 @@ export function validateBinaryExists(
   }
 
   try {
-    const currentPath = process.env.PATH || '';
-    const extraDirs = [
-      ...COMMON_BIN_DIRS,
-      '/usr/local/sbin',
-      '/opt/homebrew/sbin',
-    ];
-    const pathSet = new Set(currentPath.split(':'));
-    for (const dir of extraDirs) {
-      pathSet.add(dir);
-    }
-    const augmentedPath = Array.from(pathSet).join(':');
-
     const resolved = execSync(`which ${binaryName}`, {
-      env: { ...process.env, PATH: augmentedPath },
+      env: { ...process.env, PATH: getFullPath() },
       encoding: 'utf-8',
       timeout: 3000,
     }).trim();
