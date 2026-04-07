@@ -51,4 +51,3 @@ jobs:
           anthropic_api_key: ${{ secrets.CLAUDE_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: '--allowed-tools "Bash Read Write Grep LS"'
-          show_full_output: true

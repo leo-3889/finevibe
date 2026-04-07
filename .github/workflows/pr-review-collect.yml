@@ -2,7 +2,7 @@ name: PR Review Collect
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
