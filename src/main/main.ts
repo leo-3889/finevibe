@@ -60,18 +60,26 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   initProviders();
 
-  // Validate all registered providers; block on Claude (default), warn on others
-  for (const provider of getAllProviders()) {
-    const prereq = provider.validatePrerequisites();
+  // Validate all registered providers; require at least one to be available.
+  const providerResults = getAllProviders().map(provider => ({
+    provider,
+    prereq: provider.validatePrerequisites(),
+  }));
+  for (const { provider, prereq } of providerResults) {
     if (!prereq.ok) {
-      if (provider.meta.id === 'claude') {
-        dialog.showErrorBox('Vibeyard — Missing Prerequisite', prereq.message);
-        app.quit();
-        return;
-      } else {
-        console.warn(`Provider "${provider.meta.displayName}" not available: ${prereq.message}`);
-      }
+      console.warn(`Provider "${provider.meta.displayName}" not available: ${prereq.message}`);
     }
+  }
+  if (!providerResults.some(r => r.prereq.ok)) {
+    const details = providerResults
+      .map(r => `- ${r.provider.meta.displayName}:\n${r.prereq.message}`)
+      .join('\n\n');
+    dialog.showErrorBox(
+      'Vibeyard — Missing Prerequisite',
+      `Vibeyard requires at least one supported CLI provider to be installed.\n\n${details}\n\nAfter installing, restart Vibeyard.`,
+    );
+    app.quit();
+    return;
   }
 
   registerIpcHandlers();
