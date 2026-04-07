@@ -62,6 +62,7 @@ CLI-specific behavior is encapsulated behind a `CliProvider` interface (`src/mai
 - `split-layout.ts` — Manages tab mode (single terminal) vs split mode (side-by-side)
 - `session-activity.ts` — Tracks working/waiting/idle status with debounced transitions
 - `session-cost.ts` — Structured cost tracking via Claude CLI status line (`statusLine` setting), with regex fallback for older CLI versions. Provides per-session and aggregate cost data (USD, tokens, cache, duration)
+- `browser-tab/` — Browser tab pane split into focused modules: `types.ts`, `instance.ts` (registry + preload path), `navigation.ts`, `viewport.ts`, `selector-ui.ts`, `inspect-mode.ts`, `flow-recording.ts`, `flow-picker.ts`, `session-integration.ts`, and `pane.ts` (DOM build + event wiring). `browser-tab-pane.ts` is a re-export shim for backward compatibility.
 
 ### State Persistence
 
