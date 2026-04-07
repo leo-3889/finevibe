@@ -67,8 +67,12 @@ export function getStatus(sessionId: string): SessionStatus {
   return sessions.get(sessionId)?.status ?? 'idle';
 }
 
-export function onChange(callback: StatusChangeCallback): void {
+export function onChange(callback: StatusChangeCallback): () => void {
   listeners.push(callback);
+  return () => {
+    const idx = listeners.indexOf(callback);
+    if (idx !== -1) listeners.splice(idx, 1);
+  };
 }
 
 /** @internal Test-only: reset all module state */

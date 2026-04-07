@@ -61,8 +61,12 @@ export function removeSession(sessionId: string): void {
   }
 }
 
-export function onChange(callback: UnreadChangeCallback): void {
+export function onChange(callback: UnreadChangeCallback): () => void {
   listeners.push(callback);
+  return () => {
+    const idx = listeners.indexOf(callback);
+    if (idx !== -1) listeners.splice(idx, 1);
+  };
 }
 
 /** @internal Test-only: reset all module state */

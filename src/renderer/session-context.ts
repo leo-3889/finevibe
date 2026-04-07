@@ -49,8 +49,12 @@ export function getContext(sessionId: string): ContextWindowInfo | null {
   return contexts.get(sessionId) ?? null;
 }
 
-export function onChange(callback: ContextChangeCallback): void {
+export function onChange(callback: ContextChangeCallback): () => void {
   listeners.push(callback);
+  return () => {
+    const idx = listeners.indexOf(callback);
+    if (idx !== -1) listeners.splice(idx, 1);
+  };
 }
 
 /** Restore context from persisted session data (used on startup, silent — no listeners notified) */
