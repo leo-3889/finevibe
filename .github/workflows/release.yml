@@ -63,8 +63,15 @@ jobs:
 
           Generate release notes and prepend them to CHANGELOG.md:
           - Find the previous version tag: run 'git tag --list "v*" --sort=-version:refname'. The previous tag is the first tag that is NOT v${{ steps.version.outputs.version }}. If no previous tag exists, use the root commit.
-          - Collect commits between the previous tag and HEAD using 'git log <range> --pretty=format:"%s" --no-merges'.
-          - Categorize commits:
+          - Collect commits between the previous tag and HEAD using 'git log <range> --pretty=format:"%H %s" --no-merges'.
+          - Filter out commits that are NOT user-facing (changelog is for end users of the app, not contributors). For each commit, inspect its changed files via 'git show --name-only --pretty=format: <sha>'. Exclude a commit if ALL of its changed files fall within these paths/patterns:
+            - '.github/' (workflows, actions, issue templates, PR templates)
+            - '.claude/', '.codex/' (agent/tooling config)
+            - Repo meta/docs: 'README.md', 'CLAUDE.md', 'AGENTS.md', 'MARKETING.md', 'CHANGELOG.md', 'LICENSE', any other top-level '*.md'
+            - Lint/format/CI config: '.eslintrc*', '.prettierrc*', '.editorconfig', '.nvmrc', '.gitignore', '.gitattributes'
+          - Also exclude commits whose subject starts with (case-insensitive): 'ci:', 'ci(', 'chore(ci', 'docs:', 'docs(', 'build(ci', 'release:', 'release(', 'chore(release'.
+          - If a commit touches BOTH excluded paths and app code (e.g. 'src/'), keep it — it's user-facing.
+          - From the remaining commits, categorize by subject prefix:
             - Features: commits starting with add, feat, implement, introduce, support (case-insensitive)
             - Fixes: commits starting with fix, resolve, patch, correct (case-insensitive)
             - Changes: everything else
@@ -153,8 +160,38 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  build-linux:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Build and publish
+        run: npm run build && npx electron-builder --linux --publish always --x64
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   publish-npm:
-    needs: [prepare, build]
+    needs: [prepare, build, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

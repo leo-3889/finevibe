@@ -228,6 +228,7 @@ function initResizeHandle(): void {
     e.preventDefault();
     dragging = true;
     resizeHandle.classList.add('active');
+    document.body.classList.add('sidebar-resizing');
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'col-resize';
   });
@@ -242,6 +243,7 @@ function initResizeHandle(): void {
     if (!dragging) return;
     dragging = false;
     resizeHandle.classList.remove('active');
+    document.body.classList.remove('sidebar-resizing');
     document.body.style.userSelect = '';
     document.body.style.cursor = '';
     appState.setSidebarWidth(parseInt(sidebarEl.style.width, 10));

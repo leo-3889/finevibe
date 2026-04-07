@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.23] - 2026-04-07
+
+### Features
+
+- Browser flow recording for capturing click/navigate sequences
+- New tab page with Vibeyard branding and dev port quick links
+- Viewport picker to browser tab for responsive testing
+- Custom size entry to browser tab viewport picker
+
+### Fixes
+
+- Persist browser tab URL on navigation so it survives app restart
+- Ctrl+Shift+C clipboard copy in terminal panels
+- Sidebar resize drag freezing when browser tab is open
+- False "gh not installed" alert on HTTP 404 errors
+- Require any CLI provider instead of Claude specifically
+
+### Changes
+
+- Browser tab reload icon size without changing button dimensions
+
 ## [0.2.22] - 2026-04-04
 
 ### Features
