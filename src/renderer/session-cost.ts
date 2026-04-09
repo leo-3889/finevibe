@@ -94,8 +94,12 @@ export function getAggregateCost(): CostInfo {
   return aggregate;
 }
 
-export function onChange(callback: CostChangeCallback): void {
+export function onChange(callback: CostChangeCallback): () => void {
   listeners.push(callback);
+  return () => {
+    const idx = listeners.indexOf(callback);
+    if (idx !== -1) listeners.splice(idx, 1);
+  };
 }
 
 /** Restore cost from persisted session data (used on startup, silent — no listeners notified) */
