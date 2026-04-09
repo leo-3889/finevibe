@@ -13,6 +13,15 @@ vi.mock('os', () => ({
   tmpdir: () => '/tmp',
 }));
 
+vi.mock('./providers/resolve-binary', () => ({
+  resolveBinary: vi.fn(() => '/mock/bin/claude'),
+  validateBinaryExists: vi.fn(() => ({ ok: true, message: '' })),
+}));
+
+vi.mock('./providers/claude-version', () => ({
+  getClaudeVersion: vi.fn(() => '999.999.999'),
+}));
+
 vi.mock('./hook-commands', () => ({
   installHookScripts: vi.fn(),
   installEventScript: vi.fn(),
@@ -433,7 +442,7 @@ describe('installHooks', () => {
     expect(vibeyardHookCount).toBe(2);
   });
 
-  it('installs all 26 hook events (7 core + 19 inspector-only)', () => {
+  it('installs all 25 hook events (6 core + 19 inspector-only)', () => {
     mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
     installHooks();
@@ -441,13 +450,14 @@ describe('installHooks', () => {
     const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
     const hookEvents = Object.keys(written.hooks);
 
-    // Core 7 hooks
-    const coreEvents = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'StopFailure', 'PermissionRequest'];
+    // Core 6 hooks (PostToolUseFailure is not a real Claude hook event and
+    // is skipped — not listed in the version manifest).
+    const coreEvents = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'StopFailure', 'PermissionRequest'];
     for (const event of coreEvents) {
       expect(hookEvents).toContain(event);
     }
+    expect(hookEvents).not.toContain('PostToolUseFailure');
 
-    // Inspector-only 18 hooks
     const inspectorEvents = [
       'PreToolUse', 'PermissionDenied', 'SubagentStart', 'SubagentStop', 'Notification',
       'PreCompact', 'PostCompact', 'SessionEnd', 'TaskCreated', 'TaskCompleted',
@@ -459,7 +469,7 @@ describe('installHooks', () => {
       expect(hookEvents).toContain(event);
     }
 
-    expect(hookEvents).toHaveLength(26);
+    expect(hookEvents).toHaveLength(25);
 
     // Core hooks should have status writer + event logger (at least 2 hooks)
     for (const event of coreEvents) {
@@ -468,13 +478,6 @@ describe('installHooks', () => {
       expect(allHooks.some((h: { command: string }) => h.command.includes('.status'))).toBe(true);
       expect(allHooks.some((h: { command: string }) => h.command.includes('.events'))).toBe(true);
     }
-
-    // PostToolUseFailure should include dedicated tool failure capture
-    const failureHooks = written.hooks.PostToolUseFailure
-      .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks);
-    expect(failureHooks.some((h: { command: string }) =>
-      h.command.includes('.toolfailure')
-    )).toBe(true);
 
     // PostToolUse event cmd should include event capture
     const toolUseHooks = written.hooks.PostToolUse

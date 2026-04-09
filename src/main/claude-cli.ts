@@ -4,6 +4,9 @@ import { homedir } from 'os';
 import { STATUS_DIR, getStatusLineScriptPath } from './hook-status';
 import { statusCmd as mkStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, captureToolFailureCmd as mkCaptureToolFailureCmd, installEventScript, wrapPythonHookCmd, installHookScripts } from './hook-commands';
 import { readJsonSafe, readDirSafe } from './fs-utils';
+import { getSupportedHookEvents as computeSupportedHookEvents } from './claude-hook-versions';
+import { getClaudeVersion } from './providers/claude-version';
+import { resolveBinary } from './providers/resolve-binary';
 import type { McpServer, Agent, Skill, Command, ClaudeConfig, InspectorEventType } from '../shared/types';
 
 export type { McpServer, Agent, Skill, Command, ClaudeConfig } from '../shared/types';
@@ -162,6 +165,17 @@ function getEnabledPlugins(): Set<string> {
 
 export const HOOK_MARKER = '# vibeyard-hook';
 
+/**
+ * Return the set of Claude Code hook events supported by the currently
+ * installed `claude` CLI binary. If the version cannot be detected, returns
+ * the safe (empty) baseline so no unsupported hooks are written.
+ */
+export function getSupportedHookEvents(): Set<string> {
+  const binary = resolveBinary('claude', { path: null });
+  const version = getClaudeVersion(binary);
+  return computeSupportedHookEvents(version);
+}
+
 interface HookHandler {
   type: string;
   command: string;
@@ -220,6 +234,8 @@ function writeSettings(settings: Record<string, unknown>): void {
  */
 export function installHooksOnly(): void {
   const { settings, cleaned } = prepareSettings();
+
+  const supportedEvents = getSupportedHookEvents();
 
   installHookScripts();
 
@@ -307,6 +323,7 @@ with open(os.path.join(status_dir,sid+".events"),"a") as f:
   };
 
   for (const [event, status] of Object.entries(ideEvents)) {
+    if (!supportedEvents.has(event)) continue;
     const existing = cleaned[event] ?? [];
     const hooks: HookHandler[] = [{ type: 'command', command: statusCmd(event, status) }];
     // Capture Claude session ID on session start and prompt submission
@@ -350,6 +367,7 @@ with open(os.path.join(status_dir,sid+".events"),"a") as f:
   };
 
   for (const [event, eventType] of Object.entries(inspectorOnlyEvents)) {
+    if (!supportedEvents.has(event)) continue;
     const existing = cleaned[event] ?? [];
     existing.push({
       matcher: '',
