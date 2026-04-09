@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.25] - 2026-04-09
+
+### Fixes
+
+- Broken claude hooks from shell-quoting in inlined python
+
 ## [0.2.24] - 2026-04-09
 
 ### Features
