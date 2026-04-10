@@ -17,6 +17,8 @@ No hot reload — changes require rebuild + app restart.
 
 Requires Node v24 (see `.nvmrc`). No lint tooling is configured.
 
+Cross-platform: builds and runs on macOS, Linux, and Windows. Release artifacts (via electron-builder) include `.dmg`/`.zip` (mac), `.deb`/`.AppImage` (linux), and NSIS installer + portable `.exe` (win). CI covers all three platforms.
+
 ## Testing
 
 ```bash
@@ -63,6 +65,15 @@ CLI-specific behavior is encapsulated behind a `CliProvider` interface (`src/mai
 - `session-activity.ts` — Tracks working/waiting/idle status with debounced transitions
 - `session-cost.ts` — Structured cost tracking via Claude CLI status line (`statusLine` setting), with regex fallback for older CLI versions. Provides per-session and aggregate cost data (USD, tokens, cache, duration)
 - `browser-tab/` — Browser tab pane split into focused modules: `types.ts`, `instance.ts` (registry + preload path), `navigation.ts`, `viewport.ts`, `selector-ui.ts`, `inspect-mode.ts`, `flow-recording.ts`, `flow-picker.ts`, `session-integration.ts`, and `pane.ts` (DOM build + event wiring). `browser-tab-pane.ts` is a re-export shim for backward compatibility.
+
+### Platform Checks
+
+Platform detection is centralized in `src/main/platform.ts`. Import
+`isWin`/`isMac`/`isLinux` (and derived constants `pathSep`, `whichCmd`,
+`pythonBin`) from there — do **not** inline `process.platform === 'win32'`
+or redefine `isWin`/`isMac` locally in source or test files. The
+three-way managed-path branch in `claude-cli.ts` is the one intentional
+exception.
 
 ### State Persistence
 

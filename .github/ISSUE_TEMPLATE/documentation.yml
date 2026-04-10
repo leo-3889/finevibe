@@ -1,0 +1,24 @@
+name: Documentation Issue
+description: Report an issue or suggest an improvement to documentation
+body:
+  - type: input
+    id: page-or-section
+    attributes:
+      label: What page or section is affected?
+      placeholder: e.g., README, Installation guide, API docs
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description of the issue
+      description: What is incorrect, missing, or unclear?
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: How would you improve the documentation?
+    validations:
+      required: false

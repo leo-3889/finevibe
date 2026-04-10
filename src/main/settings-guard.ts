@@ -2,15 +2,28 @@ import * as path from 'path';
 import { homedir } from 'os';
 import { ipcMain, BrowserWindow } from 'electron';
 import { getStatusLineScriptPath } from './hook-status';
-import { HOOK_MARKER, installHooksOnly, installStatusLine } from './claude-cli';
+import { HOOK_MARKER, installHooksOnly, installStatusLine, getSupportedHookEvents } from './claude-cli';
 import { readJsonSafe } from './fs-utils';
 import { loadState, saveState } from './store';
 import type { SettingsValidationResult } from '../shared/types';
 
-const EXPECTED_HOOK_EVENTS = [
+const LEGACY_STATUSLINE_RE = /[/\\]vibeyard[/\\]statusline\.(sh|cmd)$/;
+
+const CANDIDATE_HOOK_EVENTS = [
   'SessionStart', 'UserPromptSubmit', 'PostToolUse',
   'PostToolUseFailure', 'Stop', 'StopFailure', 'PermissionRequest',
 ];
+
+/**
+ * Hook events the guard expects to find installed, filtered by which events
+ * the currently-installed Claude CLI version actually supports. Events that
+ * the CLI does not support are dropped so the guard does not flag them as
+ * "missing" and trigger a reinstall loop.
+ */
+function getExpectedHookEvents(): string[] {
+  const supported = getSupportedHookEvents();
+  return CANDIDATE_HOOK_EVENTS.filter(e => supported.has(e));
+}
 
 function readClaudeSettings(): Record<string, unknown> {
   return readJsonSafe(path.join(homedir(), '.claude', 'settings.json')) ?? {};
@@ -19,11 +32,18 @@ function readClaudeSettings(): Record<string, unknown> {
 export function isVibeyardStatusLine(statusLine: unknown): boolean {
   if (!statusLine || typeof statusLine !== 'object') return false;
   const sl = statusLine as Record<string, unknown>;
-  return sl.command === getStatusLineScriptPath();
+  if (sl.command === getStatusLineScriptPath()) return true;
+  // Recognize legacy Vibeyard statusline paths (e.g. /tmp/vibeyard/statusline.sh)
+  // so upgrades silently replace them without showing a conflict dialog.
+  if (typeof sl.command === 'string') {
+    return LEGACY_STATUSLINE_RE.test(sl.command);
+  }
+  return false;
 }
 
 export function validateSettings(): SettingsValidationResult {
   const settings = readClaudeSettings();
+  const expectedHookEvents = getExpectedHookEvents();
 
   let statusLine: SettingsValidationResult['statusLine'] = 'missing';
   let foreignStatusLineCommand: string | undefined;
@@ -38,17 +58,17 @@ export function validateSettings(): SettingsValidationResult {
   }
 
   let hooks: SettingsValidationResult['hooks'] = 'missing';
-  const hookDetails: Record<string, boolean> = Object.fromEntries(EXPECTED_HOOK_EVENTS.map(e => [e, false]));
+  const hookDetails: Record<string, boolean> = Object.fromEntries(expectedHookEvents.map(e => [e, false]));
   const existingHooks = settings.hooks as Record<string, Array<{ hooks?: Array<{ command?: string }> }>> | undefined;
   if (existingHooks) {
     let found = 0;
-    for (const event of EXPECTED_HOOK_EVENTS) {
+    for (const event of expectedHookEvents) {
       const matchers = existingHooks[event];
       const installed = matchers?.some(m => m.hooks?.some(h => h.command?.includes(HOOK_MARKER))) ?? false;
       hookDetails[event] = installed;
       if (installed) found++;
     }
-    if (found === EXPECTED_HOOK_EVENTS.length) {
+    if (found === expectedHookEvents.length) {
       hooks = 'complete';
     } else if (found > 0) {
       hooks = 'partial';

@@ -2,9 +2,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BrowserWindow } from 'electron';
+import { isWin } from './platform';
 
 export const STATUS_DIR = path.join(os.tmpdir(), 'vibeyard');
-const STATUSLINE_SCRIPT = path.join(STATUS_DIR, process.platform === 'win32' ? 'statusline.cmd' : 'statusline.sh');
+export const SCRIPT_DIR = path.join(os.homedir(), '.vibeyard', 'run');
+const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'statusline.sh');
 
 const KNOWN_EXTENSIONS = ['.status', '.sessionid', '.cost', '.toolfailure', '.events'];
 
@@ -32,6 +34,7 @@ export function getStatusLineScriptPath(): string {
 
 export function installStatusLineScript(): void {
   fs.mkdirSync(STATUS_DIR, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(SCRIPT_DIR, { recursive: true, mode: 0o700 });
 
   // Script that extracts cost, context_window, and session_id from hook JSON stdin.
   // Used by hook commands to write .cost and .sessionid files to STATUS_DIR.
@@ -40,7 +43,7 @@ export function installStatusLineScript(): void {
   const statusDir = STATUS_DIR.replace(/\\/g, '/');
 
   let script: string;
-  if (process.platform === 'win32') {
+  if (isWin) {
     // On Windows, write a Python helper script and a .cmd wrapper
     const pyScript = `import sys,json,os
 try:
@@ -65,7 +68,7 @@ if claude_sid:
     with open(os.path.join(status_dir,sid+'.sessionid'),'w') as f:
         f.write(claude_sid)
 `;
-    const pyPath = path.join(STATUS_DIR, 'statusline.py');
+    const pyPath = path.join(SCRIPT_DIR, 'statusline.py');
     fs.writeFileSync(pyPath, pyScript, { mode: 0o755 });
     script = `@echo off\r\npython "${pyPath}" 2>>"${statusDir}/statusline.log"\r\n`;
   } else {
@@ -310,16 +313,18 @@ export function cleanupAll(): void {
     watcher.close();
     watcher = null;
   }
+  cleanupDir(STATUS_DIR, isKnownExtension);
+  cleanupDir(SCRIPT_DIR, (f) => f.endsWith('.py') || f.endsWith('.cmd') || f.endsWith('.sh'));
+}
+
+function cleanupDir(dir: string, shouldUnlink: (filename: string) => boolean): void {
   try {
-    const files = fs.readdirSync(STATUS_DIR);
-    for (const file of files) {
-      if (isKnownExtension(file) || file.endsWith('.py') || file.endsWith('.cmd') || file.endsWith('.sh')) {
-        try { fs.unlinkSync(path.join(STATUS_DIR, file)); } catch { /* already gone */ }
+    for (const file of fs.readdirSync(dir)) {
+      if (shouldUnlink(file)) {
+        try { fs.unlinkSync(path.join(dir, file)); } catch { /* already gone */ }
       }
     }
-    // Remove the statusline script
-    try { fs.unlinkSync(STATUSLINE_SCRIPT); } catch { /* already gone */ }
-    try { fs.rmSync(STATUS_DIR, { recursive: true }); } catch { /* may not be empty */ }
+    try { fs.rmSync(dir, { recursive: true }); } catch { /* may not be empty */ }
   } catch {
     // Directory may not exist
   }
