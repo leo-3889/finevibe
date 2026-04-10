@@ -7,6 +7,8 @@ import { readJsonSafe } from './fs-utils';
 import { loadState, saveState } from './store';
 import type { SettingsValidationResult } from '../shared/types';
 
+const LEGACY_STATUSLINE_RE = /[/\\]vibeyard[/\\]statusline\.(sh|cmd)$/;
+
 const CANDIDATE_HOOK_EVENTS = [
   'SessionStart', 'UserPromptSubmit', 'PostToolUse',
   'PostToolUseFailure', 'Stop', 'StopFailure', 'PermissionRequest',
@@ -30,7 +32,13 @@ function readClaudeSettings(): Record<string, unknown> {
 export function isVibeyardStatusLine(statusLine: unknown): boolean {
   if (!statusLine || typeof statusLine !== 'object') return false;
   const sl = statusLine as Record<string, unknown>;
-  return sl.command === getStatusLineScriptPath();
+  if (sl.command === getStatusLineScriptPath()) return true;
+  // Recognize legacy Vibeyard statusline paths (e.g. /tmp/vibeyard/statusline.sh)
+  // so upgrades silently replace them without showing a conflict dialog.
+  if (typeof sl.command === 'string') {
+    return LEGACY_STATUSLINE_RE.test(sl.command);
+  }
+  return false;
 }
 
 export function validateSettings(): SettingsValidationResult {
