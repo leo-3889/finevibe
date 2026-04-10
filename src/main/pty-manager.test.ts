@@ -71,16 +71,29 @@ describe('spawnPty', () => {
 
     spawnPty('s1', '/project', null, false, '', 'claude', undefined, vi.fn(), vi.fn());
 
-    expect(mockSpawn).toHaveBeenCalledWith(
-      'claude', // falls back to bare 'claude'
-      [],
-      expect.objectContaining({
-        cwd: '/project',
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
-      }),
-    );
+    if (isWin) {
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'cmd.exe',
+        ['/c', 'claude'],
+        expect.objectContaining({
+          cwd: '/project',
+          name: 'xterm-256color',
+          cols: 120,
+          rows: 30,
+        }),
+      );
+    } else {
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'claude',
+        [],
+        expect.objectContaining({
+          cwd: '/project',
+          name: 'xterm-256color',
+          cols: 120,
+          rows: 30,
+        }),
+      );
+    }
   });
 
   it('adds -r flag when resuming with cliSessionId', () => {
@@ -89,11 +102,19 @@ describe('spawnPty', () => {
 
     spawnPty('s1', '/project', 'claude-123', true, '', 'claude', undefined, vi.fn(), vi.fn());
 
-    expect(mockSpawn).toHaveBeenCalledWith(
-      'claude',
-      ['-r', 'claude-123'],
-      expect.any(Object),
-    );
+    if (isWin) {
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'cmd.exe',
+        ['/c', 'claude', '-r', 'claude-123'],
+        expect.any(Object),
+      );
+    } else {
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'claude',
+        ['-r', 'claude-123'],
+        expect.any(Object),
+      );
+    }
   });
 
   it('adds --session-id flag when not resuming', () => {
@@ -102,11 +123,19 @@ describe('spawnPty', () => {
 
     spawnPty('s1', '/project', 'claude-123', false, '', 'claude', undefined, vi.fn(), vi.fn());
 
-    expect(mockSpawn).toHaveBeenCalledWith(
-      'claude',
-      ['--session-id', 'claude-123'],
-      expect.any(Object),
-    );
+    if (isWin) {
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'cmd.exe',
+        ['/c', 'claude', '--session-id', 'claude-123'],
+        expect.any(Object),
+      );
+    } else {
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'claude',
+        ['--session-id', 'claude-123'],
+        expect.any(Object),
+      );
+    }
   });
 
   it('splits extraArgs into individual args', () => {
@@ -115,11 +144,19 @@ describe('spawnPty', () => {
 
     spawnPty('s1', '/project', null, false, '--verbose --debug', 'claude', undefined, vi.fn(), vi.fn());
 
-    expect(mockSpawn).toHaveBeenCalledWith(
-      'claude',
-      ['--verbose', '--debug'],
-      expect.any(Object),
-    );
+    if (isWin) {
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'cmd.exe',
+        ['/c', 'claude', '--verbose', '--debug'],
+        expect.any(Object),
+      );
+    } else {
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'claude',
+        ['--verbose', '--debug'],
+        expect.any(Object),
+      );
+    }
   });
 
   it('forwards PTY data to callback', () => {
