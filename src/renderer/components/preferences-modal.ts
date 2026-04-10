@@ -4,6 +4,7 @@ import { createCustomSelect, type CustomSelectInstance } from './custom-select.j
 import { shortcutManager, displayKeys, eventToAccelerator } from '../shortcuts.js';
 import { loadProviderAvailability, getProviderAvailabilitySnapshot } from '../provider-availability.js';
 import type { CliProviderMeta, ProviderId, SettingsValidationResult } from '../../shared/types.js';
+import { hasProviderIssue, type ProviderStatus } from './setup-checks.js';
 
 
 const overlay = document.getElementById('modal-overlay')!;
@@ -504,12 +505,6 @@ export function showPreferencesModal(): void {
     parent.appendChild(header);
   }
 
-  interface ProviderStatus {
-    meta: CliProviderMeta;
-    validation: SettingsValidationResult;
-    binary: { ok: boolean; message: string };
-  }
-
   async function fetchProviderStatuses(): Promise<ProviderStatus[]> {
     const providers = await window.vibeyard.provider.listProviders();
     return Promise.all(
@@ -520,13 +515,6 @@ export function showPreferencesModal(): void {
         ]).then(([validation, binary]) => ({ meta, validation, binary })),
       ),
     );
-  }
-
-  function hasProviderIssue({ meta, validation, binary }: ProviderStatus): boolean {
-    if (!binary.ok) return true;
-    if ((meta.capabilities.costTracking || meta.capabilities.contextWindow) && validation.statusLine !== 'vibeyard') return true;
-    if (meta.capabilities.hookStatus && validation.hooks !== 'complete') return true;
-    return false;
   }
 
   async function renderSetupSection(container: HTMLElement) {
