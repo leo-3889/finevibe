@@ -1,0 +1,65 @@
+name: Bug Report
+description: Report a bug to help us improve Vibeyard
+body:
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: "For macOS/Linux: copy the output of `uname -mprs`. For Windows: copy the output of `\"$([Environment]::OSVersion | ForEach-Object VersionString) $(if ([Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x86' })\"` in PowerShell."
+      placeholder: e.g., Darwin 24.3.0 arm64 Apple
+    validations:
+      required: true
+  - type: input
+    id: vibeyard-version
+    attributes:
+      label: Vibeyard Version
+      description: From "About Vibeyard" in the app menu
+      placeholder: e.g., 1.2.0
+    validations:
+      required: true
+  - type: input
+    id: cli-version
+    attributes:
+      label: Claude Code CLI Version
+      description: Run `claude --version` to find this
+      placeholder: e.g., 1.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots / terminal output
+      description: If applicable, add screenshots or paste terminal output.
+    validations:
+      required: false
