@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.26] - 2026-04-10
+
+### Features
+
+- Version-gated claude code hook installation
+- Resume with different provider
+
+### Fixes
+
+- Windows platform compatibility and unify shortcut system
+- Setup badge showing for uninstalled providers
+- Auto-override legacy vibeyard statusline path on upgrade
+- Cost attribution in session inspector tools and costs tabs
+
+### Changes
+
+- Split hook script dir from runtime status dir
+- Centralize platform checks in platform.ts
+
 ## [0.2.25] - 2026-04-09
 
 ### Features
