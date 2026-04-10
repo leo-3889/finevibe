@@ -17,11 +17,22 @@ body:
       placeholder: e.g., 1.2.0
     validations:
       required: true
+  - type: dropdown
+    id: cli-provider
+    attributes:
+      label: CLI Provider
+      description: Which CLI tool were you using?
+      options:
+        - Claude Code
+        - Gemini CLI
+        - Codex CLI
+    validations:
+      required: true
   - type: input
     id: cli-version
     attributes:
-      label: Claude Code CLI Version
-      description: Run `claude --version` to find this
+      label: CLI Version
+      description: "Claude Code: `claude --version`. Gemini CLI: `gemini --version`. Codex CLI: `codex --version`."
       placeholder: e.g., 1.0.0
     validations:
       required: true
