@@ -1,4 +1,5 @@
 import { getEvents, getToolStats, getContextHistory, getCostDeltas } from '../session-inspector-state.js';
+import type { InspectorEventType } from '../../shared/types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { inspectorState } from './session-inspector-state-ui.js';
 import {
@@ -16,7 +17,6 @@ export function renderCosts(container: HTMLElement): void {
   if (renderUnsupportedGuard(container, 'costTracking', 'Cost tracking')) return;
 
   const events = getEvents(inspectorState.inspectedSessionId!);
-  const costDeltas = getCostDeltas(inspectorState.inspectedSessionId!);
 
   if (events.length === 0) {
     container.innerHTML = `<div class="inspector-empty">${emptyMessage('No events yet')}</div>`;
@@ -35,14 +35,12 @@ export function renderCosts(container: HTMLElement): void {
     }
     if (totalCost !== 0 && totalTokens !== 0) break;
   }
-  const stepsWithCost = costDeltas.filter(d => d.delta > 0).length;
 
   const summary = document.createElement('div');
   summary.className = 'inspector-summary';
   summary.innerHTML = `
     <div class="inspector-summary-item"><span class="inspector-summary-label">Total Cost</span><span class="inspector-summary-value">$${totalCost.toFixed(4)}</span></div>
     <div class="inspector-summary-item"><span class="inspector-summary-label">Total Tokens</span><span class="inspector-summary-value">${formatTokenCount(totalTokens)}</span></div>
-    <div class="inspector-summary-item"><span class="inspector-summary-label">Avg Cost/Step</span><span class="inspector-summary-value">$${stepsWithCost > 0 ? (totalCost / stepsWithCost).toFixed(4) : '0.0000'}</span></div>
   `;
   container.appendChild(summary);
 
@@ -52,33 +50,38 @@ export function renderCosts(container: HTMLElement): void {
   table.innerHTML = '<thead><tr><th>#</th><th>Event</th><th>Tool</th><th>Cost Delta</th><th>Cumulative</th></tr></thead>';
   const tbody = document.createElement('tbody');
 
-  const deltaMap = new Map(costDeltas.map(d => [d.index, d.delta]));
+  // Attribute each cost delta to the nearest preceding tool event,
+  // since cost snapshots live on synthetic status_update events.
+  const costDeltas = getCostDeltas(inspectorState.inspectedSessionId!);
+  const toolRows: { index: number; type: InspectorEventType; tool: string | undefined; delta: number; cumulative: number }[] = [];
+  const toolRowByIndex = new Map<number, typeof toolRows[number]>();
 
-  for (let i = 0; i < events.length; i++) {
-    const ev = events[i];
-    if (!ev.cost_snapshot && !deltaMap.has(i)) continue;
-
-    // For synthetic status_update events, attribute the cost to the most recent
-    // real event (e.g. the tool call that actually incurred the cost)
-    let displayType = ev.type;
-    let displayTool = ev.tool_name;
-    if (ev.type === 'status_update') {
-      for (let j = i - 1; j >= 0; j--) {
-        if (events[j].type !== 'status_update') {
-          displayType = events[j].type;
-          displayTool = events[j].tool_name;
-          break;
+  for (const { index, delta } of costDeltas) {
+    for (let j = index - 1; j >= 0; j--) {
+      const t = events[j].type;
+      if (t === 'tool_use' || t === 'tool_failure') {
+        let row = toolRowByIndex.get(j);
+        if (!row) {
+          row = { index: j, type: t, tool: events[j].tool_name, delta: 0, cumulative: 0 };
+          toolRows.push(row);
+          toolRowByIndex.set(j, row);
         }
+        row.delta += delta;
+        row.cumulative = events[index].cost_snapshot!.total_cost_usd;
+        break;
       }
     }
+  }
 
+  for (const row of toolRows) {
+    if (row.delta === 0 && row.cumulative === 0) continue;
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${i + 1}</td>
-      <td>${badgeLabel(displayType)}</td>
-      <td>${displayTool ? escapeHtml(displayTool) : '-'}</td>
-      <td>${deltaMap.has(i) ? `+$${deltaMap.get(i)!.toFixed(4)}` : '-'}</td>
-      <td>${ev.cost_snapshot ? `$${ev.cost_snapshot.total_cost_usd.toFixed(4)}` : '-'}</td>
+      <td>${row.index + 1}</td>
+      <td>${badgeLabel(row.type)}</td>
+      <td>${row.tool ? escapeHtml(row.tool) : '-'}</td>
+      <td>+$${row.delta.toFixed(4)}</td>
+      <td>$${row.cumulative.toFixed(4)}</td>
     `;
     tbody.appendChild(tr);
   }

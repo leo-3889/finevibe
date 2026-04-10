@@ -79,28 +79,18 @@ describe('session-inspector-state', () => {
       expect(getToolStats('nope')).toEqual([]);
     });
 
-    it('aggregates call counts, failures, and totalCost per tool', () => {
+    it('aggregates call counts, failures, and attributes cost deltas to the preceding tool event', () => {
+      // Real event layout: snapshots live on status_update events that follow
+      // the tool event they should be attributed to.
       addEvents('s1', [
-        makeEvent({
-          type: 'tool_use',
-          tool_name: 'Bash',
-          cost_snapshot: { total_cost_usd: 0.1, total_duration_ms: 10 },
-        }),
-        makeEvent({
-          type: 'tool_use',
-          tool_name: 'Bash',
-          cost_snapshot: { total_cost_usd: 0.25, total_duration_ms: 10 },
-        }),
-        makeEvent({
-          type: 'tool_failure',
-          tool_name: 'Bash',
-          cost_snapshot: { total_cost_usd: 0.3, total_duration_ms: 10 },
-        }),
-        makeEvent({
-          type: 'tool_use',
-          tool_name: 'Read',
-          cost_snapshot: { total_cost_usd: 0.35, total_duration_ms: 10 },
-        }),
+        makeEvent({ type: 'tool_use', tool_name: 'Bash' }),
+        makeEvent({ type: 'status_update', cost_snapshot: { total_cost_usd: 0.10, total_duration_ms: 10 } }),
+        makeEvent({ type: 'tool_use', tool_name: 'Bash' }),
+        makeEvent({ type: 'status_update', cost_snapshot: { total_cost_usd: 0.25, total_duration_ms: 10 } }),
+        makeEvent({ type: 'tool_failure', tool_name: 'Bash' }),
+        makeEvent({ type: 'status_update', cost_snapshot: { total_cost_usd: 0.30, total_duration_ms: 10 } }),
+        makeEvent({ type: 'tool_use', tool_name: 'Read' }),
+        makeEvent({ type: 'status_update', cost_snapshot: { total_cost_usd: 0.35, total_duration_ms: 10 } }),
       ]);
 
       const stats = getToolStats('s1');
@@ -108,10 +98,21 @@ describe('session-inspector-state', () => {
       expect(stats[0].tool_name).toBe('Bash');
       expect(stats[0].calls).toBe(3);
       expect(stats[0].failures).toBe(1);
-      expect(stats[0].totalCost).toBeCloseTo(0.1 + 0.15 + 0.05, 5);
+      // 0.10 (first snapshot → first Bash) + 0.15 (→ second Bash) + 0.05 (→ Bash failure)
+      expect(stats[0].totalCost).toBeCloseTo(0.30, 5);
       expect(stats[1].tool_name).toBe('Read');
       expect(stats[1].calls).toBe(1);
       expect(stats[1].failures).toBe(0);
+      expect(stats[1].totalCost).toBeCloseTo(0.05, 5);
+    });
+
+    it('leaves totalCost at 0 when no cost snapshots are present', () => {
+      addEvents('s1', [
+        makeEvent({ type: 'tool_use', tool_name: 'Bash' }),
+        makeEvent({ type: 'tool_use', tool_name: 'Bash' }),
+      ]);
+      const stats = getToolStats('s1');
+      expect(stats[0].totalCost).toBe(0);
     });
 
     it('uses "unknown" when tool_name is missing', () => {

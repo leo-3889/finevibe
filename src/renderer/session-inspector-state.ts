@@ -30,25 +30,29 @@ export function getToolStats(sessionId: string): ToolUsageStats[] {
   const events = sessionEvents.get(sessionId) ?? [];
   const statsMap = new Map<string, ToolUsageStats>();
 
-  // Use cached deltas for O(1) lookup instead of O(n) backward scan per event
-  const deltaMap = new Map(getCostDeltas(sessionId).map(d => [d.index, d.delta]));
+  // Cost snapshots live on synthetic status_update events, not on tool events.
+  let lastToolStats: ToolUsageStats | null = null;
+  let prevCost: number | null = null;
 
-  for (let i = 0; i < events.length; i++) {
-    const ev = events[i];
-    if (ev.type !== 'tool_use' && ev.type !== 'tool_failure') continue;
-    const name = ev.tool_name ?? 'unknown';
-    let stats = statsMap.get(name);
-    if (!stats) {
-      stats = { tool_name: name, calls: 0, failures: 0, totalCost: 0 };
-      statsMap.set(name, stats);
+  for (const ev of events) {
+    if (ev.type === 'tool_use' || ev.type === 'tool_failure') {
+      const name = ev.tool_name ?? 'unknown';
+      let stats = statsMap.get(name);
+      if (!stats) {
+        stats = { tool_name: name, calls: 0, failures: 0, totalCost: 0 };
+        statsMap.set(name, stats);
+      }
+      stats.calls++;
+      if (ev.type === 'tool_failure') stats.failures++;
+      lastToolStats = stats;
     }
-    stats.calls++;
-    if (ev.type === 'tool_failure') stats.failures++;
 
-    const delta = deltaMap.get(i);
-    if (delta !== undefined) {
-      stats.totalCost += delta;
+    const snapshot = ev.cost_snapshot;
+    if (snapshot && lastToolStats) {
+      const delta = prevCost !== null ? snapshot.total_cost_usd - prevCost : snapshot.total_cost_usd;
+      lastToolStats.totalCost += delta;
     }
+    if (snapshot) prevCost = snapshot.total_cost_usd;
   }
 
   return Array.from(statsMap.values()).sort((a, b) => b.calls - a.calls);
