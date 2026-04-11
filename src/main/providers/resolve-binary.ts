@@ -100,27 +100,15 @@ export function resolveBinary(binaryName: string, cache: { path: string | null }
   return binaryName;
 }
 
-export function validateBinaryExists(
-  binaryName: string,
-  displayName: string,
-  installCommand: string,
-): { ok: boolean; message: string } {
+export function validateBinaryExists(binaryName: string): boolean {
   for (const dir of COMMON_BIN_DIRS) {
-    if (findBinaryInDir(dir, binaryName)) return { ok: true, message: '' };
+    if (findBinaryInDir(dir, binaryName)) return true;
   }
 
   const fullPath = getFullPath();
-  if (whichBinary(binaryName, fullPath)) return { ok: true, message: '' };
+  if (whichBinary(binaryName, fullPath)) return true;
 
-  if (findViaNpmPrefix(binaryName, fullPath)) return { ok: true, message: '' };
+  if (findViaNpmPrefix(binaryName, fullPath)) return true;
 
-  return {
-    ok: false,
-    message:
-      `${displayName} not found.\n\n` +
-      `Vibeyard requires the ${displayName} to be installed.\n\n` +
-      `Install it with:\n` +
-      `  ${installCommand}\n\n` +
-      `After installing, restart Vibeyard.`,
-  };
+  return false;
 }
