@@ -67,7 +67,7 @@ export function resetHookWatcher(): void {
 }
 
 export function registerIpcHandlers(): void {
-  ipcMain.handle('pty:create', (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string) => {
+  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
 
@@ -77,18 +77,7 @@ export function registerIpcHandlers(): void {
       hookWatcherStarted = true;
     }
 
-    // Validate provider settings and warn renderer if missing/tampered
     const provider = getProvider(providerId);
-    if (provider.meta.capabilities.hookStatus) {
-      const validation = provider.validateSettings();
-      if (validation.statusLine !== 'vibeyard' || validation.hooks !== 'complete') {
-        win.webContents.send('settings:warning', {
-          sessionId,
-          statusLine: validation.statusLine,
-          hooks: validation.hooks,
-        });
-      }
-    }
 
     // For Codex sessions without a cliSessionId, start watching history.jsonl
     if (providerId === 'codex' && !cliSessionId) {
@@ -96,7 +85,7 @@ export function registerIpcHandlers(): void {
       registerPendingCodexSession(sessionId);
     }
 
-    spawnPty(
+    await spawnPty(
       sessionId,
       cwd,
       cliSessionId,
@@ -120,6 +109,19 @@ export function registerIpcHandlers(): void {
         }
       }
     );
+
+    // Validate after spawnPty — Copilot installs per-project hooks there, so
+    // validating earlier would see an empty config on a project's first spawn.
+    if (provider.meta.capabilities.hookStatus) {
+      const validation = provider.validateSettings(cwd);
+      if (validation.statusLine !== 'vibeyard' || validation.hooks !== 'complete') {
+        win.webContents.send('settings:warning', {
+          sessionId,
+          statusLine: validation.statusLine,
+          hooks: validation.hooks,
+        });
+      }
+    }
   });
 
   ipcMain.handle('pty:createShell', (_event, sessionId: string, cwd: string) => {
