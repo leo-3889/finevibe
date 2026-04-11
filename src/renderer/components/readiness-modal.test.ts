@@ -129,7 +129,9 @@ function findFilterSection(container: Record<string, unknown>): Record<string, u
 
 function getFilterLabels(filterSection: Record<string, unknown>): Record<string, unknown>[] {
   const children = filterSection._children as Record<string, unknown>[];
-  return children.filter(c => c.className === 'readiness-filter-toggle');
+  const row = children.find(c => c.className === 'readiness-filter-row');
+  const rowChildren = (row?._children ?? []) as Record<string, unknown>[];
+  return rowChildren.filter(c => c.className === 'readiness-filter-toggle');
 }
 
 // --- Tests ---

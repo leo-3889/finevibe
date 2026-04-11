@@ -207,13 +207,27 @@
 
 .readiness-filter-section {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   padding: 8px 12px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 4px;
   margin-bottom: 12px;
+}
+
+.readiness-filter-description {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.readiness-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .readiness-filter-label {
