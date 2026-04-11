@@ -5,6 +5,10 @@ vi.mock('os', () => ({
   homedir: () => '/Users/test',
 }));
 
+vi.mock('../platform', () => ({
+  isWin: false,
+}));
+
 const mockFileExists = vi.fn();
 const mockDirExists = vi.fn();
 const mockReadDirSafe = vi.fn();
