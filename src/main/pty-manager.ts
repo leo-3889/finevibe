@@ -6,6 +6,7 @@ import type { ProviderId } from '../shared/types';
 import { getProvider } from './providers/registry';
 import { registerSession } from './hook-status';
 import { isWin, pathSep } from './platform';
+import { nvmDefaultNodeBinDir } from './providers/nvm';
 
 interface PtyInstance {
   process: pty.IPty;
@@ -24,6 +25,9 @@ const silencedExits = new Set<string>();
  * We resolve this once by running a login shell / reading the registry.
  */
 let cachedFullPath: string | null = null;
+
+const PATH_MARKER_BEGIN = '__VY_PATH_BEGIN__';
+const PATH_MARKER_END = '__VY_PATH_END__';
 
 export function getRegistryPath(): string {
   if (!isWin) return '';
@@ -88,21 +92,26 @@ export function getFullPath(): string {
 
   const shell = process.env.SHELL || '/bin/zsh';
 
-  // Try to get the real PATH from a login shell
+  // -i is required: nvm exports PATH from ~/.zshrc, only sourced for interactive shells.
   try {
-    const shellPath = execSync(`${shell} -ilc 'echo __PATH__=$PATH'`, {
-      encoding: 'utf-8',
-      timeout: 5000,
-      env: { ...process.env, HOME: os.homedir() },
-    });
-    const match = shellPath.match(/__PATH__=(.+)/);
+    const shellPath = execSync(
+      `${shell} -ilc 'echo "${PATH_MARKER_BEGIN}${'${PATH}'}${PATH_MARKER_END}"'`,
+      {
+        encoding: 'utf-8',
+        timeout: 8000,
+        env: { ...process.env, HOME: os.homedir() },
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    );
+    const match = shellPath.match(
+      new RegExp(`${PATH_MARKER_BEGIN}([\\s\\S]*?)${PATH_MARKER_END}`),
+    );
     if (match && match[1]) {
       cachedFullPath = match[1].trim();
       return cachedFullPath;
     }
   } catch (err) { console.warn('Failed to resolve PATH from login shell:', err); }
 
-  // Fallback: merge current PATH with common directories
   const home = os.homedir();
   const extraDirs = [
     '/usr/local/bin',
@@ -112,6 +121,8 @@ export function getFullPath(): string {
     '/usr/local/sbin',
     '/opt/homebrew/sbin',
   ];
+  const nvmBin = nvmDefaultNodeBinDir();
+  if (nvmBin) extraDirs.push(nvmBin);
 
   const pathSet = new Set(currentPath.split(pathSep));
   for (const dir of extraDirs) {
@@ -145,7 +156,7 @@ export function resolveWindowsShell(
   return { shell: 'cmd.exe', args: ['/c', shell, ...args] };
 }
 
-export function spawnPty(
+export async function spawnPty(
   sessionId: string,
   cwd: string,
   cliSessionId: string | null,
@@ -155,7 +166,7 @@ export function spawnPty(
   initialPrompt: string | undefined,
   onData: (data: string) => void,
   onExit: (exitCode: number, signal?: number) => void
-): void {
+): Promise<void> {
   if (ptys.has(sessionId)) {
     // Silence the old PTY's exit event so it doesn't remove the new session
     silencedExits.add(sessionId);
@@ -165,6 +176,18 @@ export function spawnPty(
   registerSession(sessionId);
 
   const provider = getProvider(providerId);
+
+  // Copilot CLI loads hooks from <cwd>/.github/hooks/*.json, so we must
+  // install the hook file before spawning the binary. Other providers use
+  // global config and are already handled at app boot.
+  if (providerId === 'copilot') {
+    try {
+      await provider.installHooks(null, cwd);
+    } catch (err) {
+      console.warn('Failed to install Copilot hooks for project:', cwd, err);
+    }
+  }
+
   const env = provider.buildEnv(sessionId, { ...process.env } as Record<string, string>);
   const args = provider.buildArgs({ cliSessionId, isResume, extraArgs, initialPrompt });
   const resolvedShell = provider.resolveBinaryPath();

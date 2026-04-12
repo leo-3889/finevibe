@@ -201,7 +201,7 @@ export function showPreferencesModal(): void {
     } else if (section === 'sidebar') {
       const views = appState.preferences.sidebarViews ?? { configSections: true, gitPanel: true, sessionHistory: true, costFooter: true, readinessSection: true };
       const toggles: { key: keyof typeof views; label: string }[] = [
-        { key: 'configSections', label: 'Config Sections (MCP Servers, Agents, Skills, Commands)' },
+        { key: 'configSections', label: 'Provider Tools (MCP Servers, Agents, Skills, Commands)' },
         { key: 'readinessSection', label: 'AI Readiness' },
         { key: 'gitPanel', label: 'Git Panel' },
         { key: 'sessionHistory', label: 'Session History' },
@@ -512,7 +512,7 @@ export function showPreferencesModal(): void {
         Promise.all([
           window.vibeyard.settings.validate(meta.id),
           window.vibeyard.provider.checkBinary(meta.id),
-        ]).then(([validation, binary]) => ({ meta, validation, binary })),
+        ]).then(([validation, binaryOk]) => ({ meta, validation, binaryOk })),
       ),
     );
   }
@@ -535,18 +535,18 @@ export function showPreferencesModal(): void {
 
     section.innerHTML = '';
 
-    for (const { meta, validation, binary } of results) {
+    for (const { meta, validation, binaryOk } of results) {
       renderProviderHeader(section, meta.displayName);
 
       renderCheckItem(section, {
         label: meta.displayName,
         description: `The ${meta.binaryName} binary must be installed for sessions to work.`,
-        ok: binary.ok,
-        statusText: binary.ok ? 'Installed' : 'Not found',
-        helpText: binary.ok ? undefined : binary.message,
+        ok: binaryOk,
+        statusText: binaryOk ? 'Installed' : 'Not found',
+        helpText: binaryOk ? undefined : `${meta.binaryName} not found.`,
       });
 
-      if (!binary.ok) continue;
+      if (!binaryOk) continue;
 
       const { capabilities } = meta;
 

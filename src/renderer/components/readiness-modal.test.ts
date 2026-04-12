@@ -10,6 +10,7 @@ const mockProviderAvailability = vi.hoisted(() => ({
     providers: Array<{ id: string; displayName: string }>;
     availability: Map<string, boolean>;
   } | null),
+  getAvailableProviderMetas: vi.fn(() => [] as Array<{ id: string; displayName: string }>),
   getProviderDisplayName: vi.fn((id: string) => id),
 }));
 
@@ -129,7 +130,9 @@ function findFilterSection(container: Record<string, unknown>): Record<string, u
 
 function getFilterLabels(filterSection: Record<string, unknown>): Record<string, unknown>[] {
   const children = filterSection._children as Record<string, unknown>[];
-  return children.filter(c => c.className === 'readiness-filter-toggle');
+  const row = children.find(c => c.className === 'readiness-filter-row');
+  const rowChildren = (row?._children ?? []) as Record<string, unknown>[];
+  return rowChildren.filter(c => c.className === 'readiness-filter-toggle');
 }
 
 // --- Tests ---
@@ -154,6 +157,9 @@ describe('readiness-modal provider filter', () => {
       providers: allProviderMetas,
       availability,
     });
+    mockProviderAvailability.getAvailableProviderMetas.mockReturnValue(
+      allProviderMetas.filter(p => availability.get(p.id)),
+    );
   }
 
   it('does not show provider filter when only one provider is available', async () => {

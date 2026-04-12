@@ -67,7 +67,7 @@ export function resetHookWatcher(): void {
 }
 
 export function registerIpcHandlers(): void {
-  ipcMain.handle('pty:create', (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string) => {
+  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
 
@@ -77,18 +77,7 @@ export function registerIpcHandlers(): void {
       hookWatcherStarted = true;
     }
 
-    // Validate provider settings and warn renderer if missing/tampered
     const provider = getProvider(providerId);
-    if (provider.meta.capabilities.hookStatus) {
-      const validation = provider.validateSettings();
-      if (validation.statusLine !== 'vibeyard' || validation.hooks !== 'complete') {
-        win.webContents.send('settings:warning', {
-          sessionId,
-          statusLine: validation.statusLine,
-          hooks: validation.hooks,
-        });
-      }
-    }
 
     // For Codex sessions without a cliSessionId, start watching history.jsonl
     if (providerId === 'codex' && !cliSessionId) {
@@ -96,7 +85,7 @@ export function registerIpcHandlers(): void {
       registerPendingCodexSession(sessionId);
     }
 
-    spawnPty(
+    await spawnPty(
       sessionId,
       cwd,
       cliSessionId,
@@ -120,6 +109,19 @@ export function registerIpcHandlers(): void {
         }
       }
     );
+
+    // Validate after spawnPty — Copilot installs per-project hooks there, so
+    // validating earlier would see an empty config on a project's first spawn.
+    if (provider.meta.capabilities.hookStatus) {
+      const validation = provider.validateSettings(cwd);
+      if (validation.statusLine !== 'vibeyard' || validation.hooks !== 'complete') {
+        win.webContents.send('settings:warning', {
+          sessionId,
+          statusLine: validation.statusLine,
+          hooks: validation.hooks,
+        });
+      }
+    }
   });
 
   ipcMain.handle('pty:createShell', (_event, sessionId: string, cwd: string) => {
@@ -442,6 +444,40 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.warn('fs:readFile failed:', err);
       return '';
+    }
+  });
+
+  const IMAGE_MIME_BY_EXT: Record<string, string> = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+    '.ico': 'image/x-icon',
+    '.svg': 'image/svg+xml',
+  };
+  const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+
+  ipcMain.handle('fs:readImage', (_event, filePath: string) => {
+    try {
+      const resolved = path.resolve(filePath);
+      if (!isAllowedReadPath(resolved)) {
+        console.warn(`fs:readImage blocked: ${resolved} is not within an allowed path`);
+        return null;
+      }
+      const mime = IMAGE_MIME_BY_EXT[path.extname(resolved).toLowerCase()];
+      if (!mime) return null;
+      const stat = fs.statSync(resolved);
+      if (stat.size > MAX_IMAGE_BYTES) {
+        console.warn(`fs:readImage rejected: ${resolved} exceeds ${MAX_IMAGE_BYTES} bytes`);
+        return null;
+      }
+      const buf = fs.readFileSync(resolved);
+      return { dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
+    } catch (err) {
+      console.warn('fs:readImage failed:', err);
+      return null;
     }
   });
 
