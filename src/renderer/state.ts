@@ -41,6 +41,7 @@ const defaultPreferences: Preferences = {
   sessionHistoryEnabled: true,
   insightsEnabled: true,
   autoTitleEnabled: true,
+  zoomFactor: 1.0,
   readinessExcludedProviders: [],
   sidebarViews: { configSections: true, gitPanel: true, sessionHistory: true, costFooter: true, readinessSection: true, discussions: true },
 };

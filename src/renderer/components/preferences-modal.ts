@@ -1,6 +1,7 @@
 import { appState } from '../state.js';
 import { closeModal } from './modal.js';
 import { createCustomSelect, type CustomSelectInstance } from './custom-select.js';
+import { applyZoom, getZoomFactor, ZOOM_STEPS } from '../zoom.js';
 import { shortcutManager, displayKeys, eventToAccelerator } from '../shortcuts.js';
 import { loadProviderAvailability, getProviderAvailabilitySnapshot } from '../provider-availability.js';
 import type { CliProviderMeta, ProviderId, SettingsValidationResult } from '../../shared/types.js';
@@ -63,6 +64,8 @@ export function showPreferencesModal(): void {
   let insightsCheckbox: HTMLInputElement | null = null;
   let autoTitleCheckbox: HTMLInputElement | null = null;
   let defaultProviderSelect: CustomSelectInstance | null = null;
+  let zoomSelect: CustomSelectInstance | null = null;
+  let zoomPrefUnsub: (() => void) | null = null;
   let debugModeCheckbox: HTMLInputElement | null = null;
   let sidebarCheckboxes: { configSections: HTMLInputElement; gitPanel: HTMLInputElement; sessionHistory: HTMLInputElement; costFooter: HTMLInputElement; readinessSection: HTMLInputElement; discussions: HTMLInputElement } | null = null;
   let activeRecorder: { cleanup: () => void } | null = null;
@@ -76,6 +79,8 @@ export function showPreferencesModal(): void {
 
   function renderSection(section: Section) {
     cleanupRecorder();
+    zoomPrefUnsub?.();
+    zoomPrefUnsub = null;
     currentSection = section;
     content.innerHTML = '';
 
@@ -197,6 +202,27 @@ export function showPreferencesModal(): void {
       autoTitleRow.appendChild(autoTitleLabel);
       autoTitleRow.appendChild(autoTitleCheckbox);
       content.appendChild(autoTitleRow);
+
+      const zoomRow = document.createElement('div');
+      zoomRow.className = 'modal-toggle-field';
+
+      const zoomLabel = document.createElement('label');
+      zoomLabel.textContent = 'Zoom';
+
+      const zoomOptions = ZOOM_STEPS.map((v) => ({ value: String(v), label: `${Math.round(v * 100)}%` }));
+      zoomSelect = createCustomSelect('pref-zoom', zoomOptions, String(getZoomFactor()), (value) => {
+        const n = parseFloat(value);
+        if (!Number.isNaN(n)) applyZoom(n);
+      });
+
+      zoomRow.appendChild(zoomLabel);
+      zoomRow.appendChild(zoomSelect.element);
+      content.appendChild(zoomRow);
+
+      zoomPrefUnsub?.();
+      zoomPrefUnsub = appState.on('preferences-changed', () => {
+        zoomSelect?.setValue(String(getZoomFactor()));
+      });
 
     } else if (section === 'sidebar') {
       const views = appState.preferences.sidebarViews ?? { configSections: true, gitPanel: true, sessionHistory: true, costFooter: true, readinessSection: true, discussions: true };
@@ -723,7 +749,10 @@ export function showPreferencesModal(): void {
 
   (overlay as any)._cleanup = () => {
     cleanupRecorder();
+    zoomPrefUnsub?.();
+    zoomPrefUnsub = null;
     if (defaultProviderSelect) defaultProviderSelect.destroy();
+    if (zoomSelect) zoomSelect.destroy();
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
     document.removeEventListener('keydown', handleKeydown);
