@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.28] - 2026-04-19
+
+### Features
+
+- Preference to hide discussions button in sidebar
+- New-post badge to Discussions sidebar link via Atom feed polling
+
+### Fixes
+
+- Browser tab input lag by disabling background throttling on webview
+- Guard PTY operations against errors from exited processes
+- Sidebar discussions overlapping project list when sidebar content overflows
+
 ## [0.2.27] - 2026-04-12
 
 ### Features
