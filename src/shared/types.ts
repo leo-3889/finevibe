@@ -160,6 +160,7 @@ export interface Preferences {
     sessionHistory: boolean;
     costFooter: boolean;
     readinessSection: boolean;
+    discussions: boolean;
   };
 }
 
@@ -192,6 +193,7 @@ export interface PersistedState {
   lastSeenVersion?: string;
   appLaunchCount?: number;
   starPromptDismissed?: boolean;
+  discussionsLastSeen?: string;
 }
 
 // --- AI Readiness ---

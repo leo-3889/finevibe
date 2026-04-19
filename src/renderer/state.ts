@@ -42,7 +42,7 @@ const defaultPreferences: Preferences = {
   insightsEnabled: true,
   autoTitleEnabled: true,
   readinessExcludedProviders: [],
-  sidebarViews: { configSections: true, gitPanel: true, sessionHistory: true, costFooter: true, readinessSection: true },
+  sidebarViews: { configSections: true, gitPanel: true, sessionHistory: true, costFooter: true, readinessSection: true, discussions: true },
 };
 
 const NAV_HISTORY_MAX = 50;
@@ -213,6 +213,15 @@ class AppState {
     this.state.sidebarCollapsed = !this.sidebarCollapsed;
     this.persist();
     this.emit('sidebar-toggled');
+  }
+
+  get discussionsLastSeen(): string | undefined {
+    return this.state.discussionsLastSeen;
+  }
+
+  setDiscussionsLastSeen(timestamp: string): void {
+    this.state.discussionsLastSeen = timestamp;
+    this.persist();
   }
 
   setTerminalPanelOpen(open: boolean): void {
