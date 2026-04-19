@@ -96,6 +96,10 @@
   background: var(--bg-hover);
 }
 
+#sidebar-discussions.hidden {
+  display: none;
+}
+
 #sidebar-discussions .discussions-title {
   font-size: 12px;
   font-weight: 600;

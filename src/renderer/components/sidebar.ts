@@ -36,6 +36,7 @@ export function initSidebar(): void {
   btnToggleSidebar.addEventListener('click', toggleSidebar);
 
   renderDiscussions();
+  applyDiscussionsVisibility();
   sidebarDiscussionsEl.addEventListener('click', () => {
     markDiscussionsSeen();
     window.vibeyard.app.openExternal(DISCUSSIONS_URL);
@@ -64,7 +65,10 @@ export function initSidebar(): void {
   });
 
   onUnreadChange(render);
-  appState.on('preferences-changed', () => applyCostFooterVisibility());
+  appState.on('preferences-changed', () => {
+    applyCostFooterVisibility();
+    applyDiscussionsVisibility();
+  });
 
   document.addEventListener('click', hideProjectContextMenu);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideProjectContextMenu(); });
@@ -269,6 +273,11 @@ function applyCostFooterVisibility(): void {
   } else {
     renderCostFooter();
   }
+}
+
+function applyDiscussionsVisibility(): void {
+  const visible = appState.preferences.sidebarViews?.discussions ?? true;
+  sidebarDiscussionsEl.classList.toggle('hidden', !visible);
 }
 
 function renderCostFooter(): void {

@@ -160,6 +160,7 @@ export interface Preferences {
     sessionHistory: boolean;
     costFooter: boolean;
     readinessSection: boolean;
+    discussions: boolean;
   };
 }
 

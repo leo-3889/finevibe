@@ -42,7 +42,7 @@ const defaultPreferences: Preferences = {
   insightsEnabled: true,
   autoTitleEnabled: true,
   readinessExcludedProviders: [],
-  sidebarViews: { configSections: true, gitPanel: true, sessionHistory: true, costFooter: true, readinessSection: true },
+  sidebarViews: { configSections: true, gitPanel: true, sessionHistory: true, costFooter: true, readinessSection: true, discussions: true },
 };
 
 const NAV_HISTORY_MAX = 50;
