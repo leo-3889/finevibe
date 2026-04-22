@@ -14,6 +14,7 @@ export function toggleDrawMode(instance: BrowserTabInstance): void {
   if (instance.drawMode) {
     instance.webview.send('enter-draw-mode');
     instance.drawInstructionInput.value = '';
+    instance.drawInstructionInput.dispatchEvent(new Event('input'));
   } else {
     instance.webview.send('exit-draw-mode');
     instance.drawPanel.style.display = 'none';
@@ -34,6 +35,7 @@ export function clearDrawing(instance: BrowserTabInstance): void {
 
 export function dismissDraw(instance: BrowserTabInstance): void {
   instance.drawInstructionInput.value = '';
+  instance.drawInstructionInput.dispatchEvent(new Event('input'));
   hideDrawError(instance);
   if (instance.drawMode) toggleDrawMode(instance);
 }

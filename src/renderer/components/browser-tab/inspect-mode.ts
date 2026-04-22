@@ -52,6 +52,7 @@ export function showElementInfo(instance: BrowserTabInstance, info: ElementInfo,
   instance.elementInfoEl.appendChild(selectorOptions);
 
   instance.instructionInput.value = '';
+  instance.instructionInput.dispatchEvent(new Event('input'));
   instance.instructionInput.focus();
 }
 
@@ -73,6 +74,7 @@ export function buildPrompt(instance: BrowserTabInstance): string | null {
 
 export function dismissInspect(instance: BrowserTabInstance): void {
   instance.instructionInput.value = '';
+  instance.instructionInput.dispatchEvent(new Event('input'));
   instance.selectedElement = null;
   instance.inspectPanel.style.display = 'none';
   if (instance.inspectMode) {

@@ -96,6 +96,7 @@ export function toggleFlowMode(instance: BrowserTabInstance): void {
 export function clearFlow(instance: BrowserTabInstance): void {
   instance.flowSteps = [];
   instance.flowInstructionInput.value = '';
+  instance.flowInstructionInput.dispatchEvent(new Event('input'));
   renderFlowSteps(instance);
 }
 

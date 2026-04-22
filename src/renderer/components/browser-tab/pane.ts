@@ -29,6 +29,7 @@ import {
   sendToCustomSession,
   sendToNewSession,
 } from './session-integration.js';
+import { wireSubmitDisabled } from '../submit-disabled.js';
 
 export function createBrowserTabPane(sessionId: string, url?: string): void {
   if (instances.has(sessionId)) return;
@@ -500,6 +501,10 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   customApplyBtn.addEventListener('click', applyCustomSize);
   customWInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') applyCustomSize(); });
   customHInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') applyCustomSize(); });
+
+  wireSubmitDisabled(instructionInput, submitBtn, customBtn);
+  wireSubmitDisabled(drawInstructionInput, drawSubmitBtn, drawCustomBtn);
+  wireSubmitDisabled(flowInstructionInput, flowSubmitBtn, flowCustomBtn);
 
   inspectBtn.addEventListener('click', () => toggleInspectMode(instance));
   recordBtn.addEventListener('click', () => toggleFlowMode(instance));

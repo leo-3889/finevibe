@@ -4,6 +4,7 @@ import { setPendingPrompt } from './terminal-pane.js';
 import { getFileViewerInstance } from './file-viewer.js';
 import { getFileReaderInstance } from './file-reader.js';
 import { promptNewSession } from './tab-bar.js';
+import { wireSubmitDisabled } from './submit-disabled.js';
 
 type PaneKind = 'file-viewer' | 'file-reader';
 
@@ -198,6 +199,7 @@ function ensureComposer(): HTMLDivElement {
     e.preventDefault();
     submitToCustomSession();
   });
+  wireSubmitDisabled(textarea, submitBtn, customBtn);
 
   popover = p;
   popoverInfo = info;
@@ -241,6 +243,7 @@ function openComposer(ctx: PaneContext): void {
   popoverInfo!.appendChild(tag);
 
   popoverTextarea!.value = '';
+  popoverTextarea!.dispatchEvent(new Event('input'));
   popoverPlanModeCheckbox!.checked = true;
 
   const paneRect = ctx.paneEl.getBoundingClientRect();
