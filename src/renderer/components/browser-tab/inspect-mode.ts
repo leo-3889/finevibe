@@ -19,8 +19,6 @@ export function toggleInspectMode(instance: BrowserTabInstance): void {
 
 export function showElementInfo(instance: BrowserTabInstance, info: ElementInfo, x: number, y: number): void {
   instance.selectedElement = info;
-  instance.inspectPanel.style.display = 'flex';
-  positionPopover(instance, instance.inspectPanel, x, y);
 
   const classStr = info.classes.length ? `.${info.classes.join('.')}` : '';
   const idStr = info.id ? `#${info.id}` : '';
@@ -53,6 +51,12 @@ export function showElementInfo(instance: BrowserTabInstance, info: ElementInfo,
 
   instance.instructionInput.value = '';
   instance.instructionInput.dispatchEvent(new Event('input'));
+
+  // Display + position AFTER content is populated so positionPopover measures
+  // the final rendered size and can clamp it correctly inside the pane.
+  instance.inspectPanel.style.display = 'flex';
+  positionPopover(instance, instance.inspectPanel, x, y);
+
   instance.instructionInput.focus();
 }
 
