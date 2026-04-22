@@ -313,13 +313,13 @@ class AppState {
     this.emit('project-changed');
   }
 
-  addPlanSession(projectId: string, name: string): SessionRecord | undefined {
+  addPlanSession(projectId: string, name: string, planMode: boolean = true): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
     const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
     const providerId = activeSession?.providerId ?? this.state.preferences.defaultProvider ?? 'claude';
     const caps = getProviderCapabilities(providerId);
-    const planArg = caps?.planModeArg ?? '';
+    const planArg = planMode ? (caps?.planModeArg ?? '') : '';
     const base = project.defaultArgs ?? '';
     const args = [base, planArg].filter(Boolean).join(' ').trim() || undefined;
     return this.addSession(projectId, name, args, providerId);
