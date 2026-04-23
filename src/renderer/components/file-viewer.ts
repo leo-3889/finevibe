@@ -184,6 +184,10 @@ export function destroyFileViewerPane(sessionId: string): void {
     window.vibeyard.fs.unwatchFile(instance.resolvedPath);
   }
   pendingReloads.delete(sessionId);
+  if (pendingReloads.size === 0 && removeSelectionListener) {
+    removeSelectionListener();
+    removeSelectionListener = null;
+  }
   destroySearchBar(sessionId);
   instance.element.remove();
   instances.delete(sessionId);
