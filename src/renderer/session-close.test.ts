@@ -68,15 +68,18 @@ function confirmDialog() {
 }
 
 describe('closeSessionWithConfirm', () => {
-  it('closes directly when status is not working', () => {
-    const { project, sessions } = seedProject(1);
-    mockGetStatus.mockReturnValue('idle');
+  it.each(['waiting', 'idle', 'completed'] as const)(
+    'closes directly when status is %s',
+    (status) => {
+      const { project, sessions } = seedProject(1);
+      mockGetStatus.mockReturnValue(status);
 
-    closeSessionWithConfirm(project.id, sessions[0].id);
+      closeSessionWithConfirm(project.id, sessions[0].id);
 
-    expect(mockShowConfirmDialog).not.toHaveBeenCalled();
-    expect(project.sessions).toHaveLength(0);
-  });
+      expect(mockShowConfirmDialog).not.toHaveBeenCalled();
+      expect(project.sessions).toHaveLength(0);
+    },
+  );
 
   it('shows dialog when session is working; confirm removes it', () => {
     const { project, sessions } = seedProject(1);
@@ -88,7 +91,25 @@ describe('closeSessionWithConfirm', () => {
     const [title, message, options] = mockShowConfirmDialog.mock.calls[0];
     expect(title).toBe('Close session');
     expect(message).toContain('S1');
-    expect(message).toContain('still working');
+    expect(message).toContain('still active');
+    expect(options.confirmLabel).toBe('Close');
+    expect(project.sessions).toHaveLength(1);
+
+    options.onConfirm();
+    expect(project.sessions).toHaveLength(0);
+  });
+
+  it('shows dialog when session is awaiting input; confirm removes it', () => {
+    const { project, sessions } = seedProject(1);
+    mockGetStatus.mockReturnValue('input');
+
+    closeSessionWithConfirm(project.id, sessions[0].id);
+
+    expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    const [title, message, options] = mockShowConfirmDialog.mock.calls[0];
+    expect(title).toBe('Close session');
+    expect(message).toContain('S1');
+    expect(message).toContain('still active');
     expect(options.confirmLabel).toBe('Close');
     expect(project.sessions).toHaveLength(1);
 
@@ -115,10 +136,21 @@ describe('closeSessionWithConfirm', () => {
     expect(mockShowConfirmDialog).not.toHaveBeenCalled();
     expect(project.sessions).toHaveLength(0);
   });
+
+  it('bypasses dialog when preference is off, even if awaiting input', () => {
+    const { project, sessions } = seedProject(1);
+    appState.setPreference('confirmCloseWorkingSession', false);
+    mockGetStatus.mockReturnValue('input');
+
+    closeSessionWithConfirm(project.id, sessions[0].id);
+
+    expect(mockShowConfirmDialog).not.toHaveBeenCalled();
+    expect(project.sessions).toHaveLength(0);
+  });
 });
 
 describe('closeAllSessionsWithConfirm', () => {
-  it('closes all directly when none are working', () => {
+  it('closes all directly when none are active', () => {
     const { project } = seedProject(3);
     mockGetStatus.mockReturnValue('waiting');
 
@@ -142,6 +174,20 @@ describe('closeAllSessionsWithConfirm', () => {
     expect(options.confirmLabel).toBe('Close');
   });
 
+  it('shows singular dialog when exactly one session is awaiting input', () => {
+    const { project, sessions } = seedProject(3);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[2].id ? 'input' : 'idle',
+    );
+
+    closeAllSessionsWithConfirm(project.id);
+
+    const [title, message, options] = mockShowConfirmDialog.mock.calls[0];
+    expect(title).toBe('Close session');
+    expect(message).toContain('S3');
+    expect(options.confirmLabel).toBe('Close');
+  });
+
   it('shows plural dialog with count when multiple sessions are working', () => {
     const { project } = seedProject(3);
     mockGetStatus.mockReturnValue('working');
@@ -156,10 +202,27 @@ describe('closeAllSessionsWithConfirm', () => {
     options.onConfirm();
     expect(project.sessions).toHaveLength(0);
   });
+
+  it('shows plural dialog when sessions mix working and input statuses', () => {
+    const { project, sessions } = seedProject(3);
+    mockGetStatus.mockImplementation((id: string) => {
+      if (id === sessions[0].id) return 'working';
+      if (id === sessions[1].id) return 'input';
+      return 'idle';
+    });
+
+    closeAllSessionsWithConfirm(project.id);
+
+    const [title, message, options] = mockShowConfirmDialog.mock.calls[0];
+    expect(title).toBe('Close sessions');
+    expect(message).toContain('2 sessions');
+    expect(message).toContain('still active');
+    expect(options.confirmLabel).toBe('Close all');
+  });
 });
 
 describe('closeOtherSessionsWithConfirm', () => {
-  it('only considers working sessions outside the kept one', () => {
+  it('only considers active sessions outside the kept one', () => {
     const { project, sessions } = seedProject(3);
     // Mark the kept session as working — should NOT trigger dialog
     mockGetStatus.mockImplementation((id: string) =>
@@ -173,10 +236,35 @@ describe('closeOtherSessionsWithConfirm', () => {
     expect(project.sessions.map((s) => s.id)).toEqual([sessions[0].id]);
   });
 
+  it('ignores input status on the kept session', () => {
+    const { project, sessions } = seedProject(3);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[0].id ? 'input' : 'idle',
+    );
+
+    closeOtherSessionsWithConfirm(project.id, sessions[0].id);
+
+    expect(mockShowConfirmDialog).not.toHaveBeenCalled();
+    expect(project.sessions.map((s) => s.id)).toEqual([sessions[0].id]);
+  });
+
   it('prompts when a non-kept session is working', () => {
     const { project, sessions } = seedProject(3);
     mockGetStatus.mockImplementation((id: string) =>
       id === sessions[1].id ? 'working' : 'idle',
+    );
+
+    closeOtherSessionsWithConfirm(project.id, sessions[0].id);
+
+    expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    confirmDialog();
+    expect(project.sessions.map((s) => s.id)).toEqual([sessions[0].id]);
+  });
+
+  it('prompts when a non-kept session is awaiting input', () => {
+    const { project, sessions } = seedProject(3);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[1].id ? 'input' : 'idle',
     );
 
     closeOtherSessionsWithConfirm(project.id, sessions[0].id);
@@ -212,6 +300,19 @@ describe('closeSessionsFromRightWithConfirm', () => {
     confirmDialog();
     expect(project.sessions.map((s) => s.id)).toEqual([sessions[0].id, sessions[1].id]);
   });
+
+  it('prompts when a session to the right is awaiting input', () => {
+    const { project, sessions } = seedProject(3);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[2].id ? 'input' : 'idle',
+    );
+
+    closeSessionsFromRightWithConfirm(project.id, sessions[1].id);
+
+    expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    confirmDialog();
+    expect(project.sessions.map((s) => s.id)).toEqual([sessions[0].id, sessions[1].id]);
+  });
 });
 
 describe('closeSessionsFromLeftWithConfirm', () => {
@@ -231,6 +332,19 @@ describe('closeSessionsFromLeftWithConfirm', () => {
     const { project, sessions } = seedProject(3);
     mockGetStatus.mockImplementation((id: string) =>
       id === sessions[0].id ? 'working' : 'idle',
+    );
+
+    closeSessionsFromLeftWithConfirm(project.id, sessions[1].id);
+
+    expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    confirmDialog();
+    expect(project.sessions.map((s) => s.id)).toEqual([sessions[1].id, sessions[2].id]);
+  });
+
+  it('prompts when a session to the left is awaiting input', () => {
+    const { project, sessions } = seedProject(3);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[0].id ? 'input' : 'idle',
     );
 
     closeSessionsFromLeftWithConfirm(project.id, sessions[1].id);

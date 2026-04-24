@@ -16,17 +16,21 @@ function confirmAndClose(
     return;
   }
   const targets = new Set(targetIds);
-  const working = sessions.filter((s) => targets.has(s.id) && getStatus(s.id) === 'working');
-  if (working.length === 0) {
+  const active = sessions.filter((s) => {
+    if (!targets.has(s.id)) return false;
+    const status = getStatus(s.id);
+    return status === 'working' || status === 'input';
+  });
+  if (active.length === 0) {
     remove();
     return;
   }
-  const isSingle = working.length === 1;
+  const isSingle = active.length === 1;
   showConfirmDialog(
     isSingle ? 'Close session' : 'Close sessions',
     isSingle
-      ? `'${working[0].name}' is still working. Closing will interrupt the running task.`
-      : `${working.length} sessions are still working. Closing will interrupt running tasks.`,
+      ? `'${active[0].name}' is still active. Closing will interrupt it.`
+      : `${active.length} sessions are still active. Closing will interrupt them.`,
     {
       confirmLabel: isSingle ? 'Close' : 'Close all',
       onConfirm: remove,
