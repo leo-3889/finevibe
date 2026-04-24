@@ -13,10 +13,18 @@ import { endShare, onShareChange } from '../sharing/share-manager.js';
 import { openInspector, isInspectorOpen, getInspectedSessionId, closeInspector } from './session-inspector.js';
 import { loadProviderAvailability, hasMultipleAvailableProviders, getProviderAvailabilitySnapshot, getProviderCapabilities } from '../provider-availability.js';
 import { buildResumeWithProviderItems } from './resume-with-provider-menu.js';
+import {
+  closeSessionWithConfirm,
+  closeAllSessionsWithConfirm,
+  closeOtherSessionsWithConfirm,
+  closeSessionsFromRightWithConfirm,
+  closeSessionsFromLeftWithConfirm,
+} from '../session-close.js';
 
 const tabListEl = document.getElementById('tab-list')!;
 const gitStatusEl = document.getElementById('git-status')!;
 const btnAddSession = document.getElementById('btn-add-session')!;
+const btnAddSessionMenu = document.getElementById('btn-add-session-menu')!;
 const btnAddMcpInspector = document.getElementById('btn-add-mcp-inspector')!;
 const btnToggleSwarm = document.getElementById('btn-toggle-swarm')!;
 const btnHelp = document.getElementById('btn-help')!;
@@ -34,6 +42,11 @@ export function initTabBar(): void {
   btnAddSession.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     showAddSessionContextMenu(e.clientX, e.clientY);
+  });
+  btnAddSessionMenu.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const rect = btnAddSessionMenu.getBoundingClientRect();
+    showAddSessionContextMenu(rect.right, rect.bottom + 2);
   });
   btnAddMcpInspector.addEventListener('click', promptNewMcpInspector);
   btnToggleSwarm.addEventListener('click', () => appState.toggleSwarm());
@@ -150,7 +163,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   closeItem.addEventListener('click', (e) => {
     e.stopPropagation();
     hideTabContextMenu();
-    appState.removeSession(project.id, session.id);
+    closeSessionWithConfirm(project.id, session.id);
   });
 
   const sessionIdx = project.sessions.findIndex((s) => s.id === session.id);
@@ -165,7 +178,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   closeAllItem.addEventListener('click', (e) => {
     e.stopPropagation();
     hideTabContextMenu();
-    appState.removeAllSessions(project.id);
+    closeAllSessionsWithConfirm(project.id);
   });
 
   const closeOthersItem = document.createElement('div');
@@ -175,7 +188,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
     closeOthersItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideTabContextMenu();
-      appState.removeOtherSessions(project.id, session.id);
+      closeOtherSessionsWithConfirm(project.id, session.id);
     });
   }
 
@@ -186,7 +199,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
     closeRightItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideTabContextMenu();
-      appState.removeSessionsFromRight(project.id, session.id);
+      closeSessionsFromRightWithConfirm(project.id, session.id);
     });
   }
 
@@ -197,7 +210,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
     closeLeftItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideTabContextMenu();
-      appState.removeSessionsFromLeft(project.id, session.id);
+      closeSessionsFromLeftWithConfirm(project.id, session.id);
     });
   }
 
@@ -372,15 +385,16 @@ function render(): void {
     const isFileReader = session.type === 'file-reader';
     const isRemoteTab = session.type === 'remote-terminal';
     const isBrowserTab = session.type === 'browser-tab';
-    const isSpecial = isMcp || isDiff || isFileReader || isRemoteTab || isBrowserTab;
+    const isProjectTab = session.type === 'project-tab';
+    const isSpecial = isMcp || isDiff || isFileReader || isRemoteTab || isBrowserTab || isProjectTab;
     const sharing = isSharing(session.id);
     tab.className = 'tab-item' + (isActive ? ' active' : '') + (unread ? ' unread' : '') + (sharing ? ' tab-sharing' : '') + (isRemoteTab ? ' tab-remote' : '');
     tab.dataset.sessionId = session.id;
     tab.draggable = true;
-    tab.title = isDiff ? `Diff: ${session.diffFilePath || session.name}` : isMcp ? `MCP Inspector` : isFileReader ? `File: ${session.fileReaderPath || session.name}` : isRemoteTab ? `Remote: ${session.remoteHostName || session.name}` : isBrowserTab ? `Browser: ${session.browserTabUrl || 'New Tab'}` : buildTooltip(getStatus(session.id), session.cliSessionId);
+    tab.title = isDiff ? `Diff: ${session.diffFilePath || session.name}` : isMcp ? `MCP Inspector` : isFileReader ? `File: ${session.fileReaderPath || session.name}` : isRemoteTab ? `Remote: ${session.remoteHostName || session.name}` : isBrowserTab ? `Browser: ${session.browserTabUrl || 'New Tab'}` : isProjectTab ? 'Project tools' : buildTooltip(getStatus(session.id), session.cliSessionId);
     const providerId = session.providerId || 'claude';
     const providerIcon = hasMultipleAvailableProviders() ? `<img class="tab-provider-icon" src="assets/providers/${providerId}.png" alt="${providerId}" onerror="this.style.display='none'"> ` : '';
-    const namePrefix = isDiff ? '<span class="tab-diff-badge">DIFF</span> ' : isMcp ? '<span class="tab-mcp-badge">MCP</span> ' : isFileReader ? '<span class="tab-file-badge">FILE</span> ' : isRemoteTab ? '<span class="tab-remote-badge">P2P</span> ' : isBrowserTab ? '<span class="tab-browser-badge">WEB</span> ' : !isSpecial ? providerIcon : '';
+    const namePrefix = isDiff ? '<span class="tab-diff-badge">DIFF</span> ' : isMcp ? '<span class="tab-mcp-badge">MCP</span> ' : isFileReader ? '<span class="tab-file-badge">FILE</span> ' : isRemoteTab ? '<span class="tab-remote-badge">P2P</span> ' : isBrowserTab ? '<span class="tab-browser-badge">WEB</span> ' : isProjectTab ? '<span class="tab-project-badge">&#x2699;</span> ' : !isSpecial ? providerIcon : '';
     const shareIndicator = sharing ? '<span class="tab-share-indicator" title="Sharing"></span>' : '';
     const statusDot = isSpecial ? '' : `<span class="tab-status ${getStatus(session.id)}"></span>`;
     tab.innerHTML = `
@@ -403,7 +417,7 @@ function render(): void {
     tab.addEventListener('auxclick', (e) => {
       if (e.button === 1) {
         e.preventDefault();
-        appState.removeSession(project.id, session.id);
+        closeSessionWithConfirm(project.id, session.id);
       }
     });
 
@@ -418,7 +432,7 @@ function render(): void {
 
     // Close button
     tab.querySelector('.tab-close')!.addEventListener('click', () => {
-      appState.removeSession(project.id, session.id);
+      closeSessionWithConfirm(project.id, session.id);
     });
 
     tab.addEventListener('dragstart', (e) => {

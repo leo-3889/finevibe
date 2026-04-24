@@ -1,5 +1,6 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webFrame } from 'electron';
 import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig } from '../shared/types';
+import { ZOOM_MIN, ZOOM_MAX } from '../shared/types';
 
 export type { CostData } from '../shared/types';
 
@@ -28,6 +29,7 @@ export interface VibeyardApi {
     isDirectory(path: string): Promise<boolean>;
     expandPath(path: string): Promise<string>;
     listDirs(dirPath: string, prefix?: string): Promise<string[]>;
+    listDir(dirPath: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
     browseDirectory(): Promise<string | null>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     readFile(filePath: string): Promise<string>;
@@ -111,6 +113,9 @@ export interface VibeyardApi {
     reinstall(providerId?: ProviderId): Promise<{ success: boolean }>;
     validate(providerId?: ProviderId): Promise<SettingsValidationResult>;
   };
+  zoom: {
+    set(factor: number): void;
+  };
   menu: {
     onNewProject(callback: () => void): () => void;
     onNewSession(callback: () => void): () => void;
@@ -178,6 +183,7 @@ const api: VibeyardApi = {
     isDirectory: (path) => ipcRenderer.invoke('fs:isDirectory', path),
     expandPath: (path: string) => ipcRenderer.invoke('fs:expandPath', path),
     listDirs: (dirPath: string, prefix?: string) => ipcRenderer.invoke('fs:listDirs', dirPath, prefix),
+    listDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
     browseDirectory: () => ipcRenderer.invoke('fs:browseDirectory'),
     listFiles: (cwd: string, query: string) => ipcRenderer.invoke('fs:listFiles', cwd, query),
     readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
@@ -260,6 +266,11 @@ const api: VibeyardApi = {
     respondConflictDialog: (choice) => ipcRenderer.send('settings:conflictDialogResponse', choice),
     reinstall: (providerId) => ipcRenderer.invoke('settings:reinstall', providerId || 'claude'),
     validate: (providerId) => ipcRenderer.invoke('settings:validate', providerId || 'claude'),
+  },
+  zoom: {
+    set: (factor: number) => {
+      webFrame.setZoomFactor(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, factor)));
+    },
   },
   menu: {
     onNewProject: (cb) => onChannel('menu:new-project', cb),

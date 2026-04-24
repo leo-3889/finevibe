@@ -1,4 +1,5 @@
 import { appState } from './state.js';
+import { closeSessionWithConfirm } from './session-close.js';
 import { promptNewProject, toggleSidebar } from './components/sidebar.js';
 import { quickNewSession } from './components/tab-bar.js';
 import { toggleProjectTerminal } from './components/project-terminal.js';
@@ -15,12 +16,13 @@ import { getFileViewerInstance } from './components/file-viewer.js';
 import { DomSearchBackend } from './components/dom-search-backend.js';
 import { toggleInspector } from './components/session-inspector.js';
 import { showUsageModal } from './components/usage-modal.js';
+import { zoomIn, zoomOut, zoomReset } from './zoom.js';
 
 export function initKeybindings(): void {
   const handleCloseSession = () => {
     const project = appState.activeProject;
     const session = appState.activeSession;
-    if (project && session) appState.removeSession(project.id, session.id);
+    if (project && session) closeSessionWithConfirm(project.id, session.id);
   };
 
   // Menu IPC listeners — handle clicks on Electron menu items.
@@ -96,6 +98,9 @@ export function initKeybindings(): void {
   shortcutManager.registerHandler('close-session', handleCloseSession);
   shortcutManager.registerHandler('usage-stats', showUsageModal);
   shortcutManager.registerHandler('toggle-inspector', toggleInspector);
+  shortcutManager.registerHandler('zoom-in', zoomIn);
+  shortcutManager.registerHandler('zoom-out', zoomOut);
+  shortcutManager.registerHandler('zoom-reset', zoomReset);
 
   document.addEventListener('keydown', (e) => {
     shortcutManager.matchEvent(e);

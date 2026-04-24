@@ -3,16 +3,15 @@ import { initSidebar, promptNewProject } from './components/sidebar.js';
 import { initTabBar } from './components/tab-bar.js';
 import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
-import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay } from './components/terminal-pane.js';
+import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals } from './components/terminal-pane.js';
 import { setIdle, setHookStatus, notifyInterrupt } from './session-activity.js';
 import { parseCost, setCostData, onChange as onCostChange } from './session-cost.js';
 import { parseTitle, clearSession as clearTitleSession } from './session-title.js';
 import { setContextData, onChange as onContextChange } from './session-context.js';
-import { initConfigSections } from './components/config-sections.js';
 import { initNotificationSound } from './notification-sound.js';
 import { initNotificationDesktop } from './notification-desktop.js';
 import { init as initSessionUnread } from './session-unread.js';
-import { initProjectTerminal, handleShellPtyData, handleShellPtyExit, isShellSessionId } from './components/project-terminal.js';
+import { initProjectTerminal, handleShellPtyData, handleShellPtyExit, isShellSessionId, applyThemeToAllShells } from './components/project-terminal.js';
 import { startPolling as startGitPolling } from './git-status.js';
 import { initDebugPanel, logDebugEvent } from './components/debug-panel.js';
 import { initGitPanel } from './components/git-panel.js';
@@ -22,7 +21,6 @@ import { initSessionHistory } from './components/session-history.js';
 import { showUsageModal } from './components/usage-modal.js';
 import { captureInitialContext } from './session-insights.js';
 import { initInsightAlert } from './components/insight-alert.js';
-import { initReadinessSection } from './components/readiness-section.js';
 import { initToolDetector } from './tools/missing-tool-detector.js';
 import { initToolAlert } from './components/tool-alert.js';
 import { initLargeFileDetector } from './tools/large-file-detector.js';
@@ -36,7 +34,10 @@ import { addEvents as addInspectorEvents } from './session-inspector-state.js';
 import type { InspectorEvent } from '../shared/types.js';
 import { getContext } from './session-context.js';
 import { initSessionInspector } from './components/session-inspector.js';
+import { initFilePrompt } from './components/file-prompt.js';
+import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
 import { loadProviderMetas } from './provider-availability.js';
+import { getZoomFactor } from './zoom.js';
 
 let isQuitting = false;
 window.vibeyard.app.onQuitting(() => {
@@ -153,7 +154,6 @@ async function main(): Promise<void> {
   initTabBar();
   initSplitLayout();
   initKeybindings();
-  initConfigSections();
   initNotificationSound();
   initNotificationDesktop();
   initProjectTerminal();
@@ -167,9 +167,9 @@ async function main(): Promise<void> {
   initLargeFileDetector();
   initLargeFileAlert();
   initSettingsGuard();
-  initReadinessSection();
   initShareManager();
   initSessionInspector();
+  initFilePrompt();
   startGitPolling();
 
   document.getElementById('btn-usage-stats')!.addEventListener('click', () => showUsageModal());
@@ -196,6 +196,21 @@ async function main(): Promise<void> {
 
   // Load persisted state
   await appState.load();
+
+  // Apply theme from loaded preferences
+  const initialTheme = appState.preferences.theme ?? 'dark';
+  document.documentElement.dataset.theme = initialTheme;
+
+  // Re-apply theme (and re-theme terminals) whenever preferences change
+  appState.on('preferences-changed', () => {
+    const theme = appState.preferences.theme ?? 'dark';
+    document.documentElement.dataset.theme = theme;
+    applyThemeToAllTerminals(theme);
+    applyThemeToAllShells(theme);
+    applyThemeToAllRemoteTerminals(theme);
+  });
+  const savedZoom = getZoomFactor();
+  if (savedZoom !== 1.0) window.vibeyard.zoom.set(savedZoom);
 
   // Auto-open new project modal when no projects exist
   if (appState.projects.length === 0) {
