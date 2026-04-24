@@ -22,6 +22,7 @@ import { analyzeReadiness } from './readiness/analyzer';
 import { expandUserPath } from './fs-utils';
 import { isMac, isWin } from './platform';
 import { shouldWarnStatusLine } from './settings-guard';
+import { setCloseConfirmed } from './close-state';
 
 /**
  * Check if a resolved path is within one of the known project directories.
@@ -288,6 +289,11 @@ export function registerIpcHandlers(): void {
       if (win.isMinimized()) win.restore();
       win.focus();
     }
+  });
+
+  ipcMain.on('app:closeConfirmed', () => {
+    setCloseConfirmed(true);
+    app.quit();
   });
 
   ipcMain.handle('app:getVersion', () => app.getVersion());

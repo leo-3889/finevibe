@@ -43,6 +43,7 @@ import {
   closeOtherSessionsWithConfirm,
   closeSessionsFromRightWithConfirm,
   closeSessionsFromLeftWithConfirm,
+  confirmAppClose,
 } from './session-close';
 
 beforeEach(() => {
@@ -312,6 +313,107 @@ describe('closeSessionsFromRightWithConfirm', () => {
     expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
     confirmDialog();
     expect(project.sessions.map((s) => s.id)).toEqual([sessions[0].id, sessions[1].id]);
+  });
+});
+
+describe('confirmAppClose', () => {
+  it('calls onConfirm immediately when no sessions are active', () => {
+    const projectA = appState.addProject('A', '/a');
+    appState.addSession(projectA.id, 'A1');
+    const projectB = appState.addProject('B', '/b');
+    appState.addSession(projectB.id, 'B1');
+    mockGetStatus.mockReturnValue('idle');
+    const onConfirm = vi.fn();
+
+    confirmAppClose(onConfirm);
+
+    expect(mockShowConfirmDialog).not.toHaveBeenCalled();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onConfirm immediately when preference is off, even if sessions are working', () => {
+    const { sessions } = seedProject(2);
+    appState.setPreference('confirmCloseWorkingSession', false);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[0].id ? 'working' : 'idle',
+    );
+    const onConfirm = vi.fn();
+
+    confirmAppClose(onConfirm);
+
+    expect(mockShowConfirmDialog).not.toHaveBeenCalled();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows singular dialog when exactly one session is working', () => {
+    const { sessions } = seedProject(3);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[1].id ? 'working' : 'idle',
+    );
+    const onConfirm = vi.fn();
+
+    confirmAppClose(onConfirm);
+
+    expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    const [title, message, options] = mockShowConfirmDialog.mock.calls[0];
+    expect(title).toBe('Quit Vibeyard');
+    expect(message).toBe('A session is still active. Quitting will interrupt it.');
+    expect(options.confirmLabel).toBe('Quit');
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    options.onConfirm();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts input status as active', () => {
+    const { sessions } = seedProject(2);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[0].id ? 'input' : 'idle',
+    );
+    const onConfirm = vi.fn();
+
+    confirmAppClose(onConfirm);
+
+    expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    const [, message] = mockShowConfirmDialog.mock.calls[0];
+    expect(message).toContain('A session is still active');
+  });
+
+  it('counts active sessions across multiple projects with plural copy', () => {
+    const projectA = appState.addProject('A', '/a');
+    const a1 = appState.addSession(projectA.id, 'A1')!;
+    appState.addSession(projectA.id, 'A2');
+    const projectB = appState.addProject('B', '/b');
+    const b1 = appState.addSession(projectB.id, 'B1')!;
+    const b2 = appState.addSession(projectB.id, 'B2')!;
+    mockGetStatus.mockImplementation((id: string) => {
+      if (id === a1.id) return 'working';
+      if (id === b1.id) return 'working';
+      if (id === b2.id) return 'input';
+      return 'idle';
+    });
+    const onConfirm = vi.fn();
+
+    confirmAppClose(onConfirm);
+
+    expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    const [title, message, options] = mockShowConfirmDialog.mock.calls[0];
+    expect(title).toBe('Quit Vibeyard');
+    expect(message).toBe('3 sessions are still active. Quitting will interrupt them.');
+    expect(options.confirmLabel).toBe('Quit');
+  });
+
+  it('does not call onConfirm when user cancels (onConfirm never invoked on dialog)', () => {
+    const { sessions } = seedProject(1);
+    mockGetStatus.mockImplementation((id: string) =>
+      id === sessions[0].id ? 'working' : 'idle',
+    );
+    const onConfirm = vi.fn();
+
+    confirmAppClose(onConfirm);
+
+    expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 });
 

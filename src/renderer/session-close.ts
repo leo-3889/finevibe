@@ -6,6 +6,11 @@ function projectSessions(projectId: string): SessionRecord[] {
   return appState.projects.find((p) => p.id === projectId)?.sessions ?? [];
 }
 
+function isActive(sessionId: string): boolean {
+  const status = getStatus(sessionId);
+  return status === 'working' || status === 'input';
+}
+
 function confirmAndClose(
   sessions: SessionRecord[],
   targetIds: string[],
@@ -16,11 +21,7 @@ function confirmAndClose(
     return;
   }
   const targets = new Set(targetIds);
-  const active = sessions.filter((s) => {
-    if (!targets.has(s.id)) return false;
-    const status = getStatus(s.id);
-    return status === 'working' || status === 'input';
-  });
+  const active = sessions.filter((s) => targets.has(s.id) && isActive(s.id));
   if (active.length === 0) {
     remove();
     return;
@@ -83,5 +84,38 @@ export function closeSessionsFromLeftWithConfirm(projectId: string, sessionId: s
     sessions,
     sessions.slice(0, idx).map((s) => s.id),
     () => appState.removeSessionsFromLeft(projectId, sessionId),
+  );
+}
+
+function countActiveSessions(): number {
+  let count = 0;
+  for (const project of appState.projects) {
+    for (const session of project.sessions) {
+      if (isActive(session.id)) count++;
+    }
+  }
+  return count;
+}
+
+export function confirmAppClose(onConfirm: () => void): void {
+  if (!appState.preferences.confirmCloseWorkingSession) {
+    onConfirm();
+    return;
+  }
+  const count = countActiveSessions();
+  if (count === 0) {
+    onConfirm();
+    return;
+  }
+  const isSingle = count === 1;
+  showConfirmDialog(
+    'Quit Vibeyard',
+    isSingle
+      ? 'A session is still active. Quitting will interrupt it.'
+      : `${count} sessions are still active. Quitting will interrupt them.`,
+    {
+      confirmLabel: 'Quit',
+      onConfirm,
+    },
   );
 }
