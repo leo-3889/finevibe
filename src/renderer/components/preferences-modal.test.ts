@@ -129,6 +129,16 @@ function makeElement(tagName = 'div'): Record<string, any> {
       const targetClass = selector.slice(1);
       return findInTree(element, (node) => node.className?.split(/\s+/).includes(targetClass));
     },
+    closest(selector: string) {
+      if (!selector.startsWith('.')) return null;
+      const targetClass = selector.slice(1);
+      let current: Record<string, any> | null = element;
+      while (current) {
+        if (current.className?.split(/\s+/).includes(targetClass)) return current;
+        current = current.parentElement;
+      }
+      return null;
+    },
     addEventListener(event: string, cb: (...args: unknown[]) => void) {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(cb);
@@ -182,6 +192,15 @@ function click(el: Record<string, any>): void {
   el.dispatchEvent({ type: 'click' });
 }
 
+function selectPreferencesSection(section: string): void {
+  const body = getOrCreateElement('modal-body');
+  const menu = findInTree(body, (node) => node.className === 'preferences-menu');
+  if (!menu) throw new Error('preferences menu not found');
+  const item = (menu.children as Record<string, any>[]).find((c) => c.dataset?.section === section);
+  if (!item) throw new Error(`menu item not found for section: ${section}`);
+  menu.dispatchEvent({ type: 'click', target: item });
+}
+
 describe('showPreferencesModal theme preference', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -226,6 +245,7 @@ describe('showPreferencesModal theme preference', () => {
     const { showPreferencesModal } = await import('./preferences-modal.js');
 
     showPreferencesModal();
+    selectPreferencesSection('appearance');
 
     expect(selectState.instances.get('pref-theme')?.getValue()).toBe('light');
   });
@@ -234,6 +254,7 @@ describe('showPreferencesModal theme preference', () => {
     const { showPreferencesModal } = await import('./preferences-modal.js');
 
     showPreferencesModal();
+    selectPreferencesSection('appearance');
 
     const themeSelect = selectState.instances.get('pref-theme')!;
     themeSelect.setValue('light');
@@ -250,6 +271,7 @@ describe('showPreferencesModal theme preference', () => {
 
     (document as any).documentElement.dataset.theme = 'dark';
     showPreferencesModal();
+    selectPreferencesSection('appearance');
 
     const themeSelect = selectState.instances.get('pref-theme')!;
     themeSelect.setValue('light');
@@ -263,6 +285,7 @@ describe('showPreferencesModal theme preference', () => {
     const { showPreferencesModal } = await import('./preferences-modal.js');
 
     showPreferencesModal();
+    selectPreferencesSection('appearance');
 
     (getOrCreateElement('modal-overlay') as any)._cleanup();
 

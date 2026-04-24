@@ -15,7 +15,7 @@ const bodyEl = document.getElementById('modal-body')!;
 const btnCancel = document.getElementById('modal-cancel')!;
 const btnConfirm = document.getElementById('modal-confirm')!;
 
-type Section = 'general' | 'sidebar' | 'shortcuts' | 'setup' | 'about';
+type Section = 'general' | 'appearance' | 'shortcuts' | 'setup' | 'about';
 
 export function showPreferencesModal(): void {
   titleEl.textContent = 'Preferences';
@@ -32,7 +32,7 @@ export function showPreferencesModal(): void {
 
   const sections: { id: Section; label: string }[] = [
     { id: 'general', label: 'General' },
-    { id: 'sidebar', label: 'Sidebar' },
+    { id: 'appearance', label: 'Appearance' },
     { id: 'shortcuts', label: 'Shortcuts' },
     { id: 'setup', label: 'Setup' },
     { id: 'about', label: 'About' },
@@ -222,6 +222,7 @@ export function showPreferencesModal(): void {
       confirmCloseRow.appendChild(confirmCloseCheckbox);
       content.appendChild(confirmCloseRow);
 
+    } else if (section === 'appearance') {
       const themeRow = document.createElement('div');
       themeRow.className = 'modal-toggle-field';
 
@@ -260,7 +261,11 @@ export function showPreferencesModal(): void {
         zoomSelect?.setValue(String(getZoomFactor()));
       });
 
-    } else if (section === 'sidebar') {
+      const sidebarViewsHeading = document.createElement('div');
+      sidebarViewsHeading.className = 'preferences-subheading';
+      sidebarViewsHeading.textContent = 'Sidebar Views';
+      content.appendChild(sidebarViewsHeading);
+
       const views = appState.preferences.sidebarViews ?? { gitPanel: true, sessionHistory: true, costFooter: true, discussions: true, fileTree: true };
       const toggles: { key: keyof typeof views; label: string }[] = [
         { key: 'fileTree', label: 'Project File Tree' },
