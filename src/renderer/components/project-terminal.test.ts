@@ -32,7 +32,12 @@ class FakeTerminal {
 
 vi.mock('@xterm/xterm', () => ({ Terminal: FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
-vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class {} }));
+vi.mock('@xterm/addon-webgl', () => ({
+  WebglAddon: class {
+    onContextLoss = (_: () => void) => ({ dispose() {} });
+    dispose() {}
+  },
+}));
 vi.mock('@xterm/addon-search', () => ({ SearchAddon: class {} }));
 
 const mockStateOn = vi.fn();

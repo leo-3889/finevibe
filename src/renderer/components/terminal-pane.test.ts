@@ -46,7 +46,10 @@ vi.mock('@xterm/addon-fit', () => ({
 }));
 
 vi.mock('@xterm/addon-webgl', () => ({
-  WebglAddon: class FakeWebglAddon {},
+  WebglAddon: class FakeWebglAddon {
+    onContextLoss = (_: () => void) => ({ dispose() {} });
+    dispose() {}
+  },
 }));
 
 vi.mock('@xterm/addon-search', () => ({

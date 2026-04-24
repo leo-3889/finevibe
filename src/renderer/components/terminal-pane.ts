@@ -1,7 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { initSession, removeSession } from '../session-activity.js';
@@ -12,7 +11,7 @@ import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
-import { attachClipboardCopyHandler } from './terminal-utils.js';
+import { attachClipboardCopyHandler, loadWebglWithFallback } from './terminal-utils.js';
 
 interface TerminalInstance {
   terminal: Terminal;
@@ -224,13 +223,7 @@ export function attachToContainer(sessionId: string, container: HTMLElement): vo
     container.appendChild(instance.element);
     instance.terminal.open(xtermWrap as HTMLElement);
 
-    // Try WebGL, fall back silently
-    try {
-      const webglAddon = new WebglAddon();
-      instance.terminal.loadAddon(webglAddon);
-    } catch {
-      // WebGL not available, software renderer works fine
-    }
+    loadWebglWithFallback(instance.terminal);
   } else {
     // Always re-append to ensure correct DOM order (appendChild moves existing children)
     container.appendChild(instance.element);
