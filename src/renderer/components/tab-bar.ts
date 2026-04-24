@@ -17,6 +17,7 @@ import { buildResumeWithProviderItems } from './resume-with-provider-menu.js';
 const tabListEl = document.getElementById('tab-list')!;
 const gitStatusEl = document.getElementById('git-status')!;
 const btnAddSession = document.getElementById('btn-add-session')!;
+const btnAddSessionMenu = document.getElementById('btn-add-session-menu')!;
 const btnAddMcpInspector = document.getElementById('btn-add-mcp-inspector')!;
 const btnToggleSwarm = document.getElementById('btn-toggle-swarm')!;
 const btnHelp = document.getElementById('btn-help')!;
@@ -34,6 +35,11 @@ export function initTabBar(): void {
   btnAddSession.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     showAddSessionContextMenu(e.clientX, e.clientY);
+  });
+  btnAddSessionMenu.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const rect = btnAddSessionMenu.getBoundingClientRect();
+    showAddSessionContextMenu(rect.right, rect.bottom + 2);
   });
   btnAddMcpInspector.addEventListener('click', promptNewMcpInspector);
   btnToggleSwarm.addEventListener('click', () => appState.toggleSwarm());
