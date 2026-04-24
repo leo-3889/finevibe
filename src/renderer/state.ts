@@ -330,11 +330,13 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
+    const effectiveProvider = providerId ?? this.state.preferences.defaultProvider ?? 'claude';
     const effectiveArgs = args ?? project.defaultArgs;
+
     const session: SessionRecord = {
       id: crypto.randomUUID(),
       name,
-      providerId: providerId ?? this.state.preferences.defaultProvider ?? 'claude',
+      providerId: effectiveProvider,
       ...(effectiveArgs ? { args: effectiveArgs } : {}),
       cliSessionId: null,
       createdAt: new Date().toISOString(),

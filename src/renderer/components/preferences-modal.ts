@@ -65,11 +65,13 @@ export function showPreferencesModal(): void {
   let autoTitleCheckbox: HTMLInputElement | null = null;
   let confirmCloseCheckbox: HTMLInputElement | null = null;
   let defaultProviderSelect: CustomSelectInstance | null = null;
+  let themeSelect: CustomSelectInstance | null = null;
   let zoomSelect: CustomSelectInstance | null = null;
   let zoomPrefUnsub: (() => void) | null = null;
   let debugModeCheckbox: HTMLInputElement | null = null;
   let sidebarCheckboxes: { gitPanel: HTMLInputElement; sessionHistory: HTMLInputElement; costFooter: HTMLInputElement; discussions: HTMLInputElement; fileTree: HTMLInputElement } | null = null;
   let activeRecorder: { cleanup: () => void } | null = null;
+  const originalTheme = appState.preferences.theme ?? 'dark';
 
   function cleanupRecorder() {
     if (activeRecorder) {
@@ -219,6 +221,23 @@ export function showPreferencesModal(): void {
       confirmCloseRow.appendChild(confirmCloseLabel);
       confirmCloseRow.appendChild(confirmCloseCheckbox);
       content.appendChild(confirmCloseRow);
+
+      const themeRow = document.createElement('div');
+      themeRow.className = 'modal-toggle-field';
+
+      const themeLabel = document.createElement('label');
+      themeLabel.textContent = 'Theme';
+
+      themeSelect = createCustomSelect(
+        'pref-theme',
+        [{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }],
+        originalTheme,
+        (value) => { document.documentElement.dataset.theme = value; },
+      );
+
+      themeRow.appendChild(themeLabel);
+      themeRow.appendChild(themeSelect.element);
+      content.appendChild(themeRow);
 
       const zoomRow = document.createElement('div');
       zoomRow.className = 'modal-toggle-field';
@@ -719,6 +738,9 @@ export function showPreferencesModal(): void {
     if (defaultProviderSelect) {
       appState.setPreference('defaultProvider', defaultProviderSelect.getValue() as ProviderId);
     }
+    if (themeSelect) {
+      appState.setPreference('theme', themeSelect.getValue() as 'dark' | 'light');
+    }
     if (debugModeCheckbox && debugModeCheckbox.checked !== appState.preferences.debugMode) {
       appState.setPreference('debugMode', debugModeCheckbox.checked);
       window.vibeyard.menu.rebuild(debugModeCheckbox.checked);
@@ -744,6 +766,7 @@ export function showPreferencesModal(): void {
 
   const handleCancel = () => {
     cleanupRecorder();
+    document.documentElement.dataset.theme = originalTheme;
     closeModal();
     modal.classList.remove('modal-wide');
     btnConfirm.textContent = 'Create';
@@ -770,6 +793,7 @@ export function showPreferencesModal(): void {
     zoomPrefUnsub?.();
     zoomPrefUnsub = null;
     if (defaultProviderSelect) defaultProviderSelect.destroy();
+    if (themeSelect) themeSelect.destroy();
     if (zoomSelect) zoomSelect.destroy();
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);

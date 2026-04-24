@@ -3,7 +3,7 @@ import { initSidebar, promptNewProject } from './components/sidebar.js';
 import { initTabBar } from './components/tab-bar.js';
 import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
-import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay } from './components/terminal-pane.js';
+import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals } from './components/terminal-pane.js';
 import { setIdle, setHookStatus, notifyInterrupt } from './session-activity.js';
 import { parseCost, setCostData, onChange as onCostChange } from './session-cost.js';
 import { parseTitle, clearSession as clearTitleSession } from './session-title.js';
@@ -11,7 +11,7 @@ import { setContextData, onChange as onContextChange } from './session-context.j
 import { initNotificationSound } from './notification-sound.js';
 import { initNotificationDesktop } from './notification-desktop.js';
 import { init as initSessionUnread } from './session-unread.js';
-import { initProjectTerminal, handleShellPtyData, handleShellPtyExit, isShellSessionId } from './components/project-terminal.js';
+import { initProjectTerminal, handleShellPtyData, handleShellPtyExit, isShellSessionId, applyThemeToAllShells } from './components/project-terminal.js';
 import { startPolling as startGitPolling } from './git-status.js';
 import { initDebugPanel, logDebugEvent } from './components/debug-panel.js';
 import { initGitPanel } from './components/git-panel.js';
@@ -35,6 +35,7 @@ import type { InspectorEvent } from '../shared/types.js';
 import { getContext } from './session-context.js';
 import { initSessionInspector } from './components/session-inspector.js';
 import { initFilePrompt } from './components/file-prompt.js';
+import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
 import { loadProviderMetas } from './provider-availability.js';
 import { getZoomFactor } from './zoom.js';
 
@@ -196,6 +197,18 @@ async function main(): Promise<void> {
   // Load persisted state
   await appState.load();
 
+  // Apply theme from loaded preferences
+  const initialTheme = appState.preferences.theme ?? 'dark';
+  document.documentElement.dataset.theme = initialTheme;
+
+  // Re-apply theme (and re-theme terminals) whenever preferences change
+  appState.on('preferences-changed', () => {
+    const theme = appState.preferences.theme ?? 'dark';
+    document.documentElement.dataset.theme = theme;
+    applyThemeToAllTerminals(theme);
+    applyThemeToAllShells(theme);
+    applyThemeToAllRemoteTerminals(theme);
+  });
   const savedZoom = getZoomFactor();
   if (savedZoom !== 1.0) window.vibeyard.zoom.set(savedZoom);
 

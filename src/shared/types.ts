@@ -162,6 +162,7 @@ export interface Preferences {
   // vs the previously-acknowledged one.
   statusLineConsentCommand?: string | null;
   keybindings?: Record<string, string>;
+  theme?: 'dark' | 'light';
   readinessExcludedProviders?: ProviderId[];
   sidebarViews?: {
     gitPanel: boolean;
