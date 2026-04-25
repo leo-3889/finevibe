@@ -4,6 +4,7 @@ import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename } from '../shared/platform.js';
+import { isCliSession } from './session-utils.js';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession } from '../shared/types.js';
 
@@ -548,7 +549,7 @@ class AppState {
 
     // Archive CLI sessions before removing (cost data must be captured before session-removed triggers destroyTerminal)
     const session = project.sessions.find((s) => s.id === sessionId);
-    if (session && (!session.type || session.type === 'claude') && this.state.preferences.sessionHistoryEnabled) {
+    if (session && isCliSession(session) && this.state.preferences.sessionHistoryEnabled) {
       // Skip archiving empty sessions (no CLI activity)
       if (session.cliSessionId || getCost(session.id) !== null) {
         this.archiveSession(project, session);
@@ -855,9 +856,7 @@ class AppState {
       project.layout.mode = 'tabs';
       // Keep splitPanes as-is so order is preserved when switching back
     } else {
-      const cliSessions = project.sessions.filter(
-        (s) => !s.type || s.type === 'claude'
-      );
+      const cliSessions = project.sessions.filter(isCliSession);
       project.layout.mode = 'swarm';
 
       // Remove stale IDs (deleted sessions)
