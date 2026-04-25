@@ -463,6 +463,16 @@ export function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('fs:exists', (_event, filePath: string): boolean => {
+    try {
+      const resolved = path.resolve(filePath);
+      if (!isAllowedReadPath(resolved)) return false;
+      return fs.existsSync(resolved);
+    } catch {
+      return false;
+    }
+  });
+
   ipcMain.handle('fs:readFile', (_event, filePath: string) => {
     try {
       // Security: resolve to absolute and check it's within a known project directory

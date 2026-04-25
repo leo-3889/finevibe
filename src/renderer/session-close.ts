@@ -47,6 +47,19 @@ export function closeSessionWithConfirm(projectId: string, sessionId: string): v
   );
 }
 
+export function closeSessionById(sessionId: string): void {
+  const project = appState.projects.find((p) =>
+    p.sessions.some((s) => s.id === sessionId),
+  );
+  if (project) appState.removeSession(project.id, sessionId);
+}
+
+export async function closeSessionIfFileMissing(sessionId: string, fullPath: string): Promise<boolean> {
+  if (await window.vibeyard.fs.exists(fullPath)) return false;
+  closeSessionById(sessionId);
+  return true;
+}
+
 export function closeAllSessionsWithConfirm(projectId: string): void {
   const sessions = projectSessions(projectId);
   confirmAndClose(
