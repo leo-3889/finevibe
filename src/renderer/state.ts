@@ -55,6 +55,7 @@ const defaultPreferences: Preferences = {
   insightsEnabled: true,
   autoTitleEnabled: true,
   confirmCloseWorkingSession: true,
+  copyOnSelect: false,
   zoomFactor: 1.0,
   readinessExcludedProviders: [],
   sidebarViews: { gitPanel: true, sessionHistory: true, costFooter: true, discussions: true, fileTree: true },

@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, app, dialog, shell } from 'electron';
+import { ipcMain, BrowserWindow, app, dialog, shell, clipboard } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -221,6 +221,12 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {
     createAppMenu(debugMode);
+  });
+
+  ipcMain.handle('clipboard:write', (_event, text: string) => {
+    clipboard.writeText(text);
+    // Also write to X11 primary selection on Linux so middle-click paste works
+    if (process.platform === 'linux') clipboard.writeText(text, 'selection');
   });
 
   ipcMain.handle('provider:getConfig', async (_event, providerId: ProviderId, projectPath: string) => {

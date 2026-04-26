@@ -85,6 +85,9 @@ export interface VibeyardApi {
   stats: {
     getCache(): Promise<StatsCache | null>;
   };
+  clipboard: {
+    write(text: string): Promise<void>;
+  };
   menu: {
     onNewProject(callback: () => void): () => void;
     onNewSession(callback: () => void): () => void;
