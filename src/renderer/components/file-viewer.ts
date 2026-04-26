@@ -2,6 +2,7 @@ import { appState } from '../state.js';
 import { areaLabel } from '../dom-utils.js';
 import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
+import { isAbsolutePath } from '../../shared/platform.js';
 
 interface FileViewerInstance {
   element: HTMLElement;
@@ -92,7 +93,7 @@ function parseDiffLines(diff: string): HTMLElement {
 function resolveFilePath(instance: FileViewerInstance): string {
   const project = appState.activeProject;
   const basePath = instance.worktreePath ?? project?.path ?? '';
-  return instance.filePath.startsWith('/')
+  return isAbsolutePath(instance.filePath)
     ? instance.filePath
     : `${basePath}/${instance.filePath}`;
 }
