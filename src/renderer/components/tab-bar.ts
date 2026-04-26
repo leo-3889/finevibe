@@ -13,6 +13,7 @@ import { endShare, onShareChange } from '../sharing/share-manager.js';
 import { openInspector, isInspectorOpen, getInspectedSessionId, closeInspector } from './session-inspector.js';
 import { loadProviderAvailability, hasMultipleAvailableProviders, getProviderAvailabilitySnapshot, getProviderCapabilities } from '../provider-availability.js';
 import { buildResumeWithProviderItems } from './resume-with-provider-menu.js';
+import { isCliSession } from '../session-utils.js';
 import {
   closeSessionWithConfirm,
   closeAllSessionsWithConfirm,
@@ -237,19 +238,19 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   }
 
   // Share menu items — only for CLI sessions (not special types)
-  const isCliSession = !session.type || session.type === 'claude';
+  const isCli = isCliSession(session);
   const isRemote = session.type === 'remote-terminal';
   const providerCapabilities = getProviderCapabilities(session.providerId || 'claude');
-  const canInspect = isCliSession && providerCapabilities?.hookStatus !== false;
+  const canInspect = isCli && providerCapabilities?.hookStatus !== false;
   const currentlySharing = isSharing(session.id);
 
   const shareSeparator = document.createElement('div');
   shareSeparator.className = 'tab-context-menu-separator';
 
   const shareItem = document.createElement('div');
-  shareItem.className = 'tab-context-menu-item' + (!isCliSession || currentlySharing ? ' disabled' : '');
+  shareItem.className = 'tab-context-menu-item' + (!isCli || currentlySharing ? ' disabled' : '');
   shareItem.textContent = 'Share Session\u2026';
-  if (isCliSession && !currentlySharing) {
+  if (isCli && !currentlySharing) {
     shareItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideTabContextMenu();
@@ -324,7 +325,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   const moveSeparator = document.createElement('div');
   moveSeparator.className = 'tab-context-menu-separator';
   menu.appendChild(moveSeparator);
-  if (isCliSession || isRemote) {
+  if (isCli || isRemote) {
     menu.appendChild(shareSeparator);
     if (!currentlySharing) menu.appendChild(shareItem);
     if (currentlySharing) menu.appendChild(stopShareItem);
@@ -337,7 +338,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   }
 
   // Resume with <other provider> — only for CLI sessions
-  if (isCliSession) {
+  if (isCli) {
     const items = buildResumeWithProviderItems(
       (session.providerId || 'claude') as ProviderId,
       (targetId) => {

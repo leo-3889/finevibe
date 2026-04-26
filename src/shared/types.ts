@@ -72,15 +72,21 @@ export interface ContextWindowInfo {
 
 // --- Session / State ---
 
+export type SessionType =
+  | 'mcp-inspector'
+  | 'diff-viewer'
+  | 'file-reader'
+  | 'remote-terminal'
+  | 'browser-tab'
+  | 'project-tab';
+
 export interface SessionRecord {
   id: string;
   name: string;
-  type?: 'claude' | 'mcp-inspector' | 'diff-viewer' | 'file-reader' | 'remote-terminal' | 'browser-tab' | 'project-tab';
+  type?: SessionType;
   providerId?: ProviderId;
   args?: string;
   cliSessionId: string | null;
-  /** @deprecated Use cliSessionId instead. Kept for state migration compatibility. */
-  claudeSessionId?: string | null;
   mcpServerUrl?: string;
   diffFilePath?: string;
   diffArea?: string;
@@ -356,3 +362,9 @@ export interface StatsCache {
   firstSessionDate: string;
   hourCounts: Record<string, number>;
 }
+
+// --- Filesystem IPC ---
+
+export type ReadFileResult =
+  | { ok: true; content: string }
+  | { ok: false; reason: 'binary' | 'error' };

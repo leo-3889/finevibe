@@ -6,6 +6,11 @@ function projectSessions(projectId: string): SessionRecord[] {
   return appState.projects.find((p) => p.id === projectId)?.sessions ?? [];
 }
 
+function isActive(sessionId: string): boolean {
+  const status = getStatus(sessionId);
+  return status === 'working' || status === 'input';
+}
+
 function confirmAndClose(
   sessions: SessionRecord[],
   targetIds: string[],
@@ -16,17 +21,17 @@ function confirmAndClose(
     return;
   }
   const targets = new Set(targetIds);
-  const working = sessions.filter((s) => targets.has(s.id) && getStatus(s.id) === 'working');
-  if (working.length === 0) {
+  const active = sessions.filter((s) => targets.has(s.id) && isActive(s.id));
+  if (active.length === 0) {
     remove();
     return;
   }
-  const isSingle = working.length === 1;
+  const isSingle = active.length === 1;
   showConfirmDialog(
     isSingle ? 'Close session' : 'Close sessions',
     isSingle
-      ? `'${working[0].name}' is still working. Closing will interrupt the running task.`
-      : `${working.length} sessions are still working. Closing will interrupt running tasks.`,
+      ? `'${active[0].name}' is still active. Closing will interrupt it.`
+      : `${active.length} sessions are still active. Closing will interrupt them.`,
     {
       confirmLabel: isSingle ? 'Close' : 'Close all',
       onConfirm: remove,
@@ -40,6 +45,19 @@ export function closeSessionWithConfirm(projectId: string, sessionId: string): v
     [sessionId],
     () => appState.removeSession(projectId, sessionId),
   );
+}
+
+export function closeSessionById(sessionId: string): void {
+  const project = appState.projects.find((p) =>
+    p.sessions.some((s) => s.id === sessionId),
+  );
+  if (project) appState.removeSession(project.id, sessionId);
+}
+
+export async function closeSessionIfFileMissing(sessionId: string, fullPath: string): Promise<boolean> {
+  if (await window.vibeyard.fs.exists(fullPath)) return false;
+  closeSessionById(sessionId);
+  return true;
 }
 
 export function closeAllSessionsWithConfirm(projectId: string): void {
@@ -79,5 +97,38 @@ export function closeSessionsFromLeftWithConfirm(projectId: string, sessionId: s
     sessions,
     sessions.slice(0, idx).map((s) => s.id),
     () => appState.removeSessionsFromLeft(projectId, sessionId),
+  );
+}
+
+function countActiveSessions(): number {
+  let count = 0;
+  for (const project of appState.projects) {
+    for (const session of project.sessions) {
+      if (isActive(session.id)) count++;
+    }
+  }
+  return count;
+}
+
+export function confirmAppClose(onConfirm: () => void): void {
+  if (!appState.preferences.confirmCloseWorkingSession) {
+    onConfirm();
+    return;
+  }
+  const count = countActiveSessions();
+  if (count === 0) {
+    onConfirm();
+    return;
+  }
+  const isSingle = count === 1;
+  showConfirmDialog(
+    'Quit Vibeyard',
+    isSingle
+      ? 'A session is still active. Quitting will interrupt it.'
+      : `${count} sessions are still active. Quitting will interrupt them.`,
+    {
+      confirmLabel: 'Quit',
+      onConfirm,
+    },
   );
 }

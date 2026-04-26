@@ -211,7 +211,7 @@ export function showPreferencesModal(): void {
 
       const confirmCloseLabel = document.createElement('label');
       confirmCloseLabel.htmlFor = 'pref-confirm-close-working';
-      confirmCloseLabel.textContent = 'Confirm closing a working session';
+      confirmCloseLabel.textContent = 'Confirm closing an active session';
 
       confirmCloseCheckbox = document.createElement('input');
       confirmCloseCheckbox.type = 'checkbox';

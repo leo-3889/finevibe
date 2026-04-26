@@ -1,13 +1,12 @@
 import { Terminal } from '@xterm/xterm';
 import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { appState } from '../state.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
-import { attachClipboardCopyHandler } from './terminal-utils.js';
+import { attachClipboardCopyHandler, loadWebglWithFallback } from './terminal-utils.js';
 import { esc } from '../dom-utils.js';
 
 interface ShellTerminalInstance {
@@ -129,11 +128,7 @@ function activateShellInstance(instance: ShellTerminalInstance): void {
   if (!containerEl.contains(instance.element)) {
     containerEl.appendChild(instance.element);
     instance.terminal.open(instance.element);
-    try {
-      instance.terminal.loadAddon(new WebglAddon());
-    } catch {
-      // Software fallback
-    }
+    loadWebglWithFallback(instance.terminal);
   }
   instance.element.style.display = '';
 

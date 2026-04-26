@@ -38,11 +38,16 @@ import { initFilePrompt } from './components/file-prompt.js';
 import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
 import { loadProviderMetas } from './provider-availability.js';
 import { getZoomFactor } from './zoom.js';
+import { confirmAppClose } from './session-close.js';
 
 let isQuitting = false;
 window.vibeyard.app.onQuitting(() => {
   isQuitting = true;
   cleanupAllShares();
+});
+
+window.vibeyard.app.onConfirmClose(() => {
+  confirmAppClose(() => window.vibeyard.app.closeConfirmed());
 });
 
 async function main(): Promise<void> {

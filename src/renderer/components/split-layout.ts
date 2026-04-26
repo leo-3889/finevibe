@@ -63,6 +63,7 @@ import {
   getProjectTabInstance,
 } from './project-tab/pane.js';
 import { quickNewSession } from './tab-bar.js';
+import { isCliSession } from '../session-utils.js';
 
 const container = document.getElementById('terminal-container')!;
 
@@ -272,7 +273,7 @@ function renderTabMode(project: ProjectRecord): void {
   if (!activeId) return;
 
   const activeSession = project.sessions.find(s => s.id === activeId);
-  if (activeSession?.type && activeSession.type !== 'claude') {
+  if (activeSession && !isCliSession(activeSession)) {
     attachNonCliPane(activeSession, container, false);
     return;
   }
@@ -298,7 +299,7 @@ function renderTabMode(project: ProjectRecord): void {
 function showPanes(project: ProjectRecord, target: HTMLElement = container): void {
   for (const paneId of project.layout.splitPanes) {
     const session = project.sessions.find(s => s.id === paneId);
-    if (session?.type && session.type !== 'claude') {
+    if (session && !isCliSession(session)) {
       attachNonCliPane(session, target, true);
       continue;
     }
@@ -338,9 +339,9 @@ function renderSwarmMode(project: ProjectRecord): void {
   const rows = Math.ceil(count / cols);
 
   const activeSession = project.sessions.find(s => s.id === project.activeSessionId);
-  const nonCliSession = (activeSession?.type && activeSession.type !== 'claude')
+  const nonCliSession = (activeSession && !isCliSession(activeSession))
     ? activeSession
-    : [...project.sessions].reverse().find(s => s.type && s.type !== 'claude');
+    : [...project.sessions].reverse().find(s => !isCliSession(s));
 
   const hasInspector = isInspectorOpen();
 

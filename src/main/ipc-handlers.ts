@@ -17,11 +17,12 @@ import { checkForUpdates, quitAndInstall } from './auto-updater';
 import { createAppMenu } from './menu';
 import { getProvider, getProviderMeta, getAllProviderMetas } from './providers/registry';
 import { buildHandoffPrompt } from './providers/resume-handoff';
-import type { ProviderId, GitFileEntry, SettingsValidationResult } from '../shared/types';
+import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult } from '../shared/types';
 import { analyzeReadiness } from './readiness/analyzer';
-import { expandUserPath } from './fs-utils';
+import { expandUserPath, isBinaryBuffer, BINARY_SNIFF_BYTES } from './fs-utils';
 import { isMac, isWin } from './platform';
 import { shouldWarnStatusLine } from './settings-guard';
+import { setCloseConfirmed } from './close-state';
 
 /**
  * Check if a resolved path is within one of the known project directories.
@@ -290,6 +291,11 @@ export function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.on('app:closeConfirmed', () => {
+    setCloseConfirmed(true);
+    app.quit();
+  });
+
   ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('app:getBrowserPreloadPath', () =>
     path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js')
@@ -457,18 +463,40 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:readFile', (_event, filePath: string) => {
+  ipcMain.handle('fs:exists', (_event, filePath: string): boolean => {
+    try {
+      const resolved = path.resolve(filePath);
+      if (!isAllowedReadPath(resolved)) return false;
+      return fs.existsSync(resolved);
+    } catch {
+      return false;
+    }
+  });
+
+  ipcMain.handle('fs:readFile', (_event, filePath: string): ReadFileResult => {
     try {
       // Security: resolve to absolute and check it's within a known project directory
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) {
         console.warn(`fs:readFile blocked: ${resolved} is not within an allowed path`);
-        return '';
+        return { ok: false, reason: 'error' };
       }
-      return fs.readFileSync(resolved, 'utf-8');
+      // Sniff the head before slurping the whole file so a multi-MB binary
+      // (e.g. build artifacts in build/) doesn't get allocated just to be discarded.
+      const fd = fs.openSync(resolved, 'r');
+      try {
+        const head = Buffer.alloc(BINARY_SNIFF_BYTES);
+        const bytesRead = fs.readSync(fd, head, 0, BINARY_SNIFF_BYTES, 0);
+        if (isBinaryBuffer(head.subarray(0, bytesRead))) {
+          return { ok: false, reason: 'binary' };
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+      return { ok: true, content: fs.readFileSync(resolved, 'utf-8') };
     } catch (err) {
       console.warn('fs:readFile failed:', err);
-      return '';
+      return { ok: false, reason: 'error' };
     }
   });
 

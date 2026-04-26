@@ -4,9 +4,9 @@
 import { Terminal } from '@xterm/xterm';
 import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { appState } from '../state.js';
+import { loadWebglWithFallback } from './terminal-utils.js';
 
 interface RemoteTerminalInstance {
   terminal: Terminal;
@@ -102,12 +102,7 @@ export function attachRemoteToContainer(sessionId: string, container: HTMLElemen
     container.appendChild(instance.element);
     instance.terminal.open(xtermWrap as HTMLElement);
 
-    try {
-      const webglAddon = new WebglAddon();
-      instance.terminal.loadAddon(webglAddon);
-    } catch {
-      // Software renderer fallback
-    }
+    loadWebglWithFallback(instance.terminal);
   } else {
     container.appendChild(instance.element);
   }

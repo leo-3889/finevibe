@@ -1,6 +1,8 @@
 import { appState } from '../state.js';
 import { areaLabel } from '../dom-utils.js';
+import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
+import { isAbsolutePath } from '../../shared/platform.js';
 
 interface FileViewerInstance {
   element: HTMLElement;
@@ -34,7 +36,7 @@ function flushPendingReloads(): void {
     const inst = instances.get(id);
     if (inst) {
       inst.loaded = false;
-      loadDiff(inst);
+      loadDiff(inst, id);
     }
   }
   // Remove listener when no longer needed
@@ -91,18 +93,22 @@ function parseDiffLines(diff: string): HTMLElement {
 function resolveFilePath(instance: FileViewerInstance): string {
   const project = appState.activeProject;
   const basePath = instance.worktreePath ?? project?.path ?? '';
-  return instance.filePath.startsWith('/')
+  return isAbsolutePath(instance.filePath)
     ? instance.filePath
     : `${basePath}/${instance.filePath}`;
 }
 
 let loadGeneration = 0;
 
-async function loadDiff(instance: FileViewerInstance): Promise<void> {
+async function loadDiff(instance: FileViewerInstance, sessionId: string): Promise<void> {
   if (instance.loaded) return;
 
   const project = appState.activeProject;
   if (!project) return;
+
+  if (instance.area === 'untracked') {
+    if (await closeSessionIfFileMissing(sessionId, resolveFilePath(instance))) return;
+  }
 
   const body = instance.element.querySelector('.file-viewer-body')!;
   const isFirstLoad = !body.hasChildNodes();
@@ -208,7 +214,7 @@ export function showFileViewerPane(sessionId: string, isSplit: boolean): void {
     window.vibeyard.fs.watchFile(fullPath);
   }
 
-  loadDiff(instance);
+  loadDiff(instance, sessionId);
 }
 
 export function hideAllFileViewerPanes(): void {
@@ -246,5 +252,5 @@ export function reloadFileViewer(sessionId: string): void {
     return;
   }
   instance.loaded = false;
-  loadDiff(instance);
+  loadDiff(instance, sessionId);
 }

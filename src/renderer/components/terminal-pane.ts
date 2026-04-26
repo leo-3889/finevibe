@@ -1,7 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { initSession, removeSession } from '../session-activity.js';
@@ -12,7 +11,7 @@ import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
-import { attachClipboardCopyHandler } from './terminal-utils.js';
+import { attachClipboardCopyHandler, loadWebglWithFallback } from './terminal-utils.js';
 
 interface TerminalInstance {
   terminal: Terminal;
@@ -183,6 +182,17 @@ export function setPendingPrompt(sessionId: string, prompt: string): void {
   }
 }
 
+export function injectPromptIntoRunningSession(sessionId: string, prompt: string): boolean {
+  const instance = instances.get(sessionId);
+  if (!instance || !instance.spawned || instance.exited) return false;
+  const modes = (instance.terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+  const bp = modes?.bracketedPasteMode;
+  const payload = bp ? `\x1b[200~${prompt}\x1b[201~` : prompt;
+  window.vibeyard.pty.write(sessionId, payload);
+  window.vibeyard.pty.write(sessionId, '\r');
+  return true;
+}
+
 function clearPendingPromptTimer(instance: TerminalInstance): void {
   if (instance.pendingPromptTimer) {
     clearTimeout(instance.pendingPromptTimer);
@@ -224,13 +234,7 @@ export function attachToContainer(sessionId: string, container: HTMLElement): vo
     container.appendChild(instance.element);
     instance.terminal.open(xtermWrap as HTMLElement);
 
-    // Try WebGL, fall back silently
-    try {
-      const webglAddon = new WebglAddon();
-      instance.terminal.loadAddon(webglAddon);
-    } catch {
-      // WebGL not available, software renderer works fine
-    }
+    loadWebglWithFallback(instance.terminal);
   } else {
     // Always re-append to ensure correct DOM order (appendChild moves existing children)
     container.appendChild(instance.element);
