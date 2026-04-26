@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.30] - 2026-04-26
+
+### Features
+
+- Send to existing session path in browser tab popovers
+- Line-number suffix in quick-open file search
+- Confirmation modal when quitting the app with working sessions
+
+### Fixes
+
+- Windows file viewer renders blank for absolute paths
+- Show "unable to preview" for binary files in the file viewer
+- Auto-close file viewer and diff tabs when the file is missing
+- Blacked-out terminal characters on WebGL context loss
+
+### Changes
+
+- Close-confirmation to include sessions awaiting input
+- Split AppState into nav-history, session-factory, and session-archive helpers
+- Centralize SessionType and drop legacy claude state
+- Extract readMcpServersFromJson into shared provider-config-utils
+
 ## [0.2.29] - 2026-04-24
 
 ### Features
