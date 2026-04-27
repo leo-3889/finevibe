@@ -328,11 +328,20 @@ class AppState {
     this.emit('project-changed');
   }
 
-  addPlanSession(projectId: string, name: string, planMode: boolean = true): SessionRecord | undefined {
+  addPlanSession(
+    projectId: string,
+    name: string,
+    planMode: boolean = true,
+    providerIdOverride?: ProviderId,
+  ): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
     const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
-    const providerId = activeSession?.providerId ?? this.state.preferences.defaultProvider ?? 'claude';
+    const providerId =
+      providerIdOverride
+      ?? activeSession?.providerId
+      ?? this.state.preferences.defaultProvider
+      ?? 'claude';
     const caps = getProviderCapabilities(providerId);
     const planArg = planMode ? (caps?.planModeArg ?? '') : '';
     const base = project.defaultArgs ?? '';

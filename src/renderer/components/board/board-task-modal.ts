@@ -1,6 +1,14 @@
-import type { BoardTask } from '../../../shared/types.js';
+import type { BoardTask, ProviderId } from '../../../shared/types.js';
 import { addTask, updateTask, getBoard, addTag, getTagColor } from '../../board-state.js';
-import { showModal, closeModal, setModalError, type FieldDef } from '../modal.js';
+import { showModal, closeModal, setModalError, registerModalCleanup, type FieldDef } from '../modal.js';
+import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
+import { createPlanModeRow } from '../../dom-utils.js';
+import {
+  getAvailableProviderMetas,
+  getProviderCapabilities,
+  loadProviderAvailability,
+} from '../../provider-availability.js';
+import { appState } from '../../state.js';
 import { runTask } from './board-card.js';
 
 export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, defaultColumnId?: string): void {
@@ -53,6 +61,14 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
 
   const currentTags: string[] = [...(task?.tags ?? [])];
 
+  let currentProviderId: ProviderId =
+    task?.providerId
+    ?? appState.preferences.defaultProvider
+    ?? 'claude';
+  const initialPlanMode = task?.planMode ?? (mode === 'create');
+  const { row: planModeRow, checkbox: planModeCheckbox } =
+    createPlanModeRow('Plan mode', initialPlanMode);
+
   showModal(title, fields, (values) => {
     const prompt = values.prompt?.trim() ?? '';
     const taskTitle = values.taskTitle?.trim() ?? '';
@@ -67,6 +83,8 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
     // Ensure all tags are in the palette (assigns colors)
     for (const t of currentTags) addTag(t);
 
+    const planMode = planModeCheckbox.checked;
+
     if (mode === 'create') {
       const targetColumnId = defaultColumnId ?? board.columns.find(c => c.behavior === 'inbox')?.id ?? board.columns[0]?.id;
       addTask({
@@ -75,6 +93,8 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
         notes: notes || undefined,
         columnId: targetColumnId,
         tags: currentTags.length > 0 ? currentTags : undefined,
+        providerId: currentProviderId,
+        planMode,
       });
     } else if (task) {
       updateTask(task.id, {
@@ -82,6 +102,8 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
         prompt,
         notes: notes || undefined,
         tags: currentTags.length > 0 ? currentTags : undefined,
+        providerId: currentProviderId,
+        planMode,
         ...(values.columnId ? { columnId: values.columnId } : {}),
       });
     }
@@ -198,11 +220,71 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
     modalBody.appendChild(tagFieldDiv);
   }
 
+  // Provider dropdown
+  const providerFieldDiv = document.createElement('div');
+  providerFieldDiv.className = 'modal-field';
+  const providerLabel = document.createElement('label');
+  providerLabel.textContent = 'Provider';
+  providerFieldDiv.appendChild(providerLabel);
+
+  const buildProviderOptions = () =>
+    getAvailableProviderMetas().map(p => ({ value: p.id, label: p.displayName }));
+
+  function refreshPlanModeAvailability(): void {
+    const caps = getProviderCapabilities(currentProviderId);
+    const supported = !!caps?.planModeArg;
+    planModeCheckbox.disabled = !supported;
+    if (!supported) planModeCheckbox.checked = false;
+    planModeRow.title = supported ? '' : 'Provider does not support plan mode';
+  }
+
+  const onProviderChange = (value: string) => {
+    currentProviderId = value as ProviderId;
+    refreshPlanModeAvailability();
+  };
+
+  const initialProviderOptions = buildProviderOptions();
+  let providerSelect: CustomSelectInstance = createCustomSelect(
+    'taskProvider',
+    initialProviderOptions.length > 0
+      ? initialProviderOptions
+      : [{ value: currentProviderId, label: 'Loading…' }],
+    currentProviderId,
+    onProviderChange,
+  );
+  providerFieldDiv.appendChild(providerSelect.element);
+  registerModalCleanup(() => providerSelect.destroy());
+
+  const planModeFieldDiv = document.createElement('div');
+  planModeFieldDiv.className = 'modal-field modal-field-checkbox';
+  planModeFieldDiv.appendChild(planModeRow);
+
+  refreshPlanModeAvailability();
+
+  if (columnField) {
+    modalBody.insertBefore(providerFieldDiv, columnField);
+    modalBody.insertBefore(planModeFieldDiv, columnField);
+  } else {
+    modalBody.appendChild(providerFieldDiv);
+    modalBody.appendChild(planModeFieldDiv);
+  }
+
+  if (initialProviderOptions.length === 0) {
+    loadProviderAvailability().then(() => {
+      if (!providerFieldDiv.isConnected) return;
+      const opts = buildProviderOptions();
+      if (opts.length === 0) return;
+      providerSelect.destroy();
+      providerSelect = createCustomSelect('taskProvider', opts, currentProviderId, onProviderChange);
+      providerFieldDiv.querySelector('.custom-select')?.remove();
+      providerFieldDiv.appendChild(providerSelect.element);
+    });
+  }
+
   // Add Run/Resume button in edit mode
   const footer = document.getElementById('modal-actions') as HTMLElement;
   if (footer) {
-    // Clean up any leftover run buttons from previous modal opens
-    footer.querySelectorAll('.modal-run-btn').forEach(el => el.remove());
+    footer.querySelectorAll('.board-modal-run-btn').forEach(el => el.remove());
 
     if (mode === 'edit' && task) {
       const runBtn = document.createElement('button');
@@ -218,11 +300,14 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
         const columnId = (document.getElementById('modal-columnId') as HTMLInputElement)?.value;
 
         for (const t of currentTags) addTag(t);
+        const planMode = planModeCheckbox.checked;
         updateTask(task.id, {
           title: taskTitle || task.title,
           prompt: prompt || task.prompt,
           notes: notes || undefined,
           tags: currentTags.length > 0 ? currentTags : undefined,
+          providerId: currentProviderId,
+          planMode,
           ...(columnId ? { columnId } : {}),
         });
 
@@ -230,6 +315,7 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
         runTask(task);
       });
       footer.insertBefore(runBtn, footer.firstChild);
+      registerModalCleanup(() => runBtn.remove());
     }
   }
 }

@@ -1907,3 +1907,29 @@ describe('openCliSession()', () => {
     expect(appState.activeProject!.layout.splitPanes).toContain(session.id);
   });
 });
+
+describe('addPlanSession()', () => {
+  it('uses providerIdOverride when provided', () => {
+    const project = addProject();
+    const session = appState.addPlanSession(project.id, 'Plan', true, 'copilot')!;
+    expect(session.providerId).toBe('copilot');
+  });
+
+  it('providerIdOverride wins over preferences.defaultProvider', () => {
+    appState.setPreference('defaultProvider', 'gemini');
+    const project = addProject();
+    const session = appState.addPlanSession(project.id, 'Plan', true, 'copilot')!;
+    expect(session.providerId).toBe('copilot');
+  });
+
+  it('falls back to preferences.defaultProvider when override absent', () => {
+    appState.setPreference('defaultProvider', 'gemini');
+    const project = addProject();
+    const session = appState.addPlanSession(project.id, 'Plan', true)!;
+    expect(session.providerId).toBe('gemini');
+  });
+
+  it('returns undefined for nonexistent project', () => {
+    expect(appState.addPlanSession('no-such-project', 'Plan', true, 'claude')).toBeUndefined();
+  });
+});

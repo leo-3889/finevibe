@@ -166,6 +166,7 @@ export interface BoardTask {
   sessionId?: string;
   cliSessionId?: string;
   providerId?: ProviderId;
+  planMode?: boolean;
   tags?: string[];
   createdAt: number;
   updatedAt: number;

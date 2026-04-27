@@ -150,7 +150,9 @@ export function runTask(task: BoardTask): void {
       return;
     }
     const sessionName = task.title || task.prompt.slice(0, 40);
-    const session = appState.addSession(project.id, sessionName);
+    const session = task.planMode
+      ? appState.addPlanSession(project.id, sessionName, true, task.providerId)
+      : appState.addSession(project.id, sessionName, undefined, task.providerId);
     if (session) {
       updateTask(task.id, { sessionId: session.id });
       const activeCol = getColumnByBehavior('active');
