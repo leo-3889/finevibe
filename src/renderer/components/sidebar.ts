@@ -1,4 +1,4 @@
-import { appState, ProjectRecord } from '../state.js';
+import { appState, MAX_PROJECT_NAME_LENGTH, ProjectRecord } from '../state.js';
 import { showModal, setModalError, closeModal, showConfirmDialog } from './modal.js';
 import { showPreferencesModal } from './preferences-modal.js';
 import { onChange as onCostChange, getAggregateCost } from '../session-cost.js';
@@ -18,6 +18,7 @@ const projectPanelOpen = new Map<string, ProjectPanel>();
 
 const projectListEl = document.getElementById('project-list')!;
 let activeProjectContextMenu: HTMLElement | null = null;
+let renamingProjectId: string | null = null;
 const btnAddProject = document.getElementById('btn-add-project')!;
 const btnPreferences = document.getElementById('btn-preferences')!;
 const sidebarEl = document.getElementById('sidebar')!;
@@ -96,6 +97,7 @@ export function initSidebar(): void {
 }
 
 function render(): void {
+  if (renamingProjectId) return;
   hideProjectContextMenu();
   projectListEl.innerHTML = '';
 
@@ -112,6 +114,7 @@ function render(): void {
 
     const el = document.createElement('div');
     el.className = 'project-item' + (isActive ? ' active' : '');
+    el.dataset.projectId = project.id;
     el.innerHTML = `
       <div style="flex:1;min-width:0">
         <div class="project-name${hasUnreadInProject(project.id) ? ' unread' : ''}">${esc(project.name)}${project.sessions.length ? ` <span class="project-session-count">(${project.sessions.length})</span>` : ''}</div>
@@ -429,6 +432,49 @@ function confirmRemoveProject(project: ProjectRecord): void {
   });
 }
 
+function startProjectRename(project: ProjectRecord): void {
+  const el = projectListEl.querySelector(
+    `.project-item[data-project-id="${project.id}"]`,
+  ) as HTMLElement | null;
+  const nameEl = el?.querySelector('.project-name') as HTMLElement | null;
+  if (!nameEl || nameEl.querySelector('input')) return;
+
+  const input = document.createElement('input');
+  input.maxLength = MAX_PROJECT_NAME_LENGTH;
+  input.value = project.name;
+  nameEl.textContent = '';
+  nameEl.appendChild(input);
+  input.focus();
+  input.select();
+  renamingProjectId = project.id;
+
+  let committed = false;
+  const finish = (newName: string | null) => {
+    if (committed) return;
+    committed = true;
+    input.remove();
+    renamingProjectId = null;
+    if (newName && newName !== project.name) {
+      appState.renameProject(project.id, newName);
+    } else {
+      render();
+    }
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      finish(input.value.trim());
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      finish(null);
+    }
+  });
+
+  input.addEventListener('blur', () => finish(input.value.trim()));
+  input.addEventListener('click', (e) => e.stopPropagation());
+}
+
 function showProjectContextMenu(x: number, y: number, project: ProjectRecord): void {
   hideProjectContextMenu();
 
@@ -436,6 +482,15 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   menu.className = 'tab-context-menu';
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
+
+  const renameItem = document.createElement('div');
+  renameItem.className = 'tab-context-menu-item';
+  renameItem.textContent = 'Rename';
+  renameItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideProjectContextMenu();
+    startProjectRename(project);
+  });
 
   const hasSessions = project.sessions.length > 0;
 
@@ -462,6 +517,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
     confirmRemoveProject(project);
   });
 
+  menu.appendChild(renameItem);
   menu.appendChild(closeAllItem);
   menu.appendChild(separator);
   menu.appendChild(removeItem);

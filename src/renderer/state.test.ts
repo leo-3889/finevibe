@@ -23,7 +23,7 @@ vi.mock('./session-context.js', () => ({
   restoreContext: vi.fn(),
 }));
 
-import { appState, _resetForTesting, MAX_SESSION_NAME_LENGTH } from './state';
+import { appState, _resetForTesting, MAX_SESSION_NAME_LENGTH, MAX_PROJECT_NAME_LENGTH } from './state';
 import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
 
@@ -324,6 +324,58 @@ describe('removeProject()', () => {
     expect(sessionRemovedCb).toHaveBeenCalledTimes(2);
     expect(sessionRemovedCb).toHaveBeenCalledWith({ projectId: p.id, sessionId: s1.id });
     expect(sessionRemovedCb).toHaveBeenCalledWith({ projectId: p.id, sessionId: s2.id });
+  });
+});
+
+describe('renameProject()', () => {
+  it('renames an existing project', () => {
+    const p = addProject('Old', '/path');
+    appState.renameProject(p.id, 'New');
+    expect(appState.projects[0].name).toBe('New');
+    expect(appState.projects[0].path).toBe('/path');
+  });
+
+  it('trims whitespace', () => {
+    const p = addProject('Old');
+    appState.renameProject(p.id, '  Spaced  ');
+    expect(appState.projects[0].name).toBe('Spaced');
+  });
+
+  it('is a no-op when name is empty or whitespace', () => {
+    const p = addProject('Old');
+    appState.renameProject(p.id, '   ');
+    expect(appState.projects[0].name).toBe('Old');
+  });
+
+  it('is a no-op when name is unchanged', () => {
+    const p = addProject('Same');
+    const changedCb = vi.fn();
+    appState.on('project-changed', changedCb);
+    appState.renameProject(p.id, 'Same');
+    expect(changedCb).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op for unknown project id', () => {
+    addProject('Real');
+    appState.renameProject('does-not-exist', 'Anything');
+    expect(appState.projects[0].name).toBe('Real');
+  });
+
+  it('truncates name exceeding MAX_PROJECT_NAME_LENGTH', () => {
+    const p = addProject('Old');
+    const longName = 'A'.repeat(MAX_PROJECT_NAME_LENGTH + 30);
+    appState.renameProject(p.id, longName);
+    expect(appState.projects[0].name).toBe('A'.repeat(MAX_PROJECT_NAME_LENGTH));
+  });
+
+  it('emits project-changed and persists', () => {
+    const p = addProject('Old');
+    const changedCb = vi.fn();
+    appState.on('project-changed', changedCb);
+    mockSave.mockClear();
+    appState.renameProject(p.id, 'New');
+    expect(changedCb).toHaveBeenCalled();
+    expect(mockSave).toHaveBeenCalled();
   });
 });
 

@@ -22,6 +22,7 @@ import { NavHistory } from './state/nav-history.js';
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession } from '../shared/types.js';
 
 export const MAX_SESSION_NAME_LENGTH = 60;
+export const MAX_PROJECT_NAME_LENGTH = 80;
 
 declare global {
   interface Window {
@@ -314,6 +315,16 @@ class AppState {
       this.emit('session-removed', { projectId: id, sessionId: session.id });
     }
     this.emit('project-removed', id);
+    this.emit('project-changed');
+  }
+
+  renameProject(id: string, name: string): void {
+    const project = this.state.projects.find((p) => p.id === id);
+    if (!project) return;
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === project.name) return;
+    project.name = trimmed.slice(0, MAX_PROJECT_NAME_LENGTH);
+    this.persist();
     this.emit('project-changed');
   }
 
