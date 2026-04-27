@@ -130,6 +130,15 @@ export interface InitialContextSnapshot {
   usedPercentage: number;
 }
 
+export interface DeepSearchResult {
+  providerId: ProviderId;
+  cliSessionId: string;
+  projectSlug: string;
+  projectCwd: string;
+  snippet: string;
+  score: number;
+}
+
 export interface ProjectInsightsData {
   initialContextSnapshots: InitialContextSnapshot[];
   dismissed: string[];
