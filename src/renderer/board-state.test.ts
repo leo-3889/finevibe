@@ -108,11 +108,6 @@ describe('board-state', () => {
       const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-ready' });
       expect(task!.columnId).toBe('col-ready');
     });
-
-    it('defaults cwd to project path', () => {
-      const task = addTask({ title: 'T', prompt: 'p' });
-      expect(task!.cwd).toBe('/test');
-    });
   });
 
   describe('updateTask', () => {

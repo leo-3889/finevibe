@@ -58,18 +58,12 @@ export function createCardElement(task: BoardTask): HTMLElement {
     el.appendChild(tagsEl);
   }
 
-  // Bottom row: path + status
-  const bottomRow = document.createElement('div');
-  bottomRow.className = 'board-card-bottom';
-
-  const folderSpan = document.createElement('span');
-  folderSpan.className = 'card-folder';
-  folderSpan.textContent = shortenPath(task.cwd);
-  bottomRow.appendChild(folderSpan);
-
   if (task.sessionId) {
     const status = getStatus(task.sessionId);
     if (status) {
+      const bottomRow = document.createElement('div');
+      bottomRow.className = 'board-card-bottom';
+
       const statusEl = document.createElement('span');
       statusEl.className = 'board-card-status-inline';
       const dot = document.createElement('span');
@@ -85,10 +79,9 @@ export function createCardElement(task: BoardTask): HTMLElement {
       statusEl.appendChild(dot);
       statusEl.appendChild(document.createTextNode(statusLabels[status] ?? status));
       bottomRow.appendChild(statusEl);
+      el.appendChild(bottomRow);
     }
   }
-
-  el.appendChild(bottomRow);
 
   // Click card body -> edit modal
   el.addEventListener('click', (e) => {
@@ -157,8 +150,7 @@ export function runTask(task: BoardTask): void {
       return;
     }
     const sessionName = task.title || task.prompt.slice(0, 40);
-    const taskCwd = task.cwd && task.cwd !== project.path ? task.cwd : undefined;
-    const session = appState.addSession(project.id, sessionName, undefined, undefined, taskCwd);
+    const session = appState.addSession(project.id, sessionName);
     if (session) {
       updateTask(task.id, { sessionId: session.id });
       const activeCol = getColumnByBehavior('active');
@@ -184,18 +176,4 @@ function truncate(str: string, len: number): string {
   if (!str) return '';
   const firstLine = str.split('\n')[0];
   return firstLine.length > len ? firstLine.slice(0, len) + '...' : firstLine;
-}
-
-const HOME_RE_UNIX = /^(?:\/Users|\/home)\/[^/]+/;
-const HOME_RE_WIN = /^[A-Z]:\\Users\\[^\\]+/i;
-
-export function shortenPath(path: string): string {
-  if (!path) return '';
-  const sep = path.includes('\\') ? '\\' : '/';
-  const home = path.replace(HOME_RE_UNIX, '~').replace(HOME_RE_WIN, '~');
-  const parts = home.split(sep);
-  if (parts.length > 3) {
-    return parts.slice(0, 1).concat('...', parts.slice(-2)).join(sep);
-  }
-  return home;
 }

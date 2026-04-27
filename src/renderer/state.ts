@@ -340,7 +340,7 @@ class AppState {
     return this.addSession(projectId, name, args, providerId);
   }
 
-  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId, cwd?: string): SessionRecord | undefined {
+  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
@@ -348,7 +348,6 @@ class AppState {
       name,
       providerId: providerId ?? this.state.preferences.defaultProvider ?? 'claude',
       args: args ?? project.defaultArgs,
-      cwd,
     });
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);

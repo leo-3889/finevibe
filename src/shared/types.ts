@@ -94,7 +94,6 @@ export interface SessionRecord {
   worktreePath?: string;
   fileReaderPath?: string;
   fileReaderLine?: number;
-  cwd?: string;  // Override project path for task-specific working directory
   createdAt: string;
   userRenamed?: boolean;
   cost?: CostInfo;
@@ -162,7 +161,6 @@ export interface BoardTask {
   title: string;
   prompt: string;
   notes?: string;
-  cwd: string;
   columnId: string;
   order: number;
   sessionId?: string;

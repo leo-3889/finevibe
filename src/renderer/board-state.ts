@@ -35,7 +35,6 @@ export function addTask(partial: Partial<BoardTask>): BoardTask | undefined {
   const board = getBoard();
   if (!board) return undefined;
 
-  const project = appState.activeProject!;
   const columnId = partial.columnId ?? getColumnByBehavior('inbox')?.id ?? board.columns[0]?.id;
   if (!columnId) return undefined;
 
@@ -48,7 +47,6 @@ export function addTask(partial: Partial<BoardTask>): BoardTask | undefined {
     id: taskId,
     title: partial.title ?? '',
     prompt: partial.prompt ?? '',
-    cwd: partial.cwd ?? project.path,
     columnId,
     order: maxOrder + 1,
     createdAt: partial.createdAt || now,

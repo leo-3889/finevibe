@@ -1,5 +1,4 @@
 import type { BoardTask } from '../../../shared/types.js';
-import { appState } from '../../state.js';
 import { addTask, updateTask, getBoard, addTag, getTagColor } from '../../board-state.js';
 import { showModal, closeModal, setModalError, type FieldDef } from '../modal.js';
 import { runTask } from './board-card.js';
@@ -7,8 +6,6 @@ import { runTask } from './board-card.js';
 export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, defaultColumnId?: string): void {
   const board = getBoard();
   if (!board) return;
-  const project = appState.activeProject;
-  if (!project) return;
 
   const columnOptions = [...board.columns]
     .sort((a, b) => a.order - b.order)
@@ -37,17 +34,6 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
       placeholder: 'Context, reasoning, acceptance criteria...',
       defaultValue: task?.notes ?? '',
       rows: 3,
-    },
-    {
-      label: 'Folder',
-      id: 'cwd',
-      placeholder: project.path,
-      defaultValue: task?.cwd ?? project.path,
-      buttonLabel: 'Browse',
-      onButtonClick: async (input) => {
-        const dir = await window.vibeyard.fs.browseDirectory();
-        if (dir) input.value = dir;
-      },
     },
   ];
 
@@ -87,7 +73,6 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
         title: taskTitle,
         prompt,
         notes: notes || undefined,
-        cwd: values.cwd?.trim() || project.path,
         columnId: targetColumnId,
         tags: currentTags.length > 0 ? currentTags : undefined,
       });
@@ -96,7 +81,6 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
         title: taskTitle,
         prompt,
         notes: notes || undefined,
-        cwd: values.cwd?.trim() || project.path,
         tags: currentTags.length > 0 ? currentTags : undefined,
         ...(values.columnId ? { columnId: values.columnId } : {}),
       });
@@ -105,9 +89,9 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
     closeModal();
   }, { confirmLabel });
 
-  // Inject tags UI into modal (after the Notes field, before Folder)
+  // Inject tags UI into modal (after Notes; before Column field in edit mode)
   const modalBody = document.getElementById('modal-body')!;
-  const folderField = modalBody.querySelector('#modal-cwd')?.closest('.modal-field');
+  const columnField = modalBody.querySelector('#modal-columnId')?.closest('.modal-field');
 
   const tagFieldDiv = document.createElement('div');
   tagFieldDiv.className = 'modal-field';
@@ -208,8 +192,8 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
   tagInputWrapper.appendChild(autocompleteList);
   tagFieldDiv.appendChild(tagInputWrapper);
 
-  if (folderField) {
-    modalBody.insertBefore(tagFieldDiv, folderField);
+  if (columnField) {
+    modalBody.insertBefore(tagFieldDiv, columnField);
   } else {
     modalBody.appendChild(tagFieldDiv);
   }
@@ -231,7 +215,6 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
         const prompt = (document.getElementById('modal-prompt') as HTMLTextAreaElement)?.value?.trim() ?? '';
         const taskTitle = (document.getElementById('modal-taskTitle') as HTMLInputElement)?.value?.trim() ?? '';
         const notes = (document.getElementById('modal-notes') as HTMLTextAreaElement)?.value?.trim() ?? '';
-        const cwd = (document.getElementById('modal-cwd') as HTMLInputElement)?.value?.trim() || project.path;
         const columnId = (document.getElementById('modal-columnId') as HTMLInputElement)?.value;
 
         for (const t of currentTags) addTag(t);
@@ -239,7 +222,6 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
           title: taskTitle || task.title,
           prompt: prompt || task.prompt,
           notes: notes || undefined,
-          cwd,
           tags: currentTags.length > 0 ? currentTags : undefined,
           ...(columnId ? { columnId } : {}),
         });

@@ -10,7 +10,6 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     id: 'task-1',
     title: 'Test Task',
     prompt: 'Do something',
-    cwd: '/test',
     columnId: 'col-1',
     order: 0,
     createdAt: Date.now(),
