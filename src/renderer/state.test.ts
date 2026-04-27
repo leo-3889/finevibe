@@ -615,6 +615,49 @@ describe('renameSession()', () => {
     appState.renameSession(project.id, session.id, longName);
     expect(appState.activeSession!.name).toBe('A'.repeat(MAX_SESSION_NAME_LENGTH));
   });
+
+  it('refuses to rename a kanban session', () => {
+    const project = addProject('My Project');
+    const kanban = appState.openKanbanTab(project.id)!;
+    appState.renameSession(project.id, kanban.id, 'Custom', true);
+    expect(kanban.name).toBe('My Project - Kanban');
+    expect(kanban.userRenamed).toBeUndefined();
+  });
+
+  it('refuses to rename a project-tab session', () => {
+    const project = addProject('My Project');
+    const overview = appState.openProjectTab(project.id)!;
+    appState.renameSession(project.id, overview.id, 'Custom', true);
+    expect(overview.name).toBe('My Project - Overview');
+    expect(overview.userRenamed).toBeUndefined();
+  });
+});
+
+describe('openKanbanTab()', () => {
+  it('creates a kanban session with locked name', () => {
+    const project = addProject('Acme');
+    const session = appState.openKanbanTab(project.id)!;
+    expect(session.type).toBe('kanban');
+    expect(session.name).toBe('Acme - Kanban');
+    expect(project.activeSessionId).toBe(session.id);
+  });
+
+  it('reuses an existing kanban session instead of creating a duplicate', () => {
+    const project = addProject('Acme');
+    const first = appState.openKanbanTab(project.id)!;
+    const second = appState.openKanbanTab(project.id)!;
+    expect(second.id).toBe(first.id);
+    expect(project.sessions.filter((s) => s.type === 'kanban')).toHaveLength(1);
+  });
+});
+
+describe('openProjectTab()', () => {
+  it('creates a project-tab session named "<project> - Overview"', () => {
+    const project = addProject('Acme');
+    const session = appState.openProjectTab(project.id)!;
+    expect(session.type).toBe('project-tab');
+    expect(session.name).toBe('Acme - Overview');
+  });
 });
 
 describe('toggleSplit() / toggleSwarm()', () => {

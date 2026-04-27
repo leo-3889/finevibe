@@ -62,6 +62,14 @@ import {
   attachProjectTabToContainer,
   getProjectTabInstance,
 } from './project-tab/pane.js';
+import {
+  createKanbanPane,
+  destroyKanbanPane,
+  showKanbanPane,
+  hideAllKanbanPanes,
+  attachKanbanToContainer,
+  getKanbanInstance,
+} from './kanban/pane.js';
 import { quickNewSession } from './tab-bar.js';
 import { isCliSession } from '../session-utils.js';
 
@@ -108,7 +116,7 @@ export function initSplitLayout(): void {
 }
 
 function onSessionAdded(data: unknown): void {
-  const { projectId, session } = data as { projectId: string; session: { id: string; type?: string; cliSessionId: string | null; providerId?: string; args?: string; diffFilePath?: string; diffArea?: string; worktreePath?: string; fileReaderPath?: string; fileReaderLine?: number; browserTabUrl?: string } };
+  const { projectId, session } = data as { projectId: string; session: { id: string; type?: string; cliSessionId: string | null; providerId?: string; args?: string; cwd?: string; diffFilePath?: string; diffArea?: string; worktreePath?: string; fileReaderPath?: string; fileReaderLine?: number; browserTabUrl?: string } };
   const project = appState.activeProject;
   if (!project) return;
 
@@ -130,9 +138,12 @@ function onSessionAdded(data: unknown): void {
   } else if (session.type === 'project-tab') {
     createProjectTabPane(session.id, projectId);
     renderLayout();
+  } else if (session.type === 'kanban') {
+    createKanbanPane(session.id, projectId);
+    renderLayout();
   } else {
     // Create and spawn immediately
-    createTerminalPane(session.id, project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', (session.providerId as import('../../shared/types').ProviderId) || 'claude', project.id);
+    createTerminalPane(session.id, session.cwd || project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', (session.providerId as import('../../shared/types').ProviderId) || 'claude', project.id);
     const pending = appState.consumePendingInitialPrompt(project.id, session.id);
     if (pending) {
       setPendingPrompt(session.id, pending);
@@ -162,6 +173,8 @@ function onSessionRemoved(data: unknown): void {
     destroyBrowserTabPane(sessionId);
   } else if (getProjectTabInstance(sessionId)) {
     destroyProjectTabPane(sessionId);
+  } else if (getKanbanInstance(sessionId)) {
+    destroyKanbanPane(sessionId);
   } else {
     destroyTerminal(sessionId);
   }
@@ -179,6 +192,7 @@ export function renderLayout(): void {
     hideAllRemotePanes();
     hideAllBrowserTabPanes();
     hideAllProjectTabPanes();
+    hideAllKanbanPanes();
     setContainerClass('');
     showEmptyState(project);
     return;
@@ -212,9 +226,13 @@ export function renderLayout(): void {
       if (!getProjectTabInstance(session.id)) {
         createProjectTabPane(session.id, project.id);
       }
+    } else if (session.type === 'kanban') {
+      if (!getKanbanInstance(session.id)) {
+        createKanbanPane(session.id, project.id);
+      }
     } else {
       if (!getTerminalInstance(session.id)) {
-        createTerminalPane(session.id, project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', session.providerId || 'claude', project.id);
+        createTerminalPane(session.id, session.cwd || project.path, session.cliSessionId, !!session.cliSessionId, session.args || '', session.providerId || 'claude', project.id);
       }
     }
   }
@@ -226,6 +244,7 @@ export function renderLayout(): void {
   hideAllRemotePanes();
   hideAllBrowserTabPanes();
   hideAllProjectTabPanes();
+  hideAllKanbanPanes();
 
   if (project.layout.mode === 'swarm' && project.layout.splitPanes.length >= 1) {
     renderSwarmMode(project);
@@ -261,6 +280,9 @@ function attachNonCliPane(session: { id: string; type?: string; fileReaderLine?:
   } else if (session.type === 'project-tab') {
     attachProjectTabToContainer(session.id, target);
     showProjectTabPane(session.id, inSplit);
+  } else if (session.type === 'kanban') {
+    attachKanbanToContainer(session.id, target);
+    showKanbanPane(session.id, inSplit);
   }
 }
 

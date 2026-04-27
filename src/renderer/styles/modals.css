@@ -67,8 +67,23 @@
   outline: none;
 }
 
-.modal-field input:focus {
+.modal-field input:focus,
+.modal-field textarea:focus {
   border-color: var(--accent);
+}
+
+.modal-field textarea {
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 /* Custom select dropdown */

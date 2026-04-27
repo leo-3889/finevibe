@@ -25,4 +25,7 @@ out/
 # Log files
 *.log
 
+# Superpowers brainstorm artifacts
+.superpowers/
+
 vibeyard-copilot-hooks.json

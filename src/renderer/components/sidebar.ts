@@ -75,6 +75,7 @@ export function initSidebar(): void {
   appState.on('project-changed', render);
   appState.on('session-added', render);
   appState.on('session-removed', render);
+  appState.on('layout-changed', render);
 
 
   onCostChange(() => {
@@ -167,6 +168,15 @@ function buildProjectActions(
 ): HTMLElement {
   const actions = document.createElement('div');
   actions.className = 'project-actions';
+
+  const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
+  const kanbanActive = appState.activeProjectId === project.id && activeSession?.type === 'kanban';
+  const kanbanBtn = makeActionButton('Kanban', kanbanActive);
+  kanbanBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    appState.openKanbanTab(project.id);
+  });
+  actions.appendChild(kanbanBtn);
 
   if (opts.historyEnabled) {
     const historyBtn = makeActionButton('Sessions', openPanel === 'history');

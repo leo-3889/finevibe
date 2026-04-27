@@ -15,6 +15,7 @@ describe('isCliSession', () => {
     'remote-terminal',
     'browser-tab',
     'project-tab',
+    'kanban',
   ])('returns false for special pane type %s', (type) => {
     expect(isCliSession({ type })).toBe(false);
   });

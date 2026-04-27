@@ -37,6 +37,8 @@ import { initSessionInspector } from './components/session-inspector.js';
 import { initFilePrompt } from './components/file-prompt.js';
 import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
 import { loadProviderMetas } from './provider-availability.js';
+import { initBoard } from './components/board/board-view.js';
+import { initBoardSessionSync } from './board-session-sync.js';
 import { getZoomFactor } from './zoom.js';
 import { confirmAppClose } from './session-close.js';
 
@@ -174,6 +176,8 @@ async function main(): Promise<void> {
   initSettingsGuard();
   initShareManager();
   initSessionInspector();
+  initBoard();
+  initBoardSessionSync();
   initFilePrompt();
   startGitPolling();
 

@@ -28,6 +28,7 @@ const btnAddSession = document.getElementById('btn-add-session')!;
 const btnAddSessionMenu = document.getElementById('btn-add-session-menu')!;
 const btnAddMcpInspector = document.getElementById('btn-add-mcp-inspector')!;
 const btnToggleSwarm = document.getElementById('btn-toggle-swarm')!;
+const btnToggleBoard = document.getElementById('btn-toggle-board')!;
 const btnHelp = document.getElementById('btn-help')!;
 
 let activeContextMenu: HTMLElement | null = null;
@@ -51,6 +52,10 @@ export function initTabBar(): void {
   });
   btnAddMcpInspector.addEventListener('click', promptNewMcpInspector);
   btnToggleSwarm.addEventListener('click', () => appState.toggleSwarm());
+  btnToggleBoard.addEventListener('click', () => {
+    const projectId = appState.activeProjectId;
+    if (projectId) appState.openKanbanTab(projectId);
+  });
   btnHelp.addEventListener('click', () => showHelpDialog());
   gitStatusEl.addEventListener('click', (e) => showBranchContextMenu(e));
 
@@ -103,6 +108,7 @@ export function initTabBar(): void {
 }
 
 function startRename(tab: HTMLElement, project: ProjectRecord, session: SessionRecord): void {
+  if (session.type === 'kanban' || session.type === 'project-tab') return;
   const nameSpan = tab.querySelector('.tab-name') as HTMLElement;
   if (nameSpan.querySelector('input')) return;
 
@@ -149,14 +155,17 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
+  const renamable = session.type !== 'kanban' && session.type !== 'project-tab';
   const renameItem = document.createElement('div');
-  renameItem.className = 'tab-context-menu-item';
+  renameItem.className = 'tab-context-menu-item' + (renamable ? '' : ' disabled');
   renameItem.textContent = 'Rename';
-  renameItem.addEventListener('click', (e) => {
-    e.stopPropagation();
-    hideTabContextMenu();
-    startRename(tab, project, session);
-  });
+  if (renamable) {
+    renameItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideTabContextMenu();
+      startRename(tab, project, session);
+    });
+  }
 
   const closeItem = document.createElement('div');
   closeItem.className = 'tab-context-menu-item';
@@ -387,20 +396,22 @@ function render(): void {
     const isRemoteTab = session.type === 'remote-terminal';
     const isBrowserTab = session.type === 'browser-tab';
     const isProjectTab = session.type === 'project-tab';
-    const isSpecial = isMcp || isDiff || isFileReader || isRemoteTab || isBrowserTab || isProjectTab;
+    const isKanban = session.type === 'kanban';
+    const isSpecial = isMcp || isDiff || isFileReader || isRemoteTab || isBrowserTab || isProjectTab || isKanban;
     const sharing = isSharing(session.id);
+    const displayName = isProjectTab ? `${project.name} - Overview` : isKanban ? `${project.name} - Kanban` : session.name;
     tab.className = 'tab-item' + (isActive ? ' active' : '') + (unread ? ' unread' : '') + (sharing ? ' tab-sharing' : '') + (isRemoteTab ? ' tab-remote' : '');
     tab.dataset.sessionId = session.id;
     tab.draggable = true;
-    tab.title = isDiff ? `Diff: ${session.diffFilePath || session.name}` : isMcp ? `MCP Inspector` : isFileReader ? `File: ${session.fileReaderPath || session.name}` : isRemoteTab ? `Remote: ${session.remoteHostName || session.name}` : isBrowserTab ? `Browser: ${session.browserTabUrl || 'New Tab'}` : isProjectTab ? 'Project tools' : buildTooltip(getStatus(session.id), session.cliSessionId);
+    tab.title = isDiff ? `Diff: ${session.diffFilePath || session.name}` : isMcp ? `MCP Inspector` : isFileReader ? `File: ${session.fileReaderPath || session.name}` : isRemoteTab ? `Remote: ${session.remoteHostName || session.name}` : isBrowserTab ? `Browser: ${session.browserTabUrl || 'New Tab'}` : isProjectTab ? 'Project tools' : isKanban ? 'Kanban board' : buildTooltip(getStatus(session.id), session.cliSessionId);
     const providerId = session.providerId || 'claude';
     const providerIcon = hasMultipleAvailableProviders() ? `<img class="tab-provider-icon" src="assets/providers/${providerId}.png" alt="${providerId}" onerror="this.style.display='none'"> ` : '';
-    const namePrefix = isDiff ? '<span class="tab-diff-badge">DIFF</span> ' : isMcp ? '<span class="tab-mcp-badge">MCP</span> ' : isFileReader ? '<span class="tab-file-badge">FILE</span> ' : isRemoteTab ? '<span class="tab-remote-badge">P2P</span> ' : isBrowserTab ? '<span class="tab-browser-badge">WEB</span> ' : isProjectTab ? '<span class="tab-project-badge">&#x2699;</span> ' : !isSpecial ? providerIcon : '';
+    const namePrefix = isDiff ? '<span class="tab-diff-badge">DIFF</span> ' : isMcp ? '<span class="tab-mcp-badge">MCP</span> ' : isFileReader ? '<span class="tab-file-badge">FILE</span> ' : isRemoteTab ? '<span class="tab-remote-badge">P2P</span> ' : isBrowserTab ? '<span class="tab-browser-badge">WEB</span> ' : isProjectTab ? '<span class="tab-project-badge">&#x2699;</span> ' : isKanban ? '<span class="tab-kanban-badge">&#x25A6;</span> ' : !isSpecial ? providerIcon : '';
     const shareIndicator = sharing ? '<span class="tab-share-indicator" title="Sharing"></span>' : '';
     const statusDot = isSpecial ? '' : `<span class="tab-status ${getStatus(session.id)}"></span>`;
     tab.innerHTML = `
       ${statusDot}
-      <span class="tab-name">${namePrefix}${esc(session.name)}</span>
+      <span class="tab-name">${namePrefix}${esc(displayName)}</span>
       ${shareIndicator}
       <span class="tab-close" title="Close session">&times;</span>
     `;
@@ -491,6 +502,8 @@ function render(): void {
 
   // Update swarm toggle button visual
   btnToggleSwarm.style.color = project.layout.mode === 'swarm' ? 'var(--accent)' : '';
+  const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
+  btnToggleBoard.style.color = activeSession?.type === 'kanban' ? 'var(--accent)' : '';
 }
 
 function renderGitStatus(): void {

@@ -78,7 +78,8 @@ export type SessionType =
   | 'file-reader'
   | 'remote-terminal'
   | 'browser-tab'
-  | 'project-tab';
+  | 'project-tab'
+  | 'kanban';
 
 export interface SessionRecord {
   id: string;
@@ -93,6 +94,7 @@ export interface SessionRecord {
   worktreePath?: string;
   fileReaderPath?: string;
   fileReaderLine?: number;
+  cwd?: string;  // Override project path for task-specific working directory
   createdAt: string;
   userRenamed?: boolean;
   cost?: CostInfo;
@@ -133,6 +135,46 @@ export interface ProjectInsightsData {
   dismissed: string[];
 }
 
+// --- Board ---
+
+export type ColumnBehavior = 'inbox' | 'active' | 'terminal' | 'none';
+
+export interface BoardColumn {
+  id: string;
+  title: string;
+  order: number;
+  behavior: ColumnBehavior;
+  color?: string;
+  locked?: boolean;
+}
+
+export interface BoardTask {
+  id: string;
+  title: string;
+  prompt: string;
+  notes?: string;
+  cwd: string;
+  columnId: string;
+  order: number;
+  sessionId?: string;
+  cliSessionId?: string;
+  providerId?: ProviderId;
+  tags?: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TagDefinition {
+  name: string;
+  color: string;
+}
+
+export interface BoardData {
+  columns: BoardColumn[];
+  tasks: BoardTask[];
+  tags?: TagDefinition[];
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;
@@ -144,6 +186,7 @@ export interface ProjectRecord {
     splitPanes: string[];
     splitDirection: 'horizontal' | 'vertical';
   };
+  board?: BoardData;
   sessionHistory?: ArchivedSession[];
   insights?: ProjectInsightsData;
   defaultArgs?: string;
