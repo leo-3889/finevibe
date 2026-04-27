@@ -28,7 +28,6 @@ const btnAddSession = document.getElementById('btn-add-session')!;
 const btnAddSessionMenu = document.getElementById('btn-add-session-menu')!;
 const btnAddMcpInspector = document.getElementById('btn-add-mcp-inspector')!;
 const btnToggleSwarm = document.getElementById('btn-toggle-swarm')!;
-const btnToggleBoard = document.getElementById('btn-toggle-board')!;
 const btnHelp = document.getElementById('btn-help')!;
 
 let activeContextMenu: HTMLElement | null = null;
@@ -52,10 +51,6 @@ export function initTabBar(): void {
   });
   btnAddMcpInspector.addEventListener('click', promptNewMcpInspector);
   btnToggleSwarm.addEventListener('click', () => appState.toggleSwarm());
-  btnToggleBoard.addEventListener('click', () => {
-    const projectId = appState.activeProjectId;
-    if (projectId) appState.openKanbanTab(projectId);
-  });
   btnHelp.addEventListener('click', () => showHelpDialog());
   gitStatusEl.addEventListener('click', (e) => showBranchContextMenu(e));
 
@@ -502,8 +497,6 @@ function render(): void {
 
   // Update swarm toggle button visual
   btnToggleSwarm.style.color = project.layout.mode === 'swarm' ? 'var(--accent)' : '';
-  const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
-  btnToggleBoard.style.color = activeSession?.type === 'kanban' ? 'var(--accent)' : '';
 }
 
 function renderGitStatus(): void {
