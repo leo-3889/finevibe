@@ -80,6 +80,27 @@ or redefine `isWin`/`isMac` locally in source or test files. The
 three-way managed-path branch in `claude-cli.ts` is the one intentional
 exception.
 
+### Cross-platform paths in tests
+
+When asserting on a path that the implementation produced via `path.join`,
+`path.resolve`, or `path.normalize`, **never hardcode forward-slash literals**
+like `'/repo/foo.ts'` in the assertion — they pass on macOS/Linux but fail
+on `windows-latest` because Node yields `\repo\foo.ts` there. Build the
+expected value with the same primitive the implementation uses:
+
+```ts
+import * as path from 'path';
+// good — matches whatever path.join produces on the running platform
+expect(mockRm).toHaveBeenCalledWith(path.join('/repo', 'foo.ts'), opts);
+
+// bad — hidden Windows-only failure
+expect(mockRm).toHaveBeenCalledWith('/repo/foo.ts', opts);
+```
+
+This applies to any assertion on arguments to `fs.*`, `child_process` calls,
+or anything else that flows a joined path through. CI runs on all three
+platforms, so a forward-slash literal will eventually fail on Windows.
+
 ### State Persistence
 
 App state (projects, sessions, layout) persists to `~/.vibeyard/state.json` via the main process store. Saves are debounced and flushed on quit. Sessions track `cliSessionId` for CLI session resume capability.
