@@ -3,9 +3,11 @@ import { createCustomSelect } from './custom-select.js';
 export interface FieldDef {
   label: string;
   id: string;
-  type?: 'text' | 'checkbox' | 'select';
+  type?: 'text' | 'checkbox' | 'select' | 'textarea';
   placeholder?: string;
   defaultValue?: string;
+  rows?: number;
+  maxLength?: number;
   options?: { value: string; label: string; disabled?: boolean }[];
   buttonLabel?: string;
   onButtonClick?: (input: HTMLInputElement) => void;
@@ -53,9 +55,19 @@ export function showModal(
 ): void {
   titleEl.textContent = title;
   btnConfirm.textContent = options?.confirmLabel ?? DEFAULT_CONFIRM_LABEL;
+  btnConfirm.style.display = '';
+  btnConfirm.style.background = '';
+  btnConfirm.style.borderColor = '';
   bodyEl.innerHTML = '';
-  btnConfirm.textContent = 'Create';
   btnCancel.textContent = 'Cancel';
+
+  // Clean up any extra buttons injected into the footer by previous modals
+  const footer = document.getElementById('modal-actions');
+  if (footer) {
+    for (const el of Array.from(footer.children)) {
+      if (el !== btnCancel && el !== btnConfirm) el.remove();
+    }
+  }
 
   for (const field of fields) {
     const div = document.createElement('div');
@@ -76,6 +88,15 @@ export function showModal(
       }
       div.appendChild(input);
       div.appendChild(label);
+    } else if (field.type === 'textarea') {
+      div.appendChild(label);
+      const textarea = document.createElement('textarea');
+      textarea.id = `modal-${field.id}`;
+      textarea.placeholder = field.placeholder ?? '';
+      textarea.value = field.defaultValue ?? '';
+      textarea.rows = field.rows ?? 3;
+      if (field.maxLength) textarea.maxLength = field.maxLength;
+      div.appendChild(textarea);
     } else if (field.type === 'select') {
       div.appendChild(label);
       const sel = createCustomSelect(`modal-${field.id}`, field.options ?? [], field.defaultValue);
@@ -139,7 +160,7 @@ export function showModal(
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !(e.target instanceof HTMLTextAreaElement)) {
       e.preventDefault();
       handleConfirm();
     } else if (e.key === 'Escape') {
@@ -150,13 +171,13 @@ export function showModal(
 
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);
-  overlay.addEventListener('keydown', handleKeydown);
+  document.addEventListener('keydown', handleKeydown);
 
   // Store for cleanup
   (overlay as any)._cleanup = () => {
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
-    overlay.removeEventListener('keydown', handleKeydown);
+    document.removeEventListener('keydown', handleKeydown);
   };
 }
 
@@ -208,12 +229,12 @@ export function showConfirmDialog(
 
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);
-  overlay.addEventListener('keydown', handleKeydown);
+  document.addEventListener('keydown', handleKeydown);
 
   (overlay as any)._cleanup = () => {
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
-    overlay.removeEventListener('keydown', handleKeydown);
+    document.removeEventListener('keydown', handleKeydown);
   };
 }
 
@@ -225,6 +246,35 @@ function cleanup(): void {
   if ((overlay as any)._selectCleanups) {
     for (const fn of (overlay as any)._selectCleanups) fn();
     (overlay as any)._selectCleanups = null;
+  }
+}
+
+export function showConfirmModal(
+  title: string,
+  message: string,
+  onConfirm: () => void,
+  options?: { confirmLabel?: string; danger?: boolean }
+): void {
+  const label = options?.confirmLabel ?? 'Delete';
+  const fields: FieldDef[] = [];
+
+  showModal(title, fields, () => {
+    onConfirm();
+    closeModal();
+  }, { confirmLabel: label });
+
+  // Replace the empty body with the message text
+  bodyEl.innerHTML = '';
+  const msgEl = document.createElement('p');
+  msgEl.style.cssText = 'font-size:13px;color:var(--text-secondary);margin:0;line-height:1.5;';
+  msgEl.textContent = message;
+  bodyEl.appendChild(msgEl);
+
+  // Style the confirm button as danger if requested
+  if (options?.danger !== false) {
+    const btnConfirm = document.getElementById('modal-confirm')!;
+    btnConfirm.style.background = 'var(--accent)';
+    btnConfirm.style.borderColor = 'var(--accent)';
   }
 }
 

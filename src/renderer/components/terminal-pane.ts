@@ -11,7 +11,7 @@ import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
-import { attachClipboardCopyHandler, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
 
 interface TerminalInstance {
   terminal: Terminal;
@@ -234,6 +234,7 @@ export function attachToContainer(sessionId: string, container: HTMLElement): vo
     container.appendChild(instance.element);
     instance.terminal.open(xtermWrap as HTMLElement);
 
+    attachCopyOnSelect(instance.terminal);
     loadWebglWithFallback(instance.terminal);
   } else {
     // Always re-append to ensure correct DOM order (appendChild moves existing children)

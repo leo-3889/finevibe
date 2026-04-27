@@ -170,6 +170,18 @@
   color: var(--accent);
 }
 
+.project-item .project-name input {
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  color: inherit;
+  font: inherit;
+  padding: 0 2px;
+  outline: none;
+  width: 100%;
+  min-width: 40px;
+}
+
 .project-item .project-path {
   font-size: 10px;
   color: var(--text-muted);

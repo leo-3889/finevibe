@@ -2,8 +2,18 @@ import type { Terminal } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { shortcutManager } from '../shortcuts.js';
 import { isWin } from '../platform.js';
+import { appState } from '../state.js';
 
 type ExtraKeyHandler = (e: KeyboardEvent) => boolean | undefined;
+
+// Call after terminal.open(); the selection service doesn't fire before then.
+export function attachCopyOnSelect(terminal: Terminal): void {
+  terminal.onSelectionChange(() => {
+    if (!appState.preferences.copyOnSelect) return;
+    const selection = terminal.getSelection();
+    if (selection) window.vibeyard.clipboard.write(selection).catch(() => {});
+  });
+}
 
 /**
  * Attaches shared key event handling to a terminal:

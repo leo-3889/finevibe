@@ -23,7 +23,7 @@ vi.mock('./session-context.js', () => ({
   restoreContext: vi.fn(),
 }));
 
-import { appState, _resetForTesting, MAX_SESSION_NAME_LENGTH } from './state';
+import { appState, _resetForTesting, MAX_SESSION_NAME_LENGTH, MAX_PROJECT_NAME_LENGTH } from './state';
 import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
 
@@ -327,6 +327,58 @@ describe('removeProject()', () => {
   });
 });
 
+describe('renameProject()', () => {
+  it('renames an existing project', () => {
+    const p = addProject('Old', '/path');
+    appState.renameProject(p.id, 'New');
+    expect(appState.projects[0].name).toBe('New');
+    expect(appState.projects[0].path).toBe('/path');
+  });
+
+  it('trims whitespace', () => {
+    const p = addProject('Old');
+    appState.renameProject(p.id, '  Spaced  ');
+    expect(appState.projects[0].name).toBe('Spaced');
+  });
+
+  it('is a no-op when name is empty or whitespace', () => {
+    const p = addProject('Old');
+    appState.renameProject(p.id, '   ');
+    expect(appState.projects[0].name).toBe('Old');
+  });
+
+  it('is a no-op when name is unchanged', () => {
+    const p = addProject('Same');
+    const changedCb = vi.fn();
+    appState.on('project-changed', changedCb);
+    appState.renameProject(p.id, 'Same');
+    expect(changedCb).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op for unknown project id', () => {
+    addProject('Real');
+    appState.renameProject('does-not-exist', 'Anything');
+    expect(appState.projects[0].name).toBe('Real');
+  });
+
+  it('truncates name exceeding MAX_PROJECT_NAME_LENGTH', () => {
+    const p = addProject('Old');
+    const longName = 'A'.repeat(MAX_PROJECT_NAME_LENGTH + 30);
+    appState.renameProject(p.id, longName);
+    expect(appState.projects[0].name).toBe('A'.repeat(MAX_PROJECT_NAME_LENGTH));
+  });
+
+  it('emits project-changed and persists', () => {
+    const p = addProject('Old');
+    const changedCb = vi.fn();
+    appState.on('project-changed', changedCb);
+    mockSave.mockClear();
+    appState.renameProject(p.id, 'New');
+    expect(changedCb).toHaveBeenCalled();
+    expect(mockSave).toHaveBeenCalled();
+  });
+});
+
 describe('addSession()', () => {
   it('creates a session and sets it active', () => {
     const project = addProject();
@@ -614,6 +666,49 @@ describe('renameSession()', () => {
     const longName = 'A'.repeat(MAX_SESSION_NAME_LENGTH + 40);
     appState.renameSession(project.id, session.id, longName);
     expect(appState.activeSession!.name).toBe('A'.repeat(MAX_SESSION_NAME_LENGTH));
+  });
+
+  it('refuses to rename a kanban session', () => {
+    const project = addProject('My Project');
+    const kanban = appState.openKanbanTab(project.id)!;
+    appState.renameSession(project.id, kanban.id, 'Custom', true);
+    expect(kanban.name).toBe('My Project - Kanban');
+    expect(kanban.userRenamed).toBeUndefined();
+  });
+
+  it('refuses to rename a project-tab session', () => {
+    const project = addProject('My Project');
+    const overview = appState.openProjectTab(project.id)!;
+    appState.renameSession(project.id, overview.id, 'Custom', true);
+    expect(overview.name).toBe('My Project - Overview');
+    expect(overview.userRenamed).toBeUndefined();
+  });
+});
+
+describe('openKanbanTab()', () => {
+  it('creates a kanban session with locked name', () => {
+    const project = addProject('Acme');
+    const session = appState.openKanbanTab(project.id)!;
+    expect(session.type).toBe('kanban');
+    expect(session.name).toBe('Acme - Kanban');
+    expect(project.activeSessionId).toBe(session.id);
+  });
+
+  it('reuses an existing kanban session instead of creating a duplicate', () => {
+    const project = addProject('Acme');
+    const first = appState.openKanbanTab(project.id)!;
+    const second = appState.openKanbanTab(project.id)!;
+    expect(second.id).toBe(first.id);
+    expect(project.sessions.filter((s) => s.type === 'kanban')).toHaveLength(1);
+  });
+});
+
+describe('openProjectTab()', () => {
+  it('creates a project-tab session named "<project> - Overview"', () => {
+    const project = addProject('Acme');
+    const session = appState.openProjectTab(project.id)!;
+    expect(session.type).toBe('project-tab');
+    expect(session.name).toBe('Acme - Overview');
   });
 });
 

@@ -1,5 +1,5 @@
 import type { VibeyardApi } from './types.js';
-import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult } from '../shared/types.js';
+import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, BoardColumn, BoardData } from '../shared/types.js';
 import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
@@ -12,6 +12,7 @@ import {
   buildCliSession,
   buildDiffViewerSession,
   buildFileReaderSession,
+  buildKanbanSession,
   buildMcpInspectorSession,
   buildProjectTabSession,
   buildRemoteSession,
@@ -21,6 +22,7 @@ import { NavHistory } from './state/nav-history.js';
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession } from '../shared/types.js';
 
 export const MAX_SESSION_NAME_LENGTH = 60;
+export const MAX_PROJECT_NAME_LENGTH = 80;
 
 declare global {
   interface Window {
@@ -43,6 +45,7 @@ type EventType =
   | 'readiness-changed'
   | 'sidebar-toggled'
   | 'cli-session-cleared'
+  | 'board-changed'
   | 'state-loaded';
 
 type EventCallback = (data?: unknown) => void;
@@ -55,6 +58,7 @@ const defaultPreferences: Preferences = {
   insightsEnabled: true,
   autoTitleEnabled: true,
   confirmCloseWorkingSession: true,
+  copyOnSelect: false,
   zoomFactor: 1.0,
   readinessExcludedProviders: [],
   sidebarViews: { gitPanel: true, sessionHistory: true, costFooter: true, discussions: true, fileTree: true },
@@ -139,6 +143,27 @@ class AppState {
         }
       }
     }
+    // Ensure all projects have board data; clear stale runtime sessionIds
+    for (const project of this.state.projects) {
+      if (!project.board) {
+        project.board = createDefaultBoard();
+      }
+      for (const task of project.board.tasks) {
+        task.sessionId = undefined;
+      }
+      // Migrate legacy layout.mode === 'board' to a kanban tab session
+      const legacyMode = (project.layout as { mode: string }).mode;
+      if (legacyMode === 'board') {
+        project.layout.mode = 'tabs';
+        const existingKanban = project.sessions.find((s) => s.type === 'kanban');
+        const kanbanSession = existingKanban ?? buildKanbanSession({ projectName: project.name });
+        if (!existingKanban) {
+          project.sessions.push(kanbanSession);
+        }
+        project.activeSessionId = kanbanSession.id;
+      }
+    }
+
     if (!this.state.starPromptDismissed) {
       this.state.appLaunchCount = (this.state.appLaunchCount ?? 0) + 1;
       this.persist();
@@ -293,6 +318,16 @@ class AppState {
     this.emit('project-changed');
   }
 
+  renameProject(id: string, name: string): void {
+    const project = this.state.projects.find((p) => p.id === id);
+    if (!project) return;
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === project.name) return;
+    project.name = trimmed.slice(0, MAX_PROJECT_NAME_LENGTH);
+    this.persist();
+    this.emit('project-changed');
+  }
+
   addPlanSession(projectId: string, name: string, planMode: boolean = true): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
@@ -305,7 +340,7 @@ class AppState {
     return this.addSession(projectId, name, args, providerId);
   }
 
-  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId): SessionRecord | undefined {
+  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId, cwd?: string): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
@@ -313,6 +348,7 @@ class AppState {
       name,
       providerId: providerId ?? this.state.preferences.defaultProvider ?? 'claude',
       args: args ?? project.defaultArgs,
+      cwd,
     });
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);
@@ -395,7 +431,24 @@ class AppState {
     const existing = project.sessions.find((s) => s.type === 'project-tab');
     if (existing) return this.activateExistingSession(project, existing);
 
-    const session = buildProjectTabSession({ name: project.name });
+    const session = buildProjectTabSession({ projectName: project.name });
+    attachSessionToProject(project, session);
+    this.commitNewSession(projectId, session);
+    return session;
+  }
+
+  openKanbanTab(projectId: string): SessionRecord | undefined {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return undefined;
+
+    if (this.state.activeProjectId !== projectId) {
+      this.setActiveProject(projectId);
+    }
+
+    const existing = project.sessions.find((s) => s.type === 'kanban');
+    if (existing) return this.activateExistingSession(project, existing);
+
+    const session = buildKanbanSession({ projectName: project.name });
     attachSessionToProject(project, session);
     this.commitNewSession(projectId, session);
     return session;
@@ -658,6 +711,7 @@ class AppState {
     if (!project) return;
     const session = project.sessions.find((s) => s.id === sessionId);
     if (!session) return;
+    if (session.type === 'kanban' || session.type === 'project-tab') return;
     session.name = name.slice(0, MAX_SESSION_NAME_LENGTH);
     if (userRenamed) session.userRenamed = true;
     // Keep history entry in sync if this session was resumed from history
@@ -670,6 +724,11 @@ class AppState {
     }
     this.persist();
     this.emit('session-changed');
+  }
+
+  notifyBoardChanged(): void {
+    this.persist();
+    this.emit('board-changed');
   }
 
   toggleSplit(): void {
@@ -808,6 +867,16 @@ class AppState {
     this.persist();
     this.emit('session-changed');
   }
+}
+
+export function createDefaultBoard(): BoardData {
+  const columns: BoardColumn[] = [
+    { id: crypto.randomUUID(), title: 'Backlog', order: 0, behavior: 'inbox' },
+    { id: crypto.randomUUID(), title: 'Ready',   order: 1, behavior: 'none' },
+    { id: crypto.randomUUID(), title: 'Running', order: 2, behavior: 'active' },
+    { id: crypto.randomUUID(), title: 'Done',    order: 3, behavior: 'terminal' },
+  ];
+  return { columns, tasks: [] };
 }
 
 /** @internal Test-only: reset all module state */

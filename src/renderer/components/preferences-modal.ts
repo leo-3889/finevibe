@@ -64,6 +64,7 @@ export function showPreferencesModal(): void {
   let insightsCheckbox: HTMLInputElement | null = null;
   let autoTitleCheckbox: HTMLInputElement | null = null;
   let confirmCloseCheckbox: HTMLInputElement | null = null;
+  let copyOnSelectCheckbox: HTMLInputElement | null = null;
   let defaultProviderSelect: CustomSelectInstance | null = null;
   let themeSelect: CustomSelectInstance | null = null;
   let zoomSelect: CustomSelectInstance | null = null;
@@ -221,6 +222,22 @@ export function showPreferencesModal(): void {
       confirmCloseRow.appendChild(confirmCloseLabel);
       confirmCloseRow.appendChild(confirmCloseCheckbox);
       content.appendChild(confirmCloseRow);
+
+      const copyOnSelectRow = document.createElement('div');
+      copyOnSelectRow.className = 'modal-toggle-field';
+
+      const copyOnSelectLabel = document.createElement('label');
+      copyOnSelectLabel.htmlFor = 'pref-copy-on-select';
+      copyOnSelectLabel.textContent = 'Copy on select';
+
+      copyOnSelectCheckbox = document.createElement('input');
+      copyOnSelectCheckbox.type = 'checkbox';
+      copyOnSelectCheckbox.id = 'pref-copy-on-select';
+      copyOnSelectCheckbox.checked = appState.preferences.copyOnSelect ?? false;
+
+      copyOnSelectRow.appendChild(copyOnSelectLabel);
+      copyOnSelectRow.appendChild(copyOnSelectCheckbox);
+      content.appendChild(copyOnSelectRow);
 
     } else if (section === 'appearance') {
       const themeRow = document.createElement('div');
@@ -739,6 +756,9 @@ export function showPreferencesModal(): void {
     }
     if (confirmCloseCheckbox) {
       appState.setPreference('confirmCloseWorkingSession', confirmCloseCheckbox.checked);
+    }
+    if (copyOnSelectCheckbox) {
+      appState.setPreference('copyOnSelect', copyOnSelectCheckbox.checked);
     }
     if (defaultProviderSelect) {
       appState.setPreference('defaultProvider', defaultProviderSelect.getValue() as ProviderId);
