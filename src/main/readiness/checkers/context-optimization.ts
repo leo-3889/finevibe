@@ -62,12 +62,12 @@ function checkLargeFiles(projectPath: string, trackedFiles: string[]): Readiness
   const isIgnored = (file: string) => matchBasename(file) || matchFullPath(file);
 
   const largeFiles: string[] = [];
-  const LINE_THRESHOLD = 2000;
-  const CHECK_LIMIT = 500;
+  const LINE_THRESHOLD = 1000;
+  const MAX_FILES_SCANNED = 500;
 
   let checked = 0;
   for (const file of trackedFiles) {
-    if (checked >= CHECK_LIMIT) break;
+    if (checked >= MAX_FILES_SCANNED) break;
     const ext = path.extname(file).toLowerCase();
     if (!TEXT_EXTENSIONS.has(ext)) continue;
     if (isIgnored(file)) continue;
@@ -75,9 +75,9 @@ function checkLargeFiles(projectPath: string, trackedFiles: string[]): Readiness
 
     try {
       const fullPath = path.join(projectPath, file);
-      const lines = countFileLines(fullPath);
+      const lines = countFileLines(fullPath, LINE_THRESHOLD);
       if (lines > LINE_THRESHOLD) {
-        largeFiles.push(`${file} (${lines} lines)`);
+        largeFiles.push(`${file} (${LINE_THRESHOLD}+ lines)`);
       }
     } catch {
       // Skip unreadable files
@@ -86,21 +86,21 @@ function checkLargeFiles(projectPath: string, trackedFiles: string[]): Readiness
 
   const count = largeFiles.length;
   if (count === 0) {
-    return { id: 'large-files', name: 'No extremely large files', status: 'pass', description: 'No tracked files exceed 2000 lines.', score: 100, maxScore: 100 };
+    return { id: 'large-files', name: 'No extremely large files', status: 'pass', description: `No tracked files exceed ${LINE_THRESHOLD} lines.`, score: 100, maxScore: 100 };
   }
   if (count <= 3) {
     return {
       id: 'large-files', name: 'No extremely large files', status: 'warning',
-      description: `${count} file(s) over 2000 lines: ${largeFiles.slice(0, 3).join(', ')}. Edit .vibeyardignore to exclude files from scanning.`,
+      description: `${count} file(s) over ${LINE_THRESHOLD} lines: ${largeFiles.slice(0, 3).join(', ')}. Edit .vibeyardignore to exclude files from scanning.`,
       score: 50, maxScore: 100,
       fixPrompt: `These files are very large and may consume excessive AI context: ${largeFiles.join(', ')}. Split them into smaller, focused modules.`,
     };
   }
   return {
     id: 'large-files', name: 'No extremely large files', status: 'fail',
-    description: `${count} files over 2000 lines. Edit .vibeyardignore to exclude files from scanning.`,
+    description: `${count} files over ${LINE_THRESHOLD} lines. Edit .vibeyardignore to exclude files from scanning.`,
     score: 0, maxScore: 100,
-    fixPrompt: `${count} files exceed 2000 lines: ${largeFiles.slice(0, 5).join(', ')}. Large files waste AI context and make changes harder. Refactor them into smaller, focused modules.`,
+    fixPrompt: `${count} files exceed ${LINE_THRESHOLD} lines: ${largeFiles.slice(0, 5).join(', ')}. Large files waste AI context and make changes harder. Refactor them into smaller, focused modules.`,
   };
 }
 

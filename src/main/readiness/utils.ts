@@ -16,19 +16,26 @@ export function getTrackedFiles(projectPath: string): string[] {
 /**
  * Counts lines in a file without reading the entire content into a single string.
  * Uses a buffer-based approach to avoid large string allocations.
+ *
+ * If `maxLines` is provided, stops reading once the count exceeds it and returns
+ * `maxLines + 1`. Callers that only need a "≤ threshold or not" answer should
+ * pass the threshold to skip scanning the rest of huge files.
  */
-export function countFileLines(filePath: string): number {
+export function countFileLines(filePath: string, maxLines?: number): number {
   const fd = fs.openSync(filePath, 'r');
   try {
     const buffer = Buffer.alloc(64 * 1024);
     let lines = 0;
     let bytesRead: number;
-    while ((bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+    outer: while ((bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
       for (let i = 0; i < bytesRead; i++) {
-        if (buffer[i] === 0x0a) lines++;
+        if (buffer[i] === 0x0a) {
+          lines++;
+          if (maxLines !== undefined && lines > maxLines) break outer;
+        }
       }
     }
-    // Account for final line without trailing newline
+    if (maxLines !== undefined && lines > maxLines) return lines;
     const stat = fs.fstatSync(fd);
     if (stat.size > 0) lines++;
     return lines;

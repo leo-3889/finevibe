@@ -131,6 +131,27 @@ describe('genericContextProducer', () => {
     expect(check.description).toContain('.vibeyardignore');
   });
 
+  it('flags files just over the 1000-line threshold', () => {
+    mockFs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockVibeyardignoreAutoCreate();
+    mockCountFileLines({ 'medium.ts': Array(1001).fill('line').join('\n') });
+
+    const tagged = genericContextProducer.produce('/test/project', makeCtx(['medium.ts']));
+    const check = tagged.find(t => t.check.id === 'large-files')!.check;
+    expect(check.status).toBe('warning');
+    expect(check.description).toContain('1000 lines');
+  });
+
+  it('passes for files at exactly the 1000-line threshold', () => {
+    mockFs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockVibeyardignoreAutoCreate();
+    mockCountFileLines({ 'edge.ts': Array(1000).fill('line').join('\n') });
+
+    const tagged = genericContextProducer.produce('/test/project', makeCtx(['edge.ts']));
+    const check = tagged.find(t => t.check.id === 'large-files')!.check;
+    expect(check.status).toBe('pass');
+  });
+
   it('passes when no large files found', () => {
     mockFs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
     mockVibeyardignoreAutoCreate();
