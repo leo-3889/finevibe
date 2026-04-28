@@ -1,5 +1,5 @@
-import { closeModal } from './modal.js';
 import { appState } from '../state.js';
+import { createModalShell, createModalButton } from './modal-shell.js';
 
 interface ReleaseNotes {
   date: string;
@@ -8,8 +8,9 @@ interface ReleaseNotes {
   changes: string[];
 }
 
+let cleanupFn: (() => void) | null = null;
+
 export function parseChangelog(markdown: string, version: string): ReleaseNotes | null {
-  // Find the section for the given version: ## [0.2.11] - 2026-03-24
   const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const sectionRegex = new RegExp(`^## \\[${escapedVersion}\\]\\s*-\\s*(.+)$`, 'm');
   const match = markdown.match(sectionRegex);
@@ -18,7 +19,6 @@ export function parseChangelog(markdown: string, version: string): ReleaseNotes 
   const date = match[1].trim();
   const startIndex = match.index! + match[0].length;
 
-  // Find where the next version section starts (or end of file)
   const nextSectionMatch = markdown.slice(startIndex).match(/^## \[/m);
   const sectionText = nextSectionMatch
     ? markdown.slice(startIndex, startIndex + nextSectionMatch.index!)
@@ -51,17 +51,20 @@ function extractList(section: string, heading: string): string[] {
 }
 
 function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
-  const overlay = document.getElementById('modal-overlay')!;
-  const modal = document.getElementById('modal')!;
-  const titleEl = document.getElementById('modal-title')!;
-  const bodyEl = document.getElementById('modal-body')!;
-  const btnCancel = document.getElementById('modal-cancel')!;
-  const btnConfirm = document.getElementById('modal-confirm')!;
+  cleanupFn?.();
+  cleanupFn = null;
 
+  const { overlay, titleEl, body, actions } = createModalShell({
+    id: 'whats-new-overlay',
+    title: '',
+    wide: true,
+  });
   titleEl.textContent = `What's New in v${version}`;
-  bodyEl.innerHTML = '';
-  modal.classList.add('modal-wide');
-  btnCancel.style.display = 'none';
+  body.innerHTML = '';
+  actions.innerHTML = '';
+
+  const confirmBtn = createModalButton('Got it', true);
+  actions.appendChild(confirmBtn);
 
   const container = document.createElement('div');
   container.className = 'whats-new-container';
@@ -81,29 +84,13 @@ function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
     container.appendChild(buildSection('Changes', notes.changes));
   }
 
-  bodyEl.appendChild(container);
-
-  const prevConfirmText = btnConfirm.textContent;
-  btnConfirm.textContent = 'Got it';
-  overlay.classList.remove('hidden');
-
-  if ((overlay as any)._cleanup) {
-    (overlay as any)._cleanup();
-    (overlay as any)._cleanup = null;
-  }
-
-  const cleanup = () => {
-    btnConfirm.removeEventListener('click', close);
-    document.removeEventListener('keydown', handleKeydown);
-    (overlay as any)._cleanup = null;
-  };
+  body.appendChild(container);
+  overlay.style.display = '';
 
   const close = () => {
-    cleanup();
-    closeModal();
-    modal.classList.remove('modal-wide');
-    btnCancel.style.display = '';
-    btnConfirm.textContent = prevConfirmText;
+    overlay.style.display = 'none';
+    cleanupFn?.();
+    cleanupFn = null;
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
@@ -113,10 +100,13 @@ function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
     }
   };
 
-  btnConfirm.addEventListener('click', close);
+  confirmBtn.addEventListener('click', close);
   document.addEventListener('keydown', handleKeydown);
 
-  (overlay as any)._cleanup = cleanup;
+  cleanupFn = () => {
+    confirmBtn.removeEventListener('click', close);
+    document.removeEventListener('keydown', handleKeydown);
+  };
 }
 
 function buildSection(title: string, items: string[]): HTMLElement {
@@ -144,7 +134,7 @@ export async function checkWhatsNew(): Promise<void> {
   const currentVersion = await window.vibeyard.app.getVersion();
   const lastSeen = appState.lastSeenVersion;
 
-  // Skip on fresh install — no previous version to compare against
+  // Skip on a fresh install — no previous version to compare against, so nothing's "new"
   if (lastSeen && lastSeen !== currentVersion) {
     try {
       const response = await fetch('./CHANGELOG.md');
@@ -156,7 +146,7 @@ export async function checkWhatsNew(): Promise<void> {
         }
       }
     } catch {
-      // Silently skip if CHANGELOG.md is unavailable
+      // CHANGELOG.md missing in some packaged builds — silently skip
     }
   }
 

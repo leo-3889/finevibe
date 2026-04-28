@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('./modal.js', () => ({ closeModal: vi.fn() }));
 vi.mock('../state.js', () => ({ appState: { lastSeenVersion: undefined, setLastSeenVersion: vi.fn() } }));
 
 import { parseChangelog } from './whats-new-dialog';

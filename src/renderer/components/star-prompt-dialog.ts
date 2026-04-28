@@ -1,29 +1,28 @@
-import { closeModal } from './modal.js';
 import { appState } from '../state.js';
+import { createModalShell } from './modal-shell.js';
 
 const STAR_THRESHOLD = 10;
 const REPO_URL = 'https://github.com/elirantutia/vibeyard';
 
-function showStarPromptDialog(): void {
-  const overlay = document.getElementById('modal-overlay')!;
-  const modal = document.getElementById('modal')!;
-  const titleEl = document.getElementById('modal-title')!;
-  const bodyEl = document.getElementById('modal-body')!;
-  const btnCancel = document.getElementById('modal-cancel')!;
-  const btnConfirm = document.getElementById('modal-confirm')!;
+let cleanupFn: (() => void) | null = null;
 
-  titleEl.textContent = 'Enjoying Vibeyard?';
-  bodyEl.innerHTML = '';
-  modal.classList.remove('modal-wide');
-  btnCancel.style.display = 'none';
-  btnConfirm.style.display = 'none';
+function showStarPromptDialog(): void {
+  cleanupFn?.();
+  cleanupFn = null;
+
+  const { overlay, body, actions } = createModalShell({
+    id: 'star-prompt-overlay',
+    title: 'Enjoying Vibeyard?',
+  });
+  body.innerHTML = '';
+  actions.innerHTML = '';
 
   const container = document.createElement('div');
   container.className = 'star-prompt-container';
 
   const icon = document.createElement('div');
   icon.className = 'star-prompt-icon';
-  icon.textContent = '\u2B50';
+  icon.textContent = '⭐';
   container.appendChild(icon);
 
   const message = document.createElement('div');
@@ -32,39 +31,34 @@ function showStarPromptDialog(): void {
     "If Vibeyard has been useful to you, consider giving it a star on GitHub. It helps others discover the project!";
   container.appendChild(message);
 
-  const actions = document.createElement('div');
-  actions.className = 'star-prompt-actions';
+  const innerActions = document.createElement('div');
+  innerActions.className = 'star-prompt-actions';
 
   const starBtn = document.createElement('button');
   starBtn.className = 'modal-btn primary';
   starBtn.textContent = 'Star on GitHub';
-  actions.appendChild(starBtn);
+  innerActions.appendChild(starBtn);
 
   const laterBtn = document.createElement('button');
   laterBtn.className = 'modal-btn';
   laterBtn.textContent = 'Maybe Later';
-  actions.appendChild(laterBtn);
+  innerActions.appendChild(laterBtn);
 
-  container.appendChild(actions);
+  container.appendChild(innerActions);
 
   const dontAsk = document.createElement('button');
   dontAsk.className = 'star-prompt-dont-ask';
   dontAsk.textContent = "Don't ask again";
   container.appendChild(dontAsk);
 
-  bodyEl.appendChild(container);
+  body.appendChild(container);
 
-  overlay.classList.remove('hidden');
-
-  if ((overlay as any)._cleanup) {
-    (overlay as any)._cleanup();
-    (overlay as any)._cleanup = null;
-  }
+  overlay.style.display = '';
 
   const close = () => {
-    closeModal();
-    btnCancel.style.display = '';
-    btnConfirm.style.display = '';
+    overlay.style.display = 'none';
+    cleanupFn?.();
+    cleanupFn = null;
   };
 
   const handleStar = () => {
@@ -90,7 +84,7 @@ function showStarPromptDialog(): void {
   dontAsk.addEventListener('click', handleDontAsk);
   document.addEventListener('keydown', handleKeydown);
 
-  (overlay as any)._cleanup = () => {
+  cleanupFn = () => {
     starBtn.removeEventListener('click', handleStar);
     laterBtn.removeEventListener('click', close);
     dontAsk.removeEventListener('click', handleDontAsk);

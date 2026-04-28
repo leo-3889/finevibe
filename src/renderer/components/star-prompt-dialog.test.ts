@@ -6,40 +6,69 @@ const mockAppState = vi.hoisted(() => ({
   dismissStarPrompt: vi.fn(),
 }));
 
-vi.mock('./modal.js', () => ({ closeModal: vi.fn() }));
 vi.mock('../state.js', () => ({ appState: mockAppState }));
 
-// Stub minimal DOM elements that the dialog needs
-function stubDOM(): void {
-  const elements: Record<string, any> = {};
-  const makeEl = (id: string) => {
-    const el: any = {
-      id,
-      textContent: '',
-      innerHTML: '',
-      style: {},
-      classList: { add: vi.fn(), remove: vi.fn(), contains: vi.fn(() => true) },
-      appendChild: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      querySelectorAll: vi.fn(() => []),
-      querySelector: vi.fn(() => null),
-    };
-    elements[id] = el;
-    return el;
-  };
-  makeEl('modal-overlay');
-  makeEl('modal');
-  makeEl('modal-title');
-  makeEl('modal-body');
-  makeEl('modal-cancel');
-  makeEl('modal-confirm');
+interface FakeEl {
+  id: string;
+  textContent: string;
+  innerHTML: string;
+  className: string;
+  style: Record<string, string>;
+  classList: { add: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn>; contains: ReturnType<typeof vi.fn> };
+  appendChild: ReturnType<typeof vi.fn>;
+  addEventListener: ReturnType<typeof vi.fn>;
+  removeEventListener: ReturnType<typeof vi.fn>;
+  querySelector: (sel: string) => FakeEl | null;
+  querySelectorAll: ReturnType<typeof vi.fn>;
+  children: FakeEl[];
+}
 
-  vi.stubGlobal('document', {
-    getElementById: (id: string) => elements[id] || null,
+function makeEl(id: string = ''): FakeEl {
+  const el: FakeEl = {
+    id,
+    textContent: '',
+    innerHTML: '',
+    className: '',
+    style: {},
+    classList: { add: vi.fn(), remove: vi.fn(), contains: vi.fn(() => false) },
+    appendChild: vi.fn((child: FakeEl) => { el.children.push(child); }),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
-    createElement: vi.fn(() => makeEl('dynamic')),
+    querySelector: vi.fn((sel: string) => {
+      const idMatch = sel.match(/^#(.+)$/);
+      if (idMatch) {
+        return findById(el, idMatch[1]);
+      }
+      return null;
+    }) as unknown as (sel: string) => FakeEl | null,
+    querySelectorAll: vi.fn(() => []),
+    children: [],
+  };
+  return el;
+}
+
+function findById(root: FakeEl, id: string): FakeEl | null {
+  if (root.id === id) return root;
+  for (const c of root.children) {
+    const found = findById(c, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+let docElements: Record<string, FakeEl> = {};
+let body: FakeEl;
+
+function stubDOM(): void {
+  docElements = {};
+  body = makeEl('body');
+
+  vi.stubGlobal('document', {
+    getElementById: (id: string) => docElements[id] || findById(body, id) || null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    createElement: (_tag: string) => makeEl(''),
+    body,
   });
   vi.stubGlobal('window', {
     vibeyard: { app: { openExternal: vi.fn() } },
@@ -59,29 +88,29 @@ describe('checkStarPrompt', () => {
   it('does not show dialog when launch count is below threshold', () => {
     mockAppState.appLaunchCount = 5;
     checkStarPrompt();
-    const overlay = document.getElementById('modal-overlay')!;
-    expect(overlay.classList.remove).not.toHaveBeenCalled();
+    expect(body.appendChild).not.toHaveBeenCalled();
   });
 
   it('does not show dialog when already dismissed', () => {
     mockAppState.appLaunchCount = 15;
     mockAppState.starPromptDismissed = true;
     checkStarPrompt();
-    const overlay = document.getElementById('modal-overlay')!;
-    expect(overlay.classList.remove).not.toHaveBeenCalled();
+    expect(body.appendChild).not.toHaveBeenCalled();
   });
 
   it('shows dialog when launch count meets threshold and not dismissed', () => {
     mockAppState.appLaunchCount = 10;
     checkStarPrompt();
-    const overlay = document.getElementById('modal-overlay')! as any;
-    expect(overlay.classList.remove).toHaveBeenCalledWith('hidden');
+    const overlay = findById(body, 'star-prompt-overlay');
+    expect(overlay).not.toBeNull();
+    expect(overlay!.style.display).toBe('');
   });
 
   it('shows dialog when launch count exceeds threshold', () => {
     mockAppState.appLaunchCount = 25;
     checkStarPrompt();
-    const overlay = document.getElementById('modal-overlay')! as any;
-    expect(overlay.classList.remove).toHaveBeenCalledWith('hidden');
+    const overlay = findById(body, 'star-prompt-overlay');
+    expect(overlay).not.toBeNull();
+    expect(overlay!.style.display).toBe('');
   });
 });
