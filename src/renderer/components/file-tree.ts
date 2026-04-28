@@ -1,4 +1,6 @@
 import { appState, ProjectRecord } from '../state.js';
+import { pathToFileURL } from '../file-url.js';
+import { showContextMenu } from './board/board-context-menu.js';
 
 export interface DirEntry {
   name: string;
@@ -211,6 +213,18 @@ async function renderChildren(
       row.addEventListener('click', (e) => {
         e.stopPropagation();
         appState.addFileReaderSession(projectId, entry.path);
+      });
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showContextMenu(e.clientX, e.clientY, [
+          {
+            label: 'Open in Browser',
+            action: () => {
+              appState.addBrowserTabSession(projectId, pathToFileURL(entry.path));
+            },
+          },
+        ]);
       });
     }
   }
