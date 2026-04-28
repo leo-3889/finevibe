@@ -5,6 +5,7 @@ import { showTaskModal } from './board-task-modal.js';
 import { initBoardDnd, cleanupBoardDnd, isDragActive, setDragEndCallback } from './board-dnd.js';
 import { showConfirmModal } from '../modal.js';
 import { showContextMenu } from './board-context-menu.js';
+import { showBoardHelpDialog } from './board-help-dialog.js';
 import { instances as kanbanInstances } from '../kanban/instance.js';
 import type { BoardColumn, TagDefinition, BoardData } from '../../../shared/types.js';
 import {
@@ -45,16 +46,29 @@ export function createBoardView(): HTMLElement {
   const header = document.createElement('div');
   header.className = 'board-header';
 
+  const titleGroup = document.createElement('div');
+  titleGroup.className = 'board-title-group';
+
   const title = document.createElement('span');
   title.className = 'board-title';
   title.textContent = 'Board';
+
+  const helpBtn = document.createElement('button');
+  helpBtn.className = 'board-help-btn';
+  helpBtn.title = 'About the board';
+  helpBtn.setAttribute('aria-label', 'About the board');
+  helpBtn.textContent = '?';
+  helpBtn.addEventListener('click', () => showBoardHelpDialog());
+
+  titleGroup.appendChild(title);
+  titleGroup.appendChild(helpBtn);
 
   const addBtn = document.createElement('button');
   addBtn.className = 'board-add-task';
   addBtn.textContent = '+ Add Task';
   addBtn.addEventListener('click', () => showTaskModal('create'));
 
-  header.appendChild(title);
+  header.appendChild(titleGroup);
   header.appendChild(addBtn);
 
   const tagRow = document.createElement('div');
