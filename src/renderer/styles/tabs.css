@@ -221,7 +221,7 @@
 
 .toolbar-icon-browser {
   box-sizing: border-box;
-  border: 1.5px solid currentColor;
+  border: 1px solid currentColor;
   border-radius: 3px;
 }
 
@@ -231,10 +231,11 @@
   left: -1px;
   top: 3px;
   width: calc(100% + 2px);
-  border-top: 1.5px solid currentColor;
+  border-top: 1px solid currentColor;
 }
 
-.toolbar-icon-browser-dot {
+.toolbar-icon-browser::after {
+  content: '';
   position: absolute;
   top: 1px;
   left: 2px;
