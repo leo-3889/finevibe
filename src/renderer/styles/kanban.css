@@ -200,7 +200,6 @@
 .board-card-bottom {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   margin-top: 6px;
   font-size: 11px;
   color: var(--text-secondary);

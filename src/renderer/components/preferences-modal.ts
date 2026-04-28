@@ -1,26 +1,34 @@
 import { appState } from '../state.js';
-import { closeModal } from './modal.js';
 import { createCustomSelect, type CustomSelectInstance } from './custom-select.js';
 import { applyZoom, getZoomFactor, ZOOM_STEPS } from '../zoom.js';
 import { shortcutManager, displayKeys, eventToAccelerator } from '../shortcuts.js';
 import { loadProviderAvailability, getProviderAvailabilitySnapshot } from '../provider-availability.js';
 import type { CliProviderMeta, ProviderId, SettingsValidationResult } from '../../shared/types.js';
 import { hasProviderIssue, type ProviderStatus } from './setup-checks.js';
+import { createModalShell, createModalButton } from './modal-shell.js';
 
-
-const overlay = document.getElementById('modal-overlay')!;
-const modal = document.getElementById('modal')!;
-const titleEl = document.getElementById('modal-title')!;
-const bodyEl = document.getElementById('modal-body')!;
-const btnCancel = document.getElementById('modal-cancel')!;
-const btnConfirm = document.getElementById('modal-confirm')!;
+let cleanupFn: (() => void) | null = null;
 
 type Section = 'general' | 'appearance' | 'shortcuts' | 'setup' | 'about';
 
 export function showPreferencesModal(): void {
-  titleEl.textContent = 'Preferences';
+  cleanupFn?.();
+  cleanupFn = null;
+
+  const { overlay, body: bodyEl, actions } = createModalShell({
+    id: 'preferences-overlay',
+    title: 'Preferences',
+    wide: true,
+  });
   bodyEl.innerHTML = '';
-  modal.classList.add('modal-wide');
+  actions.innerHTML = '';
+
+  const btnCancel = createModalButton('Cancel', false);
+  btnCancel.id = 'preferences-cancel';
+  actions.appendChild(btnCancel);
+  const btnConfirm = createModalButton('Done', true);
+  btnConfirm.id = 'preferences-confirm';
+  actions.appendChild(btnConfirm);
 
   // Build two-pane layout
   const layout = document.createElement('div');
@@ -729,14 +737,7 @@ export function showPreferencesModal(): void {
   // Show initial section
   renderSection('general');
 
-  btnConfirm.textContent = 'Done';
-  overlay.classList.remove('hidden');
-
-  // Clean up previous listeners
-  if ((overlay as any)._cleanup) {
-    (overlay as any)._cleanup();
-    (overlay as any)._cleanup = null;
-  }
+  overlay.style.display = '';
 
   const save = () => {
     if (soundCheckbox) {
@@ -781,20 +782,20 @@ export function showPreferencesModal(): void {
     }
   };
 
+  const close = () => {
+    overlay.style.display = 'none';
+    cleanupFn?.();
+    cleanupFn = null;
+  };
+
   const handleConfirm = () => {
-    cleanupRecorder();
     save();
-    closeModal();
-    modal.classList.remove('modal-wide');
-    btnConfirm.textContent = 'Create';
+    close();
   };
 
   const handleCancel = () => {
-    cleanupRecorder();
     document.documentElement.dataset.theme = originalTheme;
-    closeModal();
-    modal.classList.remove('modal-wide');
-    btnConfirm.textContent = 'Create';
+    close();
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
@@ -813,7 +814,7 @@ export function showPreferencesModal(): void {
   btnCancel.addEventListener('click', handleCancel);
   document.addEventListener('keydown', handleKeydown);
 
-  (overlay as any)._cleanup = () => {
+  cleanupFn = () => {
     cleanupRecorder();
     zoomPrefUnsub?.();
     zoomPrefUnsub = null;

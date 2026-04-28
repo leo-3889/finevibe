@@ -94,7 +94,6 @@ export interface SessionRecord {
   worktreePath?: string;
   fileReaderPath?: string;
   fileReaderLine?: number;
-  cwd?: string;  // Override project path for task-specific working directory
   createdAt: string;
   userRenamed?: boolean;
   cost?: CostInfo;
@@ -130,6 +129,15 @@ export interface InitialContextSnapshot {
   usedPercentage: number;
 }
 
+export interface DeepSearchResult {
+  providerId: ProviderId;
+  cliSessionId: string;
+  projectSlug: string;
+  projectCwd: string;
+  snippet: string;
+  score: number;
+}
+
 export interface ProjectInsightsData {
   initialContextSnapshots: InitialContextSnapshot[];
   dismissed: string[];
@@ -153,12 +161,12 @@ export interface BoardTask {
   title: string;
   prompt: string;
   notes?: string;
-  cwd: string;
   columnId: string;
   order: number;
   sessionId?: string;
   cliSessionId?: string;
   providerId?: ProviderId;
+  planMode?: boolean;
   tags?: string[];
   createdAt: number;
   updatedAt: number;

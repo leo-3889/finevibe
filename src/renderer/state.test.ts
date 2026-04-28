@@ -1844,3 +1844,92 @@ describe('toggleSwarm() sync new CLI sessions', () => {
     expect(appState.activeProject!.layout.splitPanes).toContain(newSession.id);
   });
 });
+
+describe('openCliSession()', () => {
+  it('creates a new session with the given cliSessionId', () => {
+    const project = addProject();
+    const session = appState.openCliSession(project.id, 'cli-abc-123', 'My Session')!;
+    expect(session).toBeDefined();
+    expect(session.cliSessionId).toBe('cli-abc-123');
+    expect(session.name).toBe('My Session');
+    expect(session.providerId).toBe('claude');
+  });
+
+  it('sets the new session as active', () => {
+    const project = addProject();
+    const session = appState.openCliSession(project.id, 'cli-abc-123', 'My Session')!;
+    expect(appState.activeProject!.activeSessionId).toBe(session.id);
+  });
+
+  it('activates existing tab when cliSessionId already open', () => {
+    const project = addProject();
+    const first = appState.openCliSession(project.id, 'cli-same', 'Session A')!;
+    appState.addSession(project.id, 'Other');
+    expect(appState.activeProject!.activeSessionId).not.toBe(first.id);
+
+    const second = appState.openCliSession(project.id, 'cli-same', 'Session A')!;
+    expect(second.id).toBe(first.id);
+    expect(appState.activeProject!.sessions).toHaveLength(2); // no duplicate created
+  });
+
+  it('emits session-added for new session', () => {
+    const project = addProject();
+    const addedCb = vi.fn();
+    appState.on('session-added', addedCb);
+    appState.openCliSession(project.id, 'cli-xyz', 'S');
+    expect(addedCb).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not emit session-added when activating existing tab', () => {
+    const project = addProject();
+    appState.openCliSession(project.id, 'cli-dup', 'S');
+    const addedCb = vi.fn();
+    appState.on('session-added', addedCb);
+    appState.openCliSession(project.id, 'cli-dup', 'S');
+    expect(addedCb).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined for nonexistent project', () => {
+    expect(appState.openCliSession('no-such-project', 'cli-123', 'S')).toBeUndefined();
+  });
+
+  it('persists state after opening session', () => {
+    const project = addProject();
+    mockSave.mockClear();
+    appState.openCliSession(project.id, 'cli-persist', 'S');
+    expect(mockSave).toHaveBeenCalled();
+  });
+
+  it('appends to swarm splitPanes when in swarm mode', () => {
+    const project = addProject();
+    // swarm mode is the default layout mode
+    const session = appState.openCliSession(project.id, 'cli-swarm', 'S')!;
+    expect(appState.activeProject!.layout.splitPanes).toContain(session.id);
+  });
+});
+
+describe('addPlanSession()', () => {
+  it('uses providerIdOverride when provided', () => {
+    const project = addProject();
+    const session = appState.addPlanSession(project.id, 'Plan', true, 'copilot')!;
+    expect(session.providerId).toBe('copilot');
+  });
+
+  it('providerIdOverride wins over preferences.defaultProvider', () => {
+    appState.setPreference('defaultProvider', 'gemini');
+    const project = addProject();
+    const session = appState.addPlanSession(project.id, 'Plan', true, 'copilot')!;
+    expect(session.providerId).toBe('copilot');
+  });
+
+  it('falls back to preferences.defaultProvider when override absent', () => {
+    appState.setPreference('defaultProvider', 'gemini');
+    const project = addProject();
+    const session = appState.addPlanSession(project.id, 'Plan', true)!;
+    expect(session.providerId).toBe('gemini');
+  });
+
+  it('returns undefined for nonexistent project', () => {
+    expect(appState.addPlanSession('no-such-project', 'Plan', true, 'claude')).toBeUndefined();
+  });
+});

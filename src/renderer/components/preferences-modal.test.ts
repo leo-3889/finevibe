@@ -181,11 +181,21 @@ function findInTree(root: Record<string, any>, predicate: (node: Record<string, 
   return null;
 }
 
-const domElements: Record<string, Record<string, any>> = {};
+let docBody: Record<string, any>;
 
-function getOrCreateElement(id: string): Record<string, any> {
-  if (!domElements[id]) domElements[id] = makeElement();
-  return domElements[id];
+function findById(root: Record<string, any>, id: string): Record<string, any> | null {
+  if (root.id === id) return root;
+  for (const child of root.children as Record<string, any>[]) {
+    const found = findById(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function getElement(id: string): Record<string, any> {
+  const found = findById(docBody, id);
+  if (!found) throw new Error(`element not found: ${id}`);
+  return found;
 }
 
 function click(el: Record<string, any>): void {
@@ -193,8 +203,8 @@ function click(el: Record<string, any>): void {
 }
 
 function selectPreferencesSection(section: string): void {
-  const body = getOrCreateElement('modal-body');
-  const menu = findInTree(body, (node) => node.className === 'preferences-menu');
+  const overlay = getElement('preferences-overlay');
+  const menu = findInTree(overlay, (node) => node.className === 'preferences-menu');
   if (!menu) throw new Error('preferences menu not found');
   const item = (menu.children as Record<string, any>[]).find((c) => c.dataset?.section === section);
   if (!item) throw new Error(`menu item not found for section: ${section}`);
@@ -206,13 +216,14 @@ describe('showPreferencesModal theme preference', () => {
     vi.resetModules();
     vi.clearAllMocks();
     selectState.reset();
-    for (const key of Object.keys(domElements)) delete domElements[key];
+    docBody = makeElement('body');
 
     mockState.preferences.theme = 'dark';
 
     vi.stubGlobal('document', {
       documentElement: { dataset: {} as Record<string, string> },
-      getElementById(id: string) { return getOrCreateElement(id); },
+      body: docBody,
+      getElementById(id: string) { return findById(docBody, id); },
       createElement(tagName: string) { return makeElement(tagName); },
       createTextNode(text: string) { return { textContent: text }; },
       addEventListener: vi.fn(),
@@ -261,7 +272,7 @@ describe('showPreferencesModal theme preference', () => {
 
     expect((document as any).documentElement.dataset.theme).toBe('light');
 
-    click(getOrCreateElement('modal-confirm'));
+    click(getElement('preferences-confirm'));
 
     expect(mockState.setPreference).toHaveBeenCalledWith('theme', 'light');
   });
@@ -275,7 +286,7 @@ describe('showPreferencesModal theme preference', () => {
 
     const themeSelect = selectState.instances.get('pref-theme')!;
     themeSelect.setValue('light');
-    click(getOrCreateElement('modal-cancel'));
+    click(getElement('preferences-cancel'));
 
     expect((document as any).documentElement.dataset.theme).toBe('dark');
     expect(mockState.setPreference).not.toHaveBeenCalledWith('theme', 'light');
@@ -287,7 +298,7 @@ describe('showPreferencesModal theme preference', () => {
     showPreferencesModal();
     selectPreferencesSection('appearance');
 
-    (getOrCreateElement('modal-overlay') as any)._cleanup();
+    click(getElement('preferences-confirm'));
 
     expect(selectState.instances.get('pref-theme')?.destroyCount).toBe(1);
     expect(selectState.instances.get('pref-zoom')?.destroyCount).toBe(1);

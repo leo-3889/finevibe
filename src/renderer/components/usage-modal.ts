@@ -1,12 +1,7 @@
-import { closeModal } from './modal.js';
 import type { StatsCache } from '../types.js';
+import { createModalShell, createModalButton } from './modal-shell.js';
 
-const overlay = document.getElementById('modal-overlay')!;
-const modal = document.getElementById('modal')!;
-const titleEl = document.getElementById('modal-title')!;
-const bodyEl = document.getElementById('modal-body')!;
-const btnCancel = document.getElementById('modal-cancel')!;
-const btnConfirm = document.getElementById('modal-confirm')!;
+let cleanupFn: (() => void) | null = null;
 
 function formatNumber(n: number): string {
   return n.toLocaleString();
@@ -172,30 +167,31 @@ function renderEmpty(container: HTMLElement): void {
 }
 
 export async function showUsageModal(): Promise<void> {
-  titleEl.textContent = 'Usage Stats';
-  bodyEl.innerHTML = '';
-  modal.classList.add('modal-wide');
+  cleanupFn?.();
+  cleanupFn = null;
+
+  const { overlay, body, actions } = createModalShell({
+    id: 'usage-overlay',
+    title: 'Usage Stats',
+    wide: true,
+  });
+  body.innerHTML = '';
+  actions.innerHTML = '';
+
+  const confirmBtn = createModalButton('Done', true);
+  actions.appendChild(confirmBtn);
 
   const content = document.createElement('div');
   content.className = 'usage-content';
   content.innerHTML = '<div class="usage-empty">Loading...</div>';
-  bodyEl.appendChild(content);
+  body.appendChild(content);
 
-  btnConfirm.textContent = 'Done';
-  btnCancel.style.display = 'none';
-  overlay.classList.remove('hidden');
-
-  // Clean up previous listeners
-  if ((overlay as any)._cleanup) {
-    (overlay as any)._cleanup();
-    (overlay as any)._cleanup = null;
-  }
+  overlay.style.display = '';
 
   const handleClose = () => {
-    closeModal();
-    modal.classList.remove('modal-wide');
-    btnConfirm.textContent = 'Create';
-    btnCancel.style.display = '';
+    overlay.style.display = 'none';
+    cleanupFn?.();
+    cleanupFn = null;
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
@@ -205,17 +201,14 @@ export async function showUsageModal(): Promise<void> {
     }
   };
 
-  btnConfirm.addEventListener('click', handleClose);
-  btnCancel.addEventListener('click', handleClose);
+  confirmBtn.addEventListener('click', handleClose);
   document.addEventListener('keydown', handleKeydown);
 
-  (overlay as any)._cleanup = () => {
-    btnConfirm.removeEventListener('click', handleClose);
-    btnCancel.removeEventListener('click', handleClose);
+  cleanupFn = () => {
+    confirmBtn.removeEventListener('click', handleClose);
     document.removeEventListener('keydown', handleKeydown);
   };
 
-  // Load stats
   try {
     const stats = await window.vibeyard.stats.getCache();
     content.innerHTML = '';

@@ -17,6 +17,7 @@ import { checkForUpdates, quitAndInstall } from './auto-updater';
 import { createAppMenu } from './menu';
 import { getProvider, getProviderMeta, getAllProviderMetas } from './providers/registry';
 import { buildHandoffPrompt } from './providers/resume-handoff';
+import { searchSessions } from './session-deep-search';
 import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult } from '../shared/types';
 import { analyzeReadiness } from './readiness/analyzer';
 import { expandUserPath, isBinaryBuffer, BINARY_SNIFF_BYTES } from './fs-utils';
@@ -273,6 +274,10 @@ export function registerIpcHandlers(): void {
       }
     }
     return buildHandoffPrompt({ fromProviderLabel, sessionName, transcriptPath });
+  });
+
+  ipcMain.handle('session:deepSearch', (_event, query: string) => {
+    return searchSessions(query);
   });
 
   ipcMain.handle('provider:checkBinary', (_event, providerId: ProviderId = 'claude') => {
@@ -537,6 +542,23 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.warn('fs:readImage failed:', err);
       return null;
+    }
+  });
+
+  ipcMain.handle('fs:trashItem', async (_event, filePath: string): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const resolved = path.resolve(filePath);
+      // Stricter than isAllowedReadPath: only allow trashing inside a known project,
+      // never config dirs like ~/.claude or ~/.codex.
+      if (!isWithinKnownProject(resolved)) {
+        console.warn(`fs:trashItem blocked: ${resolved} is not within a known project`);
+        return { ok: false, error: 'Path is not within a known project' };
+      }
+      await shell.trashItem(resolved);
+      return { ok: true };
+    } catch (err) {
+      console.warn('fs:trashItem failed:', err);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 

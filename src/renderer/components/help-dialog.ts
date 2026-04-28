@@ -1,18 +1,13 @@
-import { closeModal } from './modal.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
-
-const overlay = document.getElementById('modal-overlay')!;
-const modal = document.getElementById('modal')!;
-const titleEl = document.getElementById('modal-title')!;
-const bodyEl = document.getElementById('modal-body')!;
-const btnCancel = document.getElementById('modal-cancel')!;
-const btnConfirm = document.getElementById('modal-confirm')!;
+import { createModalShell, createModalButton } from './modal-shell.js';
 
 interface IndicatorRow {
   visual: () => HTMLElement;
   label: string;
   description: string;
 }
+
+let cleanupFn: (() => void) | null = null;
 
 function dot(color: string, animate?: boolean): HTMLElement {
   const el = document.createElement('span');
@@ -78,11 +73,11 @@ function buildShortcutSections(): HTMLElement[] {
   const grouped = shortcutManager.getAll();
 
   for (const [category, shortcuts] of grouped) {
-    // Collapse goto-session-1..9 into a single row
     const rows: IndicatorRow[] = [];
     let gotoHandled = false;
 
     for (const shortcut of shortcuts) {
+      // Collapse goto-session-1..9 into a single "N" row to avoid 9 near-identical entries
       if (shortcut.id.startsWith('goto-session-')) {
         if (!gotoHandled) {
           gotoHandled = true;
@@ -111,10 +106,20 @@ function buildShortcutSections(): HTMLElement[] {
 }
 
 export function showHelpDialog(): void {
-  titleEl.textContent = 'Help';
-  bodyEl.innerHTML = '';
-  modal.classList.add('modal-wide');
-  btnCancel.style.display = 'none';
+  cleanupFn?.();
+  cleanupFn = null;
+
+  const { overlay, body, actions } = createModalShell({
+    id: 'help-overlay',
+    title: 'Help',
+    wide: true,
+  });
+  body.innerHTML = '';
+  actions.innerHTML = '';
+
+  const confirmBtn = createModalButton('Done', true);
+  confirmBtn.id = 'help-confirm';
+  actions.appendChild(confirmBtn);
 
   const container = document.createElement('div');
   container.className = 'help-container';
@@ -132,41 +137,32 @@ export function showHelpDialog(): void {
   ]));
 
   container.appendChild(buildSection('Status Bar', [
-    { visual: () => mono('$1.23 \u00b7 5k in / 2k out'), label: 'Cost details', description: 'Detailed cost with token counts' },
+    { visual: () => mono('$1.23 · 5k in / 2k out'), label: 'Cost details', description: 'Detailed cost with token counts' },
     { visual: () => mono('[====------] 50%'), label: 'Context usage', description: 'How full the context window is' },
     { visual: () => mono('[=======---] 75%', '#f4b400'), label: 'Context warning', description: 'Context usage above 70%' },
-    { visual: () => mono('[=========\u2010] 95%', '#e94560'), label: 'Context critical', description: 'Context usage above 90%' },
+    { visual: () => mono('[=========‐] 95%', '#e94560'), label: 'Context critical', description: 'Context usage above 90%' },
   ]));
 
   container.appendChild(buildSection('Git Status', [
-    { visual: () => mono('\u2387 main', '#a0a0b0'), label: 'Branch', description: 'Current git branch' },
+    { visual: () => mono('⎇ main', '#a0a0b0'), label: 'Branch', description: 'Current git branch' },
     { visual: () => mono('+3', '#34a853'), label: 'Staged', description: 'Files staged for commit' },
     { visual: () => mono('~2', '#f4b400'), label: 'Modified', description: 'Modified tracked files' },
     { visual: () => mono('?1', '#606070'), label: 'Untracked', description: 'New untracked files' },
     { visual: () => mono('!1', '#e94560'), label: 'Conflicted', description: 'Files with merge conflicts' },
-    { visual: () => mono('\u21912 \u21933', '#606070'), label: 'Ahead/Behind', description: 'Commits ahead/behind remote' },
+    { visual: () => mono('↑2 ↓3', '#606070'), label: 'Ahead/Behind', description: 'Commits ahead/behind remote' },
   ]));
 
-  // Keyboard shortcuts sections
   for (const section of buildShortcutSections()) {
     container.appendChild(section);
   }
 
-  bodyEl.appendChild(container);
-
-  btnConfirm.textContent = 'Done';
-  overlay.classList.remove('hidden');
-
-  if ((overlay as any)._cleanup) {
-    (overlay as any)._cleanup();
-    (overlay as any)._cleanup = null;
-  }
+  body.appendChild(container);
+  overlay.style.display = '';
 
   const close = () => {
-    closeModal();
-    modal.classList.remove('modal-wide');
-    btnCancel.style.display = '';
-    btnConfirm.textContent = 'Create';
+    overlay.style.display = 'none';
+    cleanupFn?.();
+    cleanupFn = null;
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
@@ -176,13 +172,11 @@ export function showHelpDialog(): void {
     }
   };
 
-  btnConfirm.addEventListener('click', close);
-  btnCancel.addEventListener('click', close);
+  confirmBtn.addEventListener('click', close);
   document.addEventListener('keydown', handleKeydown);
 
-  (overlay as any)._cleanup = () => {
-    btnConfirm.removeEventListener('click', close);
-    btnCancel.removeEventListener('click', close);
+  cleanupFn = () => {
+    confirmBtn.removeEventListener('click', close);
     document.removeEventListener('keydown', handleKeydown);
   };
 }

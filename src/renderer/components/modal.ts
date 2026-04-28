@@ -20,6 +20,14 @@ const bodyEl = document.getElementById('modal-body')!;
 const btnCancel = document.getElementById('modal-cancel')!;
 const btnConfirm = document.getElementById('modal-confirm')!;
 
+/** Register a teardown callback for resources injected into the open modal
+ *  (e.g. a custom-select created outside the standard FieldDef flow). Runs
+ *  when the modal closes. */
+export function registerModalCleanup(fn: () => void): void {
+  if (!(overlay as any)._selectCleanups) (overlay as any)._selectCleanups = [];
+  (overlay as any)._selectCleanups.push(fn);
+}
+
 export function setModalError(fieldId: string, message: string): void {
   const existing = bodyEl.querySelector(`#modal-error-${fieldId}`);
   if (existing) existing.remove();
@@ -47,6 +55,17 @@ export interface ModalOptions {
   confirmLabel?: string;
 }
 
+function resetFooter(): void {
+  btnConfirm.style.display = '';
+  btnConfirm.style.background = '';
+  btnConfirm.style.borderColor = '';
+  const footer = document.getElementById('modal-actions');
+  if (!footer) return;
+  for (const el of Array.from(footer.children)) {
+    if (el !== btnCancel && el !== btnConfirm) el.remove();
+  }
+}
+
 export function showModal(
   title: string,
   fields: FieldDef[],
@@ -55,19 +74,9 @@ export function showModal(
 ): void {
   titleEl.textContent = title;
   btnConfirm.textContent = options?.confirmLabel ?? DEFAULT_CONFIRM_LABEL;
-  btnConfirm.style.display = '';
-  btnConfirm.style.background = '';
-  btnConfirm.style.borderColor = '';
   bodyEl.innerHTML = '';
   btnCancel.textContent = 'Cancel';
-
-  // Clean up any extra buttons injected into the footer by previous modals
-  const footer = document.getElementById('modal-actions');
-  if (footer) {
-    for (const el of Array.from(footer.children)) {
-      if (el !== btnCancel && el !== btnConfirm) el.remove();
-    }
-  }
+  resetFooter();
 
   for (const field of fields) {
     const div = document.createElement('div');
@@ -194,6 +203,7 @@ export function showConfirmDialog(
   bodyEl.innerHTML = '';
   btnConfirm.textContent = options.confirmLabel ?? 'Confirm';
   btnCancel.textContent = options.cancelLabel ?? 'Cancel';
+  resetFooter();
 
   const messageEl = document.createElement('div');
   messageEl.className = 'modal-message';

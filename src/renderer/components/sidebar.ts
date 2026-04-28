@@ -172,9 +172,7 @@ function buildProjectActions(
   const actions = document.createElement('div');
   actions.className = 'project-actions';
 
-  const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
-  const kanbanActive = appState.activeProjectId === project.id && activeSession?.type === 'kanban';
-  const kanbanBtn = makeActionButton('Kanban', kanbanActive);
+  const kanbanBtn = makeActionButton('Kanban', false);
   kanbanBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     appState.openKanbanTab(project.id);
