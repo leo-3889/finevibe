@@ -2,6 +2,9 @@ import * as fs from 'fs';
 import type { DeepSearchResult } from '../shared/types';
 import type { CliProvider, TranscriptDescriptor } from './providers/provider';
 import { getAllProviders } from './providers/registry';
+import { TRANSCRIPT_TEXT_SEPARATOR } from './providers/transcript-utils';
+
+const MAX_DERIVED_NAME_LENGTH = 80;
 
 const MAX_CACHE_ENTRIES = 500;
 
@@ -56,6 +59,15 @@ function scoreFuzzy(textLower: string, query: string): number {
   return 0;
 }
 
+function deriveName(text: string): string | undefined {
+  const first = text.split(TRANSCRIPT_TEXT_SEPARATOR)[0]?.trim();
+  if (!first) return undefined;
+  const oneLine = first.replace(/\s+/g, ' ');
+  return oneLine.length > MAX_DERIVED_NAME_LENGTH
+    ? oneLine.slice(0, MAX_DERIVED_NAME_LENGTH - 1).trimEnd() + '…'
+    : oneLine;
+}
+
 function extractSnippet(text: string, textLower: string, query: string): string {
   const q = query.toLowerCase().trim();
   let idx = textLower.indexOf(q);
@@ -86,11 +98,18 @@ async function searchOneProvider(provider: CliProvider, query: string): Promise<
     const entry = await getCachedIndex(provider, desc.transcriptPath);
     return { desc, entry };
   }));
-  const out: DeepSearchResult[] = [];
+  // Same cliSessionId can appear under multiple project slugs (e.g. Claude
+  // resumes that move between cwds); keep the highest-scoring transcript.
+  const best = new Map<string, { desc: TranscriptDescriptor; entry: CacheEntry; score: number }>();
   for (const { desc, entry } of indexed) {
     if (!entry.textLower) continue;
     const score = scoreFuzzy(entry.textLower, query);
     if (score === 0) continue;
+    const prev = best.get(desc.cliSessionId);
+    if (!prev || score > prev.score) best.set(desc.cliSessionId, { desc, entry, score });
+  }
+  const out: DeepSearchResult[] = [];
+  for (const { desc, entry, score } of best.values()) {
     out.push({
       providerId: provider.meta.id,
       cliSessionId: desc.cliSessionId,
@@ -98,6 +117,7 @@ async function searchOneProvider(provider: CliProvider, query: string): Promise<
       projectCwd: desc.projectCwd || entry.cwd,
       snippet: extractSnippet(entry.text, entry.textLower, query),
       score,
+      derivedName: deriveName(entry.text),
     });
   }
   return out;

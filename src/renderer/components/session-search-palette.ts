@@ -7,6 +7,14 @@ interface ResolvedResult extends DeepSearchResult {
   sessionName: string | null;
   projectId: string | null;
   archivedId: string | null;
+  activeSessionId: string | null;
+}
+
+interface SessionMapEntry {
+  projectId: string;
+  name: string;
+  archivedId: string | null;
+  activeSessionId: string | null;
 }
 
 export function highlightMatches(text: string, query: string): string {
@@ -35,13 +43,30 @@ let resolvedResults: ResolvedResult[] = [];
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let latestSearchToken = 0;
 
-function buildSessionMap(): Map<string, { projectId: string; archivedId: string; name: string }> {
-  const map = new Map<string, { projectId: string; archivedId: string; name: string }>();
+function buildSessionMap(): Map<string, SessionMapEntry> {
+  const map = new Map<string, SessionMapEntry>();
+  // Active sessions take precedence: if a session is open as a tab, opening from
+  // the palette should switch to that tab rather than re-resume from history.
+  for (const project of appState.projects) {
+    for (const session of project.sessions) {
+      if (!session.cliSessionId) continue;
+      map.set(session.cliSessionId, {
+        projectId: project.id,
+        name: session.name,
+        archivedId: null,
+        activeSessionId: session.id,
+      });
+    }
+  }
   for (const project of appState.projects) {
     for (const archived of appState.getSessionHistory(project.id)) {
-      if (archived.cliSessionId) {
-        map.set(archived.cliSessionId, { projectId: project.id, archivedId: archived.id, name: archived.name });
-      }
+      if (!archived.cliSessionId || map.has(archived.cliSessionId)) continue;
+      map.set(archived.cliSessionId, {
+        projectId: project.id,
+        name: archived.name,
+        archivedId: archived.id,
+        activeSessionId: null,
+      });
     }
   }
   return map;
@@ -130,7 +155,13 @@ async function searchSessions(): Promise<void> {
   const sessionMap = buildSessionMap();
   resolvedResults = raw.map(r => {
     const match = sessionMap.get(r.cliSessionId) ?? null;
-    return { ...r, sessionName: match?.name ?? null, projectId: match?.projectId ?? null, archivedId: match?.archivedId ?? null };
+    return {
+      ...r,
+      sessionName: match?.name ?? null,
+      projectId: match?.projectId ?? null,
+      archivedId: match?.archivedId ?? null,
+      activeSessionId: match?.activeSessionId ?? null,
+    };
   });
 
   activeIndex = 0;
@@ -170,7 +201,7 @@ function renderResults(): void {
     const nameRow = document.createElement('div');
     nameRow.className = 'session-palette-item-name';
     const nameText = document.createElement('span');
-    nameText.textContent = r.sessionName ?? r.cliSessionId.slice(0, 8) + '\u2026';
+    nameText.textContent = r.sessionName ?? r.derivedName ?? r.cliSessionId.slice(0, 8) + '\u2026';
     nameRow.appendChild(nameText);
 
     const providerBadge = document.createElement('span');
@@ -207,7 +238,10 @@ function updateActiveItem(): void {
 }
 
 function openResult(r: ResolvedResult): void {
-  if (r.projectId && r.archivedId) {
+  if (r.projectId && r.activeSessionId) {
+    appState.setActiveProject(r.projectId);
+    appState.setActiveSession(r.projectId, r.activeSessionId);
+  } else if (r.projectId && r.archivedId) {
     appState.setActiveProject(r.projectId);
     appState.resumeFromHistory(r.projectId, r.archivedId);
   } else {
@@ -217,7 +251,7 @@ function openResult(r: ResolvedResult): void {
       const name = r.projectCwd ? r.projectCwd.split('/').filter(Boolean).pop()! : r.projectSlug;
       project = appState.addProject(name, r.projectCwd);
     }
-    const name = r.sessionName ?? r.cliSessionId.slice(0, 8) + '\u2026';
+    const name = r.sessionName ?? r.derivedName ?? r.cliSessionId.slice(0, 8) + '\u2026';
     appState.openCliSession(project.id, r.cliSessionId, name, r.providerId);
   }
   hidePalette();

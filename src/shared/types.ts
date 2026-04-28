@@ -136,6 +136,8 @@ export interface DeepSearchResult {
   projectCwd: string;
   snippet: string;
   score: number;
+  /** Title derived from the first user message — fallback when Vibeyard has no name for this session. */
+  derivedName?: string;
 }
 
 export interface ProjectInsightsData {

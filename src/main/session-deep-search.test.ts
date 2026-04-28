@@ -141,6 +141,75 @@ describe('searchSessions()', () => {
     expect(await searchSessions('find me')).toHaveLength(20);
   });
 
+  it('dedupes by (providerId, cliSessionId), keeping the highest-scoring hit', async () => {
+    // Same Claude session indexed under two project slugs — both transcripts contain
+    // the query but with different match strength. Only the higher-scoring one survives.
+    providersForTest.push(fakeProvider({
+      id: 'claude',
+      descriptors: [
+        { cliSessionId: 'dup', transcriptPath: '/slug-a/dup.jsonl', projectSlug: 'slug-a', projectCwd: '/a' },
+        { cliSessionId: 'dup', transcriptPath: '/slug-b/dup.jsonl', projectSlug: 'slug-b', projectCwd: '/b' },
+        { cliSessionId: 'unique', transcriptPath: '/slug-a/unique.jsonl', projectSlug: 'slug-a', projectCwd: '/a' },
+      ],
+      index: {
+        '/slug-a/dup.jsonl': { text: 'deploy kubernetes cluster', cwd: '/a' }, // exact → 100
+        '/slug-b/dup.jsonl': { text: 'only deploy here nothing else', cwd: '/b' }, // partial → 25
+        '/slug-a/unique.jsonl': { text: 'deploy kubernetes cluster', cwd: '/a' }, // exact → 100
+      },
+    }));
+    mockStat.mockResolvedValue(makeStat(1));
+
+    const results = await searchSessions('deploy kubernetes');
+    expect(results).toHaveLength(2);
+    const dup = results.find(r => r.cliSessionId === 'dup');
+    expect(dup).toBeDefined();
+    expect(dup!.score).toBe(100);
+    expect(dup!.projectSlug).toBe('slug-a');
+  });
+
+  it('keeps separate entries when different providers report the same cliSessionId', async () => {
+    providersForTest.push(fakeProvider({
+      id: 'claude',
+      descriptors: [{ cliSessionId: 'shared-uuid', transcriptPath: '/cl', projectCwd: '/cl' }],
+      index: { '/cl': { text: 'find me', cwd: '/cl' } },
+    }));
+    providersForTest.push(fakeProvider({
+      id: 'codex',
+      descriptors: [{ cliSessionId: 'shared-uuid', transcriptPath: '/cx', projectCwd: '/cx' }],
+      index: { '/cx': { text: 'find me', cwd: '/cx' } },
+    }));
+    mockStat.mockResolvedValue(makeStat(1));
+
+    const results = await searchSessions('find me');
+    expect(results).toHaveLength(2);
+    expect(new Set(results.map(r => r.providerId))).toEqual(new Set(['claude', 'codex']));
+  });
+
+  it('derives a name from the first transcript segment', async () => {
+    const text = 'fix duplicate search rows in the palette\n---\nfollow-up message about something else with the find me query';
+    providersForTest.push(fakeProvider({
+      id: 'claude',
+      descriptors: [{ cliSessionId: 'd1', transcriptPath: '/d1' }],
+      index: { '/d1': { text, cwd: '/repo' } },
+    }));
+    mockStat.mockResolvedValue(makeStat(1));
+    const results = await searchSessions('find me');
+    expect(results[0].derivedName).toBe('fix duplicate search rows in the palette');
+  });
+
+  it('truncates long derived names with an ellipsis', async () => {
+    const longLine = 'a'.repeat(200);
+    providersForTest.push(fakeProvider({
+      id: 'claude',
+      descriptors: [{ cliSessionId: 'd2', transcriptPath: '/d2' }],
+      index: { '/d2': { text: longLine + '\nfind me\n---\nmore', cwd: '' } },
+    }));
+    mockStat.mockResolvedValue(makeStat(1));
+    const results = await searchSessions('find me');
+    expect(results[0].derivedName).toMatch(/…$/);
+    expect(results[0].derivedName!.length).toBeLessThanOrEqual(80);
+  });
+
   it('caches indexed text by mtime and avoids re-indexing on second search', async () => {
     const indexSpy = vi.fn(async () => ({ text: 'cached body content', cwd: '/x' }));
     const provider: CliProvider = {
