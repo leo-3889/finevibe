@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.31] - 2026-04-28
+
+### Features
+
+- Delete option to file tree right-click context menu
+- Open in browser context menu on file tree
+- Provider dropdown and plan mode toggle to kanban task form
+- Global session search palette (Cmd+Shift+F)
+- Rename option to project context menu
+- Kanban board for task management and session orchestration
+
+### Fixes
+
+- Modal confirm button missing after dismissing star prompt
+- Discard of untracked folders in git changes panel
+- Kanban sidebar button highlighting when its tab is open
+
+### Changes
+
+- Remove kanban button from top toolbar
+- Remove per-task folder field from kanban
+- Copy on select
+
 ## [0.2.30] - 2026-04-26
 
 ### Features
