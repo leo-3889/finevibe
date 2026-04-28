@@ -5,7 +5,7 @@ import { onChange as onCostChange, getAggregateCost } from '../session-cost.js';
 import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unread.js';
 import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, markSeen as markDiscussionsSeen, onChange as onDiscussionsChange, DISCUSSIONS_URL } from '../discussions-badge.js';
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
-import { esc } from '../dom-utils.js';
+import { esc, scoreColor } from '../dom-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree } from './file-tree.js';
 import {
   renderSessionHistory,
@@ -77,6 +77,7 @@ export function initSidebar(): void {
   appState.on('session-added', render);
   appState.on('session-removed', render);
   appState.on('layout-changed', render);
+  appState.on('readiness-changed', render);
 
 
   onCostChange(() => {
@@ -198,6 +199,12 @@ function buildProjectActions(
   }
 
   const overviewBtn = makeActionButton('Overview', false);
+  const readinessScore = project.readiness?.overallScore;
+  if (typeof readinessScore === 'number') {
+    overviewBtn.classList.add('has-readiness');
+    overviewBtn.style.setProperty('--readiness-color', scoreColor(readinessScore));
+    overviewBtn.title = `Readiness: ${readinessScore}%`;
+  }
   overviewBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     appState.openProjectTab(project.id);

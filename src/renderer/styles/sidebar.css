@@ -247,6 +247,15 @@
   background: var(--bg-hover);
 }
 
+.project-action-btn.has-readiness {
+  background-color: color-mix(in srgb, var(--readiness-color) 15%, transparent);
+  border-color: color-mix(in srgb, var(--readiness-color) 50%, transparent);
+}
+
+.project-action-btn.has-readiness:hover {
+  background-color: color-mix(in srgb, var(--readiness-color) 25%, transparent);
+}
+
 .project-panel {
   background: var(--bg-secondary);
   border-left: 3px solid transparent;
