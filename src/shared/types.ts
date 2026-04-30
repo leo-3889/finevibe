@@ -17,6 +17,7 @@ export interface CliProviderCapabilities {
   shiftEnterNewline: boolean;
   pendingPromptTrigger: PendingPromptTrigger;
   planModeArg?: string;
+  systemPromptInjection: boolean;
 }
 
 export interface CliProviderMeta {
@@ -79,7 +80,8 @@ export type SessionType =
   | 'remote-terminal'
   | 'browser-tab'
   | 'project-tab'
-  | 'kanban';
+  | 'kanban'
+  | 'team';
 
 export interface SessionRecord {
   id: string;
@@ -101,8 +103,31 @@ export interface SessionRecord {
   remoteHostName?: string;
   shareMode?: 'readonly' | 'readwrite';
   browserTabUrl?: string;
+  /** Persisted: identifies which TeamMember spawned this session, if any. */
+  teamMemberId?: string;
   /** Transient: initial prompt to inject on first spawn. Not persisted. */
   pendingInitialPrompt?: string;
+  /** Transient: system prompt to attach on first spawn. Not persisted (resume must not re-inject). */
+  pendingSystemPrompt?: string;
+}
+
+// --- Team ---
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  role: string;
+  description?: string;
+  systemPrompt: string;
+  source: 'predefined' | 'custom';
+  sourceUrl?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TeamData {
+  members: TeamMember[];
+  predefinedCache?: { fetchedAt: number; suggestions: TeamMember[] };
 }
 
 export interface ArchivedSession {
@@ -113,6 +138,7 @@ export interface ArchivedSession {
   createdAt: string;
   closedAt: string;
   bookmarked?: boolean;
+  teamMemberId?: string;
   cost: {
     totalCostUsd: number;
     totalInputTokens: number;
@@ -263,6 +289,7 @@ export interface PersistedState {
   appLaunchCount?: number;
   starPromptDismissed?: boolean;
   discussionsLastSeen?: string;
+  team?: TeamData;
 }
 
 // --- AI Readiness ---

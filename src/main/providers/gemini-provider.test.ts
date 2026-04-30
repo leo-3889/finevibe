@@ -199,6 +199,16 @@ describe('buildArgs', () => {
     const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
+
+  it('does not emit a system-prompt flag (Gemini CLI has none; team chat is gated off this provider)', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
+    expect(args).not.toContain('--system-prompt');
+    expect(args).not.toContain('You are the CMO.');
+  });
+
+  it('declares systemPromptInjection capability as false', () => {
+    expect(provider.meta.capabilities.systemPromptInjection).toBe(false);
+  });
 });
 
 describe('getShiftEnterSequence', () => {

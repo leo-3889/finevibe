@@ -28,6 +28,7 @@ export class CodexProvider implements CliProvider {
       configReading: true,
       shiftEnterNewline: false,
       pendingPromptTrigger: 'startup-arg',
+      systemPromptInjection: true,
     },
     defaultContextWindowSize: 200_000,
   };
@@ -47,8 +48,11 @@ export class CodexProvider implements CliProvider {
     return env;
   }
 
-  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string }): string[] {
+  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
     const args: string[] = [];
+    if (opts.systemPrompt) {
+      args.push('-c', `developer_instructions=${opts.systemPrompt}`);
+    }
     if (opts.isResume && opts.cliSessionId) {
       args.push('resume', opts.cliSessionId);
     } else if (opts.initialPrompt) {
