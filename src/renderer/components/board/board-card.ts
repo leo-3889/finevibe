@@ -1,9 +1,10 @@
-import type { BoardTask, CostInfo, ContextWindowInfo, ArchivedSession } from '../../../shared/types.js';
+import type { BoardTask, CostInfo, ContextWindowInfo, ArchivedSession, ProviderId } from '../../../shared/types.js';
 import { appState } from '../../state.js';
 import { getColumnByBehavior, updateTask, moveTask, deleteTask, getTagColor } from '../../board-state.js';
 import { getStatus, type SessionStatus } from '../../session-activity.js';
 import { getCost, formatTokens } from '../../session-cost.js';
 import { getContext, getContextSeverity } from '../../session-context.js';
+import { hasMultipleAvailableProviders } from '../../provider-availability.js';
 import { showTaskModal } from './board-task-modal.js';
 import { showContextMenu } from './board-context-menu.js';
 import { showConfirmModal } from '../modal.js';
@@ -26,6 +27,16 @@ export function createCardElement(task: BoardTask): HTMLElement {
   // Top row: title + action button
   const topRow = document.createElement('div');
   topRow.className = 'board-card-top';
+
+  if (hasMultipleAvailableProviders()) {
+    const providerId = resolveTaskProviderId(task);
+    const icon = document.createElement('img');
+    icon.className = 'tab-provider-icon';
+    icon.src = `assets/providers/${providerId}.png`;
+    icon.alt = providerId;
+    icon.onerror = () => { icon.style.display = 'none'; };
+    topRow.appendChild(icon);
+  }
 
   const titleEl = document.createElement('div');
   titleEl.className = 'board-card-title';
@@ -184,6 +195,15 @@ function truncate(str: string, len: number): string {
   if (!str) return '';
   const firstLine = str.split('\n')[0];
   return firstLine.length > len ? firstLine.slice(0, len) + '...' : firstLine;
+}
+
+function resolveTaskProviderId(task: BoardTask): ProviderId {
+  const project = appState.activeProject;
+  if (task.sessionId && project) {
+    const session = project.sessions.find(s => s.id === task.sessionId);
+    if (session?.providerId) return session.providerId;
+  }
+  return task.providerId ?? appState.preferences.defaultProvider ?? 'claude';
 }
 
 function getArchivedCost(task: BoardTask): ArchivedSession['cost'] | null {

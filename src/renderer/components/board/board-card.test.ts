@@ -30,6 +30,7 @@ vi.mock('../../session-activity.js', () => ({
 }));
 vi.mock('../../provider-availability.js', () => ({
   getProviderCapabilities: vi.fn(),
+  hasMultipleAvailableProviders: vi.fn(() => false),
 }));
 vi.mock('../terminal-pane.js', () => ({ setPendingPrompt: vi.fn() }));
 vi.mock('./board-task-modal.js', () => ({ showTaskModal: vi.fn() }));
@@ -84,6 +85,7 @@ import {
   createCardElement,
   updateMetricsRow,
 } from './board-card';
+import { hasMultipleAvailableProviders } from '../../provider-availability.js';
 import type { CostInfo, ContextWindowInfo } from '../../../shared/types.js';
 
 beforeEach(() => {
@@ -238,5 +240,63 @@ describe('createCardElement metrics row', () => {
     const card = createCardElement(task) as unknown as StubEl;
     const row = card.children.find((c) => c.className === 'board-card-metrics');
     expect(row).toBeUndefined();
+  });
+});
+
+describe('createCardElement provider icon', () => {
+  function topRow(task: ReturnType<typeof addTask>): StubEl {
+    const card = createCardElement(task!) as unknown as StubEl;
+    return card.children.find((c) => c.className === 'board-card-top')!;
+  }
+
+  function findIcon(row: StubEl): (StubEl & { src?: string; alt?: string }) | undefined {
+    return row.children.find((c) => c.className === 'tab-provider-icon') as
+      | (StubEl & { src?: string; alt?: string })
+      | undefined;
+  }
+
+  it('omits icon when only one provider is available', () => {
+    vi.mocked(hasMultipleAvailableProviders).mockReturnValue(false);
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-backlog', providerId: 'codex' });
+    expect(findIcon(topRow(task))).toBeUndefined();
+  });
+
+  it('renders icon for task.providerId when multiple providers available', () => {
+    vi.mocked(hasMultipleAvailableProviders).mockReturnValue(true);
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-backlog', providerId: 'codex' });
+    const icon = findIcon(topRow(task));
+    expect(icon).toBeTruthy();
+    expect(icon!.src).toBe('assets/providers/codex.png');
+    expect(icon!.alt).toBe('codex');
+  });
+
+  it('falls back to default provider when task has no providerId', () => {
+    vi.mocked(hasMultipleAvailableProviders).mockReturnValue(true);
+    appState.setPreference('defaultProvider', 'gemini');
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-backlog' });
+    const icon = findIcon(topRow(task));
+    expect(icon!.src).toBe('assets/providers/gemini.png');
+  });
+
+  it('falls back to claude when no task or default provider', () => {
+    vi.mocked(hasMultipleAvailableProviders).mockReturnValue(true);
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-backlog' });
+    const icon = findIcon(topRow(task));
+    expect(icon!.src).toBe('assets/providers/claude.png');
+  });
+
+  it('prefers live session providerId over task.providerId', () => {
+    vi.mocked(hasMultipleAvailableProviders).mockReturnValue(true);
+    const project = appState.activeProject!;
+    project.sessions.push({
+      id: 'sess-live',
+      name: 's',
+      providerId: 'copilot',
+      createdAt: '2024-01-01',
+    } as unknown as typeof project.sessions[number]);
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-active', providerId: 'codex' })!;
+    task.sessionId = 'sess-live';
+    const icon = findIcon(topRow(task));
+    expect(icon!.src).toBe('assets/providers/copilot.png');
   });
 });
