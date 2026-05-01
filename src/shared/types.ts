@@ -258,6 +258,7 @@ export interface Preferences {
     discussions: boolean;
     fileTree: boolean;
   };
+  boardCardMetrics?: boolean;
 }
 
 // --- Settings Validation ---

@@ -4,6 +4,7 @@ import {
   onChange,
   restoreContext,
   removeSession,
+  getContextSeverity,
   _resetForTesting,
 } from './session-context';
 
@@ -150,5 +151,20 @@ describe('onChange unsubscribe', () => {
 
     expect(cb1).not.toHaveBeenCalled();
     expect(cb2).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('getContextSeverity', () => {
+  it('returns empty string below 70', () => {
+    expect(getContextSeverity(0)).toBe('');
+    expect(getContextSeverity(69.9)).toBe('');
+  });
+  it('returns warning between 70 and 89', () => {
+    expect(getContextSeverity(70)).toBe('warning');
+    expect(getContextSeverity(89.9)).toBe('warning');
+  });
+  it('returns critical at 90 and above', () => {
+    expect(getContextSeverity(90)).toBe('critical');
+    expect(getContextSeverity(100)).toBe('critical');
   });
 });

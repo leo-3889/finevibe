@@ -272,6 +272,24 @@
 }
 .card-status-dot.idle { background: var(--text-muted); }
 
+.board-card-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--text-secondary);
+}
+.board-card-metrics:empty {
+  display: none;
+}
+.board-card-metrics .card-cost { color: var(--text-secondary); }
+.board-card-metrics .card-tokens { color: var(--text-muted); }
+.board-card-metrics .card-ctx { color: var(--text-muted); }
+.board-card-metrics .card-ctx.warning { color: #f4b400; }
+.board-card-metrics .card-ctx.critical { color: #ea4335; }
+
 /* Done column cards are slightly dimmed */
 .board-column[data-behavior="terminal"] .board-card {
   opacity: 0.6;

@@ -1,7 +1,9 @@
-import type { BoardTask } from '../../../shared/types.js';
+import type { BoardTask, CostInfo, ContextWindowInfo, ArchivedSession } from '../../../shared/types.js';
 import { appState } from '../../state.js';
 import { getColumnByBehavior, updateTask, moveTask, deleteTask, getTagColor } from '../../board-state.js';
 import { getStatus, type SessionStatus } from '../../session-activity.js';
+import { getCost, formatTokens } from '../../session-cost.js';
+import { getContext, getContextSeverity } from '../../session-context.js';
 import { showTaskModal } from './board-task-modal.js';
 import { showContextMenu } from './board-context-menu.js';
 import { showConfirmModal } from '../modal.js';
@@ -83,6 +85,9 @@ export function createCardElement(task: BoardTask): HTMLElement {
       el.appendChild(bottomRow);
     }
   }
+
+  const metricsRow = buildMetricsRow(task);
+  if (metricsRow) el.appendChild(metricsRow);
 
   // Click card body -> edit modal
   el.addEventListener('click', (e) => {
@@ -179,4 +184,76 @@ function truncate(str: string, len: number): string {
   if (!str) return '';
   const firstLine = str.split('\n')[0];
   return firstLine.length > len ? firstLine.slice(0, len) + '...' : firstLine;
+}
+
+function getArchivedCost(task: BoardTask): ArchivedSession['cost'] | null {
+  if (!task.cliSessionId) return null;
+  return appState.activeProject?.sessionHistory?.find(
+    (a) => a.cliSessionId === task.cliSessionId,
+  )?.cost ?? null;
+}
+
+function buildMetricsRow(task: BoardTask): HTMLElement | null {
+  if (appState.preferences.boardCardMetrics === false) return null;
+  if (!task.sessionId && !task.cliSessionId) return null;
+
+  const cost = task.sessionId ? getCost(task.sessionId) : null;
+  const ctx = task.sessionId ? getContext(task.sessionId) : null;
+  const archivedCost = cost ? null : getArchivedCost(task);
+
+  const row = document.createElement('div');
+  row.className = 'board-card-metrics';
+  if (task.sessionId) row.dataset.sessionId = task.sessionId;
+  if (task.cliSessionId) row.dataset.cliSessionId = task.cliSessionId;
+
+  updateMetricsRow(row, cost, ctx, archivedCost);
+  return row;
+}
+
+export function updateMetricsRow(
+  row: HTMLElement,
+  cost: CostInfo | null,
+  ctx: ContextWindowInfo | null,
+  archivedCost: ArchivedSession['cost'] | null = null,
+): void {
+  row.innerHTML = '';
+
+  const usd = cost?.totalCostUsd ?? archivedCost?.totalCostUsd ?? null;
+  const inputTokens = cost?.totalInputTokens ?? archivedCost?.totalInputTokens ?? 0;
+  const outputTokens = cost?.totalOutputTokens ?? archivedCost?.totalOutputTokens ?? 0;
+  const totalTokens = inputTokens + outputTokens;
+
+  if (usd !== null) {
+    const costEl = document.createElement('span');
+    costEl.className = 'card-cost';
+    costEl.textContent = `$${usd.toFixed(4)}`;
+    if (cost) {
+      const dur = (cost.totalDurationMs / 1000).toFixed(1);
+      const apiDur = (cost.totalApiDurationMs / 1000).toFixed(1);
+      const modelPrefix = cost.model ? `${cost.model} · ` : '';
+      costEl.title = `${modelPrefix}Cache read: ${formatTokens(cost.cacheReadTokens)} · Cache create: ${formatTokens(cost.cacheCreationTokens)} · Duration: ${dur}s · API: ${apiDur}s`;
+    } else if (archivedCost) {
+      const dur = (archivedCost.totalDurationMs / 1000).toFixed(1);
+      costEl.title = `Archived · Duration: ${dur}s`;
+    }
+    row.appendChild(costEl);
+  }
+
+  if (totalTokens > 0) {
+    const tokensEl = document.createElement('span');
+    tokensEl.className = 'card-tokens';
+    tokensEl.textContent = formatTokens(totalTokens);
+    tokensEl.title = `${formatTokens(inputTokens)} in / ${formatTokens(outputTokens)} out`;
+    row.appendChild(tokensEl);
+  }
+
+  if (ctx) {
+    const pct = Math.min(Math.round(ctx.usedPercentage), 100);
+    const ctxEl = document.createElement('span');
+    const severity = getContextSeverity(pct);
+    ctxEl.className = severity ? `card-ctx ${severity}` : 'card-ctx';
+    ctxEl.textContent = `${pct}%`;
+    ctxEl.title = `Context: ${ctx.totalTokens.toLocaleString()} / ${ctx.contextWindowSize.toLocaleString()} tokens`;
+    row.appendChild(ctxEl);
+  }
 }

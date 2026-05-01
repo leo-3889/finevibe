@@ -13,7 +13,9 @@ import {
   hasActiveFilters, getFilteredTasks, onFilterChange, getActiveTagFilters,
 } from '../../board-filter.js';
 import { onChange as onStatusChange } from '../../session-activity.js';
-import { STATUS_LABELS } from './board-card.js';
+import { onChange as onCostChange, getCost } from '../../session-cost.js';
+import { onChange as onContextChange, getContext } from '../../session-context.js';
+import { STATUS_LABELS, updateMetricsRow } from './board-card.js';
 
 let boardEl: HTMLElement | null = null;
 let dndInitialized = false;
@@ -50,6 +52,23 @@ export function initBoard(): void {
     if (labelNode && labelNode.nodeType === Node.TEXT_NODE) {
       labelNode.textContent = STATUS_LABELS[status];
     }
+  });
+  const refreshMetrics = (sessionId: string): void => {
+    if (!boardEl) return;
+    const row = boardEl.querySelector(
+      `.board-card-metrics[data-session-id="${sessionId}"]`,
+    ) as HTMLElement | null;
+    if (row) updateMetricsRow(row, getCost(sessionId), getContext(sessionId));
+  };
+  onCostChange(refreshMetrics);
+  onContextChange(refreshMetrics);
+
+  let lastMetricsPref = appState.preferences.boardCardMetrics ?? true;
+  appState.on('preferences-changed', () => {
+    const cur = appState.preferences.boardCardMetrics ?? true;
+    if (cur === lastMetricsPref) return;
+    lastMetricsPref = cur;
+    if (isKanbanActive()) renderBoard();
   });
 }
 

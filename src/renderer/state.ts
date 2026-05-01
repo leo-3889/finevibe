@@ -64,6 +64,7 @@ const defaultPreferences: Preferences = {
   zoomFactor: 1.0,
   readinessExcludedProviders: [],
   sidebarViews: { gitPanel: true, sessionHistory: true, costFooter: true, discussions: true, fileTree: true },
+  boardCardMetrics: true,
 };
 
 class AppState {
