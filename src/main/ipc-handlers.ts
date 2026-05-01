@@ -50,6 +50,8 @@ function isAllowedReadPath(resolvedPath: string): boolean {
     path.join(home, '.mcp.json'),
     path.join(home, '.claude') + path.sep,
     path.join(home, '.codex') + path.sep,
+    path.join(home, '.gemini') + path.sep,
+    path.join(home, '.copilot') + path.sep,
   ];
 
   if (isMac) {
