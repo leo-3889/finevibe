@@ -53,6 +53,42 @@ You are the CMO.`;
     expect(m!.systemPrompt).toBe('You are the CMO.');
     expect(m!.source).toBe('predefined');
     expect(m!.sourceUrl).toBe('https://x');
+    expect(m!.domain).toBeUndefined();
+  });
+
+  it('reads the domain field from frontmatter', () => {
+    const withDomain = `---
+id: tech-lead
+name: Tech Lead
+role: Engineering Tech Lead
+domain: engineering-core
+---
+
+body`;
+    const m = memberFromMarkdown(withDomain, { fallbackId: 'tech-lead', source: 'predefined' });
+    expect(m!.domain).toBe('engineering-core');
+  });
+
+  it('treats blank or missing domain as undefined', () => {
+    const blank = `---
+name: X
+role: Y
+domain:
+---
+body`;
+    const m = memberFromMarkdown(blank, { fallbackId: 'x', source: 'custom' });
+    expect(m!.domain).toBeUndefined();
+  });
+
+  it('drops an unknown domain value', () => {
+    const unknown = `---
+name: X
+role: Y
+domain: not-a-real-domain
+---
+body`;
+    const m = memberFromMarkdown(unknown, { fallbackId: 'x', source: 'custom' });
+    expect(m!.domain).toBeUndefined();
   });
 
   it('falls back to provided id when frontmatter id is missing', () => {

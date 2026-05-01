@@ -1,5 +1,7 @@
 // Shared type definitions used across main, preload, and renderer processes.
 
+import type { TeamDomain } from './team-config.js';
+
 export const ZOOM_MIN = 0.75;
 export const ZOOM_MAX = 2.0;
 
@@ -118,6 +120,7 @@ export interface TeamMember {
   name: string;
   role: string;
   description?: string;
+  domain?: TeamDomain;
   systemPrompt: string;
   source: 'predefined' | 'custom';
   sourceUrl?: string;

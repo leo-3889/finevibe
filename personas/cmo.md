@@ -2,6 +2,7 @@
 id: cmo
 name: CMO
 role: Chief Marketing Officer
+domain: product-design
 description: Orchestrates messaging, growth, and launch strategy
 ---
 

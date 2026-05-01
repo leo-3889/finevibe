@@ -1,4 +1,5 @@
 import type { TeamMember } from '../../../shared/types.js';
+import { TEAM_DOMAINS, TEAM_DOMAIN_LABELS, type TeamDomain } from '../../../shared/team-config.js';
 import { appState } from '../../state.js';
 import { renderMarkdownContent } from '../file-reader.js';
 import { fetchPredefinedMembers, isCacheFresh } from './github-fetcher.js';
@@ -91,8 +92,34 @@ function renderSuggestions(state: DialogState, suggestions: TeamMember[]): void 
 
   const installed = new Set(appState.getTeamMembers().map((m) => m.id));
 
+  const buckets = new Map<TeamDomain, TeamMember[]>();
   for (const suggestion of suggestions) {
-    state.list.appendChild(buildCard(suggestion, installed.has(suggestion.id)));
+    const key = suggestion.domain ?? 'other';
+    const bucket = buckets.get(key) ?? [];
+    bucket.push(suggestion);
+    buckets.set(key, bucket);
+  }
+
+  for (const domain of TEAM_DOMAINS) {
+    const members = buckets.get(domain);
+    if (!members || members.length === 0) continue;
+
+    const section = document.createElement('div');
+    section.className = 'team-picker-section';
+
+    const heading = document.createElement('div');
+    heading.className = 'team-picker-section-title';
+    heading.textContent = TEAM_DOMAIN_LABELS[domain];
+    section.appendChild(heading);
+
+    const cards = document.createElement('div');
+    cards.className = 'team-picker-section-cards';
+    for (const member of members) {
+      cards.appendChild(buildCard(member, installed.has(member.id)));
+    }
+    section.appendChild(cards);
+
+    state.list.appendChild(section);
   }
 }
 

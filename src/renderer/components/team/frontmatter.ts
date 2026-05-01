@@ -1,4 +1,5 @@
 import type { TeamMember } from '../../../shared/types.js';
+import { isTeamDomain } from '../../../shared/team-config.js';
 
 export interface ParsedTeamFile {
   meta: Record<string, string>;
@@ -35,11 +36,13 @@ export function memberFromMarkdown(
   const role = meta.role?.trim();
   if (!name || !role || !body) return null;
   const now = Date.now();
+  const rawDomain = meta.domain?.trim();
   return {
     id: meta.id?.trim() || opts.fallbackId,
     name,
     role,
     description: meta.description?.trim() || undefined,
+    domain: isTeamDomain(rawDomain) ? rawDomain : undefined,
     systemPrompt: body,
     source: opts.source,
     sourceUrl: opts.sourceUrl,
