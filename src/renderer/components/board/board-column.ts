@@ -4,6 +4,7 @@ import { createCardElement } from './board-card.js';
 import { showTaskModal } from './board-task-modal.js';
 import { showContextMenu } from './board-context-menu.js';
 import { showConfirmModal } from '../modal.js';
+import { renderBoard } from './board-view.js';
 
 export function createColumnElement(column: BoardColumn, tasks: BoardTask[], totalCount?: number): HTMLElement {
   const el = document.createElement('div');
@@ -136,10 +137,11 @@ function startInlineRename(titleSpan: HTMLElement, column: BoardColumn): void {
 
   const commit = () => {
     const value = input.value.trim();
+    titleSpan.textContent = column.title;
     if (value && value !== column.title) {
       renameColumn(column.id, value);
     } else {
-      titleSpan.textContent = column.title;
+      renderBoard();
     }
   };
 

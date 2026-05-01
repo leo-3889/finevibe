@@ -119,7 +119,7 @@ export function createBoardView(): HTMLElement {
 }
 
 export function renderBoard(target?: HTMLElement): void {
-  if (isDragActive()) {
+  if (isDragActive() || boardEl?.querySelector('.column-title-input')) {
     pendingRender = true;
     return;
   }
