@@ -34,6 +34,7 @@ vi.mock('./hook-commands', () => ({
 import * as fs from 'fs';
 import * as path from 'path';
 import { getClaudeConfig, installHooks } from './claude-cli';
+import { installEventScript } from './hook-commands';
 
 const mockReadFileSync = vi.mocked(fs.readFileSync);
 const mockReaddirSync = vi.mocked(fs.readdirSync);
@@ -441,7 +442,7 @@ describe('installHooks', () => {
     expect(vibeyardHookCount).toBe(2);
   });
 
-  it('installs all 25 hook events (6 core + 19 inspector-only)', () => {
+  it('installs all 24 hook events (6 core + 18 inspector-only)', () => {
     mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
     installHooks();
@@ -460,7 +461,7 @@ describe('installHooks', () => {
     const inspectorEvents = [
       'PreToolUse', 'PermissionDenied', 'SubagentStart', 'SubagentStop', 'Notification',
       'PreCompact', 'PostCompact', 'SessionEnd', 'TaskCreated', 'TaskCompleted',
-      'WorktreeCreate', 'WorktreeRemove', 'CwdChanged', 'FileChanged',
+      'WorktreeRemove', 'CwdChanged', 'FileChanged',
       'ConfigChange', 'Elicitation', 'ElicitationResult', 'InstructionsLoaded',
       'TeammateIdle',
     ];
@@ -468,7 +469,7 @@ describe('installHooks', () => {
       expect(hookEvents).toContain(event);
     }
 
-    expect(hookEvents).toHaveLength(25);
+    expect(hookEvents).toHaveLength(24);
 
     // Core hooks should have status writer + event logger (at least 2 hooks)
     for (const event of coreEvents) {
@@ -492,5 +493,20 @@ describe('installHooks', () => {
       expect(allHooks.some((h: { command: string }) => h.command.includes('.status'))).toBe(false);
       expect(allHooks.some((h: { command: string }) => h.command.includes('.events'))).toBe(true);
     }
+  });
+
+  // CC >= 2.1.50 treats WorktreeCreate as a path-replacement hook that must
+  // create the worktree itself and print the path. Installing an observer hook
+  // breaks worktree creation. See issue #110.
+  it('does not install a WorktreeCreate hook', () => {
+    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+
+    installHooks();
+
+    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    expect(Object.keys(written.hooks)).not.toContain('WorktreeCreate');
+
+    const installed = vi.mocked(installEventScript).mock.calls.map(([name]) => name);
+    expect(installed).not.toContain('claude_event_WorktreeCreate.py');
   });
 });

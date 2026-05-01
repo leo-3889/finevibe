@@ -5,12 +5,17 @@ import { showTaskModal } from './board-task-modal.js';
 import { initBoardDnd, cleanupBoardDnd, isDragActive, setDragEndCallback } from './board-dnd.js';
 import { showConfirmModal } from '../modal.js';
 import { showContextMenu } from './board-context-menu.js';
+import { showBoardHelpDialog } from './board-help-dialog.js';
 import { instances as kanbanInstances } from '../kanban/instance.js';
 import type { BoardColumn, TagDefinition, BoardData } from '../../../shared/types.js';
 import {
   setSearchQuery, getSearchQuery, toggleTagFilter, isTagFilterActive,
   hasActiveFilters, getFilteredTasks, onFilterChange, getActiveTagFilters,
 } from '../../board-filter.js';
+import { onChange as onStatusChange } from '../../session-activity.js';
+import { onChange as onCostChange, getCost } from '../../session-cost.js';
+import { onChange as onContextChange, getContext } from '../../session-context.js';
+import { STATUS_LABELS, updateMetricsRow } from './board-card.js';
 
 let boardEl: HTMLElement | null = null;
 let dndInitialized = false;
@@ -36,6 +41,35 @@ export function initBoard(): void {
   onFilterChange(() => {
     if (isKanbanActive()) renderBoard();
   });
+  onStatusChange((sessionId, status) => {
+    if (!boardEl) return;
+    const dot = boardEl.querySelector(
+      `.card-status-dot[data-session-id="${sessionId}"]`,
+    ) as HTMLElement | null;
+    if (!dot) return;
+    dot.className = `card-status-dot ${status}`;
+    const labelNode = dot.parentElement?.lastChild;
+    if (labelNode && labelNode.nodeType === Node.TEXT_NODE) {
+      labelNode.textContent = STATUS_LABELS[status];
+    }
+  });
+  const refreshMetrics = (sessionId: string): void => {
+    if (!boardEl) return;
+    const row = boardEl.querySelector(
+      `.board-card-metrics[data-session-id="${sessionId}"]`,
+    ) as HTMLElement | null;
+    if (row) updateMetricsRow(row, getCost(sessionId), getContext(sessionId));
+  };
+  onCostChange(refreshMetrics);
+  onContextChange(refreshMetrics);
+
+  let lastMetricsPref = appState.preferences.boardCardMetrics ?? true;
+  appState.on('preferences-changed', () => {
+    const cur = appState.preferences.boardCardMetrics ?? true;
+    if (cur === lastMetricsPref) return;
+    lastMetricsPref = cur;
+    if (isKanbanActive()) renderBoard();
+  });
 }
 
 export function createBoardView(): HTMLElement {
@@ -45,16 +79,29 @@ export function createBoardView(): HTMLElement {
   const header = document.createElement('div');
   header.className = 'board-header';
 
+  const titleGroup = document.createElement('div');
+  titleGroup.className = 'board-title-group';
+
   const title = document.createElement('span');
   title.className = 'board-title';
   title.textContent = 'Board';
+
+  const helpBtn = document.createElement('button');
+  helpBtn.className = 'board-help-btn';
+  helpBtn.title = 'About the board';
+  helpBtn.setAttribute('aria-label', 'About the board');
+  helpBtn.textContent = '?';
+  helpBtn.addEventListener('click', () => showBoardHelpDialog());
+
+  titleGroup.appendChild(title);
+  titleGroup.appendChild(helpBtn);
 
   const addBtn = document.createElement('button');
   addBtn.className = 'board-add-task';
   addBtn.textContent = '+ Add Task';
   addBtn.addEventListener('click', () => showTaskModal('create'));
 
-  header.appendChild(title);
+  header.appendChild(titleGroup);
   header.appendChild(addBtn);
 
   const tagRow = document.createElement('div');
@@ -72,7 +119,7 @@ export function createBoardView(): HTMLElement {
 }
 
 export function renderBoard(target?: HTMLElement): void {
-  if (isDragActive()) {
+  if (isDragActive() || boardEl?.querySelector('.column-title-input')) {
     pendingRender = true;
     return;
   }

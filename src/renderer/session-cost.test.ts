@@ -6,6 +6,7 @@ import {
   onChange,
   restoreCost,
   removeSession,
+  formatTokens,
   _resetForTesting,
 } from './session-cost';
 
@@ -259,5 +260,22 @@ describe('onChange unsubscribe', () => {
 
     expect(cb1).not.toHaveBeenCalled();
     expect(cb2).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('formatTokens', () => {
+  it('returns integer string for values < 1000', () => {
+    expect(formatTokens(0)).toBe('0');
+    expect(formatTokens(999)).toBe('999');
+  });
+  it('returns "k" abbreviation for thousands', () => {
+    expect(formatTokens(1000)).toBe('1k');
+    expect(formatTokens(1500)).toBe('1.5k');
+    expect(formatTokens(12_345)).toBe('12.3k');
+  });
+  it('returns "m" abbreviation for millions', () => {
+    expect(formatTokens(1_000_000)).toBe('1m');
+    expect(formatTokens(1_500_000)).toBe('1.5m');
+    expect(formatTokens(2_345_678)).toBe('2.35m');
   });
 });

@@ -137,4 +137,16 @@ describe('analyzeReadiness', () => {
     const codexCheck = instructions.checks.find(c => c.id === 'agents-md-exists')!;
     expect(codexCheck.providerIds).toEqual(['codex']);
   });
+
+  it('checks carry effort/impact/rationale through to the result', async () => {
+    mockGetAvailable.mockReturnValue(['claude']);
+    const result = await analyzeReadiness('/test/project');
+
+    const instructions = result.categories.find(c => c.id === 'instructions')!;
+    const exists = instructions.checks.find(c => c.id === 'claude-md-exists')!;
+    expect(exists.effort).toBe('low');
+    expect(exists.impact).toBe(90);
+    expect(typeof exists.rationale).toBe('string');
+    expect(exists.rationale!.length).toBeGreaterThan(0);
+  });
 });

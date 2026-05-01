@@ -22,7 +22,8 @@
 }
 
 /* Preferences layout */
-#modal.modal-wide {
+#modal.modal-wide,
+.modal-box.modal-wide {
   width: 750px;
   max-width: 750px;
 }

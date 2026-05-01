@@ -5,8 +5,8 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { initSession, removeSession } from '../session-activity.js';
 import { markFreshSession } from '../session-insights.js';
-import { removeSession as removeCostSession, type CostInfo } from '../session-cost.js';
-import { removeSession as removeContextSession, type ContextWindowInfo } from '../session-context.js';
+import { removeSession as removeCostSession, formatTokens, type CostInfo } from '../session-cost.js';
+import { removeSession as removeContextSession, getContextSeverity, type ContextWindowInfo } from '../session-context.js';
 import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
@@ -28,6 +28,7 @@ interface TerminalInstance {
   spawned: boolean;
   exited: boolean;
   pendingPrompt: string | null;
+  pendingSystemPrompt: string | null;
   pendingPromptTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -125,6 +126,7 @@ export function createTerminalPane(
     spawned: false,
     exited: false,
     pendingPrompt: null,
+    pendingSystemPrompt: null,
     pendingPromptTimer: null,
   };
 
@@ -182,6 +184,13 @@ export function setPendingPrompt(sessionId: string, prompt: string): void {
   }
 }
 
+export function setPendingSystemPrompt(sessionId: string, prompt: string): void {
+  const instance = instances.get(sessionId);
+  if (instance) {
+    instance.pendingSystemPrompt = prompt;
+  }
+}
+
 export function injectPromptIntoRunningSession(sessionId: string, prompt: string): boolean {
   const instance = instances.get(sessionId);
   if (!instance || !instance.spawned || instance.exited) return false;
@@ -221,7 +230,12 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     initialPrompt = instance.pendingPrompt;
     instance.pendingPrompt = null;
   }
-  await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt);
+  let systemPrompt: string | undefined;
+  if (instance.pendingSystemPrompt) {
+    systemPrompt = instance.pendingSystemPrompt;
+    instance.pendingSystemPrompt = null;
+  }
+  await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt);
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
 }
 
@@ -339,11 +353,6 @@ export function destroyTerminal(sessionId: string): void {
   removeContextSession(sessionId);
 }
 
-function formatTokens(n: number): string {
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  return String(n);
-}
-
 function showStatusBar(instance: TerminalInstance): void {
   const bar = instance.element.querySelector('.session-status-bar');
   if (bar) bar.classList.remove('hidden');
@@ -387,11 +396,8 @@ export function updateContextDisplay(sessionId: string, info: ContextWindowInfo)
   el.title = `${info.totalTokens.toLocaleString()} / ${info.contextWindowSize.toLocaleString()} tokens`;
 
   el.classList.remove('warning', 'critical');
-  if (pct >= 90) {
-    el.classList.add('critical');
-  } else if (pct >= 70) {
-    el.classList.add('warning');
-  }
+  const severity = getContextSeverity(pct);
+  if (severity) el.classList.add(severity);
 
   showStatusBar(instance);
 }

@@ -22,6 +22,9 @@ export function checkFileExists(projectPath: string, opts: InstructionFileOpts):
     fixPrompt: exists
       ? undefined
       : `Create a ${opts.displayName} file for this project. Analyze the codebase and generate a comprehensive ${opts.displayName} that includes: project description, build/run commands, test commands, architecture overview, key file locations, and coding conventions. Make it thorough but concise (50-300 lines).`,
+    effort: 'low',
+    impact: 90,
+    rationale: `${opts.displayName} is the first thing the AI reads about your project. Without it, the AI has to infer architecture, commands, and conventions from scratch every session — slower, costlier, and more error-prone. A focused instructions file pays for itself within a few prompts.`,
   };
 }
 
@@ -45,6 +48,9 @@ export function checkBuildCommands(content: string | null, opts: InstructionFile
     score: hasBuild ? 100 : 0,
     maxScore: 100,
     fixPrompt: hasBuild ? undefined : `Update the ${opts.displayName} file to include build and run commands. Add a "Build & Run" section with the exact commands needed to build and run this project.`,
+    effort: 'low',
+    impact: 60,
+    rationale: 'Without explicit build/run commands, the AI guesses based on the package manager or framework — and often guesses wrong on monorepos or projects with custom scripts. Listing the canonical commands removes a whole class of "command not found" failures.',
   };
 }
 
@@ -68,6 +74,9 @@ export function checkTestCommands(content: string | null, opts: InstructionFileO
     score: hasTest ? 100 : 0,
     maxScore: 100,
     fixPrompt: hasTest ? undefined : `Update the ${opts.displayName} file to include test commands. Add a "Testing" section with the exact commands needed to run tests in this project.`,
+    effort: 'low',
+    impact: 60,
+    rationale: 'Documented test commands let the AI verify its own changes before handing back. Without them, it either skips testing or invents a command, which breaks the loop and wastes a turn.',
   };
 }
 
@@ -91,6 +100,9 @@ export function checkArchitecture(content: string | null, opts: InstructionFileO
     score: hasArch ? 100 : 0,
     maxScore: 100,
     fixPrompt: hasArch ? undefined : `Update the ${opts.displayName} file to include an architecture overview. Add an "Architecture" section describing the project structure, key components, data flow, and important design decisions.`,
+    effort: 'medium',
+    impact: 70,
+    rationale: 'A short architecture overview lets the AI skip the "where does this live?" exploration phase and jump straight into the right module. Without it, it spelunks files trying to reverse-engineer your structure.',
   };
 }
 
@@ -143,6 +155,9 @@ export function checkFileSize(content: string | null, opts: InstructionFileOpts)
     score,
     maxScore: 100,
     fixPrompt,
+    effort: 'low',
+    impact: 30,
+    rationale: `${opts.displayName} is loaded into every prompt, so its bytes compete with your actual code for context. Too short and the AI lacks grounding; too long and it crowds out the files the AI actually needs to read.`,
   };
 }
 
@@ -159,18 +174,21 @@ export function checkNotBloated(projectPath: string, opts: InstructionFileOpts):
     };
   }
   const lines = content.split('\n').length;
+  const bloatRationale = `Every byte of ${opts.displayName} is paid for on every prompt. Past ~300 lines you're spending real context budget on text the AI may not need that turn. Trim to essentials and offload depth to linked files.`;
   if (lines <= 300) {
-    return { id: `${opts.idPrefix}-bloat`, name: `${opts.displayName} not bloated`, status: 'pass', description: `${opts.displayName} is ${lines} lines — within limits.`, score: 100, maxScore: 100 };
+    return { id: `${opts.idPrefix}-bloat`, name: `${opts.displayName} not bloated`, status: 'pass', description: `${opts.displayName} is ${lines} lines — within limits.`, score: 100, maxScore: 100, effort: 'low', impact: 30, rationale: bloatRationale };
   }
   if (lines <= 500) {
     return {
       id: `${opts.idPrefix}-bloat`, name: `${opts.displayName} not bloated`, status: 'warning', description: `${opts.displayName} is ${lines} lines — getting large.`, score: 50, maxScore: 100,
       fixPrompt: `The ${opts.displayName} file is getting large. Review it and move detailed documentation to separate files. Keep ${opts.displayName} focused on essential context that AI agents need for every interaction.`,
+      effort: 'medium', impact: 30, rationale: bloatRationale,
     };
   }
   return {
     id: `${opts.idPrefix}-bloat`, name: `${opts.displayName} not bloated`, status: 'fail', description: `${opts.displayName} is ${lines} lines — too large, wastes context window.`, score: 0, maxScore: 100,
     fixPrompt: `The ${opts.displayName} file is too large and wastes AI context window space. Aggressively trim it: move detailed docs to separate files, remove redundant information, and keep only the most critical context. Target under 300 lines.`,
+    effort: 'medium', impact: 60, rationale: bloatRationale,
   };
 }
 

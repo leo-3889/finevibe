@@ -79,6 +79,7 @@ export function showPreferencesModal(): void {
   let zoomPrefUnsub: (() => void) | null = null;
   let debugModeCheckbox: HTMLInputElement | null = null;
   let sidebarCheckboxes: { gitPanel: HTMLInputElement; sessionHistory: HTMLInputElement; costFooter: HTMLInputElement; discussions: HTMLInputElement; fileTree: HTMLInputElement } | null = null;
+  let boardCardMetricsCheckbox: HTMLInputElement | null = null;
   let activeRecorder: { cleanup: () => void } | null = null;
   const originalTheme = appState.preferences.theme ?? 'dark';
 
@@ -320,6 +321,27 @@ export function showPreferencesModal(): void {
         checkboxes[toggle.key] = cb;
       }
       sidebarCheckboxes = checkboxes as typeof sidebarCheckboxes;
+
+      const boardHeading = document.createElement('div');
+      boardHeading.className = 'preferences-subheading';
+      boardHeading.textContent = 'Board';
+      content.appendChild(boardHeading);
+
+      const boardMetricsRow = document.createElement('div');
+      boardMetricsRow.className = 'modal-toggle-field';
+
+      const boardMetricsLabel = document.createElement('label');
+      boardMetricsLabel.htmlFor = 'pref-board-card-metrics';
+      boardMetricsLabel.textContent = 'Show metrics on cards';
+
+      boardCardMetricsCheckbox = document.createElement('input');
+      boardCardMetricsCheckbox.type = 'checkbox';
+      boardCardMetricsCheckbox.id = 'pref-board-card-metrics';
+      boardCardMetricsCheckbox.checked = appState.preferences.boardCardMetrics ?? true;
+
+      boardMetricsRow.appendChild(boardMetricsLabel);
+      boardMetricsRow.appendChild(boardCardMetricsCheckbox);
+      content.appendChild(boardMetricsRow);
 
     } else if (section === 'shortcuts') {
       renderShortcutsSection(content);
@@ -779,6 +801,9 @@ export function showPreferencesModal(): void {
         discussions: sidebarCheckboxes.discussions.checked,
         fileTree: sidebarCheckboxes.fileTree.checked,
       });
+    }
+    if (boardCardMetricsCheckbox && boardCardMetricsCheckbox.checked !== (appState.preferences.boardCardMetrics ?? true)) {
+      appState.setPreference('boardCardMetrics', boardCardMetricsCheckbox.checked);
     }
   };
 

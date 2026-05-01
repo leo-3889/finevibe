@@ -23,7 +23,15 @@ vi.mock('./session-context.js', () => ({
   restoreContext: vi.fn(),
 }));
 
+vi.mock('./provider-availability.js', () => ({
+  getProviderCapabilities: vi.fn(() => null),
+  getProviderAvailabilitySnapshot: vi.fn(() => null),
+  getTeamChatProviderMetas: vi.fn(() => []),
+}));
+
 import { appState, _resetForTesting, MAX_SESSION_NAME_LENGTH, MAX_PROJECT_NAME_LENGTH } from './state';
+import { getTeamChatProviderMetas } from './provider-availability.js';
+const mockGetTeamChatProviderMetas = vi.mocked(getTeamChatProviderMetas);
 import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
 
@@ -1814,11 +1822,22 @@ describe('navigateBack()/navigateForward()', () => {
 });
 
 describe('setProjectReadiness()', () => {
+  function makeResult(overall = 80, t = '2025-01-01T00:00:00.000Z'): Parameters<typeof appState.setProjectReadiness>[1] {
+    return {
+      overallScore: overall,
+      scannedAt: t,
+      categories: [
+        { id: 'instructions', name: 'Instructions', weight: 0.5, score: 90, checks: [] },
+        { id: 'context', name: 'Context', weight: 0.5, score: 70, checks: [] },
+      ],
+    };
+  }
+
   it('sets readiness on the project, persists, and emits readiness-changed', () => {
     const project = addProject();
     const cb = vi.fn();
     appState.on('readiness-changed', cb);
-    const result = { ready: true, details: {} } as unknown as Parameters<typeof appState.setProjectReadiness>[1];
+    const result = makeResult();
     appState.setProjectReadiness(project.id, result);
     expect(project.readiness).toBe(result);
     expect(cb).toHaveBeenCalledWith(project.id);
@@ -1828,8 +1847,32 @@ describe('setProjectReadiness()', () => {
   it('is a no-op for unknown projectId', () => {
     const cb = vi.fn();
     appState.on('readiness-changed', cb);
-    appState.setProjectReadiness('missing', {} as Parameters<typeof appState.setProjectReadiness>[1]);
+    appState.setProjectReadiness('missing', makeResult());
     expect(cb).not.toHaveBeenCalled();
+  });
+
+  it('appends a snapshot to readinessHistory on each call', () => {
+    const project = addProject();
+    appState.setProjectReadiness(project.id, makeResult(60, '2025-01-01T00:00:00.000Z'));
+    appState.setProjectReadiness(project.id, makeResult(75, '2025-01-02T00:00:00.000Z'));
+
+    const history = project.readinessHistory!;
+    expect(history).toHaveLength(2);
+    expect(history[0].overallScore).toBe(60);
+    expect(history[1].overallScore).toBe(75);
+    expect(history[1].categoryScores).toEqual({ instructions: 90, context: 70 });
+    expect(history[1].timestamp).toBe('2025-01-02T00:00:00.000Z');
+  });
+
+  it('caps readinessHistory at 30 entries (FIFO)', () => {
+    const project = addProject();
+    for (let i = 0; i < 35; i++) {
+      appState.setProjectReadiness(project.id, makeResult(i, `2025-01-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`));
+    }
+    const history = project.readinessHistory!;
+    expect(history).toHaveLength(30);
+    expect(history[0].overallScore).toBe(5);
+    expect(history[29].overallScore).toBe(34);
   });
 });
 
@@ -1931,5 +1974,86 @@ describe('addPlanSession()', () => {
 
   it('returns undefined for nonexistent project', () => {
     expect(appState.addPlanSession('no-such-project', 'Plan', true, 'claude')).toBeUndefined();
+  });
+});
+
+describe('startTeamChat()', () => {
+  function makeMember(): import('../shared/types.js').TeamMember {
+    return {
+      id: 'm-1',
+      name: 'CMO',
+      role: 'Marketing',
+      systemPrompt: 'You are the CMO.',
+      source: 'custom',
+      createdAt: 0,
+      updatedAt: 0,
+    };
+  }
+
+  function metaFor(id: 'claude' | 'codex' | 'gemini' | 'copilot') {
+    return {
+      id,
+      displayName: id,
+      binaryName: id,
+      capabilities: {
+        sessionResume: true,
+        costTracking: false,
+        contextWindow: false,
+        hookStatus: true,
+        configReading: true,
+        shiftEnterNewline: false,
+        pendingPromptTrigger: 'startup-arg' as const,
+        systemPromptInjection: id === 'claude' || id === 'codex',
+      },
+      defaultContextWindowSize: 200_000,
+    };
+  }
+
+  it('falls through Gemini override to Claude when Claude is team-capable', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([metaFor('claude'), metaFor('codex')]);
+    const project = addProject();
+    const session = appState.startTeamChat(project.id, makeMember(), 'gemini');
+    expect(session?.providerId).toBe('claude');
+    expect(session?.pendingSystemPrompt).toBe('You are the CMO.');
+  });
+
+  it('falls through Copilot default-provider to Claude', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([metaFor('claude'), metaFor('codex')]);
+    appState.setPreference('defaultProvider', 'copilot');
+    const project = addProject();
+    const session = appState.startTeamChat(project.id, makeMember());
+    expect(session?.providerId).toBe('claude');
+  });
+
+  it('honors a Codex override when team-capable', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([metaFor('claude'), metaFor('codex')]);
+    const project = addProject();
+    const session = appState.startTeamChat(project.id, makeMember(), 'codex');
+    expect(session?.providerId).toBe('codex');
+  });
+
+  it('returns undefined and creates no session when no team-capable provider exists', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([]);
+    const project = addProject();
+    const before = project.sessions.length;
+    const session = appState.startTeamChat(project.id, makeMember(), 'gemini');
+    expect(session).toBeUndefined();
+    expect(appState.projects.find((p) => p.id === project.id)?.sessions.length).toBe(before);
+  });
+
+  it('numbers sessions per team member', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([metaFor('claude')]);
+    const project = addProject();
+    const cmo = makeMember();
+    const ceo: import('../shared/types.js').TeamMember = {
+      ...makeMember(),
+      id: 'm-2',
+      name: 'CEO',
+    };
+
+    expect(appState.startTeamChat(project.id, cmo)?.name).toBe('CMO - Session 1');
+    expect(appState.startTeamChat(project.id, cmo)?.name).toBe('CMO - Session 2');
+    expect(appState.startTeamChat(project.id, ceo)?.name).toBe('CEO - Session 1');
+    expect(appState.startTeamChat(project.id, cmo)?.name).toBe('CMO - Session 3');
   });
 });

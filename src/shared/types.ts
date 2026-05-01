@@ -1,5 +1,7 @@
 // Shared type definitions used across main, preload, and renderer processes.
 
+import type { TeamDomain } from './team-config.js';
+
 export const ZOOM_MIN = 0.75;
 export const ZOOM_MAX = 2.0;
 
@@ -17,6 +19,7 @@ export interface CliProviderCapabilities {
   shiftEnterNewline: boolean;
   pendingPromptTrigger: PendingPromptTrigger;
   planModeArg?: string;
+  systemPromptInjection: boolean;
 }
 
 export interface CliProviderMeta {
@@ -79,7 +82,8 @@ export type SessionType =
   | 'remote-terminal'
   | 'browser-tab'
   | 'project-tab'
-  | 'kanban';
+  | 'kanban'
+  | 'team';
 
 export interface SessionRecord {
   id: string;
@@ -101,8 +105,32 @@ export interface SessionRecord {
   remoteHostName?: string;
   shareMode?: 'readonly' | 'readwrite';
   browserTabUrl?: string;
+  /** Persisted: identifies which TeamMember spawned this session, if any. */
+  teamMemberId?: string;
   /** Transient: initial prompt to inject on first spawn. Not persisted. */
   pendingInitialPrompt?: string;
+  /** Transient: system prompt to attach on first spawn. Not persisted (resume must not re-inject). */
+  pendingSystemPrompt?: string;
+}
+
+// --- Team ---
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  role: string;
+  description?: string;
+  domain?: TeamDomain;
+  systemPrompt: string;
+  source: 'predefined' | 'custom';
+  sourceUrl?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TeamData {
+  members: TeamMember[];
+  predefinedCache?: { fetchedAt: number; suggestions: TeamMember[] };
 }
 
 export interface ArchivedSession {
@@ -113,6 +141,7 @@ export interface ArchivedSession {
   createdAt: string;
   closedAt: string;
   bookmarked?: boolean;
+  teamMemberId?: string;
   cost: {
     totalCostUsd: number;
     totalInputTokens: number;
@@ -136,6 +165,8 @@ export interface DeepSearchResult {
   projectCwd: string;
   snippet: string;
   score: number;
+  /** Title derived from the first user message — fallback when Vibeyard has no name for this session. */
+  derivedName?: string;
 }
 
 export interface ProjectInsightsData {
@@ -201,6 +232,7 @@ export interface ProjectRecord {
   terminalPanelOpen?: boolean;
   terminalPanelHeight?: number;
   readiness?: ReadinessResult;
+  readinessHistory?: ReadinessSnapshot[];
 }
 
 export interface Preferences {
@@ -229,6 +261,7 @@ export interface Preferences {
     discussions: boolean;
     fileTree: boolean;
   };
+  boardCardMetrics?: boolean;
 }
 
 // --- Settings Validation ---
@@ -261,11 +294,14 @@ export interface PersistedState {
   appLaunchCount?: number;
   starPromptDismissed?: boolean;
   discussionsLastSeen?: string;
+  team?: TeamData;
 }
 
 // --- AI Readiness ---
 
 export type ReadinessCheckStatus = 'pass' | 'fail' | 'warning';
+
+export type ReadinessEffort = 'low' | 'medium' | 'high';
 
 export interface ReadinessCheck {
   id: string;
@@ -276,6 +312,9 @@ export interface ReadinessCheck {
   maxScore: number;
   fixPrompt?: string;
   providerIds?: ProviderId[];
+  effort?: ReadinessEffort;
+  impact?: number;
+  rationale?: string;
 }
 
 export interface ReadinessCategory {
@@ -290,6 +329,12 @@ export interface ReadinessResult {
   overallScore: number;
   categories: ReadinessCategory[];
   scannedAt: string;
+}
+
+export interface ReadinessSnapshot {
+  timestamp: string;
+  overallScore: number;
+  categoryScores: Record<string, number>;
 }
 
 // --- Cost / Context ---

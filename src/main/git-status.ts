@@ -31,7 +31,7 @@ export function getGitStatus(cwd: string): Promise<GitStatus> {
   return new Promise((resolve) => {
     execFile(
       'git',
-      ['status', '--porcelain=v2', '--branch'],
+      ['status', '--porcelain=v2', '--branch', '--untracked-files=all'],
       { cwd, timeout: 5000 },
       (err, stdout) => {
         if (err) {
@@ -136,7 +136,7 @@ export function getGitFiles(cwd: string): Promise<GitFileEntry[]> {
   return new Promise((resolve) => {
     execFile(
       'git',
-      ['status', '--porcelain=v2'],
+      ['status', '--porcelain=v2', '--untracked-files=all'],
       { cwd, timeout: 5000, maxBuffer: 1024 * 1024 },
       (err, stdout) => {
         if (err) {

@@ -14,10 +14,38 @@
   border-bottom: 1px solid var(--border);
 }
 
+.board-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .board-title {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.board-help-btn {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.board-help-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .board-add-task {
@@ -226,17 +254,41 @@
   color: var(--accent);
 }
 
-
 .card-status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
-.card-status-dot.working { background: var(--status-working, #34d399); }
-.card-status-dot.waiting { background: var(--status-waiting, #fbbf24); }
-.card-status-dot.prompt-waiting { background: var(--status-waiting, #fbbf24); }
-.card-status-dot.idle { background: var(--status-idle, #60a5fa); }
-.card-status-dot.completed { background: var(--text-muted); }
+.card-status-dot.working {
+  background: var(--accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.card-status-dot.waiting { background: #f4b400; }
+.card-status-dot.completed { background: #34a853; }
+.card-status-dot.input {
+  background: #e67e22;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.card-status-dot.idle { background: var(--text-muted); }
+
+.board-card-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--text-secondary);
+}
+.board-card-metrics:empty {
+  display: none;
+}
+.board-card-metrics .card-cost { color: var(--text-secondary); }
+.board-card-metrics .card-tokens { color: var(--text-muted); }
+.board-card-metrics .card-ctx { color: var(--text-muted); }
+.board-card-metrics .card-ctx.warning { color: #f4b400; }
+.board-card-metrics .card-ctx.critical { color: #ea4335; }
 
 /* Done column cards are slightly dimmed */
 .board-column[data-behavior="terminal"] .board-card {

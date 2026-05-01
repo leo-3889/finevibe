@@ -18,6 +18,7 @@ const mockState = vi.hoisted(() => ({
       readinessSection: true,
       discussions: true,
     },
+    boardCardMetrics: true,
   },
   on: vi.fn(() => () => {}),
   setPreference: vi.fn(),

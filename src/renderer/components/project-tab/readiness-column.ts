@@ -3,12 +3,25 @@ import { esc, scoreColor } from '../../dom-utils.js';
 import { loadProviderAvailability, getAvailableProviderMetas, getProviderAvailabilitySnapshot, getProviderDisplayName } from '../../provider-availability.js';
 import { setPendingPrompt } from '../terminal-pane.js';
 import { promptNewSession } from '../tab-bar.js';
-import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus } from '../../../shared/types.js';
+import { attachHoverCard, hideHoverCard } from '../hover-card.js';
+import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ReadinessResult, ReadinessSnapshot, ReadinessEffort } from '../../../shared/types.js';
 
 export interface ReadinessColumnInstance {
   element: HTMLElement;
   destroy(): void;
 }
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const GAUGE_RADIUS = 38;
+const GAUGE_CIRCUMFERENCE = 2 * Math.PI * GAUGE_RADIUS;
+
+type StatusFilter = ReadinessCheckStatus | 'all';
+
+const EFFORT_MULTIPLIER: Record<ReadinessEffort, number> = {
+  low: 1.0,
+  medium: 0.6,
+  high: 0.3,
+};
 
 function statusIcon(status: ReadinessCheckStatus): string {
   if (status === 'pass') return '✓';
@@ -20,6 +33,50 @@ function statusClass(status: ReadinessCheckStatus): string {
   if (status === 'pass') return 'readiness-check-pass';
   if (status === 'warning') return 'readiness-check-warning';
   return 'readiness-check-fail';
+}
+
+function effortLabel(effort: ReadinessEffort): string {
+  if (effort === 'low') return 'low effort';
+  if (effort === 'medium') return 'medium effort';
+  return 'high effort';
+}
+
+function impactLabel(impact: number): string {
+  if (impact >= 75) return 'high impact';
+  if (impact >= 45) return 'medium impact';
+  return 'low impact';
+}
+
+function checkPriority(check: ReadinessCheck): number {
+  const impact = check.impact ?? 50;
+  const effort = check.effort ?? 'medium';
+  return impact * EFFORT_MULTIPLIER[effort];
+}
+
+function selectQuickWins(result: ReadinessResult, n = 3): ReadinessCheck[] {
+  const candidates: ReadinessCheck[] = [];
+  for (const cat of result.categories) {
+    for (const c of cat.checks) {
+      if ((c.status === 'fail' || c.status === 'warning') && c.fixPrompt) {
+        candidates.push(c);
+      }
+    }
+  }
+  candidates.sort((a, b) => checkPriority(b) - checkPriority(a));
+  return candidates.slice(0, n);
+}
+
+function countByStatus(result: ReadinessResult): Record<StatusFilter, number> {
+  const counts: Record<StatusFilter, number> = { all: 0, fail: 0, warning: 0, pass: 0 };
+  for (const cat of result.categories) {
+    for (const c of cat.checks) {
+      counts.all++;
+      if (c.status === 'fail') counts.fail++;
+      else if (c.status === 'warning') counts.warning++;
+      else counts.pass++;
+    }
+  }
+  return counts;
 }
 
 function handleFix(check: ReadinessCheck): void {
@@ -41,6 +98,105 @@ function handleFixCustomSession(check: ReadinessCheck): void {
   });
 }
 
+function createGauge(score: number, prevScore: number | null, animateFromScore: number | null): HTMLElement {
+  const container = document.createElement('div');
+  container.className = 'readiness-gauge';
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 96 96');
+  svg.setAttribute('class', 'readiness-gauge-svg');
+  svg.setAttribute('aria-label', `Readiness score: ${score}%`);
+
+  const track = document.createElementNS(SVG_NS, 'circle');
+  track.setAttribute('class', 'readiness-gauge-track');
+  track.setAttribute('cx', '48');
+  track.setAttribute('cy', '48');
+  track.setAttribute('r', String(GAUGE_RADIUS));
+  svg.appendChild(track);
+
+  const targetOffset = GAUGE_CIRCUMFERENCE * (1 - score / 100);
+  const startOffset = animateFromScore === null
+    ? targetOffset
+    : GAUGE_CIRCUMFERENCE * (1 - animateFromScore / 100);
+
+  const arc = document.createElementNS(SVG_NS, 'circle');
+  arc.setAttribute('class', 'readiness-gauge-arc');
+  arc.setAttribute('cx', '48');
+  arc.setAttribute('cy', '48');
+  arc.setAttribute('r', String(GAUGE_RADIUS));
+  arc.setAttribute('stroke', scoreColor(score));
+  arc.setAttribute('stroke-dasharray', String(GAUGE_CIRCUMFERENCE));
+  arc.setAttribute('stroke-dashoffset', String(startOffset));
+  arc.setAttribute('transform', 'rotate(-90 48 48)');
+  svg.appendChild(arc);
+
+  container.appendChild(svg);
+
+  const value = document.createElement('div');
+  value.className = 'readiness-gauge-value';
+  value.style.color = scoreColor(score);
+  value.textContent = `${score}%`;
+  container.appendChild(value);
+
+  if (prevScore !== null) {
+    const delta = score - prevScore;
+    const deltaEl = document.createElement('div');
+    deltaEl.className = 'readiness-gauge-delta';
+    if (delta > 0) {
+      deltaEl.classList.add('positive');
+      deltaEl.textContent = `▲ +${delta}%`;
+    } else if (delta < 0) {
+      deltaEl.classList.add('negative');
+      deltaEl.textContent = `▼ ${delta}%`;
+    } else {
+      deltaEl.classList.add('neutral');
+      deltaEl.textContent = '— 0%';
+    }
+    container.appendChild(deltaEl);
+  }
+
+  if (animateFromScore !== null) {
+    requestAnimationFrame(() => {
+      arc.setAttribute('stroke-dashoffset', String(targetOffset));
+    });
+  }
+
+  return container;
+}
+
+function createSparkline(values: number[], color: string): SVGElement | null {
+  if (values.length < 2) return null;
+  const w = 60;
+  const h = 16;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const stepX = w / (values.length - 1);
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'readiness-sparkline');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('width', String(w));
+  svg.setAttribute('height', String(h));
+
+  const points = values.map((v, i) => {
+    const x = i * stepX;
+    const y = h - 2 - ((v - min) / range) * (h - 4);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  const line = document.createElementNS(SVG_NS, 'polyline');
+  line.setAttribute('points', points);
+  line.setAttribute('fill', 'none');
+  line.setAttribute('stroke', color);
+  line.setAttribute('stroke-width', '1.5');
+  line.setAttribute('stroke-linecap', 'round');
+  line.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(line);
+
+  return svg;
+}
+
 export function createReadinessColumn(project: ProjectRecord): ReadinessColumnInstance {
   const root = document.createElement('div');
   root.className = 'project-tab-column project-tab-readiness';
@@ -48,6 +204,8 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
   let scanning = false;
   let destroyed = false;
   let lastExcludedKey = (appState.preferences.readinessExcludedProviders ?? []).join(',');
+  let activeFilter: StatusFilter = 'all';
+  let lastRenderedScore: number | null = null;
   const expandedCategories = new Set<string>();
 
   const renderCheck = (check: ReadinessCheck): HTMLElement => {
@@ -71,6 +229,15 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
         tag.textContent = getProviderDisplayName(pid);
         name.appendChild(tag);
       }
+    }
+    if (check.rationale) {
+      const infoBtn = document.createElement('button');
+      infoBtn.type = 'button';
+      infoBtn.className = 'readiness-info-btn';
+      infoBtn.setAttribute('aria-label', 'Why this matters');
+      infoBtn.textContent = 'i';
+      attachHoverCard(infoBtn, check.rationale);
+      name.appendChild(infoBtn);
     }
 
     const desc = document.createElement('div');
@@ -112,14 +279,24 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
     return row;
   };
 
-  const renderCategory = (category: ReadinessCategory): HTMLElement => {
+  const filterChecks = (checks: ReadinessCheck[]): ReadinessCheck[] => {
+    if (activeFilter === 'all') return checks;
+    if (activeFilter === 'fail') return checks.filter(c => c.status === 'fail');
+    if (activeFilter === 'warning') return checks.filter(c => c.status === 'warning');
+    return checks.filter(c => c.status === 'pass');
+  };
+
+  const renderCategory = (category: ReadinessCategory, history: ReadinessSnapshot[]): HTMLElement | null => {
+    const visibleChecks = filterChecks(category.checks);
+    if (visibleChecks.length === 0) return null;
+
     const wrap = document.createElement('div');
     wrap.className = 'project-tab-readiness-category-wrap';
 
     const header = document.createElement('div');
     header.className = 'project-tab-readiness-category config-item-clickable';
 
-    const expanded = expandedCategories.has(category.id);
+    const expanded = expandedCategories.has(category.id) || activeFilter !== 'all';
     const color = scoreColor(category.score);
 
     header.innerHTML = `
@@ -131,11 +308,20 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       <span class="project-tab-readiness-cat-score" style="color:${color}">${category.score}%</span>
     `;
 
+    const sparkValues = history.map(s => s.categoryScores[category.id]).filter(v => typeof v === 'number');
+    const spark = createSparkline(sparkValues, color);
+    if (spark) {
+      const sparkWrap = document.createElement('span');
+      sparkWrap.className = 'readiness-sparkline-wrap';
+      sparkWrap.appendChild(spark);
+      header.insertBefore(sparkWrap, header.querySelector('.project-tab-readiness-cat-score'));
+    }
+
     const body = document.createElement('div');
     body.className = 'project-tab-readiness-cat-body';
     if (!expanded) body.classList.add('hidden');
 
-    for (const check of category.checks) {
+    for (const check of visibleChecks) {
       body.appendChild(renderCheck(check));
     }
 
@@ -151,6 +337,92 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
     wrap.appendChild(header);
     wrap.appendChild(body);
     return wrap;
+  };
+
+  const renderQuickWins = (result: ReadinessResult): HTMLElement | null => {
+    const wins = selectQuickWins(result, 3);
+    if (wins.length === 0) return null;
+
+    const section = document.createElement('div');
+    section.className = 'readiness-quick-wins';
+
+    const header = document.createElement('div');
+    header.className = 'readiness-quick-wins-header';
+    header.innerHTML = `<span class="readiness-quick-wins-icon">⚡</span><span class="readiness-quick-wins-title">Quick wins</span><span class="readiness-quick-wins-sub">Top fixes ranked by effort × impact</span>`;
+    section.appendChild(header);
+
+    for (const check of wins) {
+      const row = document.createElement('div');
+      row.className = `readiness-quick-win-row ${statusClass(check.status)}`;
+
+      const icon = document.createElement('span');
+      icon.className = 'readiness-quick-win-bolt';
+      icon.textContent = '⚡';
+      row.appendChild(icon);
+
+      const info = document.createElement('div');
+      info.className = 'readiness-quick-win-info';
+
+      const name = document.createElement('div');
+      name.className = 'readiness-quick-win-name';
+      name.textContent = check.name;
+      info.appendChild(name);
+
+      const meta = document.createElement('div');
+      meta.className = 'readiness-quick-win-meta';
+      const effort = check.effort ?? 'medium';
+      const impact = check.impact ?? 50;
+      meta.textContent = `${effortLabel(effort)} · ${impactLabel(impact)}`;
+      info.appendChild(meta);
+
+      row.appendChild(info);
+
+      const fixBtn = document.createElement('button');
+      fixBtn.className = 'readiness-fix-btn';
+      fixBtn.textContent = 'Fix';
+      fixBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleFix(check);
+      });
+      row.appendChild(fixBtn);
+
+      section.appendChild(row);
+    }
+
+    return section;
+  };
+
+  const renderStatusChips = (result: ReadinessResult): HTMLElement => {
+    const counts = countByStatus(result);
+    const chips: { id: StatusFilter; label: string; count: number }[] = [
+      { id: 'all', label: 'All', count: counts.all },
+      { id: 'fail', label: 'Failing', count: counts.fail },
+      { id: 'warning', label: 'Warnings', count: counts.warning },
+      { id: 'pass', label: 'Passing', count: counts.pass },
+    ];
+
+    const row = document.createElement('div');
+    row.className = 'readiness-status-chips';
+
+    for (const chip of chips) {
+      const pill = document.createElement('span');
+      pill.className = 'tag-pill tag-pill-header readiness-status-chip';
+      pill.dataset.color = chip.id === 'fail' ? 'red' : chip.id === 'warning' ? 'amber' : chip.id === 'pass' ? 'green' : 'gray';
+      pill.dataset.filter = chip.id;
+      if (chip.id !== activeFilter) pill.classList.add('inactive');
+      pill.textContent = `${chip.label} ${chip.count}`;
+      pill.addEventListener('click', () => {
+        if (activeFilter === chip.id) {
+          activeFilter = 'all';
+        } else {
+          activeFilter = chip.id;
+        }
+        render();
+      });
+      row.appendChild(pill);
+    }
+
+    return row;
   };
 
   const renderProviderFilter = (): HTMLElement | null => {
@@ -205,6 +477,7 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
     root.innerHTML = '';
     const freshProject = appState.projects.find(p => p.id === project.id) ?? project;
     const result = freshProject.readiness;
+    const history = freshProject.readinessHistory ?? [];
 
     const header = document.createElement('div');
     header.className = 'project-tab-section-header';
@@ -243,11 +516,11 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       const scoreRow = document.createElement('div');
       scoreRow.className = 'project-tab-readiness-score-row';
 
-      const scoreBadge = document.createElement('div');
-      scoreBadge.className = 'project-tab-readiness-score';
-      scoreBadge.style.background = scoreColor(result.overallScore);
-      scoreBadge.textContent = `${result.overallScore}%`;
-      scoreRow.appendChild(scoreBadge);
+      // Second-to-last snapshot is the "previous" because the current scan is already appended
+      const prevScore = history.length >= 2 ? history[history.length - 2].overallScore : null;
+      const animateFrom = lastRenderedScore === null ? 0 : (lastRenderedScore !== result.overallScore ? lastRenderedScore : null);
+      scoreRow.appendChild(createGauge(result.overallScore, prevScore, animateFrom));
+      lastRenderedScore = result.overallScore;
 
       const scoreInfo = document.createElement('div');
       scoreInfo.className = 'project-tab-readiness-score-info';
@@ -263,17 +536,33 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       scoreInfo.appendChild(scannedAt);
 
       scoreRow.appendChild(scoreInfo);
-
       body.appendChild(scoreRow);
+
+      const quickWins = renderQuickWins(result);
+      if (quickWins) body.appendChild(quickWins);
 
       const filter = renderProviderFilter();
       if (filter) body.appendChild(filter);
 
+      body.appendChild(renderStatusChips(result));
+
       const categories = document.createElement('div');
       categories.className = 'project-tab-readiness-categories';
 
+      let renderedAny = false;
       for (const category of result.categories) {
-        categories.appendChild(renderCategory(category));
+        const el = renderCategory(category, history);
+        if (el) {
+          categories.appendChild(el);
+          renderedAny = true;
+        }
+      }
+
+      if (!renderedAny) {
+        const empty = document.createElement('div');
+        empty.className = 'project-tab-empty readiness-filter-empty';
+        empty.textContent = 'No checks match this filter.';
+        categories.appendChild(empty);
       }
 
       body.appendChild(categories);
@@ -335,6 +624,7 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       destroyed = true;
       unsubReadiness();
       unsubPrefs();
+      hideHoverCard();
     },
   };
 }

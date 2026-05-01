@@ -27,6 +27,7 @@ export class GeminiProvider implements CliProvider {
       shiftEnterNewline: false,
       pendingPromptTrigger: 'startup-arg',
       planModeArg: '--approval-mode=plan',
+      systemPromptInjection: false,
     },
     defaultContextWindowSize: 1_000_000,
   };
@@ -46,7 +47,7 @@ export class GeminiProvider implements CliProvider {
     return env;
   }
 
-  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string }): string[] {
+  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
     const args: string[] = [];
     if (opts.isResume && opts.cliSessionId) {
       args.push('-r', opts.cliSessionId);

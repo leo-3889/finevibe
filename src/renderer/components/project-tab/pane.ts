@@ -1,5 +1,4 @@
 import { appState } from '../../state.js';
-import { esc } from '../../dom-utils.js';
 import { instances, type ProjectTabInstance } from './instance.js';
 import { createReadinessColumn } from './readiness-column.js';
 import { createProviderToolsColumn } from './provider-tools-column.js';
@@ -30,14 +29,6 @@ export function createProjectTabPane(sessionId: string, projectId: string): void
     instances.set(sessionId, instance);
     return;
   }
-
-  const header = document.createElement('div');
-  header.className = 'project-tab-header';
-  header.innerHTML = `
-    <div class="project-tab-header-name">${esc(project.name)}</div>
-    <div class="project-tab-header-path">${esc(project.path)}</div>
-  `;
-  el.appendChild(header);
 
   const columns = document.createElement('div');
   columns.className = 'project-tab-columns';

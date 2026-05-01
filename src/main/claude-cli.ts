@@ -336,7 +336,9 @@ with open(os.path.join(status_dir,sid+".events"),"a") as f:
     SessionEnd: 'session_end',
     TaskCreated: 'task_created',
     TaskCompleted: 'task_completed',
-    WorktreeCreate: 'worktree_create',
+    // WorktreeCreate intentionally omitted: CC >= 2.1.50 treats it as a
+    // path-replacement hook that must create the worktree and print the path.
+    // An observer hook breaks worktree creation; let CC's built-in handler run.
     WorktreeRemove: 'worktree_remove',
     CwdChanged: 'cwd_changed',
     FileChanged: 'file_changed',
