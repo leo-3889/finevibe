@@ -15,6 +15,12 @@ export function showTeamMemberModal(mode: 'create' | 'edit', existing?: TeamMemb
       defaultValue: existing?.systemPrompt ?? '',
       rows: 16,
     },
+    {
+      label: 'Install as agent (invoke via /<slug> in CLI sessions)',
+      id: 'installAsAgent',
+      type: 'checkbox',
+      defaultValue: (existing ? existing.installAsAgent : true) ? 'true' : 'false',
+    },
   ];
 
   const title = mode === 'create' ? 'New Team Member' : 'Edit Team Member';
@@ -30,6 +36,7 @@ export function showTeamMemberModal(mode: 'create' | 'edit', existing?: TeamMemb
     if (!systemPrompt) { setModalError('systemPrompt', 'System prompt is required'); return; }
 
     const description = values.description?.trim() || undefined;
+    const installAsAgent = values.installAsAgent === 'true';
 
     if (mode === 'create') {
       appState.addTeamMember({
@@ -38,9 +45,10 @@ export function showTeamMemberModal(mode: 'create' | 'edit', existing?: TeamMemb
         description,
         systemPrompt,
         source: 'custom',
+        installAsAgent,
       });
     } else if (existing) {
-      appState.updateTeamMember(existing.id, { name, role, description, systemPrompt });
+      appState.updateTeamMember(existing.id, { name, role, description, systemPrompt, installAsAgent });
     }
 
     closeModal();

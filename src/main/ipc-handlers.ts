@@ -15,7 +15,7 @@ import { watchFile as watchFileForChanges, unwatchFile as unwatchFileForChanges,
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
 import { createAppMenu } from './menu';
-import { getProvider, getProviderMeta, getAllProviderMetas } from './providers/registry';
+import { getProvider, getProviderMeta, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
 import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult } from '../shared/types';
@@ -284,6 +284,23 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('provider:checkBinary', (_event, providerId: ProviderId = 'claude') => {
     const provider = getProvider(providerId);
     return provider.validatePrerequisites();
+  });
+
+  ipcMain.handle('provider:installAgent', async (_event, slug: string, content: string) => {
+    const targets = getAllProviders().filter((p) => p.installAgent && p.validatePrerequisites());
+    return Promise.all(targets.map(async (p) => {
+      try {
+        const r = await p.installAgent!(slug, content);
+        return { providerId: p.meta.id, ok: true, filePath: r.filePath };
+      } catch (err) {
+        return { providerId: p.meta.id, ok: false, error: String((err as Error)?.message ?? err) };
+      }
+    }));
+  });
+
+  ipcMain.handle('provider:removeAgent', async (_event, slug: string) => {
+    const targets = getAllProviders().filter((p) => p.removeAgent);
+    await Promise.all(targets.map((p) => p.removeAgent!(slug).catch(() => undefined)));
   });
 
   ipcMain.handle('fs:browseDirectory', async () => {

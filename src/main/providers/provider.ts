@@ -34,4 +34,10 @@ export interface CliProvider {
   indexTranscript?(transcriptPath: string): Promise<{ text: string; cwd: string }>;
   startConfigWatcher?(win: BrowserWindow, projectPath: string): void;
   stopConfigWatcher?(): void;
+  /** Absolute path to the user-global agents directory (e.g. ~/.claude/agents). */
+  agentsDir?(): string;
+  /** Write `<slug>.md` into the agents dir with the given markdown content. */
+  installAgent?(slug: string, content: string): Promise<{ filePath: string }>;
+  /** Remove `<slug>.md` from the agents dir. Best-effort: missing file is not an error. */
+  removeAgent?(slug: string): Promise<void>;
 }

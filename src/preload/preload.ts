@@ -52,6 +52,8 @@ export interface VibeyardApi {
     checkBinary(providerId?: ProviderId): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
     onConfigChanged(callback: () => void): () => void;
+    installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
+    removeAgent(slug: string): Promise<void>;
   };
   /** @deprecated Use provider namespace instead */
   claude: {
@@ -211,6 +213,8 @@ const api: VibeyardApi = {
     checkBinary: (providerId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude'),
     watchProject: (providerId, projectPath) => ipcRenderer.send('config:watchProject', providerId, projectPath),
     onConfigChanged: (callback) => onChannel('config:changed', callback),
+    installAgent: (slug, content) => ipcRenderer.invoke('provider:installAgent', slug, content),
+    removeAgent: (slug) => ipcRenderer.invoke('provider:removeAgent', slug),
   },
   claude: {
     getConfig: (projectPath) => ipcRenderer.invoke('claude:getConfig', projectPath),

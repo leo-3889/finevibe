@@ -263,6 +263,7 @@ function addMember(member: TeamMember): void {
     systemPrompt: member.systemPrompt,
     source: 'predefined',
     sourceUrl: member.sourceUrl,
+    installAsAgent: true,
   });
 }
 

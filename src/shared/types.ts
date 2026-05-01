@@ -126,6 +126,10 @@ export interface TeamMember {
   sourceUrl?: string;
   createdAt: number;
   updatedAt: number;
+  /** When true, member is mirrored as a CLI-provider agent file at ~/.<cli>/agents/<slug>.md. */
+  installAsAgent?: boolean;
+  /** Sticky slug assigned on first install; preserved across renames so the right file is removed. */
+  agentSlug?: string;
 }
 
 export interface TeamData {
