@@ -1,5 +1,5 @@
 import type { VibeyardApi } from './types.js';
-import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, BoardColumn, BoardData, TeamMember, TeamData } from '../shared/types.js';
+import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, ReadinessSnapshot, BoardColumn, BoardData, TeamMember, TeamData } from '../shared/types.js';
 import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot, getTeamChatProviderMetas } from './provider-availability.js';
@@ -985,6 +985,13 @@ class AppState {
   setProjectReadiness(projectId: string, result: ReadinessResult): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
+    const snapshot: ReadinessSnapshot = {
+      timestamp: result.scannedAt,
+      overallScore: result.overallScore,
+      categoryScores: Object.fromEntries(result.categories.map((c) => [c.id, c.score])),
+    };
+    const history = project.readinessHistory ?? [];
+    project.readinessHistory = [...history, snapshot].slice(-30);
     project.readiness = result;
     this.persist();
     this.emit('readiness-changed', projectId);

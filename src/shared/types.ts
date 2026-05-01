@@ -229,6 +229,7 @@ export interface ProjectRecord {
   terminalPanelOpen?: boolean;
   terminalPanelHeight?: number;
   readiness?: ReadinessResult;
+  readinessHistory?: ReadinessSnapshot[];
 }
 
 export interface Preferences {
@@ -296,6 +297,8 @@ export interface PersistedState {
 
 export type ReadinessCheckStatus = 'pass' | 'fail' | 'warning';
 
+export type ReadinessEffort = 'low' | 'medium' | 'high';
+
 export interface ReadinessCheck {
   id: string;
   name: string;
@@ -305,6 +308,9 @@ export interface ReadinessCheck {
   maxScore: number;
   fixPrompt?: string;
   providerIds?: ProviderId[];
+  effort?: ReadinessEffort;
+  impact?: number;
+  rationale?: string;
 }
 
 export interface ReadinessCategory {
@@ -319,6 +325,12 @@ export interface ReadinessResult {
   overallScore: number;
   categories: ReadinessCategory[];
   scannedAt: string;
+}
+
+export interface ReadinessSnapshot {
+  timestamp: string;
+  overallScore: number;
+  categoryScores: Record<string, number>;
 }
 
 // --- Cost / Context ---

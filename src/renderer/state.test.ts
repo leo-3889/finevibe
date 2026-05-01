@@ -1822,11 +1822,22 @@ describe('navigateBack()/navigateForward()', () => {
 });
 
 describe('setProjectReadiness()', () => {
+  function makeResult(overall = 80, t = '2025-01-01T00:00:00.000Z'): Parameters<typeof appState.setProjectReadiness>[1] {
+    return {
+      overallScore: overall,
+      scannedAt: t,
+      categories: [
+        { id: 'instructions', name: 'Instructions', weight: 0.5, score: 90, checks: [] },
+        { id: 'context', name: 'Context', weight: 0.5, score: 70, checks: [] },
+      ],
+    };
+  }
+
   it('sets readiness on the project, persists, and emits readiness-changed', () => {
     const project = addProject();
     const cb = vi.fn();
     appState.on('readiness-changed', cb);
-    const result = { ready: true, details: {} } as unknown as Parameters<typeof appState.setProjectReadiness>[1];
+    const result = makeResult();
     appState.setProjectReadiness(project.id, result);
     expect(project.readiness).toBe(result);
     expect(cb).toHaveBeenCalledWith(project.id);
@@ -1836,8 +1847,32 @@ describe('setProjectReadiness()', () => {
   it('is a no-op for unknown projectId', () => {
     const cb = vi.fn();
     appState.on('readiness-changed', cb);
-    appState.setProjectReadiness('missing', {} as Parameters<typeof appState.setProjectReadiness>[1]);
+    appState.setProjectReadiness('missing', makeResult());
     expect(cb).not.toHaveBeenCalled();
+  });
+
+  it('appends a snapshot to readinessHistory on each call', () => {
+    const project = addProject();
+    appState.setProjectReadiness(project.id, makeResult(60, '2025-01-01T00:00:00.000Z'));
+    appState.setProjectReadiness(project.id, makeResult(75, '2025-01-02T00:00:00.000Z'));
+
+    const history = project.readinessHistory!;
+    expect(history).toHaveLength(2);
+    expect(history[0].overallScore).toBe(60);
+    expect(history[1].overallScore).toBe(75);
+    expect(history[1].categoryScores).toEqual({ instructions: 90, context: 70 });
+    expect(history[1].timestamp).toBe('2025-01-02T00:00:00.000Z');
+  });
+
+  it('caps readinessHistory at 30 entries (FIFO)', () => {
+    const project = addProject();
+    for (let i = 0; i < 35; i++) {
+      appState.setProjectReadiness(project.id, makeResult(i, `2025-01-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`));
+    }
+    const history = project.readinessHistory!;
+    expect(history).toHaveLength(30);
+    expect(history[0].overallScore).toBe(5);
+    expect(history[29].overallScore).toBe(34);
   });
 });
 
