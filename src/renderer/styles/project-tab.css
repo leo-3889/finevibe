@@ -186,20 +186,6 @@
 .readiness-gauge-delta.negative { color: #e94560; }
 .readiness-gauge-delta.neutral { color: var(--text-muted); }
 
-/* Sparkline */
-.readiness-sparkline-wrap {
-  flex: 0 0 60px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  margin-right: 4px;
-  opacity: 0.85;
-}
-
-.readiness-sparkline {
-  display: block;
-}
-
 /* Quick wins */
 .readiness-quick-wins {
   display: flex;
