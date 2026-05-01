@@ -1,6 +1,7 @@
 import { appState } from '../state.js';
 import { getProviderDisplayName } from '../provider-availability.js';
 import { escapeHtml, escapeRegExp } from './dom-search-backend.js';
+import { deriveProjectName } from '../../shared/project-name.js';
 import type { DeepSearchResult } from '../../shared/types.js';
 
 interface ResolvedResult extends DeepSearchResult {
@@ -211,7 +212,7 @@ function renderResults(): void {
 
     const badge = document.createElement('span');
     badge.className = `session-palette-badge${isCurrentProject ? ' current' : ''}`;
-    const projectName = r.projectCwd ? r.projectCwd.split('/').filter(Boolean).pop() ?? r.projectSlug : r.projectSlug;
+    const projectName = deriveProjectName(r.projectCwd, r.projectSlug);
     badge.textContent = isCurrentProject ? 'current project' : projectName;
     nameRow.appendChild(badge);
 
@@ -248,7 +249,7 @@ function openResult(r: ResolvedResult): void {
     // Not in Vibeyard — find or create project by cwd, then open session directly
     let project = appState.projects.find(p => p.path === r.projectCwd);
     if (!project) {
-      const name = r.projectCwd ? r.projectCwd.split('/').filter(Boolean).pop()! : r.projectSlug;
+      const name = deriveProjectName(r.projectCwd, r.projectSlug);
       project = appState.addProject(name, r.projectCwd);
     }
     const name = r.sessionName ?? r.derivedName ?? r.cliSessionId.slice(0, 8) + '\u2026';

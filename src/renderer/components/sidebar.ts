@@ -5,6 +5,7 @@ import { onChange as onCostChange, getAggregateCost } from '../session-cost.js';
 import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unread.js';
 import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, markSeen as markDiscussionsSeen, onChange as onDiscussionsChange, DISCUSSIONS_URL } from '../discussions-badge.js';
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
+import { deriveProjectName } from '../../shared/project-name.js';
 import { esc, scoreColor } from '../dom-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree } from './file-tree.js';
 import {
@@ -276,7 +277,7 @@ export function promptNewProject(): void {
 
   const autoFillName = (path: string) => {
     if (nameInput && !nameManuallyEdited) {
-      nameInput.value = basename(path);
+      nameInput.value = deriveProjectName(path);
     }
   };
 
