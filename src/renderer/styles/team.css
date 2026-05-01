@@ -219,7 +219,7 @@
 
 .team-picker-dialog {
   width: min(640px, 92vw);
-  max-height: 80vh;
+  height: 80vh;
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
