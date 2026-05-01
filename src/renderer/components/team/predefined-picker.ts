@@ -1,13 +1,19 @@
 import type { TeamMember } from '../../../shared/types.js';
-import { TEAM_DOMAINS, TEAM_DOMAIN_LABELS, type TeamDomain } from '../../../shared/team-config.js';
+import { TEAM_DOMAINS, TEAM_DOMAIN_LABELS } from '../../../shared/team-config.js';
 import { appState } from '../../state.js';
 import { renderMarkdownContent } from '../file-reader.js';
 import { fetchPredefinedMembers, isCacheFresh } from './github-fetcher.js';
+import { filterMembers, type DomainFilter } from './predefined-filter.js';
 
 interface DialogState {
   overlay: HTMLDivElement;
   list: HTMLDivElement;
   status: HTMLDivElement;
+  searchInput: HTMLInputElement;
+  chips: Map<DomainFilter, HTMLButtonElement>;
+  allSuggestions: TeamMember[];
+  query: string;
+  activeDomain: DomainFilter;
 }
 
 export async function showPredefinedPicker(): Promise<void> {
@@ -16,7 +22,8 @@ export async function showPredefinedPicker(): Promise<void> {
 
   const cache = appState.team.predefinedCache;
   if (cache && isCacheFresh(cache)) {
-    renderSuggestions(state, cache.suggestions);
+    state.allSuggestions = cache.suggestions;
+    rerender(state);
   } else {
     await load(state);
   }
@@ -46,13 +53,64 @@ function buildDialog(): DialogState {
   const status = document.createElement('div');
   status.className = 'team-picker-status';
 
+  const filterRow = document.createElement('div');
+  filterRow.className = 'team-picker-filter';
+
+  const searchInput = document.createElement('input');
+  searchInput.type = 'text';
+  searchInput.className = 'team-picker-search';
+  searchInput.placeholder = 'Search by name, role, description…';
+
+  const chipsWrap = document.createElement('div');
+  chipsWrap.className = 'team-picker-domain-chips';
+
+  const chips = new Map<DomainFilter, HTMLButtonElement>();
+  const filters: DomainFilter[] = ['all', ...TEAM_DOMAINS];
+  for (const filter of filters) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'team-picker-chip';
+    chip.textContent = filter === 'all' ? 'All' : TEAM_DOMAIN_LABELS[filter];
+    if (filter === 'all') chip.classList.add('active');
+    chips.set(filter, chip);
+    chipsWrap.appendChild(chip);
+  }
+
+  filterRow.appendChild(searchInput);
+  filterRow.appendChild(chipsWrap);
+
   const list = document.createElement('div');
   list.className = 'team-picker-list';
 
   dialog.appendChild(header);
   dialog.appendChild(status);
+  dialog.appendChild(filterRow);
   dialog.appendChild(list);
   overlay.appendChild(dialog);
+
+  const state: DialogState = {
+    overlay,
+    list,
+    status,
+    searchInput,
+    chips,
+    allSuggestions: [],
+    query: '',
+    activeDomain: 'all',
+  };
+
+  for (const [filter, chip] of chips) {
+    chip.addEventListener('click', () => selectDomain(state, filter));
+  }
+
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  searchInput.addEventListener('input', () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      state.query = searchInput.value.trim().toLowerCase();
+      rerender(state);
+    }, 150);
+  });
 
   const escListener = (e: KeyboardEvent): void => {
     if (e.key !== 'Escape') return;
@@ -67,7 +125,14 @@ function buildDialog(): DialogState {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) dispose(); });
   document.addEventListener('keydown', escListener);
 
-  return { overlay, list, status };
+  return state;
+}
+
+function selectDomain(state: DialogState, filter: DomainFilter): void {
+  if (state.activeDomain === filter) return;
+  state.activeDomain = filter;
+  for (const [key, el] of state.chips) el.classList.toggle('active', key === filter);
+  rerender(state);
 }
 
 async function load(state: DialogState): Promise<void> {
@@ -76,24 +141,32 @@ async function load(state: DialogState): Promise<void> {
   try {
     const suggestions = await fetchPredefinedMembers();
     appState.setTeamPredefinedCache(suggestions);
-    renderSuggestions(state, suggestions);
+    state.allSuggestions = suggestions;
+    rerender(state);
   } catch (err) {
     state.status.textContent = `Failed to load: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 
-function renderSuggestions(state: DialogState, suggestions: TeamMember[]): void {
+function rerender(state: DialogState): void {
   state.list.innerHTML = '';
-  if (suggestions.length === 0) {
+  if (state.allSuggestions.length === 0) {
     state.status.textContent = 'No predefined members found.';
     return;
   }
   state.status.textContent = '';
 
+  const filtered = filterMembers(state.allSuggestions, state.query, state.activeDomain);
+
+  if (filtered.length === 0) {
+    state.list.appendChild(buildEmptyState(state));
+    return;
+  }
+
   const installed = new Set(appState.getTeamMembers().map((m) => m.id));
 
   const buckets = new Map<TeamDomain, TeamMember[]>();
-  for (const suggestion of suggestions) {
+  for (const suggestion of filtered) {
     const key = suggestion.domain ?? 'other';
     const bucket = buckets.get(key) ?? [];
     bucket.push(suggestion);
@@ -121,6 +194,30 @@ function renderSuggestions(state: DialogState, suggestions: TeamMember[]): void 
 
     state.list.appendChild(section);
   }
+}
+
+function buildEmptyState(state: DialogState): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'team-picker-empty';
+
+  const msg = document.createElement('div');
+  msg.textContent = 'No personas match your filter.';
+  wrap.appendChild(msg);
+
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'team-picker-empty-clear';
+  clear.textContent = 'Clear filters';
+  clear.addEventListener('click', () => {
+    state.query = '';
+    state.activeDomain = 'all';
+    state.searchInput.value = '';
+    for (const [key, el] of state.chips) el.classList.toggle('active', key === 'all');
+    rerender(state);
+  });
+  wrap.appendChild(clear);
+
+  return wrap;
 }
 
 function buildCard(member: TeamMember, isInstalled: boolean): HTMLElement {
