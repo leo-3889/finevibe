@@ -35,11 +35,6 @@ export function createMemberCard(member: TeamMember, projectId: string): HTMLEle
   header.appendChild(avatar);
   header.appendChild(heading);
 
-  const sourceBadge = document.createElement('span');
-  sourceBadge.className = `team-card-badge team-card-badge-${member.source}`;
-  sourceBadge.textContent = member.source === 'predefined' ? 'Predefined' : 'Custom';
-  header.appendChild(sourceBadge);
-
   card.appendChild(header);
 
   if (member.description) {

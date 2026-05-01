@@ -1,12 +1,12 @@
 import type { TeamMember } from '../../../shared/types.js';
 import { appState } from '../../state.js';
+import { renderMarkdownContent } from '../file-reader.js';
 import { fetchPredefinedMembers, isCacheFresh } from './github-fetcher.js';
 
 interface DialogState {
   overlay: HTMLDivElement;
   list: HTMLDivElement;
   status: HTMLDivElement;
-  refreshBtn: HTMLButtonElement;
 }
 
 export async function showPredefinedPicker(): Promise<void> {
@@ -34,17 +34,12 @@ function buildDialog(): DialogState {
   title.className = 'team-picker-title';
   title.textContent = 'Browse predefined team members';
 
-  const refreshBtn = document.createElement('button');
-  refreshBtn.className = 'team-picker-refresh';
-  refreshBtn.textContent = 'Refresh';
-
   const closeBtn = document.createElement('button');
   closeBtn.className = 'team-picker-close';
   closeBtn.textContent = '×';
   closeBtn.setAttribute('aria-label', 'Close');
 
   header.appendChild(title);
-  header.appendChild(refreshBtn);
   header.appendChild(closeBtn);
 
   const status = document.createElement('div');
@@ -58,33 +53,31 @@ function buildDialog(): DialogState {
   dialog.appendChild(list);
   overlay.appendChild(dialog);
 
-  const dispose = (): void => overlay.remove();
+  const escListener = (e: KeyboardEvent): void => {
+    if (e.key !== 'Escape') return;
+    if (document.querySelector('.team-picker-detail-overlay')) return;
+    dispose();
+  };
+  const dispose = (): void => {
+    overlay.remove();
+    document.removeEventListener('keydown', escListener);
+  };
   closeBtn.addEventListener('click', dispose);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) dispose(); });
-  document.addEventListener('keydown', function escListener(e) {
-    if (e.key === 'Escape') {
-      dispose();
-      document.removeEventListener('keydown', escListener);
-    }
-  });
+  document.addEventListener('keydown', escListener);
 
-  const state: DialogState = { overlay, list, status, refreshBtn };
-  refreshBtn.addEventListener('click', () => { void load(state); });
-  return state;
+  return { overlay, list, status };
 }
 
 async function load(state: DialogState): Promise<void> {
   state.status.textContent = 'Loading suggestions from GitHub…';
   state.list.innerHTML = '';
-  state.refreshBtn.disabled = true;
   try {
     const suggestions = await fetchPredefinedMembers();
     appState.setTeamPredefinedCache(suggestions);
     renderSuggestions(state, suggestions);
   } catch (err) {
     state.status.textContent = `Failed to load: ${err instanceof Error ? err.message : String(err)}`;
-  } finally {
-    state.refreshBtn.disabled = false;
   }
 }
 
@@ -94,55 +87,168 @@ function renderSuggestions(state: DialogState, suggestions: TeamMember[]): void 
     state.status.textContent = 'No predefined members found.';
     return;
   }
-  state.status.textContent = `${suggestions.length} member${suggestions.length === 1 ? '' : 's'} available`;
+  state.status.textContent = '';
 
   const installed = new Set(appState.getTeamMembers().map((m) => m.id));
 
   for (const suggestion of suggestions) {
-    const row = document.createElement('div');
-    row.className = 'team-picker-row';
-
-    const main = document.createElement('div');
-    main.className = 'team-picker-row-main';
-
-    const name = document.createElement('div');
-    name.className = 'team-picker-row-name';
-    name.textContent = `${suggestion.name} · ${suggestion.role}`;
-
-    main.appendChild(name);
-
-    if (suggestion.description) {
-      const desc = document.createElement('div');
-      desc.className = 'team-picker-row-desc';
-      desc.textContent = suggestion.description;
-      main.appendChild(desc);
-    }
-
-    row.appendChild(main);
-
-    const addBtn = document.createElement('button');
-    addBtn.className = 'team-picker-add-btn';
-    if (installed.has(suggestion.id)) {
-      addBtn.textContent = 'Added';
-      addBtn.disabled = true;
-    } else {
-      addBtn.textContent = 'Add';
-      addBtn.addEventListener('click', () => {
-        appState.addTeamMember({
-          id: suggestion.id,
-          name: suggestion.name,
-          role: suggestion.role,
-          description: suggestion.description,
-          systemPrompt: suggestion.systemPrompt,
-          source: 'predefined',
-          sourceUrl: suggestion.sourceUrl,
-        });
-        addBtn.textContent = 'Added';
-        addBtn.disabled = true;
-      });
-    }
-
-    row.appendChild(addBtn);
-    state.list.appendChild(row);
+    state.list.appendChild(buildCard(suggestion, installed.has(suggestion.id)));
   }
+}
+
+function buildCard(member: TeamMember, isInstalled: boolean): HTMLElement {
+  const card = document.createElement('div');
+  card.className = 'team-picker-card';
+  card.setAttribute('role', 'button');
+  card.setAttribute('tabindex', '0');
+
+  const header = document.createElement('div');
+  header.className = 'team-card-header';
+
+  const avatar = document.createElement('div');
+  avatar.className = 'team-card-avatar';
+  avatar.textContent = initials(member.name);
+
+  header.appendChild(avatar);
+  header.appendChild(buildNameRole(member));
+  card.appendChild(header);
+
+  if (member.description) {
+    const desc = document.createElement('div');
+    desc.className = 'team-card-description';
+    desc.textContent = member.description;
+    card.appendChild(desc);
+  }
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'team-picker-card-add';
+  applyAddState(addBtn, isInstalled, 'Add', 'Added');
+  addBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    addMember(member);
+    applyAddState(addBtn, true, 'Add', 'Added');
+  });
+  card.appendChild(addBtn);
+
+  const open = (): void => {
+    showMemberDetail(member, () => {
+      addMember(member);
+      applyAddState(addBtn, true, 'Add', 'Added');
+    }, addBtn.disabled);
+  };
+  card.addEventListener('click', open);
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      open();
+    }
+  });
+
+  return card;
+}
+
+function showMemberDetail(member: TeamMember, onAdd: () => void, isInstalled: boolean): void {
+  const overlay = document.createElement('div');
+  overlay.className = 'team-picker-detail-overlay';
+
+  const dialog = document.createElement('div');
+  dialog.className = 'team-picker-detail-dialog';
+
+  const header = document.createElement('div');
+  header.className = 'team-picker-detail-header';
+
+  const backBtn = document.createElement('button');
+  backBtn.className = 'team-picker-detail-back';
+  backBtn.textContent = '‹';
+  backBtn.setAttribute('aria-label', 'Back');
+
+  const titleWrap = buildNameRole(member);
+  titleWrap.classList.add('team-picker-detail-title');
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'team-picker-close';
+  closeBtn.textContent = '×';
+  closeBtn.setAttribute('aria-label', 'Close');
+
+  header.appendChild(backBtn);
+  header.appendChild(titleWrap);
+  header.appendChild(closeBtn);
+
+  const body = document.createElement('div');
+  body.className = 'team-picker-detail-body';
+
+  body.appendChild(renderMarkdownContent(member.systemPrompt ?? ''));
+
+  const footer = document.createElement('div');
+  footer.className = 'team-picker-detail-footer';
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'team-picker-card-add';
+  applyAddState(addBtn, isInstalled, 'Add to team', 'Already added');
+  addBtn.addEventListener('click', () => {
+    onAdd();
+    applyAddState(addBtn, true, 'Add to team', 'Already added');
+  });
+  footer.appendChild(addBtn);
+
+  dialog.appendChild(header);
+  dialog.appendChild(body);
+  dialog.appendChild(footer);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  const escListener = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') dispose();
+  };
+  const dispose = (): void => {
+    overlay.remove();
+    document.removeEventListener('keydown', escListener);
+  };
+  backBtn.addEventListener('click', dispose);
+  closeBtn.addEventListener('click', dispose);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) dispose(); });
+  document.addEventListener('keydown', escListener);
+}
+
+function buildNameRole(member: TeamMember): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'team-card-heading';
+
+  const nameEl = document.createElement('div');
+  nameEl.className = 'team-card-name';
+  nameEl.textContent = member.name;
+
+  const roleEl = document.createElement('div');
+  roleEl.className = 'team-card-role';
+  roleEl.textContent = member.role;
+
+  wrap.appendChild(nameEl);
+  wrap.appendChild(roleEl);
+  return wrap;
+}
+
+function addMember(member: TeamMember): void {
+  appState.addTeamMember({
+    id: member.id,
+    name: member.name,
+    role: member.role,
+    description: member.description,
+    systemPrompt: member.systemPrompt,
+    source: 'predefined',
+    sourceUrl: member.sourceUrl,
+  });
+}
+
+function applyAddState(btn: HTMLButtonElement, isInstalled: boolean, addLabel: string, addedLabel: string): void {
+  btn.disabled = isInstalled;
+  btn.textContent = isInstalled ? addedLabel : addLabel;
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? '')
+    .join('') || '?';
 }
