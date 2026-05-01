@@ -2040,4 +2040,20 @@ describe('startTeamChat()', () => {
     expect(session).toBeUndefined();
     expect(appState.projects.find((p) => p.id === project.id)?.sessions.length).toBe(before);
   });
+
+  it('numbers sessions per team member', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([metaFor('claude')]);
+    const project = addProject();
+    const cmo = makeMember();
+    const ceo: import('../shared/types.js').TeamMember = {
+      ...makeMember(),
+      id: 'm-2',
+      name: 'CEO',
+    };
+
+    expect(appState.startTeamChat(project.id, cmo)?.name).toBe('CMO - Session 1');
+    expect(appState.startTeamChat(project.id, cmo)?.name).toBe('CMO - Session 2');
+    expect(appState.startTeamChat(project.id, ceo)?.name).toBe('CEO - Session 1');
+    expect(appState.startTeamChat(project.id, cmo)?.name).toBe('CMO - Session 3');
+  });
 });

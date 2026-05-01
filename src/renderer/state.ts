@@ -555,8 +555,10 @@ class AppState {
     const providerId = candidates.find((id): id is ProviderId => !!id && teamCapable.has(id));
     if (!providerId) return undefined;
 
+    const sessionNum =
+      project.sessions.filter((s) => s.teamMemberId === member.id).length + 1;
     const base = buildCliSession({
-      name: member.name.slice(0, MAX_SESSION_NAME_LENGTH),
+      name: `${member.name} - Session ${sessionNum}`.slice(0, MAX_SESSION_NAME_LENGTH),
       providerId,
       args: project.defaultArgs,
     });
