@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { homedir } from 'os';
-import { readMcpServersFromJson } from './provider-config-utils';
+import { dedupeByName, readAgentsFromDir, readMcpServersFromJson } from './provider-config-utils';
 import type { McpServer, ProviderConfig } from '../shared/types';
 
 export async function getGeminiConfig(projectPath: string): Promise<ProviderConfig> {
@@ -14,9 +14,14 @@ export async function getGeminiConfig(projectPath: string): Promise<ProviderConf
   for (const server of userMcp) serverMap.set(server.name, server);
   for (const server of projectMcp) serverMap.set(server.name, server);
 
+  const agents = dedupeByName(
+    readAgentsFromDir(path.join(geminiDir, 'agents'), 'user'),
+    readAgentsFromDir(path.join(projectGeminiDir, 'agents'), 'project'),
+  );
+
   return {
     mcpServers: Array.from(serverMap.values()),
-    agents: [],
+    agents,
     skills: [],
     commands: [],
   };

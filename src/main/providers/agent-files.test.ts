@@ -40,6 +40,14 @@ describe('writeAgentFile', () => {
     await writeAgentFile(dir, 'a', 'two');
     expect(writeFile).toHaveBeenLastCalledWith(path.join(dir, 'a.md'), 'two', 'utf8');
   });
+
+  it('honors a custom extension', async () => {
+    const dir = path.join('/home/u', '.copilot', 'agents');
+    const result = await writeAgentFile(dir, 'cmo', 'body', '.agent.md');
+
+    expect(writeFile).toHaveBeenCalledWith(path.join(dir, 'cmo.agent.md'), 'body', 'utf8');
+    expect(result.filePath).toBe(path.join(dir, 'cmo.agent.md'));
+  });
 });
 
 describe('deleteAgentFile', () => {
@@ -47,6 +55,12 @@ describe('deleteAgentFile', () => {
     const dir = path.join('/home/u', '.codex', 'agents');
     await deleteAgentFile(dir, 'cmo');
     expect(unlink).toHaveBeenCalledWith(path.join(dir, 'cmo.md'));
+  });
+
+  it('honors a custom extension', async () => {
+    const dir = path.join('/home/u', '.copilot', 'agents');
+    await deleteAgentFile(dir, 'cmo', '.agent.md');
+    expect(unlink).toHaveBeenCalledWith(path.join(dir, 'cmo.agent.md'));
   });
 
   it('swallows ENOENT', async () => {

@@ -21,6 +21,7 @@ vi.mock('../pty-manager', () => ({
 
 vi.mock('../copilot-config', () => ({
   getCopilotConfig: vi.fn(async () => ({ mcpServers: [], agents: [], skills: [], commands: [] })),
+  AGENT_EXT: '.agent.md',
 }));
 
 vi.mock('../config-watcher', () => ({
@@ -35,12 +36,20 @@ vi.mock('../copilot-hooks', () => ({
   SESSION_ID_VAR: 'VIBEYARD_SESSION_ID',
 }));
 
+vi.mock('./agent-files', () => ({
+  writeAgentFile: vi.fn(async (dir: string, slug: string, _content: string, ext: string) => ({
+    filePath: `${dir}/${slug}${ext}`,
+  })),
+  deleteAgentFile: vi.fn(async () => undefined),
+}));
+
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { CopilotProvider, _resetCachedPath } from './copilot-provider';
 import { getCopilotConfig } from '../copilot-config';
 import { startConfigWatcher, stopConfigWatcher } from '../config-watcher';
 import { installCopilotHooks, validateCopilotHooks, cleanupCopilotHooks } from '../copilot-hooks';
+import { writeAgentFile, deleteAgentFile } from './agent-files';
 
 const mockStatSync = vi.mocked(fs.statSync);
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -238,6 +247,21 @@ describe('hooks integration', () => {
   it('reinstallSettings delegates to installCopilotHooks', () => {
     provider.reinstallSettings();
     expect(mockInstallCopilotHooks).toHaveBeenCalled();
+  });
+});
+
+describe('agent install/remove', () => {
+  const agentsDir = path.join('/mock/home', '.copilot', 'agents');
+
+  it('installAgent writes <slug>.agent.md (Copilot CLI native extension)', async () => {
+    const result = await provider.installAgent('cmo', '---\nname: cmo\n---\nhi');
+    expect(writeAgentFile).toHaveBeenCalledWith(agentsDir, 'cmo', '---\nname: cmo\n---\nhi', '.agent.md');
+    expect(result.filePath).toBe(`${agentsDir}/cmo.agent.md`);
+  });
+
+  it('removeAgent deletes <slug>.agent.md', async () => {
+    await provider.removeAgent('cmo');
+    expect(deleteAgentFile).toHaveBeenCalledWith(agentsDir, 'cmo', '.agent.md');
   });
 });
 

@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { readDirSafe, readFileSafe, readJsonSafe } from './fs-utils';
-import { parseFrontmatterContent } from './frontmatter';
-import type { McpServer, Skill } from '../shared/types';
+import { parseFrontmatter, parseFrontmatterContent } from './frontmatter';
+import type { Agent, McpServer, Skill } from '../shared/types';
 
 export function readMcpServersFromJson(filePath: string, scope: 'user' | 'project'): McpServer[] {
   const json = readJsonSafe(filePath);
@@ -15,6 +15,29 @@ export function readMcpServersFromJson(filePath: string, scope: 'user' | 'projec
     }
   }
   return servers;
+}
+
+/**
+ * Read `.md` agent files from a directory, each expected to have YAML frontmatter
+ * with at least a `name` field. Files without a name are skipped. Used by Codex
+ * and Gemini providers (Claude and Copilot have their own variants).
+ */
+export function readAgentsFromDir(dirPath: string, scope: 'user' | 'project'): Agent[] {
+  const agents: Agent[] = [];
+  for (const file of readDirSafe(dirPath)) {
+    if (!file.endsWith('.md')) continue;
+    const filePath = path.join(dirPath, file);
+    const fm = parseFrontmatter(filePath);
+    if (!fm.name) continue;
+    agents.push({
+      name: fm.name,
+      model: fm.model || '',
+      category: 'plugin',
+      scope,
+      filePath,
+    });
+  }
+  return agents;
 }
 
 /**
