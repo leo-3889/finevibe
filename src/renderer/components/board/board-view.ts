@@ -12,6 +12,8 @@ import {
   setSearchQuery, getSearchQuery, toggleTagFilter, isTagFilterActive,
   hasActiveFilters, getFilteredTasks, onFilterChange, getActiveTagFilters,
 } from '../../board-filter.js';
+import { onChange as onStatusChange } from '../../session-activity.js';
+import { STATUS_LABELS } from './board-card.js';
 
 let boardEl: HTMLElement | null = null;
 let dndInitialized = false;
@@ -36,6 +38,18 @@ export function initBoard(): void {
   });
   onFilterChange(() => {
     if (isKanbanActive()) renderBoard();
+  });
+  onStatusChange((sessionId, status) => {
+    if (!boardEl) return;
+    const dot = boardEl.querySelector(
+      `.card-status-dot[data-session-id="${sessionId}"]`,
+    ) as HTMLElement | null;
+    if (!dot) return;
+    dot.className = `card-status-dot ${status}`;
+    const labelNode = dot.parentElement?.lastChild;
+    if (labelNode && labelNode.nodeType === Node.TEXT_NODE) {
+      labelNode.textContent = STATUS_LABELS[status];
+    }
   });
 }
 

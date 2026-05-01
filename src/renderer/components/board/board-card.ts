@@ -1,11 +1,19 @@
 import type { BoardTask } from '../../../shared/types.js';
 import { appState } from '../../state.js';
 import { getColumnByBehavior, updateTask, moveTask, deleteTask, getTagColor } from '../../board-state.js';
-import { getStatus } from '../../session-activity.js';
+import { getStatus, type SessionStatus } from '../../session-activity.js';
 import { showTaskModal } from './board-task-modal.js';
 import { showContextMenu } from './board-context-menu.js';
 import { showConfirmModal } from '../modal.js';
 import { setPendingPrompt } from '../terminal-pane.js';
+
+export const STATUS_LABELS: Record<SessionStatus, string> = {
+  working: 'Working',
+  waiting: 'Waiting',
+  idle: 'Idle',
+  completed: 'Done',
+  input: 'Input',
+};
 
 export function createCardElement(task: BoardTask): HTMLElement {
   const el = document.createElement('div');
@@ -68,16 +76,9 @@ export function createCardElement(task: BoardTask): HTMLElement {
       statusEl.className = 'board-card-status-inline';
       const dot = document.createElement('span');
       dot.className = `card-status-dot ${status}`;
-      const statusLabels: Record<string, string> = {
-        working: 'Working',
-        waiting: 'Waiting',
-        'prompt-waiting': 'Waiting',
-        idle: 'Idle',
-        completed: 'Done',
-        input: 'Input',
-      };
+      dot.dataset.sessionId = task.sessionId;
       statusEl.appendChild(dot);
-      statusEl.appendChild(document.createTextNode(statusLabels[status] ?? status));
+      statusEl.appendChild(document.createTextNode(STATUS_LABELS[status]));
       bottomRow.appendChild(statusEl);
       el.appendChild(bottomRow);
     }
