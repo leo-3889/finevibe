@@ -265,6 +265,7 @@
 .card-status-dot.prompt-waiting { background: var(--status-waiting, #fbbf24); }
 .card-status-dot.idle { background: var(--status-idle, #60a5fa); }
 .card-status-dot.completed { background: var(--text-muted); }
+.card-status-dot.input { background: var(--status-input, #e67e22); }
 
 /* Done column cards are slightly dimmed */
 .board-column[data-behavior="terminal"] .board-card {
