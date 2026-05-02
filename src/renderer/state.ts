@@ -1,13 +1,20 @@
 import type { VibeyardApi } from './types.js';
-import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, ReadinessSnapshot, BoardColumn, BoardData, TeamMember, TeamData } from '../shared/types.js';
-import { getCost, restoreCost } from './session-cost.js';
-import { restoreContext } from './session-context.js';
-import { getProviderCapabilities, getProviderAvailabilitySnapshot, getTeamChatProviderMetas } from './provider-availability.js';
+import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, ReadinessSnapshot, TeamMember, TeamData } from '../shared/types.js';
+import { getCost } from './session-cost.js';
+import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename } from '../shared/platform.js';
-import { ensureUniqueSlug, nameToSlug } from '../shared/slug.js';
-import { buildAgentMarkdown } from './components/team/agent-markdown.js';
 import { isCliSession } from './session-utils.js';
-import { archiveSession as archiveSessionPure, buildResumedSession, buildResumedSessionFromCliId } from './state/session-archive.js';
+import { archiveSession as archiveSessionPure } from './state/session-archive.js';
+import {
+  buildResumedSession,
+  buildResumedSessionFromCliId,
+  clearSessionHistory as clearSessionHistoryPure,
+  findCliSessionTab,
+  getSessionHistory as getSessionHistoryPure,
+  removeHistoryEntry as removeHistoryEntryPure,
+  resolveResumeSource,
+  toggleBookmark as toggleBookmarkPure,
+} from './state/session-history.js';
 import {
   attachSessionToProject,
   buildBrowserTabSession,
@@ -21,6 +28,40 @@ import {
   buildTeamSession,
 } from './state/session-factory.js';
 import { NavHistory } from './state/nav-history.js';
+import { createDefaultBoard, ensureProjectDefaults, hydrateLoadedState, serializeForSave } from './state/persistence.js';
+import {
+  applyMemberPatch,
+  buildNewMember,
+  buildTeamChatSession,
+  fireAndForgetRemoveAgent,
+  pickTeamChatProvider,
+  reconcileAgent as reconcileAgentPure,
+  removeMember,
+  syncAgentInstall as syncAgentInstallPure,
+} from './state/team-state.js';
+import {
+  browserTabNameFromUrl,
+  buildPlanSessionArgs,
+  findExistingBrowserTab,
+  findExistingDiffViewer,
+  findExistingFileReader,
+  findExistingTabByType,
+  resolveCliProvider,
+  resolvePlanProvider,
+} from './state/specialized-sessions.js';
+import {
+  addInsightSnapshot as addInsightSnapshotPure,
+  dismissInsight as dismissInsightPure,
+  isInsightDismissed as isInsightDismissedPure,
+  setProjectReadiness as setProjectReadinessPure,
+} from './state/insights-state.js';
+import {
+  collectRemovalIds,
+  cycleSessionId,
+  reorderSessionInProject,
+  sessionIdAtIndex,
+  toggleSwarmMode,
+} from './state/layout-state.js';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession } from '../shared/types.js';
 
@@ -124,50 +165,9 @@ class AppState {
     const loaded = (await window.vibeyard.store.load()) as PersistedState | null;
     if (loaded && loaded.version === 1) {
       this.state = loaded;
-      // Merge defaults for forward compatibility with old state files
-      this.state.preferences = { ...defaultPreferences, ...this.state.preferences };
-      // Restore persisted cost data into the in-memory cost tracker
-      for (const project of this.state.projects) {
-        for (const session of project.sessions) {
-          if (session.cost) {
-            restoreCost(session.id, session.cost);
-          }
-          if (session.contextWindow) {
-            restoreContext(session.id, session.contextWindow);
-          }
-        }
-        // Migrate duplicate archived session IDs (caused by /clear creating two entries with same id)
-        if (project.sessionHistory) {
-          const seenIds = new Set<string>();
-          for (const entry of project.sessionHistory) {
-            if (seenIds.has(entry.id)) {
-              entry.id = crypto.randomUUID();
-            }
-            seenIds.add(entry.id);
-          }
-        }
-      }
+      hydrateLoadedState(this.state, defaultPreferences);
     }
-    // Ensure all projects have board data; clear stale runtime sessionIds
-    for (const project of this.state.projects) {
-      if (!project.board) {
-        project.board = createDefaultBoard();
-      }
-      for (const task of project.board.tasks) {
-        task.sessionId = undefined;
-      }
-      // Migrate legacy layout.mode === 'board' to a kanban tab session
-      const legacyMode = (project.layout as { mode: string }).mode;
-      if (legacyMode === 'board') {
-        project.layout.mode = 'tabs';
-        const existingKanban = project.sessions.find((s) => s.type === 'kanban');
-        const kanbanSession = existingKanban ?? buildKanbanSession({ projectName: project.name });
-        if (!existingKanban) {
-          project.sessions.push(kanbanSession);
-        }
-        project.activeSessionId = kanbanSession.id;
-      }
-    }
+    ensureProjectDefaults(this.state);
 
     if (!this.state.starPromptDismissed) {
       this.state.appLaunchCount = (this.state.appLaunchCount ?? 0) + 1;
@@ -178,15 +178,7 @@ class AppState {
   }
 
   private persist(): void {
-    // Strip transient fields before saving
-    const toSave = {
-      ...this.state,
-      projects: this.state.projects.map((p) => ({
-        ...p,
-        sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, ...rest }) => rest),
-      })),
-    };
-    window.vibeyard.store.save(toSave);
+    window.vibeyard.store.save(serializeForSave(this.state));
   }
 
   get projects(): ProjectRecord[] {
@@ -341,16 +333,8 @@ class AppState {
   ): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
-    const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
-    const providerId =
-      providerIdOverride
-      ?? activeSession?.providerId
-      ?? this.state.preferences.defaultProvider
-      ?? 'claude';
-    const caps = getProviderCapabilities(providerId);
-    const planArg = planMode ? (caps?.planModeArg ?? '') : '';
-    const base = project.defaultArgs ?? '';
-    const args = [base, planArg].filter(Boolean).join(' ').trim() || undefined;
+    const providerId = resolvePlanProvider(project, this.state.preferences, providerIdOverride);
+    const args = buildPlanSessionArgs(project, getProviderCapabilities(providerId), planMode);
     return this.addSession(projectId, name, args, providerId);
   }
 
@@ -360,7 +344,7 @@ class AppState {
 
     const session = buildCliSession({
       name,
-      providerId: providerId ?? this.state.preferences.defaultProvider ?? 'claude',
+      providerId: resolveCliProvider(this.state.preferences, providerId),
       args: args ?? project.defaultArgs,
     });
     attachSessionToProject(project, session, { addToSwarm: true });
@@ -389,10 +373,7 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    // If a diff tab for this file+area+worktree already exists, just switch to it
-    const existing = project.sessions.find(
-      (s) => s.type === 'diff-viewer' && s.diffFilePath === filePath && s.diffArea === area && s.worktreePath === worktreePath
-    );
+    const existing = findExistingDiffViewer(project, filePath, area, worktreePath);
     if (existing) return this.activateExistingSession(project, existing);
 
     const session = buildDiffViewerSession({ name: basename(filePath), filePath, area, worktreePath });
@@ -415,19 +396,12 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    // If a browser-tab with the same URL already exists, switch to it
     if (url) {
-      const existing = project.sessions.find(
-        (s) => s.type === 'browser-tab' && s.browserTabUrl === url
-      );
+      const existing = findExistingBrowserTab(project, url);
       if (existing) return this.activateExistingSession(project, existing);
     }
 
-    let name = 'Browser';
-    if (url) {
-      try { name = new URL(url).hostname || url; } catch { name = url; }
-    }
-    const session = buildBrowserTabSession({ name, url });
+    const session = buildBrowserTabSession({ name: browserTabNameFromUrl(url), url });
     attachSessionToProject(project, session);
     this.commitNewSession(projectId, session);
     return session;
@@ -437,11 +411,9 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    if (this.state.activeProjectId !== projectId) {
-      this.setActiveProject(projectId);
-    }
+    if (this.state.activeProjectId !== projectId) this.setActiveProject(projectId);
 
-    const existing = project.sessions.find((s) => s.type === 'project-tab');
+    const existing = findExistingTabByType(project, 'project-tab');
     if (existing) return this.activateExistingSession(project, existing);
 
     const session = buildProjectTabSession({ projectName: project.name });
@@ -454,11 +426,9 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    if (this.state.activeProjectId !== projectId) {
-      this.setActiveProject(projectId);
-    }
+    if (this.state.activeProjectId !== projectId) this.setActiveProject(projectId);
 
-    const existing = project.sessions.find((s) => s.type === 'kanban');
+    const existing = findExistingTabByType(project, 'kanban');
     if (existing) return this.activateExistingSession(project, existing);
 
     const session = buildKanbanSession({ projectName: project.name });
@@ -471,11 +441,9 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    if (this.state.activeProjectId !== projectId) {
-      this.setActiveProject(projectId);
-    }
+    if (this.state.activeProjectId !== projectId) this.setActiveProject(projectId);
 
-    const existing = project.sessions.find((s) => s.type === 'team');
+    const existing = findExistingTabByType(project, 'team');
     if (existing) return this.activateExistingSession(project, existing);
 
     const session = buildTeamSession({ projectName: project.name });
@@ -494,91 +462,33 @@ class AppState {
   }
 
   addTeamMember(input: Omit<TeamMember, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): TeamMember {
-    const now = Date.now();
-    const member: TeamMember = {
-      id: input.id ?? crypto.randomUUID(),
-      name: input.name,
-      role: input.role,
-      description: input.description,
-      systemPrompt: input.systemPrompt,
-      source: input.source,
-      sourceUrl: input.sourceUrl,
-      installAsAgent: input.installAsAgent,
-      agentSlug: input.agentSlug,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const member = buildNewMember(input);
     this.team.members.push(member);
     this.persist();
     this.emit('team-changed');
-    if (member.installAsAgent) void this.syncAgentInstall(member);
+    if (member.installAsAgent) {
+      void syncAgentInstallPure(window.vibeyard.provider, this.team, member, () => this.persist());
+    }
     return member;
   }
 
   updateTeamMember(id: string, patch: Partial<Omit<TeamMember, 'id' | 'createdAt'>>): TeamMember | undefined {
-    const member = this.team.members.find((m) => m.id === id);
-    if (!member) return undefined;
-    const before: TeamMember = { ...member };
-    Object.assign(member, patch, { updatedAt: Date.now() });
+    const result = applyMemberPatch(this.team, id, patch);
+    if (!result) return undefined;
     this.persist();
     this.emit('team-changed');
-    void this.reconcileAgent(before, member);
-    return member;
+    void reconcileAgentPure(window.vibeyard.provider, this.team, result.before, result.after, () => this.persist());
+    return result.after;
   }
 
   removeTeamMember(id: string): void {
-    const removed = this.team.members.find((m) => m.id === id);
-    const before = this.team.members.length;
-    this.team.members = this.team.members.filter((m) => m.id !== id);
-    if (this.team.members.length === before) return;
+    const removed = removeMember(this.team, id);
+    if (!removed) return;
     this.persist();
     this.emit('team-changed');
-    if (removed?.installAsAgent && removed.agentSlug) {
-      void window.vibeyard.provider.removeAgent(removed.agentSlug).catch((err) => {
-        console.warn('removeAgent failed:', err);
-      });
+    if (removed.installAsAgent && removed.agentSlug) {
+      fireAndForgetRemoveAgent(window.vibeyard.provider, removed.agentSlug);
     }
-  }
-
-  /** Assign a slug, write the agent file across all installed providers, and persist. */
-  private async syncAgentInstall(member: TeamMember): Promise<void> {
-    if (!member.agentSlug) {
-      const taken = new Set(this.team.members.filter((m) => m !== member && m.agentSlug).map((m) => m.agentSlug!));
-      member.agentSlug = ensureUniqueSlug(nameToSlug(member.name), taken);
-      this.persist();
-    }
-    try {
-      await window.vibeyard.provider.installAgent(member.agentSlug, buildAgentMarkdown(member.agentSlug, member));
-    } catch (err) {
-      console.warn('installAgent failed:', err);
-    }
-  }
-
-  /** Apply the four-cell reconcile table from the plan: install / remove / rewrite. */
-  private async reconcileAgent(before: TeamMember, after: TeamMember): Promise<void> {
-    const wasOn = !!before.installAsAgent;
-    const isOn = !!after.installAsAgent;
-    if (!wasOn && !isOn) return;
-    if (!wasOn && isOn) {
-      await this.syncAgentInstall(after);
-      return;
-    }
-    if (wasOn && !isOn) {
-      const slug = before.agentSlug;
-      after.agentSlug = undefined;
-      this.persist();
-      if (slug) {
-        try { await window.vibeyard.provider.removeAgent(slug); }
-        catch (err) { console.warn('removeAgent failed:', err); }
-      }
-      return;
-    }
-    if (before.agentSlug && after.agentSlug && before.agentSlug === after.agentSlug) {
-      const oldContent = buildAgentMarkdown(before.agentSlug, before);
-      const newContent = buildAgentMarkdown(after.agentSlug, after);
-      if (oldContent === newContent) return;
-    }
-    await this.syncAgentInstall(after);
   }
 
   setTeamPredefinedCache(suggestions: TeamMember[]): void {
@@ -600,28 +510,10 @@ class AppState {
     if (!project) return undefined;
 
     const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
-    const teamCapable = new Set(getTeamChatProviderMetas().map((p) => p.id));
-    const candidates: (ProviderId | undefined)[] = [
-      overrideProviderId,
-      activeSession && isCliSession(activeSession) ? activeSession.providerId : undefined,
-      this.state.preferences.defaultProvider,
-      'claude',
-    ];
-    const providerId = candidates.find((id): id is ProviderId => !!id && teamCapable.has(id));
+    const providerId = pickTeamChatProvider(activeSession, this.state.preferences.defaultProvider, overrideProviderId);
     if (!providerId) return undefined;
 
-    const sessionNum =
-      project.sessions.filter((s) => s.teamMemberId === member.id).length + 1;
-    const base = buildCliSession({
-      name: `${member.name} - Session ${sessionNum}`.slice(0, MAX_SESSION_NAME_LENGTH),
-      providerId,
-      args: project.defaultArgs,
-    });
-    const session: SessionRecord = {
-      ...base,
-      teamMemberId: member.id,
-      pendingSystemPrompt: member.systemPrompt,
-    };
+    const session = buildTeamChatSession(project, member, providerId, MAX_SESSION_NAME_LENGTH);
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);
     return session;
@@ -640,10 +532,7 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    // If a file-reader tab for this path already exists, just switch to it
-    const existing = project.sessions.find(
-      (s) => s.type === 'file-reader' && s.fileReaderPath === filePath
-    );
+    const existing = findExistingFileReader(project, filePath);
     if (existing) {
       const lineChanged = existing.fileReaderLine !== lineNumber;
       const activating = project.activeSessionId !== existing.id;
@@ -711,24 +600,21 @@ class AppState {
   }
 
   getSessionHistory(projectId: string): ArchivedSession[] {
-    const project = this.state.projects.find((p) => p.id === projectId);
-    return project?.sessionHistory ?? [];
+    return getSessionHistoryPure(this.state.projects.find((p) => p.id === projectId));
   }
 
   removeHistoryEntry(projectId: string, archivedSessionId: string): void {
     const project = this.state.projects.find((p) => p.id === projectId);
-    if (!project?.sessionHistory) return;
-    project.sessionHistory = project.sessionHistory.filter((a) => a.id !== archivedSessionId);
+    if (!project) return;
+    if (!removeHistoryEntryPure(project, archivedSessionId)) return;
     this.persist();
     this.emit('history-changed', projectId);
   }
 
   toggleBookmark(projectId: string, archivedSessionId: string): void {
     const project = this.state.projects.find((p) => p.id === projectId);
-    if (!project?.sessionHistory) return;
-    const entry = project.sessionHistory.find((a) => a.id === archivedSessionId);
-    if (!entry) return;
-    entry.bookmarked = !entry.bookmarked;
+    if (!project) return;
+    if (!toggleBookmarkPure(project, archivedSessionId)) return;
     this.persist();
     this.emit('history-changed', projectId);
   }
@@ -736,7 +622,7 @@ class AppState {
   clearSessionHistory(projectId: string): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
-    project.sessionHistory = project.sessionHistory?.filter((a) => a.bookmarked) ?? [];
+    clearSessionHistoryPure(project);
     this.persist();
     this.emit('history-changed', projectId);
   }
@@ -748,8 +634,7 @@ class AppState {
     const archived = project.sessionHistory?.find((a) => a.id === archivedSessionId);
     if (!archived || !archived.cliSessionId) return undefined;
 
-    // If a tab with the same cliSessionId is already open, just activate it
-    const existing = project.sessions.find((s) => s.cliSessionId === archived.cliSessionId);
+    const existing = findCliSessionTab(project, archived.cliSessionId);
     if (existing) return this.activateExistingSession(project, existing);
 
     const session = buildResumedSession(archived);
@@ -763,7 +648,7 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    const existing = project.sessions.find((s) => s.cliSessionId === cliSessionId);
+    const existing = findCliSessionTab(project, cliSessionId);
     if (existing) return this.activateExistingSession(project, existing);
 
     const session = buildResumedSessionFromCliId(cliSessionId, name, providerId);
@@ -787,35 +672,18 @@ class AppState {
       return undefined;
     }
 
-    let sourceProviderId: ProviderId | undefined;
-    let sourceCliSessionId: string | null = null;
-    let sourceName = 'session';
-    if (source.archivedSessionId) {
-      const archived = project.sessionHistory?.find((a) => a.id === source.archivedSessionId);
-      if (!archived) return undefined;
-      sourceProviderId = archived.providerId;
-      sourceCliSessionId = archived.cliSessionId;
-      sourceName = archived.name;
-    } else if (source.sessionId) {
-      const existing = project.sessions.find((s) => s.id === source.sessionId);
-      if (!existing) return undefined;
-      sourceProviderId = existing.providerId;
-      sourceCliSessionId = existing.cliSessionId;
-      sourceName = existing.name;
-    } else {
-      return undefined;
-    }
-    if (!sourceProviderId) return undefined;
+    const resolved = resolveResumeSource(project, source);
+    if (!resolved) return undefined;
 
     const initialPrompt = await window.vibeyard.session.buildResumeWithPrompt(
-      sourceProviderId,
-      sourceCliSessionId,
+      resolved.providerId,
+      resolved.cliSessionId ?? null,
       project.path,
-      sourceName,
+      resolved.name,
     );
 
     const session: SessionRecord = {
-      ...buildCliSession({ name: `${sourceName} (↪ ${targetProviderId})`, providerId: targetProviderId }),
+      ...buildCliSession({ name: `${resolved.name} (↪ ${targetProviderId})`, providerId: targetProviderId }),
       pendingInitialPrompt: initialPrompt,
     };
     attachSessionToProject(project, session, { addToSwarm: true });
@@ -934,91 +802,60 @@ class AppState {
   toggleSwarm(): void {
     const project = this.activeProject;
     if (!project) return;
-
-    if (project.layout.mode === 'swarm') {
-      project.layout.mode = 'tabs';
-      // Keep splitPanes as-is so order is preserved when switching back
-    } else {
-      const cliSessions = project.sessions.filter(isCliSession);
-      project.layout.mode = 'swarm';
-
-      // Remove stale IDs (deleted sessions)
-      project.layout.splitPanes = project.layout.splitPanes.filter(
-        (id) => cliSessions.some((s) => s.id === id)
-      );
-
-      // Add any new CLI sessions not yet in splitPanes
-      for (const s of cliSessions) {
-        if (!project.layout.splitPanes.includes(s.id)) {
-          project.layout.splitPanes.push(s.id);
-        }
-      }
-    }
+    toggleSwarmMode(project);
     this.persist();
     this.emit('layout-changed');
   }
 
   cycleSession(direction: 1 | -1): void {
     const project = this.activeProject;
-    if (!project || project.sessions.length === 0) return;
-    const idx = project.sessions.findIndex((s) => s.id === project.activeSessionId);
-    const next = (idx + direction + project.sessions.length) % project.sessions.length;
-    project.activeSessionId = project.sessions[next].id;
-    this.pushNav(project.activeSessionId);
+    if (!project) return;
+    const next = cycleSessionId(project, direction);
+    if (!next) return;
+    project.activeSessionId = next;
+    this.pushNav(next);
     this.persist();
     this.emit('session-changed');
   }
 
   gotoSession(index: number): void {
     const project = this.activeProject;
-    if (!project || index >= project.sessions.length) return;
-    project.activeSessionId = project.sessions[index].id;
-    this.pushNav(project.activeSessionId);
+    if (!project) return;
+    const next = sessionIdAtIndex(project, index);
+    if (!next) return;
+    project.activeSessionId = next;
+    this.pushNav(next);
     this.persist();
     this.emit('session-changed');
   }
 
   removeAllSessions(projectId: string): void {
-    const project = this.state.projects.find((p) => p.id === projectId);
-    if (!project) return;
-    const ids = project.sessions.map((s) => s.id);
-    for (const id of ids) this.removeSession(projectId, id);
+    this.batchRemoveSessions(projectId, 'all');
   }
 
   removeSessionsFromRight(projectId: string, sessionId: string): void {
-    const project = this.state.projects.find((p) => p.id === projectId);
-    if (!project) return;
-    const idx = project.sessions.findIndex((s) => s.id === sessionId);
-    if (idx === -1) return;
-    const ids = project.sessions.slice(idx + 1).map((s) => s.id);
-    for (const id of ids) this.removeSession(projectId, id);
+    this.batchRemoveSessions(projectId, 'right', sessionId);
   }
 
   removeSessionsFromLeft(projectId: string, sessionId: string): void {
-    const project = this.state.projects.find((p) => p.id === projectId);
-    if (!project) return;
-    const idx = project.sessions.findIndex((s) => s.id === sessionId);
-    if (idx === -1) return;
-    const ids = project.sessions.slice(0, idx).map((s) => s.id);
-    for (const id of ids) this.removeSession(projectId, id);
+    this.batchRemoveSessions(projectId, 'left', sessionId);
   }
 
   removeOtherSessions(projectId: string, sessionId: string): void {
+    this.batchRemoveSessions(projectId, 'others', sessionId);
+  }
+
+  private batchRemoveSessions(projectId: string, mode: 'all' | 'right' | 'left' | 'others', anchorSessionId?: string): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
-    const ids = project.sessions.filter((s) => s.id !== sessionId).map((s) => s.id);
+    const ids = collectRemovalIds(project, mode, anchorSessionId);
     for (const id of ids) this.removeSession(projectId, id);
   }
 
   addInsightSnapshot(projectId: string, snapshot: InitialContextSnapshot): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
-    if (!project.insights) project.insights = { initialContextSnapshots: [], dismissed: [] };
-    project.insights.initialContextSnapshots.push(snapshot);
-    // Cap at 50 snapshots
-    if (project.insights.initialContextSnapshots.length > 50) {
-      project.insights.initialContextSnapshots = project.insights.initialContextSnapshots.slice(-50);
-    }
+    addInsightSnapshotPure(project, snapshot);
     this.persist();
     this.emit('insights-changed', projectId);
   }
@@ -1026,61 +863,33 @@ class AppState {
   dismissInsight(projectId: string, insightId: string): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
-    if (!project.insights) project.insights = { initialContextSnapshots: [], dismissed: [] };
-    if (!project.insights.dismissed.includes(insightId)) {
-      project.insights.dismissed.push(insightId);
-    }
+    dismissInsightPure(project, insightId);
     this.persist();
     this.emit('insights-changed', projectId);
   }
 
   isInsightDismissed(projectId: string, insightId: string): boolean {
-    const project = this.state.projects.find((p) => p.id === projectId);
-    return project?.insights?.dismissed.includes(insightId) ?? false;
+    return isInsightDismissedPure(this.state.projects.find((p) => p.id === projectId), insightId);
   }
 
   setProjectReadiness(projectId: string, result: ReadinessResult): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
-    const snapshot: ReadinessSnapshot = {
-      timestamp: result.scannedAt,
-      overallScore: result.overallScore,
-      categoryScores: Object.fromEntries(result.categories.map((c) => [c.id, c.score])),
-    };
-    const history = project.readinessHistory ?? [];
-    project.readinessHistory = [...history, snapshot].slice(-30);
-    project.readiness = result;
+    setProjectReadinessPure(project, result);
     this.persist();
     this.emit('readiness-changed', projectId);
   }
 
   reorderSession(projectId: string, sessionId: string, toIndex: number): void {
-    const project = this.state.projects.find(p => p.id === projectId);
+    const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
-    const fromIndex = project.sessions.findIndex(s => s.id === sessionId);
-    if (fromIndex === -1 || fromIndex === toIndex) return;
-    const [session] = project.sessions.splice(fromIndex, 1);
-    project.sessions.splice(toIndex, 0, session);
-    // Keep splitPanes in sync with sessions order
-    if (project.layout.splitPanes.length > 0) {
-      project.layout.splitPanes = project.sessions
-        .filter(s => project.layout.splitPanes.includes(s.id))
-        .map(s => s.id);
-    }
+    if (!reorderSessionInProject(project, sessionId, toIndex)) return;
     this.persist();
     this.emit('session-changed');
   }
 }
 
-export function createDefaultBoard(): BoardData {
-  const columns: BoardColumn[] = [
-    { id: crypto.randomUUID(), title: 'Backlog', order: 0, behavior: 'inbox' },
-    { id: crypto.randomUUID(), title: 'Ready',   order: 1, behavior: 'none' },
-    { id: crypto.randomUUID(), title: 'Running', order: 2, behavior: 'active' },
-    { id: crypto.randomUUID(), title: 'Done',    order: 3, behavior: 'terminal' },
-  ];
-  return { columns, tasks: [] };
-}
+export { createDefaultBoard };
 
 /** @internal Test-only: reset all module state */
 export function _resetForTesting(): void {
