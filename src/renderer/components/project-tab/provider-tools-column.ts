@@ -32,7 +32,23 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
   const root = document.createElement('div');
   root.className = 'project-tab-column project-tab-provider-tools';
 
+  const header = document.createElement('div');
+  header.className = 'project-tab-section-header';
+
+  const headerTitle = document.createElement('span');
+  headerTitle.className = 'project-tab-section-title';
+  headerTitle.textContent = 'Provider Tools';
+  header.appendChild(headerTitle);
+
+  const body = document.createElement('div');
+  body.className = 'project-tab-tools-body';
+  body.innerHTML = '<div class="config-loading">Loading...</div>';
+
+  root.appendChild(header);
+  root.appendChild(body);
+
   let providerSelect: CustomSelectInstance | null = null;
+  let lastAvailableKey: string | null = null;
   let unsubConfigChanged: (() => void) | null = null;
   let destroyed = false;
 
@@ -93,9 +109,9 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
     const section = document.createElement('div');
     section.className = 'config-section project-tab-tools-section';
 
-    const header = document.createElement('div');
-    header.className = 'config-section-header';
-    header.innerHTML = `${esc(title)}<span class="config-section-count">${count}</span>`;
+    const sectionHeader = document.createElement('div');
+    sectionHeader.className = 'config-section-header';
+    sectionHeader.innerHTML = `${esc(title)}<span class="config-section-count">${count}</span>`;
 
     if (onAdd) {
       const addBtn = document.createElement('button');
@@ -103,28 +119,29 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
       addBtn.textContent = '+';
       addBtn.title = `Add ${title.replace(/s$/, '')}`;
       addBtn.addEventListener('click', (e) => { e.stopPropagation(); onAdd(); });
-      header.appendChild(addBtn);
+      sectionHeader.appendChild(addBtn);
     }
 
-    const body = document.createElement('div');
-    body.className = 'config-section-body';
+    const sectionBody = document.createElement('div');
+    sectionBody.className = 'config-section-body';
 
     if (items.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'config-empty';
       empty.textContent = 'None configured';
-      body.appendChild(empty);
+      sectionBody.appendChild(empty);
     } else {
-      items.forEach(el => body.appendChild(el));
+      items.forEach(el => sectionBody.appendChild(el));
     }
 
-    section.appendChild(header);
-    section.appendChild(body);
+    section.appendChild(sectionHeader);
+    section.appendChild(sectionBody);
     return section;
   };
 
   const destroyProviderSelect = () => {
     if (providerSelect) {
+      providerSelect.element.remove();
       providerSelect.destroy();
       providerSelect = null;
     }
@@ -132,6 +149,30 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
 
   const watchActiveProvider = () => {
     window.vibeyard.provider.watchProject(getActiveProviderId(project.id), project.path);
+  };
+
+  const buildHeaderSelect = () => {
+    const available = getAvailableProviderMetas();
+    const key = available.map(p => p.id).join(',');
+    const wantSelect = available.length > 1;
+    if (key === lastAvailableKey && wantSelect === !!providerSelect) return;
+    lastAvailableKey = key;
+
+    destroyProviderSelect();
+
+    if (wantSelect) {
+      providerSelect = createCustomSelect(
+        `config-provider-select-${project.id}`,
+        available.map(p => ({ value: p.id, label: p.displayName })),
+        getActiveProviderId(project.id),
+        (value) => {
+          selectedProviderByProject.set(project.id, value as ProviderId);
+          watchActiveProvider();
+          void refresh();
+        },
+      );
+      header.appendChild(providerSelect.element);
+    }
   };
 
   const refresh = async () => {
@@ -142,48 +183,20 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
     }
     if (destroyed) return;
 
-    const available = getAvailableProviderMetas();
+    buildHeaderSelect();
+
     const providerId = getActiveProviderId(project.id);
 
     let config: ProviderConfig;
     try {
       config = await window.vibeyard.provider.getConfig(providerId, project.path);
     } catch {
-      destroyProviderSelect();
-      root.innerHTML = '';
+      body.innerHTML = '';
       return;
     }
     if (destroyed) return;
 
-    destroyProviderSelect();
-    root.innerHTML = '';
-
-    const header = document.createElement('div');
-    header.className = 'project-tab-section-header';
-
-    const title = document.createElement('span');
-    title.className = 'project-tab-section-title';
-    title.textContent = 'Provider Tools';
-    header.appendChild(title);
-
-    if (available.length > 1) {
-      providerSelect = createCustomSelect(
-        `config-provider-select-${project.id}`,
-        available.map(p => ({ value: p.id, label: p.displayName })),
-        providerId,
-        (value) => {
-          selectedProviderByProject.set(project.id, value as ProviderId);
-          watchActiveProvider();
-          void refresh();
-        },
-      );
-      header.appendChild(providerSelect.element);
-    }
-
-    root.appendChild(header);
-
-    const body = document.createElement('div');
-    body.className = 'project-tab-tools-body';
+    body.innerHTML = '';
 
     body.appendChild(renderSection(
       'MCP Servers',
@@ -211,14 +224,7 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
         config.commands.length,
       ));
     }
-
-    root.appendChild(body);
   };
-
-  const loading = document.createElement('div');
-  loading.className = 'config-loading';
-  loading.textContent = 'Loading...';
-  root.appendChild(loading);
 
   watchActiveProvider();
   void refresh();

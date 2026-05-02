@@ -1,5 +1,7 @@
 let cardEl: HTMLDivElement | null = null;
 let escHandler: ((e: KeyboardEvent) => void) | null = null;
+let showTimer: ReturnType<typeof setTimeout> | null = null;
+const HOVER_DELAY_MS = 600;
 
 function ensureCard(): HTMLDivElement {
   if (cardEl) return cardEl;
@@ -44,6 +46,10 @@ function show(target: HTMLElement, content: string): void {
 }
 
 function hide(): void {
+  if (showTimer) {
+    clearTimeout(showTimer);
+    showTimer = null;
+  }
   if (cardEl) cardEl.classList.add('hidden');
   if (escHandler) {
     document.removeEventListener('keydown', escHandler);
@@ -51,13 +57,21 @@ function hide(): void {
   }
 }
 
+function scheduleShow(target: HTMLElement, content: string): void {
+  if (showTimer) clearTimeout(showTimer);
+  showTimer = setTimeout(() => {
+    showTimer = null;
+    show(target, content);
+  }, HOVER_DELAY_MS);
+}
+
 export function hideHoverCard(): void {
   hide();
 }
 
 export function attachHoverCard(target: HTMLElement, content: string): void {
-  target.addEventListener('mouseenter', () => show(target, content));
-  target.addEventListener('focusin', () => show(target, content));
+  target.addEventListener('mouseenter', () => scheduleShow(target, content));
+  target.addEventListener('focusin', () => scheduleShow(target, content));
   target.addEventListener('mouseleave', hide);
   target.addEventListener('focusout', hide);
 }

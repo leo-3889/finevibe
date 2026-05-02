@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.32] - 2026-05-02
+
+### Features
+
+- Vertical icon strip and hover hints to collapsed sidebar
+- Provider icon to kanban task cards
+- Search and domain filter to team browse modal
+- Team-member install-as-agent flag
+- Team marketplace personas grouped by domain
+- Session metrics to kanban cards
+- Team tab with persona library and per-provider system prompts
+- Browser tab toolbar button
+- Readiness score tint to project Overview button in sidebar
+- Kanban board help dialog
+
+### Fixes
+
+- Browse team members modal shifting height on filter
+- Team tab being renamable like overview tab
+- Overview file tabs auto-closing for gemini and copilot agents
+- Team agents not appearing in Gemini and Copilot sidebars
+- Providers dropdown closing automatically on overview page
+- Kanban column rename being wiped by mid-edit re-renders
+- Diff viewer crash when clicking an untracked folder
+- Windows path shown as project name in tab titles
+- Missing orange dot for input status on kanban cards
+- Duplicate sessions and missing names in global search palette
+- Preferences modal width regressed after modal shell refactor
+- Worktree creation broken by WorktreeCreate observer hook
+
+### Changes
+
+- Discussions sidebar icon to material chat glyph
+- Split AppState into focused state modules
+- Yellow accent left border from quick wins panel
+- Sparkline from readiness category rows
+- Team chat session names with per-member counter
+- AI readiness with quick wins, score history, gauge, filter chips, and rationale tooltips
+- Kanban running card dots with tab status dots
+- Browse members modal with cards and persona detail view
+- Browser tab toolbar icon for sharper rendering
+- Large-file readiness threshold to 1000 lines
+
 ## [0.2.31] - 2026-04-28
 
 ### Features

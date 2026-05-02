@@ -5,7 +5,7 @@ import { parseFrontmatter } from './frontmatter';
 import { dedupeByName, readMcpServersFromJson, readSkillsFromDir } from './provider-config-utils';
 import type { Agent, McpServer, ProviderConfig } from '../shared/types';
 
-const AGENT_EXT = '.agent.md';
+export const AGENT_EXT = '.agent.md';
 
 function readAgentsFromDir(dirPath: string, scope: 'user' | 'project'): Agent[] {
   const agents: Agent[] = [];

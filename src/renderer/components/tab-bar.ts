@@ -108,7 +108,7 @@ export function initTabBar(): void {
 }
 
 function startRename(tab: HTMLElement, project: ProjectRecord, session: SessionRecord): void {
-  if (session.type === 'kanban' || session.type === 'project-tab') return;
+  if (session.type === 'kanban' || session.type === 'project-tab' || session.type === 'team') return;
   const nameSpan = tab.querySelector('.tab-name') as HTMLElement;
   if (nameSpan.querySelector('input')) return;
 
@@ -155,7 +155,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  const renamable = session.type !== 'kanban' && session.type !== 'project-tab';
+  const renamable = session.type !== 'kanban' && session.type !== 'project-tab' && session.type !== 'team';
   const renameItem = document.createElement('div');
   renameItem.className = 'tab-context-menu-item' + (renamable ? '' : ' disabled');
   renameItem.textContent = 'Rename';

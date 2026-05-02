@@ -2,6 +2,7 @@ import { vi } from 'vitest';
 
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),
+  readdirSync: vi.fn(),
   statSync: vi.fn(),
 }));
 
@@ -10,9 +11,11 @@ vi.mock('os', () => ({
 }));
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { getGeminiConfig } from './gemini-config';
 
 const mockReadFileSync = vi.mocked(fs.readFileSync);
+const mockReaddirSync = vi.mocked(fs.readdirSync);
 const n = (p: string) => p.replace(/\\/g, '/');
 
 function mockFiles(rawFiles: Record<string, string>): void {
@@ -27,6 +30,7 @@ function mockFiles(rawFiles: Record<string, string>): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
 });
 
 describe('getGeminiConfig', () => {
@@ -120,7 +124,7 @@ describe('getGeminiConfig', () => {
     expect(config.mcpServers).toHaveLength(0);
   });
 
-  it('always returns empty agents, skills, and commands', async () => {
+  it('always returns empty skills and commands', async () => {
     mockFiles({
       '/mock/home/.gemini/settings.json': JSON.stringify({
         mcpServers: {
@@ -130,8 +134,58 @@ describe('getGeminiConfig', () => {
     });
 
     const config = await getGeminiConfig('/project');
-    expect(config.agents).toEqual([]);
     expect(config.skills).toEqual([]);
     expect(config.commands).toEqual([]);
+  });
+
+  it('reads agents from user and project .gemini/agents directories', async () => {
+    mockReaddirSync.mockImplementation((dirPath: any) => {
+      const input = n(String(dirPath));
+      if (input === '/mock/home/.gemini/agents') return ['cmo.md'] as any;
+      if (input === '/project/.gemini/agents') return ['proj.md'] as any;
+      throw new Error('ENOENT');
+    });
+    mockFiles({
+      '/mock/home/.gemini/agents/cmo.md': '---\nname: cmo\n---\nhi',
+      '/project/.gemini/agents/proj.md': '---\nname: proj\nmodel: gemini-2.0\n---\nbody',
+    });
+
+    const config = await getGeminiConfig('/project');
+    expect(config.agents).toEqual([
+      { name: 'cmo', model: '', category: 'plugin', scope: 'user', filePath: path.join('/mock/home', '.gemini', 'agents', 'cmo.md') },
+      { name: 'proj', model: 'gemini-2.0', category: 'plugin', scope: 'project', filePath: path.join('/project', '.gemini', 'agents', 'proj.md') },
+    ]);
+  });
+
+  it('skips non-.md files and files without a name in frontmatter', async () => {
+    mockReaddirSync.mockImplementation((dirPath: any) => {
+      const input = n(String(dirPath));
+      if (input === '/mock/home/.gemini/agents') return ['ok.md', 'README.txt', 'noname.md'] as any;
+      throw new Error('ENOENT');
+    });
+    mockFiles({
+      '/mock/home/.gemini/agents/ok.md': '---\nname: ok\n---\nhi',
+      '/mock/home/.gemini/agents/noname.md': '---\ndescription: no name field\n---\nhi',
+    });
+
+    const config = await getGeminiConfig('/project');
+    expect(config.agents).toHaveLength(1);
+    expect(config.agents[0].name).toBe('ok');
+  });
+
+  it('user-scope agents win over project-scope on name collision', async () => {
+    mockReaddirSync.mockImplementation((dirPath: any) => {
+      const input = n(String(dirPath));
+      if (input === '/mock/home/.gemini/agents' || input === '/project/.gemini/agents') return ['cmo.md'] as any;
+      throw new Error('ENOENT');
+    });
+    mockFiles({
+      '/mock/home/.gemini/agents/cmo.md': '---\nname: cmo\n---\nuser',
+      '/project/.gemini/agents/cmo.md': '---\nname: cmo\n---\nproject',
+    });
+
+    const config = await getGeminiConfig('/project');
+    expect(config.agents).toHaveLength(1);
+    expect(config.agents[0].scope).toBe('user');
   });
 });

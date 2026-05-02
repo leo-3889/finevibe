@@ -4,7 +4,7 @@ import { loadProviderAvailability, getAvailableProviderMetas, getProviderAvailab
 import { setPendingPrompt } from '../terminal-pane.js';
 import { promptNewSession } from '../tab-bar.js';
 import { attachHoverCard, hideHoverCard } from '../hover-card.js';
-import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ReadinessResult, ReadinessSnapshot, ReadinessEffort } from '../../../shared/types.js';
+import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ReadinessResult, ReadinessEffort } from '../../../shared/types.js';
 
 export interface ReadinessColumnInstance {
   element: HTMLElement;
@@ -164,39 +164,6 @@ function createGauge(score: number, prevScore: number | null, animateFromScore: 
   return container;
 }
 
-function createSparkline(values: number[], color: string): SVGElement | null {
-  if (values.length < 2) return null;
-  const w = 60;
-  const h = 16;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const stepX = w / (values.length - 1);
-
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('class', 'readiness-sparkline');
-  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-  svg.setAttribute('width', String(w));
-  svg.setAttribute('height', String(h));
-
-  const points = values.map((v, i) => {
-    const x = i * stepX;
-    const y = h - 2 - ((v - min) / range) * (h - 4);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-
-  const line = document.createElementNS(SVG_NS, 'polyline');
-  line.setAttribute('points', points);
-  line.setAttribute('fill', 'none');
-  line.setAttribute('stroke', color);
-  line.setAttribute('stroke-width', '1.5');
-  line.setAttribute('stroke-linecap', 'round');
-  line.setAttribute('stroke-linejoin', 'round');
-  svg.appendChild(line);
-
-  return svg;
-}
-
 export function createReadinessColumn(project: ProjectRecord): ReadinessColumnInstance {
   const root = document.createElement('div');
   root.className = 'project-tab-column project-tab-readiness';
@@ -286,7 +253,7 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
     return checks.filter(c => c.status === 'pass');
   };
 
-  const renderCategory = (category: ReadinessCategory, history: ReadinessSnapshot[]): HTMLElement | null => {
+  const renderCategory = (category: ReadinessCategory): HTMLElement | null => {
     const visibleChecks = filterChecks(category.checks);
     if (visibleChecks.length === 0) return null;
 
@@ -307,15 +274,6 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       </div>
       <span class="project-tab-readiness-cat-score" style="color:${color}">${category.score}%</span>
     `;
-
-    const sparkValues = history.map(s => s.categoryScores[category.id]).filter(v => typeof v === 'number');
-    const spark = createSparkline(sparkValues, color);
-    if (spark) {
-      const sparkWrap = document.createElement('span');
-      sparkWrap.className = 'readiness-sparkline-wrap';
-      sparkWrap.appendChild(spark);
-      header.insertBefore(sparkWrap, header.querySelector('.project-tab-readiness-cat-score'));
-    }
 
     const body = document.createElement('div');
     body.className = 'project-tab-readiness-cat-body';
@@ -551,7 +509,7 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
 
       let renderedAny = false;
       for (const category of result.categories) {
-        const el = renderCategory(category, history);
+        const el = renderCategory(category);
         if (el) {
           categories.appendChild(el);
           renderedAny = true;
