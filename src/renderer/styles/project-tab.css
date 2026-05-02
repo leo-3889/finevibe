@@ -195,7 +195,6 @@
   border-radius: 8px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-left: 3px solid #f4b400;
 }
 
 .readiness-quick-wins-header {
