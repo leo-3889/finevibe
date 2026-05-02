@@ -351,7 +351,6 @@
   padding: 10px 12px;
   background: var(--bg-elevated, var(--bg-secondary));
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.5;

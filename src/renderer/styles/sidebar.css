@@ -48,22 +48,65 @@
 }
 
 #sidebar.collapsed {
-  width: auto !important;
-  min-width: auto;
-  max-width: none;
+  width: 44px !important;
+  min-width: 44px;
+  max-width: 44px;
 }
 
 #sidebar.collapsed .sidebar-title,
 #sidebar.collapsed .sidebar-header-actions,
-#sidebar.collapsed #sidebar-content,
-#sidebar.collapsed #sidebar-discussions,
-#sidebar.collapsed #sidebar-footer {
+#sidebar.collapsed #sidebar-footer,
+#sidebar.collapsed #git-panel,
+#sidebar.collapsed .project-item,
+#sidebar.collapsed .project-panel,
+#sidebar.collapsed .project-action-btn.panel-toggle {
   display: none;
 }
 
 #sidebar.collapsed #sidebar-header {
   border-bottom: none;
   padding: 10px 6px;
+  justify-content: center;
+}
+
+#sidebar.collapsed .project-actions {
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 4px;
+  align-items: stretch;
+}
+
+#sidebar.collapsed .project-action-btn {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  display: flex;
+  align-items: center;
+}
+
+#sidebar.collapsed .project-action-btn .action-label {
+  display: none;
+}
+
+#sidebar.collapsed .project-action-btn .action-icon {
+  display: flex;
+}
+
+#sidebar.collapsed #sidebar-discussions {
+  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#sidebar.collapsed #sidebar-discussions .discussions-text {
+  display: none;
+}
+
+#sidebar.collapsed #sidebar-discussions .action-icon {
+  display: flex;
+  position: relative;
 }
 
 #sidebar-content {
@@ -126,6 +169,17 @@
 #sidebar-discussions .discussions-desc {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.discussions-icon-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1px solid var(--bg-secondary);
 }
 
 #project-list {
@@ -233,6 +287,29 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.action-icon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: currentColor;
+  flex-shrink: 0;
+}
+
+.action-icon svg {
+  display: block;
+}
+
+.action-label {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  vertical-align: middle;
 }
 
 .project-action-btn:hover {
