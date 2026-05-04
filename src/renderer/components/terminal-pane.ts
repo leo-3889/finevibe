@@ -12,7 +12,7 @@ import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
-import { FILE_PATH_DRAG_TYPE } from '../drag-types.js';
+import { FILE_PATH_DRAG_TYPE, NATIVE_FILES_DRAG_TYPE } from '../drag-types.js';
 
 interface TerminalInstance {
   terminal: Terminal;
@@ -161,7 +161,9 @@ export function createTerminalPane(
   });
 
   element.addEventListener('dragover', (e: DragEvent) => {
-    if (!e.dataTransfer?.types.includes(FILE_PATH_DRAG_TYPE)) return;
+    if (!e.dataTransfer) return;
+    const types = e.dataTransfer.types;
+    if (!types.includes(FILE_PATH_DRAG_TYPE) && !types.includes(NATIVE_FILES_DRAG_TYPE)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     element.classList.add('drag-over');
@@ -174,10 +176,10 @@ export function createTerminalPane(
   });
   element.addEventListener('drop', (e: DragEvent) => {
     element.classList.remove('drag-over');
-    const filePath = e.dataTransfer?.getData(FILE_PATH_DRAG_TYPE);
-    if (!filePath) return;
+    const paths = collectDroppedPaths(e.dataTransfer);
+    if (paths.length === 0) return;
     e.preventDefault();
-    if (injectTextIntoRunningSession(sessionId, filePath + ' ')) {
+    if (injectTextIntoRunningSession(sessionId, paths.join(' ') + ' ')) {
       terminal.focus();
     }
   });
@@ -212,6 +214,18 @@ export function setPendingSystemPrompt(sessionId: string, prompt: string): void 
   if (instance) {
     instance.pendingSystemPrompt = prompt;
   }
+}
+
+function collectDroppedPaths(dt: DataTransfer | null): string[] {
+  if (!dt) return [];
+  const internal = dt.getData(FILE_PATH_DRAG_TYPE);
+  if (internal) return [internal];
+  const paths: string[] = [];
+  for (const file of dt.files) {
+    const path = window.vibeyard.fs.getDroppedFilePath(file);
+    if (path) paths.push(path);
+  }
+  return paths;
 }
 
 export function injectTextIntoRunningSession(sessionId: string, text: string): boolean {

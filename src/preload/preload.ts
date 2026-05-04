@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webFrame } from 'electron';
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, DeepSearchResult } from '../shared/types';
 import { ZOOM_MIN, ZOOM_MAX } from '../shared/types';
 
@@ -40,6 +40,7 @@ export interface VibeyardApi {
     watchFile(filePath: string): void;
     unwatchFile(filePath: string): void;
     onFileChanged(callback: (filePath: string) => void): () => void;
+    getDroppedFilePath(file: File): string;
   };
   store: {
     load(): Promise<unknown>;
@@ -205,6 +206,7 @@ const api: VibeyardApi = {
     watchFile: (filePath: string) => ipcRenderer.send('fs:watchFile', filePath),
     unwatchFile: (filePath: string) => ipcRenderer.send('fs:unwatchFile', filePath),
     onFileChanged: (callback: (filePath: string) => void) => onChannel('fs:fileChanged', (filePath) => callback(filePath as string)),
+    getDroppedFilePath: (file: File) => webUtils.getPathForFile(file),
   },
   provider: {
     getConfig: (providerId, projectPath) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath),
