@@ -2,6 +2,7 @@ import { appState, ProjectRecord } from '../state.js';
 import { pathToFileURL } from '../file-url.js';
 import { showContextMenu, MenuOption } from './board/board-context-menu.js';
 import { showConfirmModal } from './modal.js';
+import { FILE_PATH_DRAG_TYPE } from '../drag-types.js';
 
 export interface DirEntry {
   name: string;
@@ -216,6 +217,13 @@ async function renderChildren(
         showContextMenu(e.clientX, e.clientY, [deleteMenuOption(entry)]);
       });
     } else {
+      row.draggable = true;
+      row.addEventListener('dragstart', (e) => {
+        if (!e.dataTransfer) return;
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData(FILE_PATH_DRAG_TYPE, entry.path);
+        e.dataTransfer.setData('text/plain', entry.path);
+      });
       row.addEventListener('click', (e) => {
         e.stopPropagation();
         appState.addFileReaderSession(projectId, entry.path);

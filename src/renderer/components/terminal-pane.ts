@@ -11,7 +11,8 @@ import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
-import { attachClipboardCopyHandler, attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
+import { FILE_PATH_DRAG_TYPE } from '../drag-types.js';
 
 interface TerminalInstance {
   terminal: Terminal;
@@ -159,6 +160,28 @@ export function createTerminalPane(
     }
   });
 
+  element.addEventListener('dragover', (e: DragEvent) => {
+    if (!e.dataTransfer?.types.includes(FILE_PATH_DRAG_TYPE)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    element.classList.add('drag-over');
+  });
+  element.addEventListener('dragleave', (e: DragEvent) => {
+    const next = e.relatedTarget as Node | null;
+    if (!next || !element.contains(next)) {
+      element.classList.remove('drag-over');
+    }
+  });
+  element.addEventListener('drop', (e: DragEvent) => {
+    element.classList.remove('drag-over');
+    const filePath = e.dataTransfer?.getData(FILE_PATH_DRAG_TYPE);
+    if (!filePath) return;
+    e.preventDefault();
+    if (injectTextIntoRunningSession(sessionId, filePath + ' ')) {
+      terminal.focus();
+    }
+  });
+
   return instance;
 }
 
@@ -191,13 +214,15 @@ export function setPendingSystemPrompt(sessionId: string, prompt: string): void 
   }
 }
 
-export function injectPromptIntoRunningSession(sessionId: string, prompt: string): boolean {
+export function injectTextIntoRunningSession(sessionId: string, text: string): boolean {
   const instance = instances.get(sessionId);
   if (!instance || !instance.spawned || instance.exited) return false;
-  const modes = (instance.terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-  const bp = modes?.bracketedPasteMode;
-  const payload = bp ? `\x1b[200~${prompt}\x1b[201~` : prompt;
-  window.vibeyard.pty.write(sessionId, payload);
+  window.vibeyard.pty.write(sessionId, wrapBracketedPaste(instance.terminal, text));
+  return true;
+}
+
+export function injectPromptIntoRunningSession(sessionId: string, prompt: string): boolean {
+  if (!injectTextIntoRunningSession(sessionId, prompt)) return false;
   window.vibeyard.pty.write(sessionId, '\r');
   return true;
 }
