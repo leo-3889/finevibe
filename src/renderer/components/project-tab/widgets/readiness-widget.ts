@@ -1,15 +1,11 @@
-import { appState, ProjectRecord } from '../../state.js';
-import { esc, scoreColor } from '../../dom-utils.js';
-import { loadProviderAvailability, getAvailableProviderMetas, getProviderAvailabilitySnapshot, getProviderDisplayName } from '../../provider-availability.js';
-import { setPendingPrompt } from '../terminal-pane.js';
-import { promptNewSession } from '../tab-bar.js';
-import { attachHoverCard, hideHoverCard } from '../hover-card.js';
-import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ReadinessResult, ReadinessEffort } from '../../../shared/types.js';
-
-export interface ReadinessColumnInstance {
-  element: HTMLElement;
-  destroy(): void;
-}
+import { appState } from '../../../state.js';
+import { esc, scoreColor } from '../../../dom-utils.js';
+import { loadProviderAvailability, getAvailableProviderMetas, getProviderAvailabilitySnapshot, getProviderDisplayName } from '../../../provider-availability.js';
+import { setPendingPrompt } from '../../terminal-pane.js';
+import { promptNewSession } from '../../tab-bar.js';
+import { attachHoverCard, hideHoverCard } from '../../hover-card.js';
+import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ReadinessResult, ReadinessEffort } from '../../../../shared/types.js';
+import type { WidgetFactory, WidgetHost, WidgetInstance } from './widget-host.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const GAUGE_RADIUS = 38;
@@ -79,20 +75,15 @@ function countByStatus(result: ReadinessResult): Record<StatusFilter, number> {
   return counts;
 }
 
-function handleFix(check: ReadinessCheck): void {
+function handleFix(projectId: string, check: ReadinessCheck): void {
   if (!check.fixPrompt) return;
-  const project = appState.activeProject;
-  if (!project) return;
-
-  const session = appState.addPlanSession(project.id, `Fix: ${check.name}`);
+  const session = appState.addPlanSession(projectId, `Fix: ${check.name}`);
   if (!session) return;
-
   setPendingPrompt(session.id, check.fixPrompt);
 }
 
 function handleFixCustomSession(check: ReadinessCheck): void {
   if (!check.fixPrompt) return;
-
   promptNewSession((session) => {
     setPendingPrompt(session.id, check.fixPrompt!);
   });
@@ -164,9 +155,10 @@ function createGauge(score: number, prevScore: number | null, animateFromScore: 
   return container;
 }
 
-export function createReadinessColumn(project: ProjectRecord): ReadinessColumnInstance {
+export const createReadinessWidget: WidgetFactory = (host: WidgetHost): WidgetInstance => {
+  const projectId = host.projectId;
   const root = document.createElement('div');
-  root.className = 'project-tab-column project-tab-readiness';
+  root.className = 'project-tab-readiness widget-readiness';
 
   let scanning = false;
   let destroyed = false;
@@ -226,7 +218,7 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       fixBtn.textContent = 'Fix';
       fixBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        handleFix(check);
+        handleFix(projectId, check);
       });
 
       const customBtn = document.createElement('button');
@@ -340,7 +332,7 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       fixBtn.textContent = 'Fix';
       fixBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        handleFix(check);
+        handleFix(projectId, check);
       });
       row.appendChild(fixBtn);
 
@@ -414,11 +406,8 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       cb.checked = !excluded.has(meta.id);
       cb.addEventListener('change', () => {
         const current = new Set(appState.preferences.readinessExcludedProviders ?? []);
-        if (cb.checked) {
-          current.delete(meta.id);
-        } else {
-          current.add(meta.id);
-        }
+        if (cb.checked) current.delete(meta.id);
+        else current.add(meta.id);
         appState.setPreference('readinessExcludedProviders', [...current]);
       });
 
@@ -432,18 +421,15 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
   };
 
   const render = () => {
+    if (destroyed) return;
     root.innerHTML = '';
-    const freshProject = appState.projects.find(p => p.id === project.id) ?? project;
-    const result = freshProject.readiness;
-    const history = freshProject.readinessHistory ?? [];
+    const project = appState.projects.find(p => p.id === projectId);
+    if (!project) return;
+    const result = project.readiness;
+    const history = project.readinessHistory ?? [];
 
-    const header = document.createElement('div');
-    header.className = 'project-tab-section-header';
-
-    const title = document.createElement('span');
-    title.className = 'project-tab-section-title';
-    title.textContent = 'AI Readiness';
-    header.appendChild(title);
+    const toolbar = document.createElement('div');
+    toolbar.className = 'widget-readiness-toolbar';
 
     const scanBtn = document.createElement('button');
     scanBtn.className = 'readiness-scan-btn';
@@ -453,9 +439,9 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       e.stopPropagation();
       void runScan();
     });
-    header.appendChild(scanBtn);
+    toolbar.appendChild(scanBtn);
 
-    root.appendChild(header);
+    root.appendChild(toolbar);
 
     const body = document.createElement('div');
     body.className = 'project-tab-readiness-body';
@@ -474,7 +460,6 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       const scoreRow = document.createElement('div');
       scoreRow.className = 'project-tab-readiness-score-row';
 
-      // Second-to-last snapshot is the "previous" because the current scan is already appended
       const prevScore = history.length >= 2 ? history[history.length - 2].overallScore : null;
       const animateFrom = lastRenderedScore === null ? 0 : (lastRenderedScore !== result.overallScore ? lastRenderedScore : null);
       scoreRow.appendChild(createGauge(result.overallScore, prevScore, animateFrom));
@@ -530,16 +515,16 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
   };
 
   const runScan = async (silent = false) => {
-    const freshProject = appState.projects.find(p => p.id === project.id);
-    if (!freshProject || scanning) return;
+    const project = appState.projects.find(p => p.id === projectId);
+    if (!project || scanning) return;
 
     scanning = true;
     if (!silent) render();
 
     try {
       const excluded = appState.preferences.readinessExcludedProviders ?? [];
-      const result = await window.vibeyard.readiness.analyze(freshProject.path, excluded.length > 0 ? excluded : undefined);
-      appState.setProjectReadiness(freshProject.id, result);
+      const result = await window.vibeyard.readiness.analyze(project.path, excluded.length > 0 ? excluded : undefined);
+      appState.setProjectReadiness(project.id, result);
     } catch (err) {
       console.warn('Readiness scan failed:', err);
     } finally {
@@ -549,14 +534,14 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
   };
 
   const autoScanIfNeeded = () => {
-    const freshProject = appState.projects.find(p => p.id === project.id);
-    if (!freshProject || scanning) return;
-    void runScan(!!freshProject.readiness);
+    const project = appState.projects.find(p => p.id === projectId);
+    if (!project || scanning) return;
+    void runScan(!!project.readiness);
   };
 
   const unsubReadiness = appState.on('readiness-changed', (data) => {
-    const projectId = typeof data === 'string' ? data : undefined;
-    if (projectId && projectId !== project.id) return;
+    const id = typeof data === 'string' ? data : undefined;
+    if (id && id !== projectId) return;
     render();
   });
   const unsubPrefs = appState.on('preferences-changed', () => {
@@ -584,5 +569,8 @@ export function createReadinessColumn(project: ProjectRecord): ReadinessColumnIn
       unsubPrefs();
       hideHoverCard();
     },
+    refresh() {
+      void runScan();
+    },
   };
-}
+};

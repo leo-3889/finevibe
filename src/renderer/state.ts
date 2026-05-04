@@ -1,5 +1,5 @@
 import type { VibeyardApi } from './types.js';
-import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, ReadinessSnapshot, TeamMember, TeamData } from '../shared/types.js';
+import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, ReadinessSnapshot, TeamMember, TeamData, OverviewLayout } from '../shared/types.js';
 import { getCost } from './session-cost.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename } from '../shared/platform.js';
@@ -91,6 +91,8 @@ type EventType =
   | 'cli-session-cleared'
   | 'board-changed'
   | 'team-changed'
+  | 'overview-layout-changed'
+  | 'github-unread-changed'
   | 'state-loaded';
 
 type EventCallback = (data?: unknown) => void;
@@ -881,6 +883,44 @@ class AppState {
     setProjectReadinessPure(project, result);
     this.persist();
     this.emit('readiness-changed', projectId);
+  }
+
+  setProjectOverviewLayout(projectId: string, layout: OverviewLayout): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    project.overviewLayout = layout;
+    this.persist();
+    this.emit('overview-layout-changed', projectId);
+  }
+
+  setGithubItemSeen(projectId: string, itemId: string, isoTimestamp: string): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (!project.githubLastSeen) project.githubLastSeen = {};
+    project.githubLastSeen[itemId] = isoTimestamp;
+    this.persist();
+    this.emit('github-unread-changed', projectId);
+  }
+
+  setGithubItemsSeenBulk(projectId: string, entries: Record<string, string>): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (!project.githubLastSeen) project.githubLastSeen = {};
+    let changed = false;
+    for (const [id, ts] of Object.entries(entries)) {
+      if (project.githubLastSeen[id] !== ts) {
+        project.githubLastSeen[id] = ts;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.persist();
+    this.emit('github-unread-changed', projectId);
+  }
+
+  getGithubLastSeen(projectId: string, itemId: string): string | undefined {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    return project?.githubLastSeen?.[itemId];
   }
 
   reorderSession(projectId: string, sessionId: string, toIndex: number): void {

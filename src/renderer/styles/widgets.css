@@ -1,0 +1,377 @@
+/* Project-tab toolbar (Add Widget / Edit layout) */
+.project-tab-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.project-tab-toolbar-btn {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.project-tab-toolbar-btn:hover {
+  background: var(--bg-hover);
+}
+
+.project-tab-toolbar-btn.active {
+  background: var(--accent);
+  color: var(--bg-primary);
+  border-color: var(--accent);
+}
+
+/* Grid root */
+.project-tab-grid-root {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+/* GridStack tile chrome */
+.widget-tile {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.widget-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  cursor: default;
+  user-select: none;
+}
+
+.project-tab-grid-root.edit-mode .widget-drag-handle {
+  cursor: move;
+}
+
+.widget-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget-actions {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 8px;
+}
+
+.widget-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.widget-action-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.widget-action-remove {
+  display: none;
+}
+
+.project-tab-grid-root.edit-mode .widget-action-remove {
+  display: inline-flex;
+}
+
+.widget-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
+/* Toolbar slot inside widgets (e.g. readiness Scan, provider-tools select) */
+.widget-readiness-toolbar,
+.widget-provider-tools-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* GitHub widget */
+.widget-github {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.widget-github-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.widget-github-repo {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget-github-mark-all {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.widget-github-mark-all:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.widget-github-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.widget-github-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  transition: background 0.12s ease;
+}
+
+.widget-github-row:hover {
+  background: var(--bg-hover);
+}
+
+.widget-github-row.unread .widget-github-row-link {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.widget-github-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.widget-github-unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent, #4f8cff);
+  flex: 0 0 auto;
+}
+
+.widget-github-row-num {
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.widget-github-row-link {
+  flex: 1;
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget-github-row-link:hover {
+  text-decoration: underline;
+}
+
+.widget-github-row-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding-left: 14px;
+}
+
+.widget-github-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.widget-github-badge-draft {
+  background: #6b7280;
+  color: #fff;
+}
+
+.widget-github-badge-merged {
+  background: #8957e5;
+  color: #fff;
+}
+
+.widget-github-badge-closed {
+  background: #cf222e;
+  color: #fff;
+}
+
+.widget-github-empty,
+.widget-github-loading,
+.widget-github-error {
+  padding: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  font-style: italic;
+}
+
+.widget-github-error {
+  color: #cf222e;
+  font-style: normal;
+}
+
+/* Widget picker modal */
+.widget-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.widget-picker-card {
+  text-align: left;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  color: var(--text-primary);
+  font-family: inherit;
+}
+
+.widget-picker-card:hover:not(.disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.widget-picker-card.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.widget-picker-card.added {
+  border-color: var(--accent, #4f8cff);
+}
+
+.widget-picker-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  gap: 8px;
+}
+
+.widget-picker-added-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent, #4f8cff);
+  color: var(--bg-primary, #fff);
+}
+
+.widget-picker-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.widget-picker-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* Widget settings dialog */
+.widget-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 320px;
+}
+
+.widget-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.widget-settings-field label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.widget-settings-field input[type="text"],
+.widget-settings-field input[type="number"] {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.widget-settings-help {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Pane layout when in edit mode */
+.project-tab-pane.editing .widget-tile {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}

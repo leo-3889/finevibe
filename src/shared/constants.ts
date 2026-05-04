@@ -1,3 +1,6 @@
+/** GitHub REST/Search API ceiling for `per_page`. Shared by main-process callers and the widget settings UI. */
+export const GITHUB_MAX_PER_PAGE = 100;
+
 /** Glob patterns for files to exclude from large-file scanning (readiness checks). */
 export const DEFAULT_SCAN_IGNORE = [
   'package-lock.json',

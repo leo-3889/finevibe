@@ -237,6 +237,62 @@ export interface ProjectRecord {
   terminalPanelHeight?: number;
   readiness?: ReadinessResult;
   readinessHistory?: ReadinessSnapshot[];
+  overviewLayout?: OverviewLayout;
+  githubLastSeen?: Record<string, string>;
+}
+
+// --- Overview Widgets ---
+
+export type OverviewWidgetType =
+  | 'readiness'
+  | 'provider-tools'
+  | 'github-prs'
+  | 'github-issues';
+
+export interface OverviewWidget {
+  id: string;
+  type: OverviewWidgetType;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  config?: Record<string, unknown>;
+}
+
+export interface OverviewLayout {
+  gridVersion: 1;
+  widgets: OverviewWidget[];
+}
+
+// --- GitHub ---
+
+export interface GithubItem {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  user: { login: string; avatar_url: string } | null;
+  html_url: string;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  /** Present on issues that are PRs (Issues API includes PRs); absent on real issues. */
+  pull_request?: { url: string };
+  /** Optional PR-only fields populated when fetching from /pulls. */
+  draft?: boolean;
+  merged_at?: string | null;
+  comments?: number;
+  labels?: { name: string; color: string }[];
+}
+
+export interface GithubFetchResult {
+  ok: boolean;
+  items?: GithubItem[];
+  error?: string;
+}
+
+export interface GithubRepo {
+  owner: string;
+  repo: string;
 }
 
 export interface Preferences {

@@ -42,35 +42,6 @@
   text-overflow: ellipsis;
 }
 
-.project-tab-columns {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.project-tab-column {
-  flex: 1;
-  min-width: 0;
-  overflow: auto;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.project-tab-readiness {
-  flex: 2;
-}
-
-.project-tab-provider-tools {
-  flex: 1;
-}
-
-.project-tab-column + .project-tab-column {
-  border-left: 1px solid var(--border);
-}
-
 .project-tab-section-header {
   display: flex;
   align-items: center;
