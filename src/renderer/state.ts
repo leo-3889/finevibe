@@ -289,7 +289,7 @@ class AppState {
       path,
       sessions: [],
       activeSessionId: null,
-      layout: { mode: 'swarm', splitPanes: [], splitDirection: 'horizontal' },
+      layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
       board: createDefaultBoard(),
     };
     this.state.projects.push(project);
