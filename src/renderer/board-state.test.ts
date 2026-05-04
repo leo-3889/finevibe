@@ -38,22 +38,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   uuidCounter = 0;
   _resetForTesting();
-  // Add a project — board is auto-initialized via addProject not calling load(),
-  // so we manually set it up:
+  // Replace the auto-initialized board with one that has predictable column IDs.
   const project = appState.addProject('Test', '/test');
-  // Board won't be auto-initialized by addProject (that happens in load()),
-  // so create it manually for tests
-  if (!project.board) {
-    project.board = {
-      columns: [
-        { id: 'col-backlog', title: 'Backlog', order: 0, behavior: 'inbox' as const },
-        { id: 'col-ready', title: 'Ready', order: 1, behavior: 'none' as const },
-        { id: 'col-running', title: 'Running', order: 2, behavior: 'active' as const },
-        { id: 'col-done', title: 'Done', order: 3, behavior: 'terminal' as const },
-      ],
-      tasks: [],
-    };
-  }
+  project.board = {
+    columns: [
+      { id: 'col-backlog', title: 'Backlog', order: 0, behavior: 'inbox' as const },
+      { id: 'col-ready', title: 'Ready', order: 1, behavior: 'none' as const },
+      { id: 'col-running', title: 'Running', order: 2, behavior: 'active' as const },
+      { id: 'col-done', title: 'Done', order: 3, behavior: 'terminal' as const },
+    ],
+    tasks: [],
+  };
 });
 
 describe('board-state', () => {

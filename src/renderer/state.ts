@@ -290,6 +290,7 @@ class AppState {
       sessions: [],
       activeSessionId: null,
       layout: { mode: 'swarm', splitPanes: [], splitDirection: 'horizontal' },
+      board: createDefaultBoard(),
     };
     this.state.projects.push(project);
     this.state.activeProjectId = project.id;
@@ -425,6 +426,8 @@ class AppState {
   openKanbanTab(projectId: string): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
+
+    if (!project.board) project.board = createDefaultBoard();
 
     if (this.state.activeProjectId !== projectId) this.setActiveProject(projectId);
 

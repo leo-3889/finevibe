@@ -76,6 +76,14 @@ jobs:
             - Fixes: commits starting with fix, resolve, patch, correct (case-insensitive)
             - Changes: everything else
           - Strip the prefix keyword and capitalize the first letter of each entry.
+          - Consolidate entries that describe the same new feature area. The audience is end users skimming a release blurb, not contributors auditing the diff:
+            - Identify "headline" Features — entries that introduce a brand-new tab, panel, modal, board, or major capability for this release.
+            - For each headline feature, drop Fix entries scoped to that same area. A brand-new feature has no prior shipped version, so in-development fixes are not user-visible bug fixes — they are part of building the feature.
+            - For each headline feature, drop Change entries that describe a sub-aspect of building it out (sub-modal layouts, internal naming, follow-on UI tweaks). Keep a Change only when it is a meaningful evolution of an already-shipped capability.
+            - Drop Feature entries that are sub-pieces of a larger headline feature (e.g. if "Team tab" is the headline, drop "Team install-as-agent flag", "Search filter in team browse modal", "Team marketplace grouped by domain").
+            - When multiple Feature entries name the same area, fold them into one concise headline. Trim trailing "and X and Y" clauses that just enumerate sub-pieces — keep the user-visible capability, drop the implementation detail.
+            - Use the changed file paths from earlier 'git show --name-only' results as a grouping signal: entries whose changed files substantially overlap are likely the same area.
+            - Apply conservatively. When unsure whether two entries describe the same area, prefer to group/drop rather than over-list.
           - Format as: '## [${{ steps.version.outputs.version }}] - <YYYY-MM-DD>' followed by sections (Features, Fixes, Changes). Omit empty sections.
           - If CHANGELOG.md doesn't exist, create it with header '# Changelog' and a blank line.
           - Prepend the new entry after the header. Do NOT duplicate if one for this version already exists.
