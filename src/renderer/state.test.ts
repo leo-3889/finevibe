@@ -288,6 +288,24 @@ describe('addProject()', () => {
     expect(addedCb).toHaveBeenCalledWith(project);
     expect(changedCb).toHaveBeenCalledTimes(1);
   });
+
+  it('initializes a default board so the kanban tab renders without an app restart', () => {
+    const project = addProject();
+    expect(project.board).toBeDefined();
+    expect(project.board!.columns.map(c => c.title)).toEqual(['Backlog', 'Ready', 'Running', 'Done']);
+    expect(project.board!.tasks).toEqual([]);
+  });
+});
+
+describe('openKanbanTab()', () => {
+  it('backfills a missing board on the project before opening the tab', () => {
+    const project = addProject();
+    delete project.board;
+    const session = appState.openKanbanTab(project.id);
+    expect(session?.type).toBe('kanban');
+    expect(project.board).toBeDefined();
+    expect(project.board!.columns).toHaveLength(4);
+  });
 });
 
 describe('removeProject()', () => {

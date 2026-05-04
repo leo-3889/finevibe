@@ -126,7 +126,10 @@ export function renderBoard(target?: HTMLElement): void {
   pendingRender = false;
 
   const board = getBoard();
-  if (!board) return;
+  if (!board) {
+    console.warn('[kanban] renderBoard called with no active project board');
+    return;
+  }
 
   const container = target ?? activeKanbanContainer();
   if (!container) return;
