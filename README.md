@@ -28,12 +28,17 @@
   <img src="assets/web-ui-short.gif" alt="Vibeyard UI Edit Demo" width="800" />
 </p>
 
+<p align="center">
+  <img src="assets/kanban.gif" alt="Vibeyard Kanban Board Demo" width="800" />
+</p>
+
 ## Why Vibeyard?
 
-Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you a proper workspace — multi-session management, split panes, swarm mode, cost tracking, and session resume — so you can focus on building, not juggling terminals.
+Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you a proper workspace — a kanban task board, multi-session management, split panes, swarm mode, cost tracking, and session resume — so you can focus on building, not juggling terminals.
 
 ## Highlights
 
+- **Kanban task board** — plan work on a per-project board with drag-and-drop, search, and tag filtering; each card can spawn or resume a CLI session in one click, and tasks auto-move to Done when their session completes
 - **P2P session sharing** — share live terminal sessions with teammates over encrypted peer-to-peer connections (WebRTC), with read-only or read-write modes and PIN-based authentication
 - **Multi-session management** — run multiple agent sessions per project, each in its own PTY; use swarm mode for a grid view of all sessions at once and spin up new ones with `Cmd+\`
 - **Cost & context tracking** — real-time spend, token usage, and context window monitoring per session
