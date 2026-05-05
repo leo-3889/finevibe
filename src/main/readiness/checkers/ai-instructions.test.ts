@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
+import * as path from 'path';
 import { aiInstructionsProducer } from './ai-instructions';
 import type { AnalysisContext } from '../types';
 
@@ -75,6 +76,27 @@ describe('aiInstructionsProducer', () => {
     const tagged = aiInstructionsProducer.produce('/test/project', ctx);
     const check = tagged.find(t => t.check.id === 'claude-md-architecture')!.check;
     expect(check.status).toBe('pass');
+  });
+
+  it('uses .claude/CLAUDE.md when root CLAUDE.md is missing', () => {
+    mockFileExists({ [path.join('.claude', 'CLAUDE.md')]: '## Build\nnpm run build\n## Testing\nnpm test\n## Architecture\nReadiness architecture\n' });
+
+    const tagged = aiInstructionsProducer.produce('/test/project', ctx);
+
+    expect(tagged.find(t => t.check.id === 'claude-md-exists')!.check.status).toBe('pass');
+    expect(tagged.find(t => t.check.id === 'claude-md-build')!.check.status).toBe('pass');
+    expect(tagged.find(t => t.check.id === 'claude-md-test')!.check.status).toBe('pass');
+    expect(tagged.find(t => t.check.id === 'claude-md-architecture')!.check.status).toBe('pass');
+  });
+
+  it('prefers root CLAUDE.md over .claude/CLAUDE.md when both exist', () => {
+    mockFileExists({ 'CLAUDE.md': 'root only\n', [path.join('.claude', 'CLAUDE.md')]: '## Build\nnpm run build\n## Testing\nnpm test\n## Architecture\nDetailed\n' });
+
+    const tagged = aiInstructionsProducer.produce('/test/project', ctx);
+
+    expect(tagged.find(t => t.check.id === 'claude-md-build')!.check.status).toBe('fail');
+    expect(tagged.find(t => t.check.id === 'claude-md-test')!.check.status).toBe('fail');
+    expect(tagged.find(t => t.check.id === 'claude-md-architecture')!.check.status).toBe('fail');
   });
 
   it('warns for small CLAUDE.md', () => {

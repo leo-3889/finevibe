@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as child_process from 'child_process';
+import * as path from 'path';
 import { claudeContextProducer } from './claude-context';
+import { mockInstructionFiles } from '../test-utils';
 import type { AnalysisContext } from '../types';
 
 vi.mock('fs');
@@ -40,11 +42,7 @@ describe('claudeContextProducer', () => {
 
   it('warns for CLAUDE.md between 300-500 lines', () => {
     const content = Array(400).fill('line').join('\n');
-    mockFs.readFileSync.mockImplementation((p: fs.PathOrFileDescriptor) => {
-      if (String(p).endsWith('CLAUDE.md')) return content;
-      throw new Error('ENOENT');
-    });
-    mockFs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockInstructionFiles(mockFs, { 'CLAUDE.md': content });
 
     const tagged = claudeContextProducer.produce('/test/project', makeCtx([]));
     const check = tagged.find(t => t.check.id === 'claude-md-bloat')!.check;
@@ -52,13 +50,30 @@ describe('claudeContextProducer', () => {
     expect(check.score).toBe(50);
   });
 
+  it('uses .claude/CLAUDE.md for bloat checks when root is missing', () => {
+    const content = Array(400).fill('line').join('\n');
+    mockInstructionFiles(mockFs, { [path.join('.claude', 'CLAUDE.md')]: content });
+
+    const tagged = claudeContextProducer.produce('/test/project', makeCtx([]));
+    expect(tagged.find(t => t.check.id === 'claude-md-bloat')!.check.status).toBe('warning');
+  });
+
+  it('prefers root CLAUDE.md for bloat checks when both files exist', () => {
+    const rootContent = Array(50).fill('line').join('\n');
+    const fallbackContent = Array(600).fill('line').join('\n');
+
+    mockInstructionFiles(mockFs, {
+      'CLAUDE.md': rootContent,
+      [path.join('.claude', 'CLAUDE.md')]: fallbackContent,
+    });
+
+    const tagged = claudeContextProducer.produce('/test/project', makeCtx([]));
+    expect(tagged.find(t => t.check.id === 'claude-md-bloat')!.check.status).toBe('pass');
+  });
+
   it('fails for CLAUDE.md over 500 lines', () => {
     const content = Array(600).fill('line').join('\n');
-    mockFs.readFileSync.mockImplementation((p: fs.PathOrFileDescriptor) => {
-      if (String(p).endsWith('CLAUDE.md')) return content;
-      throw new Error('ENOENT');
-    });
-    mockFs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockInstructionFiles(mockFs, { 'CLAUDE.md': content });
 
     const tagged = claudeContextProducer.produce('/test/project', makeCtx([]));
     const check = tagged.find(t => t.check.id === 'claude-md-bloat')!.check;

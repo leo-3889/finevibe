@@ -14,8 +14,11 @@ export function makeInstructionProducer(providerId: ProviderId, opts: Instructio
   };
 }
 
-export const aiInstructionsProducer = makeInstructionProducer('claude', {
+export const claudeInstructionFileOpts: InstructionFileOpts = {
   fileName: 'CLAUDE.md',
+  fallbackDirectory: '.claude',
   idPrefix: 'claude-md',
   displayName: 'CLAUDE.md',
-});
+};
+
+export const aiInstructionsProducer = makeInstructionProducer('claude', claudeInstructionFileOpts);
