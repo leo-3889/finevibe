@@ -3,6 +3,8 @@ import type { WidgetFactory } from './widget-host.js';
 import { createReadinessWidget } from './readiness-widget.js';
 import { createProviderToolsWidget } from './provider-tools-widget.js';
 import { createGithubPRsWidget, createGithubIssuesWidget } from './github-widgets.js';
+import { createTeamWidget } from './team-widget.js';
+import { createKanbanWidget } from './kanban-widget.js';
 
 export interface WidgetMeta {
   type: OverviewWidgetType;
@@ -57,6 +59,26 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
     factory: createGithubIssuesWidget,
     allowMultiple: false,
     hasSettings: true,
+  },
+  'team': {
+    type: 'team',
+    displayName: 'Team',
+    description: 'Your team of AI personas. Chat, edit, or manage their sessions.',
+    defaultSize: { w: 6, h: 8 },
+    defaultConfig: {},
+    factory: createTeamWidget,
+    allowMultiple: false,
+    hasSettings: false,
+  },
+  'kanban': {
+    type: 'kanban',
+    displayName: 'Kanban',
+    description: 'Project board tasks grouped by column. Click to edit, run, or resume.',
+    defaultSize: { w: 6, h: 8 },
+    defaultConfig: {},
+    factory: createKanbanWidget,
+    allowMultiple: false,
+    hasSettings: false,
   },
 };
 

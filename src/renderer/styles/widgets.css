@@ -375,3 +375,226 @@
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
 }
+
+/* Shared empty-state for widgets */
+.widget-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.widget-empty-action {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.widget-empty-action:hover {
+  border-color: var(--accent);
+}
+
+/* Team widget */
+.widget-team {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+
+.widget-team-toolbar,
+.widget-kanban-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.widget-team-count,
+.widget-kanban-count {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.widget-team-add-btn,
+.widget-kanban-add-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.widget-team-add-btn:hover,
+.widget-kanban-add-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.widget-team-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+
+.widget-team-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 0.15s ease;
+}
+
+.widget-team-card:hover {
+  border-color: var(--accent);
+}
+
+.widget-team-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.widget-team-card-avatar {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 600;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.widget-team-card-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.widget-team-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget-team-card-role {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget-team-card-description {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.widget-team-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.widget-team-card-btn {
+  flex: 1;
+  min-width: 64px;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.widget-team-card-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.widget-team-card-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.widget-team-card-btn-primary {
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  border-color: var(--accent);
+}
+
+.widget-team-card-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.widget-team-card-chat-group {
+  flex: 1;
+  display: flex;
+  min-width: 64px;
+}
+
+.widget-team-card-chat-main {
+  flex: 1;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+
+.widget-team-card-chat-dropdown {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  font-size: 9px;
+  line-height: 1;
+}
+
+/* Kanban widget */
+.widget-kanban {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+
+.widget-kanban-body {
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  overflow-x: auto;
+  flex: 1;
+  align-items: flex-start;
+  min-height: 0;
+}

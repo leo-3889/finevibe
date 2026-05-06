@@ -11,6 +11,8 @@ function defaultLayout(): OverviewLayout {
     widgets: [
       { id: crypto.randomUUID(), type: 'readiness', x: 0, y: 0, w: 8, h: 8 },
       { id: crypto.randomUUID(), type: 'provider-tools', x: 8, y: 0, w: 4, h: 8 },
+      { id: crypto.randomUUID(), type: 'kanban', x: 0, y: 8, w: 6, h: 8 },
+      { id: crypto.randomUUID(), type: 'team', x: 6, y: 8, w: 6, h: 8 },
     ],
   };
 }
