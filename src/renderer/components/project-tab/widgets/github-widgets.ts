@@ -151,6 +151,8 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
 
     if (kind === 'issues') {
       row.appendChild(buildIssueActions(projectId, repo, item, render));
+    } else if (kind === 'prs') {
+      row.appendChild(buildPRActions(projectId, repo, item, render));
     }
 
     return row;
@@ -356,6 +358,72 @@ function startFixSession(projectId: string, item: GithubItem, providerId?: Provi
   const session = appState.addPlanSession(projectId, `Fix #${item.number}`, true, providerId);
   if (!session) return;
   setPendingPrompt(session.id, `Plan a solution for this issue #${item.number}: ${item.html_url}`);
+}
+
+function buildPRActions(
+  projectId: string,
+  repo: string,
+  item: GithubItem,
+  rerender: () => void,
+): HTMLElement {
+  const actions = document.createElement('div');
+  actions.className = 'widget-github-row-actions';
+
+  const onAction = (run: () => void) => (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    markRead(projectId, repo, item);
+    run();
+    rerender();
+  };
+
+  const reviewProviders = getAvailableProviderMetas().filter(p => p.id !== 'gemini');
+
+  const reviewGroup = document.createElement('div');
+  reviewGroup.className = 'widget-github-fix-group';
+
+  const reviewBtn = document.createElement('button');
+  reviewBtn.className = 'widget-github-row-action-btn widget-github-row-action-btn-primary widget-github-fix-main';
+  reviewBtn.textContent = 'Review';
+  reviewBtn.title = `Review PR #${item.number} in a new session`;
+  reviewBtn.addEventListener('click', onAction(() => startReviewSession(projectId, item)));
+  reviewGroup.appendChild(reviewBtn);
+
+  if (reviewProviders.length > 1) {
+    const chevron = document.createElement('button');
+    chevron.className = 'widget-github-row-action-btn widget-github-row-action-btn-primary widget-github-fix-dropdown';
+    chevron.textContent = '▼';
+    chevron.title = 'Review in another provider';
+    chevron.setAttribute('aria-label', 'Review in another provider');
+    chevron.setAttribute('aria-haspopup', 'menu');
+    chevron.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const r = chevron.getBoundingClientRect();
+      showContextMenu(
+        r.right,
+        r.bottom + 4,
+        reviewProviders.map(p => ({
+          label: p.displayName,
+          action: () => {
+            markRead(projectId, repo, item);
+            startReviewSession(projectId, item, p.id);
+            rerender();
+          },
+        })),
+      );
+    });
+    reviewGroup.appendChild(chevron);
+  }
+
+  actions.appendChild(reviewGroup);
+  return actions;
+}
+
+function startReviewSession(projectId: string, item: GithubItem, providerId?: ProviderId): void {
+  const session = appState.addSession(projectId, `Review #${item.number}`, undefined, providerId);
+  if (!session) return;
+  setPendingPrompt(session.id, `/review pr #${item.number} ${item.html_url}`);
 }
 
 function addIssueToKanban(item: GithubItem): void {
