@@ -355,7 +355,7 @@ function buildIssueActions(
 }
 
 function startFixSession(projectId: string, item: GithubItem, providerId?: ProviderId): void {
-  const session = appState.addPlanSession(projectId, `Fix #${item.number}`, true, providerId);
+  const session = appState.addPlanSession(projectId, `Issue #${item.number}`, true, providerId);
   if (!session) return;
   setPendingPrompt(session.id, `Plan a solution for this issue #${item.number}: ${item.html_url}`);
 }
