@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.34] - 2026-05-06
+
+### Features
+
+- Customizable overview page with GitHub widgets
+- Drag-and-drop files into session prompt (from Finder or the file tree)
+
+### Fixes
+
+- CLAUDE.md recognition
+
+### Changes
+
+- Default layout for new projects to tabs (swarm off)
+
 ## [0.2.33] - 2026-05-04
 
 ### Fixes
