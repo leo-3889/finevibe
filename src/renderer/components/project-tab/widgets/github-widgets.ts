@@ -1,9 +1,13 @@
 import { appState } from '../../../state.js';
 import { esc } from '../../../dom-utils.js';
 import { ingestItems, isUnread, makeItemId, markRead, markAllReadInProject } from '../../../github-unread.js';
-import type { GithubItem } from '../../../../shared/types.js';
+import type { GithubItem, ProviderId } from '../../../../shared/types.js';
 import type { WidgetFactory, WidgetHost, WidgetInstance } from './widget-host.js';
 import { DEFAULT_GITHUB_CONFIG, type GithubConfig } from './github-types.js';
+import { setPendingPrompt } from '../../terminal-pane.js';
+import { showTaskModal } from '../../board/board-task-modal.js';
+import { getAvailableProviderMetas } from '../../../provider-availability.js';
+import { showContextMenu } from '../../board/board-context-menu.js';
 
 type ListKind = 'prs' | 'issues';
 
@@ -87,6 +91,9 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     const row = document.createElement('div');
     row.className = 'widget-github-row' + (unread ? ' unread' : '');
 
+    const info = document.createElement('div');
+    info.className = 'widget-github-row-info';
+
     const title = document.createElement('div');
     title.className = 'widget-github-row-title';
 
@@ -132,13 +139,19 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
       title.appendChild(closed);
     }
 
-    row.appendChild(title);
+    info.appendChild(title);
 
     const meta = document.createElement('div');
     meta.className = 'widget-github-row-meta';
     const author = item.user?.login ?? 'unknown';
     meta.innerHTML = `${esc(author)} · ${esc(timeAgo(item.updated_at))}`;
-    row.appendChild(meta);
+    info.appendChild(meta);
+
+    row.appendChild(info);
+
+    if (kind === 'issues') {
+      row.appendChild(buildIssueActions(projectId, repo, item, render));
+    }
 
     return row;
   }
@@ -269,6 +282,88 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
       void refresh();
     },
   };
+}
+
+function buildIssueActions(
+  projectId: string,
+  repo: string,
+  item: GithubItem,
+  rerender: () => void,
+): HTMLElement {
+  const actions = document.createElement('div');
+  actions.className = 'widget-github-row-actions';
+
+  const onAction = (run: () => void) => (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    markRead(projectId, repo, item);
+    run();
+    rerender();
+  };
+
+  const planProviders = getAvailableProviderMetas().filter(p => p.capabilities.planModeArg);
+
+  const fixGroup = document.createElement('div');
+  fixGroup.className = 'widget-github-fix-group';
+
+  const fixBtn = document.createElement('button');
+  fixBtn.className = 'widget-github-row-action-btn widget-github-row-action-btn-primary widget-github-fix-main';
+  fixBtn.textContent = 'Fix';
+  fixBtn.title = `Plan a solution for #${item.number} in a new session`;
+  fixBtn.addEventListener('click', onAction(() => startFixSession(projectId, item)));
+  fixGroup.appendChild(fixBtn);
+
+  if (planProviders.length > 1) {
+    const chevron = document.createElement('button');
+    chevron.className = 'widget-github-row-action-btn widget-github-row-action-btn-primary widget-github-fix-dropdown';
+    chevron.textContent = '▼';
+    chevron.title = 'Plan in another provider';
+    chevron.setAttribute('aria-label', 'Plan in another provider');
+    chevron.setAttribute('aria-haspopup', 'menu');
+    chevron.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const r = chevron.getBoundingClientRect();
+      showContextMenu(
+        r.right,
+        r.bottom + 4,
+        planProviders.map(p => ({
+          label: p.displayName,
+          action: () => {
+            markRead(projectId, repo, item);
+            startFixSession(projectId, item, p.id);
+            rerender();
+          },
+        })),
+      );
+    });
+    fixGroup.appendChild(chevron);
+  }
+
+  actions.appendChild(fixGroup);
+
+  const kanbanBtn = document.createElement('button');
+  kanbanBtn.className = 'widget-github-row-action-btn widget-github-row-action-btn-primary';
+  kanbanBtn.textContent = 'Add to Kanban';
+  kanbanBtn.title = 'Create a board task from this issue';
+  kanbanBtn.addEventListener('click', onAction(() => addIssueToKanban(item)));
+  actions.appendChild(kanbanBtn);
+
+  return actions;
+}
+
+function startFixSession(projectId: string, item: GithubItem, providerId?: ProviderId): void {
+  const session = appState.addPlanSession(projectId, `Fix #${item.number}`, true, providerId);
+  if (!session) return;
+  setPendingPrompt(session.id, `Plan a solution for this issue #${item.number}: ${item.html_url}`);
+}
+
+function addIssueToKanban(item: GithubItem): void {
+  showTaskModal('create', undefined, undefined, {
+    title: item.title,
+    prompt: `Plan a solution for this issue #${item.number}: ${item.html_url}`,
+    tags: ['github-issues'],
+  });
 }
 
 export const createGithubPRsWidget: WidgetFactory = (host) => makeGithubWidget('prs', host);
