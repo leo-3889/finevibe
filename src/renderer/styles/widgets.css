@@ -30,8 +30,8 @@
   border-color: var(--accent);
 }
 
-/* Grid root */
-.project-tab-grid-root {
+/* Scroll lives on the wrapper, not on the grid root — see pane.ts. */
+.project-tab-grid-scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;

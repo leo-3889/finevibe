@@ -63,11 +63,20 @@ export function createProjectTabPane(sessionId: string, projectId: string): void
   editBtn.title = 'Toggle drag and resize';
   toolbar.appendChild(editBtn);
 
+  // Scroll lives on this wrapper, not on .project-tab-grid-root. Gridstack's
+  // resize math assumes the items' direct parent is not internally scrolled —
+  // see dd-resizable.js _applyChange, which writes style.top as
+  // (itemViewportY - parentViewportY). If the parent itself scrolls, that diff
+  // is off by scrollTop and the tile jumps on the first mousemove of a resize.
+  const gridScroll = document.createElement('div');
+  gridScroll.className = 'project-tab-grid-scroll';
+
   const gridRoot = document.createElement('div');
   gridRoot.className = 'project-tab-grid-root';
+  gridScroll.appendChild(gridRoot);
 
   el.appendChild(toolbar);
-  el.appendChild(gridRoot);
+  el.appendChild(gridScroll);
 
   let grid: ProjectTabGrid | null = null;
 
