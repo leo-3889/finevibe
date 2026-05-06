@@ -250,7 +250,8 @@ export type OverviewWidgetType =
   | 'github-issues'
   | 'team'
   | 'kanban'
-  | 'sessions';
+  | 'sessions'
+  | 'favorite-sessions';
 
 export interface OverviewWidget {
   id: string;

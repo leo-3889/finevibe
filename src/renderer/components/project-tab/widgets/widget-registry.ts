@@ -6,6 +6,7 @@ import { createGithubPRsWidget, createGithubIssuesWidget } from './github-widget
 import { createTeamWidget } from './team-widget.js';
 import { createKanbanWidget } from './kanban-widget.js';
 import { createSessionsWidget } from './sessions-widget.js';
+import { createFavoriteSessionsWidget } from './favorite-sessions-widget.js';
 import { DEFAULT_SESSIONS_CONFIG } from './sessions-types.js';
 
 export interface WidgetMeta {
@@ -91,6 +92,16 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
     factory: createSessionsWidget,
     allowMultiple: false,
     hasSettings: true,
+  },
+  'favorite-sessions': {
+    type: 'favorite-sessions',
+    displayName: 'Favorite Sessions',
+    description: 'Bookmarked archived sessions for quick resume.',
+    defaultSize: { w: 6, h: 6 },
+    defaultConfig: {},
+    factory: createFavoriteSessionsWidget,
+    allowMultiple: false,
+    hasSettings: false,
   },
 };
 

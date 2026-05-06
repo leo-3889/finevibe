@@ -21,11 +21,14 @@ vi.mock('./kanban-widget.js', () => ({
 vi.mock('./sessions-widget.js', () => ({
   createSessionsWidget: () => ({ element: document.createElement('div'), destroy() {} }),
 }));
+vi.mock('./favorite-sessions-widget.js', () => ({
+  createFavoriteSessionsWidget: () => ({ element: document.createElement('div'), destroy() {} }),
+}));
 
 import { listWidgetTypes, getWidgetMeta } from './widget-registry';
 import type { OverviewWidgetType } from '../../../../shared/types';
 
-const ALL_TYPES: OverviewWidgetType[] = ['readiness', 'provider-tools', 'github-prs', 'github-issues', 'team', 'kanban', 'sessions'];
+const ALL_TYPES: OverviewWidgetType[] = ['readiness', 'provider-tools', 'github-prs', 'github-issues', 'team', 'kanban', 'sessions', 'favorite-sessions'];
 
 describe('widget registry', () => {
   it('exposes every documented widget type', () => {
