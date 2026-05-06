@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.35] - 2026-05-06
+
+### Features
+
+- Team, kanban, sessions, and favorite sessions widgets for the project overview
+- Review, fix, and add-to-kanban actions on GitHub PRs and issues widgets
+- Multiple GitHub widgets on the overview
+
+### Fixes
+
+- Overview widget jumping when resized while scrolled
+
+### Changes
+
+- GitHub widget titles now mention GitHub
+
 ## [0.2.34] - 2026-05-06
 
 ### Features
