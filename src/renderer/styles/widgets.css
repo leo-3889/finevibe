@@ -607,35 +607,6 @@
   height: 100%;
 }
 
-.widget-sessions-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-}
-
-.widget-sessions-count {
-  flex: 1;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.widget-sessions-add-btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.widget-sessions-add-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
 .widget-sessions-body {
   display: flex;
   flex-direction: column;
@@ -643,20 +614,6 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-}
-
-.widget-sessions-section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.widget-sessions-section-heading {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  padding: 4px 2px;
 }
 
 .widget-sessions-list {
@@ -679,11 +636,6 @@
 
 .widget-sessions-row:hover {
   border-color: var(--accent);
-}
-
-.widget-sessions-row.active {
-  border-color: var(--accent);
-  background: var(--bg-hover);
 }
 
 .widget-sessions-row.disabled {
@@ -716,17 +668,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.widget-sessions-row-name.unread::after {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  margin-left: 6px;
-  vertical-align: middle;
 }
 
 .widget-sessions-row-meta {

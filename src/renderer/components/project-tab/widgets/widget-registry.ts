@@ -86,7 +86,7 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
   'sessions': {
     type: 'sessions',
     displayName: 'Sessions',
-    description: 'Active sessions of this project plus recent archived ones. Click to focus or resume.',
+    description: 'Recent archived sessions for this project. Click to resume.',
     defaultSize: { w: 6, h: 8 },
     defaultConfig: { ...DEFAULT_SESSIONS_CONFIG },
     factory: createSessionsWidget,
