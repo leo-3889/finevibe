@@ -249,7 +249,8 @@ export type OverviewWidgetType =
   | 'github-prs'
   | 'github-issues'
   | 'team'
-  | 'kanban';
+  | 'kanban'
+  | 'sessions';
 
 export interface OverviewWidget {
   id: string;

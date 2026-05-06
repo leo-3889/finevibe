@@ -3,6 +3,7 @@ import { instances, type ProjectTabInstance } from './instance.js';
 import { createProjectTabGrid, type ProjectTabGrid } from './grid.js';
 import { showWidgetPicker } from './widgets/widget-picker-modal.js';
 import { showGithubSettings } from './widgets/github-settings-modal.js';
+import { showSessionsSettings } from './widgets/sessions-settings-modal.js';
 import type { OverviewLayout, OverviewWidget } from '../../../shared/types.js';
 
 function defaultLayout(): OverviewLayout {
@@ -73,6 +74,10 @@ export function createProjectTabPane(sessionId: string, projectId: string): void
   const handleOpenSettings = (widget: OverviewWidget) => {
     if (widget.type === 'github-prs' || widget.type === 'github-issues') {
       showGithubSettings(widget, (patch) => {
+        grid?.updateWidgetConfig(widget.id, patch);
+      });
+    } else if (widget.type === 'sessions') {
+      showSessionsSettings(widget, (patch) => {
         grid?.updateWidgetConfig(widget.id, patch);
       });
     }

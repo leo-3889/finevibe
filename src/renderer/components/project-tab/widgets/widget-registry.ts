@@ -5,6 +5,8 @@ import { createProviderToolsWidget } from './provider-tools-widget.js';
 import { createGithubPRsWidget, createGithubIssuesWidget } from './github-widgets.js';
 import { createTeamWidget } from './team-widget.js';
 import { createKanbanWidget } from './kanban-widget.js';
+import { createSessionsWidget } from './sessions-widget.js';
+import { DEFAULT_SESSIONS_CONFIG } from './sessions-types.js';
 
 export interface WidgetMeta {
   type: OverviewWidgetType;
@@ -79,6 +81,16 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
     factory: createKanbanWidget,
     allowMultiple: false,
     hasSettings: false,
+  },
+  'sessions': {
+    type: 'sessions',
+    displayName: 'Sessions',
+    description: 'Active sessions of this project plus recent archived ones. Click to focus or resume.',
+    defaultSize: { w: 6, h: 8 },
+    defaultConfig: { ...DEFAULT_SESSIONS_CONFIG },
+    factory: createSessionsWidget,
+    allowMultiple: false,
+    hasSettings: true,
   },
 };
 
