@@ -12,11 +12,23 @@ vi.mock('./github-widgets.js', () => ({
   createGithubPRsWidget: () => ({ element: document.createElement('div'), destroy() {} }),
   createGithubIssuesWidget: () => ({ element: document.createElement('div'), destroy() {} }),
 }));
+vi.mock('./team-widget.js', () => ({
+  createTeamWidget: () => ({ element: document.createElement('div'), destroy() {} }),
+}));
+vi.mock('./kanban-widget.js', () => ({
+  createKanbanWidget: () => ({ element: document.createElement('div'), destroy() {} }),
+}));
+vi.mock('./sessions-widget.js', () => ({
+  createSessionsWidget: () => ({ element: document.createElement('div'), destroy() {} }),
+}));
+vi.mock('./favorite-sessions-widget.js', () => ({
+  createFavoriteSessionsWidget: () => ({ element: document.createElement('div'), destroy() {} }),
+}));
 
 import { listWidgetTypes, getWidgetMeta } from './widget-registry';
 import type { OverviewWidgetType } from '../../../../shared/types';
 
-const ALL_TYPES: OverviewWidgetType[] = ['readiness', 'provider-tools', 'github-prs', 'github-issues'];
+const ALL_TYPES: OverviewWidgetType[] = ['readiness', 'provider-tools', 'github-prs', 'github-issues', 'team', 'kanban', 'sessions', 'favorite-sessions'];
 
 describe('widget registry', () => {
   it('exposes every documented widget type', () => {
@@ -34,9 +46,10 @@ describe('widget registry', () => {
     }
   });
 
-  it('all widgets forbid duplicates', () => {
+  it('non-github widgets forbid duplicates; github widgets allow them', () => {
+    const expectedMulti = new Set<OverviewWidgetType>(['github-prs', 'github-issues']);
     for (const meta of listWidgetTypes()) {
-      expect(meta.allowMultiple).toBe(false);
+      expect(meta.allowMultiple).toBe(expectedMulti.has(meta.type));
     }
   });
 

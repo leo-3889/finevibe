@@ -3,6 +3,11 @@ import type { WidgetFactory } from './widget-host.js';
 import { createReadinessWidget } from './readiness-widget.js';
 import { createProviderToolsWidget } from './provider-tools-widget.js';
 import { createGithubPRsWidget, createGithubIssuesWidget } from './github-widgets.js';
+import { createTeamWidget } from './team-widget.js';
+import { createKanbanWidget } from './kanban-widget.js';
+import { createSessionsWidget } from './sessions-widget.js';
+import { createFavoriteSessionsWidget } from './favorite-sessions-widget.js';
+import { DEFAULT_SESSIONS_CONFIG } from './sessions-types.js';
 
 export interface WidgetMeta {
   type: OverviewWidgetType;
@@ -40,23 +45,63 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
   },
   'github-prs': {
     type: 'github-prs',
-    displayName: 'Recent PRs',
+    displayName: 'Recent PRs - GitHub',
     description: 'Latest pull requests for a GitHub repo with read/unread badges. Uses the local gh CLI.',
     defaultSize: { w: 6, h: 6 },
     defaultConfig: { state: 'open', max: 10, refreshSeconds: 300 },
     factory: createGithubPRsWidget,
-    allowMultiple: false,
+    allowMultiple: true,
     hasSettings: true,
   },
   'github-issues': {
     type: 'github-issues',
-    displayName: 'Recent Issues',
+    displayName: 'Recent Issues - GitHub',
     description: 'Latest issues for a GitHub repo with read/unread badges. Uses the local gh CLI.',
     defaultSize: { w: 6, h: 6 },
     defaultConfig: { state: 'open', max: 10, refreshSeconds: 300 },
     factory: createGithubIssuesWidget,
+    allowMultiple: true,
+    hasSettings: true,
+  },
+  'team': {
+    type: 'team',
+    displayName: 'Team',
+    description: 'Your team of AI personas. Chat, edit, or manage their sessions.',
+    defaultSize: { w: 6, h: 8 },
+    defaultConfig: {},
+    factory: createTeamWidget,
+    allowMultiple: false,
+    hasSettings: false,
+  },
+  'kanban': {
+    type: 'kanban',
+    displayName: 'Kanban',
+    description: 'Project board tasks grouped by column. Click to edit, run, or resume.',
+    defaultSize: { w: 6, h: 8 },
+    defaultConfig: {},
+    factory: createKanbanWidget,
+    allowMultiple: false,
+    hasSettings: false,
+  },
+  'sessions': {
+    type: 'sessions',
+    displayName: 'Sessions',
+    description: 'Recent archived sessions for this project. Click to resume.',
+    defaultSize: { w: 6, h: 8 },
+    defaultConfig: { ...DEFAULT_SESSIONS_CONFIG },
+    factory: createSessionsWidget,
     allowMultiple: false,
     hasSettings: true,
+  },
+  'favorite-sessions': {
+    type: 'favorite-sessions',
+    displayName: 'Favorite Sessions',
+    description: 'Bookmarked archived sessions for quick resume.',
+    defaultSize: { w: 6, h: 6 },
+    defaultConfig: {},
+    factory: createFavoriteSessionsWidget,
+    allowMultiple: false,
+    hasSettings: false,
   },
 };
 

@@ -3,6 +3,7 @@ import { instances, type ProjectTabInstance } from './instance.js';
 import { createProjectTabGrid, type ProjectTabGrid } from './grid.js';
 import { showWidgetPicker } from './widgets/widget-picker-modal.js';
 import { showGithubSettings } from './widgets/github-settings-modal.js';
+import { showSessionsSettings } from './widgets/sessions-settings-modal.js';
 import type { OverviewLayout, OverviewWidget } from '../../../shared/types.js';
 
 function defaultLayout(): OverviewLayout {
@@ -11,6 +12,8 @@ function defaultLayout(): OverviewLayout {
     widgets: [
       { id: crypto.randomUUID(), type: 'readiness', x: 0, y: 0, w: 8, h: 8 },
       { id: crypto.randomUUID(), type: 'provider-tools', x: 8, y: 0, w: 4, h: 8 },
+      { id: crypto.randomUUID(), type: 'kanban', x: 0, y: 8, w: 6, h: 8 },
+      { id: crypto.randomUUID(), type: 'team', x: 6, y: 8, w: 6, h: 8 },
     ],
   };
 }
@@ -60,17 +63,30 @@ export function createProjectTabPane(sessionId: string, projectId: string): void
   editBtn.title = 'Toggle drag and resize';
   toolbar.appendChild(editBtn);
 
+  // Scroll lives on this wrapper, not on .project-tab-grid-root. Gridstack's
+  // resize math assumes the items' direct parent is not internally scrolled —
+  // see dd-resizable.js _applyChange, which writes style.top as
+  // (itemViewportY - parentViewportY). If the parent itself scrolls, that diff
+  // is off by scrollTop and the tile jumps on the first mousemove of a resize.
+  const gridScroll = document.createElement('div');
+  gridScroll.className = 'project-tab-grid-scroll';
+
   const gridRoot = document.createElement('div');
   gridRoot.className = 'project-tab-grid-root';
+  gridScroll.appendChild(gridRoot);
 
   el.appendChild(toolbar);
-  el.appendChild(gridRoot);
+  el.appendChild(gridScroll);
 
   let grid: ProjectTabGrid | null = null;
 
   const handleOpenSettings = (widget: OverviewWidget) => {
     if (widget.type === 'github-prs' || widget.type === 'github-issues') {
       showGithubSettings(widget, (patch) => {
+        grid?.updateWidgetConfig(widget.id, patch);
+      });
+    } else if (widget.type === 'sessions') {
+      showSessionsSettings(widget, (patch) => {
         grid?.updateWidgetConfig(widget.id, patch);
       });
     }

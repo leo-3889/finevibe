@@ -11,7 +11,19 @@ import {
 import { appState } from '../../state.js';
 import { runTask } from './board-card.js';
 
-export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, defaultColumnId?: string): void {
+export interface TaskModalPrefill {
+  title?: string;
+  prompt?: string;
+  notes?: string;
+  tags?: string[];
+}
+
+export function showTaskModal(
+  mode: 'create' | 'edit',
+  task?: BoardTask,
+  defaultColumnId?: string,
+  prefill?: TaskModalPrefill,
+): void {
   const board = getBoard();
   if (!board) return;
 
@@ -24,14 +36,14 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
       label: 'Title',
       id: 'taskTitle',
       placeholder: 'Task title',
-      defaultValue: task?.title ?? '',
+      defaultValue: task?.title ?? prefill?.title ?? '',
     },
     {
       label: 'Prompt',
       id: 'prompt',
       type: 'textarea',
       placeholder: 'Instructions for Claude...',
-      defaultValue: task?.prompt ?? '',
+      defaultValue: task?.prompt ?? prefill?.prompt ?? '',
       rows: 4,
       maxLength: 10000,
     },
@@ -40,7 +52,7 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
       id: 'notes',
       type: 'textarea',
       placeholder: 'Context, reasoning, acceptance criteria...',
-      defaultValue: task?.notes ?? '',
+      defaultValue: task?.notes ?? prefill?.notes ?? '',
       rows: 3,
     },
   ];
@@ -59,7 +71,7 @@ export function showTaskModal(mode: 'create' | 'edit', task?: BoardTask, default
 
   const confirmLabel = mode === 'create' ? 'Create' : 'Update';
 
-  const currentTags: string[] = [...(task?.tags ?? [])];
+  const currentTags: string[] = [...(task?.tags ?? prefill?.tags ?? [])];
 
   let currentProviderId: ProviderId =
     task?.providerId

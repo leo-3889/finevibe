@@ -2,7 +2,7 @@ import { appState } from '../../state.js';
 import { getBoard, addTag, removeTag, updateTagColor, getTagCount, TAG_COLORS } from '../../board-state.js';
 import { createColumnElement } from './board-column.js';
 import { showTaskModal } from './board-task-modal.js';
-import { initBoardDnd, cleanupBoardDnd, isDragActive, setDragEndCallback } from './board-dnd.js';
+import { initBoardDnd, isDragActive, addDragEndCallback } from './board-dnd.js';
 import { showConfirmModal } from '../modal.js';
 import { showContextMenu } from './board-context-menu.js';
 import { showBoardHelpDialog } from './board-help-dialog.js';
@@ -18,8 +18,8 @@ import { onChange as onContextChange, getContext } from '../../session-context.j
 import { STATUS_LABELS, updateMetricsRow } from './board-card.js';
 
 let boardEl: HTMLElement | null = null;
-let dndInitialized = false;
 let pendingRender = false;
+let offDragEnd: (() => void) | null = null;
 
 function isKanbanActive(): boolean {
   const project = appState.activeProject;
@@ -35,7 +35,8 @@ export function initBoard(): void {
   appState.on('project-changed', () => {
     if (isKanbanActive()) renderBoard();
   });
-  setDragEndCallback(() => {
+  if (offDragEnd) offDragEnd();
+  offDragEnd = addDragEndCallback(() => {
     if (pendingRender) renderBoard();
   });
   onFilterChange(() => {
@@ -162,10 +163,7 @@ export function renderBoard(target?: HTMLElement): void {
     columnsContainer.appendChild(colEl);
   }
 
-  if (!dndInitialized) {
-    initBoardDnd();
-    dndInitialized = true;
-  }
+  initBoardDnd();
 }
 
 export function hideBoardView(): void {
@@ -188,9 +186,9 @@ export function destroyBoardView(): void {
     boardEl.remove();
     boardEl = null;
   }
-  if (dndInitialized) {
-    cleanupBoardDnd();
-    dndInitialized = false;
+  if (offDragEnd) {
+    offDragEnd();
+    offDragEnd = null;
   }
 }
 
