@@ -18,7 +18,8 @@ interface ProjectFilterState {
 }
 
 const filterStateByProject = new Map<string, ProjectFilterState>();
-const activePanels = new Map<string, HTMLElement>();
+const activePanels = new Map<string, Map<string, HTMLElement>>();
+const DEFAULT_INSTANCE_KEY = 'sidebar';
 
 let historyContextMenu: HTMLElement | null = null;
 
@@ -89,14 +90,26 @@ export function initSessionHistory(): void {
 }
 
 function rerenderAll(): void {
-  for (const [projectId, container] of activePanels) {
+  for (const [projectId, panels] of activePanels) {
     const project = appState.projects.find(p => p.id === projectId);
-    if (project) renderSessionHistory(project, container);
+    if (!project) continue;
+    for (const [instanceKey, container] of panels) {
+      renderSessionHistory(project, container, instanceKey);
+    }
   }
 }
 
-export function renderSessionHistory(project: ProjectRecord, container: HTMLElement): void {
-  activePanels.set(project.id, container);
+export function renderSessionHistory(
+  project: ProjectRecord,
+  container: HTMLElement,
+  instanceKey: string = DEFAULT_INSTANCE_KEY,
+): void {
+  let panels = activePanels.get(project.id);
+  if (!panels) {
+    panels = new Map();
+    activePanels.set(project.id, panels);
+  }
+  panels.set(instanceKey, container);
 
   const history = appState.getSessionHistory(project.id);
   const filter = getFilterState(project.id);
@@ -161,10 +174,18 @@ export function renderSessionHistory(project: ProjectRecord, container: HTMLElem
   renderList(project, container, history, filter);
 }
 
-export function closeSessionHistory(projectId: string): void {
-  const container = activePanels.get(projectId);
+export function closeSessionHistory(projectId: string, instanceKey?: string): void {
+  const panels = activePanels.get(projectId);
+  if (!panels) return;
+  if (instanceKey === undefined) {
+    for (const container of panels.values()) container.innerHTML = '';
+    activePanels.delete(projectId);
+    return;
+  }
+  const container = panels.get(instanceKey);
   if (container) container.innerHTML = '';
-  activePanels.delete(projectId);
+  panels.delete(instanceKey);
+  if (panels.size === 0) activePanels.delete(projectId);
 }
 
 export function clearProjectState(projectId: string): void {

@@ -1,5 +1,5 @@
 import type { ArchivedSession, ProviderId, SessionRecord } from '../../../../shared/types.js';
-import { appState } from '../../../state.js';
+import { appState, type ProjectRecord } from '../../../state.js';
 import { getStatus, onChange as onStatusChange, type SessionStatus } from '../../../session-activity.js';
 import { getCost, onChange as onCostChange, formatTokens } from '../../../session-cost.js';
 import { isUnread, onChange as onUnreadChange } from '../../../session-unread.js';
@@ -8,6 +8,7 @@ import { isCliSession } from '../../../session-utils.js';
 import { createWidgetEmpty } from './widget-empty.js';
 import type { WidgetFactory } from './widget-host.js';
 import { DEFAULT_SESSIONS_CONFIG, type SessionsConfig } from './sessions-types.js';
+import { showSessionHistoryDialog } from './sessions-dialog.js';
 
 export const createSessionsWidget: WidgetFactory = (host) => {
   const root = document.createElement('div');
@@ -49,15 +50,28 @@ export const createSessionsWidget: WidgetFactory = (host) => {
       : DEFAULT_SESSIONS_CONFIG.recentLimit;
 
     const sessions = (project?.sessions ?? []).filter(isCliSession);
-    const history = (project?.sessionHistory ?? [])
+    const fullHistory = (project?.sessionHistory ?? [])
       .slice()
-      .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''))
-      .slice(0, recentLimit);
+      .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''));
+    const history = fullHistory.slice(0, recentLimit);
 
     countLabel.textContent = sessions.length === 1 ? '1 active' : `${sessions.length} active`;
 
     body.appendChild(buildActiveSection(sessions, project?.activeSessionId ?? null));
     body.appendChild(buildRecentSection(history));
+
+    if (project && fullHistory.length > recentLimit) {
+      body.appendChild(buildViewAllButton(project, fullHistory.length));
+    }
+  }
+
+  function buildViewAllButton(project: ProjectRecord, total: number): HTMLElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'widget-sessions-view-all-btn';
+    btn.textContent = `View all ${total} sessions →`;
+    btn.addEventListener('click', () => showSessionHistoryDialog(project));
+    return btn;
   }
 
   function buildActiveSection(sessions: SessionRecord[], activeSessionId: string | null): HTMLElement {

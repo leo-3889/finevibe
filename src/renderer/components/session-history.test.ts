@@ -243,4 +243,45 @@ describe('renderSessionHistory', () => {
     expect(container.querySelector('.history-bookmark-filter')).not.toBeNull();
     expect(container.querySelector('.history-clear-btn')).not.toBeNull();
   });
+
+  it('isolates panel instances so closing one key keeps the other live', async () => {
+    vi.resetModules();
+    const doc = new FakeDocument();
+    const sidebarContainer = doc.createElement('div');
+    const dialogContainer = doc.createElement('div');
+    vi.stubGlobal('document', doc);
+
+    const { renderSessionHistory, closeSessionHistory } = await import('./session-history.js');
+    const project = mockAppState.activeProject as never;
+
+    renderSessionHistory(project, sidebarContainer as never);
+    renderSessionHistory(project, dialogContainer as never, 'dialog');
+
+    expect(sidebarContainer.querySelector('.history-list')).not.toBeNull();
+    expect(dialogContainer.querySelector('.history-list')).not.toBeNull();
+
+    closeSessionHistory(mockAppState.activeProject.id, 'dialog');
+
+    expect(dialogContainer.innerHTML).toBe('');
+    expect(sidebarContainer.querySelector('.history-list')).not.toBeNull();
+  });
+
+  it('closeSessionHistory without a key clears every panel for the project', async () => {
+    vi.resetModules();
+    const doc = new FakeDocument();
+    const sidebarContainer = doc.createElement('div');
+    const dialogContainer = doc.createElement('div');
+    vi.stubGlobal('document', doc);
+
+    const { renderSessionHistory, closeSessionHistory } = await import('./session-history.js');
+    const project = mockAppState.activeProject as never;
+
+    renderSessionHistory(project, sidebarContainer as never);
+    renderSessionHistory(project, dialogContainer as never, 'dialog');
+
+    closeSessionHistory(mockAppState.activeProject.id);
+
+    expect(sidebarContainer.innerHTML).toBe('');
+    expect(dialogContainer.innerHTML).toBe('');
+  });
 });

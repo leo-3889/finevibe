@@ -166,3 +166,41 @@
   color: var(--text-dim);
   font-style: italic;
 }
+
+.session-history-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 480px;
+}
+
+.session-history-dialog .history-search {
+  margin: 0;
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.session-history-dialog .history-actions {
+  padding: 0;
+}
+
+.session-history-dialog .history-list {
+  height: 60vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.session-history-dialog .history-item {
+  padding: 6px 12px;
+}
+
+.session-history-dialog .history-empty {
+  padding: 8px 0;
+}
+
+.session-history-dialog .history-bookmark-btn,
+.session-history-dialog .history-remove-btn {
+  opacity: 1;
+}

@@ -752,3 +752,23 @@
   padding: 8px 2px;
   text-align: center;
 }
+
+.widget-sessions-view-all-btn {
+  align-self: stretch;
+  margin-top: 4px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.widget-sessions-view-all-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
