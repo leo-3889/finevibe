@@ -7,31 +7,27 @@ let startX = 0;
 let startY = 0;
 const DRAG_THRESHOLD = 5;
 let pointerStarted = false;
-let onDragEnd: (() => void) | null = null;
+const dragEndCallbacks = new Set<() => void>();
 let activeDropTarget: HTMLElement | null = null;
 let cachedTargets: { el: HTMLElement; left: number; right: number; centerY: number }[] = [];
-
-const container = () => document.querySelector('.board-columns') as HTMLElement | null;
+let currentScope: HTMLElement | null = null;
+let initialized = false;
 
 export function initBoardDnd(): void {
+  if (initialized) return;
   document.addEventListener('pointerdown', onPointerDown, true);
   document.addEventListener('pointermove', onPointerMove, true);
   document.addEventListener('pointerup', onPointerUp, true);
-}
-
-export function cleanupBoardDnd(): void {
-  document.removeEventListener('pointerdown', onPointerDown, true);
-  document.removeEventListener('pointermove', onPointerMove, true);
-  document.removeEventListener('pointerup', onPointerUp, true);
-  cancelDrag();
+  initialized = true;
 }
 
 export function isDragActive(): boolean {
   return isDragging;
 }
 
-export function setDragEndCallback(cb: () => void): void {
-  onDragEnd = cb;
+export function addDragEndCallback(cb: () => void): () => void {
+  dragEndCallbacks.add(cb);
+  return () => dragEndCallbacks.delete(cb);
 }
 
 function onPointerDown(e: PointerEvent): void {
@@ -40,6 +36,10 @@ function onPointerDown(e: PointerEvent): void {
   if (!card || !card.dataset.taskId) return;
   if ((e.target as HTMLElement).closest('button, input, textarea')) return;
 
+  const scope = card.closest('.board-column')?.parentElement as HTMLElement | null;
+  if (!scope) return;
+
+  currentScope = scope;
   dragTaskId = card.dataset.taskId;
   startX = e.clientX;
   startY = e.clientY;
@@ -58,7 +58,7 @@ function onPointerMove(e: PointerEvent): void {
     if (dx + dy < DRAG_THRESHOLD) return;
 
     isDragging = true;
-    const card = document.querySelector(`.board-card[data-task-id="${dragTaskId}"]`) as HTMLElement;
+    const card = currentScope?.querySelector(`.board-card[data-task-id="${dragTaskId}"]`) as HTMLElement | null;
     if (!card) { cancelDrag(); return; }
 
     card.classList.add('dragging');
@@ -99,7 +99,7 @@ function onPointerUp(e: PointerEvent): void {
   }
 
   cancelDrag();
-  if (onDragEnd) onDragEnd();
+  for (const cb of dragEndCallbacks) cb();
 }
 
 function cancelDrag(): void {
@@ -110,12 +110,13 @@ function cancelDrag(): void {
 
   removeDropTargets();
   cachedTargets = [];
-  document.querySelectorAll('.board-card.dragging').forEach(el => el.classList.remove('dragging'));
+  currentScope?.querySelectorAll('.board-card.dragging').forEach(el => el.classList.remove('dragging'));
 
   isDragging = false;
   dragTaskId = null;
   pointerStarted = false;
   activeDropTarget = null;
+  currentScope = null;
 }
 
 /**
@@ -124,10 +125,9 @@ function cancelDrag(): void {
  * would receive if dropped there.
  */
 function injectDropTargets(excludeTaskId: string): void {
-  const boardColumns = container();
-  if (!boardColumns) return;
+  if (!currentScope) return;
 
-  for (const area of boardColumns.querySelectorAll('.board-column-cards')) {
+  for (const area of currentScope.querySelectorAll('.board-column-cards')) {
     const columnId = (area as HTMLElement).dataset.columnId;
     if (!columnId) continue;
 
@@ -150,7 +150,7 @@ function injectDropTargets(excludeTaskId: string): void {
 
   // Cache target positions so highlightNearestTarget avoids querySelectorAll + getBoundingClientRect per pointermove
   cachedTargets = [];
-  for (const el of document.querySelectorAll('.board-drop-target')) {
+  for (const el of currentScope.querySelectorAll('.board-drop-target')) {
     const rect = el.getBoundingClientRect();
     cachedTargets.push({ el: el as HTMLElement, left: rect.left, right: rect.right, centerY: rect.top + rect.height / 2 });
   }
@@ -165,7 +165,7 @@ function createDropTarget(columnId: string, order: number): HTMLElement {
 }
 
 function removeDropTargets(): void {
-  document.querySelectorAll('.board-drop-target').forEach(el => el.remove());
+  currentScope?.querySelectorAll('.board-drop-target').forEach(el => el.remove());
 }
 
 function highlightNearestTarget(x: number, y: number): void {

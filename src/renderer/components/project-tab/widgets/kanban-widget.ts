@@ -1,6 +1,7 @@
 import { appState } from '../../../state.js';
 import { createColumnElement } from '../../board/board-column.js';
 import { showTaskModal } from '../../board/board-task-modal.js';
+import { addDragEndCallback, initBoardDnd, isDragActive } from '../../board/board-dnd.js';
 import { createWidgetEmpty } from './widget-empty.js';
 import type { BoardData } from '../../../../shared/types.js';
 import type { WidgetFactory } from './widget-host.js';
@@ -42,7 +43,15 @@ export const createKanbanWidget: WidgetFactory = (host) => {
     return appState.projects.find((p) => p.id === host.projectId)?.board;
   }
 
+  let pendingRender = false;
+
   function render(): void {
+    if (isDragActive()) {
+      pendingRender = true;
+      return;
+    }
+    pendingRender = false;
+
     const board = getBoardForProject();
     body.innerHTML = '';
 
@@ -66,12 +75,7 @@ export const createKanbanWidget: WidgetFactory = (host) => {
         .filter((t) => t.columnId === column.id)
         .sort((a, b) => a.order - b.order);
 
-      const columnEl = createColumnElement(column, tasksInCol);
-      // Widget has no drop zones; disable card drag to avoid stuck ghosts.
-      columnEl.querySelectorAll<HTMLElement>('.board-card').forEach((card) => {
-        card.draggable = false;
-      });
-      body.appendChild(columnEl);
+      body.appendChild(createColumnElement(column, tasksInCol));
     }
   }
 
@@ -84,12 +88,18 @@ export const createKanbanWidget: WidgetFactory = (host) => {
   // structural board changes.
   const offBoard = appState.on('board-changed', () => render());
 
+  initBoardDnd();
+  const offDragEnd = addDragEndCallback(() => {
+    if (pendingRender) render();
+  });
+
   render();
 
   return {
     element: root,
     destroy() {
       offBoard();
+      offDragEnd();
     },
     refresh() {
       render();
