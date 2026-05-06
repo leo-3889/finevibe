@@ -417,6 +417,14 @@ function buildPRActions(
   }
 
   actions.appendChild(reviewGroup);
+
+  const kanbanBtn = document.createElement('button');
+  kanbanBtn.className = 'widget-github-row-action-btn widget-github-row-action-btn-primary';
+  kanbanBtn.textContent = 'Add to Kanban';
+  kanbanBtn.title = 'Create a board task from this PR';
+  kanbanBtn.addEventListener('click', onAction(() => addPRToKanban(item)));
+  actions.appendChild(kanbanBtn);
+
   return actions;
 }
 
@@ -431,6 +439,14 @@ function addIssueToKanban(item: GithubItem): void {
     title: item.title,
     prompt: `Plan a solution for this issue #${item.number}: ${item.html_url}`,
     tags: ['github-issues'],
+  });
+}
+
+function addPRToKanban(item: GithubItem): void {
+  showTaskModal('create', undefined, undefined, {
+    title: `[Review] ${item.title}`,
+    prompt: `Review this PR #${item.number}: ${item.html_url}`,
+    tags: ['github-prs'],
   });
 }
 
