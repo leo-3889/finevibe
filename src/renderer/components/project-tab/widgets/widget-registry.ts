@@ -45,7 +45,7 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
   },
   'github-prs': {
     type: 'github-prs',
-    displayName: 'Recent PRs',
+    displayName: 'Recent PRs - GitHub',
     description: 'Latest pull requests for a GitHub repo with read/unread badges. Uses the local gh CLI.',
     defaultSize: { w: 6, h: 6 },
     defaultConfig: { state: 'open', max: 10, refreshSeconds: 300 },
@@ -55,7 +55,7 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
   },
   'github-issues': {
     type: 'github-issues',
-    displayName: 'Recent Issues',
+    displayName: 'Recent Issues - GitHub',
     description: 'Latest issues for a GitHub repo with read/unread badges. Uses the local gh CLI.',
     defaultSize: { w: 6, h: 6 },
     defaultConfig: { state: 'open', max: 10, refreshSeconds: 300 },
