@@ -1,58 +1,53 @@
-import { appState, ProjectRecord } from '../../state.js';
-import { showMcpAddModal } from '../mcp-add-modal.js';
-import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
-import { esc } from '../../dom-utils.js';
+import { appState } from '../../../state.js';
+import { showMcpAddModal } from '../../mcp-add-modal.js';
+import { createCustomSelect, type CustomSelectInstance } from '../../custom-select.js';
+import { esc } from '../../../dom-utils.js';
 import {
   getAvailableProviderMetas,
   getProviderAvailabilitySnapshot,
   loadProviderAvailability,
-} from '../../provider-availability.js';
-import type { ProviderConfig, ProviderId, McpServer, Agent, Skill, Command } from '../../types.js';
-
-export interface ProviderToolsColumnInstance {
-  element: HTMLElement;
-  destroy(): void;
-}
-
-const selectedProviderByProject = new Map<string, ProviderId>();
-
-function getActiveProviderId(projectId: string): ProviderId {
-  const available = getAvailableProviderMetas().map(p => p.id);
-  const stored = selectedProviderByProject.get(projectId);
-  if (stored && available.includes(stored)) return stored;
-  if (available.length > 0) return available[0];
-  return 'claude';
-}
+} from '../../../provider-availability.js';
+import type { ProviderConfig, ProviderId, McpServer, Agent, Skill, Command } from '../../../types.js';
+import type { WidgetFactory, WidgetHost, WidgetInstance } from './widget-host.js';
 
 function scopeBadge(scope: 'user' | 'project'): string {
   return `<span class="scope-badge ${scope}">${scope}</span>`;
 }
 
-export function createProviderToolsColumn(project: ProjectRecord): ProviderToolsColumnInstance {
+export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): WidgetInstance => {
+  const projectId = host.projectId;
   const root = document.createElement('div');
-  root.className = 'project-tab-column project-tab-provider-tools';
+  root.className = 'project-tab-provider-tools widget-provider-tools';
 
-  const header = document.createElement('div');
-  header.className = 'project-tab-section-header';
-
-  const headerTitle = document.createElement('span');
-  headerTitle.className = 'project-tab-section-title';
-  headerTitle.textContent = 'Provider Tools';
-  header.appendChild(headerTitle);
+  const toolbar = document.createElement('div');
+  toolbar.className = 'widget-provider-tools-toolbar';
+  root.appendChild(toolbar);
 
   const body = document.createElement('div');
   body.className = 'project-tab-tools-body';
   body.innerHTML = '<div class="config-loading">Loading...</div>';
-
-  root.appendChild(header);
   root.appendChild(body);
 
+  // Per-instance provider selection (don't share across widget instances).
+  let selectedProviderId: ProviderId | null = null;
   let providerSelect: CustomSelectInstance | null = null;
   let lastAvailableKey: string | null = null;
   let unsubConfigChanged: (() => void) | null = null;
   let destroyed = false;
 
-  const mcpItem = (server: McpServer): HTMLElement => {
+  const getActiveProviderId = (): ProviderId => {
+    const available = getAvailableProviderMetas().map(p => p.id);
+    if (selectedProviderId && available.includes(selectedProviderId)) return selectedProviderId;
+    if (available.length > 0) return available[0];
+    return 'claude';
+  };
+
+  const getProjectPath = (): string | null => {
+    const p = appState.projects.find(pr => pr.id === projectId);
+    return p?.path ?? null;
+  };
+
+  const mcpItem = (server: McpServer, projectPath: string): HTMLElement => {
     const el = document.createElement('div');
     el.className = 'config-item config-item-clickable';
     el.innerHTML = `<span class="config-item-name">${esc(server.name)}</span><span class="config-item-detail">${esc(server.status)}</span>${scopeBadge(server.scope)}`;
@@ -64,7 +59,7 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
     removeBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!confirm(`Remove MCP server "${server.name}"?`)) return;
-      await window.vibeyard.mcp.removeServer(server.name, server.filePath, server.scope, project.path);
+      await window.vibeyard.mcp.removeServer(server.name, server.filePath, server.scope, projectPath);
       void refresh();
     });
     el.appendChild(removeBtn);
@@ -102,7 +97,7 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
 
   const openConfigFile = (filePath: string) => {
     if (!filePath) return;
-    appState.addFileReaderSession(project.id, filePath);
+    appState.addFileReaderSession(projectId, filePath);
   };
 
   const renderSection = (title: string, items: HTMLElement[], count: number, onAdd?: () => void): HTMLElement => {
@@ -148,10 +143,12 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
   };
 
   const watchActiveProvider = () => {
-    window.vibeyard.provider.watchProject(getActiveProviderId(project.id), project.path);
+    const projectPath = getProjectPath();
+    if (!projectPath) return;
+    window.vibeyard.provider.watchProject(getActiveProviderId(), projectPath);
   };
 
-  const buildHeaderSelect = () => {
+  const buildToolbarSelect = () => {
     const available = getAvailableProviderMetas();
     const key = available.map(p => p.id).join(',');
     const wantSelect = available.length > 1;
@@ -162,16 +159,16 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
 
     if (wantSelect) {
       providerSelect = createCustomSelect(
-        `config-provider-select-${project.id}`,
+        `widget-provider-select-${host.widgetId}`,
         available.map(p => ({ value: p.id, label: p.displayName })),
-        getActiveProviderId(project.id),
+        getActiveProviderId(),
         (value) => {
-          selectedProviderByProject.set(project.id, value as ProviderId);
+          selectedProviderId = value as ProviderId;
           watchActiveProvider();
           void refresh();
         },
       );
-      header.appendChild(providerSelect.element);
+      toolbar.appendChild(providerSelect.element);
     }
   };
 
@@ -183,13 +180,18 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
     }
     if (destroyed) return;
 
-    buildHeaderSelect();
+    buildToolbarSelect();
 
-    const providerId = getActiveProviderId(project.id);
+    const providerId = getActiveProviderId();
+    const projectPath = getProjectPath();
+    if (!projectPath) {
+      body.innerHTML = '';
+      return;
+    }
 
     let config: ProviderConfig;
     try {
-      config = await window.vibeyard.provider.getConfig(providerId, project.path);
+      config = await window.vibeyard.provider.getConfig(providerId, projectPath);
     } catch {
       body.innerHTML = '';
       return;
@@ -200,7 +202,7 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
 
     body.appendChild(renderSection(
       'MCP Servers',
-      config.mcpServers.map(mcpItem),
+      config.mcpServers.map(s => mcpItem(s, projectPath)),
       config.mcpServers.length,
       providerId === 'claude' ? () => showMcpAddModal(() => void refresh()) : undefined,
     ));
@@ -241,5 +243,8 @@ export function createProviderToolsColumn(project: ProjectRecord): ProviderTools
       unsubConfigChanged?.();
       unsubConfigChanged = null;
     },
+    refresh() {
+      void refresh();
+    },
   };
-}
+};

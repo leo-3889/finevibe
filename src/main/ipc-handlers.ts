@@ -20,6 +20,7 @@ import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
 import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult } from '../shared/types';
 import { analyzeReadiness } from './readiness/analyzer';
+import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { expandUserPath, isBinaryBuffer, BINARY_SNIFF_BYTES } from './fs-utils';
 import { isMac, isWin } from './platform';
 import { shouldWarnStatusLine } from './settings-guard';
@@ -606,6 +607,15 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) => analyzeReadiness(projectPath, excludedProviders));
+
+  ipcMain.handle('github:isAvailable', () => isGhAvailable());
+  ipcMain.handle('github:detectRepo', (_event, projectPath: string) => detectRepo(projectPath));
+  ipcMain.handle('github:listPRs', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
+    listPullRequests(repo, { state, max })
+  );
+  ipcMain.handle('github:listIssues', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
+    listIssues(repo, { state, max })
+  );
 
   ipcMain.handle('update:checkNow', () => checkForUpdates());
   ipcMain.handle('update:install', () => quitAndInstall());

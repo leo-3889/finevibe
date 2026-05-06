@@ -11,6 +11,7 @@ import { setContextData, onChange as onContextChange } from './session-context.j
 import { initNotificationSound } from './notification-sound.js';
 import { initNotificationDesktop } from './notification-desktop.js';
 import { init as initSessionUnread } from './session-unread.js';
+import { init as initGithubUnread } from './github-unread.js';
 import { initProjectTerminal, handleShellPtyData, handleShellPtyExit, isShellSessionId, applyThemeToAllShells } from './components/project-terminal.js';
 import { startPolling as startGitPolling } from './git-status.js';
 import { initDebugPanel, logDebugEvent } from './components/debug-panel.js';
@@ -158,6 +159,7 @@ async function main(): Promise<void> {
 
   // Initialize components
   initSessionUnread();
+  initGithubUnread();
   initSidebar();
   initTabBar();
   initSplitLayout();

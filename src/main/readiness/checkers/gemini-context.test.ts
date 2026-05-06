@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import { geminiContextProducer } from './gemini-context';
+import { mockInstructionFiles } from '../test-utils';
 import type { AnalysisContext } from '../types';
 
 vi.mock('fs');
@@ -34,20 +35,14 @@ describe('geminiContextProducer', () => {
   });
 
   it('passes for GEMINI.md under 300 lines', () => {
-    mockFs.readFileSync.mockImplementation((p: fs.PathOrFileDescriptor) => {
-      if (String(p).endsWith('GEMINI.md')) return Array(200).fill('line').join('\n');
-      throw new Error('ENOENT');
-    });
+    mockInstructionFiles(mockFs, { 'GEMINI.md': Array(200).fill('line').join('\n') });
 
     const tagged = geminiContextProducer.produce('/test/project', ctx);
     expect(tagged[0].check.status).toBe('pass');
   });
 
   it('warns for GEMINI.md between 300-500 lines', () => {
-    mockFs.readFileSync.mockImplementation((p: fs.PathOrFileDescriptor) => {
-      if (String(p).endsWith('GEMINI.md')) return Array(400).fill('line').join('\n');
-      throw new Error('ENOENT');
-    });
+    mockInstructionFiles(mockFs, { 'GEMINI.md': Array(400).fill('line').join('\n') });
 
     const tagged = geminiContextProducer.produce('/test/project', ctx);
     expect(tagged[0].check.status).toBe('warning');
@@ -55,10 +50,7 @@ describe('geminiContextProducer', () => {
   });
 
   it('fails for GEMINI.md over 500 lines', () => {
-    mockFs.readFileSync.mockImplementation((p: fs.PathOrFileDescriptor) => {
-      if (String(p).endsWith('GEMINI.md')) return Array(600).fill('line').join('\n');
-      throw new Error('ENOENT');
-    });
+    mockInstructionFiles(mockFs, { 'GEMINI.md': Array(600).fill('line').join('\n') });
 
     const tagged = geminiContextProducer.produce('/test/project', ctx);
     expect(tagged[0].check.status).toBe('fail');

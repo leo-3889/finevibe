@@ -1,5 +1,5 @@
-import { contextBridge, ipcRenderer, webFrame } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, DeepSearchResult } from '../shared/types';
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, DeepSearchResult, GithubFetchResult, GithubRepo } from '../shared/types';
 import { ZOOM_MIN, ZOOM_MAX } from '../shared/types';
 
 export type { CostData } from '../shared/types';
@@ -40,6 +40,7 @@ export interface VibeyardApi {
     watchFile(filePath: string): void;
     unwatchFile(filePath: string): void;
     onFileChanged(callback: (filePath: string) => void): () => void;
+    getDroppedFilePath(file: File): string;
   };
   store: {
     load(): Promise<unknown>;
@@ -109,6 +110,12 @@ export interface VibeyardApi {
   };
   readiness: {
     analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
+  };
+  github: {
+    isAvailable(): Promise<boolean>;
+    detectRepo(projectPath: string): Promise<GithubRepo | null>;
+    listPRs(repo: string, state: 'open' | 'closed' | 'all', max: number): Promise<GithubFetchResult>;
+    listIssues(repo: string, state: 'open' | 'closed' | 'all', max: number): Promise<GithubFetchResult>;
   };
   stats: {
     getCache(): Promise<StatsCache | null>;
@@ -205,6 +212,7 @@ const api: VibeyardApi = {
     watchFile: (filePath: string) => ipcRenderer.send('fs:watchFile', filePath),
     unwatchFile: (filePath: string) => ipcRenderer.send('fs:unwatchFile', filePath),
     onFileChanged: (callback: (filePath: string) => void) => onChannel('fs:fileChanged', (filePath) => callback(filePath as string)),
+    getDroppedFilePath: (file: File) => webUtils.getPathForFile(file),
   },
   provider: {
     getConfig: (providerId, projectPath) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath),
@@ -274,6 +282,12 @@ const api: VibeyardApi = {
   },
   readiness: {
     analyze: (projectPath: string, excludedProviders?: string[]) => ipcRenderer.invoke('readiness:analyze', projectPath, excludedProviders),
+  },
+  github: {
+    isAvailable: () => ipcRenderer.invoke('github:isAvailable'),
+    detectRepo: (projectPath: string) => ipcRenderer.invoke('github:detectRepo', projectPath),
+    listPRs: (repo: string, state: 'open' | 'closed' | 'all', max: number) => ipcRenderer.invoke('github:listPRs', repo, state, max),
+    listIssues: (repo: string, state: 'open' | 'closed' | 'all', max: number) => ipcRenderer.invoke('github:listIssues', repo, state, max),
   },
   stats: {
     getCache: () => ipcRenderer.invoke('stats:getCache'),

@@ -46,6 +46,7 @@ function addProject(name = 'Test', path = '/test') {
 
 function addProjectWithSessions(count: number) {
   const project = addProject();
+  appState.toggleSwarm();
   const sessions = [];
   for (let i = 0; i < count; i++) {
     sessions.push(appState.addSession(project.id, `Session ${i + 1}`)!);

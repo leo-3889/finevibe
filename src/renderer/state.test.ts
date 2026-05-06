@@ -482,7 +482,7 @@ describe('removeSession()', () => {
 
   it('clears session from splitPanes', () => {
     const { project, sessions } = addProjectWithSessions(2);
-    // default mode is swarm, so splitPanes are auto-populated
+    appState.toggleSwarm();
     expect(appState.activeProject!.layout.splitPanes.length).toBeGreaterThan(0);
     appState.removeSession(project.id, sessions[0].id);
     expect(appState.activeProject!.layout.splitPanes).not.toContain(sessions[0].id);

@@ -4,6 +4,7 @@ import type { ReadinessCheck } from '../../../shared/types';
 import type { ReadinessCheckProducer, TaggedCheck, AnalysisContext } from '../types';
 import { fileExists } from '../utils';
 import { checkNotBloated } from './instruction-file-checks';
+import { claudeInstructionFileOpts } from './ai-instructions';
 
 const SENSITIVE_FILE_PATTERNS = [
   '.env', '.env.*',
@@ -88,7 +89,7 @@ export const claudeContextProducer: ReadinessCheckProducer = {
 
   produce(projectPath: string, ctx: AnalysisContext): TaggedCheck[] {
     return [
-      checkNotBloated(projectPath, { fileName: 'CLAUDE.md', idPrefix: 'claude-md', displayName: 'CLAUDE.md' }),
+      checkNotBloated(projectPath, claudeInstructionFileOpts),
       checkClaudeignore(projectPath, ctx.trackedFiles),
     ].map(check => ({ category: 'context', check }));
   },

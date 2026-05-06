@@ -3,13 +3,30 @@ import type { ReadinessCheck } from '../../../shared/types';
 import { fileExists, readFileSafe } from '../utils';
 
 export interface InstructionFileOpts {
-  fileName: string;      // e.g. 'CLAUDE.md' or 'AGENTS.md'
-  idPrefix: string;      // e.g. 'claude-md' or 'agents-md'
-  displayName: string;   // e.g. 'CLAUDE.md' or 'AGENTS.md'
+  fileName: string;           // e.g. 'CLAUDE.md' or 'AGENTS.md'
+  fallbackDirectory?: string; // e.g. '.claude'
+  idPrefix: string;           // e.g. 'claude-md' or 'agents-md'
+  displayName: string;        // e.g. 'CLAUDE.md' or 'AGENTS.md'
+}
+
+export function resolveInstructionFilePath(projectPath: string, opts: InstructionFileOpts): string | null {
+  const candidates = [path.join(projectPath, opts.fileName)];
+
+  if (opts.fallbackDirectory) {
+    candidates.push(path.join(projectPath, opts.fallbackDirectory, opts.fileName));
+  }
+
+  for (const candidate of candidates) {
+    if (fileExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 export function checkFileExists(projectPath: string, opts: InstructionFileOpts): ReadinessCheck {
-  const exists = fileExists(path.join(projectPath, opts.fileName));
+  const exists = resolveInstructionFilePath(projectPath, opts) !== null;
   return {
     id: `${opts.idPrefix}-exists`,
     name: `${opts.displayName} exists`,
@@ -162,7 +179,8 @@ export function checkFileSize(content: string | null, opts: InstructionFileOpts)
 }
 
 export function checkNotBloated(projectPath: string, opts: InstructionFileOpts): ReadinessCheck {
-  const content = readFileSafe(path.join(projectPath, opts.fileName));
+  const instructionPath = resolveInstructionFilePath(projectPath, opts);
+  const content = instructionPath ? readFileSafe(instructionPath) : null;
   if (!content) {
     return {
       id: `${opts.idPrefix}-bloat`,
@@ -193,7 +211,8 @@ export function checkNotBloated(projectPath: string, opts: InstructionFileOpts):
 }
 
 export function runAllInstructionChecks(projectPath: string, opts: InstructionFileOpts): ReadinessCheck[] {
-  const content = readFileSafe(path.join(projectPath, opts.fileName));
+  const instructionPath = resolveInstructionFilePath(projectPath, opts);
+  const content = instructionPath ? readFileSafe(instructionPath) : null;
   return [
     checkFileExists(projectPath, opts),
     checkBuildCommands(content, opts),

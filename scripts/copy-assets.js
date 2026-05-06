@@ -40,6 +40,10 @@ copyFile(
   path.join(root, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'),
   path.join(dist, 'xterm.css')
 );
+copyFile(
+  path.join(root, 'node_modules', 'gridstack', 'dist', 'gridstack.min.css'),
+  path.join(dist, 'vendor', 'gridstack.min.css')
+);
 copyFile(path.join(root, 'build', 'icon.png'), path.join(dist, 'icon.png'));
 copyFile(path.join(root, 'CHANGELOG.md'), path.join(dist, 'CHANGELOG.md'));
 

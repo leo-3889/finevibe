@@ -707,7 +707,7 @@ describe('openCliSession()', () => {
 
   it('appends to swarm splitPanes when in swarm mode', () => {
     const project = addProject();
-    // swarm mode is the default layout mode
+    appState.toggleSwarm();
     const session = appState.openCliSession(project.id, 'cli-swarm', 'S')!;
     expect(appState.activeProject!.layout.splitPanes).toContain(session.id);
   });

@@ -1,7 +1,19 @@
 import { appState } from '../../state.js';
 import { instances, type ProjectTabInstance } from './instance.js';
-import { createReadinessColumn } from './readiness-column.js';
-import { createProviderToolsColumn } from './provider-tools-column.js';
+import { createProjectTabGrid, type ProjectTabGrid } from './grid.js';
+import { showWidgetPicker } from './widgets/widget-picker-modal.js';
+import { showGithubSettings } from './widgets/github-settings-modal.js';
+import type { OverviewLayout, OverviewWidget } from '../../../shared/types.js';
+
+function defaultLayout(): OverviewLayout {
+  return {
+    gridVersion: 1,
+    widgets: [
+      { id: crypto.randomUUID(), type: 'readiness', x: 0, y: 0, w: 8, h: 8 },
+      { id: crypto.randomUUID(), type: 'provider-tools', x: 8, y: 0, w: 4, h: 8 },
+    ],
+  };
+}
 
 export function createProjectTabPane(sessionId: string, projectId: string): void {
   if (instances.has(sessionId)) return;
@@ -22,31 +34,83 @@ export function createProjectTabPane(sessionId: string, projectId: string): void
       sessionId,
       projectId,
       element: el,
-      destroy() {
-        el.remove();
-      },
+      destroy() { el.remove(); },
     };
     instances.set(sessionId, instance);
     return;
   }
 
-  const columns = document.createElement('div');
-  columns.className = 'project-tab-columns';
+  // Lazy-create the default layout — no migration code per the project rule.
+  if (!project.overviewLayout || project.overviewLayout.widgets.length === 0) {
+    appState.setProjectOverviewLayout(projectId, defaultLayout());
+  }
+  const layout = project.overviewLayout!;
 
-  const readiness = createReadinessColumn(project);
-  const tools = createProviderToolsColumn(project);
+  const toolbar = document.createElement('div');
+  toolbar.className = 'project-tab-toolbar';
 
-  columns.appendChild(readiness.element);
-  columns.appendChild(tools.element);
-  el.appendChild(columns);
+  const addBtn = document.createElement('button');
+  addBtn.className = 'project-tab-toolbar-btn';
+  addBtn.textContent = '+ Add Widget';
+  toolbar.appendChild(addBtn);
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'project-tab-toolbar-btn project-tab-edit-btn';
+  editBtn.textContent = 'Edit layout';
+  editBtn.title = 'Toggle drag and resize';
+  toolbar.appendChild(editBtn);
+
+  const gridRoot = document.createElement('div');
+  gridRoot.className = 'project-tab-grid-root';
+
+  el.appendChild(toolbar);
+  el.appendChild(gridRoot);
+
+  let grid: ProjectTabGrid | null = null;
+
+  const handleOpenSettings = (widget: OverviewWidget) => {
+    if (widget.type === 'github-prs' || widget.type === 'github-issues') {
+      showGithubSettings(widget, (patch) => {
+        grid?.updateWidgetConfig(widget.id, patch);
+      });
+    }
+  };
+
+  const handleChange = (next: OverviewLayout) => {
+    appState.setProjectOverviewLayout(projectId, next);
+  };
+
+  let editing = false;
+  editBtn.addEventListener('click', () => {
+    editing = !editing;
+    grid?.setEditMode(editing);
+    editBtn.classList.toggle('active', editing);
+    editBtn.textContent = editing ? 'Done editing' : 'Edit layout';
+    el.classList.toggle('editing', editing);
+  });
+
+  addBtn.addEventListener('click', () => {
+    const fresh = appState.projects.find(p => p.id === projectId);
+    const widgets = fresh?.overviewLayout?.widgets ?? [];
+    showWidgetPicker(widgets, (type) => {
+      grid?.addWidget(type);
+    });
+  });
+
+  grid = createProjectTabGrid({
+    projectId,
+    rootEl: gridRoot,
+    initialLayout: layout,
+    onChange: handleChange,
+    onOpenSettings: handleOpenSettings,
+  });
 
   const instance: ProjectTabInstance = {
     sessionId,
     projectId,
     element: el,
     destroy() {
-      readiness.destroy();
-      tools.destroy();
+      grid?.destroy();
       el.remove();
     },
   };

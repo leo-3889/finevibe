@@ -5,6 +5,7 @@ import { onChange as onStatusChange, getStatus, type SessionStatus } from '../se
 import { onChange as onGitStatusChange, getGitStatus, getActiveGitPath, refreshGitStatus } from '../git-status.js';
 
 import { isUnread, onChange as onUnreadChange } from '../session-unread.js';
+import { hasUnreadInProject as hasGithubUnread, onChange as onGithubUnreadChange } from '../github-unread.js';
 import { showHelpDialog } from './help-dialog.js';
 import { showShareDialog } from './share-dialog.js';
 import { showJoinDialog } from './join-dialog.js';
@@ -95,6 +96,7 @@ export function initTabBar(): void {
   });
 
   onUnreadChange(render);
+  onGithubUnreadChange(render);
 
   onGitStatusChange((projectId) => {
     if (projectId === appState.activeProjectId) renderGitStatus();
@@ -389,13 +391,13 @@ function render(): void {
   for (const session of project.sessions) {
     const tab = document.createElement('div');
     const isActive = session.id === project.activeSessionId;
-    const unread = !isActive && isUnread(session.id);
     const isMcp = session.type === 'mcp-inspector';
     const isDiff = session.type === 'diff-viewer';
     const isFileReader = session.type === 'file-reader';
     const isRemoteTab = session.type === 'remote-terminal';
     const isBrowserTab = session.type === 'browser-tab';
     const isProjectTab = session.type === 'project-tab';
+    const unread = !isActive && (isProjectTab ? hasGithubUnread(project.id) : isUnread(session.id));
     const isKanban = session.type === 'kanban';
     const isTeam = session.type === 'team';
     const isSpecial = isMcp || isDiff || isFileReader || isRemoteTab || isBrowserTab || isProjectTab || isKanban || isTeam;

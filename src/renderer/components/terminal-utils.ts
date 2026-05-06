@@ -6,6 +6,13 @@ import { appState } from '../state.js';
 
 type ExtraKeyHandler = (e: KeyboardEvent) => boolean | undefined;
 
+// Wraps text in bracketed-paste escapes when the shell has the mode enabled,
+// so it's delivered as a paste rather than character-by-character input.
+export function wrapBracketedPaste(terminal: Terminal, text: string): string {
+  const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+  return modes?.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
+}
+
 // Call after terminal.open(); the selection service doesn't fire before then.
 export function attachCopyOnSelect(terminal: Terminal): void {
   terminal.onSelectionChange(() => {
@@ -61,10 +68,7 @@ export function attachClipboardCopyHandler(
       if (e.type === 'keydown') {
         navigator.clipboard.readText().then((text) => {
           if (!text) return;
-          // Respect bracketed paste mode if the shell enabled it
-          const modes = (terminal as any).modes;
-          const bp = modes?.bracketedPasteMode;
-          writeToPty(bp ? `\x1b[200~${text}\x1b[201~` : text);
+          writeToPty(wrapBracketedPaste(terminal, text));
         }).catch(() => {});
       }
       e.preventDefault(); // prevent native paste event from firing

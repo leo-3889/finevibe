@@ -98,6 +98,11 @@
   border-color: var(--accent);
 }
 
+.terminal-pane.drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
 .terminal-pane .xterm-wrap {
   flex: 1;
   min-height: 0;
