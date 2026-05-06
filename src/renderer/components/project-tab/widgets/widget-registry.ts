@@ -47,7 +47,7 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
     defaultSize: { w: 6, h: 6 },
     defaultConfig: { state: 'open', max: 10, refreshSeconds: 300 },
     factory: createGithubPRsWidget,
-    allowMultiple: false,
+    allowMultiple: true,
     hasSettings: true,
   },
   'github-issues': {
@@ -57,7 +57,7 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
     defaultSize: { w: 6, h: 6 },
     defaultConfig: { state: 'open', max: 10, refreshSeconds: 300 },
     factory: createGithubIssuesWidget,
-    allowMultiple: false,
+    allowMultiple: true,
     hasSettings: true,
   },
   'team': {

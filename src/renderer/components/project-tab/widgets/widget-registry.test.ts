@@ -40,9 +40,10 @@ describe('widget registry', () => {
     }
   });
 
-  it('all widgets forbid duplicates', () => {
+  it('non-github widgets forbid duplicates; github widgets allow them', () => {
+    const expectedMulti = new Set<OverviewWidgetType>(['github-prs', 'github-issues']);
     for (const meta of listWidgetTypes()) {
-      expect(meta.allowMultiple).toBe(false);
+      expect(meta.allowMultiple).toBe(expectedMulti.has(meta.type));
     }
   });
 
