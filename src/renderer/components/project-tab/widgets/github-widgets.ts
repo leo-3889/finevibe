@@ -445,7 +445,7 @@ function addIssueToKanban(item: GithubItem): void {
 function addPRToKanban(item: GithubItem): void {
   showTaskModal('create', undefined, undefined, {
     title: `[Review] ${item.title}`,
-    prompt: `Review this PR #${item.number}: ${item.html_url}`,
+    prompt: `/review pr #${item.number} ${item.html_url}`,
     tags: ['github-prs'],
   });
 }
