@@ -7,6 +7,7 @@ import { createTeamWidget } from './team-widget.js';
 import { createKanbanWidget } from './kanban-widget.js';
 import { createSessionsWidget } from './sessions-widget.js';
 import { createFavoriteSessionsWidget } from './favorite-sessions-widget.js';
+import { createUsageStatsWidget } from './usage-stats-widget.js';
 import { DEFAULT_SESSIONS_CONFIG } from './sessions-types.js';
 
 export interface WidgetMeta {
@@ -100,6 +101,16 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
     defaultSize: { w: 6, h: 6 },
     defaultConfig: {},
     factory: createFavoriteSessionsWidget,
+    allowMultiple: false,
+    hasSettings: false,
+  },
+  'usage-stats': {
+    type: 'usage-stats',
+    displayName: 'Claude Code Usage Stats',
+    description: 'Sessions, messages, model token usage, and activity history from your Claude Code CLI.',
+    defaultSize: { w: 6, h: 8 },
+    defaultConfig: {},
+    factory: createUsageStatsWidget,
     allowMultiple: false,
     hasSettings: false,
   },

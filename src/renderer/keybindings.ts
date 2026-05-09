@@ -16,7 +16,6 @@ import { getFileReaderInstance, getFileReaderTextSelector, showGoToLineBar } fro
 import { getFileViewerInstance } from './components/file-viewer.js';
 import { DomSearchBackend } from './components/dom-search-backend.js';
 import { toggleInspector } from './components/session-inspector.js';
-import { showUsageModal } from './components/usage-modal.js';
 import { zoomIn, zoomOut, zoomReset } from './zoom.js';
 
 export function initKeybindings(): void {
@@ -36,7 +35,6 @@ export function initKeybindings(): void {
   window.vibeyard.menu.onPrevSession(() => appState.cycleSession(-1));
   window.vibeyard.menu.onGotoSession((index) => appState.gotoSession(index));
   window.vibeyard.menu.onToggleDebug(toggleDebugPanel);
-  window.vibeyard.menu.onUsageStats(showUsageModal);
   window.vibeyard.menu.onToggleInspector(toggleInspector);
   window.vibeyard.menu.onCloseSession(handleCloseSession);
 
@@ -98,7 +96,6 @@ export function initKeybindings(): void {
   });
   shortcutManager.registerHandler('help', showHelpDialog);
   shortcutManager.registerHandler('close-session', handleCloseSession);
-  shortcutManager.registerHandler('usage-stats', showUsageModal);
   shortcutManager.registerHandler('toggle-inspector', toggleInspector);
   shortcutManager.registerHandler('zoom-in', zoomIn);
   shortcutManager.registerHandler('zoom-out', zoomOut);

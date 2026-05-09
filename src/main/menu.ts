@@ -79,12 +79,6 @@ export function createAppMenu(debugMode = false): void {
         },
         { type: 'separator' },
         {
-          label: 'Usage Stats',
-          accelerator: 'CmdOrCtrl+Shift+U',
-          registerAccelerator: false,
-          click: () => sendToRenderer('menu:usage-stats'),
-        },
-        {
           label: 'Toggle Session Inspector',
           accelerator: 'CmdOrCtrl+Shift+I',
           registerAccelerator: false,
