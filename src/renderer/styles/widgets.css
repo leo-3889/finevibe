@@ -708,10 +708,46 @@
   border-color: var(--border);
 }
 
-.widget-sessions-bookmark {
-  color: var(--accent);
-  font-size: 12px;
+.widget-sessions-bookmark-btn,
+.widget-sessions-remove-btn {
   flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.widget-sessions-row:hover .widget-sessions-bookmark-btn,
+.widget-sessions-row:hover .widget-sessions-remove-btn {
+  opacity: 1;
+}
+
+.widget-sessions-bookmark-btn:hover,
+.widget-sessions-remove-btn:hover {
+  background: var(--bg-hover);
+}
+
+.widget-sessions-bookmark-btn:hover {
+  color: var(--bookmark);
+}
+
+.widget-sessions-remove-btn:hover {
+  color: var(--text-primary);
+}
+
+.widget-sessions-bookmark-btn.bookmarked {
+  opacity: 1;
+  color: var(--bookmark);
 }
 
 .widget-sessions-row-main {
@@ -746,33 +782,6 @@
 
 .widget-sessions-cost:empty {
   display: none;
-}
-
-.widget-sessions-remove-btn {
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  font-size: 13px;
-  line-height: 18px;
-  text-align: center;
-  background: transparent;
-  color: var(--text-dim);
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-family: inherit;
-  opacity: 0;
-  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
-}
-
-.widget-sessions-row:hover .widget-sessions-remove-btn {
-  opacity: 1;
-}
-
-.widget-sessions-remove-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 
 .widget-sessions-recent-empty {

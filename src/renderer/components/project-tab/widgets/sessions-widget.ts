@@ -57,14 +57,6 @@ export const createSessionsWidget: WidgetFactory = (host) => {
     row.className = 'widget-sessions-row widget-sessions-row-recent';
     row.title = archived.cliSessionId ? 'Click to resume' : 'No CLI session id — cannot resume';
 
-    if (archived.bookmarked) {
-      const bookmark = document.createElement('span');
-      bookmark.className = 'widget-sessions-bookmark';
-      bookmark.textContent = '★';
-      bookmark.title = 'Bookmarked';
-      row.appendChild(bookmark);
-    }
-
     const main = document.createElement('div');
     main.className = 'widget-sessions-row-main';
 
@@ -96,6 +88,29 @@ export const createSessionsWidget: WidgetFactory = (host) => {
 
     main.appendChild(meta);
     row.appendChild(main);
+
+    const isBookmarked = archived.bookmarked === true;
+    const bookmarkBtn = document.createElement('button');
+    bookmarkBtn.type = 'button';
+    bookmarkBtn.className = `widget-sessions-bookmark-btn${isBookmarked ? ' bookmarked' : ''}`;
+    bookmarkBtn.innerHTML = isBookmarked ? '&#9733;' : '&#9734;';
+    bookmarkBtn.title = isBookmarked ? 'Remove bookmark' : 'Bookmark session';
+    bookmarkBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      appState.toggleBookmark(host.projectId, archived.id);
+    });
+    row.appendChild(bookmarkBtn);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'widget-sessions-remove-btn';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.title = 'Remove from history';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      appState.removeHistoryEntry(host.projectId, archived.id);
+    });
+    row.appendChild(removeBtn);
 
     if (archived.cliSessionId) {
       row.addEventListener('click', () => {
