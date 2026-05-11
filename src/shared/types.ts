@@ -251,7 +251,8 @@ export type OverviewWidgetType =
   | 'team'
   | 'kanban'
   | 'sessions'
-  | 'favorite-sessions';
+  | 'favorite-sessions'
+  | 'usage-stats';
 
 export interface OverviewWidget {
   id: string;

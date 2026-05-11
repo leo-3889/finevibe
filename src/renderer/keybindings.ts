@@ -16,8 +16,8 @@ import { getFileReaderInstance, getFileReaderTextSelector, showGoToLineBar } fro
 import { getFileViewerInstance } from './components/file-viewer.js';
 import { DomSearchBackend } from './components/dom-search-backend.js';
 import { toggleInspector } from './components/session-inspector.js';
-import { showUsageModal } from './components/usage-modal.js';
 import { zoomIn, zoomOut, zoomReset } from './zoom.js';
+import { getBrowserTabInstance } from './components/browser-tab/instance.js';
 
 export function initKeybindings(): void {
   const handleCloseSession = () => {
@@ -36,7 +36,6 @@ export function initKeybindings(): void {
   window.vibeyard.menu.onPrevSession(() => appState.cycleSession(-1));
   window.vibeyard.menu.onGotoSession((index) => appState.gotoSession(index));
   window.vibeyard.menu.onToggleDebug(toggleDebugPanel);
-  window.vibeyard.menu.onUsageStats(showUsageModal);
   window.vibeyard.menu.onToggleInspector(toggleInspector);
   window.vibeyard.menu.onCloseSession(handleCloseSession);
 
@@ -98,11 +97,20 @@ export function initKeybindings(): void {
   });
   shortcutManager.registerHandler('help', showHelpDialog);
   shortcutManager.registerHandler('close-session', handleCloseSession);
-  shortcutManager.registerHandler('usage-stats', showUsageModal);
   shortcutManager.registerHandler('toggle-inspector', toggleInspector);
   shortcutManager.registerHandler('zoom-in', zoomIn);
   shortcutManager.registerHandler('zoom-out', zoomOut);
   shortcutManager.registerHandler('zoom-reset', zoomReset);
+  shortcutManager.registerHandler('browser-reload', () => {
+    const session = appState.activeSession;
+    if (session?.type !== 'browser-tab') return;
+    getBrowserTabInstance(session.id)?.webview.reload();
+  });
+  shortcutManager.registerHandler('browser-hard-reload', () => {
+    const session = appState.activeSession;
+    if (session?.type !== 'browser-tab') return;
+    getBrowserTabInstance(session.id)?.webview.reloadIgnoringCache();
+  });
 
   document.addEventListener('keydown', (e) => {
     shortcutManager.matchEvent(e);

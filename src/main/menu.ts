@@ -79,12 +79,6 @@ export function createAppMenu(debugMode = false): void {
         },
         { type: 'separator' },
         {
-          label: 'Usage Stats',
-          accelerator: 'CmdOrCtrl+Shift+U',
-          registerAccelerator: false,
-          click: () => sendToRenderer('menu:usage-stats'),
-        },
-        {
           label: 'Toggle Session Inspector',
           accelerator: 'CmdOrCtrl+Shift+I',
           registerAccelerator: false,
@@ -99,7 +93,12 @@ export function createAppMenu(debugMode = false): void {
           },
           { type: 'separator' as const },
           { role: 'toggleDevTools' as const },
-          { role: 'reload' as const },
+          {
+            label: 'Reload Main Window',
+            accelerator: 'CmdOrCtrl+Alt+R',
+            registerAccelerator: false,
+            click: () => BrowserWindow.getFocusedWindow()?.reload(),
+          },
         ] : []),
       ],
     },

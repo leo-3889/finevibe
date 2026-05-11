@@ -32,7 +32,14 @@ const CHANGE_DEBOUNCE_MS = 400;
 export function createProjectTabGrid(opts: ProjectTabGridOptions): ProjectTabGrid {
   const { projectId, rootEl, onChange, onOpenSettings } = opts;
   // Local working copy of widget config (gridstack only tracks x/y/w/h).
-  let layout: OverviewLayout = { gridVersion: 1, widgets: opts.initialLayout.widgets.map((w) => ({ ...w })) };
+  // Drop any widgets whose type isn't in the registry (renamed/removed types);
+  // serialize() will then prune them from persisted state on the next change.
+  let layout: OverviewLayout = {
+    gridVersion: 1,
+    widgets: opts.initialLayout.widgets
+      .filter((w) => getWidgetMeta(w.type) !== undefined)
+      .map((w) => ({ ...w })),
+  };
   let editMode = false;
   let destroyed = false;
   let changeDebounceHandle: number | null = null;
@@ -153,13 +160,7 @@ export function createProjectTabGrid(opts: ProjectTabGridOptions): ProjectTabGri
 
   function mountInstance(record: OverviewWidget, body: HTMLElement): WidgetInstance | null {
     const meta = getWidgetMeta(record.type);
-    if (!meta) {
-      const fallback = document.createElement('div');
-      fallback.className = 'widget-empty';
-      fallback.textContent = `Unknown widget type: ${record.type}`;
-      body.appendChild(fallback);
-      return null;
-    }
+    if (!meta) return null;
     const instance = meta.factory(buildHost(record));
     body.appendChild(instance.element);
     return instance;

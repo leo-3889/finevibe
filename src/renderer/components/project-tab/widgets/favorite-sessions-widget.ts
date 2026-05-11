@@ -78,6 +78,16 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
     main.appendChild(meta);
     row.appendChild(main);
 
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'widget-sessions-remove-btn';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.title = 'Remove from favorites';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      appState.toggleBookmark(host.projectId, archived.id);
+    });
+    row.appendChild(removeBtn);
+
     if (archived.cliSessionId) {
       row.addEventListener('click', () => {
         appState.resumeFromHistory(host.projectId, archived.id);

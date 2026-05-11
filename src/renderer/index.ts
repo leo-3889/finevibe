@@ -19,7 +19,6 @@ import { initGitPanel } from './components/git-panel.js';
 import { disconnectInspector } from './components/mcp-inspector.js';
 import { initUpdateBanner } from './components/update-banner.js';
 import { initSessionHistory } from './components/session-history.js';
-import { showUsageModal } from './components/usage-modal.js';
 import { captureInitialContext } from './session-insights.js';
 import { initInsightAlert } from './components/insight-alert.js';
 import { initToolDetector } from './tools/missing-tool-detector.js';
@@ -184,8 +183,6 @@ async function main(): Promise<void> {
   initTeamView();
   initFilePrompt();
   startGitPolling();
-
-  document.getElementById('btn-usage-stats')!.addEventListener('click', () => showUsageModal());
 
   function isMcpSession(sessionId: string): boolean {
     for (const project of appState.projects) {

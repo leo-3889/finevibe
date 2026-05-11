@@ -1,5 +1,5 @@
 import { appState } from '../../state.js';
-import { shortcutManager } from '../../shortcuts.js';
+import { shortcutManager, displayKeys } from '../../shortcuts.js';
 import {
   VIEWPORT_PRESETS,
   type BrowserTabInstance,
@@ -57,7 +57,9 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   const reloadBtn = document.createElement('button');
   reloadBtn.className = 'browser-nav-btn browser-reload-btn';
   reloadBtn.textContent = '\u21BB';
-  reloadBtn.title = 'Reload';
+  const reloadKeys = displayKeys(shortcutManager.getKeys('browser-reload'));
+  const hardReloadKeys = displayKeys(shortcutManager.getKeys('browser-hard-reload'));
+  reloadBtn.title = `Reload (${reloadKeys}) \u2014 Shift-click or ${hardReloadKeys} for hard reload`;
 
   const urlInput = document.createElement('input');
   urlInput.className = 'browser-url-input';
@@ -475,7 +477,10 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
 
   backBtn.addEventListener('click', () => webview.goBack());
   fwdBtn.addEventListener('click', () => webview.goForward());
-  reloadBtn.addEventListener('click', () => webview.reload());
+  reloadBtn.addEventListener('click', (e) => {
+    if (e.shiftKey) webview.reloadIgnoringCache();
+    else webview.reload();
+  });
 
   goBtn.addEventListener('click', () => navigateTo(instance, urlInput.value));
   urlInput.addEventListener('keydown', (e: KeyboardEvent) => {

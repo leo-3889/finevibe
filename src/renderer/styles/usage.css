@@ -1,10 +1,4 @@
-/* Usage modal */
-.usage-content {
-  padding: 4px 0;
-  max-height: 400px;
-  overflow-y: auto;
-}
-
+/* Claude Code Usage Stats widget */
 .usage-summary {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -113,30 +107,3 @@
   padding: 0 2px;
 }
 
-.usage-refresh-btn {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 11px;
-  cursor: pointer;
-  padding: 4px 10px;
-  border-radius: 4px;
-  margin-top: 14px;
-}
-
-.usage-refresh-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.usage-refresh-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.usage-empty {
-  color: var(--text-muted);
-  font-size: 13px;
-  text-align: center;
-  padding: 40px 20px;
-}

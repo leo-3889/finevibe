@@ -51,7 +51,7 @@ export function initTabBar(): void {
     const rect = btnAddSessionMenu.getBoundingClientRect();
     showAddSessionContextMenu(rect.right, rect.bottom + 2);
   });
-  btnAddMcpInspector.addEventListener('click', promptNewMcpInspector);
+  btnAddMcpInspector.addEventListener('click', addMcpInspector);
   btnToggleSwarm.addEventListener('click', () => appState.toggleSwarm());
   btnAddBrowserTab.addEventListener('click', () => {
     const project = appState.activeProject;
@@ -876,20 +876,12 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
   });
 }
 
-function promptNewMcpInspector(): void {
+function addMcpInspector(): void {
   const project = appState.activeProject;
   if (!project) return;
 
   const inspectorNum = project.sessions.filter(s => s.type === 'mcp-inspector').length + 1;
-  showModal('New MCP Inspector', [
-    { label: 'Name', id: 'inspector-name', placeholder: `Inspector ${inspectorNum}`, defaultValue: `Inspector ${inspectorNum}` },
-  ], (values) => {
-    const name = values['inspector-name']?.trim();
-    if (name) {
-      closeModal();
-      appState.addMcpInspectorSession(project.id, name);
-    }
-  });
+  appState.addMcpInspectorSession(project.id, `Inspector ${inspectorNum}`);
 }
 
 function esc(s: string): string {
