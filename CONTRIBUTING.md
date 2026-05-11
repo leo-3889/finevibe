@@ -36,6 +36,8 @@ No lint tooling is configured yet (planned). For now:
 
 ## Pull Request Workflow
 
+**Before you start:** for anything beyond a small bugfix, typo, or doc change, please open an issue (or comment on an existing one) first to confirm the change is wanted and agree on the approach. This saves you from building something we can't merge.
+
 1. Fork the repository
 2. Create a feature branch from `main`
 3. Make your changes and add tests where appropriate
