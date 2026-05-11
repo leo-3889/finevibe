@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.36] - 2026-05-11
+
+### Features
+
+- Hard refresh and Cmd+R/Shift+Cmd+R shortcuts in browser tab
+- Drag-to-reorder projects in sidebar
+- Remove button on favorite sessions widget
+
+### Fixes
+
+- Unknown widget types breaking the overview grid
+
+### Changes
+
+- Claude Code usage stats moved from top-bar modal to overview widget
+- MCP inspector tab no longer prompts for a name
+- Bookmark button moved next to remove button in sessions widget
+- Add-to-kanban prompt in PRs widget uses /review slash command
+
 ## [0.2.35] - 2026-05-06
 
 ### Features
