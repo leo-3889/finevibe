@@ -55,6 +55,7 @@ export interface WebviewElement extends HTMLElement {
   goBack(): void;
   goForward(): void;
   reload(): void;
+  reloadIgnoringCache(): void;
   stop(): void;
   send(channel: string, ...args: unknown[]): void;
   capturePage(rect?: { x: number; y: number; width: number; height: number }): Promise<{

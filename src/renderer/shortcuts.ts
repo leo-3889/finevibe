@@ -49,6 +49,8 @@ export const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'zoom-in', label: 'Zoom In', category: 'View', defaultKeys: 'CmdOrCtrl+=' },
   { id: 'zoom-out', label: 'Zoom Out', category: 'View', defaultKeys: 'CmdOrCtrl+-' },
   { id: 'zoom-reset', label: 'Reset Zoom', category: 'View', defaultKeys: 'CmdOrCtrl+0' },
+  { id: 'browser-reload', label: 'Reload Page', category: 'Browser', defaultKeys: 'CmdOrCtrl+R' },
+  { id: 'browser-hard-reload', label: 'Hard Reload (Bypass Cache)', category: 'Browser', defaultKeys: 'CmdOrCtrl+Shift+R' },
 ];
 
 /** Convert accelerator string to platform-specific display string */
