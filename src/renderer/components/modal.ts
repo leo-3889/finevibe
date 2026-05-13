@@ -259,6 +259,53 @@ function cleanup(): void {
   }
 }
 
+export function showPropertiesDialog(
+  title: string,
+  rows: Array<{ label: string; value: string; mono?: boolean }>,
+): void {
+  titleEl.textContent = title;
+  bodyEl.innerHTML = '';
+  btnConfirm.textContent = 'OK';
+  resetFooter();
+  btnCancel.style.display = 'none';
+
+  const list = document.createElement('dl');
+  list.className = 'modal-properties';
+  for (const row of rows) {
+    const dt = document.createElement('dt');
+    dt.textContent = row.label;
+    const dd = document.createElement('dd');
+    if (row.mono) dd.classList.add('mono');
+    dd.textContent = row.value;
+    list.appendChild(dt);
+    list.appendChild(dd);
+  }
+  bodyEl.appendChild(list);
+
+  overlay.classList.remove('hidden');
+
+  requestAnimationFrame(() => { btnConfirm.focus(); });
+
+  cleanup();
+
+  const handleClose = () => closeModal();
+  const handleKeydown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      e.preventDefault();
+      handleClose();
+    }
+  };
+
+  btnConfirm.addEventListener('click', handleClose);
+  document.addEventListener('keydown', handleKeydown);
+
+  (overlay as any)._cleanup = () => {
+    btnConfirm.removeEventListener('click', handleClose);
+    document.removeEventListener('keydown', handleKeydown);
+    btnCancel.style.display = '';
+  };
+}
+
 export function showConfirmModal(
   title: string,
   message: string,

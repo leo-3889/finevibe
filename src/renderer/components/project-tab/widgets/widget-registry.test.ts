@@ -24,11 +24,17 @@ vi.mock('./sessions-widget.js', () => ({
 vi.mock('./favorite-sessions-widget.js', () => ({
   createFavoriteSessionsWidget: () => ({ element: document.createElement('div'), destroy() {} }),
 }));
+vi.mock('./usage-stats-widget.js', () => ({
+  createUsageStatsWidget: () => ({ element: document.createElement('div'), destroy() {} }),
+}));
+vi.mock('./top-files-widget.js', () => ({
+  createTopFilesWidget: () => ({ element: document.createElement('div'), destroy() {} }),
+}));
 
 import { listWidgetTypes, getWidgetMeta } from './widget-registry';
 import type { OverviewWidgetType } from '../../../../shared/types';
 
-const ALL_TYPES: OverviewWidgetType[] = ['readiness', 'provider-tools', 'github-prs', 'github-issues', 'team', 'kanban', 'sessions', 'favorite-sessions'];
+const ALL_TYPES: OverviewWidgetType[] = ['readiness', 'provider-tools', 'github-prs', 'github-issues', 'team', 'kanban', 'sessions', 'favorite-sessions', 'usage-stats', 'top-files-by-tokens'];
 
 describe('widget registry', () => {
   it('exposes every documented widget type', () => {
@@ -69,5 +75,13 @@ describe('widget registry', () => {
 
   it('returns undefined for unknown types', () => {
     expect(getWidgetMeta('unknown' as OverviewWidgetType)).toBeUndefined();
+  });
+
+  it('top-files-by-tokens has settings and disallows duplicates', () => {
+    const meta = getWidgetMeta('top-files-by-tokens');
+    expect(meta).toBeDefined();
+    expect(meta!.hasSettings).toBe(true);
+    expect(meta!.allowMultiple).toBe(false);
+    expect(meta!.defaultConfig.limit).toBe(10);
   });
 });

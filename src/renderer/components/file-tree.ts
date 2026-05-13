@@ -1,8 +1,9 @@
 import { appState, ProjectRecord } from '../state.js';
 import { pathToFileURL } from '../file-url.js';
 import { showContextMenu, MenuOption } from './board/board-context-menu.js';
-import { showConfirmModal } from './modal.js';
+import { showConfirmModal, showPropertiesDialog } from './modal.js';
 import { FILE_PATH_DRAG_TYPE } from '../drag-types.js';
+import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../../shared/token-estimate.js';
 
 export interface DirEntry {
   name: string;
@@ -238,11 +239,73 @@ async function renderChildren(
               appState.addBrowserTabSession(projectId, pathToFileURL(entry.path));
             },
           },
+          {
+            label: 'Properties',
+            action: () => { showFileProperties(entry); },
+          },
           deleteMenuOption(entry),
         ]);
       });
     }
   }
+}
+
+async function showFileProperties(entry: DirEntry): Promise<void> {
+  const [statResult, readResult] = await Promise.all([
+    window.vibeyard.fs.stat(entry.path),
+    window.vibeyard.fs.readFile(entry.path),
+  ]);
+
+  const rows: Array<{ label: string; value: string; mono?: boolean }> = [];
+  rows.push({ label: 'Path', value: entry.path, mono: true });
+  rows.push({ label: 'Type', value: fileTypeLabel(entry.name) });
+  rows.push({ label: 'Size', value: statResult.ok ? formatBytes(statResult.size) : '—' });
+  rows.push({ label: 'Modified', value: statResult.ok ? formatMtime(statResult.mtimeMs) : '—' });
+
+  if (readResult.ok) {
+    const lines = readResult.content.length === 0 ? 0 : readResult.content.split('\n').length;
+    rows.push({ label: 'Lines', value: lines.toLocaleString() });
+    if (readResult.content.length > TOKEN_COUNT_MAX_CHARS) {
+      rows.push({ label: 'Tokens', value: 'too large to count' });
+    } else {
+      rows.push({ label: 'Tokens', value: `~ ${estimateTokens(readResult.content).toLocaleString()}` });
+    }
+  } else {
+    const why = readResult.reason === 'binary' ? 'binary file' : 'unreadable';
+    rows.push({ label: 'Lines', value: `— (${why})` });
+    rows.push({ label: 'Tokens', value: `— (${why})` });
+  }
+
+  showPropertiesDialog(entry.name, rows);
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let val = n / 1024;
+  let i = 0;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  return `${val.toFixed(1)} ${units[i]}`;
+}
+
+function formatMtime(ms: number): string {
+  const diffSec = Math.max(1, Math.floor((Date.now() - ms) / 1000));
+  let rel: string;
+  if (diffSec < 60) rel = `${diffSec}s ago`;
+  else if (diffSec < 3600) rel = `${Math.floor(diffSec / 60)}m ago`;
+  else if (diffSec < 86400) rel = `${Math.floor(diffSec / 3600)}h ago`;
+  else if (diffSec < 86400 * 30) rel = `${Math.floor(diffSec / 86400)}d ago`;
+  else rel = `${Math.floor(diffSec / (86400 * 30))}mo ago`;
+  return `${rel} · ${new Date(ms).toLocaleString()}`;
+}
+
+function fileTypeLabel(name: string): string {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) return '(no ext)';
+  return name.slice(dot + 1).toLowerCase();
 }
 
 function deleteMenuOption(entry: DirEntry): MenuOption {

@@ -478,6 +478,17 @@
   flex-shrink: 0;
 }
 
+.file-reader-token-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(96, 96, 112, 0.15);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .file-reader-body {
   flex: 1;
   overflow-y: auto;

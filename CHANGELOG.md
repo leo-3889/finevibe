@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.37] - 2026-05-13
+
+### Features
+
+- Top files by tokens overview widget
+- File properties dialog and token count in the file viewer
+
+### Fixes
+
+- Duplicate file tab when opening from the search bar
+
+### Changes
+
+- Remove-project dialog now mentions kanban tasks
+
 ## [0.2.36] - 2026-05-11
 
 ### Features
