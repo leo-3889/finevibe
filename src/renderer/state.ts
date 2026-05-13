@@ -2,7 +2,7 @@ import type { VibeyardApi } from './types.js';
 import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, ReadinessSnapshot, TeamMember, TeamData, OverviewLayout } from '../shared/types.js';
 import { getCost } from './session-cost.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
-import { basename } from '../shared/platform.js';
+import { basename, isAbsolutePath } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
 import { archiveSession as archiveSessionPure } from './state/session-archive.js';
 import {
@@ -537,7 +537,9 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    const existing = findExistingFileReader(project, filePath);
+    const normalizedPath = isAbsolutePath(filePath) ? filePath : `${project.path}/${filePath}`;
+
+    const existing = findExistingFileReader(project, normalizedPath);
     if (existing) {
       const lineChanged = existing.fileReaderLine !== lineNumber;
       const activating = project.activeSessionId !== existing.id;
@@ -555,7 +557,7 @@ class AppState {
       return existing;
     }
 
-    const session = buildFileReaderSession({ name: basename(filePath), filePath, lineNumber });
+    const session = buildFileReaderSession({ name: basename(normalizedPath), filePath: normalizedPath, lineNumber });
     attachSessionToProject(project, session);
     this.commitNewSession(projectId, session);
     return session;

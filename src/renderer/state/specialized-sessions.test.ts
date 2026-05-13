@@ -112,6 +112,22 @@ describe('addFileReaderSession()', () => {
     expect(appState.activeProject!.sessions).toHaveLength(1);
   });
 
+  it('deduplicates across absolute and project-relative path formats', () => {
+    const project = addProject('Test', '/p');
+    const s1 = appState.addFileReaderSession(project.id, '/p/src/foo.ts')!;
+    const s2 = appState.addFileReaderSession(project.id, 'src/foo.ts')!;
+    expect(s2.id).toBe(s1.id);
+    expect(s1.fileReaderPath).toBe('/p/src/foo.ts');
+    expect(project.sessions.filter((s) => s.type === 'file-reader')).toHaveLength(1);
+  });
+
+  it('stores relative paths normalized to absolute', () => {
+    const project = addProject('Test', '/p');
+    const session = appState.addFileReaderSession(project.id, 'src/foo.ts')!;
+    expect(session.fileReaderPath).toBe('/p/src/foo.ts');
+    expect(session.name).toBe('foo.ts');
+  });
+
   it('returns undefined for nonexistent project', () => {
     expect(appState.addFileReaderSession('nope', '/f')).toBeUndefined();
   });
