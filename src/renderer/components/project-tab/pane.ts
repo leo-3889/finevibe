@@ -4,6 +4,7 @@ import { createProjectTabGrid, type ProjectTabGrid } from './grid.js';
 import { showWidgetPicker } from './widgets/widget-picker-modal.js';
 import { showGithubSettings } from './widgets/github-settings-modal.js';
 import { showSessionsSettings } from './widgets/sessions-settings-modal.js';
+import { showTopFilesSettings } from './widgets/top-files-settings-modal.js';
 import type { OverviewLayout, OverviewWidget } from '../../../shared/types.js';
 
 function defaultLayout(): OverviewLayout {
@@ -87,6 +88,10 @@ export function createProjectTabPane(sessionId: string, projectId: string): void
       });
     } else if (widget.type === 'sessions') {
       showSessionsSettings(widget, (patch) => {
+        grid?.updateWidgetConfig(widget.id, patch);
+      });
+    } else if (widget.type === 'top-files-by-tokens') {
+      showTopFilesSettings(widget, (patch) => {
         grid?.updateWidgetConfig(widget.id, patch);
       });
     }

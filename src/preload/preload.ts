@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, DeepSearchResult, GithubFetchResult, GithubRepo } from '../shared/types';
 import { ZOOM_MIN, ZOOM_MAX } from '../shared/types';
 
 export type { CostData } from '../shared/types';
@@ -33,6 +33,7 @@ export interface VibeyardApi {
     listDir(dirPath: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
     browseDirectory(): Promise<string | null>;
     listFiles(cwd: string, query: string): Promise<string[]>;
+    topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
     exists(filePath: string): Promise<boolean>;
     readFile(filePath: string): Promise<ReadFileResult>;
     stat(filePath: string): Promise<FileStatResult>;
@@ -205,6 +206,7 @@ const api: VibeyardApi = {
     listDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
     browseDirectory: () => ipcRenderer.invoke('fs:browseDirectory'),
     listFiles: (cwd: string, query: string) => ipcRenderer.invoke('fs:listFiles', cwd, query),
+    topFilesByTokens: (cwd: string, limit: number) => ipcRenderer.invoke('fs:topFilesByTokens', cwd, limit),
     exists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
     readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
     stat: (filePath: string) => ipcRenderer.invoke('fs:stat', filePath),

@@ -252,7 +252,8 @@ export type OverviewWidgetType =
   | 'kanban'
   | 'sessions'
   | 'favorite-sessions'
-  | 'usage-stats';
+  | 'usage-stats'
+  | 'top-files-by-tokens';
 
 export interface OverviewWidget {
   id: string;
@@ -533,4 +534,14 @@ export type ReadFileResult =
 
 export type FileStatResult =
   | { ok: true; size: number; mtimeMs: number }
+  | { ok: false };
+
+export interface TopFile {
+  path: string;
+  tokens: number;
+  size: number;
+}
+
+export type TopFilesResult =
+  | { ok: true; files: TopFile[]; scanned: number; skipped: number }
   | { ok: false };

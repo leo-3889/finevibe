@@ -18,10 +18,11 @@ import { createAppMenu } from './menu';
 import { getProvider, getProviderMeta, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
-import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult } from '../shared/types';
+import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile } from '../shared/types';
+import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
-import { expandUserPath, isBinaryBuffer, BINARY_SNIFF_BYTES } from './fs-utils';
+import { expandUserPath, isBinaryBuffer, isLikelyBinaryFile, BINARY_SNIFF_BYTES } from './fs-utils';
 import { isMac, isWin } from './platform';
 import { shouldWarnStatusLine } from './settings-guard';
 import { setCloseConfirmed } from './close-state';
@@ -64,6 +65,44 @@ function isAllowedReadPath(resolvedPath: string): boolean {
   }
 
   return allowedPaths.some(allowed => resolvedPath === allowed || resolvedPath.startsWith(allowed));
+}
+
+/**
+ * Enumerate files in a project root. Prefers `git ls-files` (respects .gitignore);
+ * falls back to a depth- and count-limited recursive walk when not a git repo.
+ * Returns repo-relative paths.
+ */
+function enumerateProjectFiles(resolvedCwd: string): string[] {
+  try {
+    const output = execSync('git ls-files --cached --others --exclude-standard', {
+      cwd: resolvedCwd,
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    return output.split('\n').filter(Boolean);
+  } catch {
+    const files: string[] = [];
+    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '__pycache__']);
+    const MAX_DEPTH = 5;
+    const MAX_FILES = 5000;
+    function walk(dir: string, depth: number): void {
+      if (depth > MAX_DEPTH || files.length >= MAX_FILES) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (files.length >= MAX_FILES) return;
+        if (IGNORE.has(entry.name) || entry.name.startsWith('.')) continue;
+        const rel = path.relative(resolvedCwd, path.join(dir, entry.name));
+        if (entry.isDirectory()) {
+          walk(path.join(dir, entry.name), depth + 1);
+        } else {
+          files.push(rel);
+        }
+      }
+    }
+    walk(resolvedCwd, 0);
+    return files;
+  }
 }
 
 let hookWatcherStarted = false;
@@ -445,33 +484,7 @@ export function registerIpcHandlers(): void {
       if (!isWithinKnownProject(resolvedCwd)) {
         return [];
       }
-      let files: string[];
-      try {
-        const output = execSync('git ls-files --cached --others --exclude-standard', { cwd: resolvedCwd, encoding: 'utf-8', timeout: 5000 });
-        files = output.split('\n').filter(Boolean);
-      } catch {
-        // Not a git repo — fallback to recursive readdir with depth limit
-        files = [];
-        const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '__pycache__']);
-        const MAX_DEPTH = 5;
-        const MAX_FILES = 5000;
-        function walk(dir: string, depth: number): void {
-          if (depth > MAX_DEPTH || files.length >= MAX_FILES) return;
-          let entries: fs.Dirent[];
-          try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-          for (const entry of entries) {
-            if (files.length >= MAX_FILES) return;
-            if (IGNORE.has(entry.name) || entry.name.startsWith('.')) continue;
-            const rel = path.relative(resolvedCwd, path.join(dir, entry.name));
-            if (entry.isDirectory()) {
-              walk(path.join(dir, entry.name), depth + 1);
-            } else {
-              files.push(rel);
-            }
-          }
-        }
-        walk(resolvedCwd, 0);
-      }
+      let files = enumerateProjectFiles(resolvedCwd);
 
       if (query) {
         const lower = query.toLowerCase();
@@ -492,6 +505,64 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.warn('fs:listFiles failed:', err);
       return [];
+    }
+  });
+
+  ipcMain.handle('fs:topFilesByTokens', async (_event, cwd: string, limit: number): Promise<TopFilesResult> => {
+    try {
+      const resolvedCwd = path.resolve(cwd);
+      if (!isWithinKnownProject(resolvedCwd)) {
+        return { ok: false };
+      }
+      const clampedLimit = Math.max(1, Math.min(100, Math.floor(limit) || 10));
+      const relFiles = enumerateProjectFiles(resolvedCwd);
+
+      const results: TopFile[] = [];
+      let scanned = 0;
+      let skipped = 0;
+
+      // Pooled async scan: one fd per file, fstat → sniff → read remainder using the same fd.
+      // Keeps the main loop responsive for PTY traffic during multi-second scans on large repos.
+      const CONCURRENCY = 16;
+      let cursor = 0;
+
+      async function processOne(rel: string): Promise<void> {
+        const abs = path.join(resolvedCwd, rel);
+        let handle: fs.promises.FileHandle;
+        try { handle = await fs.promises.open(abs, 'r'); } catch { skipped++; return; }
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > TOKEN_COUNT_MAX_CHARS) { skipped++; return; }
+
+          const buf = Buffer.alloc(stat.size);
+          if (stat.size > 0) {
+            await handle.read(buf, 0, stat.size, 0);
+          }
+          if (isBinaryBuffer(buf.subarray(0, Math.min(stat.size, BINARY_SNIFF_BYTES)))) {
+            skipped++;
+            return;
+          }
+          const tokens = estimateTokens(buf.toString('utf-8'));
+          results.push({ path: rel, tokens, size: stat.size });
+          scanned++;
+        } finally {
+          await handle.close().catch(() => {});
+        }
+      }
+
+      const workers = Array.from({ length: Math.min(CONCURRENCY, relFiles.length) }, async () => {
+        while (cursor < relFiles.length) {
+          const rel = relFiles[cursor++];
+          try { await processOne(rel); } catch { skipped++; }
+        }
+      });
+      await Promise.all(workers);
+
+      results.sort((a, b) => b.tokens - a.tokens);
+      return { ok: true, files: results.slice(0, clampedLimit), scanned, skipped };
+    } catch (err) {
+      console.warn('fs:topFilesByTokens failed:', err);
+      return { ok: false };
     }
   });
 
@@ -528,15 +599,8 @@ export function registerIpcHandlers(): void {
       }
       // Sniff the head before slurping the whole file so a multi-MB binary
       // (e.g. build artifacts in build/) doesn't get allocated just to be discarded.
-      const fd = fs.openSync(resolved, 'r');
-      try {
-        const head = Buffer.alloc(BINARY_SNIFF_BYTES);
-        const bytesRead = fs.readSync(fd, head, 0, BINARY_SNIFF_BYTES, 0);
-        if (isBinaryBuffer(head.subarray(0, bytesRead))) {
-          return { ok: false, reason: 'binary' };
-        }
-      } finally {
-        fs.closeSync(fd);
+      if (isLikelyBinaryFile(resolved)) {
+        return { ok: false, reason: 'binary' };
       }
       return { ok: true, content: fs.readFileSync(resolved, 'utf-8') };
     } catch (err) {

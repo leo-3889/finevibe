@@ -8,7 +8,9 @@ import { createKanbanWidget } from './kanban-widget.js';
 import { createSessionsWidget } from './sessions-widget.js';
 import { createFavoriteSessionsWidget } from './favorite-sessions-widget.js';
 import { createUsageStatsWidget } from './usage-stats-widget.js';
+import { createTopFilesWidget } from './top-files-widget.js';
 import { DEFAULT_SESSIONS_CONFIG } from './sessions-types.js';
+import { DEFAULT_TOP_FILES_CONFIG } from './top-files-types.js';
 
 export interface WidgetMeta {
   type: OverviewWidgetType;
@@ -113,6 +115,16 @@ const REGISTRY: Record<OverviewWidgetType, WidgetMeta> = {
     factory: createUsageStatsWidget,
     allowMultiple: false,
     hasSettings: false,
+  },
+  'top-files-by-tokens': {
+    type: 'top-files-by-tokens',
+    displayName: 'Top Files by Tokens',
+    description: 'Largest project files by estimated token count. Click a row to open.',
+    defaultSize: { w: 4, h: 8 },
+    defaultConfig: { ...DEFAULT_TOP_FILES_CONFIG },
+    factory: createTopFilesWidget,
+    allowMultiple: false,
+    hasSettings: true,
   },
 };
 
