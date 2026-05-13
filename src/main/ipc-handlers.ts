@@ -18,7 +18,7 @@ import { createAppMenu } from './menu';
 import { getProvider, getProviderMeta, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
-import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult } from '../shared/types';
+import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult } from '../shared/types';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { expandUserPath, isBinaryBuffer, BINARY_SNIFF_BYTES } from './fs-utils';
@@ -502,6 +502,19 @@ export function registerIpcHandlers(): void {
       return fs.existsSync(resolved);
     } catch {
       return false;
+    }
+  });
+
+  ipcMain.handle('fs:stat', (_event, filePath: string): FileStatResult => {
+    try {
+      const resolved = path.resolve(filePath);
+      if (!isAllowedReadPath(resolved)) {
+        return { ok: false };
+      }
+      const s = fs.statSync(resolved);
+      return { ok: true, size: s.size, mtimeMs: s.mtimeMs };
+    } catch {
+      return { ok: false };
     }
   });
 

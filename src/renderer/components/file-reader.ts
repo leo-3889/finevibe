@@ -5,6 +5,7 @@ import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
 import { escapeHtml } from './dom-search-backend.js';
 import { isAbsolutePath } from '../../shared/platform.js';
+import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../../shared/token-estimate.js';
 
 interface FileReaderInstance {
   element: HTMLElement;
@@ -111,6 +112,7 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
   if (!project) return;
 
   instance.unsupported = false;
+  hideTokenBadge(instance);
   const body = instance.element.querySelector('.file-reader-body')!;
   showFileReaderMessage(body, 'Loading...');
 
@@ -139,6 +141,7 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
       return;
     }
     instance.rawContent = result.content;
+    updateTokenBadge(instance, result.content);
     renderBody(instance);
     instance.loaded = true;
     if (instance.targetLine && instance.viewMode === 'raw') {
@@ -148,6 +151,28 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
     showFileReaderMessage(body, 'Failed to load file');
     instance.unsupported = true;
   }
+}
+
+function getTokenBadge(instance: FileReaderInstance): HTMLElement | null {
+  return instance.element.querySelector('.file-reader-token-badge');
+}
+
+function updateTokenBadge(instance: FileReaderInstance, content: string): void {
+  const badge = getTokenBadge(instance);
+  if (!badge) return;
+  if (content.length > TOKEN_COUNT_MAX_CHARS) {
+    badge.textContent = 'too large to count';
+  } else {
+    const count = estimateTokens(content);
+    badge.textContent = `~ ${count.toLocaleString()} tokens`;
+  }
+  badge.style.display = '';
+}
+
+function hideTokenBadge(instance: FileReaderInstance): void {
+  const badge = getTokenBadge(instance);
+  if (!badge) return;
+  badge.style.display = 'none';
 }
 
 function ensureFileChangedListener(): void {
@@ -189,8 +214,14 @@ export function createFileReaderPane(sessionId: string, filePath: string, target
   badge.className = 'file-reader-badge';
   badge.textContent = 'READ-ONLY';
 
+  const tokenBadge = document.createElement('span');
+  tokenBadge.className = 'file-reader-token-badge';
+  tokenBadge.style.display = 'none';
+  tokenBadge.title = 'Rough token estimate (provider-agnostic)';
+
   header.appendChild(pathSpan);
   header.appendChild(badge);
+  header.appendChild(tokenBadge);
 
   const isMd = isMarkdownFile(filePath);
   const isImage = isImageFile(filePath);

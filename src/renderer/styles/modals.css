@@ -589,3 +589,31 @@
   font-size: 11px;
   color: var(--text-muted);
 }
+
+.modal-properties {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.modal-properties dt {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  align-self: center;
+}
+
+.modal-properties dd {
+  margin: 0;
+  color: var(--text-primary);
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal-properties dd.mono {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+}

@@ -530,3 +530,7 @@ export interface StatsCache {
 export type ReadFileResult =
   | { ok: true; content: string }
   | { ok: false; reason: 'binary' | 'error' };
+
+export type FileStatResult =
+  | { ok: true; size: number; mtimeMs: number }
+  | { ok: false };
