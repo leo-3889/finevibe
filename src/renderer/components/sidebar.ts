@@ -503,8 +503,20 @@ function renderCostFooter(): void {
 
 function confirmRemoveProject(project: ProjectRecord): void {
   const historyCount = project.sessionHistory?.length ?? 0;
-  const message = historyCount > 0
-    ? `Remove project "${project.name}"? This will delete all sessions and history (${historyCount} entries) from Vibeyard. No files on disk will be affected.`
+  const taskCount = project.board?.tasks?.length ?? 0;
+
+  const parts: string[] = [];
+  if (historyCount > 0) {
+    parts.push(
+      `all sessions and history (${historyCount} ${historyCount === 1 ? 'entry' : 'entries'})`,
+    );
+  }
+  if (taskCount > 0) {
+    parts.push(`kanban tasks (${taskCount} ${taskCount === 1 ? 'task' : 'tasks'})`);
+  }
+
+  const message = parts.length > 0
+    ? `Remove project "${project.name}"? This will delete ${parts.join(' and ')} from Vibeyard. No files on disk will be affected.`
     : `Remove project "${project.name}"? No files on disk will be affected.`;
   showConfirmDialog('Remove project', message, {
     confirmLabel: 'Remove',
