@@ -4,7 +4,19 @@ import { execFile } from 'child_process';
 import type { BrowserWindow } from 'electron';
 
 const DEBOUNCE_MS = 300;
-const IGNORE_SEGMENTS = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.cache', 'coverage', '__pycache__']);
+const MAX_WATCHES = 2000;
+
+const IGNORE_SEGMENTS = new Set([
+  '.git', 'node_modules', 'dist', 'build', '.next', '.cache', 'coverage', '__pycache__',
+  '.venv', 'venv', 'env',
+  '.tox', '.mypy_cache', '.ruff_cache', '.pytest_cache',
+  'target', 'vendor', 'out',
+  '.turbo', '.parcel-cache', '.svelte-kit', '.nuxt', '.output',
+  '.idea', '.vscode',
+  'tmp', '.tmp',
+]);
+
+const GIT_DIR_FILES = new Set(['index', 'HEAD', 'ORIG_HEAD', 'MERGE_HEAD', 'packed-refs', 'FETCH_HEAD']);
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let dirWatchers: fs.FSWatcher[] = [];
@@ -20,22 +32,53 @@ function notify(): void {
   }, DEBOUNCE_MS);
 }
 
-function shouldIgnore(filename: string | null): boolean {
-  if (!filename) return false;
-  const first = filename.split(path.sep)[0];
-  return IGNORE_SEGMENTS.has(first);
+function isIgnored(name: string): boolean {
+  return IGNORE_SEGMENTS.has(name);
 }
 
-function watchDir(dirPath: string, shouldSkip?: (filename: string | null) => boolean): void {
+function watchOne(dirPath: string, onEvent: (filename: string | null) => void): void {
+  if (dirWatchers.length >= MAX_WATCHES) return;
   try {
-    const watcher = fs.watch(dirPath, { recursive: true }, (_event, filename) => {
-      if (shouldSkip && shouldSkip(filename)) return;
-      notify();
+    const watcher = fs.watch(dirPath, (_event, filename) => {
+      onEvent(filename);
     });
     watcher.on('error', () => {}); // ignore errors (dir deleted, etc.)
     dirWatchers.push(watcher);
   } catch {
-    // Directory doesn't exist — that's fine
+    // Directory doesn't exist or unreadable — that's fine
+  }
+}
+
+function walkAndWatch(root: string): void {
+  // BFS so we watch shallower dirs first; if we hit the cap, deep dirs are skipped
+  // rather than dropping the more useful top-level signals.
+  const queue: string[] = [root];
+  let capWarned = false;
+  while (queue.length > 0) {
+    if (dirWatchers.length >= MAX_WATCHES) {
+      if (!capWarned) {
+        console.warn(
+          `[git-watcher] reached MAX_WATCHES=${MAX_WATCHES} for ${root}; remaining subdirs will not be watched (60s poll will cover them)`
+        );
+        capWarned = true;
+      }
+      break;
+    }
+    const dir = queue.shift()!;
+    watchOne(dir, () => notify());
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue; // EACCES, ENOENT — skip
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.isSymbolicLink && entry.isSymbolicLink()) continue;
+      if (isIgnored(entry.name)) continue;
+      queue.push(path.join(dir, entry.name));
+    }
   }
 }
 
@@ -62,23 +105,30 @@ function stopAll(): void {
   dirWatchers = [];
 }
 
-const GIT_DIR_FILES = new Set(['index', 'HEAD']);
-
 async function setupWatchers(projectPath: string): Promise<void> {
   const gitDir = await resolveGitDir(projectPath);
 
-  // Watch git dir for index changes (stage/unstage) and HEAD (branch switch, commit)
-  watchDir(gitDir, (filename) => !filename || !GIT_DIR_FILES.has(filename));
+  // Working tree: walk-time-filtered, non-recursive, capped.
+  walkAndWatch(projectPath);
 
-  // Watch refs for commits, branch creation/deletion, remote updates
-  watchDir(path.join(gitDir, 'refs'));
+  // Git internals: non-recursive watch on .git/ itself, only react to a small allow-list
+  // of files (index/HEAD/ORIG_HEAD/MERGE_HEAD/packed-refs/FETCH_HEAD). This catches
+  // stage/unstage, commit, branch switch, merge/rebase, fetch — without recursing into
+  // .git/objects/ which is huge and produces no useful UI signal.
+  watchOne(gitDir, (filename) => {
+    if (filename && GIT_DIR_FILES.has(filename)) notify();
+  });
 
-  // Watch working tree for file edits, filtering out ignored directories
-  watchDir(projectPath, shouldIgnore);
+  // Refs: non-recursive watch on each top-level refs subdirectory. Triggers on any
+  // ref change within. We accept that ref churn inside a single remote is debounced
+  // at the parent — that's fine for UI status.
+  for (const sub of ['heads', 'tags', 'remotes']) {
+    const refsSubdir = path.join(gitDir, 'refs', sub);
+    watchOne(refsSubdir, () => notify());
+  }
 
-  // Watch HEAD file directly for reliable branch-switch detection.
-  // The recursive .git/ watcher may miss HEAD changes when macOS FSEvents
-  // reports null filenames, which the shouldSkip filter discards.
+  // HEAD file directly: belt-and-suspenders for branch-switch detection on macOS
+  // where FSEvents can report null filenames that the .git/ allow-list discards.
   const headPath = path.join(gitDir, 'HEAD');
   try {
     const watcher = fs.watch(headPath, () => notify());
