@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, DeepSearchResult, GithubFetchResult, GithubRepo } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult } from '../shared/types';
 import { ZOOM_MIN, ZOOM_MAX } from '../shared/types';
 
 export type { CostData } from '../shared/types';
@@ -97,6 +97,13 @@ export interface VibeyardApi {
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
+  };
+  chromeImport: {
+    listProfiles(): Promise<ChromeProfile[]>;
+    run(options: ChromeImportOptions): Promise<ChromeImportResult>;
+    onProgress(callback: (progress: ChromeImportProgress) => void): () => void;
+    summary(): Promise<{ cookieCount: number; lastImportedAt: number }>;
+    clearCookies(): Promise<void>;
   };
   mcp: {
     connect(id: string, url: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
@@ -270,6 +277,14 @@ const api: VibeyardApi = {
   browser: {
     saveScreenshot: (sessionId: string, dataUrl: string) =>
       ipcRenderer.invoke('browser:saveScreenshot', sessionId, dataUrl),
+  },
+  chromeImport: {
+    listProfiles: () => ipcRenderer.invoke('chromeImport:listProfiles'),
+    run: (options: ChromeImportOptions) => ipcRenderer.invoke('chromeImport:run', options),
+    onProgress: (callback) =>
+      onChannel('chromeImport:progress', (progress) => callback(progress as ChromeImportProgress)),
+    summary: () => ipcRenderer.invoke('chromeImport:summary'),
+    clearCookies: () => ipcRenderer.invoke('chromeImport:clearCookies'),
   },
   mcp: {
     connect: (id: string, url: string) => ipcRenderer.invoke('mcp:connect', id, url),

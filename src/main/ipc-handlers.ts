@@ -24,6 +24,8 @@ import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { expandUserPath, isBinaryBuffer, isLikelyBinaryFile, BINARY_SNIFF_BYTES } from './fs-utils';
 import { isMac, isWin } from './platform';
+import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
+import type { ChromeImportOptions, ChromeImportProgress } from '../shared/types';
 import { shouldWarnStatusLine } from './settings-guard';
 import { setCloseConfirmed } from './close-state';
 
@@ -420,6 +422,56 @@ export function registerIpcHandlers(): void {
     await fs.promises.writeFile(filePath, buffer);
     return filePath;
   });
+  ipcMain.handle('chromeImport:listProfiles', () => listChromeProfiles());
+
+  ipcMain.handle('chromeImport:run', async (event, options: ChromeImportOptions) => {
+    const send = (p: ChromeImportProgress) => {
+      try {
+        event.sender.send('chromeImport:progress', p);
+      } catch {
+        // sender may have gone away
+      }
+    };
+    const result = await runChromeImport(options, send);
+    if (result.ok || result.cookieCount > 0) {
+      try {
+        const state = loadState();
+        state.preferences.chromeImport = {
+          lastImportedAt: Date.now(),
+          profileId: options.profileId,
+          cookieCount: result.cookieCount,
+          skippedV11: result.skippedV11,
+        };
+        saveState(state);
+      } catch (err) {
+        console.warn('Failed to persist chromeImport summary', err);
+      }
+    }
+    return result;
+  });
+
+  ipcMain.handle('chromeImport:summary', async () => {
+    const cookieCount = await getCookieCount();
+    const state = loadState();
+    return {
+      cookieCount,
+      lastImportedAt: state.preferences.chromeImport?.lastImportedAt ?? 0,
+    };
+  });
+
+  ipcMain.handle('chromeImport:clearCookies', async () => {
+    await clearImportedCookies();
+    try {
+      const state = loadState();
+      if (state.preferences.chromeImport) {
+        delete state.preferences.chromeImport;
+        saveState(state);
+      }
+    } catch (err) {
+      console.warn('Failed to clear chromeImport summary', err);
+    }
+  });
+
   ipcMain.handle('app:openExternal', (_event, url: string) => {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {

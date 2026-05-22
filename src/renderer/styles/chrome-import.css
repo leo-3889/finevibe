@@ -1,0 +1,162 @@
+/* Chrome import wizard */
+.chrome-import-intro,
+.preferences-intro {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.chrome-import-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.chrome-import-profile-slot {
+  margin-bottom: 16px;
+}
+
+.chrome-import-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.chrome-import-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.chrome-import-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.chrome-import-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding: 10px 12px;
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
+  border-radius: 6px;
+  border-left: 3px solid var(--accent);
+}
+
+.chrome-import-progress {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chrome-import-status {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.chrome-import-bar {
+  display: grid;
+  grid-template-columns: 110px 70px 1fr;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.chrome-import-bar-label {
+  color: var(--text-secondary);
+}
+
+.chrome-import-bar-counts {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.chrome-import-bar-track {
+  height: 6px;
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.06));
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.chrome-import-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.15s ease;
+}
+
+.chrome-import-summary {
+  padding: 10px 12px;
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.chrome-import-tip {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+/* Preferences Browser section */
+.preferences-browser-summary {
+  font-size: 13px;
+  color: var(--text-primary);
+  padding: 10px 12px;
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.preferences-browser-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.preferences-footnote {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-top: 12px;
+}
+
+.modal-btn.danger {
+  color: #ff6b6b;
+}
+
+.modal-btn.danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.1);
+}
+
+/* Browser tab toolbar additions */
+.browser-isolation-btn,
+.browser-import-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.browser-isolation-btn:hover,
+.browser-import-btn:hover {
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.06));
+  color: var(--text-primary);
+}

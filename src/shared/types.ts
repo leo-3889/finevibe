@@ -105,6 +105,8 @@ export interface SessionRecord {
   remoteHostName?: string;
   shareMode?: 'readonly' | 'readwrite';
   browserTabUrl?: string;
+  /** When true, the browser-tab webview uses an isolated partition that doesn't see imported cookies/passwords. */
+  browserIsolated?: boolean;
   /** Persisted: identifies which TeamMember spawned this session, if any. */
   teamMemberId?: string;
   /** Transient: initial prompt to inject on first spawn. Not persisted. */
@@ -328,7 +330,44 @@ export interface Preferences {
     fileTree: boolean;
   };
   boardCardMetrics?: boolean;
+  chromeImport?: ChromeImportSummary;
 }
+
+// --- Chrome Import ---
+
+export interface ChromeProfile {
+  id: string;
+  displayName: string;
+}
+
+export interface ChromeImportSummary {
+  lastImportedAt: number;
+  profileId: string;
+  cookieCount: number;
+  skippedV11: number;
+}
+
+export interface ChromeImportProgress {
+  stage: 'starting' | 'copy' | 'cookies' | 'done' | 'error';
+  done?: number;
+  total?: number;
+  skippedV11?: number;
+  errors?: number;
+  message?: string;
+}
+
+export interface ChromeImportOptions {
+  profileId: string;
+}
+
+export interface ChromeImportResult {
+  ok: boolean;
+  cookieCount: number;
+  skippedV11: number;
+  errors: string[];
+}
+
+export const BROWSER_DEFAULT_PARTITION = 'persist:vibeyard-browser';
 
 // --- Settings Validation ---
 
