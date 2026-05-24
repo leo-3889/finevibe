@@ -777,6 +777,14 @@ class AppState {
     this.persist();
   }
 
+  setSessionBrowserIsolated(sessionId: string, isolated: boolean): void {
+    const session = this.findSessionById(sessionId);
+    if (!session) return;
+    if (!!session.browserIsolated === isolated) return;
+    session.browserIsolated = isolated || undefined;
+    this.persist();
+  }
+
   renameSession(projectId: string, sessionId: string, name: string, userRenamed?: boolean): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;

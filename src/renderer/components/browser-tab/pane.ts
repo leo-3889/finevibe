@@ -1,5 +1,7 @@
 import { appState } from '../../state.js';
 import { shortcutManager, displayKeys } from '../../shortcuts.js';
+import { BROWSER_DEFAULT_PARTITION } from '../../../shared/types.js';
+import { showChromeImportModal } from '../chrome-import-modal.js';
 import {
   VIEWPORT_PRESETS,
   type BrowserTabInstance,
@@ -147,6 +149,21 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   drawBtn.textContent = 'Draw';
   drawBtn.title = 'Draw on page and send annotated screenshot to AI';
 
+  const session = appState.findSessionById(sessionId);
+  const isIsolated = !!session?.browserIsolated;
+
+  const isolationBtn = document.createElement('button');
+  isolationBtn.className = 'browser-isolation-btn';
+  isolationBtn.textContent = isIsolated ? 'Isolated' : 'Shared';
+  isolationBtn.title = isIsolated
+    ? 'This tab has its own cookie jar — imported cookies and logins are not visible. Click to switch to shared.'
+    : 'This tab uses the shared cookie jar with imported Chrome data. Click to isolate this tab.';
+
+  const importBtn = document.createElement('button');
+  importBtn.className = 'browser-import-btn';
+  importBtn.textContent = 'Import…';
+  importBtn.title = 'Import cookies and passwords from Chrome';
+
   toolbar.appendChild(backBtn);
   toolbar.appendChild(fwdBtn);
   toolbar.appendChild(reloadBtn);
@@ -156,6 +173,8 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   toolbar.appendChild(inspectBtn);
   toolbar.appendChild(recordBtn);
   toolbar.appendChild(drawBtn);
+  toolbar.appendChild(isolationBtn);
+  toolbar.appendChild(importBtn);
   el.appendChild(toolbar);
 
   const viewportContainer = document.createElement('div');
@@ -196,6 +215,10 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   webview.className = 'browser-webview';
   webview.setAttribute('allowpopups', '');
   webview.setAttribute('webpreferences', 'backgroundThrottling=false');
+  const partition = isIsolated
+    ? `persist:vibeyard-browser-iso-${sessionId}`
+    : BROWSER_DEFAULT_PARTITION;
+  webview.setAttribute('partition', partition);
   viewportContainer.appendChild(webview);
   el.appendChild(viewportContainer);
 
@@ -529,6 +552,18 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   inspectBtn.addEventListener('click', () => toggleInspectMode(instance));
   recordBtn.addEventListener('click', () => toggleFlowMode(instance));
   drawBtn.addEventListener('click', () => toggleDrawMode(instance));
+  isolationBtn.addEventListener('click', () => {
+    const newIsolated = !appState.findSessionById(sessionId)?.browserIsolated;
+    appState.setSessionBrowserIsolated(sessionId, newIsolated);
+    const currentUrl = urlInput.value;
+    const parent = el.parentElement;
+    const wasSplit = el.classList.contains('split');
+    destroyBrowserTabPane(sessionId);
+    createBrowserTabPane(sessionId, currentUrl || undefined);
+    if (parent) attachBrowserTabToContainer(sessionId, parent);
+    showBrowserTabPane(sessionId, wasSplit);
+  });
+  importBtn.addEventListener('click', () => { showChromeImportModal(); });
   drawClearBtn.addEventListener('click', () => clearDrawing(instance));
   drawSubmitBtn.addEventListener('click', () => { void sendDrawToNewSession(instance); });
   drawCustomBtn.addEventListener('click', () => {

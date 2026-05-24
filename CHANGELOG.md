@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.38] - 2026-05-24
+
+### Features
+
+- Chrome cookies import for embedded browser
+
+### Fixes
+
+- Inotify watch leak from recursive git-watcher
+
 ## [0.2.37] - 2026-05-13
 
 ### Features
