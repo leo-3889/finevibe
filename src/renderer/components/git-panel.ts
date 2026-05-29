@@ -10,6 +10,8 @@ const MAX_FILES = 100;
 let collapsed = false;
 let lastCountKey = '';
 let lastFilesKey = '';
+// git path whose changes are currently rendered — drives the cold-load loader
+let displayedGitPath: string | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let activeContextMenu: HTMLElement | null = null;
 
@@ -292,9 +294,12 @@ async function refresh(): Promise<void> {
 }
 
 async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
-  // Show loading only on first load (when body is empty)
-  if (!body.hasChildNodes()) {
-    body.innerHTML = '<div class="config-loading">Loading...</div>';
+  // Show a loader on cold load only — first ever, or when switching to a
+  // different project/worktree (stale rows from the previous path are still
+  // showing). Background refreshes of the same path stay silent.
+  if (!body.hasChildNodes() || gitPath !== displayedGitPath) {
+    body.innerHTML = '<div class="config-loading git-loading"><span class="git-loading-spinner"></span>Loading changes…</div>';
+    lastFilesKey = '';
   }
 
   let files: GitFileEntry[];
@@ -303,6 +308,7 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
   } catch {
     body.innerHTML = '';
     lastFilesKey = '';
+    displayedGitPath = null;
     return;
   }
 
@@ -310,6 +316,7 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
   const filesKey = JSON.stringify(files);
   if (filesKey === lastFilesKey) return;
   lastFilesKey = filesKey;
+  displayedGitPath = gitPath;
 
   const fragment = document.createDocumentFragment();
 
@@ -456,4 +463,13 @@ export function initGitPanel(): void {
 
   appState.on('session-changed', () => { scheduleRefresh(); });
   appState.on('preferences-changed', () => applyGitPanelVisibility());
+}
+
+// --- Test-only exports ---
+export const _test = { loadFiles };
+export function _resetForTesting(): void {
+  collapsed = false;
+  lastCountKey = '';
+  lastFilesKey = '';
+  displayedGitPath = null;
 }
