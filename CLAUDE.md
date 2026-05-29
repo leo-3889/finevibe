@@ -107,6 +107,12 @@ This applies to any assertion on arguments to `fs.*`, `child_process` calls,
 or anything else that flows a joined path through. CI runs on all three
 platforms, so a forward-slash literal will eventually fail on Windows.
 
+### File Watching
+
+Live filesystem updates for the file tree, file reader, and diff viewer are backed by a single **chokidar** watcher in `src/main/file-watcher.ts` (chokidar is ESM-only but `require`-able under Electron's Node ≥22.12). It watches **directories non-recursively** (`depth: 0`), ref-counted per dir via `watchDir(dir)` / `unwatchDir(dir)` (IPC `fs:watchDir` / `fs:unwatchDir`). Watching the parent dir — not the file inode — is deliberate: it survives atomic save/replace (write-temp + rename), which silently kills an inode watch. Changes are coalesced and debounced (150ms) into a single batched `fs:changed` IPC carrying `FsChange[]` (`{ path, dir, type }`, type ∈ add/addDir/change/unlink/unlinkDir; see `src/shared/types.ts`). The renderer subscribes via `window.vibeyard.fs.onFsChange`. `stopAllFileWatchers()` is wired into `main.ts` teardown (window `closed` + `before-quit`).
+
+Scope is **lazy**: only expanded tree folders and the parent dirs of open reader/viewer files are watched (cheap on huge repos). The file tree (`file-tree.ts`) reacts by **incremental reconciliation** (`reconcileChildren`), not full rebuilds: rows are keyed by `data-entry-path`, vanished entries are removed (unwatching their subtree via `unwatchSubtree`), new entries are inserted at the sorted position, and unchanged rows — with their expanded subtrees, scroll, and selection — are left untouched. Change bursts are flushed once per `requestAnimationFrame`. Cross-platform path helpers (`dirname`, `isPathUnder`) live in `src/shared/platform.ts`. Note: this is separate from `git-watcher.ts` (whole-tree, capped, emits `git:changed` for git-status UI).
+
 ### State Persistence
 
 App state (projects, sessions, layout) persists to `~/.vibeyard/state.json` via the main process store. Saves are debounced and flushed on quit. Sessions track `cliSessionId` for CLI session resume capability.

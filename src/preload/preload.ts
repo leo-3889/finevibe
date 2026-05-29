@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult } from '../shared/types';
 import { ZOOM_MIN, ZOOM_MAX } from '../shared/types';
 
 export type { CostData } from '../shared/types';
@@ -39,9 +39,9 @@ export interface VibeyardApi {
     stat(filePath: string): Promise<FileStatResult>;
     readImage(filePath: string): Promise<{ dataUrl: string } | null>;
     trashItem(filePath: string): Promise<{ ok: boolean; error?: string }>;
-    watchFile(filePath: string): void;
-    unwatchFile(filePath: string): void;
-    onFileChanged(callback: (filePath: string) => void): () => void;
+    watchDir(dirPath: string): void;
+    unwatchDir(dirPath: string): void;
+    onFsChange(callback: (changes: FsChange[]) => void): () => void;
     getDroppedFilePath(file: File): string;
   };
   store: {
@@ -219,9 +219,9 @@ const api: VibeyardApi = {
     stat: (filePath: string) => ipcRenderer.invoke('fs:stat', filePath),
     readImage: (filePath: string) => ipcRenderer.invoke('fs:readImage', filePath),
     trashItem: (filePath: string) => ipcRenderer.invoke('fs:trashItem', filePath),
-    watchFile: (filePath: string) => ipcRenderer.send('fs:watchFile', filePath),
-    unwatchFile: (filePath: string) => ipcRenderer.send('fs:unwatchFile', filePath),
-    onFileChanged: (callback: (filePath: string) => void) => onChannel('fs:fileChanged', (filePath) => callback(filePath as string)),
+    watchDir: (dirPath: string) => ipcRenderer.send('fs:watchDir', dirPath),
+    unwatchDir: (dirPath: string) => ipcRenderer.send('fs:unwatchDir', dirPath),
+    onFsChange: (callback: (changes: FsChange[]) => void) => onChannel('fs:changed', (changes) => callback(changes as FsChange[])),
     getDroppedFilePath: (file: File) => webUtils.getPathForFile(file),
   },
   provider: {
