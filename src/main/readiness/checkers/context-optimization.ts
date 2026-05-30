@@ -5,6 +5,7 @@ import type { ReadinessCheckProducer, TaggedCheck, AnalysisContext } from '../ty
 import { fileExists, countFileLines } from '../utils';
 import { DEFAULT_SCAN_IGNORE } from '../../../shared/constants';
 import { buildVibeyardignoreMatcher } from '../../vibeyardignore';
+import { buildSplitFilesPrompt } from '../../../shared/split-file-prompt';
 
 const VIBEYARDIGNORE_HEADER = `# Files and patterns to exclude from AI readiness large-file scanning.
 # One pattern per line. Supports glob syntax (e.g. *.min.js, src/**/*.generated.ts).
@@ -78,7 +79,7 @@ function checkLargeFiles(projectPath: string, trackedFiles: string[]): Readiness
       id: 'large-files', name: 'No extremely large files', status: 'warning',
       description: `${count} file(s) over ${LINE_THRESHOLD} lines: ${largeFiles.slice(0, 3).join(', ')}. Edit .vibeyardignore to exclude files from scanning.`,
       score: 50, maxScore: 100,
-      fixPrompt: `These files are very large and may consume excessive AI context: ${largeFiles.join(', ')}. Split them into smaller, focused modules.`,
+      fixPrompt: buildSplitFilesPrompt(largeFiles),
       effort: 'medium', impact: 65, rationale: largeFilesRationale,
     };
   }

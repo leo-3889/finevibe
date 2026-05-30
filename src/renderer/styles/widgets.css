@@ -792,3 +792,9 @@
   color: var(--accent);
   font-weight: 500;
 }
+
+.widget-top-files-row-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+}
