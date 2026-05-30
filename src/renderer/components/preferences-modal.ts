@@ -112,7 +112,7 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
 
   menu.addEventListener('click', (e) => {
     const target = (e.target as HTMLElement).closest('.preferences-menu-item') as HTMLElement | null;
-    if (target && target.dataset.section) {
+    if (target && target.dataset.section && target.dataset.section !== currentSection) {
       renderSection(target.dataset.section as Section);
     }
   });
