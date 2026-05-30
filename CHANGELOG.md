@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-05-30
+
+### Features
+
+- Top files by tokens widget: split button and .vibeyardignore filtering
+
+### Fixes
+
+- Avoid re-render when clicking already-selected preferences menu item
+
+### Changes
+
+- Restyle the app UI
+- Move session history remove action to right-click menu and tighten panel spacing
+- Increase sidebar text and icon sizes for readability
+- Split tab-bar into focused modules
+- Split preferences-modal into per-section modules
+
 ## [0.2.39] - 2026-05-30
 
 ### Features
