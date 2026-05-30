@@ -27,6 +27,7 @@ import { isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
 import type { ChromeImportOptions, ChromeImportProgress } from '../shared/types';
 import { shouldWarnStatusLine } from './settings-guard';
+import { buildVibeyardignoreMatcher } from './vibeyardignore';
 import { setCloseConfirmed } from './close-state';
 
 /**
@@ -567,7 +568,8 @@ export function registerIpcHandlers(): void {
         return { ok: false };
       }
       const clampedLimit = Math.max(1, Math.min(100, Math.floor(limit) || 10));
-      const relFiles = enumerateProjectFiles(resolvedCwd);
+      const isIgnored = buildVibeyardignoreMatcher(resolvedCwd);
+      const relFiles = enumerateProjectFiles(resolvedCwd).filter((rel) => !isIgnored(rel));
 
       const results: TopFile[] = [];
       let scanned = 0;
