@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.39] - 2026-05-30
+
+### Features
+
+- Cold-load spinner to git changes panel
+
+### Fixes
+
+- Show git changes panel for a bare project with no session
+- Project-switch UI freeze from FSEvents watcher teardown storm
+
+### Changes
+
+- Refactor file watching to chokidar with incremental tree reconciliation
+
 ## [0.2.38] - 2026-05-24
 
 ### Features
