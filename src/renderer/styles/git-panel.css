@@ -1,14 +1,10 @@
-/* Git panel */
-#git-panel {
-  border-top: 1px solid var(--border);
-}
-
-#git-panel.hidden {
-  display: none;
-}
-
-#git-panel:empty {
-  border-top: none;
+/* Git panel — rendered inside the active project card as the "Git" panel tab.
+   The persistent .git-panel-mount node is reparented into .project-panel-git on
+   open; .git-panel-body caps height so a big diff scrolls internally rather than
+   pushing the "All projects" list off-screen. */
+.git-panel-body {
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 /* Cold-load indicator (first load / project switch) — composes .config-loading
@@ -71,8 +67,8 @@
   justify-content: center;
   font-size: 10px;
   font-weight: 700;
-  border-radius: 3px;
-  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
+  border-radius: 5px;
+  font-family: var(--font-mono);
 }
 
 .git-file-badge.added { color: #34a853; }
