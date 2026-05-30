@@ -343,6 +343,14 @@
   cursor: default;
 }
 
+.tab-context-menu-item.danger {
+  color: #e94560;
+}
+
+.tab-context-menu-item.danger:hover {
+  background: rgba(233, 69, 96, 0.15);
+}
+
 .tab-context-menu-separator {
   height: 1px;
   background: var(--border);
