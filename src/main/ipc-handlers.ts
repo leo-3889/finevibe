@@ -11,7 +11,7 @@ import { startWatching, cleanupSessionStatus } from './hook-status';
 import { startCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from './codex-session-watcher';
 import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
-import { watchFile as watchFileForChanges, unwatchFile as unwatchFileForChanges, setFileWatcherWindow } from './file-watcher';
+import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
 import { createAppMenu } from './menu';
@@ -712,17 +712,17 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.on('fs:watchFile', (event, filePath: string) => {
-    const resolved = path.resolve(filePath);
+  ipcMain.on('fs:watchDir', (event, dirPath: string) => {
+    const resolved = path.resolve(dirPath);
     if (!isAllowedReadPath(resolved)) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win) setFileWatcherWindow(win);
-    watchFileForChanges(resolved);
+    watchDir(resolved);
   });
 
-  ipcMain.on('fs:unwatchFile', (_event, filePath: string) => {
-    const resolved = path.resolve(filePath);
-    unwatchFileForChanges(resolved);
+  ipcMain.on('fs:unwatchDir', (_event, dirPath: string) => {
+    const resolved = path.resolve(dirPath);
+    unwatchDir(resolved);
   });
 
   ipcMain.handle('stats:getCache', () => {

@@ -11,6 +11,27 @@
   border-top: none;
 }
 
+/* Cold-load indicator (first load / project switch) — composes .config-loading
+   for padding/font/color, adds the spinner row layout. */
+.git-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.git-loading-spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--text-secondary);
+  border-radius: 50%;
+  animation: git-loading-spin 0.7s linear infinite;
+}
+
+@keyframes git-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
 .git-worktree-selector {
   padding: 4px 12px 4px;
 }

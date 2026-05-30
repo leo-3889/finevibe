@@ -567,6 +567,17 @@ export interface StatsCache {
 
 // --- Filesystem IPC ---
 
+/** A single filesystem change emitted by the directory watcher (chokidar-backed). */
+export type FsChangeType = 'add' | 'addDir' | 'change' | 'unlink' | 'unlinkDir';
+
+export interface FsChange {
+  /** Absolute path of the entry that changed. */
+  path: string;
+  /** Absolute path of the parent directory (the watched dir the change belongs to). */
+  dir: string;
+  type: FsChangeType;
+}
+
 export type ReadFileResult =
   | { ok: true; content: string }
   | { ok: false; reason: 'binary' | 'error' };
