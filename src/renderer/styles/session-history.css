@@ -167,6 +167,33 @@
   font-style: italic;
 }
 
+/* Sidebar panel size overrides — scoped to .project-panel-history so the
+   full-screen session-search dialog keeps its own sizing. */
+.project-panel-history .history-search {
+  font-size: 13px;
+}
+
+.project-panel-history .history-item-name {
+  font-size: 13px;
+}
+
+.project-panel-history .history-item-details {
+  font-size: 12px;
+}
+
+.project-panel-history .history-clear-btn,
+.project-panel-history .history-bookmark-filter {
+  font-size: 12px;
+}
+
+.project-panel-history .history-remove-btn,
+.project-panel-history .history-bookmark-btn {
+  width: 20px;
+  height: 20px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
 .session-history-dialog {
   display: flex;
   flex-direction: column;

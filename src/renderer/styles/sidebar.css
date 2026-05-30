@@ -540,6 +540,13 @@
    hover-card tooltip per button. */
 .project-action-btn .action-icon {
   display: flex;
+  width: 18px;
+  height: 18px;
+}
+
+.project-action-btn .action-icon svg {
+  width: 16px;
+  height: 16px;
 }
 
 .project-action-btn .action-label {
