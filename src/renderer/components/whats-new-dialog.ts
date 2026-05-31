@@ -1,5 +1,6 @@
 import { appState } from '../state.js';
 import { createModalShell, createModalButton } from './modal-shell.js';
+import { pushModal } from './modal-manager.js';
 
 interface ReleaseNotes {
   date: string;
@@ -94,16 +95,18 @@ function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === 'Escape') {
+    if (e.key === 'Enter') {
       e.preventDefault();
       close();
     }
   };
 
+  const unregisterEsc = pushModal({ onEscape: close });
   confirmBtn.addEventListener('click', close);
   document.addEventListener('keydown', handleKeydown);
 
   cleanupFn = () => {
+    unregisterEsc();
     confirmBtn.removeEventListener('click', close);
     document.removeEventListener('keydown', handleKeydown);
   };

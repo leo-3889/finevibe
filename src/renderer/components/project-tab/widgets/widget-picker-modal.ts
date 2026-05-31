@@ -1,4 +1,5 @@
 import { createModalShell, createModalButton } from '../../modal-shell.js';
+import { bindModalDismiss } from '../../modal-manager.js';
 import { listWidgetTypes } from './widget-registry.js';
 import type { OverviewWidget, OverviewWidgetType } from '../../../../shared/types.js';
 
@@ -7,21 +8,10 @@ export function showWidgetPicker(existing: OverviewWidget[], onPick: (type: Over
   shell.body.innerHTML = '';
   shell.actions.innerHTML = '';
 
+  let teardownDismiss = () => {};
   function close(): void {
     shell.overlay.style.display = 'none';
-    document.removeEventListener('keydown', onKeydown);
-    shell.overlay.removeEventListener('click', onOverlayClick);
-  }
-
-  function onKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      close();
-    }
-  }
-
-  function onOverlayClick(e: MouseEvent): void {
-    if (e.target === shell.overlay) close();
+    teardownDismiss();
   }
 
   const grid = document.createElement('div');
@@ -77,6 +67,5 @@ export function showWidgetPicker(existing: OverviewWidget[], onPick: (type: Over
   shell.actions.appendChild(cancel);
 
   shell.overlay.style.display = 'flex';
-  document.addEventListener('keydown', onKeydown);
-  shell.overlay.addEventListener('click', onOverlayClick);
+  teardownDismiss = bindModalDismiss({ overlay: shell.overlay, onClose: close });
 }

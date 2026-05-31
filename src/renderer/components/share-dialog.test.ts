@@ -50,6 +50,7 @@ function makeElement(): Record<string, unknown> {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(cb);
     },
+    removeEventListener() {},
   };
   return el;
 }
@@ -69,6 +70,8 @@ vi.stubGlobal('document', {
     // Return a checked radio with value 'readonly'
     return { value: 'readonly' };
   },
+  addEventListener() {},
+  removeEventListener() {},
 });
 
 vi.stubGlobal('navigator', {

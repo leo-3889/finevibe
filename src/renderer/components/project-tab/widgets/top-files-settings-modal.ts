@@ -1,4 +1,5 @@
 import { createModalShell, createModalButton } from '../../modal-shell.js';
+import { bindModalDismiss } from '../../modal-manager.js';
 import type { OverviewWidget } from '../../../../shared/types.js';
 import {
   DEFAULT_TOP_FILES_CONFIG,
@@ -60,25 +61,12 @@ export function showTopFilesSettings(
   shell.actions.appendChild(save);
 
   shell.overlay.style.display = 'flex';
-  document.addEventListener('keydown', onKeydown);
-  shell.overlay.addEventListener('click', onOverlayClick);
+  const teardownDismiss = bindModalDismiss({ overlay: shell.overlay, onClose: close });
   limitInput.focus();
   limitInput.select();
 
   function close(): void {
     shell.overlay.style.display = 'none';
-    document.removeEventListener('keydown', onKeydown);
-    shell.overlay.removeEventListener('click', onOverlayClick);
-  }
-
-  function onKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      close();
-    }
-  }
-
-  function onOverlayClick(e: MouseEvent): void {
-    if (e.target === shell.overlay) close();
+    teardownDismiss();
   }
 }

@@ -1,6 +1,7 @@
 import type { ArchivedSession, SessionRecord, TeamMember } from '../../../shared/types.js';
 import { appState } from '../../state.js';
 import { closeModal, registerModalCleanup } from '../modal.js';
+import { pushModal } from '../modal-manager.js';
 import { isCliSession } from '../../session-utils.js';
 import { getProviderDisplayName } from '../../provider-availability.js';
 
@@ -54,18 +55,12 @@ export function showMemberSessionsModal(member: TeamMember, projectId: string): 
   overlay.classList.remove('hidden');
 
   const handleCancel = () => closeModal();
-  const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeModal();
-    }
-  };
 
+  const unregisterEsc = pushModal({ onEscape: handleCancel });
   btnCancel.addEventListener('click', handleCancel);
-  document.addEventListener('keydown', handleKeydown);
   registerModalCleanup(() => {
+    unregisterEsc();
     btnCancel.removeEventListener('click', handleCancel);
-    document.removeEventListener('keydown', handleKeydown);
   });
 }
 

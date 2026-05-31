@@ -1,4 +1,5 @@
 import { createModalShell, createModalButton } from '../modal-shell.js';
+import { pushModal } from '../modal-manager.js';
 import { buildSection, badge, mono } from '../help-shared.js';
 import { createDefaultBoard } from '../../state.js';
 import type { ColumnBehavior } from '../../../shared/types.js';
@@ -98,16 +99,18 @@ export function showBoardHelpDialog(): void {
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === 'Escape') {
+    if (e.key === 'Enter') {
       e.preventDefault();
       close();
     }
   };
 
+  const unregisterEsc = pushModal({ onEscape: close });
   confirmBtn.addEventListener('click', close);
   document.addEventListener('keydown', handleKeydown);
 
   cleanupFn = () => {
+    unregisterEsc();
     confirmBtn.removeEventListener('click', close);
     document.removeEventListener('keydown', handleKeydown);
   };

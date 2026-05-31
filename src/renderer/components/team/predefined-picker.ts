@@ -4,6 +4,7 @@ import { appState } from '../../state.js';
 import { renderMarkdownContent } from '../file-reader.js';
 import { fetchPredefinedMembers, isCacheFresh } from './github-fetcher.js';
 import { filterMembers, type DomainFilter } from './predefined-filter.js';
+import { bindModalDismiss } from '../modal-manager.js';
 
 interface DialogState {
   overlay: HTMLDivElement;
@@ -134,19 +135,13 @@ function buildDialog(): DialogState {
     }, 150);
   });
 
-  const escListener = (e: KeyboardEvent): void => {
-    if (e.key !== 'Escape') return;
-    if (document.querySelector('.team-picker-detail-overlay')) return;
-    dispose();
-  };
   const dispose = (): void => {
+    teardownDismiss();
     overlay.remove();
-    document.removeEventListener('keydown', escListener);
   };
+  const teardownDismiss = bindModalDismiss({ overlay, onClose: dispose });
   closeBtn.addEventListener('click', dispose);
   doneBtn.addEventListener('click', dispose);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) dispose(); });
-  document.addEventListener('keydown', escListener);
 
   return state;
 }
@@ -358,17 +353,13 @@ function showMemberDetail(member: TeamMember, onAdd: () => void, isInstalled: bo
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
-  const escListener = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') dispose();
-  };
   const dispose = (): void => {
+    teardownDismiss();
     overlay.remove();
-    document.removeEventListener('keydown', escListener);
   };
+  const teardownDismiss = bindModalDismiss({ overlay, onClose: dispose });
   backBtn.addEventListener('click', dispose);
   closeBtn.addEventListener('click', dispose);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) dispose(); });
-  document.addEventListener('keydown', escListener);
 }
 
 function buildNameRole(member: TeamMember): HTMLElement {

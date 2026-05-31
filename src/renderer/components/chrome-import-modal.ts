@@ -1,4 +1,5 @@
 import { createModalShell, createModalButton } from './modal-shell.js';
+import { bindModalDismiss } from './modal-manager.js';
 import { createCustomSelect } from './custom-select.js';
 import type { ChromeProfile, ChromeImportProgress, ChromeImportResult } from '../../shared/types.js';
 
@@ -138,16 +139,11 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
     onClosed?.();
   }
 
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') close();
-  }
-
   cancelBtn.addEventListener('click', close);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  document.addEventListener('keydown', onKeydown);
+  const teardownDismiss = bindModalDismiss({ overlay, onClose: close });
 
   cleanupFn = () => {
-    document.removeEventListener('keydown', onKeydown);
+    teardownDismiss();
   };
 
   overlay.style.display = 'flex';

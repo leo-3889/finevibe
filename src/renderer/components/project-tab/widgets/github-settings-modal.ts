@@ -1,4 +1,5 @@
 import { createModalShell, createModalButton } from '../../modal-shell.js';
+import { bindModalDismiss } from '../../modal-manager.js';
 import { createCustomSelect } from '../../custom-select.js';
 import type { OverviewWidget } from '../../../../shared/types.js';
 import { GITHUB_MAX_PER_PAGE } from '../../../../shared/constants.js';
@@ -129,25 +130,12 @@ export function showGithubSettings(
   shell.actions.appendChild(save);
 
   shell.overlay.style.display = 'flex';
-  document.addEventListener('keydown', onKeydown);
-  shell.overlay.addEventListener('click', onOverlayClick);
+  const teardownDismiss = bindModalDismiss({ overlay: shell.overlay, onClose: close });
 
   function close(): void {
     shell.overlay.style.display = 'none';
-    document.removeEventListener('keydown', onKeydown);
-    shell.overlay.removeEventListener('click', onOverlayClick);
+    teardownDismiss();
     stateSelect.destroy();
     refreshSelect.destroy();
-  }
-
-  function onKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      close();
-    }
-  }
-
-  function onOverlayClick(e: MouseEvent): void {
-    if (e.target === shell.overlay) close();
   }
 }
