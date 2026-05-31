@@ -73,6 +73,8 @@ vi.mock('../session-insights.js', () => ({
 
 vi.mock('../session-cost.js', () => ({
   removeSession: vi.fn(),
+  getCost: vi.fn(() => null),
+  formatTokens: (n: number) => String(n),
 }));
 
 vi.mock('../session-context.js', () => ({
@@ -202,7 +204,7 @@ describe('terminal pending prompt injection', () => {
     setPendingPrompt('claude-1', 'fix the bug');
     await spawnTerminal('claude-1');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('claude-1', '/project', null, false, '', 'claude', 'fix the bug', undefined, '');
+    expect(mockPtyCreate).toHaveBeenCalledWith('claude-1', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined);
     expect(mockPtyWrite).not.toHaveBeenCalled();
   });
 
@@ -214,7 +216,7 @@ describe('terminal pending prompt injection', () => {
     setPendingPrompt('codex-1', 'fix the bug');
     await spawnTerminal('codex-1');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('codex-1', '/project', null, false, '', 'codex', 'fix the bug', undefined, '');
+    expect(mockPtyCreate).toHaveBeenCalledWith('codex-1', '/project', null, false, '', 'codex', 'fix the bug', undefined, '', undefined);
     expect(mockPtyWrite).not.toHaveBeenCalled();
   });
 
@@ -225,7 +227,7 @@ describe('terminal pending prompt injection', () => {
     createTerminalPane('claude-2', '/project', null, false, '', 'claude');
     await spawnTerminal('claude-2');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('claude-2', '/project', null, false, '', 'claude', undefined, undefined, '');
+    expect(mockPtyCreate).toHaveBeenCalledWith('claude-2', '/project', null, false, '', 'claude', undefined, undefined, '', undefined);
   });
 
   it('does not inject pending prompt from PTY output', async () => {
@@ -391,6 +393,101 @@ describe('injectTextIntoRunningSession', () => {
     expect(result).toBe(true);
     expect(mockPtyWrite).toHaveBeenCalledTimes(1);
     expect(mockPtyWrite).toHaveBeenCalledWith('inj-text-3', '/abs/path.ts ');
+  });
+});
+
+describe('profile label in status-line cost string', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('window', makeWindowStub());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  function makeProfile(id: string, name: string, providerId = 'claude') {
+    return { id, name, providerId, configDir: `/cfg/${id}`, managed: true, createdAt: 0 };
+  }
+
+  function costText(instance: any) {
+    return instance.element.querySelector('.cost-display')!.textContent as string;
+  }
+
+  // createTerminalPane(sessionId, projectPath, cliSessionId, isResume, args, providerId, projectId?, envVars?, configDir?)
+  function makePane(create: any, sessionId: string, providerId: string, configDir?: string) {
+    return create(sessionId, '/project', null, false, '', providerId, undefined, '', configDir);
+  }
+
+  it('omits the profile prefix when at most one profile exists for the provider', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'));
+
+    const instance = makePane(createTerminalPane, 'pb-1', 'claude', '/cfg/work');
+
+    expect(costText(instance)).toBe('$0.0000');
+  });
+
+  it('prefixes the cost string with the profile matching the spawned config dir', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'), makeProfile('personal', 'Personal'));
+
+    const instance = makePane(createTerminalPane, 'pb-2', 'claude', '/cfg/personal');
+
+    expect(costText(instance)).toBe('Personal  ·  $0.0000');
+  });
+
+  it('labels a session on the base config dir (no configDir) as "Default"', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'), makeProfile('personal', 'Personal'));
+
+    const instance = makePane(createTerminalPane, 'pb-3', 'claude', undefined); // base ~/.claude
+
+    expect(costText(instance)).toBe('Default  ·  $0.0000');
+  });
+
+  it('folds the profile in front of the model name once cost data arrives', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane, updateCostDisplay } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'), makeProfile('personal', 'Personal'));
+
+    const instance = makePane(createTerminalPane, 'pb-2b', 'claude', '/cfg/personal');
+    updateCostDisplay('pb-2b', {
+      totalCostUsd: 1.5, totalInputTokens: 0, totalOutputTokens: 0,
+      cacheReadTokens: 0, cacheCreationTokens: 0, totalDurationMs: 0, totalApiDurationMs: 0,
+      model: 'Opus 4.8',
+    });
+
+    expect(costText(instance)).toBe('Personal  ·  Opus 4.8  ·  $1.5000');
+  });
+
+  it('ignores profiles belonging to a different provider', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane } = await import('./terminal-pane.js');
+    // Two profiles, but only one targets claude — claude sessions get no prefix.
+    appState.profiles.push(makeProfile('work', 'Work', 'claude'), makeProfile('gem', 'Gem', 'gemini'));
+
+    const instance = makePane(createTerminalPane, 'pb-4', 'claude', '/cfg/work');
+
+    expect(costText(instance)).toBe('$0.0000');
+  });
+
+  it('refreshProfileLabels re-renders the prefix after a second profile is added', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane, refreshProfileLabels } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'));
+
+    const instance = makePane(createTerminalPane, 'pb-5', 'claude', '/cfg/work');
+    expect(costText(instance)).toBe('$0.0000');
+
+    appState.profiles.push(makeProfile('personal', 'Personal'));
+    refreshProfileLabels();
+
+    expect(costText(instance)).toBe('Work  ·  $0.0000');
   });
 });
 

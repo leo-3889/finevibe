@@ -5,7 +5,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { initSession, removeSession } from '../session-activity.js';
 import { markFreshSession } from '../session-insights.js';
-import { removeSession as removeCostSession, formatTokens, type CostInfo } from '../session-cost.js';
+import { removeSession as removeCostSession, formatTokens, getCost, type CostInfo } from '../session-cost.js';
 import { removeSession as removeContextSession, getContextSeverity, type ContextWindowInfo } from '../session-context.js';
 import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
@@ -26,6 +26,8 @@ interface TerminalInstance {
   providerId: ProviderId;
   args: string;
   envVars: string;
+  /** Resolved profile config dir (CLAUDE_CONFIG_DIR), or undefined for the default ~/.claude. */
+  configDir?: string;
   isResume: boolean;
   wasResumed: boolean;
   spawned: boolean;
@@ -46,7 +48,8 @@ export function createTerminalPane(
   args: string = '',
   providerId: ProviderId = 'claude',
   projectId?: string,
-  envVars: string = ''
+  envVars: string = '',
+  configDir?: string
 ): TerminalInstance {
   if (instances.has(sessionId)) {
     return instances.get(sessionId)!;
@@ -68,7 +71,7 @@ export function createTerminalPane(
   costDisplay.className = 'cost-display';
   const caps = getProviderCapabilities(providerId);
   if (caps?.costTracking !== false) {
-    costDisplay.textContent = '$0.0000';
+    costDisplay.textContent = `${profilePrefix(providerId, configDir)}$0.0000`;
   } else {
     costDisplay.classList.add('hidden');
   }
@@ -126,6 +129,7 @@ export function createTerminalPane(
     providerId,
     args,
     envVars,
+    configDir,
     isResume,
     wasResumed: isResume,
     spawned: false,
@@ -283,7 +287,7 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     systemPrompt = instance.pendingSystemPrompt;
     instance.pendingSystemPrompt = null;
   }
-  await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars);
+  await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
 }
 
@@ -406,6 +410,41 @@ function showStatusBar(instance: TerminalInstance): void {
   if (bar) bar.classList.remove('hidden');
 }
 
+/**
+ * Leading "<profile>  ·  " segment for the status-line cost string, shown only when
+ * more than one profile exists for the provider. The profile is keyed off the
+ * session's `configDir` — the exact dir threaded into the PTY spawn — so the label
+ * can never disagree with the config the running session actually uses. No matching
+ * dir (undefined → base ~/.claude) is labeled "Default". Empty string when not shown.
+ */
+function profilePrefix(providerId: ProviderId, configDir?: string): string {
+  const providerProfiles = appState.profiles.filter((p) => p.providerId === providerId);
+  if (providerProfiles.length <= 1) return '';
+  const profile = configDir ? providerProfiles.find((p) => p.configDir === configDir) : undefined;
+  return `${profile?.name ?? 'Default'}  ·  `;
+}
+
+/** Build the full status-line cost string, including the leading profile segment. */
+function formatCostLine(instance: TerminalInstance, cost: CostInfo | null): string {
+  const prefix = profilePrefix(instance.providerId, instance.configDir);
+  if (!cost) return `${prefix}$0.0000`;
+  const costStr = `$${cost.totalCostUsd.toFixed(4)}`;
+  const modelPrefix = cost.model ? `${cost.model}  ·  ` : '';
+  if (cost.totalInputTokens > 0 || cost.totalOutputTokens > 0) {
+    return `${prefix}${modelPrefix}${costStr}  ·  ${formatTokens(cost.totalInputTokens)} in / ${formatTokens(cost.totalOutputTokens)} out`;
+  }
+  return `${prefix}${modelPrefix}${costStr}`;
+}
+
+/** Re-render every open pane's cost line from its last known cost (e.g. after a profile is added/removed). */
+export function refreshProfileLabels(): void {
+  for (const instance of instances.values()) {
+    if (getProviderCapabilities(instance.providerId)?.costTracking === false) continue;
+    const el = instance.element.querySelector('.cost-display');
+    if (el) el.textContent = formatCostLine(instance, getCost(instance.sessionId));
+  }
+}
+
 export function updateCostDisplay(sessionId: string, cost: CostInfo): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
@@ -413,15 +452,12 @@ export function updateCostDisplay(sessionId: string, cost: CostInfo): void {
   const el = instance.element.querySelector('.cost-display');
   if (!el) return;
 
-  const costStr = `$${cost.totalCostUsd.toFixed(4)}`;
-  const modelPrefix = cost.model ? `${cost.model}  \u00b7  ` : '';
+  el.textContent = formatCostLine(instance, cost);
   if (cost.totalInputTokens > 0 || cost.totalOutputTokens > 0) {
-    el.textContent = `${modelPrefix}${costStr}  \u00b7  ${formatTokens(cost.totalInputTokens)} in / ${formatTokens(cost.totalOutputTokens)} out`;
     const durationSec = (cost.totalDurationMs / 1000).toFixed(1);
     const apiDurationSec = (cost.totalApiDurationMs / 1000).toFixed(1);
     (el as HTMLElement).title = `Cache read: ${formatTokens(cost.cacheReadTokens)} · Cache create: ${formatTokens(cost.cacheCreationTokens)} · Duration: ${durationSec}s · API: ${apiDurationSec}s`;
   } else {
-    el.textContent = `${modelPrefix}${costStr}`;
     (el as HTMLElement).title = '';
   }
   showStatusBar(instance);

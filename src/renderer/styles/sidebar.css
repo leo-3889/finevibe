@@ -82,6 +82,7 @@
 #sidebar.collapsed .project-row:not(.active),
 #sidebar.collapsed .project-main,
 #sidebar.collapsed .project-session-count,
+#sidebar.collapsed .project-profile-badge,
 #sidebar.collapsed .project-delete,
 #sidebar.collapsed .project-panel,
 #sidebar.collapsed .project-action-btn.panel-toggle {
@@ -444,6 +445,22 @@
 
 .project-item.active .project-session-count {
   display: none;
+}
+
+/* Claude-profile badge on the active card (shown only with multiple profiles). */
+.project-profile-badge {
+  flex-shrink: 0;
+  max-width: 120px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .project-item.dragging {

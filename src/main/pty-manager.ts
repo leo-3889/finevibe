@@ -6,6 +6,8 @@ import type { ProviderId } from '../shared/types';
 import { parseEnvVars } from '../shared/env-vars';
 import { getProvider } from './providers/registry';
 import { registerSession } from './hook-status';
+import { installHooksOnly, installStatusLine } from './claude-cli';
+import { getKeychainIsolationStatus } from './claude-keychain';
 import { isWin, pathSep } from './platform';
 import { nvmDefaultNodeBinDir } from './providers/nvm';
 
@@ -168,7 +170,8 @@ export async function spawnPty(
   systemPrompt: string | undefined,
   envVars: string,
   onData: (data: string) => void,
-  onExit: (exitCode: number, signal?: number) => void
+  onExit: (exitCode: number, signal?: number) => void,
+  configDir?: string
 ): Promise<void> {
   if (ptys.has(sessionId)) {
     // Silence the old PTY's exit event so it doesn't remove the new session
@@ -191,7 +194,42 @@ export async function spawnPty(
     }
   }
 
-  const env = provider.buildEnv(sessionId, { ...process.env } as Record<string, string>);
+  // Profile support: a Claude session bound to a profile uses an isolated
+  // config dir, so Vibeyard's hooks + statusLine (boot-installed into ~/.claude)
+  // must also be installed there or cost/activity tracking silently breaks.
+  // Fresh profile dirs have no foreign statusLine, so install directly (the
+  // guarded/consent flow stays bound to the shared ~/.claude). Both calls are
+  // idempotent, mirroring the per-spawn Copilot install above.
+  // Guardrail: on macOS, older Claude Code builds reuse a single keychain entry
+  // ("Claude Code-credentials") for every config dir, so logging into one
+  // profile silently overwrites every other profile's token — the accounts
+  // bleed into each other (anthropics/claude-code#20553). Don't spawn a profile
+  // session when isolation is known-broken; surface why in the pane and exit
+  // rather than running under a config dir whose login isn't actually separate.
+  // ('unknown' — a newer build we can't yet confirm — is allowed, never
+  // falsely blocked.) The reason is written via onData (not thrown) because the
+  // renderer fires pty.create without awaiting, so a throw would be a swallowed
+  // rejection leaving a blank pane.
+  if (providerId === 'claude' && configDir && getKeychainIsolationStatus().status === 'unsupported') {
+    onData(
+      '\r\n\x1b[31mClaude profile login isolation is unavailable on this version of Claude Code:\r\n' +
+        'all profiles would share one macOS keychain login, mixing the accounts.\r\n' +
+        'Update Claude Code, then start the profile session again.\x1b[0m\r\n',
+    );
+    onExit(1);
+    return;
+  }
+
+  if (providerId === 'claude' && configDir) {
+    try {
+      installHooksOnly(configDir);
+      installStatusLine(configDir);
+    } catch (err) {
+      console.warn('Failed to install hooks into profile config dir:', configDir, err);
+    }
+  }
+
+  const env = provider.buildEnv(sessionId, { ...process.env } as Record<string, string>, { configDir });
   // User-provided env vars are merged last so they can override anything,
   // including provider-set vars like PATH (see plan: "user vars win").
   Object.assign(env, parseEnvVars(envVars));
