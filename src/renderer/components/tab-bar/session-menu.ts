@@ -1,6 +1,7 @@
 import { appState, type SessionRecord } from '../../state.js';
 import type { ProviderId } from '../../../shared/types.js';
-import { showModal, closeModal, FieldDef } from '../modal.js';
+import { showModal, closeModal, setModalError, FieldDef } from '../modal.js';
+import { findInvalidEnvLines } from '../../../shared/env-vars.js';
 import { showJoinDialog } from '../join-dialog.js';
 import { loadProviderAvailability, getProviderAvailabilitySnapshot } from '../../provider-availability.js';
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './menu.js';
@@ -78,6 +79,13 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       type: 'checkbox',
       defaultValue: project.defaultArgs ? 'true' : undefined,
     },
+    { label: 'Environment Variables', id: 'session-env', type: 'textarea', placeholder: 'KEY=VALUE (one per line)', defaultValue: project.defaultEnv ?? '' },
+    {
+      label: 'Keep env vars for future sessions',
+      id: 'keep-env',
+      type: 'checkbox',
+      defaultValue: project.defaultEnv ? 'true' : undefined,
+    },
   ];
 
   if (providers.length > 1) {
@@ -97,15 +105,26 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
 
   showModal('New Session', fields, (values) => {
     const name = values['session-name']?.trim();
-    if (name) {
-      closeModal();
-      const args = values['session-args']?.trim() || undefined;
-      const keepArgs = values['keep-args'] === 'true';
-      project.defaultArgs = keepArgs ? (args || undefined) : undefined;
-      const providerId = (values['provider'] || 'claude') as ProviderId;
-      const session = appState.addSession(project.id, name, args, providerId);
-      if (session && onCreated) onCreated(session);
+    if (!name) return;
+
+    const envVars = values['session-env']?.trim() || undefined;
+    if (envVars) {
+      const invalid = findInvalidEnvLines(envVars);
+      if (invalid.length > 0) {
+        setModalError('session-env', `Use KEY=VALUE — invalid line: ${invalid[0]}`);
+        return;
+      }
     }
+
+    closeModal();
+    const args = values['session-args']?.trim() || undefined;
+    const keepArgs = values['keep-args'] === 'true';
+    project.defaultArgs = keepArgs ? (args || undefined) : undefined;
+    const keepEnv = values['keep-env'] === 'true';
+    project.defaultEnv = keepEnv ? (envVars || undefined) : undefined;
+    const providerId = (values['provider'] || 'claude') as ProviderId;
+    const session = appState.addSession(project.id, name, args, providerId, envVars);
+    if (session && onCreated) onCreated(session);
   });
 }
 

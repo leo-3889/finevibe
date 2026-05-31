@@ -341,7 +341,7 @@ class AppState {
     return this.addSession(projectId, name, args, providerId);
   }
 
-  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId): SessionRecord | undefined {
+  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId, envVars?: string): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
@@ -349,6 +349,7 @@ class AppState {
       name,
       providerId: resolveCliProvider(this.state.preferences, providerId),
       args: args ?? project.defaultArgs,
+      envVars: envVars ?? project.defaultEnv,
     });
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);

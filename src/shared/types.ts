@@ -91,6 +91,8 @@ export interface SessionRecord {
   type?: SessionType;
   providerId?: ProviderId;
   args?: string;
+  /** Custom environment variables (raw `KEY=VALUE` lines) injected into the PTY on spawn. */
+  envVars?: string;
   cliSessionId: string | null;
   mcpServerUrl?: string;
   diffFilePath?: string;
@@ -235,6 +237,7 @@ export interface ProjectRecord {
   sessionHistory?: ArchivedSession[];
   insights?: ProjectInsightsData;
   defaultArgs?: string;
+  defaultEnv?: string;
   terminalPanelOpen?: boolean;
   terminalPanelHeight?: number;
   readiness?: ReadinessResult;
