@@ -79,6 +79,7 @@ vi.mock('../session-cost.js', () => ({
 
 vi.mock('../session-context.js', () => ({
   removeSession: vi.fn(),
+  getContextSeverity: vi.fn((pct: number) => (pct >= 90 ? 'critical' : pct >= 70 ? 'warning' : '')),
 }));
 
 vi.mock('../provider-availability.js', () => ({
@@ -123,6 +124,7 @@ class FakeElement {
   className = '';
   classList = new FakeClassList();
   dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
   textContent = '';
 
   constructor(public tagName: string) {}
@@ -131,6 +133,16 @@ class FakeElement {
     child.parentElement = this;
     this.children.push(child);
     return child;
+  }
+
+  append(...children: FakeElement[]): void {
+    for (const child of children) this.appendChild(child);
+  }
+
+  replaceChildren(...children: FakeElement[]): void {
+    for (const child of this.children) child.parentElement = null;
+    this.children = [];
+    for (const child of children) this.appendChild(child);
   }
 
   remove(): void {
@@ -462,7 +474,48 @@ describe('profile label in status-line cost string', () => {
       model: 'Opus 4.8',
     });
 
-    expect(costText(instance)).toBe('Personal  ·  Opus 4.8  ·  $1.5000');
+    const cd = instance.element.querySelector('.cost-display')!;
+    expect(cd.querySelector('.ssl-pill')!.textContent).toBe('Personal');
+    expect(cd.querySelector('.ssl-model')!.textContent).toBe('Opus 4.8');
+    expect(cd.querySelector('.ssl-cost')!.textContent).toBe('$1.5000');
+  });
+
+  it('renders a "Context" label as the first item, before the meter', async () => {
+    const { createTerminalPane, updateContextDisplay } = await import('./terminal-pane.js');
+    const instance = makePane(createTerminalPane, 'ctx-label', 'claude', undefined);
+
+    updateContextDisplay('ctx-label', { totalTokens: 90000, contextWindowSize: 200000, usedPercentage: 45 });
+
+    const ind = instance.element.querySelector('.context-indicator')! as any;
+    const label = ind.querySelector('.ssl-label')!;
+    expect(label.textContent).toBe('Context');
+    // The label must be the first child, immediately before the meter.
+    expect(ind.children[0]).toBe(label);
+    expect(ind.children[1].className).toBe('ssl-meter');
+  });
+
+  it('holds the peak output-token count so a per-turn reset does not flicker the rail down', async () => {
+    const { createTerminalPane, updateCostDisplay } = await import('./terminal-pane.js');
+    const instance = makePane(createTerminalPane, 'pb-peak', 'claude', undefined);
+    const io = () => instance.element.querySelector('.ssl-io')!.textContent as string;
+
+    const base = {
+      totalCostUsd: 1, totalInputTokens: 5000,
+      cacheReadTokens: 0, cacheCreationTokens: 0, totalDurationMs: 0, totalApiDurationMs: 0,
+      model: 'Opus 4.8',
+    };
+
+    // Turn output climbs to 185...
+    updateCostDisplay('pb-peak', { ...base, totalOutputTokens: 185 });
+    expect(io()).toBe('5000 in / 185 out');
+
+    // ...then Claude reports the next turn's tiny starting value — display must not regress.
+    updateCostDisplay('pb-peak', { ...base, totalOutputTokens: 2 });
+    expect(io()).toBe('5000 in / 185 out');
+
+    // A genuinely higher value still ratchets the peak up.
+    updateCostDisplay('pb-peak', { ...base, totalOutputTokens: 300 });
+    expect(io()).toBe('5000 in / 300 out');
   });
 
   it('ignores profiles belonging to a different provider', async () => {
@@ -487,7 +540,9 @@ describe('profile label in status-line cost string', () => {
     appState.profiles.push(makeProfile('personal', 'Personal'));
     refreshProfileLabels();
 
-    expect(costText(instance)).toBe('Work  ·  $0.0000');
+    const cd = instance.element.querySelector('.cost-display')!;
+    expect(cd.querySelector('.ssl-pill')!.textContent).toBe('Work');
+    expect(cd.querySelector('.ssl-cost')!.textContent).toBe('$0.0000');
   });
 });
 

@@ -330,3 +330,122 @@
 .terminal-list-item-close:hover {
   color: var(--accent);
 }
+
+/* ============================================================
+   Session status line — Direction A · Rail (redesign)
+   A graphical context meter + session economics, replacing the
+   old ASCII bar. Hue shifts iris → amber → red as context fills.
+   ============================================================ */
+.session-status-bar {
+  height: 34px;
+  min-height: 34px;
+  align-items: center;
+  padding: 0 14px;
+  font-size: 12px;
+  line-height: normal;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary));
+}
+
+.session-status-bar .context-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.session-status-bar .cost-display {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  white-space: nowrap;
+}
+
+/* Left cluster — graphical context meter */
+.ssl-label {
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex: none;
+}
+.ssl-meter {
+  position: relative;
+  width: 130px;
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+  flex: none;
+}
+.ssl-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: 99px;
+  background: var(--accent);
+  box-shadow: 0 0 8px -1px var(--accent);
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s, box-shadow 0.3s;
+}
+.ssl-pct {
+  font-weight: 500;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.ssl-tok {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Right cluster — session economics */
+.ssl-dot {
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+.ssl-model { color: var(--text-secondary); }
+.ssl-cost {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.ssl-io {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ssl-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.ssl-vrule {
+  width: 1px;
+  align-self: stretch;
+  margin: 6px 2px;
+  background: var(--border-subtle);
+}
+
+/* Interactive segments lighten on hover (model / cost / io) */
+.session-status-bar .seg {
+  padding: 2px 4px;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+.session-status-bar .seg:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+/* Context-fill states — the meter + % shift hue as the window fills */
+.session-status-bar[data-state="warn"] .ssl-meter-fill {
+  background: var(--color-warning);
+  box-shadow: 0 0 8px -1px var(--color-warning);
+}
+.session-status-bar[data-state="warn"] .ssl-pct { color: var(--color-warning); }
+.session-status-bar[data-state="crit"] .ssl-meter-fill {
+  background: var(--color-critical);
+  box-shadow: 0 0 9px -1px var(--color-critical);
+}
+.session-status-bar[data-state="crit"] .ssl-pct { color: var(--color-critical); }
