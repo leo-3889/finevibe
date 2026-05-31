@@ -131,7 +131,7 @@ When entering plan mode for a new feature, consider whether the feature (or aspe
 
 After completing an implementation task, always:
 
-1. Run `/simplify` to review changed code for reuse, quality, and efficiency.
+1. Run `/code-review` to review changed code for correctness bugs and reuse/quality/efficiency cleanups.
 2. Add or update tests as needed to cover the changes.
 
 ## Git Workflow
