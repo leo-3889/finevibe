@@ -1,5 +1,5 @@
 import { appState, MAX_PROJECT_NAME_LENGTH, ProjectRecord } from '../state.js';
-import { showModal, setModalError, closeModal, showConfirmDialog } from './modal.js';
+import { showModal, setModalError, closeModal, showConfirmDialog, FieldDef } from './modal.js';
 import { showPreferencesModal } from './preferences-modal.js';
 import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unread.js';
 import { onChange as onActivityChange } from '../session-activity.js';
@@ -120,6 +120,9 @@ export function initSidebar(): void {
     applyDiscussionsVisibility();
     render();
   });
+  // Adding/removing a profile or changing a default flips the badge's
+  // visibility/label on the active card.
+  appState.on('profiles-changed', render);
 
   document.addEventListener('click', hideProjectContextMenu);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideProjectContextMenu(); });
@@ -167,6 +170,21 @@ function render(): void {
   }
 }
 
+/**
+ * Label for the project's effective Claude profile, or `undefined` when no badge
+ * should render. Shown only when more than one Claude profile exists (mirrors the
+ * session status-line gate in terminal-pane.ts). Resolution matches `resolveProfile`:
+ * `project.defaultProfileId ?? preferences.defaultProfileId`; a missing/unknown id
+ * (base ~/.claude) is labeled "Default".
+ */
+export function projectProfileLabel(project: ProjectRecord): string | undefined {
+  const providerProfiles = appState.profiles.filter((p) => p.providerId === 'claude');
+  if (providerProfiles.length <= 1) return undefined;
+  const id = project.defaultProfileId ?? appState.preferences.defaultProfileId;
+  if (!id) return 'Default';
+  return providerProfiles.find((p) => p.id === id)?.name ?? 'Default';
+}
+
 function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: RenderOpts): HTMLElement {
   const { fileTreeEnabled, historyEnabled, gitEnabled } = opts;
 
@@ -187,12 +205,20 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   const countPill = project.sessions.length
     ? `<span class="project-session-count">${project.sessions.length}</span>`
     : '';
+  // Only the active card surfaces the profile badge, and only when multiple
+  // Claude profiles exist (the session count is hidden on the active card, so
+  // the badge takes that slot).
+  const profileLabel = isActive ? projectProfileLabel(project) : undefined;
+  const profileBadge = profileLabel
+    ? `<span class="project-profile-badge" title="Claude profile">${esc(profileLabel)}</span>`
+    : '';
   el.innerHTML = `
     ${lead}
     <div class="project-main">
       <div class="project-name${hasUnreadInProject(project.id) ? ' unread' : ''}">${esc(project.name)}</div>
       <div class="project-path">${esc(project.path)}</div>
     </div>
+    ${profileBadge}
     ${countPill}
     <span class="project-delete" title="Remove project">&times;</span>
   `;
@@ -400,7 +426,8 @@ export function toggleGitPanel(): void {
 }
 
 export function promptNewProject(): void {
-  showModal('New Project', [
+  const claudeProfiles = appState.profiles.filter((p) => p.providerId === 'claude');
+  const fields: FieldDef[] = [
     { label: 'Name', id: 'project-name', placeholder: 'My Project' },
     {
       label: 'Path', id: 'project-path', placeholder: '/path/to/project',
@@ -412,7 +439,20 @@ export function promptNewProject(): void {
         autoFillName(dir);
       },
     },
-  ], async (values) => {
+  ];
+  if (claudeProfiles.length > 0) {
+    fields.push({
+      label: 'Default profile',
+      id: 'profile',
+      type: 'select',
+      defaultValue: appState.preferences.defaultProfileId ?? '',
+      options: [
+        { value: '', label: 'Default (~/.claude)' },
+        ...claudeProfiles.map((p) => ({ value: p.id, label: p.name })),
+      ],
+    });
+  }
+  showModal('New Project', fields, async (values) => {
     const name = values['project-name']?.trim();
     const rawPath = values['project-path']?.trim();
     if (!name || !rawPath) return;
@@ -425,7 +465,7 @@ export function promptNewProject(): void {
     }
 
     closeModal();
-    appState.addProject(name, projectPath);
+    appState.addProject(name, projectPath, values['profile'] || undefined);
   });
 
   const nameInput = document.getElementById('modal-project-name') as HTMLInputElement | null;
@@ -666,6 +706,21 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   const separator = document.createElement('div');
   separator.className = 'tab-context-menu-separator';
 
+  // Project Settings — currently just the default profile, shown only when
+  // the user has Claude profiles to choose from.
+  const claudeProfiles = appState.profiles.filter((p) => p.providerId === 'claude');
+  let settingsItem: HTMLDivElement | null = null;
+  if (claudeProfiles.length > 0) {
+    settingsItem = document.createElement('div');
+    settingsItem.className = 'tab-context-menu-item';
+    settingsItem.textContent = 'Project Settings…';
+    settingsItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideProjectContextMenu();
+      promptProjectSettings(project);
+    });
+  }
+
   const removeItem = document.createElement('div');
   removeItem.className = 'tab-context-menu-item';
   removeItem.textContent = 'Remove Project';
@@ -677,6 +732,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
 
   menu.appendChild(renameItem);
   menu.appendChild(closeAllItem);
+  if (settingsItem) menu.appendChild(settingsItem);
   menu.appendChild(separator);
   menu.appendChild(removeItem);
   document.body.appendChild(menu);
@@ -692,6 +748,26 @@ function hideProjectContextMenu(): void {
     activeProjectContextMenu.remove();
     activeProjectContextMenu = null;
   }
+}
+
+/** Project-level settings dialog. Currently just the default Claude profile. */
+function promptProjectSettings(project: ProjectRecord): void {
+  const claudeProfiles = appState.profiles.filter((p) => p.providerId === 'claude');
+  showModal('Project Settings', [
+    {
+      label: 'Default profile',
+      id: 'profile',
+      type: 'select',
+      defaultValue: project.defaultProfileId ?? '',
+      options: [
+        { value: '', label: 'Default (~/.claude)' },
+        ...claudeProfiles.map((p) => ({ value: p.id, label: p.name })),
+      ],
+    },
+  ], (values) => {
+    appState.setProjectDefaultProfile(project.id, values['profile'] || undefined);
+    closeModal();
+  });
 }
 
 let lastDiscussionsCount = -1;

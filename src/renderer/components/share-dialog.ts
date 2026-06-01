@@ -5,8 +5,10 @@ import { shareSession, acceptShareAnswer, endShare } from '../sharing/share-mana
 import { isSharing, isConnected } from '../sharing/peer-host.js';
 import { validatePin } from '../sharing/share-crypto.js';
 import { createPinInput } from '../dom-utils.js';
+import { bindModalDismiss } from './modal-manager.js';
 
 let activeOverlay: HTMLElement | null = null;
+let activeDismiss: (() => void) | null = null;
 let pendingShareSessionId: string | null = null;
 
 export function showShareDialog(sessionId: string): void {
@@ -210,14 +212,9 @@ export function showShareDialog(sessionId: string): void {
     }
   });
 
-  // ── Handle Escape ──
+  // ── Handle Escape + overlay background click (capture-phase ESC) ──
 
-  overlay.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === 'Escape') closeShareDialog();
-  });
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) closeShareDialog();
-  });
+  activeDismiss = bindModalDismiss({ overlay, onClose: closeShareDialog });
 
   // ── Start sharing flow ──
 
@@ -272,6 +269,10 @@ export function showShareDialog(sessionId: string): void {
 }
 
 export function closeShareDialog(): void {
+  if (activeDismiss) {
+    activeDismiss();
+    activeDismiss = null;
+  }
   if (activeOverlay) {
     activeOverlay.remove();
     activeOverlay = null;

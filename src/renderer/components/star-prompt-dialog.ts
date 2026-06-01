@@ -1,5 +1,6 @@
 import { appState } from '../state.js';
 import { createModalShell } from './modal-shell.js';
+import { pushModal } from './modal-manager.js';
 
 const STAR_THRESHOLD = 10;
 const REPO_URL = 'https://github.com/elirantutia/vibeyard';
@@ -72,23 +73,16 @@ function showStarPromptDialog(): void {
     close();
   };
 
-  const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      close();
-    }
-  };
-
+  const unregisterEsc = pushModal({ onEscape: close });
   starBtn.addEventListener('click', handleStar);
   laterBtn.addEventListener('click', close);
   dontAsk.addEventListener('click', handleDontAsk);
-  document.addEventListener('keydown', handleKeydown);
 
   cleanupFn = () => {
+    unregisterEsc();
     starBtn.removeEventListener('click', handleStar);
     laterBtn.removeEventListener('click', close);
     dontAsk.removeEventListener('click', handleDontAsk);
-    document.removeEventListener('keydown', handleKeydown);
   };
 }
 

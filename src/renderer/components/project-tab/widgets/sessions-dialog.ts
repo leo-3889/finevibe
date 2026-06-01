@@ -1,5 +1,6 @@
 import type { ProjectRecord } from '../../../state.js';
 import { createModalShell, createModalButton } from '../../modal-shell.js';
+import { bindModalDismiss } from '../../modal-manager.js';
 import { renderSessionHistory, closeSessionHistory } from '../../session-history.js';
 
 const INSTANCE_KEY = 'dialog';
@@ -21,23 +22,12 @@ export function showSessionHistoryDialog(project: ProjectRecord): void {
   shell.body.classList.add('session-history-dialog');
   shell.actions.innerHTML = '';
 
+  let teardownDismiss = () => {};
   function close(): void {
     closeSessionHistory(project.id, INSTANCE_KEY);
     shell.overlay.style.display = 'none';
-    document.removeEventListener('keydown', onKeydown);
-    shell.overlay.removeEventListener('click', onOverlayClick);
+    teardownDismiss();
     delete (shell.overlay as CleanupHolder)[CLEANUP_PROP];
-  }
-
-  function onKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      close();
-    }
-  }
-
-  function onOverlayClick(e: MouseEvent): void {
-    if (e.target === shell.overlay) close();
   }
 
   renderSessionHistory(project, shell.body, INSTANCE_KEY);
@@ -47,7 +37,6 @@ export function showSessionHistoryDialog(project: ProjectRecord): void {
   shell.actions.appendChild(closeBtn);
 
   shell.overlay.style.display = 'flex';
-  document.addEventListener('keydown', onKeydown);
-  shell.overlay.addEventListener('click', onOverlayClick);
+  teardownDismiss = bindModalDismiss({ overlay: shell.overlay, onClose: close });
   (shell.overlay as CleanupHolder)[CLEANUP_PROP] = close;
 }

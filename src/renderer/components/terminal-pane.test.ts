@@ -15,6 +15,9 @@ class FakeTerminal {
   options: Record<string, unknown>;
   private keyHandler: ((e: KeyboardEvent) => boolean) | null = null;
   private _selection = '';
+  dataHandlers: Array<(data: string) => void> = [];
+  keyHandlers: Array<(e: { key: string; domEvent: KeyboardEvent }) => void> = [];
+  focusCount = 0;
 
   constructor(options: Record<string, unknown> = {}) {
     this.options = options;
@@ -30,10 +33,11 @@ class FakeTerminal {
   getSelection(): string { return this._selection; }
   setSelection(s: string): void { this._selection = s; }
   registerLinkProvider(): void {}
-  onData(): void {}
+  onData(cb: (data: string) => void): void { this.dataHandlers.push(cb); }
+  onKey(cb: (e: { key: string; domEvent: KeyboardEvent }) => void): void { this.keyHandlers.push(cb); }
   open(): void {}
   write(): void {}
-  focus(): void {}
+  focus(): void { this.focusCount++; }
   dispose(): void {}
 }
 
@@ -73,10 +77,13 @@ vi.mock('../session-insights.js', () => ({
 
 vi.mock('../session-cost.js', () => ({
   removeSession: vi.fn(),
+  getCost: vi.fn(() => null),
+  formatTokens: (n: number) => String(n),
 }));
 
 vi.mock('../session-context.js', () => ({
   removeSession: vi.fn(),
+  getContextSeverity: vi.fn((pct: number) => (pct >= 90 ? 'critical' : pct >= 70 ? 'warning' : '')),
 }));
 
 vi.mock('../provider-availability.js', () => ({
@@ -86,6 +93,10 @@ vi.mock('../provider-availability.js', () => ({
 vi.mock('./terminal-link-provider.js', () => ({
   FilePathLinkProvider: class FakeFilePathLinkProvider {},
   GithubLinkProvider: class FakeGithubLinkProvider {},
+}));
+
+vi.mock('./terminal-context-menu.js', () => ({
+  showTerminalContextMenu: vi.fn(),
 }));
 
 class FakeClassList {
@@ -117,6 +128,7 @@ class FakeElement {
   className = '';
   classList = new FakeClassList();
   dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
   textContent = '';
 
   constructor(public tagName: string) {}
@@ -125,6 +137,16 @@ class FakeElement {
     child.parentElement = this;
     this.children.push(child);
     return child;
+  }
+
+  append(...children: FakeElement[]): void {
+    for (const child of children) this.appendChild(child);
+  }
+
+  replaceChildren(...children: FakeElement[]): void {
+    for (const child of this.children) child.parentElement = null;
+    this.children = [];
+    for (const child of children) this.appendChild(child);
   }
 
   remove(): void {
@@ -198,7 +220,7 @@ describe('terminal pending prompt injection', () => {
     setPendingPrompt('claude-1', 'fix the bug');
     await spawnTerminal('claude-1');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('claude-1', '/project', null, false, '', 'claude', 'fix the bug', undefined);
+    expect(mockPtyCreate).toHaveBeenCalledWith('claude-1', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined);
     expect(mockPtyWrite).not.toHaveBeenCalled();
   });
 
@@ -210,7 +232,7 @@ describe('terminal pending prompt injection', () => {
     setPendingPrompt('codex-1', 'fix the bug');
     await spawnTerminal('codex-1');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('codex-1', '/project', null, false, '', 'codex', 'fix the bug', undefined);
+    expect(mockPtyCreate).toHaveBeenCalledWith('codex-1', '/project', null, false, '', 'codex', 'fix the bug', undefined, '', undefined);
     expect(mockPtyWrite).not.toHaveBeenCalled();
   });
 
@@ -221,7 +243,7 @@ describe('terminal pending prompt injection', () => {
     createTerminalPane('claude-2', '/project', null, false, '', 'claude');
     await spawnTerminal('claude-2');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('claude-2', '/project', null, false, '', 'claude', undefined, undefined);
+    expect(mockPtyCreate).toHaveBeenCalledWith('claude-2', '/project', null, false, '', 'claude', undefined, undefined, '', undefined);
   });
 
   it('does not inject pending prompt from PTY output', async () => {
@@ -234,6 +256,49 @@ describe('terminal pending prompt injection', () => {
     handlePtyData('codex-2', 'some output');
     await vi.runAllTimersAsync();
     expect(mockPtyWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('terminal focus tracking', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('window', makeWindowStub());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  it('does not steal focus when the terminal emits a query-response via onData', async () => {
+    // Regression: CLAUDE_CODE_NO_FLICKER=1 makes the CLI emit cursor-position
+    // queries every frame; xterm answers them through onData. Focus tracking must
+    // ignore that data so it does not yank focus away from e.g. the search input.
+    const { createTerminalPane, getTerminalInstance, getFocusedSessionId } = await import('./terminal-pane.js');
+
+    createTerminalPane('noflicker-1', '/project', null, false, '', 'claude');
+    const term = getTerminalInstance('noflicker-1')!.terminal as unknown as FakeTerminal;
+
+    // Exactly one onData handler (input → PTY) and one onKey handler (focus tracking).
+    expect(term.dataHandlers).toHaveLength(1);
+    expect(term.keyHandlers).toHaveLength(1);
+
+    // Simulate a terminal-generated response arriving via onData.
+    term.dataHandlers.forEach((cb) => cb('\x1b[24;80R'));
+
+    expect(getFocusedSessionId()).toBeNull();
+    expect(term.focusCount).toBe(0);
+  });
+
+  it('marks the session focused on a real keystroke via onKey', async () => {
+    const { createTerminalPane, getTerminalInstance, getFocusedSessionId } = await import('./terminal-pane.js');
+
+    createTerminalPane('key-1', '/project', null, false, '', 'claude');
+    const term = getTerminalInstance('key-1')!.terminal as unknown as FakeTerminal;
+
+    term.keyHandlers.forEach((cb) => cb({ key: 'a', domEvent: {} as KeyboardEvent }));
+
+    expect(getFocusedSessionId()).toBe('key-1');
   });
 });
 
@@ -387,6 +452,144 @@ describe('injectTextIntoRunningSession', () => {
     expect(result).toBe(true);
     expect(mockPtyWrite).toHaveBeenCalledTimes(1);
     expect(mockPtyWrite).toHaveBeenCalledWith('inj-text-3', '/abs/path.ts ');
+  });
+});
+
+describe('profile label in status-line cost string', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('window', makeWindowStub());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  function makeProfile(id: string, name: string, providerId = 'claude') {
+    return { id, name, providerId, configDir: `/cfg/${id}`, managed: true, createdAt: 0 };
+  }
+
+  function costText(instance: any) {
+    return instance.element.querySelector('.cost-display')!.textContent as string;
+  }
+
+  // createTerminalPane(sessionId, projectPath, cliSessionId, isResume, args, providerId, projectId?, envVars?, configDir?)
+  function makePane(create: any, sessionId: string, providerId: string, configDir?: string) {
+    return create(sessionId, '/project', null, false, '', providerId, undefined, '', configDir);
+  }
+
+  it('omits the profile prefix when at most one profile exists for the provider', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'));
+
+    const instance = makePane(createTerminalPane, 'pb-1', 'claude', '/cfg/work');
+
+    expect(costText(instance)).toBe('$0.0000');
+  });
+
+  it('prefixes the cost string with the profile matching the spawned config dir', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'), makeProfile('personal', 'Personal'));
+
+    const instance = makePane(createTerminalPane, 'pb-2', 'claude', '/cfg/personal');
+
+    expect(costText(instance)).toBe('Personal  ·  $0.0000');
+  });
+
+  it('labels a session on the base config dir (no configDir) as "Default"', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'), makeProfile('personal', 'Personal'));
+
+    const instance = makePane(createTerminalPane, 'pb-3', 'claude', undefined); // base ~/.claude
+
+    expect(costText(instance)).toBe('Default  ·  $0.0000');
+  });
+
+  it('folds the profile in front of the model name once cost data arrives', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane, updateCostDisplay } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'), makeProfile('personal', 'Personal'));
+
+    const instance = makePane(createTerminalPane, 'pb-2b', 'claude', '/cfg/personal');
+    updateCostDisplay('pb-2b', {
+      totalCostUsd: 1.5, totalInputTokens: 0, totalOutputTokens: 0,
+      cacheReadTokens: 0, cacheCreationTokens: 0, totalDurationMs: 0, totalApiDurationMs: 0,
+      model: 'Opus 4.8',
+    });
+
+    const cd = instance.element.querySelector('.cost-display')!;
+    expect(cd.querySelector('.ssl-pill')!.textContent).toBe('Personal');
+    expect(cd.querySelector('.ssl-model')!.textContent).toBe('Opus 4.8');
+    expect(cd.querySelector('.ssl-cost')!.textContent).toBe('$1.5000');
+  });
+
+  it('renders a "Context" label as the first item, before the meter', async () => {
+    const { createTerminalPane, updateContextDisplay } = await import('./terminal-pane.js');
+    const instance = makePane(createTerminalPane, 'ctx-label', 'claude', undefined);
+
+    updateContextDisplay('ctx-label', { totalTokens: 90000, contextWindowSize: 200000, usedPercentage: 45 });
+
+    const ind = instance.element.querySelector('.context-indicator')! as any;
+    const label = ind.querySelector('.ssl-label')!;
+    expect(label.textContent).toBe('Context');
+    // The label must be the first child, immediately before the meter.
+    expect(ind.children[0]).toBe(label);
+    expect(ind.children[1].className).toBe('ssl-meter');
+  });
+
+  it('holds the peak output-token count so a per-turn reset does not flicker the rail down', async () => {
+    const { createTerminalPane, updateCostDisplay } = await import('./terminal-pane.js');
+    const instance = makePane(createTerminalPane, 'pb-peak', 'claude', undefined);
+    const io = () => instance.element.querySelector('.ssl-io')!.textContent as string;
+
+    const base = {
+      totalCostUsd: 1, totalInputTokens: 5000,
+      cacheReadTokens: 0, cacheCreationTokens: 0, totalDurationMs: 0, totalApiDurationMs: 0,
+      model: 'Opus 4.8',
+    };
+
+    // Turn output climbs to 185...
+    updateCostDisplay('pb-peak', { ...base, totalOutputTokens: 185 });
+    expect(io()).toBe('5000 in / 185 out');
+
+    // ...then Claude reports the next turn's tiny starting value — display must not regress.
+    updateCostDisplay('pb-peak', { ...base, totalOutputTokens: 2 });
+    expect(io()).toBe('5000 in / 185 out');
+
+    // A genuinely higher value still ratchets the peak up.
+    updateCostDisplay('pb-peak', { ...base, totalOutputTokens: 300 });
+    expect(io()).toBe('5000 in / 300 out');
+  });
+
+  it('ignores profiles belonging to a different provider', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane } = await import('./terminal-pane.js');
+    // Two profiles, but only one targets claude — claude sessions get no prefix.
+    appState.profiles.push(makeProfile('work', 'Work', 'claude'), makeProfile('gem', 'Gem', 'gemini'));
+
+    const instance = makePane(createTerminalPane, 'pb-4', 'claude', '/cfg/work');
+
+    expect(costText(instance)).toBe('$0.0000');
+  });
+
+  it('refreshProfileLabels re-renders the prefix after a second profile is added', async () => {
+    const { appState } = await import('../state.js');
+    const { createTerminalPane, refreshProfileLabels } = await import('./terminal-pane.js');
+    appState.profiles.push(makeProfile('work', 'Work'));
+
+    const instance = makePane(createTerminalPane, 'pb-5', 'claude', '/cfg/work');
+    expect(costText(instance)).toBe('$0.0000');
+
+    appState.profiles.push(makeProfile('personal', 'Personal'));
+    refreshProfileLabels();
+
+    const cd = instance.element.querySelector('.cost-display')!;
+    expect(cd.querySelector('.ssl-pill')!.textContent).toBe('Work');
+    expect(cd.querySelector('.ssl-cost')!.textContent).toBe('$0.0000');
   });
 });
 

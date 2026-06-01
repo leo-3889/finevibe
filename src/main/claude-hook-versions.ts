@@ -36,14 +36,14 @@ export const CLAUDE_HOOK_MIN_VERSIONS: Record<string, string> = {
 };
 
 /** Parse a semver-ish string into a [major, minor, patch] tuple, or null. */
-function parseSemver(v: string): [number, number, number] | null {
+export function parseSemver(v: string): [number, number, number] | null {
   const m = v.match(/(\d+)\.(\d+)\.(\d+)/);
   if (!m) return null;
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
 /** Return true if `actual` >= `required` (semver compare, patch-level). */
-function semverGte(actual: string, required: string): boolean {
+export function semverGte(actual: string, required: string): boolean {
   const a = parseSemver(actual);
   const r = parseSemver(required);
   if (!a || !r) return false;

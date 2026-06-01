@@ -1,4 +1,5 @@
 import { createCustomSelect } from './custom-select.js';
+import { pushModal } from './modal-manager.js';
 
 export interface FieldDef {
   label: string;
@@ -172,11 +173,12 @@ export function showModal(
     if (e.key === 'Enter' && !(e.target instanceof HTMLTextAreaElement)) {
       e.preventDefault();
       handleConfirm();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      handleCancel();
     }
   };
+
+  // ESC is handled by the centralized modal manager (capture phase) so it works
+  // over a focused terminal and never leaks to the PTY.
+  const unregisterEsc = pushModal({ onEscape: handleCancel });
 
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);
@@ -184,6 +186,7 @@ export function showModal(
 
   // Store for cleanup
   (overlay as any)._cleanup = () => {
+    unregisterEsc();
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
     document.removeEventListener('keydown', handleKeydown);
@@ -231,17 +234,17 @@ export function showConfirmDialog(
     if (e.key === 'Enter') {
       e.preventDefault();
       handleConfirm();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      handleCancel();
     }
   };
+
+  const unregisterEsc = pushModal({ onEscape: handleCancel });
 
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);
   document.addEventListener('keydown', handleKeydown);
 
   (overlay as any)._cleanup = () => {
+    unregisterEsc();
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
     document.removeEventListener('keydown', handleKeydown);
@@ -290,16 +293,19 @@ export function showPropertiesDialog(
 
   const handleClose = () => closeModal();
   const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === 'Escape') {
+    if (e.key === 'Enter') {
       e.preventDefault();
       handleClose();
     }
   };
 
+  const unregisterEsc = pushModal({ onEscape: handleClose });
+
   btnConfirm.addEventListener('click', handleClose);
   document.addEventListener('keydown', handleKeydown);
 
   (overlay as any)._cleanup = () => {
+    unregisterEsc();
     btnConfirm.removeEventListener('click', handleClose);
     document.removeEventListener('keydown', handleKeydown);
     btnCancel.style.display = '';

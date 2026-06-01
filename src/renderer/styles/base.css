@@ -54,6 +54,7 @@
   --status-completed: #34a853;
   --bookmark: #e8a317;
   --color-warning: #e2b65f;
+  --color-critical: #f0656b;
 
   --tab-active: #0e0f13;
   --tab-inactive: #101116;
@@ -94,6 +95,7 @@
   --status-completed: #34a853;
   --bookmark: #e8a317;
   --color-warning: #e2b65f;
+  --color-critical: #f0656b;
   --tab-active: #0e0f13;
   --tab-inactive: #101116;
   --pane-focus: var(--accent);
@@ -123,6 +125,7 @@
   --status-completed: #34a853;
   --bookmark: #c98a13;
   --color-warning: #c5912f;
+  --color-critical: #d6454a;
   --tab-active: #f7f7fb;
   --tab-inactive: #f0f1f6;
   --pane-focus: var(--accent);

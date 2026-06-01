@@ -1,4 +1,5 @@
 import { appState } from '../state.js';
+import { pushModal } from './modal-manager.js';
 
 let cleanupFn: (() => void) | null = null;
 let onAddedFn: (() => void) | null = null;
@@ -97,15 +98,16 @@ export function showMcpAddModal(onAdded: () => void): void {
   const handleConfirm = () => submit(overlay);
   const handleKeydown = (e: Event) => {
     const ke = e as KeyboardEvent;
-    if (ke.key === 'Escape') { ke.preventDefault(); closeMcpAddModal(); }
-    else if (ke.key === 'Enter' && !(e.target instanceof HTMLTextAreaElement)) { ke.preventDefault(); submit(overlay); }
+    if (ke.key === 'Enter' && !(e.target instanceof HTMLTextAreaElement)) { ke.preventDefault(); submit(overlay); }
   };
 
+  const unregisterEsc = pushModal({ onEscape: handleCancel });
   cancel.addEventListener('click', handleCancel);
   confirm.addEventListener('click', handleConfirm);
   overlay.addEventListener('keydown', handleKeydown);
 
   cleanupFn = () => {
+    unregisterEsc();
     cancel.removeEventListener('click', handleCancel);
     confirm.removeEventListener('click', handleConfirm);
     overlay.removeEventListener('keydown', handleKeydown);

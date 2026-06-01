@@ -3,7 +3,7 @@ import { initSidebar, promptNewProject } from './components/sidebar.js';
 import { initTabBar } from './components/tab-bar.js';
 import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
-import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals } from './components/terminal-pane.js';
+import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals, refreshProfileLabels } from './components/terminal-pane.js';
 import { setIdle, setHookStatus, notifyInterrupt } from './session-activity.js';
 import { parseCost, setCostData, onChange as onCostChange } from './session-cost.js';
 import { parseTitle, clearSession as clearTitleSession } from './session-title.js';
@@ -219,6 +219,9 @@ async function main(): Promise<void> {
     applyThemeToAllShells(theme);
     applyThemeToAllRemoteTerminals(theme);
   });
+  // Adding/removing a profile changes whether the status-line profile label is shown.
+  appState.on('profiles-changed', () => refreshProfileLabels());
+
   const savedZoom = getZoomFactor();
   if (savedZoom !== 1.0) window.vibeyard.zoom.set(savedZoom);
 

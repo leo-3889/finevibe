@@ -1,10 +1,12 @@
 import { appState } from '../state.js';
 import { createModalShell, createModalButton } from './modal-shell.js';
+import { pushModal } from './modal-manager.js';
 import type { PreferencesContext, Section, SectionController } from './preferences/section.js';
 import { createGeneralSection } from './preferences/general-section.js';
 import { createAppearanceSection } from './preferences/appearance-section.js';
 import { createBrowserSection } from './preferences/browser-section.js';
 import { createShortcutsSection } from './preferences/shortcuts-section.js';
+import { createProfilesSection } from './preferences/profiles-section.js';
 import { createSetupSection, updateSetupBadge } from './preferences/setup-section.js';
 import { createAboutSection } from './preferences/about-section.js';
 import { createHelpSection } from './preferences/help-section.js';
@@ -16,6 +18,7 @@ const SECTIONS: { id: Section; label: string; create: (ctx: PreferencesContext) 
   { id: 'appearance', label: 'Appearance', create: createAppearanceSection },
   { id: 'browser', label: 'Browser', create: createBrowserSection },
   { id: 'shortcuts', label: 'Shortcuts', create: createShortcutsSection },
+  { id: 'profiles', label: 'Profiles', create: createProfilesSection },
   { id: 'setup', label: 'Setup', create: createSetupSection },
   { id: 'help', label: 'Help', create: createHelpSection },
   { id: 'about', label: 'About', create: createAboutSection },
@@ -144,16 +147,21 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
   };
 
   const handleKeydown = (e: KeyboardEvent) => {
-    // Don't intercept if we're recording a shortcut
+    // Don't intercept Enter while recording a shortcut. ESC is handled by the
+    // centralized modal manager (capture phase) so it works over a focused
+    // terminal and never leaks to the PTY.
     if (activeRecorder) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       handleConfirm();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      handleCancel();
     }
   };
+
+  // ESC during shortcut recording is a consumed no-op (the recorder owns keys).
+  const unregisterEsc = pushModal({
+    onEscape: handleCancel,
+    canEscape: () => activeRecorder == null,
+  });
 
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);
@@ -164,6 +172,7 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
     for (const controller of controllers.values()) {
       controller.destroy?.();
     }
+    unregisterEsc();
     btnConfirm.removeEventListener('click', handleConfirm);
     btnCancel.removeEventListener('click', handleCancel);
     document.removeEventListener('keydown', handleKeydown);

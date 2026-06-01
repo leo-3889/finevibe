@@ -1,4 +1,4 @@
-export type Section = 'general' | 'appearance' | 'browser' | 'shortcuts' | 'setup' | 'help' | 'about';
+export type Section = 'general' | 'appearance' | 'browser' | 'shortcuts' | 'profiles' | 'setup' | 'help' | 'about';
 
 /**
  * Passed to each section factory so sections can talk back to the orchestrator
