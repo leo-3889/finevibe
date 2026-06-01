@@ -15,6 +15,9 @@ class FakeTerminal {
   options: Record<string, unknown>;
   private keyHandler: ((e: KeyboardEvent) => boolean) | null = null;
   private _selection = '';
+  dataHandlers: Array<(data: string) => void> = [];
+  keyHandlers: Array<(e: { key: string; domEvent: KeyboardEvent }) => void> = [];
+  focusCount = 0;
 
   constructor(options: Record<string, unknown> = {}) {
     this.options = options;
@@ -30,10 +33,11 @@ class FakeTerminal {
   getSelection(): string { return this._selection; }
   setSelection(s: string): void { this._selection = s; }
   registerLinkProvider(): void {}
-  onData(): void {}
+  onData(cb: (data: string) => void): void { this.dataHandlers.push(cb); }
+  onKey(cb: (e: { key: string; domEvent: KeyboardEvent }) => void): void { this.keyHandlers.push(cb); }
   open(): void {}
   write(): void {}
-  focus(): void {}
+  focus(): void { this.focusCount++; }
   dispose(): void {}
 }
 
@@ -252,6 +256,49 @@ describe('terminal pending prompt injection', () => {
     handlePtyData('codex-2', 'some output');
     await vi.runAllTimersAsync();
     expect(mockPtyWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('terminal focus tracking', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('window', makeWindowStub());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  it('does not steal focus when the terminal emits a query-response via onData', async () => {
+    // Regression: CLAUDE_CODE_NO_FLICKER=1 makes the CLI emit cursor-position
+    // queries every frame; xterm answers them through onData. Focus tracking must
+    // ignore that data so it does not yank focus away from e.g. the search input.
+    const { createTerminalPane, getTerminalInstance, getFocusedSessionId } = await import('./terminal-pane.js');
+
+    createTerminalPane('noflicker-1', '/project', null, false, '', 'claude');
+    const term = getTerminalInstance('noflicker-1')!.terminal as unknown as FakeTerminal;
+
+    // Exactly one onData handler (input → PTY) and one onKey handler (focus tracking).
+    expect(term.dataHandlers).toHaveLength(1);
+    expect(term.keyHandlers).toHaveLength(1);
+
+    // Simulate a terminal-generated response arriving via onData.
+    term.dataHandlers.forEach((cb) => cb('\x1b[24;80R'));
+
+    expect(getFocusedSessionId()).toBeNull();
+    expect(term.focusCount).toBe(0);
+  });
+
+  it('marks the session focused on a real keystroke via onKey', async () => {
+    const { createTerminalPane, getTerminalInstance, getFocusedSessionId } = await import('./terminal-pane.js');
+
+    createTerminalPane('key-1', '/project', null, false, '', 'claude');
+    const term = getTerminalInstance('key-1')!.terminal as unknown as FakeTerminal;
+
+    term.keyHandlers.forEach((cb) => cb({ key: 'a', domEvent: {} as KeyboardEvent }));
+
+    expect(getFocusedSessionId()).toBe('key-1');
   });
 });
 

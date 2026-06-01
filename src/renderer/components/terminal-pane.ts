@@ -171,7 +171,11 @@ export function createTerminalPane(
   element.addEventListener('mousedown', () => {
     setFocused(sessionId);
   });
-  terminal.onData(() => {
+  // Use onKey (real keystrokes only), NOT onData: onData also fires for
+  // terminal-generated responses to query escape sequences (e.g. cursor-position
+  // reports under CLAUDE_CODE_NO_FLICKER=1), which would otherwise steal focus
+  // back to the terminal on every frame.
+  terminal.onKey(() => {
     if (focusedSessionId !== sessionId) {
       setFocused(sessionId);
     }
