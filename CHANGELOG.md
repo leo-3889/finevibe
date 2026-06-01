@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-06-01
+
+### Features
+
+- Claude profiles for multi-license isolated config dirs
+- Custom environment variables to new sessions
+- Right-click context menu for terminal panes (#116)
+
+### Fixes
+
+- Terminal stealing focus under CLAUDE_CODE_NO_FLICKER
+- Modal esc-to-close over focused terminals via centralized modal manager
+
+### Changes
+
+- Improve session status line with graphical context meter and stable token rail
+
 ## [0.3.0] - 2026-05-30
 
 ### Features
