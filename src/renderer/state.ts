@@ -1,6 +1,5 @@
 import type { VibeyardApi } from './types.js';
 import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, ReadinessSnapshot, TeamMember, TeamData, Profile, OverviewLayout } from '../shared/types.js';
-import { getCost } from './session-cost.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename, isAbsolutePath } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
@@ -661,8 +660,7 @@ class AppState {
     // Archive CLI sessions before removing (cost data must be captured before session-removed triggers destroyTerminal)
     const session = project.sessions.find((s) => s.id === sessionId);
     if (session && isCliSession(session) && this.state.preferences.sessionHistoryEnabled) {
-      // Skip archiving empty sessions (no CLI activity)
-      if (session.cliSessionId || getCost(session.id) !== null) {
+      if (this.isArchivable(session, project)) {
         this.archiveSession(project, session);
       }
     }
@@ -680,6 +678,29 @@ class AppState {
     this.persist();
     this.emit('session-removed', { projectId, sessionId });
     this.emit('session-changed');
+  }
+
+  /** Resolve the config dir backing a provider profile (for transcript lookup). */
+  private profileConfigDir(providerId: ProviderId, profileId?: string): string | undefined {
+    if (!profileId) return undefined;
+    return this.profiles.find((p) => p.id === profileId && p.providerId === providerId)?.configDir;
+  }
+
+  /**
+   * Whether a CLI session is worth keeping in history: only if its conversation
+   * transcript actually exists on disk. A cliSessionId alone is NOT enough — it is
+   * assigned at PTY spawn (SessionStart hook) before any user interaction, so a session
+   * that was never prompted has an id but no transcript and would fail to resume.
+   */
+  private isArchivable(session: SessionRecord, project: ProjectRecord): boolean {
+    if (!session.cliSessionId) return false;
+    const providerId = session.providerId ?? 'claude';
+    return window.vibeyard.session.transcriptExistsSync(
+      providerId,
+      session.cliSessionId,
+      project.path,
+      this.profileConfigDir(providerId, session.profileId),
+    );
   }
 
   private archiveSession(project: ProjectRecord, session: SessionRecord): void {
@@ -729,6 +750,33 @@ class AppState {
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);
     return session;
+  }
+
+  /**
+   * Resume from history, but first verify the transcript still exists on disk.
+   * If it's gone (a stale entry, or the user deleted the transcript), silently
+   * drop the history entry instead of spawning a session that would immediately
+   * exit and auto-close. Preferred entry point for all UI resume actions.
+   */
+  async resumeFromHistorySafe(projectId: string, archivedSessionId: string): Promise<SessionRecord | undefined> {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return undefined;
+
+    const archived = project.sessionHistory?.find((a) => a.id === archivedSessionId);
+    if (!archived || !archived.cliSessionId) return undefined;
+
+    const exists = await window.vibeyard.session.transcriptExists(
+      archived.providerId,
+      archived.cliSessionId,
+      project.path,
+      this.profileConfigDir(archived.providerId, archived.profileId),
+    );
+    if (!exists) {
+      this.removeHistoryEntry(projectId, archivedSessionId);
+      return undefined;
+    }
+
+    return this.resumeFromHistory(projectId, archivedSessionId);
   }
 
   /** Open a CLI session by cliSessionId, bypassing Vibeyard history. Used for cross-project deep search results. */
@@ -814,9 +862,12 @@ class AppState {
     if (!session) return;
 
     // If session already had a different cliSessionId (e.g., /clear was used),
-    // archive the previous session and reset the tab name
+    // archive the previous session (only if its transcript exists) and reset the tab name.
+    // isArchivable is checked while session.cliSessionId still holds the OLD id.
     if (session.cliSessionId && session.cliSessionId !== cliSessionId) {
-      this.archiveSession(project, session);
+      if (this.isArchivable(session, project)) {
+        this.archiveSession(project, session);
+      }
       session.name = `Session ${project.sessions.length + (project.sessionHistory?.length || 0)}`;
       session.userRenamed = false;
       this.emit('cli-session-cleared', { sessionId });

@@ -114,7 +114,7 @@ export const createSessionsWidget: WidgetFactory = (host) => {
 
     if (archived.cliSessionId) {
       row.addEventListener('click', () => {
-        appState.resumeFromHistory(host.projectId, archived.id);
+        void appState.resumeFromHistorySafe(host.projectId, archived.id);
       });
     } else {
       row.classList.add('disabled');

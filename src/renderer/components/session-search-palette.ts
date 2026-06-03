@@ -244,7 +244,7 @@ function openResult(r: ResolvedResult): void {
     appState.setActiveSession(r.projectId, r.activeSessionId);
   } else if (r.projectId && r.archivedId) {
     appState.setActiveProject(r.projectId);
-    appState.resumeFromHistory(r.projectId, r.archivedId);
+    void appState.resumeFromHistorySafe(r.projectId, r.archivedId);
   } else {
     // Not in Vibeyard — find or create project by cwd, then open session directly
     let project = appState.projects.find(p => p.path === r.projectCwd);

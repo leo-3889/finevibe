@@ -84,7 +84,7 @@ function archivedRow(entry: ArchivedSession, projectId: string): SessionRow {
     meta: `Closed · ${formatRelative(Date.parse(entry.closedAt))}${canResume ? '' : ' · cannot resume'} · ${provider}`,
     onClick: canResume
       ? () => {
-          appState.resumeFromHistory(projectId, entry.id);
+          void appState.resumeFromHistorySafe(projectId, entry.id);
           closeModal();
         }
       : undefined,

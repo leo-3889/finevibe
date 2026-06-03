@@ -17,6 +17,8 @@ export interface VibeyardApi {
   };
   session: {
     buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string): Promise<string>;
+    transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): Promise<boolean>;
+    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): boolean;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
     onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
@@ -189,6 +191,10 @@ const api: VibeyardApi = {
   session: {
     buildResumeWithPrompt: (sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir) =>
       ipcRenderer.invoke('session:buildResumeWithPrompt', sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir),
+    transcriptExists: (providerId, cliSessionId, projectPath, configDir) =>
+      ipcRenderer.invoke('session:transcriptExists', providerId, cliSessionId, projectPath, configDir),
+    transcriptExistsSync: (providerId, cliSessionId, projectPath, configDir) =>
+      ipcRenderer.sendSync('session:transcriptExistsSync', providerId, cliSessionId, projectPath, configDir),
     deepSearch: (query) =>
       ipcRenderer.invoke('session:deepSearch', query),
     onHookStatus: (callback) =>

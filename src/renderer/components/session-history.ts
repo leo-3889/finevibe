@@ -45,7 +45,7 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
     resumeItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideHistoryContextMenu();
-      appState.resumeFromHistory(project.id, archived.id);
+      void appState.resumeFromHistorySafe(project.id, archived.id);
     });
     menu.appendChild(resumeItem);
   }
@@ -234,7 +234,7 @@ function renderList(
     if (archived.cliSessionId) {
       item.style.cursor = 'pointer';
       item.addEventListener('click', () => {
-        appState.resumeFromHistory(project.id, archived.id);
+        void appState.resumeFromHistorySafe(project.id, archived.id);
       });
     }
     item.addEventListener('contextmenu', (e) => {
