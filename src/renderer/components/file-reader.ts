@@ -6,6 +6,7 @@ import { destroySearchBar } from './search-bar.js';
 import { escapeHtml } from './dom-search-backend.js';
 import { isAbsolutePath, dirname, samePath } from '../../shared/platform.js';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../../shared/token-estimate.js';
+import { pathToFileURL } from '../file-url.js';
 
 interface FileReaderInstance {
   element: HTMLElement;
@@ -26,6 +27,10 @@ function isMarkdownFile(filePath: string): boolean {
 
 function isImageFile(filePath: string): boolean {
   return /\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(filePath);
+}
+
+function isHtmlFile(filePath: string): boolean {
+  return /\.(html?|xhtml)$/i.test(filePath);
 }
 
 const instances = new Map<string, FileReaderInstance>();
@@ -234,6 +239,20 @@ export function createFileReaderPane(sessionId: string, filePath: string, target
     kind: isImage ? 'image' : 'text',
     unsupported: false,
   };
+
+  if (isHtmlFile(filePath)) {
+    const openBtn = document.createElement('button');
+    openBtn.className = 'search-toggle-btn file-reader-open-browser';
+    openBtn.textContent = 'Open in Browser';
+    openBtn.title = 'Open this file in the embedded browser';
+    openBtn.addEventListener('click', () => {
+      const project = appState.activeProject;
+      if (project) {
+        appState.addBrowserTabSession(project.id, pathToFileURL(resolveFilePath(instance)));
+      }
+    });
+    header.insertBefore(openBtn, badge);
+  }
 
   if (isMd) {
     const toggleGroup = document.createElement('div');
