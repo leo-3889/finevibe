@@ -13,6 +13,8 @@ export interface FieldDef {
   buttonLabel?: string;
   onButtonClick?: (input: HTMLInputElement) => void;
   onChange?: (checked: boolean) => void;
+  /** Fired when a `select` field's value changes (the new value). */
+  onSelectChange?: (value: string) => void;
 }
 
 const overlay = document.getElementById('modal-overlay')!;
@@ -109,7 +111,7 @@ export function showModal(
       div.appendChild(textarea);
     } else if (field.type === 'select') {
       div.appendChild(label);
-      const sel = createCustomSelect(`modal-${field.id}`, field.options ?? [], field.defaultValue);
+      const sel = createCustomSelect(`modal-${field.id}`, field.options ?? [], field.defaultValue, field.onSelectChange);
       div.appendChild(sel.element);
       if (!(overlay as any)._selectCleanups) (overlay as any)._selectCleanups = [];
       (overlay as any)._selectCleanups.push(() => sel.destroy());

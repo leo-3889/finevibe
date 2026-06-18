@@ -341,6 +341,35 @@ export function registerIpcHandlers(): void {
     return buildHandoffPrompt({ fromProviderLabel, sessionName, transcriptPath });
   });
 
+  // Whether a resumable transcript actually exists on disk for a given CLI session.
+  // Fail-open (return true) when we cannot determine it, so resume/archive is never
+  // wrongly blocked for providers we can't introspect.
+  const transcriptExists = (
+    providerId: ProviderId,
+    cliSessionId: string | null,
+    projectPath: string,
+    configDir?: string,
+  ): boolean => {
+    if (!cliSessionId) return true;
+    try {
+      const provider = getProvider(providerId);
+      if (!provider.getTranscriptPath) return true;
+      // getTranscriptPath returns null when the transcript is absent (every provider
+      // verifies existence on disk), so a non-null path means the transcript exists.
+      return provider.getTranscriptPath(cliSessionId, projectPath, configDir) !== null;
+    } catch (err) {
+      console.warn('transcriptExists check failed:', err);
+      return true;
+    }
+  };
+  ipcMain.handle('session:transcriptExists', (_event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string) =>
+    transcriptExists(providerId, cliSessionId, projectPath, configDir));
+  // Synchronous variant: the renderer gates session archiving on this at close time,
+  // where the surrounding remove/persist/emit logic must stay synchronous.
+  ipcMain.on('session:transcriptExistsSync', (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string) => {
+    event.returnValue = transcriptExists(providerId, cliSessionId, projectPath, configDir);
+  });
+
   ipcMain.handle('session:deepSearch', (_event, query: string) => {
     return searchSessions(query);
   });

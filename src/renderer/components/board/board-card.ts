@@ -129,7 +129,7 @@ function confirmDeleteTask(task: BoardTask): void {
 }
 
 
-export function runTask(task: BoardTask): void {
+export async function runTask(task: BoardTask): Promise<void> {
   const project = appState.activeProject;
   if (!project) return;
 
@@ -151,7 +151,7 @@ export function runTask(task: BoardTask): void {
     } else {
       const archived = project.sessionHistory?.find(a => a.cliSessionId === task.cliSessionId);
       if (archived) {
-        const session = appState.resumeFromHistory(project.id, archived.id);
+        const session = await appState.resumeFromHistorySafe(project.id, archived.id);
         if (session) {
           updateTask(task.id, { sessionId: session.id });
           resumed = true;

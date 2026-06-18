@@ -88,14 +88,15 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     },
   ];
 
+  const preferred = appState.preferences.defaultProvider ?? 'claude';
+  const effectiveProvider = (availabilityMap.get(preferred) ? preferred : providers.find(p => availabilityMap.get(p.id))?.id) ?? 'claude';
   if (providers.length > 1) {
-    const preferred = appState.preferences.defaultProvider ?? 'claude';
-    const firstAvailable = (availabilityMap.get(preferred) ? preferred : providers.find(p => availabilityMap.get(p.id))?.id) ?? 'claude';
     fields.unshift({
       label: 'Provider',
       id: 'provider',
       type: 'select',
-      defaultValue: firstAvailable,
+      defaultValue: effectiveProvider,
+      onSelectChange: (value) => setProfileFieldVisible(value === 'claude'),
       options: providers.map(p => {
         const available = availabilityMap.get(p.id);
         return { value: p.id, label: available ? p.displayName : `${p.displayName} (not installed)`, disabled: !available };
@@ -103,7 +104,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     });
   }
 
-  // Profile picker (Claude only for now). Defaults to the project/global default.
+  // Profile picker (Claude only). Defaults to the project/global default.
   const claudeProfiles = appState.profiles.filter(p => p.providerId === 'claude');
   if (claudeProfiles.length > 0) {
     fields.push({
@@ -143,6 +144,17 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     const session = appState.addSession(project.id, name, args, providerId, profileId, envVars);
     if (session && onCreated) onCreated(session);
   });
+
+  // Profiles only apply to Claude — hide the field when the dialog opens
+  // defaulted to a non-Claude provider. The provider select's onSelectChange
+  // keeps it in sync as the user switches.
+  if (claudeProfiles.length > 0) setProfileFieldVisible(effectiveProvider === 'claude');
+}
+
+/** Toggle the Profile field's wrapper in the open New Session modal. */
+function setProfileFieldVisible(visible: boolean): void {
+  const wrapper = document.getElementById('modal-profile')?.closest('.modal-field') as HTMLElement | null;
+  if (wrapper) wrapper.style.display = visible ? '' : 'none';
 }
 
 function addMcpInspector(): void {
