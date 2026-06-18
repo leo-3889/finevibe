@@ -237,6 +237,8 @@ export interface BoardTask {
   sessionId?: string;
   cliSessionId?: string;
   providerId?: ProviderId;
+  /** Profile (CLI config dir) to run this task under; falls back to project/global default when unset. */
+  profileId?: string;
   planMode?: boolean;
   tags?: string[];
   createdAt: number;

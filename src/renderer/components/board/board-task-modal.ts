@@ -78,6 +78,11 @@ export function showTaskModal(
     task?.providerId
     ?? appState.preferences.defaultProvider
     ?? 'claude';
+  // Only the task's own explicit profile pre-selects the dropdown. "Default"
+  // (empty) means "follow the project/global default at run time" — we must NOT
+  // pre-fill the resolved default id here, or selecting "Default" would never
+  // stick (it would reappear as the default profile on reopen).
+  let currentProfileId: string = task?.profileId ?? '';
   const initialPlanMode = task?.planMode ?? (mode === 'create');
   const { row: planModeRow, checkbox: planModeCheckbox } =
     createPlanModeRow('Plan mode', initialPlanMode);
@@ -107,6 +112,7 @@ export function showTaskModal(
         columnId: targetColumnId,
         tags: currentTags.length > 0 ? currentTags : undefined,
         providerId: currentProviderId,
+        profileId: currentProfileId || undefined,
         planMode,
       });
     } else if (task) {
@@ -116,6 +122,7 @@ export function showTaskModal(
         notes: notes || undefined,
         tags: currentTags.length > 0 ? currentTags : undefined,
         providerId: currentProviderId,
+        profileId: currentProfileId || undefined,
         planMode,
         ...(values.columnId ? { columnId: values.columnId } : {}),
       });
@@ -254,6 +261,7 @@ export function showTaskModal(
   const onProviderChange = (value: string) => {
     currentProviderId = value as ProviderId;
     refreshPlanModeAvailability();
+    renderProfileField();
   };
 
   const initialProviderOptions = buildProviderOptions();
@@ -268,17 +276,72 @@ export function showTaskModal(
   providerFieldDiv.appendChild(providerSelect.element);
   registerModalCleanup(() => providerSelect.destroy());
 
+  // Profile dropdown (provider-scoped; today only Claude has profiles).
+  // Hidden entirely when the selected provider has no profiles.
+  const profileFieldDiv = document.createElement('div');
+  profileFieldDiv.className = 'modal-field';
+  const profileLabel = document.createElement('label');
+  profileLabel.textContent = 'Profile';
+  profileFieldDiv.appendChild(profileLabel);
+
+  let profileSelect: CustomSelectInstance | null = null;
+  registerModalCleanup(() => profileSelect?.destroy());
+
+  function renderProfileField(): void {
+    const profiles = appState.profiles.filter(p => p.providerId === currentProviderId);
+    if (profileSelect) {
+      profileSelect.destroy();
+      profileSelect.element.remove();
+      profileSelect = null;
+    }
+    if (profiles.length === 0) {
+      profileFieldDiv.style.display = 'none';
+      currentProfileId = '';
+      return;
+    }
+    profileFieldDiv.style.display = '';
+    // Reset selection if the pinned profile doesn't belong to this provider.
+    if (currentProfileId && !profiles.some(p => p.id === currentProfileId)) {
+      currentProfileId = '';
+    }
+    // Label the "Default" option with the project/global default profile it
+    // resolves to, so a task with no explicit profile visibly shows which
+    // profile it will run under — while still saving as "follow the default"
+    // (empty) rather than pinning a copy of that id onto the task.
+    const defaultId =
+      appState.activeProject?.defaultProfileId
+      ?? appState.preferences.defaultProfileId
+      ?? '';
+    const defaultProfile = profiles.find(p => p.id === defaultId);
+    // Fold an explicit pin of the default profile into "follow default" so the
+    // default profile is never listed twice (once as "Default (X)", once as "X").
+    if (defaultProfile && currentProfileId === defaultProfile.id) currentProfileId = '';
+    const options = [
+      { value: '', label: defaultProfile ? `Default (${defaultProfile.name})` : 'Default' },
+      ...profiles
+        .filter(p => p.id !== defaultProfile?.id)
+        .map(p => ({ value: p.id, label: p.name })),
+    ];
+    profileSelect = createCustomSelect('taskProfile', options, currentProfileId, v => {
+      currentProfileId = v;
+    });
+    profileFieldDiv.appendChild(profileSelect.element);
+  }
+
   const planModeFieldDiv = document.createElement('div');
   planModeFieldDiv.className = 'modal-field modal-field-checkbox';
   planModeFieldDiv.appendChild(planModeRow);
 
   refreshPlanModeAvailability();
+  renderProfileField();
 
   if (columnField) {
     modalBody.insertBefore(providerFieldDiv, columnField);
+    modalBody.insertBefore(profileFieldDiv, columnField);
     modalBody.insertBefore(planModeFieldDiv, columnField);
   } else {
     modalBody.appendChild(providerFieldDiv);
+    modalBody.appendChild(profileFieldDiv);
     modalBody.appendChild(planModeFieldDiv);
   }
 
@@ -320,6 +383,7 @@ export function showTaskModal(
           notes: notes || undefined,
           tags: currentTags.length > 0 ? currentTags : undefined,
           providerId: currentProviderId,
+          profileId: currentProfileId || undefined,
           planMode,
           ...(columnId ? { columnId } : {}),
         });
