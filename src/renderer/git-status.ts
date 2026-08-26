@@ -246,6 +246,12 @@ export function startPolling(): void {
   appState.on('state-loaded', onActiveProjectChanged);
   appState.on('project-changed', onActiveProjectChanged);
   appState.on('session-added', () => poll());
+  // Drop the session→worktree mapping when a session closes (the map would
+  // otherwise grow by one entry per session ever run, for the app's lifetime).
+  appState.on('session-removed', (data) => {
+    const sessionId = (data as { sessionId?: string })?.sessionId;
+    if (sessionId) sessionWorktreeMap.delete(sessionId);
+  });
 
   // Detect worktree on session change
   appState.on('session-changed', () => {
