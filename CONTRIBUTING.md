@@ -11,9 +11,11 @@ Thanks for your interest in contributing! Here's how to get started.
    ```
 3. Build and run:
    ```bash
-   npm run build
    npm start
    ```
+
+   `npm start` compiles all three targets first, so running `npm run build`
+   separately beforehand just builds everything twice.
 
 There is **no hot reload** — changes require a full rebuild and app restart.
 
@@ -33,6 +35,30 @@ No lint tooling is configured yet (planned). For now:
 
 - Use 2-space indentation
 - Follow existing patterns in the codebase
+
+## Commit Messages
+
+Commits use a structured prefix so release notes can be generated automatically.
+Format: `<prefix> <concise lowercase description>` — one line, no trailing period.
+
+| Release notes section | Prefixes |
+|---|---|
+| Features | `add`, `feat`, `implement`, `introduce`, `support` |
+| Fixes | `fix`, `resolve`, `patch`, `correct` |
+| Changes | `improve`, `update`, `remove`, `refactor`, `bump` — plus anything unmatched |
+
+Examples:
+
+```
+add dark mode support
+fix session resume on restart
+refactor PTY lifecycle management
+```
+
+Keep the prefix as the first word on its own — don't follow it with a `:` or a
+scope. The generator strips only the leading keyword, so a message like
+`feat : thing - description` would appear in the changelog with the `:` and scope
+still attached.
 
 ## Pull Request Workflow
 
