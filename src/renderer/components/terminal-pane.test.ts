@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ContextWindowInfo, CostInfo } from '../../shared/types.js';
 
 const providerCaps = new Map([
   ['claude', { costTracking: true, contextWindow: true, pendingPromptTrigger: 'startup-arg' }],
@@ -35,6 +36,7 @@ class FakeTerminal {
   registerLinkProvider(): void {}
   onData(cb: (data: string) => void): void { this.dataHandlers.push(cb); }
   onKey(cb: (e: { key: string; domEvent: KeyboardEvent }) => void): void { this.keyHandlers.push(cb); }
+  onSelectionChange(): void {}
   open(): void {}
   write(): void {}
   focus(): void { this.focusCount++; }
@@ -83,6 +85,7 @@ vi.mock('../session-cost.js', () => ({
 
 vi.mock('../session-context.js', () => ({
   removeSession: vi.fn(),
+  getContext: vi.fn(() => null),
   getContextSeverity: vi.fn((pct: number) => (pct >= 90 ? 'critical' : pct >= 70 ? 'warning' : '')),
 }));
 
@@ -120,12 +123,19 @@ class FakeClassList {
   contains(token: string): boolean {
     return this.values.has(token);
   }
+
+  get value(): string {
+    return [...this.values].join(' ');
+  }
+
+  set value(v: string) {
+    this.values = new Set(v.split(/\s+/).filter(Boolean));
+  }
 }
 
 class FakeElement {
   children: FakeElement[] = [];
   parentElement: FakeElement | null = null;
-  className = '';
   classList = new FakeClassList();
   dataset: Record<string, string> = {};
   style: Record<string, string> = {};
@@ -133,7 +143,19 @@ class FakeElement {
 
   constructor(public tagName: string) {}
 
+  // One source of truth, as in the DOM: production reads classList while most
+  // setup writes className, and letting them drift makes these tests lie.
+  get className(): string {
+    return this.classList.value;
+  }
+
+  set className(value: string) {
+    this.classList.value = value;
+  }
+
   appendChild(child: FakeElement): FakeElement {
+    // Mirror the DOM: appending a node that already has a parent moves it.
+    child.remove();
     child.parentElement = this;
     this.children.push(child);
     return child;
@@ -157,10 +179,31 @@ class FakeElement {
 
   addEventListener(): void {}
 
+  matches(selector: string): boolean {
+    return selector.split(',').some((part) => {
+      const sel = part.trim();
+      if (sel.startsWith('.')) return this.hasClass(sel.slice(1));
+      return this.tagName.toLowerCase() === sel.toLowerCase();
+    });
+  }
+
+  closest(selector: string): FakeElement | null {
+    let node: FakeElement | null = this as FakeElement;
+    while (node) {
+      if (node.matches(selector)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  hasClass(name: string): boolean {
+    return this.classList.contains(name);
+  }
+
   querySelector(selector: string): FakeElement | null {
     if (selector.startsWith('.')) {
       const className = selector.slice(1);
-      return this.find((child) => child.className.split(/\s+/).includes(className) || child.classList.contains(className));
+      return this.find((child) => child.hasClass(className));
     }
     return null;
   }
@@ -303,6 +346,160 @@ describe('terminal focus tracking', () => {
 
     expect(getFocusedSessionId()).toBe('key-1');
   });
+});
+
+describe('pane attach, focus and fit are idempotent', () => {
+  // Background session chatter (a statusLine tick, a status change) re-runs
+  // renderLayout(). Anything it does to the pane's DOM on a render that changed
+  // nothing is felt by the user as focus loss or a lost selection.
+  let doc: FakeDocument;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    doc = new FakeDocument();
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('window', makeWindowStub());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  /** Stand in for the .xterm node terminal.open() would have created. */
+  function markOpened(element: FakeElement): void {
+    const wrap = element.querySelector('.xterm-wrap')!;
+    const screen = new FakeElement('div');
+    screen.className = 'xterm';
+    wrap.appendChild(screen);
+  }
+
+  it('does not re-append a pane that is already in the container', async () => {
+    const { createTerminalPane, attachToContainer, getTerminalInstance } = await import('./terminal-pane.js');
+    const container = doc.createElement('div') as unknown as HTMLElement;
+
+    createTerminalPane('attach-1', '/project', null, false, '', 'claude');
+    attachToContainer('attach-1', container);
+
+    const element = getTerminalInstance('attach-1')!.element as unknown as FakeElement;
+    markOpened(element);
+
+    // A focused input inside the pane — the Cmd+F find bar lives here.
+    const input = new FakeElement('input');
+    element.appendChild(input);
+    doc.activeElement = input;
+
+    attachToContainer('attach-1', container);
+    attachToContainer('attach-1', container);
+
+    expect((container as unknown as FakeElement).children).toEqual([element]);
+    expect(doc.activeElement).toBe(input);
+  });
+
+  it('moves a pane that is attached to a different container', async () => {
+    const { createTerminalPane, attachToContainer, getTerminalInstance } = await import('./terminal-pane.js');
+    const first = doc.createElement('div') as unknown as HTMLElement;
+    const second = doc.createElement('div') as unknown as HTMLElement;
+
+    createTerminalPane('attach-2', '/project', null, false, '', 'claude');
+    attachToContainer('attach-2', first);
+
+    const element = getTerminalInstance('attach-2')!.element as unknown as FakeElement;
+    markOpened(element);
+
+    attachToContainer('attach-2', second);
+
+    expect((first as unknown as FakeElement).children).toEqual([]);
+    expect((second as unknown as FakeElement).children).toEqual([element]);
+  });
+
+  it('leaves focus alone when it sits outside every pane', async () => {
+    // The project terminal panel, a modal, the sidebar — none of them are a pane.
+    const { createTerminalPane, setFocused, showPane, getTerminalInstance } = await import('./terminal-pane.js');
+
+    createTerminalPane('focus-1', '/project', null, false, '', 'claude');
+    showPane('focus-1', false);
+    const instance = getTerminalInstance('focus-1')!;
+    const term = instance.terminal as unknown as FakeTerminal;
+
+    const elsewhere = new FakeElement('input');
+    doc.body.appendChild(elsewhere);
+    doc.activeElement = elsewhere;
+
+    setFocused('focus-1');
+
+    expect(term.focusCount).toBe(0);
+    expect((instance.element as unknown as FakeElement).classList.contains('focused')).toBe(true);
+  });
+
+  it('takes focus from body, and from another pane on a tab switch', async () => {
+    // A find bar in the outgoing pane must not block the incoming one — the find
+    // bar is protected by not calling setFocused at all (see pane-focus.ts), not here.
+    const { createTerminalPane, setFocused, showPane, getTerminalInstance } = await import('./terminal-pane.js');
+
+    createTerminalPane('focus-2', '/project', null, false, '', 'claude');
+    createTerminalPane('focus-3', '/project', null, false, '', 'claude');
+    showPane('focus-2', false);
+    const paneA = getTerminalInstance('focus-3')!.element as unknown as FakeElement;
+    const term = getTerminalInstance('focus-2')!.terminal as unknown as FakeTerminal;
+
+    doc.activeElement = null;
+    setFocused('focus-2');
+    expect(term.focusCount).toBe(1);
+
+    const findBarInput = new FakeElement('input');
+    paneA.appendChild(findBarInput);
+    doc.activeElement = findBarInput;
+    setFocused('focus-2');
+    expect(term.focusCount).toBe(2);
+  });
+
+  it('resizes the PTY only when the geometry actually changed', async () => {
+    const { createTerminalPane, fitTerminal, showPane, getTerminalInstance } = await import('./terminal-pane.js');
+    const mockResize = (window as any).vibeyard.pty.resize;
+
+    createTerminalPane('fit-1', '/project', null, false, '', 'claude');
+    showPane('fit-1', false); // fitTerminal skips a hidden pane
+    const term = getTerminalInstance('fit-1')!.terminal as unknown as FakeTerminal;
+
+    fitTerminal('fit-1');
+    fitTerminal('fit-1');
+    expect(mockResize).toHaveBeenCalledTimes(1);
+    expect(mockResize).toHaveBeenCalledWith('fit-1', 120, 30);
+
+    term.rows = 24;
+    fitTerminal('fit-1');
+    expect(mockResize).toHaveBeenCalledTimes(2);
+    expect(mockResize).toHaveBeenLastCalledWith('fit-1', 120, 24);
+  });
+
+  it('re-sends the size once the PTY exists, even if the pane was fitted mid-spawn', async () => {
+    // Callers fire spawnTerminal() un-awaited and fit immediately after, so the
+    // first resize can reach main while pty:create is still suspended (Copilot
+    // awaits a hook install before registering the PTY) — resizePty drops it.
+    // Without a re-fit the memo would make that drop permanent and the CLI would
+    // wrap at the 120x30 spawn default forever.
+    const { createTerminalPane, fitTerminal, showPane, spawnTerminal, getTerminalInstance } = await import('./terminal-pane.js');
+    const mockResize = (window as any).vibeyard.pty.resize;
+    let releaseCreate: () => void;
+    (window as any).vibeyard.pty.create = vi.fn(
+      () => new Promise<void>((resolve) => { releaseCreate = resolve; }),
+    );
+
+    createTerminalPane('fit-2', '/project', null, false, '', 'claude');
+    showPane('fit-2', false);
+    (getTerminalInstance('fit-2')!.terminal as unknown as FakeTerminal).cols = 200;
+
+    const spawning = spawnTerminal('fit-2');
+    fitTerminal('fit-2'); // the resize main never sees
+    expect(mockResize).toHaveBeenCalledTimes(1);
+
+    releaseCreate!();
+    await spawning;
+
+    expect(mockResize).toHaveBeenCalledTimes(2);
+    expect(mockResize).toHaveBeenLastCalledWith('fit-2', 200, 30);
+  });
+
 });
 
 describe('applyThemeToAllTerminals()', () => {
@@ -473,8 +670,14 @@ describe('profile label in status-line cost string', () => {
     return { id, name, providerId, configDir: `/cfg/${id}`, managed: true, createdAt: 0 };
   }
 
-  function costText(instance: any) {
-    return instance.element.querySelector('.cost-display')!.textContent as string;
+  // The cost cluster is span-composed, and FakeElement.textContent does not aggregate
+  // children — assert the segments, not the container's text.
+  function costParts(instance: any) {
+    const cd = instance.element.querySelector('.cost-display')!;
+    return {
+      pill: cd.querySelector('.ssl-pill')?.textContent ?? null,
+      cost: cd.querySelector('.ssl-cost')?.textContent ?? null,
+    };
   }
 
   // createTerminalPane(sessionId, projectPath, cliSessionId, isResume, args, providerId, projectId?, envVars?, configDir?)
@@ -489,7 +692,7 @@ describe('profile label in status-line cost string', () => {
 
     const instance = makePane(createTerminalPane, 'pb-1', 'claude', '/cfg/work');
 
-    expect(costText(instance)).toBe('$0.0000');
+    expect(costParts(instance)).toEqual({ pill: null, cost: '$0.0000' });
   });
 
   it('prefixes the cost string with the profile matching the spawned config dir', async () => {
@@ -499,7 +702,7 @@ describe('profile label in status-line cost string', () => {
 
     const instance = makePane(createTerminalPane, 'pb-2', 'claude', '/cfg/personal');
 
-    expect(costText(instance)).toBe('Personal  ·  $0.0000');
+    expect(costParts(instance)).toEqual({ pill: 'Personal', cost: '$0.0000' });
   });
 
   it('labels a session on the base config dir (no configDir) as "Default"', async () => {
@@ -509,7 +712,7 @@ describe('profile label in status-line cost string', () => {
 
     const instance = makePane(createTerminalPane, 'pb-3', 'claude', undefined); // base ~/.claude
 
-    expect(costText(instance)).toBe('Default  ·  $0.0000');
+    expect(costParts(instance)).toEqual({ pill: 'Default', cost: '$0.0000' });
   });
 
   it('folds the profile in front of the model name once cost data arrives', async () => {
@@ -576,7 +779,7 @@ describe('profile label in status-line cost string', () => {
 
     const instance = makePane(createTerminalPane, 'pb-4', 'claude', '/cfg/work');
 
-    expect(costText(instance)).toBe('$0.0000');
+    expect(costParts(instance)).toEqual({ pill: null, cost: '$0.0000' });
   });
 
   it('refreshProfileLabels re-renders the prefix after a second profile is added', async () => {
@@ -585,7 +788,7 @@ describe('profile label in status-line cost string', () => {
     appState.profiles.push(makeProfile('work', 'Work'));
 
     const instance = makePane(createTerminalPane, 'pb-5', 'claude', '/cfg/work');
-    expect(costText(instance)).toBe('$0.0000');
+    expect(costParts(instance)).toEqual({ pill: null, cost: '$0.0000' });
 
     appState.profiles.push(makeProfile('personal', 'Personal'));
     refreshProfileLabels();
@@ -652,5 +855,87 @@ describe('injectPromptIntoRunningSession', () => {
     expect(result).toBe(true);
     expect(mockPtyWrite).toHaveBeenNthCalledWith(1, 'inj-3', 'fix the bug');
     expect(mockPtyWrite).toHaveBeenNthCalledWith(2, 'inj-3', '\r');
+  });
+});
+
+describe('status rail is primed from restored cost/context', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('window', makeWindowStub());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  const q = (root: unknown, selector: string): FakeElement =>
+    (root as FakeElement).querySelector(selector) as FakeElement;
+
+  async function primeStores(cost: CostInfo | null = null, context: ContextWindowInfo | null = null): Promise<void> {
+    const { getCost } = await import('../session-cost.js');
+    const { getContext } = await import('../session-context.js');
+    vi.mocked(getCost).mockReturnValue(cost);
+    vi.mocked(getContext).mockReturnValue(context);
+  }
+
+  // The meter has to be right the moment the pane exists: a resumed session reports the
+  // context that was already persisted, so `setContextData` dedupes it away and no
+  // change event ever arrives to build it.
+  it.each([
+    [14, 'ok'],
+    [95, 'crit'],
+  ])('paints the restored context meter and its severity state (%i%%)', async (pct, state) => {
+    const totalTokens = pct * 10_000;
+    await primeStores(null, { totalTokens, contextWindowSize: 1_000_000, usedPercentage: pct });
+    const { createTerminalPane } = await import('./terminal-pane.js');
+
+    const instance = createTerminalPane(`restored-${pct}`, '/project', 'cli-1', true, '', 'claude');
+
+    const indicator = q(instance.element, '.context-indicator');
+    expect(q(indicator, '.ssl-meter-fill').style.width).toBe(`${pct}%`);
+    expect(q(indicator, '.ssl-pct').textContent).toBe(`${pct}%`);
+    expect(q(indicator, '.ssl-tok').textContent).toBe(String(totalTokens));
+    expect(q(instance.element, '.session-status-bar').dataset.state).toBe(state);
+  });
+
+  it('renders restored cost instead of the $0.0000 placeholder', async () => {
+    await primeStores({
+      totalCostUsd: 4.5619,
+      totalInputTokens: 150_458,
+      totalOutputTokens: 1352,
+      cacheReadTokens: 149_745,
+      cacheCreationTokens: 711,
+      totalDurationMs: 298_140_212,
+      totalApiDurationMs: 782_216,
+      model: 'Opus 5',
+    });
+    const { createTerminalPane } = await import('./terminal-pane.js');
+
+    const instance = createTerminalPane('restored-cost', '/project', 'cli-3', true, '', 'claude');
+
+    const costDisplay = q(instance.element, '.cost-display');
+    expect(q(costDisplay, '.ssl-model').textContent).toBe('Opus 5');
+    expect(q(costDisplay, '.ssl-cost').textContent).toBe('$4.5619');
+    expect(q(costDisplay, '.ssl-io').textContent).toBe('150458 in / 1352 out');
+  });
+
+  it('leaves the context indicator empty for a brand-new session with nothing restored', async () => {
+    await primeStores();
+    const { createTerminalPane } = await import('./terminal-pane.js');
+
+    const instance = createTerminalPane('fresh-1', '/project', null, false, '', 'claude');
+
+    expect(q(instance.element, '.context-indicator').children.length).toBe(0);
+    expect(q(instance.element, '.ssl-cost').textContent).toBe('$0.0000');
+  });
+
+  it('does not paint a meter for a provider without context-window support', async () => {
+    await primeStores(null, { totalTokens: 10_000, contextWindowSize: 200_000, usedPercentage: 5 });
+    const { createTerminalPane } = await import('./terminal-pane.js');
+
+    const instance = createTerminalPane('restored-codex', '/project', 'cli-4', true, '', 'codex');
+
+    expect(q(instance.element, '.context-indicator').children.length).toBe(0);
   });
 });

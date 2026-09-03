@@ -6,7 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { initSession, removeSession } from '../session-activity.js';
 import { markFreshSession } from '../session-insights.js';
 import { removeSession as removeCostSession, formatTokens, getCost, type CostInfo } from '../session-cost.js';
-import { removeSession as removeContextSession, getContextSeverity, type ContextWindowInfo } from '../session-context.js';
+import { removeSession as removeContextSession, getContext, getContextSeverity, type ContextWindowInfo } from '../session-context.js';
 import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
@@ -35,6 +35,8 @@ interface TerminalInstance {
   pendingPrompt: string | null;
   pendingSystemPrompt: string | null;
   pendingPromptTimer: ReturnType<typeof setTimeout> | null;
+  /** `cols`x`rows` last sent to the PTY, so a no-op fit doesn't make the CLI redraw. */
+  lastSize: string | null;
   /**
    * Peak output-token count seen this session, used to render a stable "out"
    * figure. Claude's `context_window.total_output_tokens` is per-turn, not
@@ -78,11 +80,9 @@ export function createTerminalPane(
   const costDisplay = document.createElement('div');
   costDisplay.className = 'cost-display';
   const caps = getProviderCapabilities(providerId);
-  if (caps?.costTracking !== false) {
-    costDisplay.textContent = `${profilePrefix(providerId, configDir)}$0.0000`;
-  } else {
-    costDisplay.classList.add('hidden');
-  }
+  // The `$0.0000` placeholder is painted below by updateCostDisplay, which owns this
+  // node's DOM — the two must not render the profile label differently.
+  costDisplay.classList.toggle('hidden', caps?.costTracking === false);
   contextIndicator.classList.toggle('hidden', caps?.contextWindow === false);
   statusBar.appendChild(contextIndicator);
   statusBar.appendChild(costDisplay);
@@ -145,10 +145,23 @@ export function createTerminalPane(
     pendingPrompt: null,
     pendingSystemPrompt: null,
     pendingPromptTimer: null,
+    lastSize: null,
     peakOutputTokens: 0,
   };
 
   instances.set(sessionId, instance);
+
+  // Paint the rail. A store with a silent `restore*` seeder has to be *pulled* by any
+  // consumer that builds its DOM lazily — a push-only consumer is only correct if its DOM
+  // provably predates every event, and this one does not. Without the pull a resumed
+  // session keeps an empty (CSS `:empty` → hidden) meter indefinitely: `setContextData`
+  // dedupes on identical values and a resume reports exactly what was persisted at quit,
+  // so `onContextChange` never fires. Cost would self-heal on its own (its dedupe includes
+  // the ticking duration), but goes through the same call so `updateCostDisplay` stays the
+  // single renderer of this node — it paints the `$0.0000` placeholder when cost is null.
+  updateCostDisplay(sessionId, getCost(sessionId));
+  const restoredContext = getContext(sessionId);
+  if (restoredContext) updateContextDisplay(sessionId, restoredContext);
 
   // Register file path link provider for Cmd+Click
   if (projectId) {
@@ -302,8 +315,28 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
   }
   await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
+
+  // Callers fire this un-awaited and fit the pane immediately after, so that fit
+  // can reach the main process while `pty:create` is still suspended (Copilot
+  // awaits a hook install before registering the PTY) — `resizePty` drops a
+  // resize for a session it has never heard of. The PTY also starts at the
+  // hardcoded spawn default, not at whatever the previous one was sized to. So
+  // forget the memo and re-fit now that a PTY definitely exists.
+  instance.lastSize = null;
+  fitTerminal(sessionId);
 }
 
+/**
+ * Put a pane in `container`, opening xterm into it on first attach.
+ *
+ * Idempotent by design: a pane already in `container` is left alone, because
+ * `appendChild` on a node that is already a child removes and re-inserts it —
+ * which blurs whatever is focused inside (the Cmd+F find bar lives in the pane,
+ * see `search-bar.ts`) and collapses an in-progress selection. `renderLayout()`
+ * runs on every `session-changed`, so a render that changed nothing must touch
+ * nothing. DOM order among the panes laid out together is corrected separately,
+ * by `ensurePaneOrder` in `split-layout.ts`.
+ */
 export function attachToContainer(sessionId: string, container: HTMLElement): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
@@ -316,8 +349,7 @@ export function attachToContainer(sessionId: string, container: HTMLElement): vo
     attachCopyOnSelect(instance.terminal);
     collapseArmedTextareaOnContextMenu(instance.terminal);
     loadWebglWithFallback(instance.terminal);
-  } else {
-    // Always re-append to ensure correct DOM order (appendChild moves existing children)
+  } else if (instance.element.parentElement !== container) {
     container.appendChild(instance.element);
   }
 }
@@ -353,6 +385,11 @@ export function fitTerminal(sessionId: string): void {
   try {
     instance.fitAddon.fit();
     const { cols, rows } = instance.terminal;
+    // renderLayout() ends in a fitAllVisible(), and a redundant resize makes the
+    // CLI redraw underneath an in-progress selection.
+    const size = `${cols}x${rows}`;
+    if (size === instance.lastSize) return;
+    instance.lastSize = size;
     window.vibeyard.pty.resize(sessionId, cols, rows);
   } catch {
     // Element not yet visible
@@ -379,7 +416,12 @@ export function setFocused(sessionId: string): void {
   focusedSessionId = sessionId;
 
   // Only move DOM focus if it's currently on a session terminal (or nothing).
-  // This prevents stealing focus from the project terminal panel, search bar, modals, etc.
+  // This prevents stealing focus from the project terminal panel, modals, etc.
+  //
+  // It deliberately does NOT try to spare the Cmd+F find bar, which lives *inside*
+  // the pane (search-bar.ts) and so is indistinguishable from the terminal here.
+  // That is `focusPane` in split-layout.ts's job: a render the user didn't ask for
+  // never reaches this function at all.
   const activeEl = document.activeElement;
   const shouldFocusTerminal =
     !activeEl ||
@@ -425,21 +467,12 @@ function showStatusBar(instance: TerminalInstance): void {
 }
 
 /**
- * Leading "<profile>  ·  " segment for the status-line cost string, shown only when
- * more than one profile exists for the provider. The profile is keyed off the
- * session's `configDir` — the exact dir threaded into the PTY spawn — so the label
- * can never disagree with the config the running session actually uses. No matching
- * dir (undefined → base ~/.claude) is labeled "Default". Empty string when not shown.
+ * Display name of the profile backing this session, or null when there is only a single
+ * (implicit) profile for the provider and the label would be noise. Keyed off the
+ * session's `configDir` — the exact dir threaded into the PTY spawn — so the label can
+ * never disagree with the config the running session actually uses. No matching dir
+ * (undefined → base ~/.claude) is labeled "Default".
  */
-function profilePrefix(providerId: ProviderId, configDir?: string): string {
-  const providerProfiles = appState.profiles.filter((p) => p.providerId === providerId);
-  if (providerProfiles.length <= 1) return '';
-  const profile = configDir ? providerProfiles.find((p) => p.configDir === configDir) : undefined;
-  return `${profile?.name ?? 'Default'}  ·  `;
-}
-
-/** Resolve the display name of the profile backing this session, or null when
- *  there is only a single (implicit) profile for the provider. */
 function resolveProfileName(providerId: ProviderId, configDir?: string): string | null {
   const providerProfiles = appState.profiles.filter((p) => p.providerId === providerId);
   if (providerProfiles.length <= 1) return null;
