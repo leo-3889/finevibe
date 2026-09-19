@@ -240,6 +240,8 @@
       "tagsLabel": "Tags",
       "tagInputPlaceholder": "Add tag...",
       "providerLabel": "Provider",
+      "assigneeLabel": "Assignee",
+      "assigneeUnassigned": "Unassigned",
       "planModeUnsupportedTooltip": "Provider does not support plan mode",
       "providerLoading": "Loading…",
       "focusSessionButton": "Focus Session",
@@ -318,7 +320,8 @@
       "chatButton": "Chat",
       "chatUnsupportedTooltip": "No installed CLI supports team personas. Install Claude or Codex.",
       "chatProviderAriaLabel": "Chat with another provider",
-      "chatChevronGlyph": "▼"
+      "chatChevronGlyph": "▼",
+      "backendBadgeTooltip": "Runs on profile: {profile}"
     },
     "memberModal": {
       "nameLabel": "Name",
@@ -330,6 +333,9 @@
       "systemPromptLabel": "System prompt",
       "systemPromptPlaceholder": "You are the Chief Marketing Officer of...",
       "installAsAgentLabel": "Install as agent (invoke via /<slug> in CLI sessions)",
+      "backendLabel": "Backend profile",
+      "backendDefaultOption": "Default (project / global)",
+      "backendNotTeamCapable": "{name} · {provider} (can't run team personas)",
       "titleCreate": "New Team Member",
       "titleEdit": "Edit Team Member",
       "confirmCreate": "Create",

@@ -221,6 +221,16 @@
   margin-top: 4px;
 }
 
+.board-card-assignee {
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .tag-pill {
   font-size: 10px;
   padding: 2px 8px;

@@ -55,6 +55,7 @@ export function addTask(partial: Partial<BoardTask>): BoardTask | undefined {
     ...(partial.tags && partial.tags.length > 0 ? { tags: partial.tags } : {}),
     ...(partial.providerId ? { providerId: partial.providerId } : {}),
     ...(partial.profileId ? { profileId: partial.profileId } : {}),
+    ...(partial.assigneeId && appState.getTeamMemberById(partial.assigneeId) ? { assigneeId: partial.assigneeId } : {}),
     ...(partial.planMode !== undefined ? { planMode: partial.planMode } : {}),
   };
 
@@ -71,6 +72,9 @@ export function updateTask(taskId: string, updates: Partial<BoardTask>): void {
   const safeUpdates = { ...updates };
   if (safeUpdates.columnId && !board.columns.some(c => c.id === safeUpdates.columnId)) {
     delete safeUpdates.columnId;
+  }
+  if (safeUpdates.assigneeId && !appState.getTeamMemberById(safeUpdates.assigneeId)) {
+    delete safeUpdates.assigneeId;
   }
   Object.assign(task, safeUpdates, { updatedAt: Date.now() });
   appState.notifyBoardChanged();

@@ -34,9 +34,9 @@ import {
   buildNewMember,
   buildTeamChatSession,
   fireAndForgetRemoveAgent,
-  pickTeamChatProvider,
   reconcileAgent as reconcileAgentPure,
   removeMember,
+  resolveTeamChatBackend,
   syncAgentInstall as syncAgentInstallPure,
 } from './state/team-state.js';
 import {
@@ -496,6 +496,10 @@ class AppState {
     return this.team.members;
   }
 
+  getTeamMemberById(id: string): TeamMember | undefined {
+    return this.team.members.find((m) => m.id === id);
+  }
+
   addTeamMember(input: Omit<TeamMember, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): TeamMember {
     const member = buildNewMember(input);
     this.team.members.push(member);
@@ -512,15 +516,36 @@ class AppState {
     if (!result) return undefined;
     this.persist();
     this.emit('team-changed');
+    // A rename/role edit changes the assignee badge on any board task assigned
+    // to this member; board views key off board-changed, so announce it here.
+    if (this.boardReferencesMember(id)) this.notifyBoardChanged();
     void reconcileAgentPure(window.vibeyard.provider, this.team, result.before, result.after, () => this.persist());
     return result.after;
+  }
+
+  /** True when any project's board has a task assigned to the given member. */
+  private boardReferencesMember(memberId: string): boolean {
+    return this.state.projects.some((p) =>
+      (p.board?.tasks ?? []).some((t) => t.assigneeId === memberId),
+    );
   }
 
   removeTeamMember(id: string): void {
     const removed = removeMember(this.team, id);
     if (!removed) return;
+    // Don't orphan board tasks assigned to the deleted member.
+    let boardChanged = false;
+    for (const project of this.state.projects) {
+      for (const task of project.board?.tasks ?? []) {
+        if (task.assigneeId === id) {
+          task.assigneeId = undefined;
+          boardChanged = true;
+        }
+      }
+    }
     this.persist();
     this.emit('team-changed');
+    if (boardChanged) this.notifyBoardChanged();
     if (removed.installAsAgent && removed.agentSlug) {
       fireAndForgetRemoveAgent(window.vibeyard.provider, removed.agentSlug);
     }
@@ -595,6 +620,12 @@ class AppState {
     if (this.state.preferences.defaultProfileId === id) {
       this.state.preferences.defaultProfileId = undefined;
     }
+    for (const member of this.team.members) {
+      if (member.profileId === id) {
+        member.profileId = undefined;
+        member.updatedAt = Date.now();
+      }
+    }
     this.persist();
     this.emit('profiles-changed');
   }
@@ -616,10 +647,17 @@ class AppState {
     if (!project) return undefined;
 
     const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
-    const providerId = pickTeamChatProvider(activeSession, this.state.preferences.defaultProvider, overrideProviderId);
-    if (!providerId) return undefined;
+    const backend = resolveTeamChatBackend(
+      member,
+      project,
+      this.state.preferences,
+      activeSession,
+      this.profiles,
+      overrideProviderId,
+    );
+    if (!backend) return undefined;
 
-    const session = buildTeamChatSession(project, member, providerId, MAX_SESSION_NAME_LENGTH);
+    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId);
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);
     return session;

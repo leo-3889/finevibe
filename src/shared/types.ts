@@ -143,6 +143,12 @@ export interface TeamMember {
   installAsAgent?: boolean;
   /** Sticky slug assigned on first install; preserved across renames so the right file is removed. */
   agentSlug?: string;
+  /**
+   * Sticky: pins this member's Chat sessions to a specific Profile, which carries
+   * the provider (backend) and config dir. Unset → Chat falls back to the
+   * project's defaultProfileId, then preferences.defaultProfileId, then no profile.
+   */
+  profileId?: string;
 }
 
 export interface TeamData {
@@ -239,6 +245,8 @@ export interface BoardTask {
   providerId?: ProviderId;
   /** Profile (CLI config dir) to run this task under; falls back to project/global default when unset. */
   profileId?: string;
+  /** Team member to assign this task to; running it starts a team-chat session as that member. */
+  assigneeId?: string;
   planMode?: boolean;
   tags?: string[];
   createdAt: number;

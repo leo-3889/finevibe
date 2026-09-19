@@ -240,6 +240,8 @@
       "tagsLabel": "标签",
       "tagInputPlaceholder": "添加标签…",
       "providerLabel": "提供方",
+      "assigneeLabel": "负责人",
+      "assigneeUnassigned": "未分配",
       "planModeUnsupportedTooltip": "该提供方不支持计划模式",
       "providerLoading": "加载中…",
       "focusSessionButton": "聚焦会话",
@@ -318,7 +320,8 @@
       "chatButton": "聊天",
       "chatUnsupportedTooltip": "没有已安装的 CLI 支持团队角色。请安装 Claude 或 Codex。",
       "chatProviderAriaLabel": "使用其他提供方聊天",
-      "chatChevronGlyph": "▼"
+      "chatChevronGlyph": "▼",
+      "backendBadgeTooltip": "运行于配置：{profile}"
     },
     "memberModal": {
       "nameLabel": "名称",
@@ -330,6 +333,9 @@
       "systemPromptLabel": "系统提示",
       "systemPromptPlaceholder": "您是...的首席营销官……",
       "installAsAgentLabel": "安装为代理（在 CLI 会话中通过 /<slug> 调用）",
+      "backendLabel": "后端配置",
+      "backendDefaultOption": "默认（项目 / 全局）",
+      "backendNotTeamCapable": "{name} · {provider}（无法运行团队角色）",
       "titleCreate": "新建团队成员",
       "titleEdit": "编辑团队成员",
       "confirmCreate": "创建",

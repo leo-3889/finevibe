@@ -82,6 +82,17 @@ export function createCardElement(task: BoardTask): HTMLElement {
     el.appendChild(tagsEl);
   }
 
+  // Assignee badge (task assigned to a team member); silently skipped when the
+  // member no longer exists (dangling id).
+  const assignee = task.assigneeId ? appState.getTeamMemberById(task.assigneeId) : undefined;
+  if (assignee) {
+    const assigneeEl = document.createElement('div');
+    assigneeEl.className = 'board-card-assignee';
+    assigneeEl.textContent = assignee.name;
+    if (assignee.role) assigneeEl.title = assignee.role;
+    el.appendChild(assigneeEl);
+  }
+
   if (task.sessionId) {
     const status = getStatus(task.sessionId);
     if (status) {
@@ -170,9 +181,18 @@ export async function runTask(task: BoardTask): Promise<void> {
       return;
     }
     const sessionName = task.title || task.prompt.slice(0, 40);
-    const session = task.planMode
-      ? appState.addPlanSession(project.id, sessionName, true, task.providerId, task.profileId)
-      : appState.addSession(project.id, sessionName, undefined, task.providerId, task.profileId);
+    // An assigned task runs as a team-chat session for that member (persona +
+    // pinned profile); unassigned tasks keep the plain-session behavior. If no
+    // team-capable provider is installed, startTeamChat returns undefined and
+    // the `||` falls back to a plain session so the task still runs.
+    const member = task.assigneeId
+      ? appState.getTeamMemberById(task.assigneeId)
+      : undefined;
+    const session =
+      (member && appState.startTeamChat(project.id, member, task.providerId)) ||
+      (task.planMode
+        ? appState.addPlanSession(project.id, sessionName, true, task.providerId, task.profileId)
+        : appState.addSession(project.id, sessionName, undefined, task.providerId, task.profileId));
     if (session) {
       updateTask(task.id, { sessionId: session.id });
       const activeCol = getColumnByBehavior('active');
