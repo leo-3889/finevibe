@@ -26,11 +26,13 @@ const { STATUS_DIR: MOCK_STATUS_DIR } = vi.hoisted(() => {
 
 vi.mock('./hook-status', () => ({
   STATUS_DIR: MOCK_STATUS_DIR,
+  writeCliSessionId: vi.fn(),
 }));
 
 import * as path from 'path';
 
 import * as fs from 'fs';
+import { writeCliSessionId } from './hook-status';
 import {
   registerPendingCodexSession,
   unregisterCodexSession,
@@ -42,8 +44,7 @@ const mockStatSync = vi.mocked(fs.statSync);
 const mockOpenSync = vi.mocked(fs.openSync);
 const mockReadSync = vi.mocked(fs.readSync);
 const mockCloseSync = vi.mocked(fs.closeSync);
-const mockWriteFileSync = vi.mocked(fs.writeFileSync);
-const mockMkdirSync = vi.mocked(fs.mkdirSync);
+const mockWriteCliSessionId = vi.mocked(writeCliSessionId);
 const mockWatch = vi.mocked(fs.watch);
 
 function createMockWin(): any {
@@ -141,11 +142,7 @@ describe('session ID assignment via polling', () => {
     vi.advanceTimersByTime(2000);
 
     // Should have written the .sessionid file
-    expect(mockMkdirSync).toHaveBeenCalledWith(MOCK_STATUS_DIR, { recursive: true, mode: 0o700 });
-    expect(mockWriteFileSync).toHaveBeenCalledWith(
-      path.join(MOCK_STATUS_DIR, 'ui-session-1.sessionid'),
-      'codex-abc-123'
-    );
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-session-1', 'codex-abc-123');
     expect(mockCloseSync).toHaveBeenCalledWith(42);
   });
 
@@ -175,10 +172,7 @@ describe('session ID assignment via polling', () => {
     vi.advanceTimersByTime(2000);
 
     // Should assign to the older session
-    expect(mockWriteFileSync).toHaveBeenCalledWith(
-      path.join(MOCK_STATUS_DIR, 'ui-older.sessionid'),
-      'codex-first'
-    );
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-older', 'codex-first');
   });
 
   it('does not assign the same codex session ID twice', () => {
@@ -202,7 +196,7 @@ describe('session ID assignment via polling', () => {
     });
     vi.advanceTimersByTime(2000);
 
-    expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
 
     // Register another pending session (pendingSessions was empty, so lastSize resets)
     mockStatSync.mockReturnValue({ size: buf1.length } as fs.Stats);
@@ -221,7 +215,7 @@ describe('session ID assignment via polling', () => {
     vi.advanceTimersByTime(2000);
 
     // Should NOT have written a second .sessionid (same codex ID)
-    expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
   });
 
   it('does not read when no pending sessions', () => {
@@ -262,7 +256,7 @@ describe('unregisterCodexSession', () => {
     vi.advanceTimersByTime(2000);
 
     // No .sessionid file should be written
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
   });
 });
 

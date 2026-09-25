@@ -12,6 +12,11 @@ vi.mock('../codex-hooks', () => ({
   installCodexHooks: () => {}, validateCodexHooks: () => ({}), cleanupCodexHooks: () => {}, SESSION_ID_VAR: 'CODEX_SESSION_ID',
 }));
 vi.mock('../config-watcher', () => ({ startConfigWatcher: () => {}, stopConfigWatcher: () => {} }));
+vi.mock('../codex-session-watcher', () => ({
+  startCodexSessionWatcher: vi.fn(),
+  registerPendingCodexSession: vi.fn(),
+  unregisterCodexSession: vi.fn(),
+}));
 vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
 
 import * as fs from 'fs';

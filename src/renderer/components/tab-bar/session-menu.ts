@@ -3,7 +3,8 @@ import type { ProviderId } from '../../../shared/types.js';
 import { showModal, closeModal, setModalError, FieldDef } from '../modal.js';
 import { findInvalidEnvLines } from '../../../shared/env-vars.js';
 import { showJoinDialog } from '../join-dialog.js';
-import { loadProviderAvailability, getProviderAvailabilitySnapshot } from '../../provider-availability.js';
+import { loadProviderAvailability, getProviderAvailabilitySnapshot, getProviderCapabilities } from '../../provider-availability.js';
+import { profileCapableProfiles, profileOptionLabel } from '../../profile-utils.js';
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './menu.js';
 import { t } from '../../i18n.js';
 import { defaultSessionName, nextNumberFor, nextSessionNumber, MCP_INSPECTOR_NAME_KEY } from '../../state/session-naming.js';
@@ -97,7 +98,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       id: 'provider',
       type: 'select',
       defaultValue: effectiveProvider,
-      onSelectChange: (value) => setProfileFieldVisible(value === 'claude'),
+      onSelectChange: (value) => setProfileFieldVisible(getProviderCapabilities(value as ProviderId)?.profiles === true),
       options: providers.map(p => {
         const available = availabilityMap.get(p.id);
         return { value: p.id, label: available ? p.displayName : t('tab.newSessionModal.providerNotInstalled', { name: p.displayName }), disabled: !available };
@@ -105,9 +106,10 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     });
   }
 
-  // Profile picker (Claude only). Defaults to the project/global default.
-  const claudeProfiles = appState.profiles.filter(p => p.providerId === 'claude');
-  if (claudeProfiles.length > 0) {
+  // Profile picker (profile-capable providers only). Defaults to the
+  // project/global default.
+  const profileOptions = profileCapableProfiles();
+  if (profileOptions.length > 0) {
     fields.push({
       label: t('tab.newSessionModal.profileLabel'),
       id: 'profile',
@@ -115,7 +117,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       defaultValue: project.defaultProfileId ?? appState.preferences.defaultProfileId ?? '',
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
-        ...claudeProfiles.map(p => ({ value: p.id, label: p.name })),
+        ...profileOptions.map(p => ({ value: p.id, label: profileOptionLabel(p) })),
       ],
     });
   }
@@ -140,16 +142,17 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     const keepEnv = values['keep-env'] === 'true';
     project.defaultEnv = keepEnv ? (envVars || undefined) : undefined;
     const providerId = (values['provider'] || 'claude') as ProviderId;
-    // Profiles only apply to Claude; ignore the field for other providers.
-    const profileId = providerId === 'claude' ? (values['profile'] || undefined) : undefined;
+    // Profiles only apply to profile-capable providers; ignore the field
+    // for the rest.
+    const profileId = getProviderCapabilities(providerId)?.profiles === true ? (values['profile'] || undefined) : undefined;
     const session = appState.addSession(project.id, name, args, providerId, profileId, envVars);
     if (session && onCreated) onCreated(session);
   });
 
-  // Profiles only apply to Claude — hide the field when the dialog opens
-  // defaulted to a non-Claude provider. The provider select's onSelectChange
-  // keeps it in sync as the user switches.
-  if (claudeProfiles.length > 0) setProfileFieldVisible(effectiveProvider === 'claude');
+  // Profiles only apply to profile-capable providers — hide the field when
+  // the dialog opens defaulted to another provider. The provider select's
+  // onSelectChange keeps it in sync as the user switches.
+  if (profileOptions.length > 0) setProfileFieldVisible(getProviderCapabilities(effectiveProvider as ProviderId)?.profiles === true);
 }
 
 /** Toggle the Profile field's wrapper in the open New Session modal. */

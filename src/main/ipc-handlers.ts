@@ -8,7 +8,6 @@ import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { loadState, saveState, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus, resyncAllSessions } from './hook-status';
-import { startCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from './codex-session-watcher';
 import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
@@ -154,39 +153,49 @@ export function registerIpcHandlers(): void {
 
     const provider = getProvider(providerId);
 
-    // For Codex sessions without a cliSessionId, start watching history.jsonl
-    if (providerId === 'codex' && !cliSessionId) {
-      startCodexSessionWatcher(win);
-      registerPendingCodexSession(sessionId);
+    // Providers without a hook system that reports the CLI session id
+    // discover it from on-disk artifacts after spawn (codex: history.jsonl,
+    // pi: sessions tree).
+    if (!cliSessionId) {
+      provider.onSessionStarted?.(sessionId, cwd, win, configDir);
     }
 
-    await spawnPty(
-      sessionId,
-      cwd,
-      cliSessionId,
-      isResume,
-      extraArgs,
-      providerId,
-      initialPrompt,
-      systemPrompt,
-      envVars,
-      (data) => {
-        const w = BrowserWindow.getAllWindows()[0];
-        if (w && !w.isDestroyed()) {
-          w.webContents.send('pty:data', sessionId, data);
-        }
-      },
-      (exitCode, signal) => {
-        cleanupSessionStatus(sessionId);
-        unregisterCodexSession(sessionId);
-        if (isSilencedExit(sessionId)) return; // old PTY killed for re-spawn
-        const w = BrowserWindow.getAllWindows()[0];
-        if (w && !w.isDestroyed()) {
-          w.webContents.send('pty:exit', sessionId, exitCode, signal);
-        }
-      },
-      configDir
-    );
+    try {
+      await spawnPty(
+        sessionId,
+        cwd,
+        cliSessionId,
+        isResume,
+        extraArgs,
+        providerId,
+        initialPrompt,
+        systemPrompt,
+        envVars,
+        (data) => {
+          const w = BrowserWindow.getAllWindows()[0];
+          if (w && !w.isDestroyed()) {
+            w.webContents.send('pty:data', sessionId, data);
+          }
+        },
+        (exitCode, signal) => {
+          cleanupSessionStatus(sessionId);
+          if (isSilencedExit(sessionId)) return; // old PTY killed for re-spawn
+          // After the silenced-exit check: an old PTY's async exit must not
+          // cancel the discovery the re-spawn just registered.
+          provider.onSessionExited?.(sessionId);
+          const w = BrowserWindow.getAllWindows()[0];
+          if (w && !w.isDestroyed()) {
+            w.webContents.send('pty:exit', sessionId, exitCode, signal);
+          }
+        },
+        configDir
+      );
+    } catch (err) {
+      // spawnPty threw before installing the exit callback — cancel pending
+      // id discovery so it can't match an unrelated run later.
+      provider.onSessionExited?.(sessionId);
+      throw err;
+    }
 
     // Validate after spawnPty — Copilot installs per-project hooks there, so
     // validating earlier would see an empty config on a project's first spawn.

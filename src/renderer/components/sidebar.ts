@@ -8,6 +8,7 @@ import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, ma
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
 import { esc } from '../dom-utils.js';
+import { profileCapableProfiles, profileOptionLabel } from '../profile-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree } from './file-tree.js';
 import {
   renderSessionHistory,
@@ -171,14 +172,15 @@ export function projectRenderOrder(
 }
 
 /**
- * Label for the project's effective Claude profile, or `undefined` when no badge
- * should render. Shown only when more than one Claude profile exists (mirrors the
- * session status-line gate in terminal-pane.ts). Resolution matches `resolveProfile`:
- * `project.defaultProfileId ?? preferences.defaultProfileId`; a missing/unknown id
- * (base ~/.claude) is labeled "Default".
+ * Label for the project's effective profile, or `undefined` when no badge
+ * should render. Shown only when more than one profile-capable profile exists
+ * across all providers — unlike the per-session-provider status-line gate in
+ * terminal-pane.ts, this gate counts profiles of every profile-capable CLI.
+ * Resolution matches `resolveProfile`: `project.defaultProfileId ?? preferences.defaultProfileId`;
+ * a missing/unknown id (the provider's default config dir) is labeled "Default".
  */
 export function projectProfileLabel(project: ProjectRecord): string | undefined {
-  const providerProfiles = appState.profiles.filter((p) => p.providerId === 'claude');
+  const providerProfiles = profileCapableProfiles();
   if (providerProfiles.length <= 1) return undefined;
   const id = project.defaultProfileId ?? appState.preferences.defaultProfileId;
   if (!id) return t('sidebar.default');
@@ -206,11 +208,11 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
     ? `<span class="project-session-count">${project.sessions.length}</span>`
     : '';
   // Only the active card surfaces the profile badge, and only when multiple
-  // Claude profiles exist (the session count is hidden on the active card, so
-  // the badge takes that slot).
+  // profile-capable profiles exist (the session count is hidden on the active
+  // card, so the badge takes that slot).
   const profileLabel = isActive ? projectProfileLabel(project) : undefined;
   const profileBadge = profileLabel
-    ? `<span class="project-profile-badge" title="${esc(t('sidebar.claudeProfileTooltip'))}">${esc(profileLabel)}</span>`
+    ? `<span class="project-profile-badge" title="${esc(t('sidebar.profileTooltip'))}">${esc(profileLabel)}</span>`
     : '';
   el.innerHTML = `
     ${lead}
@@ -426,7 +428,7 @@ export function toggleGitPanel(): void {
 }
 
 export function promptNewProject(): void {
-  const claudeProfiles = appState.profiles.filter((p) => p.providerId === 'claude');
+  const profileOptions = profileCapableProfiles();
   const fields: FieldDef[] = [
     { label: t('sidebar.newProject.nameLabel'), id: 'project-name', placeholder: t('sidebar.newProject.namePlaceholder') },
     {
@@ -440,7 +442,7 @@ export function promptNewProject(): void {
       },
     },
   ];
-  if (claudeProfiles.length > 0) {
+  if (profileOptions.length > 0) {
     fields.push({
       label: t('sidebar.newProject.defaultProfileLabel'),
       id: 'profile',
@@ -448,7 +450,7 @@ export function promptNewProject(): void {
       defaultValue: appState.preferences.defaultProfileId ?? '',
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
-        ...claudeProfiles.map((p) => ({ value: p.id, label: p.name })),
+        ...profileOptions.map((p) => ({ value: p.id, label: profileOptionLabel(p) })),
       ],
     });
   }
@@ -711,10 +713,10 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   separator.className = 'tab-context-menu-separator';
 
   // Project Settings — currently just the default profile, shown only when
-  // the user has Claude profiles to choose from.
-  const claudeProfiles = appState.profiles.filter((p) => p.providerId === 'claude');
+  // the user has profile-capable profiles to choose from.
+  const profileOptions = profileCapableProfiles();
   let settingsItem: HTMLDivElement | null = null;
-  if (claudeProfiles.length > 0) {
+  if (profileOptions.length > 0) {
     settingsItem = document.createElement('div');
     settingsItem.className = 'tab-context-menu-item';
     settingsItem.textContent = t('contextMenu.project.settings');
@@ -754,9 +756,9 @@ function hideProjectContextMenu(): void {
   }
 }
 
-/** Project-level settings dialog. Currently just the default Claude profile. */
+/** Project-level settings dialog. Currently just the default profile. */
 function promptProjectSettings(project: ProjectRecord): void {
-  const claudeProfiles = appState.profiles.filter((p) => p.providerId === 'claude');
+  const profileOptions = profileCapableProfiles();
   showModal(t('sidebar.projectSettings.title'), [
     {
       label: t('sidebar.projectSettings.defaultProfileLabel'),
@@ -765,7 +767,7 @@ function promptProjectSettings(project: ProjectRecord): void {
       defaultValue: project.defaultProfileId ?? '',
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
-        ...claudeProfiles.map((p) => ({ value: p.id, label: p.name })),
+        ...profileOptions.map((p) => ({ value: p.id, label: profileOptionLabel(p) })),
       ],
     },
   ], (values) => {

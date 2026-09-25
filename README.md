@@ -15,7 +15,7 @@
 
 <p align="center">
   <strong>The IDE built for AI coding agents.</strong><br/>
-  Manage multiple agent sessions, run them in parallel, track costs, and never lose context — with Claude Code, Codex CLI, and Gemini CLI.
+  Manage multiple agent sessions, run them in parallel, track costs, and never lose context — with Claude Code, Codex CLI, GitHub Copilot, Gemini CLI, and Pi.
 </p>
 
 ---
@@ -53,11 +53,11 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 - **Embedded browser tab** — open any URL (e.g. `localhost:3000`) in a session tab, toggle element inspection to click any DOM element, and send AI editing instructions with the exact selector, text content, and page URL as context
 - **Keyboard-driven** — full shortcut support, built for speed
 
-> Supports Claude Code, OpenAI Codex CLI, and Gemini CLI. More AI CLI providers coming soon.
+> Supports Claude Code, OpenAI Codex CLI, GitHub Copilot, Gemini CLI, and Pi. More AI CLI providers coming soon.
 
 ## Install
 
-Requires at least one supported CLI installed and authenticated: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli).
+Requires at least one supported CLI installed and authenticated: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), [GitHub Copilot](https://github.com/github/copilot-cli), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
 ### macOS
 

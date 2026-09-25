@@ -28,6 +28,16 @@ export function registerSession(sessionId: string): void {
   knownSessionIds.add(sessionId);
 }
 
+/**
+ * Record the CLI session id a UI session resolved to. The STATUS_DIR watcher
+ * forwards it as `session:cliSessionId`. Used by providers without hooks
+ * (codex, pi) that discover the id from on-disk artifacts.
+ */
+export function writeCliSessionId(uiSessionId: string, cliSessionId: string): void {
+  fs.mkdirSync(STATUS_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(STATUS_DIR, `${uiSessionId}.sessionid`), cliSessionId);
+}
+
 export function unregisterSession(sessionId: string): void {
   knownSessionIds.delete(sessionId);
 }

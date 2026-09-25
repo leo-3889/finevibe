@@ -10,9 +10,8 @@ import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfig
 import { installHooksOnly, installStatusLine, getClaudeConfig } from '../claude-cli';
 import { guardedInstall, validateSettings, reinstallSettings } from '../settings-guard';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
-import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR, UUID_RE } from './transcript-utils';
+import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR, UUID_RE, collectProfileRoots } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
-import { loadState } from '../store';
 
 const binaryCache = { path: null as string | null };
 
@@ -60,6 +59,7 @@ export class ClaudeProvider implements CliProvider {
       pendingPromptTrigger: 'startup-arg',
       planModeArg: '--permission-mode plan',
       systemPromptInjection: true,
+      profiles: true,
     },
     defaultContextWindowSize: 200_000,
   };
@@ -157,18 +157,7 @@ export class ClaudeProvider implements CliProvider {
     // global session search surfaces transcripts created under an isolated profile.
     // Each root carries its profileId (undefined = default ~/.claude) so resume
     // can reopen against the right config dir.
-    const defaultRoot = path.join(os.homedir(), '.claude', 'projects');
-    const roots = new Map<string, string | undefined>([[defaultRoot, undefined]]);
-    try {
-      for (const profile of loadState().profiles ?? []) {
-        if (profile.providerId === 'claude') {
-          const root = path.join(profile.configDir, 'projects');
-          if (!roots.has(root)) roots.set(root, profile.id);
-        }
-      }
-    } catch {
-      // Profiles unavailable — fall back to the default root only.
-    }
+    const roots = collectProfileRoots('claude', path.join(os.homedir(), '.claude', 'projects'), 'projects');
     const out: TranscriptDescriptor[] = [];
     for (const [root, profileId] of roots) {
       out.push(...await scanProjectsRoot(root, profileId));

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BrowserWindow } from 'electron';
-import { STATUS_DIR } from './hook-status';
+import { writeCliSessionId } from './hook-status';
 
 const HISTORY_PATH = path.join(os.homedir(), '.codex', 'history.jsonl');
 
@@ -61,11 +61,7 @@ function readNewEntries(): void {
           assignedCodexIds.add(codexSessionId);
           pendingSessions.delete(oldestId);
 
-          fs.mkdirSync(STATUS_DIR, { recursive: true, mode: 0o700 });
-          fs.writeFileSync(
-            path.join(STATUS_DIR, `${oldestId}.sessionid`),
-            codexSessionId
-          );
+          writeCliSessionId(oldestId, codexSessionId);
           break;
         }
       } catch {

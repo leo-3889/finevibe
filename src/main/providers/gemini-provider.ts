@@ -29,6 +29,7 @@ export class GeminiProvider implements CliProvider {
       pendingPromptTrigger: 'startup-arg',
       planModeArg: '--approval-mode=plan',
       systemPromptInjection: false,
+      profiles: false,
     },
     defaultContextWindowSize: 1_000_000,
   };

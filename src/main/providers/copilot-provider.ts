@@ -29,6 +29,7 @@ export class CopilotProvider implements CliProvider {
       pendingPromptTrigger: 'startup-arg',
       planModeArg: '--mode plan',
       systemPromptInjection: false,
+      profiles: false,
     },
     defaultContextWindowSize: 128_000,
   };

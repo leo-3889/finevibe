@@ -7,7 +7,7 @@ export const ZOOM_MAX = 2.0;
 
 // --- Provider ---
 
-export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini';
+export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi';
 export type PendingPromptTrigger = 'session-start' | 'first-output' | 'startup-arg';
 
 /**
@@ -27,6 +27,8 @@ export interface CliProviderCapabilities {
   pendingPromptTrigger: PendingPromptTrigger;
   planModeArg?: string;
   systemPromptInjection: boolean;
+  /** The provider's buildEnv honors a profile's configDir. */
+  profiles: boolean;
 }
 
 export interface CliProviderMeta {
@@ -161,8 +163,9 @@ export interface TeamData {
 /**
  * A named CLI-provider profile backed by a separate config directory, injected
  * via the provider's config-dir env var (e.g. CLAUDE_CONFIG_DIR). Lets a user
- * isolate multiple licenses/logins (work vs personal). Currently only the
- * 'claude' provider injects it; the interface stays uniform for future providers.
+ * isolate multiple licenses/logins (work vs personal). Claude and Pi inject it
+ * (CLAUDE_CONFIG_DIR / PI_CODING_AGENT_DIR); the interface stays uniform for
+ * future providers.
  */
 export interface Profile {
   id: string;

@@ -7,6 +7,7 @@ import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { getCodexConfig } from '../codex-config';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks, SESSION_ID_VAR } from '../codex-hooks';
+import { startCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from '../codex-session-watcher';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
@@ -30,6 +31,7 @@ export class CodexProvider implements CliProvider {
       shiftEnterNewline: false,
       pendingPromptTrigger: 'startup-arg',
       systemPromptInjection: true,
+      profiles: false,
     },
     defaultContextWindowSize: 200_000,
   };
@@ -82,6 +84,17 @@ export class CodexProvider implements CliProvider {
 
   stopConfigWatcher(): void {
     stopConfigWatch();
+  }
+
+  // Codex has no hook to report the session id — discover it by tailing
+  // ~/.codex/history.jsonl (see codex-session-watcher.ts).
+  onSessionStarted(sessionId: string, _cwd: string, win: BrowserWindow): void {
+    startCodexSessionWatcher(win);
+    registerPendingCodexSession(sessionId);
+  }
+
+  onSessionExited(sessionId: string): void {
+    unregisterCodexSession(sessionId);
   }
 
   async getConfig(projectPath: string): Promise<ProviderConfig> {

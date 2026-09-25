@@ -36,6 +36,14 @@ export interface CliProvider {
   indexTranscript?(transcriptPath: string): Promise<{ text: string; cwd: string }>;
   startConfigWatcher?(win: BrowserWindow, projectPath: string): void;
   stopConfigWatcher?(): void;
+  /**
+   * Begin CLI session-id discovery for a freshly spawned session. Only
+   * providers without a hook system that reports the id implement this
+   * (codex tails history.jsonl, pi watches its sessions tree).
+   */
+  onSessionStarted?(sessionId: string, cwd: string, win: BrowserWindow, configDir?: string): void;
+  /** Cancel pending session-id discovery — PTY exited, or the spawn failed. */
+  onSessionExited?(sessionId: string): void;
   /** Absolute path to the user-global agents directory (e.g. ~/.claude/agents). */
   agentsDir?(): string;
   /** Write `<slug>.md` into the agents dir with the given markdown content. */

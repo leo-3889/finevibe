@@ -30,6 +30,23 @@ function stubDom() {
   vi.stubGlobal('window', { vibeyard: {} });
 }
 
+// Capability table matching the real provider registry: claude and pi are
+// profile-capable, the rest are not.
+vi.mock('../provider-availability.js', () => ({
+  loadProviderMetas: vi.fn(async () => {}),
+  loadProviderAvailability: vi.fn(async () => {}),
+  hasMultipleAvailableProviders: vi.fn(() => false),
+  getProviderAvailabilitySnapshot: vi.fn(() => null),
+  getCachedProviderMetas: vi.fn(() => []),
+  getAvailableProviderMetas: vi.fn(() => []),
+  getTeamChatProviderMetas: vi.fn(() => []),
+  getTeamCapableProviderIds: vi.fn(() => new Set()),
+  getProviderCapabilities: vi.fn((id: string) => ({
+    profiles: id === 'claude' || id === 'pi',
+  })),
+  getProviderDisplayName: vi.fn((id: string) => id),
+}));
+
 describe('projectProfileLabel', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -79,11 +96,46 @@ describe('projectProfileLabel', () => {
     expect(projectProfileLabel({ defaultProfileId: 'ghost' } as any)).toBe('Default');
   });
 
-  it('ignores non-claude profiles when counting', async () => {
+  it('ignores non-profile-capable profiles when counting', async () => {
     const { projectProfileLabel, appState } = await load();
-    // Two profiles total, but only one targets claude — gate stays closed.
+    // Two profiles total, but only one is profile-capable — gate stays closed.
     appState.profiles.push(makeProfile('work', 'Work', 'claude') as any, makeProfile('gem', 'Gem', 'gemini') as any);
     expect(projectProfileLabel({ defaultProfileId: 'work' } as any)).toBeUndefined();
+  });
+
+  it('counts pi profiles toward the badge', async () => {
+    const { projectProfileLabel, appState } = await load();
+    // One claude + one pi profile: two profile-capable profiles, gate opens.
+    appState.profiles.push(makeProfile('work', 'Work', 'claude') as any, makeProfile('home', 'Home', 'pi') as any);
+    expect(projectProfileLabel({ defaultProfileId: 'home' } as any)).toBe('Home');
+  });
+});
+
+describe('profile-utils', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    stubDom();
+  });
+
+  function makeProfile(id: string, name: string, providerId = 'claude') {
+    return { id, name, providerId, configDir: `/cfg/${id}`, managed: true, createdAt: 0 };
+  }
+
+  it('labels a profile as "Name · provider"', async () => {
+    const { profileOptionLabel } = await import('../profile-utils.js');
+    expect(profileOptionLabel(makeProfile('work', 'Work', 'pi') as any)).toBe('Work · pi');
+    expect(profileOptionLabel(makeProfile('work', 'Work') as any)).toBe('Work · claude');
+  });
+
+  it('returns only profile-capable profiles', async () => {
+    const { profileCapableProfiles } = await import('../profile-utils.js');
+    const { appState } = await import('../state.js');
+    appState.profiles.push(
+      makeProfile('work', 'Work', 'claude') as any,
+      makeProfile('home', 'Home', 'pi') as any,
+      makeProfile('gem', 'Gem', 'gemini') as any,
+    );
+    expect(profileCapableProfiles().map((p) => p.id)).toEqual(['work', 'home']);
   });
 });
 

@@ -1,8 +1,11 @@
 import { appState } from '../../state.js';
 import { isMac } from '../../platform.js';
 import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
-import { showModal, closeModal, setModalError, showConfirmDialog } from '../modal.js';
+import { showModal, closeModal, setModalError, showConfirmDialog, type FieldDef } from '../modal.js';
 import { t } from '../../i18n.js';
+import { loadProviderAvailability, getAvailableProviderMetas } from '../../provider-availability.js';
+import { profileCapableProfiles, profileOptionLabel } from '../../profile-utils.js';
+import type { ProviderId } from '../../../shared/types.js';
 import type { PreferencesContext, SectionController } from './section.js';
 
 export function createProfilesSection(ctx: PreferencesContext): SectionController {
@@ -24,6 +27,14 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
     desc.textContent = t('profiles.description');
     container.appendChild(desc);
 
+    // Per-provider setup hints (today: Claude + Pi, the profile-capable CLIs).
+    for (const hintKey of ['profiles.descriptionClaude', 'profiles.descriptionPi']) {
+      const hint = document.createElement('div');
+      hint.className = 'preferences-section-desc';
+      hint.textContent = t(hintKey);
+      container.appendChild(hint);
+    }
+
     // macOS-only guardrail notice: per-profile login isolation depends on Claude
     // Code namespacing its keychain entry per config dir. Older builds share one
     // entry, so logins would bleed across profiles. Surface the status inline.
@@ -42,7 +53,8 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       }).catch(() => { /* status check is best-effort */ });
     }
 
-    const profiles = appState.profiles.filter((p) => p.providerId === 'claude');
+    // All profile-capable providers (capabilities.profiles), not just Claude.
+    const profiles = profileCapableProfiles();
 
     // Default profile selector (global fallback)
     const defaultRow = document.createElement('div');
@@ -51,7 +63,7 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
     defaultLabel.textContent = t('profiles.defaultLabel');
     profileDefaultSelect = createCustomSelect(
       'pref-default-profile',
-      [{ value: '', label: t('sidebar.defaultProfileOption') }, ...profiles.map((p) => ({ value: p.id, label: p.name }))],
+      [{ value: '', label: t('sidebar.defaultProfileOption') }, ...profiles.map((p) => ({ value: p.id, label: profileOptionLabel(p) }))],
       appState.preferences.defaultProfileId ?? '',
       (value) => appState.setPreference('defaultProfileId', value || undefined),
     );
@@ -81,6 +93,11 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
         tag.className = 'profile-row-tag';
         tag.textContent = profile.managed ? t('profiles.tagManaged') : t('profiles.tagCustom');
         nameEl.appendChild(tag);
+        const providerTag = document.createElement('span');
+        providerTag.className = 'profile-row-tag profile-row-tag-provider';
+        providerTag.textContent = profile.providerId;
+        providerTag.title = t('profiles.tagProvider');
+        nameEl.appendChild(providerTag);
         const pathEl = document.createElement('div');
         pathEl.className = 'profile-row-path';
         pathEl.textContent = profile.configDir;
@@ -132,17 +149,28 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
     container.appendChild(addRow);
   }
 
-  function promptAddProfile() {
-    showModal(t('profiles.addModalTitle'), [
+  async function promptAddProfile() {
+    await loadProviderAvailability();
+    const profileCapable = getAvailableProviderMetas().filter((p) => p.capabilities.profiles);
+    const fields: FieldDef[] = [
       { label: t('profiles.addNameLabel'), id: 'profile-name', placeholder: t('profiles.addNamePlaceholder') },
+      {
+        label: t('profiles.addProviderLabel'),
+        id: 'profile-provider',
+        type: 'select',
+        defaultValue: 'claude',
+        options: profileCapable.map((p) => ({ value: p.id, label: p.displayName })),
+      },
       { label: t('profiles.addPathLabel'), id: 'profile-path', placeholder: t('profiles.addPathPlaceholder') },
-    ], async (values) => {
+    ];
+    showModal(t('profiles.addModalTitle'), fields, async (values) => {
       const name = values['profile-name']?.trim();
       if (!name) { setModalError('profile-name', t('profiles.nameRequired')); return; }
+      const providerId = (values['profile-provider'] || 'claude') as ProviderId;
       // Block creation when this Claude build can't isolate profile logins on
       // macOS — otherwise the new profile would silently share the default
-      // account's keychain login.
-      if (isMac) {
+      // account's keychain login. Other providers have no keychain concern.
+      if (isMac && providerId === 'claude') {
         const { status, version } = cachedKeychainStatus ?? await window.vibeyard.profiles.keychainStatus();
         if (status === 'unsupported') {
           setModalError('profile-name', t('profiles.unsupportedMacError', { version: version ? ` ${version}` : '' }));
@@ -151,7 +179,7 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       }
       const customPath = values['profile-path']?.trim() || undefined;
       try {
-        await appState.addProfile({ name, providerId: 'claude', customPath });
+        await appState.addProfile({ name, providerId, customPath });
       } catch (err) {
         setModalError('profile-path', t('profiles.createDirError', { err: err instanceof Error ? err.message : String(err) }));
         return;
