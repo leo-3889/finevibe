@@ -5,6 +5,7 @@ import { CodexProvider } from './codex-provider';
 import { CopilotProvider } from './copilot-provider';
 import { GeminiProvider } from './gemini-provider';
 import { PiProvider } from './pi-provider';
+import { OmpProvider } from './omp-provider';
 
 const providers = new Map<ProviderId, CliProvider>();
 
@@ -14,6 +15,7 @@ export function initProviders(): void {
   registerProvider(new CopilotProvider());
   registerProvider(new GeminiProvider());
   registerProvider(new PiProvider());
+  registerProvider(new OmpProvider());
 }
 
 export function registerProvider(provider: CliProvider): void {
