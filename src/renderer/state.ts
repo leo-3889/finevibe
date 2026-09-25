@@ -578,7 +578,7 @@ class AppState {
    */
   async addProfile(input: { name: string; providerId: ProviderId; customPath?: string }): Promise<Profile> {
     const id = crypto.randomUUID();
-    const { configDir, managed } = await window.vibeyard.profiles.provision(id, input.customPath);
+    const { configDir, managed } = await window.vibeyard.profiles.provision(id, input.customPath, input.providerId);
     const profile: Profile = {
       id,
       name: input.name.trim(),

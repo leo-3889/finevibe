@@ -44,7 +44,10 @@ vi.mock('../provider-availability.js', () => ({
   getProviderCapabilities: vi.fn((id: string) => ({
     profiles: id === 'claude' || id === 'pi',
   })),
-  getProviderDisplayName: vi.fn((id: string) => id),
+  getProviderDisplayName: vi.fn((id: string) => {
+    const names: Record<string, string> = { claude: 'Claude Code', pi: 'Pi', omp: 'Oh my Pi' };
+    return names[id] ?? id;
+  }),
 }));
 
 describe('projectProfileLabel', () => {
@@ -121,10 +124,11 @@ describe('profile-utils', () => {
     return { id, name, providerId, configDir: `/cfg/${id}`, managed: true, createdAt: 0 };
   }
 
-  it('labels a profile as "Name · provider"', async () => {
+  it('labels a profile as "Name · provider display name"', async () => {
     const { profileOptionLabel } = await import('../profile-utils.js');
-    expect(profileOptionLabel(makeProfile('work', 'Work', 'pi') as any)).toBe('Work · pi');
-    expect(profileOptionLabel(makeProfile('work', 'Work') as any)).toBe('Work · claude');
+    expect(profileOptionLabel(makeProfile('work', 'Work', 'pi') as any)).toBe('Work · Pi');
+    expect(profileOptionLabel(makeProfile('work', 'Work') as any)).toBe('Work · Claude Code');
+    expect(profileOptionLabel(makeProfile('work', 'Work', 'omp') as any)).toBe('Work · Oh my Pi');
   });
 
   it('returns only profile-capable profiles', async () => {

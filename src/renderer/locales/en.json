@@ -403,6 +403,7 @@
     "description": "Each profile runs a CLI against its own config directory, isolating login, settings, and history — handy for separate work and personal licenses.",
     "descriptionClaude": "Claude Code: the profile's config dir is injected as CLAUDE_CONFIG_DIR. After creating a profile, start a session with it and run /login once to sign in.",
     "descriptionPi": "Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR. Set up auth and models in that config directory after creating the profile.",
+    "descriptionOmp": "Oh my Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR (the same omp agent dir mechanism as Pi). Make sure the omp CLI is installed, then set up auth and models in that config directory after creating the profile.",
     "keychainUnsupported": "This version of Claude Code{version} stores every login under a single macOS keychain entry, so profiles can't keep accounts separate. Update Claude Code to create and use profiles.",
     "keychainUnknown": "Vibeyard can't yet confirm this Claude Code build isolates profile logins in the macOS keychain. Sign in to a profile once and isolation will be verified automatically.",
     "defaultLabel": "Default profile",

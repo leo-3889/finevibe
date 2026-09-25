@@ -54,7 +54,7 @@ export interface VibeyardApi {
     save(state: unknown): Promise<void>;
   };
   profiles: {
-    provision(profileId: string, customPath?: string): Promise<{ configDir: string; managed: boolean }>;
+    provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
   };
   provider: {
@@ -260,7 +260,7 @@ const api: VibeyardApi = {
     save: (state) => ipcRenderer.invoke('store:save', state),
   },
   profiles: {
-    provision: (profileId, customPath) => ipcRenderer.invoke('profiles:provision', profileId, customPath),
+    provision: (profileId, customPath, providerId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId),
     keychainStatus: () => ipcRenderer.invoke('profiles:keychainStatus'),
   },
   git: {

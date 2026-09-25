@@ -11,6 +11,7 @@ vi.mock('../pi-session-watcher', () => ({
   startPiSessionWatcher: vi.fn(),
   registerPendingPiSession: vi.fn(),
   unregisterPiSession: vi.fn(),
+  stopPiSessionWatcher: vi.fn(),
 }));
 
 import * as fs from 'fs';

@@ -1,13 +1,12 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
-import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR, collectProfileRoots } from './transcript-utils';
-import { ompAgentDir, ompSessionsRoot, readFirstLineSync, readFirstLineAsync, parseSessionHeader } from './omp-transcripts';
-import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession } from '../omp-session-watcher';
+import { collectProfileRoots } from './transcript-utils';
+import { ompSessionsRoot } from './omp-transcripts';
+import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript } from './pi-compatible-transcripts';
+import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession, stopOmpSessionWatcher } from '../omp-session-watcher';
 
 const binaryCache = { path: null as string | null };
 
@@ -38,7 +37,7 @@ export class OmpProvider implements CliProvider {
     return validateBinaryExists('omp');
   }
 
-  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(_sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env.PATH = getFullPath();
     if (opts?.configDir) {
@@ -78,7 +77,9 @@ export class OmpProvider implements CliProvider {
 
   installStatusScripts(): void {}
 
-  cleanup(): void {}
+  cleanup(): void {
+    stopOmpSessionWatcher();
+  }
 
   reinstallSettings(): void {}
 
@@ -109,31 +110,7 @@ export class OmpProvider implements CliProvider {
   }
 
   getTranscriptPath(cliSessionId: string, projectPath: string, configDir?: string): string | null {
-    try {
-      const sessionsRoot = ompSessionsRoot(configDir);
-      if (!fs.existsSync(sessionsRoot)) return null;
-
-      // Filenames are <ISO-timestamp>_<uuid>.jsonl — match the id in the name
-      // first, then read only the header line to prefer an exact cwd match.
-      const suffix = `_${cliSessionId}.jsonl`;
-      let fallback: string | null = null;
-      for (const dir of fs.readdirSync(sessionsRoot)) {
-        const dirPath = path.join(sessionsRoot, dir);
-        let files: string[];
-        try { files = fs.readdirSync(dirPath); } catch { continue; }
-        for (const f of files) {
-          if (!f.endsWith(suffix)) continue;
-          const full = path.join(dirPath, f);
-          const header = parseSessionHeader(readFirstLineSync(full));
-          if (!header || header.id !== cliSessionId) continue;
-          if (header.cwd === projectPath) return full;
-          fallback ??= full;
-        }
-      }
-      return fallback;
-    } catch {
-      return null;
-    }
+    return findTranscriptPathSync(ompSessionsRoot, cliSessionId, projectPath, configDir);
   }
 
   async discoverTranscripts(): Promise<TranscriptDescriptor[]> {
@@ -143,82 +120,14 @@ export class OmpProvider implements CliProvider {
     // resume can reopen against the right config dir.
     const roots = collectProfileRoots('omp', ompSessionsRoot(), 'sessions');
     const results = await Promise.all(
-      [...roots].map(([root, profileId]) => scanSessionsRoot(root, profileId))
+      [...roots].map(([root, profileId]) => scanTranscriptSessionsRoot(root, profileId))
     );
     return results.flat();
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {
-    let raw: string;
-    try {
-      raw = await fs.promises.readFile(transcriptPath, 'utf-8');
-    } catch {
-      return { text: '', cwd: '' };
-    }
-    let cwd = '';
-    const texts: string[] = [];
-    let totalChars = 0;
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue;
-      let entry: { type?: string; cwd?: string; message?: { role?: string; content?: unknown } };
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (entry.type === 'session' && typeof entry.cwd === 'string') {
-        cwd = entry.cwd;
-        continue;
-      }
-      if (entry.type !== 'message') continue;
-      if (totalChars >= MAX_INDEX_CHARS_PER_SESSION) break;
-      if (entry.message?.role !== 'user') continue;
-      let text = '';
-      const c = entry.message.content;
-      if (typeof c === 'string') {
-        text = c;
-      } else if (Array.isArray(c)) {
-        for (const block of c) {
-          if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text'
-            && typeof (block as { text?: unknown }).text === 'string') {
-            text += (block as { text: string }).text + '\n';
-          }
-        }
-      }
-      if (text) {
-        texts.push(text.trim());
-        totalChars += text.length;
-      }
-    }
-    return { text: texts.join(TRANSCRIPT_TEXT_SEPARATOR), cwd };
+    return indexCompatibleTranscript(transcriptPath);
   }
-}
-
-async function scanSessionsRoot(sessionsRoot: string, profileId: string | undefined): Promise<TranscriptDescriptor[]> {
-  let dirs: string[];
-  try {
-    dirs = await fs.promises.readdir(sessionsRoot);
-  } catch {
-    return [];
-  }
-  const out: TranscriptDescriptor[] = [];
-  for (const dir of dirs) {
-    const dirPath = path.join(sessionsRoot, dir);
-    let files: string[];
-    try { files = await fs.promises.readdir(dirPath); } catch { continue; }
-    // Header reads are independent — read them concurrently.
-    const descriptors = await Promise.all(
-      files.filter((f) => f.endsWith('.jsonl')).map(async (f) => {
-        const transcriptPath = path.join(dirPath, f);
-        const header = parseSessionHeader(await readFirstLineAsync(transcriptPath));
-        return header
-          ? { cliSessionId: header.id, transcriptPath, projectCwd: header.cwd ?? '', profileId }
-          : null;
-      })
-    );
-    for (const d of descriptors) if (d) out.push(d);
-  }
-  return out;
 }
 
 /** @internal Test-only: reset cached binary path */

@@ -228,9 +228,16 @@ describe('session ID assignment', () => {
     registerPendingPiSession('ui-first', '/proj');
     registerPendingPiSession('ui-second', '/proj');
 
-    // Both transcripts appear; readdir lists the NEWER one first
-    const older = '2026-08-15T10-00-00-000Z_pi-older.jsonl';
-    const newer = '2026-08-15T11-00-00-000Z_pi-newer.jsonl';
+    // Both transcripts appear; readdir lists the NEWER one first.
+    // Timestamps are relative to "now" so they fall inside the adoption
+    // window (external runs stamped older than registration are skipped).
+    const stamp = (ageSec: number) => {
+      const d = new Date(Date.now() - ageSec * 1000);
+      const p = (n: number) => String(n).padStart(2, '0');
+      return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}-${p(d.getUTCMinutes())}-${p(d.getUTCSeconds())}-${p(d.getUTCMilliseconds())}Z`;
+    };
+    const older = `${stamp(3)}_pi-older.jsonl`;
+    const newer = `${stamp(0)}_pi-newer.jsonl`;
     mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [newer, older] });
 
     let currentFile = '';

@@ -48,6 +48,10 @@ vi.mock('../../provider-availability.js', () => ({
     { id: 'pi', displayName: 'Pi', capabilities: { profiles: true } },
   ]),
   getProviderCapabilities: vi.fn((id: string) => ({ profiles: id === 'claude' || id === 'pi' })),
+  getProviderDisplayName: vi.fn((id: string) => {
+    const names: Record<string, string> = { claude: 'Claude Code', pi: 'Pi', omp: 'Oh my Pi' };
+    return names[id] ?? id;
+  }),
 }));
 vi.mock('../custom-select.js', () => ({
   createCustomSelect: (id: string, options: Array<{ value: string; label: string }>, defaultValue: string) => {
@@ -215,8 +219,8 @@ describe('createProfilesSection', () => {
     const select = selectState.instances.get('pref-default-profile');
     expect(select?.options).toEqual([
       { value: '', label: 'Default' },
-      { value: 'work', label: 'Work · claude' },
-      { value: 'home', label: 'Home · pi' },
+      { value: 'work', label: 'Work · Claude Code' },
+      { value: 'home', label: 'Home · Pi' },
     ]);
   });
 

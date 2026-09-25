@@ -403,6 +403,7 @@
     "description": "每个配置文件让 CLI 在独立的配置目录下运行，可隔离登录、设置和历史记录——非常适合工作和个人许可证分开使用。",
     "descriptionClaude": "Claude Code：配置目录通过 CLAUDE_CONFIG_DIR 注入。创建配置文件后，使用它启动一个会话并运行一次 /login 进行登录。",
     "descriptionPi": "Pi：配置目录通过 PI_CODING_AGENT_DIR 注入。创建配置文件后，请在该配置目录中完成认证和模型配置。",
+    "descriptionOmp": "Oh my Pi：配置目录通过 PI_CODING_AGENT_DIR 注入（与 Pi 相同的 omp agent dir 机制）。请确保已安装 omp CLI，创建配置文件后，请在该配置目录中完成认证和模型配置。",
     "keychainUnsupported": "此版本的 Claude Code{version} 将所有登录信息存储在同一个 macOS 钥匙串条目中，因此配置文件无法保持账号隔离。请更新 Claude Code 后再创建并使用配置文件。",
     "keychainUnknown": "Vibeyard 还无法确认此 Claude Code 版本是否在 macOS 钥匙串中隔离配置文件登录。请登录一次配置文件，隔离状态将自动验证。",
     "defaultLabel": "默认配置文件",

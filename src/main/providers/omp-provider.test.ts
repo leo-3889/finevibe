@@ -11,6 +11,7 @@ vi.mock('../omp-session-watcher', () => ({
   startOmpSessionWatcher: vi.fn(),
   registerPendingOmpSession: vi.fn(),
   unregisterOmpSession: vi.fn(),
+  stopOmpSessionWatcher: vi.fn(),
 }));
 
 import { resolveBinary, validateBinaryExists } from './resolve-binary';

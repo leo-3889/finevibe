@@ -279,7 +279,7 @@ export function showTaskModal(
   providerFieldDiv.appendChild(providerSelect.element);
   registerModalCleanup(() => providerSelect.destroy());
 
-  // Profile dropdown (provider-scoped; today only Claude has profiles).
+  // Profile dropdown (provider-scoped; today Claude, Pi and OMP have profiles).
   // Hidden entirely when the selected provider has no profiles.
   const profileFieldDiv = document.createElement('div');
   profileFieldDiv.className = 'modal-field';

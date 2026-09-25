@@ -306,8 +306,8 @@ export function registerIpcHandlers(): void {
 
   // Provision (create) a profile's config dir. Returns the resolved absolute
   // path and whether it is the auto-managed location.
-  ipcMain.handle('profiles:provision', (_event, profileId: string, customPath?: string) => {
-    const configDir = provisionProfileDir(profileId, customPath);
+  ipcMain.handle('profiles:provision', (_event, profileId: string, customPath?: string, providerId?: ProviderId) => {
+    const configDir = provisionProfileDir(profileId, customPath, providerId, loadState().profiles ?? []);
     return { configDir, managed: !customPath?.trim() };
   });
 

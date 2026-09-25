@@ -1,6 +1,6 @@
 import type { ProviderId, TeamMember } from '../../../shared/types.js';
 import { appState } from '../../state.js';
-import { getProviderDisplayName, getTeamCapableProviderIds, loadProviderAvailability } from '../../provider-availability.js';
+import { getProviderCapabilities, getProviderDisplayName, getTeamCapableProviderIds, loadProviderAvailability } from '../../provider-availability.js';
 import { showModal, closeModal, setModalError, type FieldDef } from '../modal.js';
 import { t } from '../../i18n.js';
 
@@ -33,7 +33,12 @@ export async function showTeamMemberModal(mode: 'create' | 'edit', existing?: Te
   // saved as an inert pin (mirrors the new-session dialog's provider options).
   // If the availability check fails, the modal still opens with every option
   // enabled — a pin to a non-capable provider just falls back at runtime.
-  const profiles = appState.profiles;
+  // Only profile-capable providers (capabilities.profiles) are offered, like
+  // the rest of the UI; if provider metas are unavailable, show all profiles.
+  const profiles = appState.profiles.filter((p) => {
+    const caps = getProviderCapabilities(p.providerId);
+    return caps ? caps.profiles === true : true;
+  });
   if (profiles.length > 0) {
     let teamCapable: Set<ProviderId> | null = null;
     try {

@@ -163,9 +163,9 @@ export interface TeamData {
 /**
  * A named CLI-provider profile backed by a separate config directory, injected
  * via the provider's config-dir env var (e.g. CLAUDE_CONFIG_DIR). Lets a user
- * isolate multiple licenses/logins (work vs personal). Claude and Pi inject it
- * (CLAUDE_CONFIG_DIR / PI_CODING_AGENT_DIR); the interface stays uniform for
- * future providers.
+ * isolate multiple licenses/logins (work vs personal). Claude, Pi, and OMP
+ * inject it (CLAUDE_CONFIG_DIR / PI_CODING_AGENT_DIR); the interface stays
+ * uniform for future providers.
  */
 export interface Profile {
   id: string;
