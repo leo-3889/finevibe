@@ -2,13 +2,13 @@ import { appState, MAX_PROJECT_NAME_LENGTH, ProjectRecord } from '../state.js';
 import { showModal, setModalError, closeModal, showConfirmDialog, FieldDef } from './modal.js';
 import { showPreferencesModal } from './preferences-modal.js';
 import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unread.js';
-import { onChange as onActivityChange } from '../session-activity.js';
+import { onChange as onActivityChange, STATUS_GLYPH } from '../session-activity.js';
 import { getProjectStatus, projectInitial } from '../project-status.js';
 import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, markSeen as markDiscussionsSeen, onChange as onDiscussionsChange, DISCUSSIONS_URL } from '../discussions-badge.js';
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
 import { esc } from '../dom-utils.js';
-import { profileCapableProfiles, profileOptionLabel } from '../profile-utils.js';
+import { profileCapableProfiles, providerProfileOptions, projectProviderId } from '../profile-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree } from './file-tree.js';
 import {
   renderSessionHistory,
@@ -116,7 +116,10 @@ export function initSidebar(): void {
     const dot = projectListEl.querySelector(
       `.project-item[data-project-id="${project.id}"] .project-status`,
     );
-    if (dot) dot.className = `project-status ${getProjectStatus(project)}`;
+    if (dot) {
+      dot.className = `project-status ${getProjectStatus(project)}`;
+      dot.textContent = STATUS_GLYPH[getProjectStatus(project)];
+    }
   });
   appState.on('preferences-changed', () => {
     applyDiscussionsVisibility();
@@ -203,7 +206,7 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   // status dot reflecting their aggregate session activity.
   const lead = isActive
     ? `<div class="project-avatar" aria-hidden="true">${esc(projectInitial(project.name))}</div>`
-    : `<span class="project-status ${getProjectStatus(project)}" aria-hidden="true"></span>`;
+    : `<span class="project-status ${getProjectStatus(project)}" aria-hidden="true">${STATUS_GLYPH[getProjectStatus(project)]}</span>`;
   const countPill = project.sessions.length
     ? `<span class="project-session-count">${project.sessions.length}</span>`
     : '';
@@ -428,7 +431,9 @@ export function toggleGitPanel(): void {
 }
 
 export function promptNewProject(): void {
-  const profileOptions = profileCapableProfiles();
+  // A new project has no sessions yet, so its coding tool is the global
+  // default — scope the profile picker to that tool.
+  const profileOptions = providerProfileOptions(appState.preferences.defaultProvider ?? 'claude');
   const fields: FieldDef[] = [
     { label: t('sidebar.newProject.nameLabel'), id: 'project-name', placeholder: t('sidebar.newProject.namePlaceholder') },
     {
@@ -450,7 +455,7 @@ export function promptNewProject(): void {
       defaultValue: '',
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
-        ...profileOptions.map((p) => ({ value: p.id, label: profileOptionLabel(p) })),
+        ...profileOptions,
       ],
     });
   }
@@ -713,8 +718,8 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   separator.className = 'tab-context-menu-separator';
 
   // Project Settings — currently just the default profile, shown only when
-  // the user has profile-capable profiles to choose from.
-  const profileOptions = profileCapableProfiles();
+  // the project's current coding tool has profiles to choose from.
+  const profileOptions = providerProfileOptions(projectProviderId(project));
   let settingsItem: HTMLDivElement | null = null;
   if (profileOptions.length > 0) {
     settingsItem = document.createElement('div');
@@ -758,7 +763,9 @@ function hideProjectContextMenu(): void {
 
 /** Project-level settings dialog. Currently just the default profile. */
 function promptProjectSettings(project: ProjectRecord): void {
-  const profileOptions = profileCapableProfiles();
+  // The project's default profile applies to new sessions in this project;
+  // scope the picker to the project's current coding tool.
+  const profileOptions = providerProfileOptions(projectProviderId(project));
   showModal(t('sidebar.projectSettings.title'), [
     {
       label: t('sidebar.projectSettings.defaultProfileLabel'),
@@ -767,7 +774,7 @@ function promptProjectSettings(project: ProjectRecord): void {
       defaultValue: project.defaultProfileId ?? '',
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
-        ...profileOptions.map((p) => ({ value: p.id, label: profileOptionLabel(p) })),
+        ...profileOptions,
       ],
     },
   ], (values) => {

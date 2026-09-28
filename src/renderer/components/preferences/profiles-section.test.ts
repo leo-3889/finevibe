@@ -28,7 +28,8 @@ const selectState = vi.hoisted(() => {
   }>();
   return {
     instances,
-    reset() { instances.clear(); },
+    destroyed: [] as string[],
+    reset() { instances.clear(); this.destroyed.length = 0; },
   };
 });
 
@@ -48,6 +49,10 @@ vi.mock('../../provider-availability.js', () => ({
     { id: 'claude', displayName: 'Claude Code', capabilities: { profiles: true } },
     { id: 'pi', displayName: 'Pi', capabilities: { profiles: true } },
   ]),
+  getCachedProviderMetas: vi.fn(() => [
+    { id: 'claude', displayName: 'Claude Code', capabilities: { profiles: true } },
+    { id: 'pi', displayName: 'Pi', capabilities: { profiles: true } },
+  ]),
   getProviderCapabilities: vi.fn((id: string) => ({ profiles: id === 'claude' || id === 'pi' })),
   getProviderDisplayName: vi.fn((id: string) => {
     const names: Record<string, string> = { claude: 'Claude Code', pi: 'Pi', omp: 'Oh my Pi' };
@@ -64,7 +69,7 @@ vi.mock('../custom-select.js', () => ({
       element,
       getValue() { return instance.value; },
       setValue(value: string) { instance.value = value; },
-      destroy() {},
+      destroy() { selectState.destroyed.push(id); },
     };
     selectState.instances.set(id, instance);
     return instance;
@@ -186,17 +191,43 @@ describe('createProfilesSection', () => {
     return container;
   }
 
-  it('lists pi profiles alongside claude profiles, each with a provider tag', async () => {
+  it('destroy() tears down every cached default-profile select without throwing', async () => {
+    // Regression: destroy() once referenced an undeclared `profileDefaultSelect`
+    // (the var is the plural `profileDefaultSelects`), so closing Preferences
+    // after viewing this section threw a ReferenceError and aborted teardown.
     mockState.profiles = [
       makeProfile('work', 'Work', 'claude'),
       makeProfile('home', 'Home', 'pi'),
     ];
+    const { createProfilesSection } = await import('./profiles-section.js');
+    const container = makeElement('div');
+    const controller = createProfilesSection(ctx);
+    controller.render(container);
+    const defaultSelects = [...selectState.instances.keys()].filter((id) => id.startsWith('pref-default-profile-'));
+    expect(defaultSelects.length).toBeGreaterThan(0);
+    expect(() => controller.destroy!()).not.toThrow();
+    for (const id of defaultSelects) expect(selectState.destroyed).toContain(id);
+  });
+
+  it('groups profiles under provider headings in registry order', async () => {
+    // pi profile first in the array — group order must follow the provider
+    // registry (claude before pi), not profile creation order.
+    mockState.profiles = [
+      makeProfile('home', 'Home', 'pi'),
+      makeProfile('work', 'Work', 'claude'),
+      makeProfile('work2', 'Work 2', 'claude'),
+    ];
     const container = await render();
 
-    expect(findInTree(container, (n) => n.textContent === 'Work')).not.toBeNull();
-    expect(findInTree(container, (n) => n.textContent === 'Home')).not.toBeNull();
-    const providerTags = collectInTree(container, (n) => n.className === 'profile-row-tag profile-row-tag-provider');
-    expect(providerTags.map((n) => n.textContent)).toEqual(['claude', 'pi']);
+    const groups = collectInTree(container, (n) => n.className === 'profile-group');
+    expect(groups.length).toBe(2);
+    const [claudeGroup, piGroup] = groups;
+    expect(claudeGroup.children[0].textContent).toBe('Claude Code');
+    expect(piGroup.children[0].textContent).toBe('Pi');
+    expect(collectInTree(claudeGroup, (n) => n.className === 'profile-row-name').map((n) => n.textContent)).toEqual(['Work', 'Work 2']);
+    expect(collectInTree(piGroup, (n) => n.className === 'profile-row-name').map((n) => n.textContent)).toEqual(['Home']);
+    // The provider is carried by the group heading, not a per-row tag.
+    expect(collectInTree(container, (n) => n.className === 'profile-row-tag profile-row-tag-provider')).toEqual([]);
   });
 
   it('ignores non-profile-capable profiles in the list', async () => {

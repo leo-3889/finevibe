@@ -1,8 +1,9 @@
 import { appState } from '../state.js';
-import { ProjectRecord, Preferences } from '../../shared/types.js';
-import { getStatus, SessionStatus, onChange as onActivityChange } from '../session-activity.js';
+import { ProjectRecord, Preferences, ProviderId } from '../../shared/types.js';
+import { getStatus, SessionStatus, onChange as onActivityChange, STATUS_GLYPH } from '../session-activity.js';
 import { STATUS_PRIORITY } from '../project-status.js';
 import { isCliSession } from '../session-utils.js';
+import { getProviderCapabilities } from '../provider-availability.js';
 import { esc } from '../dom-utils.js';
 import { t } from '../i18n.js';
 
@@ -35,18 +36,31 @@ export function resolveActiveStatuses(prefs: Preferences): Set<SessionStatus> {
  * Pure selector: gather every open CLI session across all projects whose live
  * status is in `activeStatuses`, ordered by urgency (`STATUS_PRIORITY`) then
  * project name. DOM-free so it can be unit-tested.
+ *
+ * `reportsStatusOf` says whether a provider emits a live status at all —
+ * via hooks (`hookStatus`) or transcript polling (`polledStatus`). Providers
+ * that report one are filtered by `activeStatuses` like any other. A provider
+ * with neither has no status signal, so the filter can't distinguish working
+ * from idle: an open session there is listed regardless, and only an `idle`
+ * (PTY-exited) one is dropped.
  */
 export function selectActiveSessions(
   projects: ProjectRecord[],
   statusOf: (sessionId: string) => SessionStatus,
   activeStatuses: Set<SessionStatus>,
+  reportsStatusOf: (providerId: ProviderId | undefined) => boolean,
 ): ActiveSessionRow[] {
   const rows: ActiveSessionRow[] = [];
   for (const project of projects) {
     for (const session of project.sessions) {
       if (!isCliSession(session)) continue;
       const status = statusOf(session.id);
-      if (!activeStatuses.has(status)) continue;
+      if (reportsStatusOf(session.providerId)) {
+        if (!activeStatuses.has(status)) continue;
+      } else if (status === 'idle') {
+        // No status source: 'idle' is the only "not open" state we can see.
+        continue;
+      }
       rows.push({
         projectId: project.id,
         projectName: project.name,
@@ -82,7 +96,15 @@ export function renderActiveSessions(): void {
   const enabled =
     (appState.preferences.sidebarViews?.activeSessions ?? true) && appState.projects.length > 1;
   const rows = enabled
-    ? selectActiveSessions(appState.projects, getStatus, resolveActiveStatuses(appState.preferences))
+    ? selectActiveSessions(
+        appState.projects,
+        getStatus,
+        resolveActiveStatuses(appState.preferences),
+        (providerId) => {
+          const caps = getProviderCapabilities(providerId ?? 'claude');
+          return caps?.hookStatus === true || caps?.polledStatus === true;
+        },
+      )
     : [];
 
   if (rows.length === 0) {
@@ -106,7 +128,7 @@ export function renderActiveSessions(): void {
 function rowHtml(row: ActiveSessionRow): string {
   return `
     <div class="active-session-row" data-project-id="${esc(row.projectId)}" data-session-id="${esc(row.sessionId)}" title="${esc(row.projectName)}">
-      <span class="project-status ${row.status}" aria-hidden="true"></span>
+      <span class="project-status ${row.status}" aria-hidden="true">${STATUS_GLYPH[row.status]}</span>
       <span class="active-session-name">${esc(row.sessionName)}</span>
       <span class="active-session-project">${esc(row.projectName)}</span>
     </div>

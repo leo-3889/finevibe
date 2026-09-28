@@ -6,6 +6,21 @@ Vibeyard reads is in that reference. An invented field name costs nothing at wri
 time and renders a blank timeline row forever, so treat this file as the contract
 and re-check it against the docs whenever a hook changes.
 
+## Scope
+
+This document covers the **Claude Code** hook integration, which is the only
+provider with a push-based hook system. The other backends reach the same session
+state by different means:
+
+| Provider | Status source |
+|---|---|
+| Claude Code | Hooks + statusLine (this document) |
+| Codex CLI, GitHub Copilot, Gemini CLI | Hooks (subset of the events above) |
+| Pi, Oh my Pi | Polled transcript sync — `src/main/session-transcript-sync.ts` |
+
+The polled path deliberately mirrors the status convention described here, so a
+finished turn looks the same in the UI regardless of which mechanism produced it.
+
 ## 25 Hook Events (7 core + 18 inspector-only)
 
 Installation is **version-gated**: `claude-hook-versions.ts` maps each event to the

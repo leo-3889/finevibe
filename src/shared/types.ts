@@ -17,6 +17,12 @@ export type PendingPromptTrigger = 'session-start' | 'first-output' | 'startup-a
  */
 export type Locale = 'en' | 'zh-CN';
 
+/**
+ * The session statuses a provider can report through the `.status` channel.
+ * `idle` is renderer-only (PTY exited) and never crosses the channel.
+ */
+export type CliSessionStatus = 'working' | 'waiting' | 'completed' | 'input';
+
 export interface CliProviderCapabilities {
   sessionResume: boolean;
   costTracking: boolean;
@@ -29,6 +35,20 @@ export interface CliProviderCapabilities {
   systemPromptInjection: boolean;
   /** The provider's buildEnv honors a profile's configDir. */
   profiles: boolean;
+  /**
+   * The CLI titles its sessions itself and the tab adopts the title.
+   * When true, the main process polls the provider's readSessionTitle()
+   * and mirrors the result into the `.name` channel. Claude self-titles
+   * too, but pushes via its statusLine hook, so it does not need polling.
+   */
+  selfTitles: boolean;
+  /**
+   * The CLI has no hooks to report status, so the main process polls its
+   * on-disk transcript and derives a status (working/completed/idle),
+   * mirroring it into the same `.status` channel Claude's hooks push to.
+   * Mutually exclusive with hookStatus: a provider is one or the other.
+   */
+  polledStatus: boolean;
 }
 
 export interface CliProviderMeta {

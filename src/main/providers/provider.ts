@@ -1,5 +1,5 @@
 import type { BrowserWindow } from 'electron';
-import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import type { CliProviderMeta, CliSessionStatus, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 
 /** Lightweight pointer to one on-disk transcript, used by global session search. */
 export interface TranscriptDescriptor {
@@ -42,6 +42,23 @@ export interface CliProvider {
    * (codex tails history.jsonl, pi watches its sessions tree).
    */
   onSessionStarted?(sessionId: string, cwd: string, win: BrowserWindow, configDir?: string): void;
+  /**
+   * The CLI's own title read from a resolved transcript path, or null when
+   * it has none yet. Only meaningful for providers with
+   * capabilities.selfTitles — the merged transcript-sync resolves the path
+   * once via getTranscriptPath() and polls this, mirroring the result into
+   * the `.name` channel (the same channel Claude's statusLine pushes to).
+   */
+  readSessionTitle?(transcriptPath: string): string | null;
+  /**
+   * Derive the session's current status from a resolved transcript path,
+   * for providers with no hooks (capabilities.polledStatus). The merged
+   * transcript-sync resolves the path once via getTranscriptPath() and
+   * polls this, mirroring the result into the `.status` channel — the same
+   * channel Claude's hooks push to — so the renderer adopts it via the
+   * existing status pipeline.
+   */
+  readSessionStatus?(transcriptPath: string): CliSessionStatus | null;
   /** Cancel pending session-id discovery — PTY exited, or the spawn failed. */
   onSessionExited?(sessionId: string): void;
   /** Absolute path to the user-global agents directory (e.g. ~/.claude/agents). */

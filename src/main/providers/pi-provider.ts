@@ -2,12 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDescriptor } from './provider';
-import type { CliProviderMeta, McpServer, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import type { CliProviderMeta, CliSessionStatus, McpServer, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { collectProfileRoots } from './transcript-utils';
 import { piAgentDir, piSessionsRoot } from './pi-transcripts';
-import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript, readTranscriptStatusSync } from './pi-compatible-transcripts';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession, stopPiSessionWatcher } from '../pi-session-watcher';
 
 const binaryCache = { path: null as string | null };
@@ -27,6 +27,8 @@ export class PiProvider implements CliProvider {
       pendingPromptTrigger: 'startup-arg',
       systemPromptInjection: true,
       profiles: true,
+      selfTitles: false,
+      polledStatus: true,
     },
     defaultContextWindowSize: 200_000,
   };
@@ -133,6 +135,15 @@ export class PiProvider implements CliProvider {
 
   getTranscriptPath(cliSessionId: string, projectPath: string, configDir?: string): string | null {
     return findTranscriptPathSync(piSessionsRoot, cliSessionId, projectPath, configDir);
+  }
+
+  /**
+   * Derive the session's status from a resolved transcript path (Pi has no
+   * hooks). The merged transcript-sync resolves the path once via
+   * getTranscriptPath() and polls this for polledStatus providers.
+   */
+  readSessionStatus(transcriptPath: string): CliSessionStatus | null {
+    return readTranscriptStatusSync(transcriptPath);
   }
 
   async discoverTranscripts(): Promise<TranscriptDescriptor[]> {

@@ -616,6 +616,9 @@ class AppState {
       for (const archived of project.sessionHistory ?? []) {
         if (archived.profileId === id) archived.profileId = undefined;
       }
+      for (const task of project.board?.tasks ?? []) {
+        if (task.profileId === id) task.profileId = undefined;
+      }
     }
     const defaultProfiles = this.state.preferences.defaultProfiles;
     if (defaultProfiles) {

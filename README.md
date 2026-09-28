@@ -43,13 +43,13 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 - **P2P session sharing** — share live terminal sessions with teammates over encrypted peer-to-peer connections (WebRTC), with read-only or read-write modes and PIN-based authentication
 - **Multi-session management** — run multiple agent sessions per project, each in its own PTY; use swarm mode for a grid view of all sessions at once and spin up new ones with `Cmd+\`
 - **Multiple profiles per coding tool** — run separate logins side by side (e.g. work and personal licenses) for any profile-capable CLI — Claude Code, Pi, and Oh my Pi today — each session backed by its own isolated config directory so credentials, settings, and history never mix. Pick a profile per session, per project, or set a default per tool
-- **Cost & context tracking** — real-time spend, token usage, and context window monitoring per session
-- **Session inspector** — real-time session telemetry with timeline, cost breakdown, tool usage stats, and context window monitoring (`Cmd+Shift+I`)
+- **Cost & context tracking** — real-time spend, token usage, and context window monitoring per session (Claude Code)
+- **Session inspector** — real-time session telemetry with timeline, cost breakdown, tool usage stats, and context window monitoring (`Cmd+Shift+I`); the fullest detail comes from Claude Code, other backends report what they expose
 - **AI Readiness Score** — see how well-prepared your project is for AI-assisted coding, with one-click fixes
 - **Session resume** — pick up where you left off, even after restarting the app
 - **Light and dark themes** — switch the app appearance from Preferences, including live re-theming of open terminals
 - **Smart alerts** — detects missing tools, context bloat, and session health issues
-- **Session status indicators** — color-coded dots on each tab show real-time session state (working, waiting, input needed, completed), with optional desktop notifications
+- **Session status indicators** — a typographic glyph on each tab shows real-time session state (`…` working, `?` your turn, `✓` completed, `·` idle), with optional desktop notifications
 - **Embedded browser tab** — open any URL (e.g. `localhost:3000`) in a session tab, toggle element inspection to click any DOM element, and send AI editing instructions with the exact selector, text content, and page URL as context
 - **Keyboard-driven** — full shortcut support, built for speed
 

@@ -8,6 +8,7 @@ import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { loadState, saveState, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus, resyncAllSessions } from './hook-status';
+import { registerTranscriptSync, unregisterTranscriptSync } from './session-transcript-sync';
 import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
@@ -158,6 +159,12 @@ export function registerIpcHandlers(): void {
     // pi: sessions tree).
     if (!cliSessionId) {
       provider.onSessionStarted?.(sessionId, cwd, win, configDir);
+    } else {
+      // The session already knows its cli id, so discovery never runs —
+      // start mirroring the CLI's own title / derived status from the
+      // known conversation. The sync derives what to poll from the
+      // provider's capabilities (a provider can be both, e.g. OMP).
+      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir);
     }
 
     try {
@@ -179,6 +186,7 @@ export function registerIpcHandlers(): void {
         },
         (exitCode, signal) => {
           cleanupSessionStatus(sessionId);
+          unregisterTranscriptSync(sessionId);
           if (isSilencedExit(sessionId)) return; // old PTY killed for re-spawn
           // After the silenced-exit check: an old PTY's async exit must not
           // cancel the discovery the re-spawn just registered.

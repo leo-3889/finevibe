@@ -28,14 +28,49 @@ export function registerSession(sessionId: string): void {
   knownSessionIds.add(sessionId);
 }
 
+let statusDirEnsured = false;
+/**
+ * Create STATUS_DIR once per process. The write helpers below run on every
+ * status/title/id change; re-mkdir-ing an already-existing dir each time
+ * is a wasted syscall. installStatusLineScript/startWatching still mkdir
+ * directly (they own their own one-time setup).
+ */
+function ensureStatusDir(): void {
+  if (statusDirEnsured) return;
+  fs.mkdirSync(STATUS_DIR, { recursive: true, mode: 0o700 });
+  statusDirEnsured = true;
+}
+
 /**
  * Record the CLI session id a UI session resolved to. The STATUS_DIR watcher
  * forwards it as `session:cliSessionId`. Used by providers without hooks
  * (codex, pi) that discover the id from on-disk artifacts.
  */
 export function writeCliSessionId(uiSessionId: string, cliSessionId: string): void {
-  fs.mkdirSync(STATUS_DIR, { recursive: true, mode: 0o700 });
+  ensureStatusDir();
   fs.writeFileSync(path.join(STATUS_DIR, `${uiSessionId}.sessionid`), cliSessionId);
+}
+
+/**
+ * Provider-facing title channel (the same `.name` file Claude's statusLine
+ * writes): the STATUS_DIR watcher forwards it as `session:sessionName`.
+ * `cliSessionId` lets the renderer drop a title left over from a cleared
+ * conversation. Callers write only when the title actually changed.
+ */
+export function writeCliSessionName(uiSessionId: string, name: string, cliSessionId: string): void {
+  ensureStatusDir();
+  fs.writeFileSync(path.join(STATUS_DIR, `${uiSessionId}.name`), JSON.stringify({ name, session_id: cliSessionId }));
+}
+
+/**
+ * Provider-facing status channel (the same `.status` file Claude's hooks
+ * write): the STATUS_DIR watcher forwards it as `session:hookStatus`. Used
+ * by providers without hooks (omp, pi) that derive status from their
+ * transcript. Callers write only when the status actually changed.
+ */
+export function writeStatus(uiSessionId: string, status: string): void {
+  ensureStatusDir();
+  fs.writeFileSync(path.join(STATUS_DIR, `${uiSessionId}.status`), `Transcript:${status}`);
 }
 
 export function unregisterSession(sessionId: string): void {

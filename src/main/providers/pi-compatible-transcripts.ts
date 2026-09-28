@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { TranscriptDescriptor } from './provider';
+import type { CliSessionStatus } from '../../shared/types';
 import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR } from './transcript-utils';
 
 /**
@@ -19,19 +20,14 @@ import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR } from './transc
  */
 export const HEADER_READ_BYTES = 8 * 1024;
 
-function firstLineOf(text: string): string {
-  const nl = text.indexOf('\n');
-  return nl === -1 ? text : text.slice(0, nl);
-}
-
-/** Read only the first line of a file (bounded, never the whole transcript). */
-export function readFirstLineSync(filePath: string): string | null {
+/** Read the head of a file (bounded, never the whole transcript). */
+export function readHeaderWindowSync(filePath: string): string | null {
   let fd: number | null = null;
   try {
     fd = fs.openSync(filePath, 'r');
     const buf = Buffer.alloc(HEADER_READ_BYTES);
     const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
-    return firstLineOf(buf.toString('utf-8', 0, bytesRead));
+    return buf.toString('utf-8', 0, bytesRead);
   } catch {
     return null;
   } finally {
@@ -41,14 +37,14 @@ export function readFirstLineSync(filePath: string): string | null {
   }
 }
 
-/** Async twin of readFirstLineSync. Per-call buffer: safe under Promise.all. */
-export async function readFirstLineAsync(filePath: string): Promise<string | null> {
+/** Async twin of readHeaderWindowSync. Per-call buffer: safe under Promise.all. */
+export async function readHeaderWindowAsync(filePath: string): Promise<string | null> {
   let handle: fs.promises.FileHandle | null = null;
   try {
     handle = await fs.promises.open(filePath, 'r');
     const buf = Buffer.alloc(HEADER_READ_BYTES);
     const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
-    return firstLineOf(buf.toString('utf-8', 0, bytesRead));
+    return buf.toString('utf-8', 0, bytesRead);
   } catch {
     return null;
   } finally {
@@ -58,22 +54,173 @@ export async function readFirstLineAsync(filePath: string): Promise<string | nul
   }
 }
 
-/** First line of a Pi/OMP transcript: {"type":"session","version":3,"id","timestamp","cwd"}. */
+/**
+ * Status is derived from the LAST few entries of a transcript, which live at
+ * the end of the file. Pull only this many trailing bytes — a single entry
+ * longer than this simply fails to parse and is skipped.
+ */
+export const TAIL_READ_BYTES = 16 * 1024;
+
+/**
+ * Fallback window for status derivation when the last entry is larger than
+ * TAIL_READ_BYTES (a big tool output / message fills the whole window, so
+ * no complete line is present to parse). Bounded so a pathological huge
+ * transcript can't make the poller read unboundedly.
+ */
+export const MAX_STATUS_TAIL_BYTES = 1024 * 1024;
+
+/** Read the tail of a file (bounded, never the whole transcript). */
+export function readTranscriptTailSync(filePath: string, bytes = TAIL_READ_BYTES): string | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const size = stat.size;
+    const readLen = Math.min(bytes, size);
+    const start = size - readLen;
+    const buf = Buffer.alloc(readLen);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
+    return buf.toString('utf-8', 0, bytesRead);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
+  }
+}
+
+/**
+ * Derive a session's current status from the last entries of its transcript.
+ *
+ * Pi-compatible CLIs append one JSON line per event. The last *meaningful*
+ * entry (a `message` or a `custom` lifecycle marker) tells us where the
+ * conversation is, mirroring the hook convention the other tools use:
+ *   - mid-turn (assistant `toolUse`, or a `user` / `toolResult` /
+ *     `tool_execution_start` marker) → `working`
+ *   - clean finish (assistant `stop`) → `completed`
+ *   - failed turn (assistant `error`) → `waiting`
+ * A trailing `session_exit` maps to null: the session is removed on PTY exit,
+ * so there is nothing to report. Non-event lines (title, model_change, …) are
+ * skipped.
+ */
+export function transcriptStatusFromTail(tail: string | null): CliSessionStatus | null {
+  if (!tail) return null;
+  const lines = tail.split(/\r?\n/).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let entry: Record<string, any>;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      // A mid-write tail line (the writer is mid-flush) — ignore and keep
+      // scanning backwards for the last complete line.
+      continue;
+    }
+    const status = statusFromEntry(entry);
+    if (status) return status;
+  }
+  return null;
+}
+
+function statusFromEntry(entry: Record<string, any>): CliSessionStatus | null {
+  if (entry.type === 'custom') {
+    if (entry.customType === 'session_exit') return null; // session is removed on PTY exit; nothing to report
+    if (entry.customType === 'tool_execution_start') return 'working';
+    return null;
+  }
+  if (entry.type === 'message') {
+    const role = entry.message?.role;
+    if (role === 'assistant') {
+      const stop = entry.message?.stopReason;
+      // Mirrors the hook convention: a clean finish (stop) is `completed`, a
+      // failed turn (error) is `waiting` — same as Claude's Stop/StopFailure.
+      // Anything else (toolUse / mid-turn) is still `working`.
+      if (stop === 'error') return 'waiting';
+      return stop === 'stop' ? 'completed' : 'working';
+    }
+    if (role === 'user' || role === 'toolResult') return 'working';
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Convenience: read a transcript's tail and derive its status in one call.
+ * If the default 16KB window yields no complete meaningful entry — the last
+ * entry is larger than the window — retry with a larger bounded window so a
+ * big final entry (large tool output / message) doesn't leave the poller on
+ * a stale status.
+ */
+export function readTranscriptStatusSync(filePath: string): CliSessionStatus | null {
+  const status = transcriptStatusFromTail(readTranscriptTailSync(filePath));
+  if (status !== null) return status;
+  return transcriptStatusFromTail(readTranscriptTailSync(filePath, MAX_STATUS_TAIL_BYTES));
+}
+
+/**
+ * OMP (18.4+) prepends a `{"type":"title",...}` line before the session
+ * header and rewrites it in place when the title changes, so the header is
+ * not always line 1. Parse the JSON entries of the first few lines.
+ */
+function headEntries(window: string | null): Array<Record<string, any>> {
+  if (!window) return [];
+  const out: Array<Record<string, any>> = [];
+  const lines = window.split('\n');
+  for (let i = 0; i < lines.length && out.length < 4; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry && typeof entry === 'object') out.push(entry);
+    } catch { /* not JSON */ }
+  }
+  return out;
+}
+
+/** Session header from a transcript head: {"type":"session","version":3,"id","timestamp","cwd"}. */
+export function sessionHeaderFromWindow(window: string | null): CompatibleSessionHeader | null {
+  for (const entry of headEntries(window)) {
+    if (entry.type === 'session' && typeof entry.id === 'string') return entry as CompatibleSessionHeader;
+  }
+  return null;
+}
+
+export function readSessionHeaderSync(filePath: string): CompatibleSessionHeader | null {
+  return sessionHeaderFromWindow(readHeaderWindowSync(filePath));
+}
+
+export async function readSessionHeaderAsync(filePath: string): Promise<CompatibleSessionHeader | null> {
+  return sessionHeaderFromWindow(await readHeaderWindowAsync(filePath));
+}
+
+/**
+ * The CLI's own session title from a transcript head: the `type:"title"`
+ * entry (OMP) wins, falling back to the header's `title` field (OMP mirrors
+ * it there). Null when the session has no title (e.g. every Pi transcript).
+ */
+export function transcriptTitleFromWindow(window: string | null): string | null {
+  let headerTitle: string | null = null;
+  for (const entry of headEntries(window)) {
+    if (typeof entry.title !== 'string' || !entry.title.trim()) continue;
+    if (entry.type === 'title') return entry.title.trim();
+    if (entry.type === 'session' && headerTitle === null) headerTitle = entry.title.trim();
+  }
+  return headerTitle;
+}
+
+export function readTranscriptTitleSync(filePath: string): string | null {
+  return transcriptTitleFromWindow(readHeaderWindowSync(filePath));
+}
+
+/**
+ * Session header entry: {"type":"session","version":3,"id","timestamp","cwd"}.
+ * OMP also mirrors the current title into `title`/`titleSource`.
+ */
 export interface CompatibleSessionHeader {
   type: string;
   id: string;
   cwd?: string;
-}
-
-export function parseSessionHeader(firstLine: string | null): CompatibleSessionHeader | null {
-  if (!firstLine) return null;
-  try {
-    const entry = JSON.parse(firstLine);
-    if (entry?.type === 'session' && typeof entry.id === 'string') return entry;
-    return null;
-  } catch {
-    return null;
-  }
+  title?: string;
 }
 
 /**
@@ -117,7 +264,7 @@ export function findTranscriptPathSync(
       for (const f of files) {
         if (!f.endsWith(suffix)) continue;
         const full = path.join(dirPath, f);
-        const header = parseSessionHeader(readFirstLineSync(full));
+        const header = readSessionHeaderSync(full);
         if (!header || header.id !== cliSessionId) continue;
         if (header.cwd === projectPath) return full;
         fallback ??= full;
@@ -149,7 +296,7 @@ export async function scanTranscriptSessionsRoot(
     const descriptors = await Promise.all(
       files.filter((f) => f.endsWith('.jsonl')).map(async (f) => {
         const transcriptPath = path.join(dirPath, f);
-        const header = parseSessionHeader(await readFirstLineAsync(transcriptPath));
+        const header = await readSessionHeaderAsync(transcriptPath);
         return header
           ? { cliSessionId: header.id, transcriptPath, projectCwd: header.cwd ?? '', profileId }
           : null;
@@ -160,8 +307,7 @@ export async function scanTranscriptSessionsRoot(
   return out;
 }
 
-/**
- * Index a Pi/OMP transcript for global search: user-typed text only,
+/** Index a Pi/OMP transcript for global search: user-typed text only,
  * capped at the per-session char budget.
  */
 export async function indexCompatibleTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

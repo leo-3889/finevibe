@@ -30,6 +30,8 @@ export class CopilotProvider implements CliProvider {
       planModeArg: '--mode plan',
       systemPromptInjection: false,
       profiles: false,
+      selfTitles: false,
+      polledStatus: false,
     },
     defaultContextWindowSize: 128_000,
   };

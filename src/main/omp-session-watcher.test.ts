@@ -25,9 +25,14 @@ const { STATUS_DIR: MOCK_STATUS_DIR } = vi.hoisted(() => {
   return { STATUS_DIR: path.join('/tmp', 'vibeyard') };
 });
 
+const mockRegisterTranscriptSync = vi.hoisted(() => vi.fn());
+
 vi.mock('./hook-status', () => ({
   STATUS_DIR: MOCK_STATUS_DIR,
   writeCliSessionId: vi.fn(),
+}));
+vi.mock('./session-transcript-sync', () => ({
+  registerTranscriptSync: mockRegisterTranscriptSync,
 }));
 
 import * as path from 'path';
@@ -71,6 +76,31 @@ function mockFirstLine(firstLine: string | null): void {
   mockReadSync.mockImplementation((_fd, target: Buffer) => {
     if (firstLine === null) return 0;
     const buf = Buffer.from(firstLine);
+    buf.copy(target);
+    return buf.length;
+  });
+  mockCloseSync.mockReturnValue(true);
+}
+
+/**
+ * Serve a DIFFERENT header line per file (keyed by basename), so a scan that
+ * reads several transcripts at once sees each one's real id. Needed for the
+ * /clear test where two files with different ids coexist.
+ */
+function mockFilesByHeader(lineByBasename: Record<string, string>): void {
+  let fdCounter = 100;
+  const fdToLine = new Map<number, string>();
+  mockOpenSync.mockImplementation((p: string) => {
+    const line = lineByBasename[path.basename(p)];
+    if (line === undefined) return -1;
+    const fd = fdCounter++;
+    fdToLine.set(fd, line);
+    return fd;
+  });
+  mockReadSync.mockImplementation((fd: number, target: Buffer) => {
+    const line = fdToLine.get(fd);
+    if (line === undefined) return 0;
+    const buf = Buffer.from(line);
     buf.copy(target);
     return buf.length;
   });
@@ -434,5 +464,105 @@ describe('stopOmpSessionWatcher', () => {
     vi.advanceTimersByTime(2000);
 
     expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+  });
+});
+
+/** Transcript head with OMP's title line prepended to the session header. */
+function titleHead(title: string, piId: string, cwd: string): string {
+  return [
+    JSON.stringify({ type: 'title', v: 1, title, source: 'auto', updatedAt: 't' }),
+    header(piId, cwd),
+  ].join('\n');
+}
+
+describe('title sync wiring', () => {
+  it('hands the adopted session to the transcript sync', () => {
+    startWatcher();
+
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
+    registerPendingOmpSession('ui-1', '/proj');
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
+    mockFirstLine(titleHead('Fix the flaky test', 'pi-title-1', '/proj'));
+
+    vi.advanceTimersByTime(2000);
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-title-1');
+    expect(mockRegisterTranscriptSync).toHaveBeenCalledWith('ui-1', 'omp', 'pi-title-1', '/proj', undefined);
+  });
+
+  it('passes the profile configDir through to the transcript sync', () => {
+    startWatcher();
+
+    const profileRoot = path.join('/profiles/work', 'sessions');
+    mockSessionsTree(profileRoot, { 'dir-a': [] });
+    registerPendingOmpSession('ui-1', '/proj', '/profiles/work');
+    mockSessionsTree(profileRoot, { 'dir-a': ['new.jsonl'] });
+    mockFirstLine(titleHead('Profile title', 'pi-prof', '/proj'));
+
+    vi.advanceTimersByTime(2000);
+
+    expect(mockRegisterTranscriptSync).toHaveBeenCalledWith('ui-1', 'omp', 'pi-prof', '/proj', '/profiles/work');
+  });
+
+  it('still adopts when the transcript sync callback throws', () => {
+    mockRegisterTranscriptSync.mockImplementation(() => { throw new Error('boom'); });
+    startWatcher();
+
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
+    registerPendingOmpSession('ui-1', '/proj');
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
+    mockFirstLine(header('pi-throw', '/proj'));
+
+    vi.advanceTimersByTime(2000);
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-throw');
+  });
+});
+
+describe('/clear re-adoption', () => {
+  it('re-adopts a newer transcript in the same cwd and re-fires the sync', () => {
+    startWatcher();
+    const t1 = 'new.jsonl'; // null fileTs → passes the fresh-adoption tolerance
+    const t2 = '2026-01-01T01-00-00-000Z_cli-2.jsonl';
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
+    registerPendingOmpSession('ui-1', '/proj');
+
+    // First transcript appears → adopt cli-1.
+    mockFilesByHeader({ [t1]: header('cli-1', '/proj') });
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [t1] });
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-1', 'cli-1');
+    expect(mockRegisterTranscriptSync).toHaveBeenLastCalledWith('ui-1', 'omp', 'cli-1', '/proj', undefined);
+
+    // /clear → a NEWER transcript with a new id in the same cwd.
+    mockFilesByHeader({ [t1]: header('cli-1', '/proj'), [t2]: header('cli-2', '/proj') });
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [t1, t2] });
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-1', 'cli-2');
+    expect(mockRegisterTranscriptSync).toHaveBeenLastCalledWith('ui-1', 'omp', 'cli-2', '/proj', undefined);
+  });
+
+  it('does NOT re-adopt when two adopted sessions share the cwd (ambiguous)', () => {
+    startWatcher();
+    const a1 = 'a.jsonl';
+    const b1 = 'b.jsonl';
+    const clear = '2026-01-01T02-00-00-000Z_clear.jsonl';
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
+    registerPendingOmpSession('ui-A', '/proj');
+    registerPendingOmpSession('ui-B', '/proj');
+
+    // Both adopt their first transcripts (paired by filename order).
+    mockFilesByHeader({ [a1]: header('id-a', '/proj'), [b1]: header('id-b', '/proj') });
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [a1, b1] });
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-A', 'id-a');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-B', 'id-b');
+    const callsAfterFresh = mockWriteCliSessionId.mock.calls.length;
+
+    // A newer transcript appears — ambiguous which session cleared → skip.
+    mockFilesByHeader({ [a1]: header('id-a', '/proj'), [b1]: header('id-b', '/proj'), [clear]: header('id-clear', '/proj') });
+    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [a1, b1, clear] });
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(callsAfterFresh);
   });
 });

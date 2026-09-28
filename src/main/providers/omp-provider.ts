@@ -1,11 +1,11 @@
 import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDescriptor } from './provider';
-import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import type { CliProviderMeta, CliSessionStatus, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { collectProfileRoots } from './transcript-utils';
-import { ompSessionsRoot } from './omp-transcripts';
-import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript } from './pi-compatible-transcripts';
+import { ompSessionsRoot, readTranscriptTitleSync } from './omp-transcripts';
+import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript, readTranscriptStatusSync } from './pi-compatible-transcripts';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession, stopOmpSessionWatcher } from '../omp-session-watcher';
 
 const binaryCache = { path: null as string | null };
@@ -25,6 +25,8 @@ export class OmpProvider implements CliProvider {
       pendingPromptTrigger: 'startup-arg',
       systemPromptInjection: true,
       profiles: true,
+      selfTitles: true,
+      polledStatus: true,
     },
     defaultContextWindowSize: 200_000,
   };
@@ -103,6 +105,26 @@ export class OmpProvider implements CliProvider {
   onSessionStarted(sessionId: string, cwd: string, _win: BrowserWindow, configDir?: string): void {
     startOmpSessionWatcher();
     registerPendingOmpSession(sessionId, cwd, configDir);
+  }
+
+  /**
+   * The CLI's own title from a resolved transcript path. OMP keeps it in
+   * the transcript head (a `type:"title"` line, mirrored into the session
+   * header); the merged transcript-sync resolves the path once and polls
+   * this for self-titling providers.
+   */
+  readSessionTitle(transcriptPath: string): string | null {
+    return readTranscriptTitleSync(transcriptPath);
+  }
+
+  /**
+   * Derive the session's status from a resolved transcript path (OMP has no
+   * hooks). The merged transcript-sync resolves the path once and polls
+   * this for polledStatus providers, mirroring the result into the
+   * `.status` channel.
+   */
+  readSessionStatus(transcriptPath: string): CliSessionStatus | null {
+    return readTranscriptStatusSync(transcriptPath);
   }
 
   onSessionExited(sessionId: string): void {

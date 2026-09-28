@@ -13,9 +13,25 @@ vi.mock('../omp-session-watcher', () => ({
   unregisterOmpSession: vi.fn(),
   stopOmpSessionWatcher: vi.fn(),
 }));
+vi.mock('./omp-transcripts', () => ({
+  ompSessionsRoot: vi.fn((configDir?: string) => require('path').join(configDir ?? '/mock/home/.omp/agent', 'sessions')),
+  readTranscriptTitleSync: vi.fn(),
+}));
+vi.mock('./pi-compatible-transcripts', () => ({
+  createCompatibleTranscriptModule: (dir: string) => ({
+    agentDir: (configDir?: string) => configDir ?? dir,
+    sessionsRoot: (configDir?: string) => require('path').join(configDir ?? dir, 'sessions'),
+  }),
+  findTranscriptPathSync: vi.fn(),
+  scanTranscriptSessionsRoot: vi.fn(),
+  indexCompatibleTranscript: vi.fn(),
+  readTranscriptStatusSync: vi.fn(),
+}));
 
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession } from '../omp-session-watcher';
+import { readTranscriptTitleSync } from './omp-transcripts';
+import { findTranscriptPathSync, readTranscriptStatusSync } from './pi-compatible-transcripts';
 import { OmpProvider, _resetCachedPath } from './omp-provider';
 
 const mockResolveBinary = vi.mocked(resolveBinary);
@@ -152,6 +168,42 @@ describe('session id discovery hooks', () => {
   it('onSessionExited unregisters the pending session', () => {
     provider.onSessionExited!('ui-1');
     expect(mockUnregisterOmpSession).toHaveBeenCalledWith('ui-1');
+  });
+  it('readSessionTitle reads the title from the given transcript path', () => {
+    vi.mocked(readTranscriptTitleSync).mockReturnValue('My CLI title');
+
+    expect(provider.readSessionTitle!('/sessions/dir-a/2026.jsonl')).toBe('My CLI title');
+    expect(readTranscriptTitleSync).toHaveBeenCalledWith('/sessions/dir-a/2026.jsonl');
+  });
+
+  it('readSessionTitle returns null when the transcript has no title', () => {
+    vi.mocked(readTranscriptTitleSync).mockReturnValue(null);
+
+    expect(provider.readSessionTitle!('/sessions/dir-a/2026.jsonl')).toBeNull();
+  });
+});
+
+describe('readSessionStatus', () => {
+  it('derives status from the given transcript tail', () => {
+    vi.mocked(readTranscriptStatusSync).mockReturnValue('working');
+
+    expect(provider.readSessionStatus!('/sessions/dir-a/2026.jsonl')).toBe('working');
+    expect(readTranscriptStatusSync).toHaveBeenCalledWith('/sessions/dir-a/2026.jsonl');
+  });
+
+  it('returns null when the tail yields no status', () => {
+    vi.mocked(readTranscriptStatusSync).mockReturnValue(null);
+
+    expect(provider.readSessionStatus!('/sessions/dir-a/2026.jsonl')).toBeNull();
+  });
+});
+
+describe('getTranscriptPath', () => {
+  it('resolves the transcript path the sync caches and reads from', () => {
+    vi.mocked(findTranscriptPathSync).mockReturnValue('/sessions/dir-a/2026.jsonl');
+
+    expect(provider.getTranscriptPath!('cli-9', '/proj', '/profiles/work')).toBe('/sessions/dir-a/2026.jsonl');
+    expect(findTranscriptPathSync).toHaveBeenCalledWith(expect.any(Function), 'cli-9', '/proj', '/profiles/work');
   });
 });
 

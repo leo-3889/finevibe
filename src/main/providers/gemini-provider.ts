@@ -30,6 +30,8 @@ export class GeminiProvider implements CliProvider {
       planModeArg: '--approval-mode=plan',
       systemPromptInjection: false,
       profiles: false,
+      selfTitles: false,
+      polledStatus: false,
     },
     defaultContextWindowSize: 1_000_000,
   };

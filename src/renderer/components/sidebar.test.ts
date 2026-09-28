@@ -30,8 +30,8 @@ function stubDom() {
   vi.stubGlobal('window', { vibeyard: {} });
 }
 
-// Capability table matching the real provider registry: claude and pi are
-// profile-capable, the rest are not.
+// Capability table matching the real provider registry: claude, pi and omp
+// are profile-capable, the rest are not.
 vi.mock('../provider-availability.js', () => ({
   loadProviderMetas: vi.fn(async () => {}),
   loadProviderAvailability: vi.fn(async () => {}),
@@ -42,7 +42,7 @@ vi.mock('../provider-availability.js', () => ({
   getTeamChatProviderMetas: vi.fn(() => []),
   getTeamCapableProviderIds: vi.fn(() => new Set()),
   getProviderCapabilities: vi.fn((id: string) => ({
-    profiles: id === 'claude' || id === 'pi',
+    profiles: id === 'claude' || id === 'pi' || id === 'omp',
   })),
   getProviderDisplayName: vi.fn((id: string) => {
     const names: Record<string, string> = { claude: 'Claude Code', pi: 'Pi', omp: 'Oh my Pi' };
@@ -124,11 +124,28 @@ describe('profile-utils', () => {
     return { id, name, providerId, configDir: `/cfg/${id}`, managed: true, createdAt: 0 };
   }
 
-  it('labels a profile as "Name · provider display name"', async () => {
-    const { profileOptionLabel } = await import('../profile-utils.js');
-    expect(profileOptionLabel(makeProfile('work', 'Work', 'pi') as any)).toBe('Work · Pi');
-    expect(profileOptionLabel(makeProfile('work', 'Work') as any)).toBe('Work · Claude Code');
-    expect(profileOptionLabel(makeProfile('work', 'Work', 'omp') as any)).toBe('Work · Oh my Pi');
+  it('scopes profile options to a single coding tool with bare names', async () => {
+    const { providerProfileOptions } = await import('../profile-utils.js');
+    const { appState } = await import('../state.js');
+    appState.profiles.push(
+      makeProfile('work', 'Work', 'claude') as any,
+      makeProfile('home', 'Home', 'pi') as any,
+      makeProfile('omp1', 'OMP Work', 'omp') as any,
+      makeProfile('gem', 'Gem', 'gemini') as any,
+    );
+    expect(providerProfileOptions('claude')).toEqual([{ value: 'work', label: 'Work' }]);
+    expect(providerProfileOptions('pi')).toEqual([{ value: 'home', label: 'Home' }]);
+    expect(providerProfileOptions('omp')).toEqual([{ value: 'omp1', label: 'OMP Work' }]);
+    expect(providerProfileOptions('gemini')).toEqual([]);
+  });
+
+  it('resolves the project provider from the active session, else the global default', async () => {
+    const { projectProviderId } = await import('../profile-utils.js');
+    const { appState } = await import('../state.js');
+    appState.preferences.defaultProvider = 'claude';
+    expect(projectProviderId({ sessions: [], activeSessionId: null } as any)).toBe('claude');
+    expect(projectProviderId({ sessions: [{ id: 's1', providerId: 'omp' }], activeSessionId: 's1' } as any)).toBe('omp');
+    expect(projectProviderId({ sessions: [{ id: 's1', providerId: 'omp' }], activeSessionId: 's2' } as any)).toBe('claude');
   });
 
   it('returns only profile-capable profiles', async () => {

@@ -3,21 +3,34 @@ import * as path from 'path';
 import { BrowserWindow } from 'electron';
 import { writeCliSessionId } from './hook-status';
 import { isWin, isMac } from './platform';
-import { readFirstLineSync, parseSessionHeader } from './providers/pi-compatible-transcripts';
+import { readSessionHeaderSync } from './providers/pi-compatible-transcripts';
 
 /**
  * Shared session-id discovery watcher for Pi-compatible providers (Pi and
  * OMP). Neither has a hook system to report session IDs back to the host
  * app, so we watch the agent's sessions/ directory: every process creates a
- * new <ISO-timestamp>_<uuid>.jsonl whose first line is a session header
- * carrying the id and cwd. When a new file appears for a pending UI
- * session's project, we write a .sessionid file so hook-status picks it up
- * and forwards session:cliSessionId — the same channel Codex uses.
+ * new <ISO-timestamp>_<uuid>.jsonl whose head carries a session header with
+ * the id and cwd (OMP prepends a `type:"title"` line in front of it). When
+ * a new file appears for a pending UI session's project, we write a
+ * .sessionid file so hook-status picks it up and forwards
+ * session:cliSessionId — the same channel Codex uses. Providers whose CLI
+ * self-titles or needs polled status (OMP, Pi) pass an onAdopted callback
+ * to start mirroring via the merged session-transcript-sync module.
+ *
+ * A session is kept tracked after adoption (not dropped) so a later `/clear`
+ * — which starts a brand-new transcript under a new id in the same cwd — is
+ * re-adopted: the renderer's cliSessionId and the transcript-sync entry move
+ * to the live conversation instead of freezing on the pre-clear one.
  *
  * Parameterized only by the sessions-root resolver; Pi and OMP each get a
  * thin wrapper (pi-session-watcher.ts / omp-session-watcher.ts) with its
  * own registration state.
  */
+
+export interface CompatibleSessionWatcherOptions {
+  /** Called after a session id is adopted, for follow-up wiring (title sync). */
+  onAdopted?: (uiSessionId: string, cliSessionId: string, projectPath: string, configDir?: string) => void;
+}
 
 export interface CompatibleSessionWatcher {
   start(): void;
@@ -26,14 +39,21 @@ export interface CompatibleSessionWatcher {
   stop(): void;
 }
 
-interface PendingSession {
+interface WatchedSession {
   projectPath: string;
   configDir?: string;
-  /** .jsonl files that already existed at registration — never candidates. */
+  /** Transcript files that existed at registration — never adopted. */
   knownFiles: Set<string>;
-  /** Registration time — candidates stamped well before it belong to an
-   *  external CLI run in the same project, not this UI session. */
   registeredAt: number;
+  /**
+   * Set once this session's transcript is adopted. Kept (not deleted) so a
+   * later `/clear` — a newer transcript in the same cwd — can be
+   * re-adopted, keeping the synced title/status on the live conversation
+   * instead of the frozen pre-clear one.
+   */
+  adoptedFile?: string;
+  adoptedCliId?: string;
+  adoptedFileTs?: number | null;
 }
 
 interface Candidate {
@@ -65,9 +85,10 @@ function filenameTimestampMs(file: string): number | null {
 const ADOPTION_TOLERANCE_MS = 5_000;
 
 export function createCompatibleSessionWatcher(
-  sessionsRootOf: (configDir?: string) => string
+  sessionsRootOf: (configDir?: string) => string,
+  options: CompatibleSessionWatcherOptions = {}
 ): CompatibleSessionWatcher {
-  const pendingSessions = new Map<string, PendingSession>();
+  const watchedSessions = new Map<string, WatchedSession>();
   const assignedIds = new Set<string>();
 
   const watchers: fs.FSWatcher[] = [];
@@ -97,13 +118,38 @@ export function createCompatibleSessionWatcher(
     return known;
   }
 
+  /**
+   * Commit an adoption: publish the id to the renderer, mark it assigned,
+   * record it on the watched session, and fire the follow-up wiring. A
+   * failed id write leaves the session in its prior state so the next scan
+   * retries (never crash the timer/watch callback).
+   */
+  function adopt(uiId: string, p: WatchedSession, cand: Candidate): boolean {
+    try {
+      writeCliSessionId(uiId, cand.sessionId);
+    } catch {
+      // Disk full / permissions — keep prior state, retry on the next scan.
+      return false;
+    }
+    assignedIds.add(cand.sessionId);
+    p.adoptedFile = cand.file;
+    p.adoptedCliId = cand.sessionId;
+    p.adoptedFileTs = cand.fileTs;
+    // Follow-up wiring (e.g. starting the transcript sync) must not undo an
+    // adoption if the callback throws.
+    try {
+      options.onAdopted?.(uiId, cand.sessionId, p.projectPath, p.configDir);
+    } catch { /* best-effort */ }
+    return true;
+  }
+
   function scanForNewSessions(): void {
-    if (pendingSessions.size === 0) return;
+    if (watchedSessions.size === 0) return;
 
     // Group by sessions root: one walk + one header read per root per scan,
-    // not one per pending session.
-    const byRoot = new Map<string, Array<[string, PendingSession]>>();
-    for (const [uiId, p] of pendingSessions) {
+    // not one per watched session.
+    const byRoot = new Map<string, Array<[string, WatchedSession]>>();
+    for (const [uiId, p] of watchedSessions) {
       const root = sessionsRootOf(p.configDir);
       if (!byRoot.has(root)) byRoot.set(root, []);
       byRoot.get(root)!.push([uiId, p]);
@@ -120,7 +166,7 @@ export function createCompatibleSessionWatcher(
         for (const f of files) {
           if (!f.endsWith('.jsonl')) continue;
           const full = path.join(dirPath, f);
-          const header = parseSessionHeader(readFirstLineSync(full));
+          const header = readSessionHeaderSync(full);
           if (!header || typeof header.cwd !== 'string') continue;
           if (assignedIds.has(header.id)) continue;
           candidates.push({ file: full, sessionId: header.id, cwd: header.cwd, root, fileTs: filenameTimestampMs(full) });
@@ -133,31 +179,46 @@ export function createCompatibleSessionWatcher(
     candidates.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
 
     const taken = new Set<string>();
+
+    // Pass 1 — fresh adoption: an un-adopted session claims its first
+    // transcript. Pending sessions take priority over clear re-adoption so a
+    // brand-new session in a project is never mistaken for another's clear.
     for (const cand of candidates) {
       const match = (byRoot.get(cand.root) ?? []).find(
-        ([uiId, p]) => !taken.has(uiId)
+        ([uiId, p]) => !p.adoptedFile
+          && !taken.has(uiId)
           && !p.knownFiles.has(cand.file)
           && (cand.fileTs === null || cand.fileTs >= p.registeredAt - ADOPTION_TOLERANCE_MS)
           && cwdMatches(p.projectPath, cand.cwd)
       );
       if (!match) continue;
-      const [uiId] = match;
-      try {
-        writeCliSessionId(uiId, cand.sessionId);
-      } catch {
-        // A failed write (disk full, permissions) must not crash the main
-        // process from a timer/watch callback — keep the session pending so
-        // the next scan retries the write.
-        continue;
-      }
-      taken.add(uiId);
-      assignedIds.add(cand.sessionId);
-      pendingSessions.delete(uiId);
+      if (adopt(match[0], match[1], cand)) taken.add(match[0]);
+    }
+
+    // Pass 2 — `/clear` re-adoption: a NEWER unassigned transcript in the
+    // same cwd is the adopted session's fresh start. Applied only when
+    // exactly ONE adopted session maps to that (cwd, root): with several, a
+    // new transcript can't be safely attributed, so we leave the existing
+    // one (no worse than before). The candidate must be strictly newer than
+    // the currently-adopted file and carry a parseable timestamp.
+    for (const cand of candidates) {
+      const candTs = cand.fileTs;
+      if (candTs === null) continue;
+      const matches = (byRoot.get(cand.root) ?? []).filter(
+        ([uiId, p]) => p.adoptedFile
+          && !taken.has(uiId)
+          && cand.file !== p.adoptedFile
+          && !p.knownFiles.has(cand.file)
+          && (p.adoptedFileTs == null || candTs > p.adoptedFileTs)
+          && cwdMatches(p.projectPath, cand.cwd)
+      );
+      if (matches.length !== 1) continue;
+      if (adopt(matches[0][0], matches[0][1], cand)) taken.add(matches[0][0]);
     }
   }
 
   function registerPending(sessionId: string, projectPath: string, configDir?: string): void {
-    pendingSessions.set(sessionId, {
+    watchedSessions.set(sessionId, {
       projectPath,
       configDir,
       knownFiles: snapshotExistingFiles(sessionsRootOf(configDir)),
@@ -166,14 +227,14 @@ export function createCompatibleSessionWatcher(
   }
 
   function unregister(sessionId: string): void {
-    pendingSessions.delete(sessionId);
+    watchedSessions.delete(sessionId);
   }
 
   function start(): void {
     if (pollInterval) return;
 
     const onEvent = () => {
-      if (pendingSessions.size > 0) scanForNewSessions();
+      if (watchedSessions.size > 0) scanForNewSessions();
     };
     const root = sessionsRootOf();
     watchDir(root, onEvent);
@@ -187,7 +248,7 @@ export function createCompatibleSessionWatcher(
     // Look the window up per tick — a window destroyed and recreated (macOS
     // dock re-activate) must not kill the polling fallback for good.
     pollInterval = setInterval(() => {
-      if (pendingSessions.size === 0) return;
+      if (watchedSessions.size === 0) return;
       const win = BrowserWindow.getAllWindows()[0];
       if (win && !win.isDestroyed()) scanForNewSessions();
     }, 2000);
@@ -210,7 +271,7 @@ export function createCompatibleSessionWatcher(
       clearInterval(pollInterval);
       pollInterval = null;
     }
-    pendingSessions.clear();
+    watchedSessions.clear();
     assignedIds.clear();
   }
 

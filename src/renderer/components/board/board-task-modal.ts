@@ -10,6 +10,7 @@ import {
 } from '../../provider-availability.js';
 import { appState } from '../../state.js';
 import { runTask } from './board-card.js';
+import { resolvePinnedTeamProfile } from '../../state/team-state.js';
 import { t } from '../../i18n.js';
 
 export interface TaskModalPrefill {
@@ -358,15 +359,27 @@ export function showTaskModal(
 
   // An assigned task runs as a team-chat session, which resolves its own
   // profile and never applies plan mode — hide those two fields so the modal
-  // doesn't promise settings that get discarded at run time. The provider is
-  // still honored as a team-chat override, so it stays visible.
+  // doesn't promise settings that get discarded at run time. The provider
+  // field stays visible only when it actually steers the backend: an assignee
+  // pinned to a profile fixes the provider via the pin (resolveTeamChatBackend
+  // returns the pin's provider before consulting the override), so the pick
+  // would be inert and the field is hidden — matching the member card.
   function applyAssigneeFieldVisibility(): void {
     if (currentAssigneeId) {
+      // An assigned task runs as team-chat under the member's pinned
+      // profile; the task's own profile is never applied. Clear it so a
+      // provider change while assigned can't persist a profileId that
+      // belongs to a different provider.
+      currentProfileId = '';
       profileFieldDiv.style.display = 'none';
       planModeFieldDiv.style.display = 'none';
+      const member = appState.getTeamMemberById(currentAssigneeId);
+      const pinned = member ? resolvePinnedTeamProfile(member, appState.profiles) : null;
+      providerFieldDiv.style.display = pinned ? 'none' : '';
     } else {
       renderProfileField(); // restores the natural profile visibility + rebuilds the select
       planModeFieldDiv.style.display = '';
+      providerFieldDiv.style.display = '';
     }
   }
 

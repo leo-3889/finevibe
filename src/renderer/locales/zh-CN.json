@@ -410,7 +410,6 @@
     "empty": "暂无配置文件。",
     "tagManaged": "托管",
     "tagCustom": "自定义",
-    "tagProvider": "提供商",
     "renameButton": "重命名",
     "deleteButton": "删除",
     "deleteTitle": "删除配置文件",

@@ -410,7 +410,6 @@
     "empty": "No profiles yet.",
     "tagManaged": "managed",
     "tagCustom": "custom",
-    "tagProvider": "provider",
     "renameButton": "Rename",
     "deleteButton": "Delete",
     "deleteTitle": "Delete profile",

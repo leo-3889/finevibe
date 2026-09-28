@@ -60,6 +60,8 @@ export class ClaudeProvider implements CliProvider {
       planModeArg: '--permission-mode plan',
       systemPromptInjection: true,
       profiles: true,
+      selfTitles: true,
+      polledStatus: false,
     },
     defaultContextWindowSize: 200_000,
   };

@@ -284,13 +284,16 @@ describe('addSession profile pinning', () => {
 });
 
 describe('removeProfile reference cleanup', () => {
-  it('clears the profile from sessions, projects, prefs, and history', async () => {
+  it('clears the profile from sessions, projects, prefs, history, and board tasks', async () => {
     const project = addProject();
     const profile = await appState.addProfile({ name: 'Work', providerId: 'claude' });
     appState.setProjectDefaultProfile(project.id, profile.id);
     appState.setProviderDefaultProfile('claude', profile.id);
     const session = appState.addSession(project.id, 'S', undefined, 'claude', profile.id)!;
     project.sessionHistory = [{ id: 'a', name: 'old', providerId: 'claude', cliSessionId: 'c', createdAt: '0', closedAt: '0', profileId: profile.id, cost: null }];
+    project.board = project.board ?? ({ tasks: [], columns: [] } as any);
+    const task = { id: 't1', title: 'T', prompt: 'p', columnId: 'col-1', order: 0, profileId: profile.id, createdAt: 0, updatedAt: 0 } as any;
+    project.board.tasks.push(task);
 
     appState.removeProfile(profile.id);
 
@@ -299,6 +302,7 @@ describe('removeProfile reference cleanup', () => {
     expect(project.defaultProfileId).toBeUndefined();
     expect(appState.preferences.defaultProfiles?.claude).toBeUndefined();
     expect(project.sessionHistory![0].profileId).toBeUndefined();
+    expect(task.profileId).toBeUndefined();
   });
 });
 

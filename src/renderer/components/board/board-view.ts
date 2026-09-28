@@ -13,7 +13,7 @@ import {
   setSearchQuery, getSearchQuery, toggleTagFilter, isTagFilterActive,
   hasActiveFilters, getFilteredTasks, onFilterChange, getActiveTagFilters,
 } from '../../board-filter.js';
-import { onChange as onStatusChange } from '../../session-activity.js';
+import { onChange as onStatusChange, STATUS_GLYPH } from '../../session-activity.js';
 import { onChange as onCostChange, getCost } from '../../session-cost.js';
 import { onChange as onContextChange, getContext } from '../../session-context.js';
 import { statusLabel, updateMetricsRow } from './board-card.js';
@@ -53,6 +53,7 @@ export function initBoard(): void {
     ) as HTMLElement | null;
     if (!dot) return;
     dot.className = `card-status-dot ${status}`;
+    dot.textContent = STATUS_GLYPH[status];
     const labelNode = dot.parentElement?.lastChild;
     if (labelNode && labelNode.nodeType === Node.TEXT_NODE) {
       labelNode.textContent = statusLabel(status);

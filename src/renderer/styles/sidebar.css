@@ -423,31 +423,30 @@
   box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
-/* Aggregate session status dot on inactive rows. */
+/* Aggregate session status glyph on inactive rows (replaces the dot). */
 .project-status {
   flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-muted);
+  width: 1.1em;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted);
 }
 
 .project-status.working {
-  background: var(--status-working);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-working) 15%, transparent);
+  color: var(--status-working);
 }
 
 .project-status.waiting {
-  background: var(--status-waiting);
+  color: var(--status-waiting);
 }
 
 .project-status.input {
-  background: var(--status-input);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-input) 15%, transparent);
+  color: var(--status-input);
 }
 
 .project-status.completed {
-  background: var(--status-completed);
+  color: var(--status-completed);
 }
 
 .project-main {

@@ -2,9 +2,9 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   createCompatibleTranscriptModule,
-  readFirstLineSync,
-  readFirstLineAsync,
-  parseSessionHeader,
+  readSessionHeaderSync,
+  readSessionHeaderAsync,
+  readTranscriptTitleSync,
   HEADER_READ_BYTES,
 } from './pi-compatible-transcripts';
 
@@ -12,7 +12,7 @@ import {
  * Pi's on-disk transcript contract (shared with OMP — see
  * pi-compatible-transcripts.ts) parameterized with Pi's default agent dir.
  */
-export { HEADER_READ_BYTES, readFirstLineSync, readFirstLineAsync, parseSessionHeader };
+export { HEADER_READ_BYTES, readSessionHeaderSync, readSessionHeaderAsync, readTranscriptTitleSync };
 export type { CompatibleSessionHeader as PiSessionHeader } from './pi-compatible-transcripts';
 
 const { agentDir, sessionsRoot } = createCompatibleTranscriptModule(

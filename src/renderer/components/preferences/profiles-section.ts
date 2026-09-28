@@ -3,7 +3,7 @@ import { isMac } from '../../platform.js';
 import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
 import { showModal, closeModal, setModalError, showConfirmDialog, type FieldDef } from '../modal.js';
 import { t } from '../../i18n.js';
-import { loadProviderAvailability, getAvailableProviderMetas, getProviderDisplayName } from '../../provider-availability.js';
+import { loadProviderAvailability, getAvailableProviderMetas, getCachedProviderMetas, getProviderDisplayName } from '../../provider-availability.js';
 import { profileCapableProfiles } from '../../profile-utils.js';
 import type { Profile, ProviderId } from '../../../shared/types.js';
 import type { PreferencesContext, SectionController } from './section.js';
@@ -57,19 +57,24 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
     // All profile-capable providers (capabilities.profiles), not just Claude.
     const profiles = profileCapableProfiles();
 
-    // Global default profile — one selector per provider that has profiles,
-    // so each coding tool carries its own fallback.
-    const defaultsHeading = document.createElement('div');
-    defaultsHeading.className = 'preferences-subheading';
-    defaultsHeading.textContent = t('profiles.defaultLabel');
-    container.appendChild(defaultsHeading);
+    // Group profiles by provider. Groups are ordered by the provider
+    // registry (the same order the rest of the UI lists coding tools), so a
+    // new profile-capable CLI gets its own group automatically; a provider
+    // with profiles but no registry meta sorts last, stably.
     const byProvider = new Map<ProviderId, Profile[]>();
     for (const p of profiles) {
       const list = byProvider.get(p.providerId) ?? [];
       list.push(p);
       byProvider.set(p.providerId, list);
     }
-    for (const [providerId, providerProfiles] of byProvider) {
+    const metaOrder = new Map(getCachedProviderMetas().map((m, i) => [m.id, i] as const));
+    const providerIds = [...byProvider.keys()].sort((a, b) => {
+      const ia = metaOrder.has(a) ? (metaOrder.get(a) as number) : Number.MAX_SAFE_INTEGER;
+      const ib = metaOrder.has(b) ? (metaOrder.get(b) as number) : Number.MAX_SAFE_INTEGER;
+      return ia - ib;
+    });
+    for (const providerId of providerIds) {
+      const providerProfiles = byProvider.get(providerId)!;
       const row = document.createElement('div');
       row.className = 'modal-toggle-field';
       const label = document.createElement('label');
@@ -86,7 +91,58 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       container.appendChild(row);
     }
 
-    // Profile list
+    // One profile row: name + managed/custom tag, config dir, actions. The
+    // provider is carried by the group heading, so no per-row provider tag.
+    function buildProfileRow(profile: Profile): HTMLElement {
+      const row = document.createElement('div');
+      row.className = 'profile-row';
+
+      const info = document.createElement('div');
+      info.className = 'profile-row-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'profile-row-name';
+      nameEl.textContent = profile.name;
+      const tag = document.createElement('span');
+      tag.className = 'profile-row-tag';
+      tag.textContent = profile.managed ? t('profiles.tagManaged') : t('profiles.tagCustom');
+      nameEl.appendChild(tag);
+      const pathEl = document.createElement('div');
+      pathEl.className = 'profile-row-path';
+      pathEl.textContent = profile.configDir;
+      info.appendChild(nameEl);
+      info.appendChild(pathEl);
+
+      const actions = document.createElement('div');
+      actions.className = 'profile-row-actions';
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn-secondary btn-sm';
+      editBtn.textContent = t('profiles.renameButton');
+      editBtn.addEventListener('click', () => promptEditProfile(profile.id, profile.name));
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn-secondary btn-sm danger';
+      deleteBtn.textContent = t('profiles.deleteButton');
+      deleteBtn.addEventListener('click', () => {
+        showConfirmDialog(
+          t('profiles.deleteTitle'),
+          t('profiles.deleteMessage', { name: profile.name }),
+          {
+            confirmLabel: t('profiles.deleteConfirm'),
+            onConfirm: () => {
+              appState.removeProfile(profile.id);
+              ctx.rerenderSection('profiles');
+            },
+          },
+        );
+      });
+      actions.appendChild(editBtn);
+      actions.appendChild(deleteBtn);
+
+      row.appendChild(info);
+      row.appendChild(actions);
+      return row;
+    }
+
+    // Profile list — grouped by provider, one heading per coding tool.
     const list = document.createElement('div');
     list.className = 'profiles-list';
     if (profiles.length === 0) {
@@ -95,58 +151,17 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       empty.textContent = t('profiles.empty');
       list.appendChild(empty);
     } else {
-      for (const profile of profiles) {
-        const row = document.createElement('div');
-        row.className = 'profile-row';
-
-        const info = document.createElement('div');
-        info.className = 'profile-row-info';
-        const nameEl = document.createElement('div');
-        nameEl.className = 'profile-row-name';
-        nameEl.textContent = profile.name;
-        const tag = document.createElement('span');
-        tag.className = 'profile-row-tag';
-        tag.textContent = profile.managed ? t('profiles.tagManaged') : t('profiles.tagCustom');
-        nameEl.appendChild(tag);
-        const providerTag = document.createElement('span');
-        providerTag.className = 'profile-row-tag profile-row-tag-provider';
-        providerTag.textContent = profile.providerId;
-        providerTag.title = t('profiles.tagProvider');
-        nameEl.appendChild(providerTag);
-        const pathEl = document.createElement('div');
-        pathEl.className = 'profile-row-path';
-        pathEl.textContent = profile.configDir;
-        info.appendChild(nameEl);
-        info.appendChild(pathEl);
-
-        const actions = document.createElement('div');
-        actions.className = 'profile-row-actions';
-        const editBtn = document.createElement('button');
-        editBtn.className = 'btn-secondary btn-sm';
-        editBtn.textContent = t('profiles.renameButton');
-        editBtn.addEventListener('click', () => promptEditProfile(profile.id, profile.name));
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'btn-secondary btn-sm danger';
-        deleteBtn.textContent = t('profiles.deleteButton');
-        deleteBtn.addEventListener('click', () => {
-          showConfirmDialog(
-            t('profiles.deleteTitle'),
-            t('profiles.deleteMessage', { name: profile.name }),
-            {
-              confirmLabel: t('profiles.deleteConfirm'),
-              onConfirm: () => {
-                appState.removeProfile(profile.id);
-                ctx.rerenderSection('profiles');
-              },
-            },
-          );
-        });
-        actions.appendChild(editBtn);
-        actions.appendChild(deleteBtn);
-
-        row.appendChild(info);
-        row.appendChild(actions);
-        list.appendChild(row);
+      for (const providerId of providerIds) {
+        const group = document.createElement('div');
+        group.className = 'profile-group';
+        const groupHeading = document.createElement('div');
+        groupHeading.className = 'profile-group-heading';
+        groupHeading.textContent = getProviderDisplayName(providerId);
+        group.appendChild(groupHeading);
+        for (const profile of byProvider.get(providerId)!) {
+          group.appendChild(buildProfileRow(profile));
+        }
+        list.appendChild(group);
       }
     }
     container.appendChild(list);
@@ -219,7 +234,8 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
   return {
     render,
     destroy() {
-      if (profileDefaultSelect) { profileDefaultSelect.destroy(); profileDefaultSelect = null; }
+      for (const s of profileDefaultSelects) s.destroy();
+      profileDefaultSelects = [];
     },
   };
 }

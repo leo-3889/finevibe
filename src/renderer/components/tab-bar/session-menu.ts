@@ -4,7 +4,8 @@ import { showModal, closeModal, setModalError, FieldDef } from '../modal.js';
 import { findInvalidEnvLines } from '../../../shared/env-vars.js';
 import { showJoinDialog } from '../join-dialog.js';
 import { loadProviderAvailability, getProviderAvailabilitySnapshot, getProviderCapabilities } from '../../provider-availability.js';
-import { profileCapableProfiles, profileOptionLabel } from '../../profile-utils.js';
+import { providerProfileOptions } from '../../profile-utils.js';
+import type { CustomSelectInstance } from '../custom-select.js';
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './menu.js';
 import { t } from '../../i18n.js';
 import { defaultSessionName, nextNumberFor, nextSessionNumber, MCP_INSPECTOR_NAME_KEY } from '../../state/session-naming.js';
@@ -71,6 +72,25 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
   }
   const providers = providerSnapshot?.providers ?? [];
   const availabilityMap = providerSnapshot?.availability ?? new Map();
+  // The profile select instance, captured when the modal builds it so the
+  // provider change can re-scope its options in place.
+  let profileSelect: CustomSelectInstance | null = null;
+
+  // Re-scope the Profile field of the open New Session modal to one coding
+  // tool: show it only when the tool has profiles, and swap in that tool's
+  // profiles (bare names). `selected` is kept when it belongs to the tool;
+  // otherwise the selection falls back to "Default", since a profile from a
+  // different tool no longer applies.
+  function setProfileFieldProvider(providerId: ProviderId, selected = ''): void {
+    const wrapper = document.getElementById('modal-profile')?.closest('.modal-field') as HTMLElement | null;
+    if (!wrapper) return;
+    const profiles = providerProfileOptions(providerId);
+    wrapper.style.display = profiles.length > 0 ? '' : 'none';
+    profileSelect?.setOptions([
+      { value: '', label: t('sidebar.defaultProfileOption') },
+      ...profiles,
+    ], selected);
+  }
 
   const fields: FieldDef[] = [
     { label: t('tab.newSessionModal.nameLabel'), id: 'session-name', placeholder: t('tab.newSessionModal.namePlaceholder', { num: sessionNum }), defaultValue: t('tab.newSessionModal.namePlaceholder', { num: sessionNum }) },
@@ -98,7 +118,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       id: 'provider',
       type: 'select',
       defaultValue: effectiveProvider,
-      onSelectChange: (value) => setProfileFieldVisible(getProviderCapabilities(value as ProviderId)?.profiles === true),
+      onSelectChange: (value) => setProfileFieldProvider(value as ProviderId),
       options: providers.map(p => {
         const available = availabilityMap.get(p.id);
         return { value: p.id, label: available ? p.displayName : t('tab.newSessionModal.providerNotInstalled', { name: p.displayName }), disabled: !available };
@@ -106,19 +126,23 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     });
   }
 
-  // Profile picker (profile-capable providers only). Defaults to the
-  // project/global default.
-  const profileOptions = profileCapableProfiles();
-  if (profileOptions.length > 0) {
+  // Profile picker — scoped to the selected coding tool (bare names, no
+  // provider suffix). Offered when any available provider has profiles; the
+  // provider select's onSelectChange re-scopes the list and hides the field
+  // when the tool has none.
+  const anyProviderHasProfiles = providers.some((p) => providerProfileOptions(p.id as ProviderId).length > 0);
+  const initialProfileValue = project.defaultProfileId ?? appState.preferences.defaultProfiles?.[effectiveProvider as ProviderId] ?? '';
+  if (anyProviderHasProfiles) {
     fields.push({
       label: t('tab.newSessionModal.profileLabel'),
       id: 'profile',
       type: 'select',
-      defaultValue: project.defaultProfileId ?? appState.preferences.defaultProfiles?.[effectiveProvider as ProviderId] ?? '',
+      defaultValue: initialProfileValue,
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
-        ...profileOptions.map(p => ({ value: p.id, label: profileOptionLabel(p) })),
+        ...providerProfileOptions(effectiveProvider as ProviderId),
       ],
+      onSelectCreated: (select) => { profileSelect = select; },
     });
   }
 
@@ -149,16 +173,9 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     if (session && onCreated) onCreated(session);
   });
 
-  // Profiles only apply to profile-capable providers — hide the field when
-  // the dialog opens defaulted to another provider. The provider select's
-  // onSelectChange keeps it in sync as the user switches.
-  if (profileOptions.length > 0) setProfileFieldVisible(getProviderCapabilities(effectiveProvider as ProviderId)?.profiles === true);
-}
-
-/** Toggle the Profile field's wrapper in the open New Session modal. */
-function setProfileFieldVisible(visible: boolean): void {
-  const wrapper = document.getElementById('modal-profile')?.closest('.modal-field') as HTMLElement | null;
-  if (wrapper) wrapper.style.display = visible ? '' : 'none';
+  // Re-scope the profile list to the provider the dialog opened with,
+  // keeping the project/global default when it belongs to that tool.
+  setProfileFieldProvider(effectiveProvider as ProviderId, initialProfileValue);
 }
 
 function addMcpInspector(): void {

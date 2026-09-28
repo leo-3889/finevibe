@@ -32,6 +32,8 @@ export class CodexProvider implements CliProvider {
       pendingPromptTrigger: 'startup-arg',
       systemPromptInjection: true,
       profiles: false,
+      selfTitles: false,
+      polledStatus: false,
     },
     defaultContextWindowSize: 200_000,
   };

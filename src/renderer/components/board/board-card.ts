@@ -1,7 +1,7 @@
 import type { BoardTask, CostInfo, ContextWindowInfo, ArchivedSession, ProviderId } from '../../../shared/types.js';
 import { appState } from '../../state.js';
 import { getColumnByBehavior, updateTask, moveTask, deleteTask, getTagColor } from '../../board-state.js';
-import { getStatus, type SessionStatus } from '../../session-activity.js';
+import { getStatus, STATUS_GLYPH, type SessionStatus } from '../../session-activity.js';
 import { getCost, formatTokens } from '../../session-cost.js';
 import { getContext, getContextSeverity } from '../../session-context.js';
 import { hasMultipleAvailableProviders } from '../../provider-availability.js';
@@ -103,6 +103,7 @@ export function createCardElement(task: BoardTask): HTMLElement {
       statusEl.className = 'board-card-status-inline';
       const dot = document.createElement('span');
       dot.className = `card-status-dot ${status}`;
+      dot.textContent = STATUS_GLYPH[status];
       dot.dataset.sessionId = task.sessionId;
       statusEl.appendChild(dot);
       statusEl.appendChild(document.createTextNode(statusLabel(status)));

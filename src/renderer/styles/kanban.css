@@ -299,22 +299,24 @@
 }
 
 .card-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+  width: 1.1em;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1;
   flex-shrink: 0;
+  color: var(--text-muted);
 }
 .card-status-dot.working {
-  background: var(--status-working);
+  color: var(--status-working);
   animation: pulse 1.5s ease-in-out infinite;
 }
-.card-status-dot.waiting { background: var(--status-waiting); }
-.card-status-dot.completed { background: var(--status-completed); }
+.card-status-dot.waiting { color: var(--status-waiting); }
+.card-status-dot.completed { color: var(--status-completed); }
 .card-status-dot.input {
-  background: var(--status-input);
+  color: var(--status-input);
   animation: pulse 1.2s ease-in-out infinite;
 }
-.card-status-dot.idle { background: var(--text-muted); }
+.card-status-dot.idle { color: var(--text-muted); }
 
 .board-card-metrics {
   display: flex;
