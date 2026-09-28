@@ -38,7 +38,7 @@
   "sidebar": {
     "default": "默认",
     "defaultProfileOption": "默认",
-    "profileTooltip": "默认配置文件",
+    "profileTooltip": "编码工具与默认配置文件",
     "removeProjectTooltip": "移除项目",
     "overview": "概览",
     "kanban": "看板",

@@ -8,7 +8,7 @@ import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, ma
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
 import { esc } from '../dom-utils.js';
-import { profileCapableProfiles, providerProfileOptions, projectProviderId } from '../profile-utils.js';
+import { projectProfileBadge, providerProfileOptions, projectProviderId } from '../profile-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree } from './file-tree.js';
 import {
   renderSessionHistory,
@@ -86,6 +86,10 @@ export function initSidebar(): void {
   appState.on('session-added', render);
   appState.on('session-removed', render);
   appState.on('layout-changed', render);
+  // The badge tracks the project's *current* coding tool, which moves whenever
+  // the active tab changes. `session-changed` deliberately does not re-render
+  // the sidebar (it fires constantly), so patch the one node instead.
+  appState.on('session-changed', syncProfileBadge);
   appState.on('readiness-changed', render);
 
   onUnreadChange(render);
@@ -175,19 +179,42 @@ export function projectRenderOrder(
 }
 
 /**
- * Label for the project's pinned profile, or `undefined` when no badge
- * should render. Shown only when more than one profile-capable profile exists
- * across all providers — unlike the per-session-provider status-line gate in
- * terminal-pane.ts, this gate counts profiles of every profile-capable CLI.
- * The global per-provider defaults don't apply here (the card has no provider
- * context), so a project without an explicit pin is labeled "Default".
+ * Fill a project card's badge node: the coding tool as a dimmed prefix, then
+ * the profile that tool runs under. Built from DOM nodes rather than an HTML
+ * string so neither the initial paint nor the live repaint can inject.
+ * Idempotent — a `data-badge` marker skips the write when nothing changed, so a
+ * repaint triggered by an unrelated `session-changed` costs nothing.
  */
-export function projectProfileLabel(project: ProjectRecord): string | undefined {
-  const providerProfiles = profileCapableProfiles();
-  if (providerProfiles.length <= 1) return undefined;
-  const id = project.defaultProfileId;
-  if (!id) return t('sidebar.default');
-  return providerProfiles.find((p) => p.id === id)?.name ?? t('sidebar.default');
+function renderProfileBadgeInto(
+  node: HTMLElement,
+  badge: { tool: string; profile: string } | undefined,
+): void {
+  const marker = badge ? `${badge.tool}\u0000${badge.profile}` : '';
+  if (node.dataset.badge === marker) return;
+  node.dataset.badge = marker;
+  node.replaceChildren();
+  if (!badge) return;
+  const tool = document.createElement('span');
+  tool.className = 'badge-tool';
+  tool.textContent = badge.tool;
+  node.appendChild(tool);
+  node.appendChild(document.createTextNode(badge.profile));
+}
+
+/**
+ * Repaint the active project's badge in place. The active tab decides the
+ * project's coding tool, and `session-changed` deliberately does not re-render
+ * the sidebar, so the node is patched directly instead of rebuilding the list.
+ */
+function syncProfileBadge(): void {
+  const node = projectListEl.querySelector(
+    '.project-row.active .project-profile-badge',
+  ) as HTMLElement | null;
+  if (!node) return;
+  renderProfileBadgeInto(
+    node,
+    appState.activeProject ? projectProfileBadge(appState.activeProject) : undefined,
+  );
 }
 
 function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: RenderOpts): HTMLElement {
@@ -210,13 +237,11 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   const countPill = project.sessions.length
     ? `<span class="project-session-count">${project.sessions.length}</span>`
     : '';
-  // Only the active card surfaces the profile badge, and only when multiple
-  // profile-capable profiles exist (the session count is hidden on the active
-  // card, so the badge takes that slot).
-  const profileLabel = isActive ? projectProfileLabel(project) : undefined;
-  const profileBadge = profileLabel
-    ? `<span class="project-profile-badge" title="${esc(t('sidebar.profileTooltip'))}">${esc(profileLabel)}</span>`
-    : '';
+  // The badge node is rendered on every row, empty ones hidden by `:empty`, so
+  // activating a project without a list rebuild still leaves a node to repaint.
+  // Content is filled in below from DOM nodes, never interpolated here.
+  const profileBadge =
+    `<span class="project-profile-badge" title="${esc(t('sidebar.profileTooltip'))}"></span>`;
   el.innerHTML = `
     ${lead}
     <div class="project-main">
@@ -227,6 +252,10 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
     ${countPill}
     <span class="project-delete" title="${esc(t('sidebar.removeProjectTooltip'))}">&times;</span>
   `;
+  if (isActive) {
+    const badgeNode = el.querySelector('.project-profile-badge') as HTMLElement | null;
+    if (badgeNode) renderProfileBadgeInto(badgeNode, projectProfileBadge(project));
+  }
 
   el.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
