@@ -76,7 +76,7 @@ describe('projectProfileLabel', () => {
   it('labels a project with no explicit profile as "Default"', async () => {
     const { projectProfileLabel, appState } = await load();
     appState.profiles.push(makeProfile('work', 'Work') as any, makeProfile('home', 'Home') as any);
-    appState.preferences.defaultProfileId = undefined;
+    appState.preferences.defaultProfiles = undefined;
     expect(projectProfileLabel({ defaultProfileId: undefined } as any)).toBe('Default');
   });
 
@@ -86,11 +86,11 @@ describe('projectProfileLabel', () => {
     expect(projectProfileLabel({ defaultProfileId: 'home' } as any)).toBe('Home');
   });
 
-  it('falls back to the preferences default profile when the project has none', async () => {
+  it('ignores per-provider global defaults (the card has no provider context)', async () => {
     const { projectProfileLabel, appState } = await load();
     appState.profiles.push(makeProfile('work', 'Work') as any, makeProfile('home', 'Home') as any);
-    appState.preferences.defaultProfileId = 'work';
-    expect(projectProfileLabel({ defaultProfileId: undefined } as any)).toBe('Work');
+    appState.preferences.defaultProfiles = { claude: 'work' };
+    expect(projectProfileLabel({ defaultProfileId: undefined } as any)).toBe('Default');
   });
 
   it('labels an unknown profile id as "Default"', async () => {

@@ -617,8 +617,11 @@ class AppState {
         if (archived.profileId === id) archived.profileId = undefined;
       }
     }
-    if (this.state.preferences.defaultProfileId === id) {
-      this.state.preferences.defaultProfileId = undefined;
+    const defaultProfiles = this.state.preferences.defaultProfiles;
+    if (defaultProfiles) {
+      for (const providerId of Object.keys(defaultProfiles)) {
+        if (defaultProfiles[providerId as ProviderId] === id) delete defaultProfiles[providerId as ProviderId];
+      }
     }
     for (const member of this.team.members) {
       if (member.profileId === id) {
@@ -636,6 +639,14 @@ class AppState {
     project.defaultProfileId = profileId || undefined;
     this.persist();
     this.emit('project-changed');
+  }
+
+  /** Set (or clear) the global default profile for one provider. */
+  setProviderDefaultProfile(providerId: ProviderId, profileId: string | undefined): void {
+    const map = { ...this.state.preferences.defaultProfiles };
+    if (profileId) map[providerId] = profileId;
+    else delete map[providerId];
+    this.setPreference('defaultProfiles', map);
   }
 
   startTeamChat(

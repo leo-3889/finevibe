@@ -186,7 +186,7 @@ describe('startTeamChat() with a pinned member profile', () => {
     const claudeProfile = await appState.addProfile({ name: 'Claude Home', providerId: 'claude' });
     const codexProfile = await appState.addProfile({ name: 'Codex Work', providerId: 'codex' });
     appState.setProjectDefaultProfile(project.id, claudeProfile.id);
-    appState.setPreference('defaultProfileId', claudeProfile.id);
+    appState.setProviderDefaultProfile('claude', claudeProfile.id);
 
     const session = appState.startTeamChat(project.id, makeMember(codexProfile.id))!;
     expect(session.providerId).toBe('codex');

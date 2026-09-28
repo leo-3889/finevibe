@@ -313,7 +313,7 @@ export function showTaskModal(
     // (empty) rather than pinning a copy of that id onto the task.
     const defaultId =
       appState.activeProject?.defaultProfileId
-      ?? appState.preferences.defaultProfileId
+      ?? appState.preferences.defaultProfiles?.[currentProviderId]
       ?? '';
     const defaultProfile = profiles.find(p => p.id === defaultId);
     // Fold an explicit pin of the default profile into "follow default" so the

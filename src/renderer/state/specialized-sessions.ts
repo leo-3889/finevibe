@@ -28,18 +28,19 @@ export function resolveCliProvider(prefs: Preferences, override: ProviderId | un
 }
 
 /**
- * Resolve the effective Profile for a session: session > project default > global
- * default > none. Only applies when the profile targets the session's provider
- * (returns undefined on mismatch, so the session uses the default config dir).
+ * Resolve the effective Profile for a session: session > project default > the
+ * provider's global default > none. Only applies when the profile targets the
+ * session's provider (returns undefined on mismatch, so the session uses the
+ * default config dir).
  */
 export function resolveProfile(
   session: Pick<SessionRecord, 'profileId'> | undefined,
   project: Pick<ProjectRecord, 'defaultProfileId'> | undefined,
-  prefs: Pick<Preferences, 'defaultProfileId'>,
+  prefs: Pick<Preferences, 'defaultProfiles'>,
   providerId: ProviderId,
   profiles: Profile[],
 ): Profile | undefined {
-  const id = session?.profileId ?? project?.defaultProfileId ?? prefs.defaultProfileId;
+  const id = session?.profileId ?? project?.defaultProfileId ?? prefs.defaultProfiles?.[providerId];
   if (!id) return undefined;
   const profile = profiles.find((p) => p.id === id);
   if (!profile || profile.providerId !== providerId) return undefined;

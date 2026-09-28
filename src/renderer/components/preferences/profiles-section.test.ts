@@ -2,11 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
   profiles: [] as any[],
-  preferences: { defaultProfileId: undefined as string | undefined },
+  preferences: { defaultProfiles: undefined as Record<string, string> | undefined },
   addProfile: vi.fn(async () => ({})),
   updateProfile: vi.fn(),
   removeProfile: vi.fn(),
   setPreference: vi.fn(),
+  setProviderDefaultProfile: vi.fn(),
 }));
 
 const modalState = vi.hoisted(() => ({
@@ -164,7 +165,7 @@ describe('createProfilesSection', () => {
     vi.clearAllMocks();
     selectState.reset();
     mockState.profiles = [];
-    mockState.preferences.defaultProfileId = undefined;
+    mockState.preferences.defaultProfiles = undefined;
     mockKeychainStatus.mockResolvedValue({ status: 'supported' });
 
     vi.stubGlobal('document', {
@@ -209,19 +210,35 @@ describe('createProfilesSection', () => {
     expect(findInTree(container, (n) => n.textContent === 'Gem')).toBeNull();
   });
 
-  it('lists pi profiles in the default-profile selector with the provider in the label', async () => {
+  it('offers one default-profile selector per provider, scoped to that provider', async () => {
     mockState.profiles = [
       makeProfile('work', 'Work', 'claude'),
       makeProfile('home', 'Home', 'pi'),
     ];
     await render();
 
-    const select = selectState.instances.get('pref-default-profile');
-    expect(select?.options).toEqual([
+    const claudeSelect = selectState.instances.get('pref-default-profile-claude');
+    expect(claudeSelect?.options).toEqual([
       { value: '', label: 'Default' },
-      { value: 'work', label: 'Work · Claude Code' },
-      { value: 'home', label: 'Home · Pi' },
+      { value: 'work', label: 'Work' },
     ]);
+    const piSelect = selectState.instances.get('pref-default-profile-pi');
+    expect(piSelect?.options).toEqual([
+      { value: '', label: 'Default' },
+      { value: 'home', label: 'Home' },
+    ]);
+  });
+
+  it('preselects each provider global default from preferences.defaultProfiles', async () => {
+    mockState.profiles = [
+      makeProfile('work', 'Work', 'claude'),
+      makeProfile('home', 'Home', 'pi'),
+    ];
+    mockState.preferences.defaultProfiles = { pi: 'home' };
+    await render();
+
+    expect(selectState.instances.get('pref-default-profile-claude')?.value).toBe('');
+    expect(selectState.instances.get('pref-default-profile-pi')?.value).toBe('home');
   });
 
   it('offers a provider field in the add modal, defaulting to claude', async () => {

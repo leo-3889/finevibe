@@ -3,19 +3,20 @@ import { isMac } from '../../platform.js';
 import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
 import { showModal, closeModal, setModalError, showConfirmDialog, type FieldDef } from '../modal.js';
 import { t } from '../../i18n.js';
-import { loadProviderAvailability, getAvailableProviderMetas } from '../../provider-availability.js';
-import { profileCapableProfiles, profileOptionLabel } from '../../profile-utils.js';
-import type { ProviderId } from '../../../shared/types.js';
+import { loadProviderAvailability, getAvailableProviderMetas, getProviderDisplayName } from '../../provider-availability.js';
+import { profileCapableProfiles } from '../../profile-utils.js';
+import type { Profile, ProviderId } from '../../../shared/types.js';
 import type { PreferencesContext, SectionController } from './section.js';
 
 export function createProfilesSection(ctx: PreferencesContext): SectionController {
-  let profileDefaultSelect: CustomSelectInstance | null = null;
+  let profileDefaultSelects: CustomSelectInstance[] = [];
   // Cached keychain-isolation status (macOS), fetched once per render and reused
   // by the Add Profile guard so it doesn't re-probe the keychain via IPC.
   let cachedKeychainStatus: Awaited<ReturnType<typeof window.vibeyard.profiles.keychainStatus>> | null = null;
 
   function render(container: HTMLElement) {
-    if (profileDefaultSelect) { profileDefaultSelect.destroy(); profileDefaultSelect = null; }
+    for (const s of profileDefaultSelects) s.destroy();
+    profileDefaultSelects = [];
 
     const heading = document.createElement('div');
     heading.className = 'preferences-subheading';
@@ -56,20 +57,34 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
     // All profile-capable providers (capabilities.profiles), not just Claude.
     const profiles = profileCapableProfiles();
 
-    // Default profile selector (global fallback)
-    const defaultRow = document.createElement('div');
-    defaultRow.className = 'modal-toggle-field';
-    const defaultLabel = document.createElement('label');
-    defaultLabel.textContent = t('profiles.defaultLabel');
-    profileDefaultSelect = createCustomSelect(
-      'pref-default-profile',
-      [{ value: '', label: t('sidebar.defaultProfileOption') }, ...profiles.map((p) => ({ value: p.id, label: profileOptionLabel(p) }))],
-      appState.preferences.defaultProfileId ?? '',
-      (value) => appState.setPreference('defaultProfileId', value || undefined),
-    );
-    defaultRow.appendChild(defaultLabel);
-    defaultRow.appendChild(profileDefaultSelect.element);
-    container.appendChild(defaultRow);
+    // Global default profile — one selector per provider that has profiles,
+    // so each coding tool carries its own fallback.
+    const defaultsHeading = document.createElement('div');
+    defaultsHeading.className = 'preferences-subheading';
+    defaultsHeading.textContent = t('profiles.defaultLabel');
+    container.appendChild(defaultsHeading);
+    const byProvider = new Map<ProviderId, Profile[]>();
+    for (const p of profiles) {
+      const list = byProvider.get(p.providerId) ?? [];
+      list.push(p);
+      byProvider.set(p.providerId, list);
+    }
+    for (const [providerId, providerProfiles] of byProvider) {
+      const row = document.createElement('div');
+      row.className = 'modal-toggle-field';
+      const label = document.createElement('label');
+      label.textContent = getProviderDisplayName(providerId);
+      const select = createCustomSelect(
+        `pref-default-profile-${providerId}`,
+        [{ value: '', label: t('sidebar.defaultProfileOption') }, ...providerProfiles.map((p) => ({ value: p.id, label: p.name }))],
+        appState.preferences.defaultProfiles?.[providerId] ?? '',
+        (value) => appState.setProviderDefaultProfile(providerId, value || undefined),
+      );
+      profileDefaultSelects.push(select);
+      row.appendChild(label);
+      row.appendChild(select.element);
+      container.appendChild(row);
+    }
 
     // Profile list
     const list = document.createElement('div');

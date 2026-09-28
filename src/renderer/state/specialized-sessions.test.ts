@@ -225,18 +225,23 @@ describe('addPlanSession()', () => {
 
 describe('resolveProfile()', () => {
   it('prefers the session profile over project and prefs', () => {
-    const r = resolveProfile({ profileId: 'work' }, { defaultProfileId: undefined }, { defaultProfileId: undefined }, 'claude', PROFILES);
+    const r = resolveProfile({ profileId: 'work' }, { defaultProfileId: undefined }, {}, 'claude', PROFILES);
     expect(r?.id).toBe('work');
   });
 
   it('falls back to the project default when the session has none', () => {
-    const r = resolveProfile({ profileId: undefined }, { defaultProfileId: 'work' }, { defaultProfileId: undefined }, 'claude', PROFILES);
+    const r = resolveProfile({ profileId: undefined }, { defaultProfileId: 'work' }, {}, 'claude', PROFILES);
     expect(r?.id).toBe('work');
   });
 
-  it('falls back to the global default when neither session nor project specify one', () => {
-    const r = resolveProfile(undefined, undefined, { defaultProfileId: 'work' }, 'claude', PROFILES);
+  it('falls back to the provider global default when neither session nor project specify one', () => {
+    const r = resolveProfile(undefined, undefined, { defaultProfiles: { claude: 'work' } }, 'claude', PROFILES);
     expect(r?.id).toBe('work');
+  });
+
+  it('does not apply one provider global default to another provider', () => {
+    // 'work' is claude's global default, but the session runs gemini.
+    expect(resolveProfile(undefined, undefined, { defaultProfiles: { claude: 'work' } }, 'gemini', PROFILES)).toBeUndefined();
   });
 
   it('returns undefined when nothing specifies a profile', () => {
@@ -283,7 +288,7 @@ describe('removeProfile reference cleanup', () => {
     const project = addProject();
     const profile = await appState.addProfile({ name: 'Work', providerId: 'claude' });
     appState.setProjectDefaultProfile(project.id, profile.id);
-    appState.setPreference('defaultProfileId', profile.id);
+    appState.setProviderDefaultProfile('claude', profile.id);
     const session = appState.addSession(project.id, 'S', undefined, 'claude', profile.id)!;
     project.sessionHistory = [{ id: 'a', name: 'old', providerId: 'claude', cliSessionId: 'c', createdAt: '0', closedAt: '0', profileId: profile.id, cost: null }];
 
@@ -292,7 +297,7 @@ describe('removeProfile reference cleanup', () => {
     expect(appState.getProfile(profile.id)).toBeUndefined();
     expect(session.profileId).toBeUndefined();
     expect(project.defaultProfileId).toBeUndefined();
-    expect(appState.preferences.defaultProfileId).toBeUndefined();
+    expect(appState.preferences.defaultProfiles?.claude).toBeUndefined();
     expect(project.sessionHistory![0].profileId).toBeUndefined();
   });
 });

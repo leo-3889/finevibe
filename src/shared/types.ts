@@ -148,7 +148,8 @@ export interface TeamMember {
   /**
    * Sticky: pins this member's Chat sessions to a specific Profile, which carries
    * the provider (backend) and config dir. Unset → Chat falls back to the
-   * project's defaultProfileId, then preferences.defaultProfileId, then no profile.
+   * project's defaultProfileId, then the provider's global default profile
+   * (preferences.defaultProfiles[providerId]), then no profile.
    */
   profileId?: string;
 }
@@ -365,8 +366,8 @@ export interface Preferences {
   defaultProvider?: ProviderId;
   /** UI language tag. See `Locale` for the supported set. */
   locale?: Locale;
-  /** Global fallback profile applied when neither the session nor the project specifies one. */
-  defaultProfileId?: string;
+  /** Per-provider global fallback profile, applied when neither the session nor the project specifies one. */
+  defaultProfiles?: Partial<Record<ProviderId, string>>;
   statusLineConsent?: 'granted' | 'declined' | null;
   // The foreign statusLine command the user was asked about when they made
   // the consent decision. Used to detect new conflicts (different command)

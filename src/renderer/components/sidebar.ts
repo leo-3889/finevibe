@@ -172,17 +172,17 @@ export function projectRenderOrder(
 }
 
 /**
- * Label for the project's effective profile, or `undefined` when no badge
+ * Label for the project's pinned profile, or `undefined` when no badge
  * should render. Shown only when more than one profile-capable profile exists
  * across all providers — unlike the per-session-provider status-line gate in
  * terminal-pane.ts, this gate counts profiles of every profile-capable CLI.
- * Resolution matches `resolveProfile`: `project.defaultProfileId ?? preferences.defaultProfileId`;
- * a missing/unknown id (the provider's default config dir) is labeled "Default".
+ * The global per-provider defaults don't apply here (the card has no provider
+ * context), so a project without an explicit pin is labeled "Default".
  */
 export function projectProfileLabel(project: ProjectRecord): string | undefined {
   const providerProfiles = profileCapableProfiles();
   if (providerProfiles.length <= 1) return undefined;
-  const id = project.defaultProfileId ?? appState.preferences.defaultProfileId;
+  const id = project.defaultProfileId;
   if (!id) return t('sidebar.default');
   return providerProfiles.find((p) => p.id === id)?.name ?? t('sidebar.default');
 }
@@ -447,7 +447,7 @@ export function promptNewProject(): void {
       label: t('sidebar.newProject.defaultProfileLabel'),
       id: 'profile',
       type: 'select',
-      defaultValue: appState.preferences.defaultProfileId ?? '',
+      defaultValue: '',
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
         ...profileOptions.map((p) => ({ value: p.id, label: profileOptionLabel(p) })),

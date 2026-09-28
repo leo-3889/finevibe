@@ -114,7 +114,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       label: t('tab.newSessionModal.profileLabel'),
       id: 'profile',
       type: 'select',
-      defaultValue: project.defaultProfileId ?? appState.preferences.defaultProfileId ?? '',
+      defaultValue: project.defaultProfileId ?? appState.preferences.defaultProfiles?.[effectiveProvider as ProviderId] ?? '',
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
         ...profileOptions.map(p => ({ value: p.id, label: profileOptionLabel(p) })),
