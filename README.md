@@ -1,6 +1,6 @@
-# Vibeyard — `leo-3889` fork
+# FineVibe - An enhanced Vibeyard
 
-> **Fork notice.** This is a working fork of
+> **Fork notice.** FineVibe is a working fork of
 > **[elirantutia/vibeyard](https://github.com/elirantutia/vibeyard)**.
 >
 > For the product as its authors describe it — features, screenshots, install
@@ -60,7 +60,7 @@ material — this README included — is kept **off** the upstream PR on purpose
 
 ## What this fork does *not* do
 
-- No fork-only branding, telemetry, analytics, or phone-home.
+- **FineVibe is the name of this fork, not a rebrand of the app.** Inside the app nothing changes — same product name, same UI, same data. No fork-only telemetry, analytics, or phone-home.
 - No config lock-in, no changed data format, no migration that blocks going back to upstream.
 - No upstream feature removed or disabled.
 - No divergence in how the app behaves for existing Claude Code users.
