@@ -10,7 +10,7 @@ export interface VibeyardApi {
     kill(sessionId: string): Promise<void>;
     getCwd(sessionId: string): Promise<string | null>;
     onData(callback: (sessionId: string, data: string) => void): () => void;
-    onExit(callback: (sessionId: string, exitCode: number, signal?: number) => void): () => void;
+    onExit(callback: (sessionId: string, exitCode: number, signal?: number, exitReason?: string) => void): () => void;
   };
   session: {
     transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): Promise<boolean>;

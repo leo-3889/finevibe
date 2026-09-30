@@ -216,6 +216,8 @@ export interface ArchivedSession {
     totalOutputTokens: number;
     totalDurationMs: number;
   } | null;
+  /** Why the CLI process exited abnormally (e.g. 'unhandled_rejection'); absent on clean exit. */
+  exitReason?: string;
 }
 
 export interface InitialContextSnapshot {

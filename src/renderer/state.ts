@@ -766,7 +766,7 @@ class AppState {
     return session;
   }
 
-  removeSession(projectId: string, sessionId: string): void {
+  removeSession(projectId: string, sessionId: string, opts?: { exitReason?: string }): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
 
@@ -774,7 +774,7 @@ class AppState {
     const session = project.sessions.find((s) => s.id === sessionId);
     if (session && isCliSession(session) && this.state.preferences.sessionHistoryEnabled) {
       if (this.isArchivable(session, project)) {
-        this.archiveSession(project, session);
+        this.archiveSession(project, session, opts);
       }
     }
 
@@ -817,8 +817,8 @@ class AppState {
     );
   }
 
-  private archiveSession(project: ProjectRecord, session: SessionRecord): void {
-    archiveSessionPure(project, session);
+  private archiveSession(project: ProjectRecord, session: SessionRecord, opts?: { exitReason?: string }): void {
+    archiveSessionPure(project, session, opts);
     this.emit('history-changed', project.id);
   }
 

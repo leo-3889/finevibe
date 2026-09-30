@@ -26,12 +26,13 @@ vi.mock('./pi-compatible-transcripts', () => ({
   scanTranscriptSessionsRoot: vi.fn(),
   indexCompatibleTranscript: vi.fn(),
   readTranscriptStatusSync: vi.fn(),
+  readSessionExitReasonSync: vi.fn(),
 }));
 
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession } from '../omp-session-watcher';
 import { readTranscriptTitleSync } from './omp-transcripts';
-import { findTranscriptPathSync, readTranscriptStatusSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import { OmpProvider, _resetCachedPath } from './omp-provider';
 
 const mockResolveBinary = vi.mocked(resolveBinary);
@@ -195,6 +196,21 @@ describe('readSessionStatus', () => {
     vi.mocked(readTranscriptStatusSync).mockReturnValue(null);
 
     expect(provider.readSessionStatus!('/sessions/dir-a/2026.jsonl')).toBeNull();
+  });
+});
+
+describe('readSessionExitReason', () => {
+  it('reads the exit reason from the given transcript path', () => {
+    vi.mocked(readSessionExitReasonSync).mockReturnValue({ reason: 'unhandled_rejection', kind: 'fatal' });
+
+    expect(provider.readSessionExitReason!('/sessions/dir-a/2026.jsonl')).toEqual({ reason: 'unhandled_rejection', kind: 'fatal' });
+    expect(readSessionExitReasonSync).toHaveBeenCalledWith('/sessions/dir-a/2026.jsonl');
+  });
+
+  it('returns null when the transcript has no session_exit', () => {
+    vi.mocked(readSessionExitReasonSync).mockReturnValue(null);
+
+    expect(provider.readSessionExitReason!('/sessions/dir-a/2026.jsonl')).toBeNull();
   });
 });
 

@@ -7,6 +7,8 @@ import {
   transcriptTitleFromWindow,
   transcriptStatusFromTail,
   readTranscriptStatusSync,
+  sessionExitReasonFromTail,
+  readSessionExitReasonSync,
   TAIL_READ_BYTES,
 } from './pi-compatible-transcripts';
 
@@ -159,6 +161,103 @@ describe('readTranscriptStatusSync huge-entry fallback', () => {
       // complete line); the bounded fallback read must still surface its
       // status instead of leaving the poller on a stale value.
       expect(readTranscriptStatusSync(file)).toBe('completed');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+const sessionExitWith = (data: Record<string, unknown>) =>
+  JSON.stringify({ type: 'custom', customType: 'session_exit', data });
+
+describe('sessionExitReasonFromTail', () => {
+  it('extracts reason and kind from a trailing session_exit', () => {
+    const tail = [
+      assistant('toolUse'),
+      sessionExitWith({
+        reason: 'unhandled_rejection',
+        kind: 'fatal',
+        pendingToolCalls: [{ tool: 'bash', callId: 'c1' }],
+      }),
+    ].join('\n');
+    expect(sessionExitReasonFromTail(tail)).toEqual({ reason: 'unhandled_rejection', kind: 'fatal' });
+  });
+
+  it('falls back to unknown when the session_exit has no data', () => {
+    expect(sessionExitReasonFromTail(sessionExit())).toEqual({ reason: 'unknown' });
+  });
+
+  it('falls back to unknown for a missing reason and omits an absent kind', () => {
+    expect(sessionExitReasonFromTail(sessionExitWith({ kind: 'fatal' }))).toEqual({ reason: 'unknown', kind: 'fatal' });
+    expect(sessionExitReasonFromTail(sessionExitWith({ reason: 'oom' }))).toEqual({ reason: 'oom' });
+  });
+
+  it('returns null when the last parseable line is not a session_exit', () => {
+    const tail = [sessionExit(), assistant('stop')].join('\n');
+    expect(sessionExitReasonFromTail(tail)).toBeNull();
+  });
+
+  it('returns null when there is no session_exit at all', () => {
+    expect(sessionExitReasonFromTail(assistant('stop'))).toBeNull();
+    expect(sessionExitReasonFromTail(null)).toBeNull();
+    expect(sessionExitReasonFromTail('not json at all')).toBeNull();
+  });
+
+  it('skips a mid-write tail line and uses the last complete line', () => {
+    const tail = [sessionExitWith({ reason: 'oom' }), '{"type":"custom","customType":"sess'].join('\n');
+    expect(sessionExitReasonFromTail(tail)).toEqual({ reason: 'oom' });
+  });
+});
+
+describe('readSessionExitReasonSync', () => {
+  it('reads the reason from a transcript ending in session_exit', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-exit-'));
+    try {
+      const file = path.join(dir, 't.jsonl');
+      const content = [
+        header('s1', '/proj'),
+        assistant('stop'),
+        sessionExitWith({ reason: 'unhandled_rejection', kind: 'fatal' }),
+      ].join('\n') + '\n';
+      fs.writeFileSync(file, content);
+      expect(readSessionExitReasonSync(file)).toEqual({ reason: 'unhandled_rejection', kind: 'fatal' });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a missing file and for a transcript without session_exit', () => {
+    expect(readSessionExitReasonSync(path.join(os.tmpdir(), 'vb-no-such-transcript.jsonl'))).toBeNull();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-exit-'));
+    try {
+      const file = path.join(dir, 't.jsonl');
+      fs.writeFileSync(file, [header('s1', '/proj'), assistant('stop')].join('\n') + '\n');
+      expect(readSessionExitReasonSync(file)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('captures a session_exit whose final line is larger than the tail window', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-exit-'));
+    try {
+      const file = path.join(dir, 't.jsonl');
+      const hugeExit = JSON.stringify({
+        type: 'custom',
+        customType: 'session_exit',
+        data: {
+          reason: 'unhandled_rejection',
+          kind: 'fatal',
+          pendingToolCalls: 'x'.repeat(TAIL_READ_BYTES + 4096),
+        },
+      });
+      expect(hugeExit.length).toBeGreaterThan(TAIL_READ_BYTES);
+      const content = [header('s1', '/proj'), assistant('stop'), hugeExit].join('\n') + '\n';
+      fs.writeFileSync(file, content);
+      // The 16KB window lands entirely inside the huge final line (no
+      // complete line to parse); the bounded fallback read must still
+      // surface the reason.
+      expect(readSessionExitReasonSync(file)).toEqual({ reason: 'unhandled_rejection', kind: 'fatal' });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

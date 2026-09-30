@@ -323,3 +323,19 @@ describe('renderSessionHistory', () => {
     expect(dialogContainer.innerHTML).toBe('');
   });
 });
+
+describe('crash badge', () => {
+  it('renders a crash badge with the reason in the title for entries with exitReason', async () => {
+    mockAppState.activeProject.sessionHistory[0].exitReason = 'unhandled_rejection';
+    const container = await renderHistory();
+    const badge = container.querySelector('.history-crash-badge');
+
+    expect(badge).not.toBeNull();
+    expect(badge?.title).toBe('Session ended unexpectedly: unhandled_rejection');
+  });
+
+  it('does not render a crash badge for entries without exitReason', async () => {
+    const container = await renderHistory();
+    expect(container.querySelector('.history-crash-badge')).toBeNull();
+  });
+});

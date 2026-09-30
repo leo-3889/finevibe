@@ -525,5 +525,9 @@
     "about": "关于",
     "general": "通用",
     "appearance": "外观"
+  },
+  "session": {
+    "crashedTitle": "会话异常结束",
+    "crashedBody": "会话已崩溃：{reason}"
   }
 }

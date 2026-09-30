@@ -30,6 +30,7 @@ const mockSpawnPty = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise
 const mockRegisterSync = vi.hoisted(() => vi.fn());
 const mockUnregisterSync = vi.hoisted(() => vi.fn(() => { calls.push('unregister'); }));
 const mockGetProvider = vi.hoisted(() => vi.fn());
+const mockGetSyncedPath = vi.hoisted(() => vi.fn(() => null));
 
 // Modules the handler-under-test imports but this suite never exercises: a
 // Proxy of vi.fn()s keeps the module loadable without hand-listing exports.
@@ -87,6 +88,7 @@ vi.mock('./pty-manager', () => ({
 vi.mock('./session-transcript-sync', () => ({
   registerTranscriptSync: mockRegisterSync,
   unregisterTranscriptSync: mockUnregisterSync,
+  getSyncedTranscriptPath: mockGetSyncedPath,
 }));
 
 vi.mock('./providers/registry', () => ({
@@ -254,6 +256,50 @@ describe('pty exit teardown ordering', () => {
     calls.length = 0;
     exitCallback()(0);
     expect(calls).toEqual(['unregister', 'exited']);
+  });
+});
+
+describe('pty:exit crash reason', () => {
+  it('sends the transcript reason on a non-zero exit when the sync resolved a path', async () => {
+    provider.readSessionExitReason = vi.fn(() => ({ reason: 'unhandled_rejection', kind: 'fatal' }));
+    mockGetSyncedPath.mockReturnValue('/sessions/dir-a/2026.jsonl');
+    await create('ui-1', 'cli-1', { isResume: true });
+    exitCallback()(1);
+    expect(provider.readSessionExitReason).toHaveBeenCalledWith('/sessions/dir-a/2026.jsonl');
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, 'unhandled_rejection');
+  });
+
+  it('falls back to the exit code when no transcript path is resolved', async () => {
+    provider.readSessionExitReason = vi.fn(() => ({ reason: 'unhandled_rejection' }));
+    mockGetSyncedPath.mockReturnValue(null);
+    await create('ui-1', 'cli-1', { isResume: true });
+    exitCallback()(2);
+    expect(provider.readSessionExitReason).not.toHaveBeenCalled();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 2, undefined, 'exited with code 2');
+  });
+
+  it('falls back to the exit code when the provider has no reason reader', async () => {
+    mockGetSyncedPath.mockReturnValue('/sessions/dir-a/2026.jsonl');
+    await create('ui-1', 'cli-1', { isResume: true });
+    exitCallback()(1);
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, 'exited with code 1');
+  });
+
+  it('falls back to the exit code when the reason read throws', async () => {
+    provider.readSessionExitReason = vi.fn(() => { throw new Error('read failed'); });
+    mockGetSyncedPath.mockReturnValue('/sessions/dir-a/2026.jsonl');
+    await create('ui-1', 'cli-1', { isResume: true });
+    exitCallback()(3);
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 3, undefined, 'exited with code 3');
+  });
+
+  it('sends no exit reason on a clean exit', async () => {
+    provider.readSessionExitReason = vi.fn(() => ({ reason: 'unhandled_rejection' }));
+    mockGetSyncedPath.mockReturnValue('/sessions/dir-a/2026.jsonl');
+    await create('ui-1', 'cli-1', { isResume: true });
+    exitCallback()(0);
+    expect(provider.readSessionExitReason).not.toHaveBeenCalled();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 0, undefined, undefined);
   });
 });
 

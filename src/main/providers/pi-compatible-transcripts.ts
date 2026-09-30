@@ -196,6 +196,72 @@ export function _resetStatusTailCacheForTesting(): void {
 }
 
 /**
+ * The CLI's own explanation of an abnormal process exit. Pi-compatible
+ * CLIs append a trailing `session_exit` custom entry when the process
+ * dies (e.g. an unhandled rejection), recording why it died.
+ */
+export interface SessionExitReason {
+  /** Why the process exited, e.g. 'unhandled_rejection'. */
+  reason: string;
+  /** Severity marker the CLI recorded, e.g. 'fatal'. Absent when it recorded none. */
+  kind?: string;
+}
+
+/**
+ * Derive the exit reason from a transcript tail.
+ *
+ * The LAST parseable JSON line decides: it must be a `session_exit`
+ * custom entry, otherwise the transcript ends with normal activity and
+ * there is no reason to report. A mid-write tail line (the writer is
+ * mid-flush) is ignored, scanning backwards for the last complete line.
+ */
+export function sessionExitReasonFromTail(tail: string | null): SessionExitReason | null {
+  if (!tail) return null;
+  const lines = tail.split(/\r?\n/).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let entry: unknown;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      // A mid-write tail line (the writer is mid-flush) — ignore and keep
+      // scanning backwards for the last complete line.
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') return null;
+    const e = entry as { type?: unknown; customType?: unknown; data?: { reason?: unknown; kind?: unknown } };
+    if (e.type === 'custom' && e.customType === 'session_exit') {
+      return {
+        reason: String(e.data?.reason ?? 'unknown'),
+        ...(e.data?.kind !== undefined ? { kind: String(e.data.kind) } : {}),
+      };
+    }
+    // The last parseable line is ordinary activity, not a crash marker.
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Convenience: read a transcript's tail and derive its exit reason in one
+ * call. If the default 16KB window has no complete entry — the last entry
+ * is larger than the window — retry with a larger bounded window so a big
+ * final entry doesn't hide a trailing `session_exit`.
+ */
+export function readSessionExitReasonSync(filePath: string): SessionExitReason | null {
+  const reason = sessionExitReasonFromTail(readTranscriptTailSync(filePath));
+  if (reason !== null) return reason;
+  let size: number;
+  try {
+    size = fs.statSync(filePath).size;
+  } catch {
+    // File vanished between the tail read and now — nothing to report.
+    return null;
+  }
+  if (size <= TAIL_READ_BYTES) return null;
+  return sessionExitReasonFromTail(readTranscriptTailSync(filePath, MAX_STATUS_TAIL_BYTES));
+}
+
+/**
  * OMP (18.4+) prepends a `{"type":"title",...}` line before the session
  * header and rewrites it in place when the title changes, so the header is
  * not always line 1. Parse the JSON entries of the first few lines.

@@ -38,7 +38,7 @@ import { initSessionInspector } from './components/session-inspector.js';
 import { initFilePrompt } from './components/file-prompt.js';
 import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
 import { loadProviderMetas } from './provider-availability.js';
-import { setLocale as setI18nLocale, getLocale } from './i18n.js';
+import { setLocale as setI18nLocale, getLocale, t } from './i18n.js';
 import { resolveSystemLocale } from './system-locale.js';
 import { rerenderOpenPreferencesModal } from './components/preferences-modal.js';
 import type { Locale } from '../shared/types.js';
@@ -154,7 +154,7 @@ async function main(): Promise<void> {
     }
   });
 
-  window.vibeyard.pty.onExit((sessionId, exitCode) => {
+  window.vibeyard.pty.onExit((sessionId, exitCode, _signal, exitReason) => {
     logDebugEvent('ptyExit', sessionId, { exitCode });
     if (isShellSessionId(sessionId)) {
       handleShellPtyExit(sessionId, exitCode);
@@ -167,7 +167,8 @@ async function main(): Promise<void> {
       const project = appState.projects.find(p => p.sessions.some(s => s.id === sessionId));
       if (project) {
         destroyTerminal(sessionId);
-        appState.removeSession(project.id, sessionId);
+        appState.removeSession(project.id, sessionId, exitReason ? { exitReason } : undefined);
+        if (exitReason) notifySessionCrash(exitReason);
       }
     }
   });
@@ -210,6 +211,16 @@ async function main(): Promise<void> {
       if (session) return session.type === 'mcp-inspector';
     }
     return false;
+  }
+
+  /** Desktop notification for an abnormal CLI exit, reusing the standard notification gate. */
+  function notifySessionCrash(reason: string): void {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (!appState.preferences.notificationsDesktop) return;
+    new Notification(t('session.crashedTitle'), {
+      body: t('session.crashedBody', { reason }),
+      silent: true,
+    });
   }
 
   // Log AppState events to debug panel

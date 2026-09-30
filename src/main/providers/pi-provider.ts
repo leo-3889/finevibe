@@ -8,7 +8,8 @@ import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { collectProfileRoots } from './transcript-utils';
 import { piAgentDir, piSessionsRoot } from './pi-transcripts';
-import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript, readTranscriptStatusSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
+import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession, stopPiSessionWatcher } from '../pi-session-watcher';
 
 const binaryCache = { path: null as string | null };
@@ -151,6 +152,16 @@ export class PiProvider implements CliProvider {
    */
   readSessionStatus(transcriptPath: string): CliSessionStatus | null {
     return readTranscriptStatusSync(transcriptPath);
+  }
+
+  /**
+   * The CLI's own explanation of an abnormal exit, from the trailing
+   * `session_exit` entry of a resolved transcript path. The pty:create
+   * exit callback reads this on a non-zero exit before the session is
+   * torn down, so the renderer can surface why the CLI died.
+   */
+  readSessionExitReason(transcriptPath: string): SessionExitReason | null {
+    return readSessionExitReasonSync(transcriptPath);
   }
 
   async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {

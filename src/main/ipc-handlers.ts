@@ -9,7 +9,8 @@ import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { loadState, saveState, getKnownProjectPaths, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus, resyncAllSessions } from './hook-status';
-import { registerTranscriptSync, unregisterTranscriptSync } from './session-transcript-sync';
+import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
+import type { SessionExitReason } from './providers/pi-compatible-transcripts';
 import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
@@ -217,12 +218,27 @@ export function registerIpcHandlers(): void {
         (exitCode, signal) => {
           // pty-manager suppresses the replaced process's callback before it
           // reaches this handler, regardless of which PTY exits first.
+          // The session is about to be destroyed — read the CLI's own crash
+          // reason from the transcript before the sync entry is torn down.
+          let exitReason: string | undefined;
+          if (exitCode !== 0) {
+            let reason: SessionExitReason | null = null;
+            const transcriptPath = getSyncedTranscriptPath(sessionId);
+            if (transcriptPath && provider.readSessionExitReason) {
+              try {
+                reason = provider.readSessionExitReason(transcriptPath);
+              } catch {
+                reason = null;
+              }
+            }
+            exitReason = reason?.reason ?? `exited with code ${exitCode}`;
+          }
           unregisterTranscriptSync(sessionId);
           cleanupSessionStatus(sessionId);
           provider.onSessionExited?.(sessionId);
           const w = BrowserWindow.getAllWindows()[0];
           if (w && !w.isDestroyed()) {
-            w.webContents.send('pty:exit', sessionId, exitCode, signal);
+            w.webContents.send('pty:exit', sessionId, exitCode, signal, exitReason);
           }
         },
         configDir

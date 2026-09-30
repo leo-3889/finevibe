@@ -13,7 +13,7 @@ export interface VibeyardApi {
     kill(sessionId: string): Promise<void>;
     getCwd(sessionId: string): Promise<string | null>;
     onData(callback: (sessionId: string, data: string) => void): () => void;
-    onExit(callback: (sessionId: string, exitCode: number, signal?: number) => void): () => void;
+    onExit(callback: (sessionId: string, exitCode: number, signal?: number, exitReason?: string) => void): () => void;
   };
   session: {
     buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string): Promise<string>;
@@ -189,8 +189,8 @@ const api: VibeyardApi = {
     onData: (callback) =>
       onChannel('pty:data', (sessionId, data) => callback(sessionId as string, data as string)),
     onExit: (callback) =>
-      onChannel('pty:exit', (sessionId, exitCode, signal) =>
-        callback(sessionId as string, exitCode as number, signal as number | undefined)),
+      onChannel('pty:exit', (sessionId, exitCode, signal, exitReason) =>
+        callback(sessionId as string, exitCode as number, signal as number | undefined, exitReason as string | undefined)),
   },
   session: {
     buildResumeWithPrompt: (sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir) =>

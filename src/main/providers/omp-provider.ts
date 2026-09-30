@@ -6,7 +6,8 @@ import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { collectProfileRoots } from './transcript-utils';
 import { ompSessionsRoot, readTranscriptTitleSync } from './omp-transcripts';
-import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript, readTranscriptStatusSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
+import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession, stopOmpSessionWatcher } from '../omp-session-watcher';
 
 const binaryCache = { path: null as string | null };
@@ -130,6 +131,16 @@ export class OmpProvider implements CliProvider {
    */
   readSessionStatus(transcriptPath: string): CliSessionStatus | null {
     return readTranscriptStatusSync(transcriptPath);
+  }
+
+  /**
+   * The CLI's own explanation of an abnormal exit, from the trailing
+   * `session_exit` entry of a resolved transcript path. The pty:create
+   * exit callback reads this on a non-zero exit before the session is
+   * torn down, so the renderer can surface why the CLI died.
+   */
+  readSessionExitReason(transcriptPath: string): SessionExitReason | null {
+    return readSessionExitReasonSync(transcriptPath);
   }
 
   onSessionExited(sessionId: string): void {

@@ -1,5 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import type { CliProviderMeta, CliSessionStatus, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import type { SessionExitReason } from './pi-compatible-transcripts';
 
 /** Lightweight pointer to one on-disk transcript, used by global session search. */
 export interface TranscriptDescriptor {
@@ -76,6 +77,15 @@ export interface CliProvider {
    * existing status pipeline.
    */
   readSessionStatus?(transcriptPath: string): CliSessionStatus | null;
+  /**
+   * The CLI's own explanation of an abnormal process exit, read from a
+   * resolved transcript path (the trailing `session_exit` entry Pi/OMP
+   * append on a crash), or null when the transcript has none. The
+   * transcript-sync resolves the path once via getTranscriptPath(); the
+   * pty:create exit callback reads this on a non-zero exit before the
+   * session is torn down, so the renderer can surface why the CLI died.
+   */
+  readSessionExitReason?(transcriptPath: string): SessionExitReason | null;
   /** Cancel pending session-id discovery — PTY exited, or the spawn failed. */
   onSessionExited?(sessionId: string): void;
   /** Absolute path to the user-global agents directory (e.g. ~/.claude/agents). */

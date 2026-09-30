@@ -144,6 +144,11 @@ export function unregisterTranscriptSync(sessionId: string): void {
   }
 }
 
+/** The entry's resolved transcript path, or null until first resolved. */
+export function getSyncedTranscriptPath(sessionId: string): string | null {
+  return entries.get(sessionId)?.transcriptPath ?? null;
+}
+
 function ensurePolling(): void {
   if (!pollInterval) {
     pollInterval = setInterval(tick, 2000);

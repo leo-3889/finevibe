@@ -2,6 +2,7 @@ import { appState, ArchivedSession, ProjectRecord } from '../state.js';
 import { loadProviderAvailability } from '../provider-availability.js';
 import { buildResumeWithProviderItems } from './resume-with-provider-menu.js';
 import { showConfirmDialog } from './modal.js';
+import { t } from '../i18n.js';
 import type { ProviderId } from '../../shared/types.js';
 
 const MAX_VISIBLE = 50;
@@ -254,6 +255,13 @@ function renderList(
       ? `${archived.name}\nSession ID: ${archived.cliSessionId}`
       : archived.name;
     info.appendChild(name);
+    if (archived.exitReason) {
+      const badge = document.createElement('span');
+      badge.className = 'history-crash-badge';
+      badge.textContent = '\u26A0';
+      badge.title = `${t('session.crashedTitle')}: ${archived.exitReason}`;
+      name.appendChild(badge);
+    }
 
     const details = document.createElement('div');
     details.className = 'history-item-details';

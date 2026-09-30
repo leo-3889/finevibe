@@ -63,6 +63,11 @@
   white-space: nowrap;
 }
 
+.history-crash-badge {
+  margin-left: 4px;
+  color: #e94560;
+}
+
 .history-item-details {
   font-size: 11px;
   color: var(--text-muted);
