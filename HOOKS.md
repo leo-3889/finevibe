@@ -1,6 +1,6 @@
 # Hooks & Session State Map
 
-Verified against Claude Code **2.1.238**. The per-event payload schemas below come
+The Claude payload and installation details below were verified against Claude Code **2.1.238**. Recheck them for newer CLI versions. The cross-provider lifecycle contract lives in [session lifecycle](docs/session-lifecycle.md). The per-event payload schemas below come
 from the [hooks reference](https://code.claude.com/docs/en/hooks); every field name
 Vibeyard reads is in that reference. An invented field name costs nothing at write
 time and renders a blank timeline row forever, so treat this file as the contract
@@ -62,9 +62,11 @@ working ◄──── PostToolUse / PostToolUseFailure
   ▼  Stop (with nothing in flight)
 completed
   │
-  ▼  (new prompt or PTY exit)
+  ▼  new prompt
 waiting
 ```
+
+PTY exit removes the non-shell live session; it does not transition it back to `waiting`.
 
 ## Stop resolution
 
@@ -144,7 +146,7 @@ guarantee of eventual completion. Any later hook event cancels it.
 | `.cost` | `statusline.py` (via the `statusLine` setting) | Cost, tokens, context window, model |
 | `.name` | `statusline.py` | `session_name` for tab auto-titling |
 | `.toolfailure` | `PostToolUseFailure`, plus a token-capped `Read` (see below) | `tool_name`, `tool_input`, `error` |
-| `.events` | Every event's capture script | JSONL inspector timeline |
+| `.events` | Every event's capture script | Bounded recent JSONL inspector timeline; see [event retention](docs/performance.md#inspector-event-retention) |
 | `.subagents` | `SubagentStart`/`SubagentStop`/`PostToolUse`/`SessionStart` | `{n, t}` in-flight counter (Stop fallback only; never forwarded to the renderer) |
 
 ### The token-capped `Read` case

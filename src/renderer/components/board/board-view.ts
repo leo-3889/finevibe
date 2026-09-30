@@ -24,6 +24,12 @@ const svgIcon = (inner: string): string =>
 let boardEl: HTMLElement | null = null;
 let pendingRender = false;
 let offDragEnd: (() => void) | null = null;
+// Cheap change key for the last full column rebuild: task ids + column +
+// order + assignee + tags, column titles, tag row, and the active filter —
+// everything a rebuild can show. board-changed fires on any board mutation,
+// including ones that change nothing visible, so an unchanged key skips the
+// innerHTML wipe and full card rebuild.
+let lastBoardKey = '';
 
 function isKanbanActive(): boolean {
   const project = appState.activeProject;
@@ -177,6 +183,10 @@ export function renderBoard(target?: HTMLElement): void {
   }
   boardEl.style.display = '';
 
+  const key = boardChangeKey(board);
+  if (key === lastBoardKey) return;
+  lastBoardKey = key;
+
   const columnsContainer = boardEl.querySelector('.board-columns')!;
   columnsContainer.innerHTML = '';
 
@@ -196,6 +206,22 @@ export function renderBoard(target?: HTMLElement): void {
   }
 
   initBoardDnd();
+}
+
+function boardChangeKey(board: BoardData): string {
+  const cols = [...board.columns]
+    .sort((a, b) => a.order - b.order)
+    .map((c) => `${c.id}:${c.order}:${c.title}:${c.behavior}:${c.color ?? ''}:${c.locked ? 1 : 0}`)
+    .join(',');
+  const tags = board.tags
+    ? [...board.tags].map((tg) => `${tg.name}:${tg.color}`).join(',')
+    : '';
+  const tasks = [...board.tasks]
+    .sort((a, b) => a.order - b.order)
+    .map((tk) => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}`)
+    .join(',');
+  const filters = `${getSearchQuery()}\u0000${[...getActiveTagFilters()].sort().join('+')}`;
+  return `${cols}\u0001${tags}\u0001${tasks}\u0001${filters}\u0001${appState.preferences.boardCardMetrics ?? true}`;
 }
 
 export function hideBoardView(): void {
@@ -218,6 +244,7 @@ export function destroyBoardView(): void {
     boardEl.remove();
     boardEl = null;
   }
+  lastBoardKey = '';
   if (offDragEnd) {
     offDragEnd();
     offDragEnd = null;

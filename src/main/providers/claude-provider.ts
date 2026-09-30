@@ -1,22 +1,24 @@
 import * as fs from 'fs';
+import * as readline from 'readline';
 import * as path from 'path';
 import * as os from 'os';
 import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import { removeEnvKey } from '../../shared/env-vars';
 import { getFullPath } from '../pty-manager';
 import { installStatusLineScript, cleanupAll as cleanupHookStatus } from '../hook-status';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { installHooksOnly, installStatusLine, getClaudeConfig } from '../claude-cli';
 import { guardedInstall, validateSettings, reinstallSettings } from '../settings-guard';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
-import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR, UUID_RE, collectProfileRoots } from './transcript-utils';
+import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE, collectProfileRoots } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 
 const binaryCache = { path: null as string | null };
 
 /** Enumerate every on-disk transcript under one `.../projects` root, tagged with its profile. */
-async function scanProjectsRoot(root: string, profileId?: string): Promise<TranscriptDescriptor[]> {
+async function scanProjectsRoot(root: string, profileId?: string, signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(root, { withFileTypes: true });
@@ -25,6 +27,7 @@ async function scanProjectsRoot(root: string, profileId?: string): Promise<Trans
   }
   const out: TranscriptDescriptor[] = [];
   for (const slugEntry of entries) {
+    if (signal?.aborted) return out;
     if (!slugEntry.isDirectory()) continue;
     const slug = slugEntry.name;
     const slugPath = path.join(root, slug);
@@ -81,6 +84,7 @@ export class ClaudeProvider implements CliProvider {
     env.PATH = getFullPath();
     // Profile support: point Claude Code at an isolated config dir (separate
     // credentials/license, settings, hooks, transcripts). Absent = default ~/.claude.
+    removeEnvKey(env, 'CLAUDE_CONFIG_DIR');
     if (opts?.configDir) env.CLAUDE_CONFIG_DIR = opts.configDir;
     return env;
   }
@@ -154,7 +158,7 @@ export class ClaudeProvider implements CliProvider {
     return fs.existsSync(filePath) ? filePath : null;
   }
 
-  async discoverTranscripts(): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
     // Search the default config dir plus every claude profile's config dir, so
     // global session search surfaces transcripts created under an isolated profile.
     // Each root carries its profileId (undefined = default ~/.claude) so resume
@@ -162,40 +166,54 @@ export class ClaudeProvider implements CliProvider {
     const roots = collectProfileRoots('claude', path.join(os.homedir(), '.claude', 'projects'), 'projects');
     const out: TranscriptDescriptor[] = [];
     for (const [root, profileId] of roots) {
-      out.push(...await scanProjectsRoot(root, profileId));
+      if (signal?.aborted) return out;
+      out.push(...await scanProjectsRoot(root, profileId, signal));
     }
     return out;
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {
-    const content = await fs.promises.readFile(transcriptPath, 'utf8');
-    const texts: string[] = [];
-    let cwd = '';
-    let totalChars = 0;
-    for (const line of content.split('\n')) {
-      if (!line.trim() || totalChars >= MAX_INDEX_CHARS_PER_SESSION) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (!cwd && entry.cwd) cwd = entry.cwd;
-        if (entry.type !== 'user' || !entry.message?.content) continue;
-        const c = entry.message.content;
-        let text = '';
-        if (typeof c === 'string') {
-          text = c;
-        } else if (Array.isArray(c)) {
-          for (const block of c) {
-            if (block.type === 'text') text += block.text + '\n';
-          }
-        }
-        if (text) {
-          texts.push(text.trim());
-          totalChars += text.length;
-        }
-      } catch {
-        // partial-write tolerance: skip malformed lines
-      }
+    let size: number;
+    try {
+      size = (await fs.promises.stat(transcriptPath)).size;
+    } catch {
+      return { text: '', cwd: '' };
     }
-    return { text: texts.join(TRANSCRIPT_TEXT_SEPARATOR), cwd };
+    if (size > MAX_INDEX_FILE_BYTES) return { text: '', cwd: '' };
+
+    let cwd = '';
+    const budget = new IndexTextBudget();
+
+    const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES - 1 });
+    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        if (!line.trim() || budget.full) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (!cwd && entry.cwd) cwd = entry.cwd;
+          if (entry.type !== 'user' || !entry.message?.content) continue;
+          const c = entry.message.content;
+          let text = '';
+          if (typeof c === 'string') {
+            text = c;
+          } else if (Array.isArray(c)) {
+            for (const block of c) {
+              if (block.type === 'text') text += block.text + '\n';
+            }
+          }
+          if (text) budget.push(text);
+        } catch {
+          // partial-write tolerance: skip malformed lines
+        }
+      }
+    } catch {
+      // Best-effort: keep whatever was extracted before the stream failed.
+    } finally {
+      lines.close();
+      input.destroy();
+    }
+    return { text: budget.join(), cwd };
   }
 
   agentsDir(): string {

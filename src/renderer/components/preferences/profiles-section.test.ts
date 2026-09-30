@@ -6,6 +6,7 @@ const mockState = vi.hoisted(() => ({
   addProfile: vi.fn(async () => ({})),
   updateProfile: vi.fn(),
   removeProfile: vi.fn(),
+  isProfileInUse: vi.fn(() => false),
   setPreference: vi.fn(),
   setProviderDefaultProfile: vi.fn(),
 }));

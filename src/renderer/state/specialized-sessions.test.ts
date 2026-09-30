@@ -284,7 +284,7 @@ describe('addSession profile pinning', () => {
 });
 
 describe('removeProfile reference cleanup', () => {
-  it('clears the profile from sessions, projects, prefs, history, and board tasks', async () => {
+  it('protects sessions and history, then clears other references once those are gone', async () => {
     const project = addProject();
     const profile = await appState.addProfile({ name: 'Work', providerId: 'claude' });
     appState.setProjectDefaultProfile(project.id, profile.id);
@@ -297,11 +297,18 @@ describe('removeProfile reference cleanup', () => {
 
     appState.removeProfile(profile.id);
 
+    expect(appState.isProfileInUse(profile.id)).toBe(true);
+    expect(appState.getProfile(profile.id)).toBeDefined();
+    expect(session.profileId).toBe(profile.id);
+    expect(project.sessionHistory![0].profileId).toBe(profile.id);
+
+    project.sessions = [];
+    project.sessionHistory = [];
+    appState.removeProfile(profile.id);
+
     expect(appState.getProfile(profile.id)).toBeUndefined();
-    expect(session.profileId).toBeUndefined();
     expect(project.defaultProfileId).toBeUndefined();
     expect(appState.preferences.defaultProfiles?.claude).toBeUndefined();
-    expect(project.sessionHistory![0].profileId).toBeUndefined();
     expect(task.profileId).toBeUndefined();
   });
 });

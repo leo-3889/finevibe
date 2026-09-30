@@ -1,5 +1,7 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import * as path from 'path';
+import { Readable } from 'stream';
+import type { Stats, ReadStream } from 'fs';
 
 vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
@@ -7,7 +9,8 @@ vi.mock('fs', () => ({
   openSync: vi.fn(),
   readSync: vi.fn(),
   closeSync: vi.fn(),
-  promises: { readFile: vi.fn(), readdir: vi.fn(), open: vi.fn() },
+  createReadStream: vi.fn(),
+  promises: { readFile: vi.fn(), readdir: vi.fn(), open: vi.fn(), stat: vi.fn() },
 }));
 vi.mock('os', () => ({ homedir: () => '/mock/home', tmpdir: () => '/tmp' }));
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
@@ -68,15 +71,17 @@ describe('OmpProvider.getTranscriptPath()', () => {
     expect(p).toContain(FILE_NAME);
   });
 
-  it('falls back to a header match when the cwd differs', () => {
+  // S2: the old code fell back to a header match when the requested cwd did
+  // not match, which handed back a transcript from a DIFFERENT project and
+  // then cached that path for the session's whole life. The cwd match is now
+  // authoritative — a mismatch resolves to null, never to a near miss.
+  it('does not fall back to a header match when the cwd differs', () => {
     mockReaddirSync
       .mockReturnValueOnce(['--C--Users-me--'] as any)
       .mockReturnValueOnce([FILE_NAME] as any);
     mockSyncHeader(header(SID, 'C:\\Users\\elsewhere'));
 
-    const p = new OmpProvider().getTranscriptPath(SID, 'C:\\Users\\me');
-    expect(p).not.toBeNull();
-    expect(p).toContain(FILE_NAME);
+    expect(new OmpProvider().getTranscriptPath(SID, 'C:\\Users\\me')).toBeNull();
   });
 
   it('skips files whose header id does not match', () => {
@@ -142,7 +147,14 @@ describe('OmpProvider.indexTranscript()', () => {
       JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'never indexed' }] } }),
       JSON.stringify({ type: 'message', message: { role: 'user', content: 'plain follow-up' } }),
     ].join('\n');
-    mockReadFile.mockResolvedValueOnce(jsonl as any);
+    // The indexer streams the head window (createReadStream) after a size
+    // guard (promises.stat), so both must be served.
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce(
+      { size: jsonl.length } as unknown as Stats
+    );
+    vi.mocked(fs.createReadStream).mockReturnValueOnce(
+      Readable.from([jsonl]) as unknown as ReadStream
+    );
 
     const r = await new OmpProvider().indexTranscript('/p');
     expect(r.text).toContain('hi');

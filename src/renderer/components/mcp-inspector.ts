@@ -1,4 +1,4 @@
-import { renderSchemaForm } from './mcp-schema-form.js';
+import { renderSchemaForm, type JsonSchema } from './mcp-schema-form.js';
 
 type NavTab = 'tools' | 'resources' | 'prompts';
 
@@ -203,7 +203,8 @@ function renderToolsList(sessionId: string, tools: unknown[], container: HTMLEle
       if (!isOpen && body.children.length === 0) {
         // Build form
         if (tool.inputSchema && (tool.inputSchema as Record<string, unknown>).properties) {
-          const { element, getValues } = renderSchemaForm(tool.inputSchema as { properties: Record<string, unknown>; required?: string[] });
+          // SAFETY: MCP tool schemas are opaque JSON; renderSchemaForm only reads properties/required.
+          const { element, getValues } = renderSchemaForm(tool.inputSchema as unknown as JsonSchema);
           formRef = { getValues };
           body.appendChild(element);
         }

@@ -48,3 +48,51 @@ export function findInvalidEnvLines(text: string): string[] {
   }
   return invalid;
 }
+
+/**
+ * Environment variables owned by a provider's profile isolation rather than by
+ * the user.
+ *
+ * `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR` relocate a CLI's entire config
+ * tree, and `CLAUDE_IDE_SESSION_ID` keys the per-session status files that the
+ * hooks and the statusLine write. Allowing a session's own `envVars` to override
+ * any of these would silently point that session at a different login's config,
+ * or make it write status under another session's key — defeating the pinned
+ * profile with no visible signal.
+ *
+ * `PATH` is deliberately NOT listed: overriding it is a supported use case
+ * ("user vars win").
+ */
+export const PROVIDER_OWNED_ENV_KEYS: readonly string[] = [
+  'CLAUDE_CONFIG_DIR',
+  'PI_CODING_AGENT_DIR',
+  'CLAUDE_IDE_SESSION_ID',
+];
+
+/** Windows environment names are case-insensitive even when object keys are not. */
+export function removeEnvKey(env: Record<string, string>, name: string): void {
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === name) delete env[key];
+  }
+}
+
+/**
+ * Split parsed user env into the part that may be merged over the provider's
+ * environment and the provider-owned keys that must not be, so the caller can
+ * report what was dropped instead of losing it silently.
+ */
+export function partitionUserEnv(env: Record<string, string>): {
+  allowed: Record<string, string>;
+  dropped: string[];
+} {
+  const allowed: Record<string, string> = {};
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (PROVIDER_OWNED_ENV_KEYS.includes(key.toUpperCase())) {
+      dropped.push(key);
+    } else {
+      allowed[key] = value;
+    }
+  }
+  return { allowed, dropped };
+}

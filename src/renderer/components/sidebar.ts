@@ -23,6 +23,9 @@ import { t } from '../i18n.js';
 
 type ProjectPanel = 'history' | 'files' | 'git' | null;
 const projectPanelOpen = new Map<string, ProjectPanel>();
+// The project the sidebar last rendered as active; a switch must release the
+// outgoing project's panel resources (file-tree dir watches, history panel).
+let lastActiveProjectId: string | null = null;
 
 const projectListEl = document.getElementById('project-list')!;
 let activeProjectContextMenu: HTMLElement | null = null;
@@ -148,6 +151,17 @@ interface RenderOpts {
 function render(): void {
   if (renamingProjectId) return;
   hideProjectContextMenu();
+
+  const activeId = appState.activeProjectId;
+  if (lastActiveProjectId && lastActiveProjectId !== activeId) {
+    // Panel state (projectPanelOpen) is kept, so the panel reopens on return;
+    // only the live resources are released. Both close fns are idempotent.
+    const prevPanel = projectPanelOpen.get(lastActiveProjectId) ?? null;
+    if (prevPanel === 'files') closeFileTree(lastActiveProjectId);
+    if (prevPanel === 'history') closeSessionHistory(lastActiveProjectId);
+  }
+  lastActiveProjectId = activeId;
+
   projectListEl.innerHTML = '';
 
   const opts: RenderOpts = {

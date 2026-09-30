@@ -110,6 +110,7 @@ describe('transcriptStatusFromTail', () => {
 
   it('maps session_exit to null (session removed on PTY exit)', () => {
     expect(transcriptStatusFromTail(sessionExit())).toBeNull();
+    expect(transcriptStatusFromTail([assistant('toolUse'), sessionExit()].join('\n'))).toBeNull();
   });
 
   it('skips non-event lines and uses the last meaningful entry', () => {

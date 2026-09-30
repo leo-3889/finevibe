@@ -5,6 +5,7 @@ Thanks for your interest in contributing! Here's how to get started.
 ## Development Setup
 
 1. **Node v24** is required — see `.nvmrc`. Use `nvm use` to switch.
+   The published npm launcher accepts Node 18+, but source development uses Node 24.
 2. Install dependencies:
    ```bash
    npm install

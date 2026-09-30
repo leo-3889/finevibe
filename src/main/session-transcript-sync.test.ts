@@ -283,3 +283,114 @@ describe('fs.watch fast path', () => {
     expect(watchRecs[0].closed).toBe(true);
   });
 });
+
+describe('/clear re-adoption (re-registering the same UI session)', () => {
+  it('closes the incumbent watch when the cli session id changes', () => {
+    provider = makeProvider({ selfTitles: true, title: { value: 'Old topic' }, path: '/old.jsonl' });
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000); // resolve + establish watch #1
+    expect(watchRecs.length).toBe(1);
+    expect(mockWriteName).toHaveBeenLastCalledWith('ui-1', 'Old topic', 'cli-1');
+
+    // The session-id watcher hands over a new transcript for the same UI
+    // session (what `/clear` does). The old fs.watch must be closed, not
+    // silently dropped from the map while still open.
+    const next = makeProvider({ selfTitles: true, title: { value: 'New topic' }, path: '/new.jsonl' });
+    provider = next; // the registry mock resolves the live `provider` binding
+    registerTranscriptSync('ui-1', 'omp', 'cli-2', '/proj');
+    expect(watchRecs[0].closed).toBe(true);
+
+    vi.advanceTimersByTime(2000);
+    expect(watchRecs.length).toBe(2);
+    expect(watchRecs[1].closed).toBe(false);
+    // The entry re-resolved against the NEW cli id and mirrors the new title.
+    expect(next.getTranscriptPath).toHaveBeenCalledWith('cli-2', '/proj', undefined);
+    expect(mockWriteName).toHaveBeenLastCalledWith('ui-1', 'New topic', 'cli-2');
+  });
+
+  it('a stale watch event from the replaced entry does not re-sync', () => {
+    provider = makeProvider({ selfTitles: true, title: { value: 'Old' }, path: '/old.jsonl' });
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    const callsAfterHandover = mockWriteName.mock.calls.length;
+
+    registerTranscriptSync('ui-1', 'omp', 'cli-2', '/proj');
+    watchRecs[0].fire(); // a late event from the dead watcher
+    vi.advanceTimersByTime(150); // DEBOUNCE_MS
+    expect(mockWriteName).toHaveBeenCalledTimes(callsAfterHandover);
+  });
+
+  it('keeps the incumbent entry when re-registering the identical conversation', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: '/t.jsonl' });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteStatus).toHaveBeenCalledTimes(1);
+
+    // A re-spawn of the same session re-registers the same conversation:
+    // the cached path, the written title/status and the live watch all stay.
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    expect(watchRecs.length).toBe(1);
+    expect(watchRecs[0].closed).toBe(false);
+    vi.advanceTimersByTime(2000);
+    expect(provider.getTranscriptPath).toHaveBeenCalledTimes(1);
+    expect(mockWriteStatus).toHaveBeenCalledTimes(1); // no re-emit of an unchanged status
+  });
+
+  it('a changed configDir is treated as a different conversation', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: '/a.jsonl' });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', '/profiles/a');
+    vi.advanceTimersByTime(2000);
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', '/profiles/b');
+    expect(watchRecs[0].closed).toBe(true);
+    vi.advanceTimersByTime(2000);
+    expect(provider.getTranscriptPath).toHaveBeenLastCalledWith('cli-1', '/proj', '/profiles/b');
+  });
+});
+
+describe('unresolvable transcript backoff', () => {
+  it('doubles the retry interval instead of scanning every 2s tick', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: null });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    // Attempts land at t=2s, 4s, 8s, 16s (2s, 4s, 8s, 16s waits) rather
+    // than once per tick, which would be 8 by now.
+    vi.advanceTimersByTime(16000);
+    expect(provider.getTranscriptPath).toHaveBeenCalledTimes(4);
+  });
+
+  it('caps the backoff and logs once per entry', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: null });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(64000); // 6th failure reaches the 60s cap
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('retrying every 60s');
+    vi.advanceTimersByTime(120000); // never spams again
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('still picks up a transcript that appears late', () => {
+    const opts = { polledStatus: true, status: { value: 'working' as CliSessionStatus }, path: null as string | null };
+    provider = makeProvider(opts);
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(8000); // 3 failed attempts, now waiting 8s
+    expect(provider.getTranscriptPath).toHaveBeenCalledTimes(3);
+
+    opts.path = '/late.jsonl';
+    vi.advanceTimersByTime(8000); // next backoff window resolves it
+    expect(provider.getTranscriptPath).toHaveBeenCalledTimes(4);
+    expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'working');
+    // And the cache resumes: no further re-resolution while the file exists.
+    vi.advanceTimersByTime(10000);
+    expect(provider.getTranscriptPath).toHaveBeenCalledTimes(4);
+  });
+
+  it('a throwing resolver is backed off the same way as a null one', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'working' } });
+    provider.getTranscriptPath = vi.fn(() => { throw new Error('boom'); });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(8000);
+    expect(provider.getTranscriptPath).toHaveBeenCalledTimes(3);
+    expect(mockWriteStatus).not.toHaveBeenCalled();
+  });
+});

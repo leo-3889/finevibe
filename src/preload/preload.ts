@@ -20,6 +20,7 @@ export interface VibeyardApi {
     transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): Promise<boolean>;
     transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): boolean;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
+    cancelDeepSearch(): void;
     onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     /** @deprecated Use onCliSessionId instead */
@@ -58,7 +59,7 @@ export interface VibeyardApi {
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
   };
   provider: {
-    getConfig(providerId: ProviderId, projectPath: string): Promise<ProviderConfig>;
+    getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
     getMeta(providerId: ProviderId): Promise<CliProviderMeta>;
     listProviders(): Promise<CliProviderMeta[]>;
     checkBinary(providerId?: ProviderId): Promise<boolean>;
@@ -198,6 +199,7 @@ const api: VibeyardApi = {
       ipcRenderer.invoke('session:transcriptExists', providerId, cliSessionId, projectPath, configDir),
     transcriptExistsSync: (providerId, cliSessionId, projectPath, configDir) =>
       ipcRenderer.sendSync('session:transcriptExistsSync', providerId, cliSessionId, projectPath, configDir),
+    cancelDeepSearch: () => ipcRenderer.send('session:cancelDeepSearch'),
     deepSearch: (query) =>
       ipcRenderer.invoke('session:deepSearch', query),
     onHookStatus: (callback) =>
@@ -243,7 +245,7 @@ const api: VibeyardApi = {
     getDroppedFilePath: (file: File) => webUtils.getPathForFile(file),
   },
   provider: {
-    getConfig: (providerId, projectPath) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath),
+    getConfig: (providerId, projectPath, configDir?) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath, configDir),
     getMeta: (providerId) => ipcRenderer.invoke('provider:getMeta', providerId),
     listProviders: () => ipcRenderer.invoke('provider:listProviders'),
     checkBinary: (providerId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude'),

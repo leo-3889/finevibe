@@ -1,6 +1,7 @@
 import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, CliSessionStatus, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import { removeEnvKey } from '../../shared/env-vars';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { collectProfileRoots } from './transcript-utils';
@@ -42,16 +43,11 @@ export class OmpProvider implements CliProvider {
   buildEnv(_sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env.PATH = getFullPath();
+    removeEnvKey(env, 'PI_CODING_AGENT_DIR');
     if (opts?.configDir) {
       // OMP honors Pi's PI_CODING_AGENT_DIR — relocates the whole agent dir
       // (default ~/.omp/agent).
       env.PI_CODING_AGENT_DIR = opts.configDir;
-    } else {
-      // OMP and Pi share PI_CODING_AGENT_DIR. If the host environment carries
-      // a Pi profile dir (e.g. Vibeyard launched from a pi shell), an
-      // unprofiled OMP session would silently read Pi's config — strip it so
-      // OMP falls back to its own ~/.omp/agent.
-      delete env.PI_CODING_AGENT_DIR;
     }
     return env;
   }
@@ -107,6 +103,15 @@ export class OmpProvider implements CliProvider {
     registerPendingOmpSession(sessionId, cwd, configDir);
   }
 
+  // A resumed session already knows its cli id, so onSessionStarted never
+  // runs for it. Join the sessions-tree watcher anyway: that is what lets a
+  // later `/clear` — a brand-new transcript under a new id in the same cwd
+  // — be re-adopted instead of the tab freezing on the pre-clear file.
+  onSessionResumed(sessionId: string, cwd: string, _win: BrowserWindow, configDir?: string): void {
+    startOmpSessionWatcher();
+    registerPendingOmpSession(sessionId, cwd, configDir);
+  }
+
   /**
    * The CLI's own title from a resolved transcript path. OMP keeps it in
    * the transcript head (a `type:"title"` line, mirrored into the session
@@ -135,16 +140,18 @@ export class OmpProvider implements CliProvider {
     return findTranscriptPathSync(ompSessionsRoot, cliSessionId, projectPath, configDir);
   }
 
-  async discoverTranscripts(): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
     // Search the default agent dir plus every omp profile's config dir, so
     // global session search surfaces transcripts created under an isolated
     // profile. Each root carries its profileId (undefined = default) so
     // resume can reopen against the right config dir.
     const roots = collectProfileRoots('omp', ompSessionsRoot(), 'sessions');
-    const results = await Promise.all(
-      [...roots].map(([root, profileId]) => scanTranscriptSessionsRoot(root, profileId))
-    );
-    return results.flat();
+    const results: TranscriptDescriptor[] = [];
+    for (const [root, profileId] of roots) {
+      if (signal?.aborted) break;
+      results.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+    }
+    return results;
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

@@ -11,7 +11,7 @@
 |---|---|
 | **Upstream** | [elirantutia/vibeyard](https://github.com/elirantutia/vibeyard) |
 | **This fork** | [leo-3889/vibeyard](https://github.com/leo-3889/vibeyard) |
-| **Delta** | 9 commits ahead of `upstream/main` (`19bc19f`) |
+| **Delta** | 14 commits ahead of `upstream/main` (`19bc19f`) |
 | **Upstream PR** | [#167](https://github.com/elirantutia/vibeyard/pull/167) |
 
 This README covers only what the fork adds. Everything else is upstream's.
