@@ -51,12 +51,12 @@ Live registrations share one filename/generation history per sessions root. Each
 
 During polling, unchanged directory listings are reused. Directory mtime changes and watched rename events invalidate listings; the next scan also refreshes a listing after its 30-second cache lifetime. The two-second poll remains in place. Polling still visits cached filenames and checks directory metadata. Root history is released when no registration uses it.
 
-This removes duplicate per-session snapshots and reduces idle directory enumeration. It does not move registration scans off the main thread, bound all native watcher allocation, or resolve the separate session-attribution issues. The broader Pi/OMP finding **PO-06 remains partially addressed**. See the [integration audit](../PI_OMP_INTEGRATION_AUDIT_2026-09-30.md) and [remaining work](../DOCUMENTATION_FILTER_2026-09-30.md).
+This removes duplicate per-session snapshots and reduces idle directory enumeration. It does not move registration scans off the main thread, bound all native watcher allocation, or resolve the separate session-attribution issues. The broader Pi/OMP finding **PO-06 remains partially addressed**. See the [audit status](AUDIT_STATUS.md) for open findings and remaining work.
 
 Source: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts).
 
 ## Evidence and open measurement
 
-Automated tests cover repeated search beyond the memory-cache budget, shared indexing/cancellation, growing diff files, split UTF-8 event records, oversized events, navigation within a 200,000-line file, and directory-cache invalidation. The [performance audit](../PERFORMANCE_AUDIT_2026-09-30.md) records the findings and implementation evidence.
+Automated tests cover repeated search beyond the memory-cache budget, shared indexing/cancellation, growing diff files, split UTF-8 event records, oversized events, navigation within a 200,000-line file, and directory-cache invalidation.
 
 Still needed: live Electron heap/RSS, main-thread delay, frame-time and watcher-handle measurements at increasing history/tab sizes; packaged preview/navigation checks; and sustained terminal-output profiling. Passing unit tests does not establish a speedup percentage or complete the broader Pi/OMP integration audit.
