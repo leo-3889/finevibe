@@ -16,7 +16,7 @@ vi.mock('os', () => ({
 }));
 
 vi.mock('electron', () => ({
-  BrowserWindow: { getAllWindows: () => [] },
+  BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false }] },
 }));
 
 const { STATUS_DIR: MOCK_STATUS_DIR } = vi.hoisted(() => {
@@ -144,6 +144,45 @@ describe('session ID assignment via polling', () => {
     // Should have written the .sessionid file
     expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-session-1', 'codex-abc-123');
     expect(mockCloseSync).toHaveBeenCalledWith(42);
+  });
+
+  it('waits for a partial JSONL line and assigns it after the remaining bytes arrive', () => {
+    mockWatch.mockReturnValue({ close: vi.fn() } as any);
+    startCodexSessionWatcher(createMockWin());
+    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
+    registerPendingCodexSession('ui-partial');
+    const line = Buffer.from('{"session_id":"codex-partial","text":"hello"}\n');
+    const split = 17;
+    let visible = split;
+    mockStatSync.mockImplementation(() => ({ size: visible } as fs.Stats));
+    mockOpenSync.mockReturnValue(42);
+    mockReadSync.mockImplementation(((_fd: number, target: Buffer, _offset: number, length: number, position: number) => {
+      const chunk = line.subarray(position, Math.min(position + length, visible));
+      chunk.copy(target);
+      return chunk.length;
+    }) as any);
+
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+    visible = line.length;
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-partial', 'codex-partial');
+  });
+
+  it('assigns two pending sessions from two lines in one append', () => {
+    mockWatch.mockReturnValue({ close: vi.fn() } as any);
+    startCodexSessionWatcher(createMockWin());
+    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
+    registerPendingCodexSession('ui-first');
+    vi.advanceTimersByTime(10);
+    registerPendingCodexSession('ui-second');
+    const data = Buffer.from('{"session_id":"codex-first"}\n{"session_id":"codex-second"}\n');
+    mockStatSync.mockReturnValue({ size: data.length } as fs.Stats);
+    mockOpenSync.mockReturnValue(42);
+    mockReadSync.mockImplementation(((_fd: number, target: Buffer) => data.copy(target)) as any);
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-first', 'codex-first');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-second', 'codex-second');
   });
 
   it('assigns to oldest pending session when multiple are pending', () => {

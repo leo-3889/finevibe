@@ -1,9 +1,8 @@
 import { appState } from '../state.js';
-import { ProjectRecord, Preferences, ProviderId } from '../../shared/types.js';
+import { ProjectRecord } from '../../shared/types.js';
 import { getStatus, SessionStatus, onChange as onActivityChange, STATUS_GLYPH } from '../session-activity.js';
 import { STATUS_PRIORITY } from '../project-status.js';
 import { isCliSession } from '../session-utils.js';
-import { getProviderCapabilities } from '../provider-availability.js';
 import { esc } from '../dom-utils.js';
 import { t } from '../i18n.js';
 
@@ -15,66 +14,43 @@ export interface ActiveSessionRow {
   status: SessionStatus;
 }
 
-type ActiveStatusConfig = NonNullable<Preferences['activeSessionStatuses']>;
 
-/** The status keys a session can be filtered on, and the canonical default set. */
-export const ACTIVE_STATUS_KEYS = ['working', 'waiting', 'input', 'completed'] as const;
-export const DEFAULT_ACTIVE_SESSION_STATUSES: ActiveStatusConfig = {
-  working: true,
-  waiting: false,
-  input: true,
-  completed: true,
-};
-
-/** Resolve the configured set of statuses that count as "active". */
-export function resolveActiveStatuses(prefs: Preferences): Set<SessionStatus> {
-  const cfg = prefs.activeSessionStatuses ?? DEFAULT_ACTIVE_SESSION_STATUSES;
-  return new Set(ACTIVE_STATUS_KEYS.filter((k) => cfg[k]));
-}
 
 /**
- * Pure selector: gather every open CLI session across all projects whose live
- * status is in `activeStatuses`, ordered by urgency (`STATUS_PRIORITY`) then
- * project name. DOM-free so it can be unit-tested.
- *
- * `reportsStatusOf` says whether a provider emits a live status at all —
- * via hooks (`hookStatus`) or transcript polling (`polledStatus`). Providers
- * that report one are filtered by `activeStatuses` like any other. A provider
- * with neither has no status signal, so the filter can't distinguish working
- * from idle: an open session there is listed regardless, and only an `idle`
- * (PTY-exited) one is dropped.
+ * Pure selector: gather every open CLI session across all projects, ordered
+ * by urgency (`STATUS_PRIORITY`) then project name then session name. Live
+ * status is display and ordering only — it never hides a row. DOM-free so it
+ * can be unit-tested.
  */
 export function selectActiveSessions(
   projects: ProjectRecord[],
   statusOf: (sessionId: string) => SessionStatus,
-  activeStatuses: Set<SessionStatus>,
-  reportsStatusOf: (providerId: ProviderId | undefined) => boolean,
 ): ActiveSessionRow[] {
   const rows: ActiveSessionRow[] = [];
   for (const project of projects) {
     for (const session of project.sessions) {
       if (!isCliSession(session)) continue;
-      const status = statusOf(session.id);
-      if (reportsStatusOf(session.providerId)) {
-        if (!activeStatuses.has(status)) continue;
-      } else if (status === 'idle') {
-        // No status source: 'idle' is the only "not open" state we can see.
-        continue;
-      }
       rows.push({
         projectId: project.id,
         projectName: project.name,
         sessionId: session.id,
         sessionName: session.name,
-        status,
+        status: statusOf(session.id),
       });
     }
   }
   rows.sort((a, b) => {
-    const pa = STATUS_PRIORITY.indexOf(a.status);
-    const pb = STATUS_PRIORITY.indexOf(b.status);
+    // idle is not in STATUS_PRIORITY — rank it after completed, not before input.
+    const rank = (s: SessionStatus) => {
+      const i = STATUS_PRIORITY.indexOf(s);
+      return i === -1 ? STATUS_PRIORITY.length : i;
+    };
+    const pa = rank(a.status);
+    const pb = rank(b.status);
     if (pa !== pb) return pa - pb;
-    return a.projectName.localeCompare(b.projectName);
+    const pn = a.projectName.localeCompare(b.projectName);
+    if (pn !== 0) return pn;
+    return a.sessionName.localeCompare(b.sessionName);
   });
   return rows;
 }
@@ -95,17 +71,7 @@ export function renderActiveSessions(): void {
   // just duplicate that project's own tab bar, so the section stays hidden.
   const enabled =
     (appState.preferences.sidebarViews?.activeSessions ?? true) && appState.projects.length > 1;
-  const rows = enabled
-    ? selectActiveSessions(
-        appState.projects,
-        getStatus,
-        resolveActiveStatuses(appState.preferences),
-        (providerId) => {
-          const caps = getProviderCapabilities(providerId ?? 'claude');
-          return caps?.hookStatus === true || caps?.polledStatus === true;
-        },
-      )
-    : [];
+  const rows = enabled ? selectActiveSessions(appState.projects, getStatus) : [];
 
   if (rows.length === 0) {
     containerEl.classList.add('hidden');

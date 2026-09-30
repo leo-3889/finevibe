@@ -193,7 +193,7 @@ describe('session ID assignment', () => {
     expect(mockCloseSync).toHaveBeenCalledWith(42);
   });
 
-  it('assigns on an fs.watch event without waiting for the poll', () => {
+  it('assigns on a coalesced fs.watch event without waiting for the poll', () => {
     startWatcher();
 
     mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
@@ -203,6 +203,9 @@ describe('session ID assignment', () => {
 
     const watchCallback = mockWatch.mock.calls[0][1] as (...args: unknown[]) => void;
     watchCallback();
+    // The event path is debounced, not synchronous; it still lands well
+    // before the 2s polling fallback.
+    vi.advanceTimersByTime(250);
 
     expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-watch');
   });

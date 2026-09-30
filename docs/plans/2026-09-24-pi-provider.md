@@ -1,5 +1,7 @@
 # Plan: Pi as a Backend Provider
 
+> Historical design record. Pi is registered in `src/main/providers/registry.ts` and has provider and transcript-watcher tests. The CLI facts below were observed with Pi 0.83.0 and may differ in later versions. For current contracts see [provider contracts](../provider-contracts.md) and [session lifecycle](../session-lifecycle.md). Live authenticated Pi startup and resume remain in the [runtime verification list](../AUDIT_STATUS.md).
+
 **Date:** 2026-09-24 · **Status:** implemented — shipped with per-tool profile support, polled session status, and OMP added alongside
 
 ## Goal

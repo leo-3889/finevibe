@@ -40,7 +40,7 @@ Running AI coding agents in a bare terminal gets messy fast. Vibeyard gives you 
 
 - **Customizable project overview** — drag-and-drop dashboard per project with widgets for AI Readiness, Kanban, Team, Sessions, Provider Tools, and live GitHub PRs/Issues — pick what matters and arrange it your way
 - **Kanban task board** — plan work on a per-project board with drag-and-drop, search, and tag filtering; each card can spawn or resume a CLI session in one click, and tasks auto-move to Done when their session completes
-- **P2P session sharing** — share live terminal sessions with teammates over encrypted peer-to-peer connections (WebRTC), with read-only or read-write modes and PIN-based authentication
+- **P2P session sharing** — share live terminal sessions over encrypted peer-to-peer connections (WebRTC), with read-only or read-write modes and a generated share key
 - **Multi-session management** — run multiple agent sessions per project, each in its own PTY; use swarm mode for a grid view of all sessions at once and spin up new ones with `Cmd+\`
 - **Multiple profiles per coding tool** — run separate logins side by side (e.g. work and personal licenses) for any profile-capable CLI — Claude Code, Pi, and Oh my Pi today — each session backed by its own isolated config directory so credentials, settings, and history never mix. Pick a profile per session, per project, or set a default per tool
 - **Cost & context tracking** — real-time spend, token usage, and context window monitoring per session (Claude Code)
@@ -61,7 +61,7 @@ Requires at least one supported CLI installed and authenticated: [Claude Code](h
 
 ### macOS
 
-Download the latest `.dmg` from [GitHub Releases](https://github.com/elirantutia/vibeyard/releases), drag to Applications, and launch. Signed and notarized by Apple.
+Download the latest `.dmg` from [GitHub Releases](https://github.com/elirantutia/vibeyard/releases), drag to Applications, and launch. The release workflow is configured for signing and notarization; verify the signature of the specific download before relying on it.
 
 ### Linux
 
@@ -69,7 +69,7 @@ Download the latest `.deb` (Debian/Ubuntu) or `.AppImage` (universal) from [GitH
 
 ```bash
 # Debian/Ubuntu
-sudo dpkg -i vibeyard_*.deb
+sudo dpkg -i Vibeyard-*.deb
 
 # AppImage
 chmod +x Vibeyard-*.AppImage
@@ -87,7 +87,7 @@ npm i -g vibeyard
 vibeyard
 ```
 
-On first run, the app is automatically downloaded and launched. No extra steps needed.
+On first run, the launcher downloads the packaged app for the current npm package version and starts it. Linux uses the x64 AppImage release asset. A matching release asset must exist for the package version.
 
 ### Build from Source
 
@@ -97,7 +97,11 @@ cd vibeyard
 npm install && npm start
 ```
 
-Requires Node v24+ (see `.nvmrc`).
+Source builds require Node v24+ (see `.nvmrc`). The published npm launcher accepts Node 18+ because it downloads a packaged app rather than building Electron from source.
+
+## Search and preview limits
+
+In the current source build, large text and Markdown files use bounded preview pages. Find searches only the displayed page; use Previous/Next or raw-view go-to-line to move through the file. Untracked Git diffs over 256 KiB or 5,000 lines show a size-limit message. Session search reuses a local derived index, and the inspector keeps bounded recent history. See [performance and resource limits](docs/performance.md) for exact limits, cache location and rebuild instructions. These changes have not been verified in a published package.
 
 ## Contributing
 

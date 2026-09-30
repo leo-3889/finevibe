@@ -121,6 +121,8 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'btn-secondary btn-sm danger';
       deleteBtn.textContent = t('profiles.deleteButton');
+      deleteBtn.disabled = appState.isProfileInUse(profile.id);
+      if (deleteBtn.disabled) deleteBtn.title = 'Close sessions and remove session history using this profile before deleting it.';
       deleteBtn.addEventListener('click', () => {
         showConfirmDialog(
           t('profiles.deleteTitle'),

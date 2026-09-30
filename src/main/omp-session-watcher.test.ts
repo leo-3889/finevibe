@@ -111,6 +111,14 @@ function header(piId: string, cwd: string): string {
   return JSON.stringify({ type: 'session', version: 3, id: piId, timestamp: 't', cwd });
 }
 
+/** `<ISO timestamp>_<id>.jsonl` stamped `ageMs` before the (fake) current time. */
+function transcript(ageMs: number, id: string): string {
+  const d = new Date(Date.now() - ageMs);
+  const p = (n: number) => String(n).padStart(2, '0');
+  const ms = String(d.getUTCMilliseconds()).padStart(3, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}-${p(d.getUTCMinutes())}-${p(d.getUTCSeconds())}-${ms}Z_${id}.jsonl`;
+}
+
 function startWatcher(): void {
   const mockWatcher = { close: vi.fn() };
   mockWatch.mockReturnValue(mockWatcher as any);
@@ -223,7 +231,7 @@ describe('session ID assignment', () => {
     expect(mockCloseSync).toHaveBeenCalledWith(42);
   });
 
-  it('assigns on an fs.watch event without waiting for the poll', () => {
+  it('assigns on a coalesced fs.watch event without waiting for the poll', () => {
     startWatcher();
 
     mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
@@ -233,6 +241,9 @@ describe('session ID assignment', () => {
 
     const watchCallback = mockWatch.mock.calls[0][1] as (...args: unknown[]) => void;
     watchCallback();
+    // The event path is debounced, not synchronous; it still lands well
+    // before the 2s polling fallback.
+    vi.advanceTimersByTime(250);
 
     expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-watch');
   });
@@ -523,7 +534,7 @@ describe('/clear re-adoption', () => {
   it('re-adopts a newer transcript in the same cwd and re-fires the sync', () => {
     startWatcher();
     const t1 = 'new.jsonl'; // null fileTs → passes the fresh-adoption tolerance
-    const t2 = '2026-01-01T01-00-00-000Z_cli-2.jsonl';
+    const t2 = transcript(2_000, 'cli-2');
     mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
     registerPendingOmpSession('ui-1', '/proj');
 
@@ -546,7 +557,7 @@ describe('/clear re-adoption', () => {
     startWatcher();
     const a1 = 'a.jsonl';
     const b1 = 'b.jsonl';
-    const clear = '2026-01-01T02-00-00-000Z_clear.jsonl';
+    const clear = transcript(2_000, 'clear');
     mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
     registerPendingOmpSession('ui-A', '/proj');
     registerPendingOmpSession('ui-B', '/proj');

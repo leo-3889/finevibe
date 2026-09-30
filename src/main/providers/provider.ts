@@ -23,7 +23,14 @@ export interface CliProvider {
   installHooks(win?: BrowserWindow | null, projectPath?: string): Promise<void>;
   installStatusScripts(): void;
   cleanup(): void;
-  getConfig(projectPath: string): Promise<ProviderConfig>;
+  /**
+   * The provider's user-visible config for a project. `configDir` is the
+   * session/project's pinned profile dir: providers whose config lives in the
+   * relocated agent tree (Pi's `mcp.json`) MUST read from it, or a project
+   * running as one login would display another login's servers — and MCP URLs
+   * routinely carry tokens.
+   */
+  getConfig(projectPath: string, configDir?: string): Promise<ProviderConfig>;
   getShiftEnterSequence(): string | null;
   validateSettings(projectPath?: string, configDir?: string): SettingsValidationResult;
   reinstallSettings(): void;
@@ -31,7 +38,7 @@ export interface CliProvider {
   /** Return the absolute path to the source transcript file for a prior session, if any. */
   getTranscriptPath?(cliSessionId: string, projectPath: string, configDir?: string): string | null;
   /** Cheap enumeration of every on-disk transcript for global session search. */
-  discoverTranscripts?(): Promise<TranscriptDescriptor[]>;
+  discoverTranscripts?(signal?: AbortSignal): Promise<TranscriptDescriptor[]>;
   /** Read user-visible text (and optionally the cwd) out of one transcript file. */
   indexTranscript?(transcriptPath: string): Promise<{ text: string; cwd: string }>;
   startConfigWatcher?(win: BrowserWindow, projectPath: string): void;
@@ -42,6 +49,16 @@ export interface CliProvider {
    * (codex tails history.jsonl, pi watches its sessions tree).
    */
   onSessionStarted?(sessionId: string, cwd: string, win: BrowserWindow, configDir?: string): void;
+  /**
+   * Re-attach to on-disk state for a RESUMED session — one spawned with a
+   * known `cliSessionId`, so `onSessionStarted` discovery never runs for
+   * it. Pi/OMP use this to join their sessions-tree watcher anyway, which
+   * is what lets the session follow a later `/clear`: the CLI starts a
+   * brand-new transcript under a new id in the same cwd, and the watcher
+   * re-adopts it (handing the new id to the transcript sync) instead of
+   * the tab freezing on the pre-clear conversation.
+   */
+  onSessionResumed?(sessionId: string, cwd: string, win: BrowserWindow, configDir?: string): void;
   /**
    * The CLI's own title read from a resolved transcript path, or null when
    * it has none yet. Only meaningful for providers with

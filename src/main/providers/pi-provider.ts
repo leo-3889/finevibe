@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, CliSessionStatus, McpServer, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import { removeEnvKey } from '../../shared/env-vars';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { collectProfileRoots } from './transcript-utils';
@@ -44,15 +45,10 @@ export class PiProvider implements CliProvider {
   buildEnv(_sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env.PATH = getFullPath();
+    removeEnvKey(env, 'PI_CODING_AGENT_DIR');
     if (opts?.configDir) {
       // Pi's equivalent of CLAUDE_CONFIG_DIR — relocates the whole agent dir.
       env.PI_CODING_AGENT_DIR = opts.configDir;
-    } else {
-      // Pi and OMP share PI_CODING_AGENT_DIR. If the host environment carries
-      // an OMP profile dir (e.g. Vibeyard launched from an omp shell), an
-      // unprofiled Pi session would silently read OMP's config — strip it so
-      // Pi falls back to its own ~/.pi/agent.
-      delete env.PI_CODING_AGENT_DIR;
     }
     return env;
   }
@@ -86,12 +82,14 @@ export class PiProvider implements CliProvider {
 
   reinstallSettings(): void {}
 
-  async getConfig(_projectPath: string): Promise<ProviderConfig> {
+  async getConfig(_projectPath: string, configDir?: string): Promise<ProviderConfig> {
     const empty: ProviderConfig = { mcpServers: [], agents: [], skills: [], commands: [] };
     // Pi's settings.json only carries display prefs (theme, quietStartup, …);
     // its MCP servers live in mcp.json — the only config the ProviderConfig
-    // shape can surface.
-    const mcpPath = path.join(piAgentDir(), 'mcp.json');
+    // shape can surface. Read it from the pinned profile's own agent tree:
+    // falling back to the default dir for a profiled project would surface a
+    // different login's servers, tokens included.
+    const mcpPath = path.join(configDir ? path.resolve(configDir) : piAgentDir(), 'mcp.json');
     try {
       const raw = JSON.parse(await fs.promises.readFile(mcpPath, 'utf-8'));
       const servers = raw?.mcpServers;
@@ -129,6 +127,15 @@ export class PiProvider implements CliProvider {
     registerPendingPiSession(sessionId, cwd, configDir);
   }
 
+  // A resumed session already knows its cli id, so onSessionStarted never
+  // runs for it. Join the sessions-tree watcher anyway: that is what lets a
+  // later `/clear` — a brand-new transcript under a new id in the same cwd
+  // — be re-adopted instead of the tab freezing on the pre-clear file.
+  onSessionResumed(sessionId: string, cwd: string, _win: BrowserWindow, configDir?: string): void {
+    startPiSessionWatcher();
+    registerPendingPiSession(sessionId, cwd, configDir);
+  }
+
   onSessionExited(sessionId: string): void {
     unregisterPiSession(sessionId);
   }
@@ -146,16 +153,18 @@ export class PiProvider implements CliProvider {
     return readTranscriptStatusSync(transcriptPath);
   }
 
-  async discoverTranscripts(): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
     // Search the default agent dir plus every pi profile's config dir, so
     // global session search surfaces transcripts created under an isolated
     // profile. Each root carries its profileId (undefined = default) so
     // resume can reopen against the right config dir.
     const roots = collectProfileRoots('pi', piSessionsRoot(), 'sessions');
-    const results = await Promise.all(
-      [...roots].map(([root, profileId]) => scanTranscriptSessionsRoot(root, profileId))
-    );
-    return results.flat();
+    const results: TranscriptDescriptor[] = [];
+    for (const [root, profileId] of roots) {
+      if (signal?.aborted) break;
+      results.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+    }
+    return results;
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

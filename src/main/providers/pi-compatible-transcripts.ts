@@ -1,8 +1,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 import type { TranscriptDescriptor } from './provider';
 import type { CliSessionStatus } from '../../shared/types';
-import { MAX_INDEX_CHARS_PER_SESSION, TRANSCRIPT_TEXT_SEPARATOR } from './transcript-utils';
+import { isWin, isMac } from '../platform';
+import {
+  MAX_INDEX_BYTES,
+  MAX_INDEX_FILE_BYTES,
+  IndexTextBudget,
+  TRANSCRIPT_IO_CONCURRENCY,
+  mapWithConcurrency,
+} from './transcript-utils';
 
 /**
  * Shared on-disk contract for Pi-compatible transcripts (Pi and OMP speak
@@ -116,6 +124,7 @@ export function transcriptStatusFromTail(tail: string | null): CliSessionStatus 
       // scanning backwards for the last complete line.
       continue;
     }
+    if (entry.type === 'custom' && entry.customType === 'session_exit') return null;
     const status = statusFromEntry(entry);
     if (status) return status;
   }
@@ -145,6 +154,16 @@ function statusFromEntry(entry: Record<string, any>): CliSessionStatus | null {
 }
 
 /**
+ * Fallback-read cache: when the 16KB window has no complete entry (the
+ * normal mid-turn state with a big final entry), the 1MB fallback read
+ * is expensive, so its result is cached with the file size at read time.
+ * An unchanged file is served from the cache; a changed size re-reads and
+ * refreshes it. The entry is dropped the moment the small window yields a
+ * status again (the file moved past the big entry), which bounds memory.
+ */
+const statusTailCache = new Map<string, { size: number; status: CliSessionStatus | null }>();
+
+/**
  * Convenience: read a transcript's tail and derive its status in one call.
  * If the default 16KB window yields no complete meaningful entry — the last
  * entry is larger than the window — retry with a larger bounded window so a
@@ -153,8 +172,27 @@ function statusFromEntry(entry: Record<string, any>): CliSessionStatus | null {
  */
 export function readTranscriptStatusSync(filePath: string): CliSessionStatus | null {
   const status = transcriptStatusFromTail(readTranscriptTailSync(filePath));
-  if (status !== null) return status;
-  return transcriptStatusFromTail(readTranscriptTailSync(filePath, MAX_STATUS_TAIL_BYTES));
+  if (status !== null) {
+    // The small window works again — any cached fallback is stale.
+    statusTailCache.delete(filePath);
+    return status;
+  }
+  let size: number;
+  try {
+    size = fs.statSync(filePath).size;
+  } catch {
+    // File vanished between the tail read and now — nothing to report.
+    return null;
+  }
+  const cached = statusTailCache.get(filePath);
+  if (cached && cached.size === size) return cached.status;
+  const fallback = transcriptStatusFromTail(readTranscriptTailSync(filePath, MAX_STATUS_TAIL_BYTES));
+  statusTailCache.set(filePath, { size, status: fallback });
+  return fallback;
+}
+
+export function _resetStatusTailCacheForTesting(): void {
+  statusTailCache.clear();
 }
 
 /**
@@ -177,10 +215,31 @@ function headEntries(window: string | null): Array<Record<string, any>> {
   return out;
 }
 
+/**
+ * Accepted shape for a transcript's session id. Pi and OMP emit a UUIDv7
+ * (`01a007b0-07e5-7eb4-b41b-438d945f89f3`); the charset is deliberately
+ * wider than a UUID so a future id format doesn't break resume, but it
+ * excludes every character that could break out of an argv token on the
+ * Windows cmd.exe spawn path (`"`, space, `&`, `|`, `%`, path separators).
+ *
+ * This is a trust boundary: the id parsed here becomes the session's
+ * `cliSessionId`, later passed to `--session` / `--resume` and used to
+ * build filename suffixes, so a transcript file is untrusted input.
+ * Every other provider gates its discovered ids on a UUID shape
+ * (claude-provider.ts, copilot-provider.ts); this is the Pi-lineage twin.
+ */
+export const COMPATIBLE_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
 /** Session header from a transcript head: {"type":"session","version":3,"id","timestamp","cwd"}. */
 export function sessionHeaderFromWindow(window: string | null): CompatibleSessionHeader | null {
   for (const entry of headEntries(window)) {
-    if (entry.type === 'session' && typeof entry.id === 'string') return entry as CompatibleSessionHeader;
+    if (entry.type !== 'session') continue;
+    // A session entry with a missing or malformed id is rejected outright
+    // rather than adopted and handed downstream as resumable state.
+    if (typeof entry.id === 'string' && COMPATIBLE_SESSION_ID_RE.test(entry.id)) {
+      return entry as CompatibleSessionHeader;
+    }
+    return null;
   }
   return null;
 }
@@ -239,9 +298,39 @@ export function createCompatibleTranscriptModule(defaultAgentDir: string): {
 
 // --- Shared provider transcript helpers (parameterized by sessions root) ---
 
+const CASE_INSENSITIVE_PATHS = isWin || isMac;
+
+/**
+ * Directory identity for cwd comparison: trailing separators ignored, and
+ * case folded on Windows/macOS, where the same directory can legitimately
+ * be spelled with different case (drive letter, Finder-vs-CLI path).
+ */
+function sameCwd(a: string | undefined, b: string): boolean {
+  if (typeof a !== 'string' || !a) return false;
+  const strip = (p: string): string => {
+    const trimmed = p.replace(/[\\/]+$/, '');
+    return trimmed || p; // keep a filesystem root ('/' or 'C:\') intact
+  };
+  const x = strip(a);
+  const y = strip(b);
+  return CASE_INSENSITIVE_PATHS ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
 /**
  * Find one transcript by cli session id: match the id in the filename
- * first, then read only the header line to prefer an exact cwd match.
+ * first, then read only the header to confirm the cwd.
+ *
+ * The cwd match is AUTHORITATIVE — a cwd-mismatched file is never
+ * returned. The old fallback handed back a transcript whose header `id`
+ * matched but whose `cwd` belonged to a different project; the
+ * transcript-sync caches whatever path this returns, so that fallback
+ * mirrored the foreign project's title and working/completed/waiting
+ * state into the requesting session and persisted the foreign title to
+ * state.json. No cwd match reports nothing, which is the honest outcome.
+ *
+ * Matching is case-insensitive on Windows/macOS so a legitimate
+ * drive-letter/case difference is not turned into a false negative by this
+ * stricter rule.
  */
 export function findTranscriptPathSync(
   sessionsRootOf: (configDir?: string) => string,
@@ -253,10 +342,9 @@ export function findTranscriptPathSync(
     const sessionsRoot = sessionsRootOf(configDir);
     if (!fs.existsSync(sessionsRoot)) return null;
 
-    // Filenames are <ISO-timestamp>_<uuid>.jsonl — match the id in the name
-    // first, then read only the header line to prefer an exact cwd match.
+    // Filenames are <ISO-timestamp>_<uuid>.jsonl — match the id in the
+    // name first, then confirm the cwd from the header alone.
     const suffix = `_${cliSessionId}.jsonl`;
-    let fallback: string | null = null;
     for (const dir of fs.readdirSync(sessionsRoot)) {
       const dirPath = path.join(sessionsRoot, dir);
       let files: string[];
@@ -266,11 +354,10 @@ export function findTranscriptPathSync(
         const full = path.join(dirPath, f);
         const header = readSessionHeaderSync(full);
         if (!header || header.id !== cliSessionId) continue;
-        if (header.cwd === projectPath) return full;
-        fallback ??= full;
+        if (sameCwd(header.cwd, projectPath)) return full;
       }
     }
-    return fallback;
+    return null;
   } catch {
     return null;
   }
@@ -279,7 +366,8 @@ export function findTranscriptPathSync(
 /** Emit a descriptor per .jsonl in a sessions root, from the session header. */
 export async function scanTranscriptSessionsRoot(
   sessionsRoot: string,
-  profileId: string | undefined
+  profileId: string | undefined,
+  signal?: AbortSignal
 ): Promise<TranscriptDescriptor[]> {
   let dirs: string[];
   try {
@@ -289,68 +377,91 @@ export async function scanTranscriptSessionsRoot(
   }
   const out: TranscriptDescriptor[] = [];
   for (const dir of dirs) {
+    if (signal?.aborted) return out;
     const dirPath = path.join(sessionsRoot, dir);
     let files: string[];
     try { files = await fs.promises.readdir(dirPath); } catch { continue; }
-    // Header reads are independent — read them concurrently.
-    const descriptors = await Promise.all(
-      files.filter((f) => f.endsWith('.jsonl')).map(async (f) => {
+    // Header reads are independent, but one project dir can hold hundreds
+    // of transcripts — cap the fan-out so a search never opens them all
+    // at once.
+    const descriptors = await mapWithConcurrency(
+      files.filter((f) => f.endsWith('.jsonl')),
+      TRANSCRIPT_IO_CONCURRENCY,
+      async (f) => {
+        if (signal?.aborted) return null;
         const transcriptPath = path.join(dirPath, f);
         const header = await readSessionHeaderAsync(transcriptPath);
         return header
           ? { cliSessionId: header.id, transcriptPath, projectCwd: header.cwd ?? '', profileId }
           : null;
-      })
+      }
     );
     for (const d of descriptors) if (d) out.push(d);
   }
   return out;
 }
 
-/** Index a Pi/OMP transcript for global search: user-typed text only,
+/**
+ * Index a Pi/OMP transcript for global search: user-typed text only,
  * capped at the per-session char budget.
+ *
+ * The read is byte-bounded and streamed. `readFile` + `split` put the
+ * whole transcript in memory — plus a second full copy as the array of
+ * lines — before the char budget could stop it, so capping the extracted
+ * output was never a cap on bytes read. Here `stat` rejects an absurd
+ * file before it is opened at all, and the read stream stops at
+ * MAX_INDEX_BYTES, so only the head window is ever resident. The 50 KiB
+ * char budget is reached far earlier, so nothing searchable is lost.
  */
 export async function indexCompatibleTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {
-  let raw: string;
+  let size: number;
   try {
-    raw = await fs.promises.readFile(transcriptPath, 'utf-8');
+    size = (await fs.promises.stat(transcriptPath)).size;
   } catch {
     return { text: '', cwd: '' };
   }
+  if (size > MAX_INDEX_FILE_BYTES) return { text: '', cwd: '' };
+
   let cwd = '';
-  const texts: string[] = [];
-  let totalChars = 0;
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    let entry: { type?: string; cwd?: string; message?: { role?: string; content?: unknown } };
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (entry.type === 'session' && typeof entry.cwd === 'string') {
-      cwd = entry.cwd;
-      continue;
-    }
-    if (entry.type !== 'message') continue;
-    if (totalChars >= MAX_INDEX_CHARS_PER_SESSION) break;
-    if (entry.message?.role !== 'user') continue;
-    let text = '';
-    const c = entry.message.content;
-    if (typeof c === 'string') {
-      text = c;
-    } else if (Array.isArray(c)) {
-      for (const block of c) {
-        if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text'
-          && typeof (block as { text?: unknown }).text === 'string') {
-          text += (block as { text: string }).text + '\n';
+  const budget = new IndexTextBudget();
+
+  const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES - 1 });
+  const lines = readline.createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      let entry: { type?: string; cwd?: string; message?: { role?: string; content?: unknown } };
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry.type === 'session' && typeof entry.cwd === 'string') {
+        cwd = entry.cwd;
+        continue;
+      }
+      if (entry.type !== 'message') continue;
+      if (budget.full) break;
+      if (entry.message?.role !== 'user') continue;
+      let text = '';
+      const c = entry.message.content;
+      if (typeof c === 'string') {
+        text = c;
+      } else if (Array.isArray(c)) {
+        for (const block of c) {
+          if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text'
+            && typeof (block as { text?: unknown }).text === 'string') {
+            text += (block as { text: string }).text + '\n';
+          }
         }
       }
+      if (text) budget.push(text);
     }
-    if (text) {
-      texts.push(text.trim());
-      totalChars += text.length;
-    }
+  } catch {
+    // Best-effort: keep whatever was extracted before the stream failed.
+  } finally {
+    lines.close();
+    input.destroy();
   }
-  return { text: texts.join(TRANSCRIPT_TEXT_SEPARATOR), cwd };
+  return { text: budget.join(), cwd };
 }

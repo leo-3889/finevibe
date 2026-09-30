@@ -1,5 +1,5 @@
 import type { VibeyardApi } from './types.js';
-import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, ReadinessSnapshot, TeamMember, TeamData, Profile, OverviewLayout } from '../shared/types.js';
+import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout } from '../shared/types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
@@ -120,6 +120,11 @@ class AppState {
   private state: PersistedState = { version: 1, projects: [], activeProjectId: null, preferences: { ...defaultPreferences } };
   private listeners = new Map<EventType, Set<EventCallback>>();
   private nav = new NavHistory();
+  /** sessionId → owning project + session record, kept in sync by the add/remove paths (O(1) lookups). */
+  private sessionIndex = new Map<string, { project: ProjectRecord; session: SessionRecord }>();
+  /** Coalesced persist for high-frequency cost/context ticks (see scheduleCostFlush). */
+  private pendingCostFlush = false;
+  private costFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   private pushNav(sessionId: string | null | undefined): void {
     this.nav.push(sessionId);
@@ -129,15 +134,21 @@ class AppState {
     this.nav.prune(sessionId);
   }
 
-  /** Resolve a session id to both the session and its owning project in one scan. */
+  /** Resolve a session id to both the session and its owning project (O(1) via sessionIndex). */
   findSessionWithProject(
     sessionId: string,
   ): { project: ProjectRecord; session: SessionRecord } | undefined {
+    return this.sessionIndex.get(sessionId);
+  }
+
+  /** Rebuild the O(1) session index from the whole state (used after a full state load). */
+  private rebuildSessionIndex(): void {
+    this.sessionIndex.clear();
     for (const project of this.state.projects) {
-      const session = project.sessions.find((s) => s.id === sessionId);
-      if (session) return { project, session };
+      for (const session of project.sessions) {
+        this.sessionIndex.set(session.id, { project, session });
+      }
     }
-    return undefined;
   }
 
   private findProjectBySession(sessionId: string): ProjectRecord | undefined {
@@ -190,12 +201,29 @@ class AppState {
       this.state.appLaunchCount = (this.state.appLaunchCount ?? 0) + 1;
       this.persist();
     }
+    this.rebuildSessionIndex();
 
     this.emit('state-loaded');
   }
 
   private persist(): void {
     window.vibeyard.store.save(serializeForSave(this.state));
+  }
+
+  /**
+   * Coalesce high-frequency cost/context ticks into a single persist ~1s later.
+   * Each tick costs a full serialize + structured clone over IPC; the 1s window
+   * is short enough that a quit at any point loses at most ~1s of cost data
+   * (the main-side store flushes on quit).
+   */
+  private scheduleCostFlush(): void {
+    this.pendingCostFlush = true;
+    if (this.costFlushTimer !== null) return;
+    this.costFlushTimer = setTimeout(() => {
+      this.costFlushTimer = null;
+      this.pendingCostFlush = false;
+      this.persist();
+    }, 1000);
   }
 
   get projects(): ProjectRecord[] {
@@ -329,6 +357,7 @@ class AppState {
     const sessions = project?.sessions ?? [];
 
     this.state.projects = this.state.projects.filter((p) => p.id !== id);
+    for (const s of sessions) this.sessionIndex.delete(s.id);
     if (this.state.activeProjectId === id) {
       this.state.activeProjectId = this.state.projects[0]?.id ?? null;
     }
@@ -396,6 +425,8 @@ class AppState {
   }
 
   private commitNewSession(projectId: string, session: SessionRecord): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (project) this.sessionIndex.set(session.id, { project, session });
     this.pushNav(session.id);
     this.persist();
     this.emit('session-added', { projectId, session });
@@ -602,9 +633,18 @@ class AppState {
     return profile;
   }
 
+  isProfileInUse(id: string): boolean {
+    return this.state.projects.some((project) =>
+      project.sessions.some((session) => session.profileId === id) ||
+      (project.sessionHistory ?? []).some((archived) => archived.profileId === id)
+    );
+  }
+
   removeProfile(id: string): void {
     const idx = this.profiles.findIndex((p) => p.id === id);
     if (idx === -1) return;
+    // A conversation must never silently resume under a different account.
+    if (this.isProfileInUse(id)) return;
     this.profiles.splice(idx, 1);
     // Don't orphan references: any session/project/preference pointing at the
     // deleted profile falls back to the default config dir.
@@ -740,6 +780,7 @@ class AppState {
 
     const closingIndex = project.sessions.findIndex((s) => s.id === sessionId);
     project.sessions = project.sessions.filter((s) => s.id !== sessionId);
+    this.sessionIndex.delete(sessionId);
     this.pruneNav(sessionId);
     if (project.activeSessionId === sessionId) {
       const newIndex = closingIndex > 0 ? closingIndex - 1 : 0;
@@ -971,14 +1012,14 @@ class AppState {
     const session = this.findSessionById(sessionId);
     if (!session) return;
     session.cost = { ...cost };
-    this.persist();
+    this.scheduleCostFlush();
   }
 
   updateSessionContext(sessionId: string, context: ContextWindowInfo): void {
     const session = this.findSessionById(sessionId);
     if (!session) return;
     session.contextWindow = { ...context };
-    this.persist();
+    this.scheduleCostFlush();
   }
 
   updateSessionBrowserTabUrl(sessionId: string, url: string): void {
@@ -1170,6 +1211,11 @@ export function _resetForTesting(): void {
   (appState as any)['state'] = { version: 1, projects: [], activeProjectId: null, preferences: { ...defaultPreferences } };
   (appState as any)['listeners'] = new Map();
   (appState as any)['nav'] = new NavHistory();
+  if ((appState as any)['costFlushTimer'] !== null) {
+    clearTimeout((appState as any)['costFlushTimer']);
+    (appState as any)['costFlushTimer'] = null;
+  }
+  (appState as any)['pendingCostFlush'] = false;
 }
 
 export const appState = new AppState();
