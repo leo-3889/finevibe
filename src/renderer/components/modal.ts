@@ -1,4 +1,4 @@
-import { createCustomSelect } from './custom-select.js';
+import { createCustomSelect, type CustomSelectInstance } from './custom-select.js';
 import { pushModal } from './modal-manager.js';
 
 export interface FieldDef {
@@ -15,6 +15,8 @@ export interface FieldDef {
   onChange?: (checked: boolean) => void;
   /** Fired when a `select` field's value changes (the new value). */
   onSelectChange?: (value: string) => void;
+  /** Fired once with the built select, so callers can re-scope its options. */
+  onSelectCreated?: (select: CustomSelectInstance) => void;
 }
 
 const overlay = document.getElementById('modal-overlay')!;
@@ -113,6 +115,7 @@ export function showModal(
       div.appendChild(label);
       const sel = createCustomSelect(`modal-${field.id}`, field.options ?? [], field.defaultValue, field.onSelectChange);
       div.appendChild(sel.element);
+      field.onSelectCreated?.(sel);
       if (!(overlay as any)._selectCleanups) (overlay as any)._selectCleanups = [];
       (overlay as any)._selectCleanups.push(() => sel.destroy());
     } else {

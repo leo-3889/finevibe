@@ -455,6 +455,36 @@ describe('killPty', () => {
   });
 });
 
+describe('PTY replacement exit ordering', () => {
+  it('suppresses only the replaced process when the new process exits first', async () => {
+    const oldProc = createMockPtyProcess();
+    const newProc = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(oldProc).mockReturnValueOnce(newProc);
+    const oldExit = vi.fn();
+    const newExit = vi.fn();
+    await spawnPty('replacement-order', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), oldExit);
+    await spawnPty('replacement-order', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), newExit);
+    newProc._emitExit(1);
+    oldProc._emitExit(0);
+    expect(newExit).toHaveBeenCalledWith(1, undefined);
+    expect(oldExit).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a synchronous exit emitted by kill during replacement', async () => {
+    const oldProc = createMockPtyProcess();
+    const newProc = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(oldProc).mockReturnValueOnce(newProc);
+    const oldExit = vi.fn();
+    const newExit = vi.fn();
+    await spawnPty('replacement-sync', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), oldExit);
+    mockKill.mockImplementationOnce(() => oldProc._emitExit(0));
+    await spawnPty('replacement-sync', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), newExit);
+    expect(oldExit).not.toHaveBeenCalled();
+    newProc._emitExit(1);
+    expect(newExit).toHaveBeenCalledWith(1, undefined);
+  });
+});
+
 describe('getPtyCwd', () => {
   it('returns null for unknown session', async () => {
     const result = await getPtyCwd('unknown');
@@ -686,6 +716,70 @@ describe('resolveWindowsShell', () => {
         args: ['/c', 'C:\\tools\\claude', '--help'],
       });
     });
+
+  // Regression guard for the cmd.exe argv-injection finding.
+  //
+  // node-pty (windowsPtyAgent.argsToCommandLine) wraps an argument in double
+  // quotes only when it contains a space or a tab. Before the fix, a
+  // whitespace-free token carrying `&` / `|` / `<` / `>` / `^` — or a `"` that
+  // closes cmd's quoted section early — reached cmd.exe raw and was interpreted,
+  // so an attacker-controlled argument could run a second command.
+
+  /** Faithful model of node-pty's per-argument quoting. */
+  const nodePtyCommandLine = (shell: string, args: string[]): string =>
+    [shell, ...args]
+      .map((a) => {
+        const needsQuotes = /[\s\t]/.test(a);
+        const enclosed = a.startsWith('"') && a.endsWith('"');
+        return needsQuotes && !enclosed ? `"${a.replace(/"/g, '\\"')}"` : a;
+      })
+      .join(' ');
+
+  /**
+   * Everything cmd.exe would see outside a quoted region. cmd toggles its quoted
+   * state on every `"` and honours no escape for it, so a backslash before a
+   * quote does NOT keep the region closed — modelling that correctly is the whole
+   * point of these tests.
+   */
+  const unquotedContent = (line: string): string => {
+    let out = '';
+    let inQuotes = false;
+    for (const c of line) {
+      if (c === '"') inQuotes = !inQuotes;
+      else if (!inQuotes) out += c;
+    }
+    return out;
+  };
+
+  it('pre-quotes a whitespace-free arg carrying cmd metacharacters', () => {
+    const r = resolveWindowsShell('C:\\tools\\claude.cmd', ['--append-system-prompt=a&calc.exe']);
+    expect(r.args[2]).toBe('"--append-system-prompt=a&calc.exe"');
+  });
+
+  it('leaves no cmd metacharacter outside quotes in the final command line', () => {
+    for (const payload of ['a&calc.exe', 'a&&b', 'a|calc.exe', 'a||b', 'a>b.txt', 'a^&b']) {
+      const r = resolveWindowsShell('C:\\tools\\claude.cmd', [payload]);
+      const bare = unquotedContent(nodePtyCommandLine(r.shell, r.args));
+      expect(bare).not.toMatch(/[&|<>^]/);
+    }
+  });
+
+  // cmd.exe has no representation for a literal double quote, so the argument is
+  // refused rather than escaped into an injectable command line.
+  it('rejects an argument containing a double quote', () => {
+    expect(() => resolveWindowsShell('C:\\tools\\claude.cmd', ['x"y&calc.exe'])).toThrow(/double quote/);
+  });
+
+  it('quotes the binary path itself when it carries a metacharacter', () => {
+    const r = resolveWindowsShell('C:\\tools\\a&b.cmd', ['--help']);
+    const line = nodePtyCommandLine(r.shell, r.args);
+    expect(unquotedContent(line)).not.toContain('&');
+  });
+
+  it('does not over-quote metachar-free args', () => {
+    const r = resolveWindowsShell('C:\\tools\\claude.cmd', ['--help', 'plain.txt']);
+    expect(r.args).toEqual(['/c', 'C:\\tools\\claude.cmd', '--help', 'plain.txt']);
+  });
   } else {
     it('passes through unchanged on non-Windows', () => {
       const result = resolveWindowsShell('/usr/local/bin/claude', ['--help']);
