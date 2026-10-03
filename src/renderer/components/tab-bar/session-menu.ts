@@ -110,7 +110,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     },
   ];
 
-  const preferred = appState.preferences.defaultProvider ?? 'claude';
+  const preferred = project.defaultProvider ?? appState.preferences.defaultProvider ?? 'claude';
   const effectiveProvider = (availabilityMap.get(preferred) ? preferred : providers.find(p => availabilityMap.get(p.id))?.id) ?? 'claude';
   if (providers.length > 1) {
     fields.unshift({

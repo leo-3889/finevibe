@@ -1,5 +1,7 @@
 # Provider contracts
 
+Project context menu → Settings always offers a coding provider and a profile scoped to that provider. `ProjectRecord.defaultProvider` is persisted; absent means the global default. New CLI sessions use explicit override → project default → global default → Claude. Plans and unpinned team chats also prefer an explicit project default over the active tab. Changing the provider resets an incompatible project profile. Running PTYs are not restarted by saving these settings. New-session and board dialogs preselect the project provider.
+
 The registry in `src/main/providers/registry.ts` registers Claude Code, Codex CLI, GitHub Copilot, Gemini CLI, Pi and Oh my Pi. Provider capabilities determine which UI and status paths are enabled; do not assume all providers support profiles, hooks, resume, cost or self titles.
 
 `src/main/pty-manager.ts` builds an argv array for node-pty. Never set `shell: true`. On Windows, `quoteArgForCmdExe` wraps each `cmd.exe` token and rejects double quotes that cannot be conveyed safely. `partitionUserEnv` removes provider-owned variables (`CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, `CLAUDE_IDE_SESSION_ID`) before merging user variables. PATH remains user configurable.

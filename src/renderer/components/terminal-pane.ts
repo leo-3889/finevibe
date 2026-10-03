@@ -1,4 +1,5 @@
 import { Terminal } from '@xterm/xterm';
+import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
 import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -116,9 +117,12 @@ export function createTerminalPane(
   }));
 
   const writeToPty = (data: string) => window.vibeyard.pty.write(sessionId, data);
+  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty);
 
   // Send CSI u encoding for Shift+Enter so Claude CLI treats it as newline
   attachClipboardCopyHandler(terminal, (e) => {
+    const handled = handleWin32Key(e);
+    if (handled !== undefined) return handled;
     if (e.shiftKey && e.key === 'Enter') {
       if (e.type === 'keydown') window.vibeyard.pty.write(sessionId, '\x1b[13;2u');
       e.preventDefault();

@@ -227,7 +227,7 @@ function resolveTaskProviderId(task: BoardTask): ProviderId {
     const session = project.sessions.find(s => s.id === task.sessionId);
     if (session?.providerId) return session.providerId;
   }
-  return task.providerId ?? appState.preferences.defaultProvider ?? 'claude';
+  return task.providerId ?? project?.defaultProvider ?? appState.preferences.defaultProvider ?? 'claude';
 }
 
 function getArchivedCost(task: BoardTask): ArchivedSession['cost'] | null {
