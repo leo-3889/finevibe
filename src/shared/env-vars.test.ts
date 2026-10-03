@@ -39,6 +39,13 @@ describe('profile-owned environment', () => {
       dropped: ['claude_config_dir', 'Pi_Coding_Agent_Dir'],
     });
   });
+
+  it('drops the pi/omp profile and directory selectors in any casing', () => {
+    expect(partitionUserEnv({ OMP_PROFILE: 'x', pi_profile: 'y', PI_CONFIG_DIR: 'z', PI_CODING_AGENT_DIR: 'w', SAFE: 'yes' })).toEqual({
+      allowed: { SAFE: 'yes' },
+      dropped: ['OMP_PROFILE', 'pi_profile', 'PI_CONFIG_DIR', 'PI_CODING_AGENT_DIR'],
+    });
+  });
 });
 
 describe('findInvalidEnvLines', () => {

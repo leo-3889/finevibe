@@ -8,7 +8,7 @@ export function resolvePlanProvider(
   override: ProviderId | undefined,
 ): ProviderId {
   const activeSession = project.sessions.find((s) => s.id === project.activeSessionId);
-  return override ?? activeSession?.providerId ?? prefs.defaultProvider ?? 'claude';
+  return override ?? project.defaultProvider ?? activeSession?.providerId ?? prefs.defaultProvider ?? 'claude';
 }
 
 /** Build the args string for a plan session: project default args + plan-mode flag (if enabled). */
@@ -23,8 +23,8 @@ export function buildPlanSessionArgs(
 }
 
 /** Resolve the providerId used when creating a plain CLI session. */
-export function resolveCliProvider(prefs: Preferences, override: ProviderId | undefined): ProviderId {
-  return override ?? prefs.defaultProvider ?? 'claude';
+export function resolveCliProvider(prefs: Preferences, override: ProviderId | undefined, project?: ProjectRecord): ProviderId {
+  return override ?? project?.defaultProvider ?? prefs.defaultProvider ?? 'claude';
 }
 
 /**

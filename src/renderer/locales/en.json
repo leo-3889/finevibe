@@ -525,5 +525,9 @@
     "about": "About",
     "general": "General",
     "appearance": "Appearance"
+  },
+  "session": {
+    "crashedTitle": "Session ended unexpectedly",
+    "crashedBody": "The session crashed: {reason}"
   }
 }

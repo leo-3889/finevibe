@@ -26,12 +26,13 @@ vi.mock('./pi-compatible-transcripts', () => ({
   scanTranscriptSessionsRoot: vi.fn(),
   indexCompatibleTranscript: vi.fn(),
   readTranscriptStatusSync: vi.fn(),
+  readSessionExitReasonSync: vi.fn(),
 }));
 
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession } from '../omp-session-watcher';
 import { readTranscriptTitleSync } from './omp-transcripts';
-import { findTranscriptPathSync, readTranscriptStatusSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import { OmpProvider, _resetCachedPath } from './omp-provider';
 
 const mockResolveBinary = vi.mocked(resolveBinary);
@@ -101,6 +102,28 @@ describe('buildEnv', () => {
     const env = provider.buildEnv('sess-1', { PI_CODING_AGENT_DIR: '/pi/profiles/olla' });
     expect(env.PI_CODING_AGENT_DIR).toBeUndefined();
   });
+
+  it('strips inherited OMP/PI native profile and storage selectors case-insensitively', () => {
+    const env = provider.buildEnv('sess-1', {
+      Omp_Profile: 'audit-example',
+      PI_PROFILE: 'legacy',
+      Pi_Config_Dir: '/inherited',
+      PI_CODING_AGENT_SESSION_DIR: '/sessions',
+      SAFE: 'yes',
+    });
+    expect(env.OMP_PROFILE).toBeUndefined();
+    expect(env.Omp_Profile).toBeUndefined();
+    expect(env.PI_PROFILE).toBeUndefined();
+    expect(env.PI_CONFIG_DIR).toBeUndefined();
+    expect(env.PI_CODING_AGENT_SESSION_DIR).toBeUndefined();
+    expect(env.SAFE).toBe('yes');
+  });
+
+  it('keeps the pinned profile when a configDir is given (default vs custom)', () => {
+    const env = provider.buildEnv('sess-1', { PI_CODING_AGENT_DIR: '/inherited', OMP_PROFILE: 'intruder' }, { configDir: '/profiles/work' });
+    expect(env.PI_CODING_AGENT_DIR).toBe('/profiles/work');
+    expect(env.OMP_PROFILE).toBeUndefined();
+  });
 });
 
 describe('buildArgs', () => {
@@ -135,6 +158,26 @@ describe('buildArgs', () => {
   it('combines resume, extraArgs, systemPrompt, and initialPrompt', () => {
     expect(provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--model x', systemPrompt: 'sp', initialPrompt: 'go' }))
       .toEqual(['--resume', 'sid-1', '--model', 'x', '--append-system-prompt', 'sp', 'go']);
+  });
+
+  it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
+    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--append-system-prompt "Use concise replies"' }))
+      .toEqual(['--append-system-prompt', 'Use concise replies']);
+  });
+
+  it('preserves empty quoted extra args', () => {
+    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' }))
+      .toEqual(['--flag', '']);
+  });
+
+  it('keeps a system prompt starting with option characters as one argument', () => {
+    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: '--foo bar' }))
+      .toEqual(['--append-system-prompt', '--foo bar']);
+  });
+
+  it('keeps an initial prompt starting with option characters as one argument', () => {
+    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: '--foo' }))
+      .toEqual(['--foo']);
   });
 });
 
@@ -195,6 +238,21 @@ describe('readSessionStatus', () => {
     vi.mocked(readTranscriptStatusSync).mockReturnValue(null);
 
     expect(provider.readSessionStatus!('/sessions/dir-a/2026.jsonl')).toBeNull();
+  });
+});
+
+describe('readSessionExitReason', () => {
+  it('reads the exit reason from the given transcript path', () => {
+    vi.mocked(readSessionExitReasonSync).mockReturnValue({ reason: 'unhandled_rejection', kind: 'fatal' });
+
+    expect(provider.readSessionExitReason!('/sessions/dir-a/2026.jsonl')).toEqual({ reason: 'unhandled_rejection', kind: 'fatal' });
+    expect(readSessionExitReasonSync).toHaveBeenCalledWith('/sessions/dir-a/2026.jsonl');
+  });
+
+  it('returns null when the transcript has no session_exit', () => {
+    vi.mocked(readSessionExitReasonSync).mockReturnValue(null);
+
+    expect(provider.readSessionExitReason!('/sessions/dir-a/2026.jsonl')).toBeNull();
   });
 });
 

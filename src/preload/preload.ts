@@ -13,7 +13,7 @@ export interface VibeyardApi {
     kill(sessionId: string): Promise<void>;
     getCwd(sessionId: string): Promise<string | null>;
     onData(callback: (sessionId: string, data: string) => void): () => void;
-    onExit(callback: (sessionId: string, exitCode: number, signal?: number) => void): () => void;
+      onExit(callback: (sessionId: string, exitCode: number, signal?: number, exitReason?: string, pid?: number) => void): () => void;
   };
   session: {
     buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string): Promise<string>;
@@ -28,6 +28,8 @@ export interface VibeyardApi {
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
     resyncStatus(): void;
+    syncRestored(sessions: { sessionId: string; providerId: ProviderId; cliSessionId: string | null; cwd: string; configDir?: string; createdAt: string }[]): Promise<void>;
+    release(sessionId: string): void;
     onToolFailure(callback: (sessionId: string, data: ToolFailureData) => void): () => void;
     onInspectorEvents(callback: (sessionId: string, events: InspectorEvent[]) => void): () => void;
   };
@@ -188,9 +190,9 @@ const api: VibeyardApi = {
       ipcRenderer.invoke('pty:getCwd', sessionId),
     onData: (callback) =>
       onChannel('pty:data', (sessionId, data) => callback(sessionId as string, data as string)),
-    onExit: (callback) =>
-      onChannel('pty:exit', (sessionId, exitCode, signal) =>
-        callback(sessionId as string, exitCode as number, signal as number | undefined)),
+      onExit: (callback) =>
+        onChannel('pty:exit', (sessionId, exitCode, signal, exitReason, pid) =>
+          callback(sessionId as string, exitCode as number, signal as number | undefined, exitReason as string | undefined, pid as number | undefined)),
   },
   session: {
     buildResumeWithPrompt: (sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir) =>
@@ -218,6 +220,8 @@ const api: VibeyardApi = {
       onChannel('session:sessionName', (sessionId, name, cliSessionId) =>
         callback(sessionId as string, name as string, (cliSessionId as string) || '')),
     resyncStatus: () => ipcRenderer.send('session:resyncStatus'),
+    syncRestored: (sessions) => ipcRenderer.invoke('session:syncRestored', sessions),
+    release: (sessionId) => ipcRenderer.send('session:release', sessionId),
     onToolFailure: (callback) =>
       onChannel('session:toolFailure', (sessionId, data) =>
         callback(sessionId as string, data as ToolFailureData)),

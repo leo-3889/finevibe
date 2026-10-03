@@ -10,7 +10,7 @@ export interface VibeyardApi {
     kill(sessionId: string): Promise<void>;
     getCwd(sessionId: string): Promise<string | null>;
     onData(callback: (sessionId: string, data: string) => void): () => void;
-    onExit(callback: (sessionId: string, exitCode: number, signal?: number) => void): () => void;
+    onExit(callback: (sessionId: string, exitCode: number, signal?: number, exitReason?: string, pid?: number) => void): () => void;
   };
   session: {
     transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): Promise<boolean>;
@@ -26,6 +26,8 @@ export interface VibeyardApi {
     onInspectorEvents(callback: (sessionId: string, events: InspectorEvent[]) => void): () => void;
     onToolFailure(callback: (sessionId: string, data: ToolFailureData) => void): () => void;
     resyncStatus(): void;
+    syncRestored(sessions: { sessionId: string; providerId: ProviderId; cliSessionId: string | null; cwd: string; configDir?: string; createdAt: string }[]): Promise<void>;
+    release(sessionId: string): void;
   };
   fs: {
     isDirectory(path: string): Promise<boolean>;

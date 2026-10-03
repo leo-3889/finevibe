@@ -8,8 +8,9 @@ import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from
 import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { loadState, saveState, getKnownProjectPaths, PersistedState } from './store';
-import { startWatching, cleanupSessionStatus, resyncAllSessions } from './hook-status';
-import { registerTranscriptSync, unregisterTranscriptSync } from './session-transcript-sync';
+import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
+import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
+import type { SessionExitReason } from './providers/pi-compatible-transcripts';
 import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
@@ -31,6 +32,7 @@ import { shouldWarnStatusLine } from './settings-guard';
 import { buildVibeyardignoreMatcher } from './vibeyardignore';
 import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
+import { launchSessionDir } from './launch-session-dir';
 import { getKeychainIsolationStatus } from './claude-keychain';
 
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
@@ -165,6 +167,16 @@ export function resetHookWatcher(): void {
   hookWatcherStarted = false;
 }
 
+/** A session restored from a previous run, sent to `session:syncRestored`. */
+interface RestoredSession {
+  sessionId: string;
+  providerId: ProviderId;
+  cliSessionId: string | null;
+  cwd: string;
+  configDir?: string;
+  createdAt: string;
+}
+
 export function registerIpcHandlers(): void {
   ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
@@ -180,7 +192,6 @@ export function registerIpcHandlers(): void {
 
     // Providers without a hook system that reports the CLI session id
     // discover it from on-disk artifacts after spawn (codex: history.jsonl,
-    // pi: sessions tree).
     if (!cliSessionId) {
       provider.onSessionStarted?.(sessionId, cwd, win, configDir);
     } else {
@@ -188,16 +199,22 @@ export function registerIpcHandlers(): void {
       // start mirroring the CLI's own title / derived status from the
       // known conversation. The sync derives what to poll from the
       // provider's capabilities (a provider can be both, e.g. OMP).
-      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir);
-      // ...and let the provider re-attach to its own on-disk state. A
-      // resumed Pi/OMP session is otherwise absent from the sessions-tree
-      // watcher, so a later `/clear` — which starts a brand-new
-      // transcript under a new id in the same cwd — is never re-adopted:
-      // the tab keeps the stale title and the polled status stays pinned
-      // to the old file's last entry no matter what the agent does next.
-      provider.onSessionResumed?.(sessionId, cwd, win, configDir);
+      // sessionDir (Pi/OMP) is the launch's exclusive transcript dir:
+      // path resolution checks it first, so a post-`/clear` transcript is
+      // found where the CLI wrote it, not only in the legacy trees.
+      const sessionDir = providerId === 'pi' || providerId === 'omp'
+        ? launchSessionDir(providerId, sessionId)
+        : undefined;
+      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir });
+      // ...and let the provider re-attach to its own on-disk state,
+      // seeding the sessions watcher as an ADOPTED entry (known id +
+      // existing transcript path) so a later `/clear` — a brand-new
+      // transcript under a new id in the launch's own dir — is
+      // re-adopted instead of the tab freezing on the pre-clear file.
+      provider.onSessionResumed?.(sessionId, cwd, win, configDir, cliSessionId);
     }
 
+    const launchStartedAt = Date.now();
     try {
       await spawnPty(
         sessionId,
@@ -214,15 +231,45 @@ export function registerIpcHandlers(): void {
             win.webContents.send('pty:data', sessionId, data);
           }
         },
-        (exitCode, signal) => {
+        (exitCode, signal, pid) => {
           // pty-manager suppresses the replaced process's callback before it
           // reaches this handler, regardless of which PTY exits first.
+          // The session is about to be destroyed — read the CLI's own crash
+          // reason from the transcript before the sync entry is torn down.
+          let reason: SessionExitReason | null = null;
+          let transcriptPath = getSyncedTranscriptPath(sessionId);
+          if (!transcriptPath && cliSessionId) {
+            try {
+              transcriptPath = provider.getTranscriptPath?.(cliSessionId, cwd, configDir, providerId === 'omp' || providerId === 'pi' ? launchSessionDir(providerId, sessionId) : undefined) ?? null;
+            } catch {
+              transcriptPath = null;
+            }
+          }
+          if (transcriptPath && provider.readSessionExitReason) {
+            try {
+              reason = provider.readSessionExitReason(transcriptPath);
+            } catch {
+              reason = null;
+            }
+          }
+          if (reason?.timestamp) {
+            const markerTime = Date.parse(reason.timestamp);
+            if (!Number.isFinite(markerTime) || markerTime < launchStartedAt) reason = null;
+          }
+          const exitReason = reason && reason.kind !== 'normal' && reason.reason !== 'dispose'
+            ? reason.reason
+            : exitCode !== 0
+              ? `exited with code ${exitCode}${signal ? ` (signal ${signal})` : ''}`
+              : signal ? `exited with signal ${signal}` : undefined;
+          if (providerId === 'omp') {
+            console.info('[omp-session-exit]', JSON.stringify({ at: new Date().toISOString(), sessionId, pid, exitCode, signal, exitReason, transcriptFound: !!transcriptPath }));
+          }
           unregisterTranscriptSync(sessionId);
           cleanupSessionStatus(sessionId);
           provider.onSessionExited?.(sessionId);
           const w = BrowserWindow.getAllWindows()[0];
           if (w && !w.isDestroyed()) {
-            w.webContents.send('pty:exit', sessionId, exitCode, signal);
+            w.webContents.send('pty:exit', sessionId, exitCode, signal, exitReason, pid);
           }
         },
         configDir
@@ -507,6 +554,59 @@ export function registerIpcHandlers(): void {
   ipcMain.on('session:resyncStatus', () => {
     const w = BrowserWindow.getAllWindows()[0];
     if (w) resyncAllSessions(w);
+  });
+
+  // Re-derive titles for sessions restored from a previous run. A Pi/OMP tab
+  // only ever learns the CLI's own title while a live PTY drives
+  // `registerTranscriptSync`; after a restart nothing re-reads the transcript,
+  // so a tab whose title was generated/changed while Vibeyard was closed stays
+  // frozen on its default name. The renderer sends every restored self-titling
+  // session; main mirrors each KNOWN-id session's title from its exact
+  // transcript. A session whose `cliSessionId` was never persisted stays
+  // UNRESOLVED: ownership is not inferred from cwd + creation time (that path
+  // can assign an unrelated conversation and persist it), so the tab keeps its
+  // default name until it is resumed.
+  ipcMain.handle('session:syncRestored', (_event, sessions: RestoredSession[]) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win || win.isDestroyed() || !Array.isArray(sessions)) return;
+    // transcript-sync writes `.name` into STATUS_DIR for the watcher to forward,
+    // but the watcher only starts on the first `pty:create` — start it now.
+    if (!hookWatcherStarted) {
+      startWatching(win);
+      hookWatcherStarted = true;
+    }
+    for (const s of sessions) {
+      // Validate the record at the IPC boundary. A malformed record is dropped,
+      // never allowed to abort the rest of the batch.
+      if (!s || typeof s.sessionId !== 'string' || !s.sessionId) continue;
+      if (typeof s.providerId !== 'string') continue;
+      if (typeof s.cwd !== 'string') continue;
+      if (typeof s.createdAt !== 'string' || !Number.isFinite(Date.parse(s.createdAt))) continue;
+      // Only a KNOWN conversation id gets a title mirror. An unknown id stays
+      // unresolved — we do not guess ownership from cwd + time.
+      if (typeof s.cliSessionId !== 'string' || !s.cliSessionId) continue;
+      try {
+        // Pi/OMP: the restored tab's launch dir is derivable from its UI
+        // session id, so a post-`/clear` transcript written to it before
+        // the restart is resolvable without any persisted mapping.
+        const sessionDir = s.providerId === 'pi' || s.providerId === 'omp'
+          ? launchSessionDir(s.providerId, s.sessionId)
+          : undefined;
+        if (registerTranscriptSync(s.sessionId, s.providerId, s.cliSessionId, s.cwd, s.configDir, { titleOnly: true, sessionDir })) {
+          registerSession(s.sessionId);
+        }
+      } catch {
+        // Unknown provider id (registerTranscriptSync → getProvider throws):
+        // drop this record and keep going.
+      }
+    }
+  });
+
+  // Drop the restored-session sync registered above when a tab is closed without
+  // ever being resumed (a live PTY tears its own down on exit).
+  ipcMain.on('session:release', (_event, sessionId: string) => {
+    unregisterTranscriptSync(sessionId);
+    cleanupSessionStatus(sessionId);
   });
 
   ipcMain.on('app:focus', () => {

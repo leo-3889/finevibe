@@ -23,13 +23,12 @@ export function providerProfileOptions(providerId: ProviderId): SelectOption[] {
 }
 
 /**
- * The project's current coding tool: the active session's provider, falling
- * back to the global default. Used to scope project-level profile pickers
- * (project settings, new project) to a single tool.
+ * The project's configured coding tool, falling back to the active session
+ * and then the global default for projects without an explicit choice.
  */
 export function projectProviderId(project: ProjectRecord): ProviderId {
   const active = project.sessions.find((s) => s.id === project.activeSessionId);
-  return active?.providerId ?? appState.preferences.defaultProvider ?? 'claude';
+  return project.defaultProvider ?? active?.providerId ?? appState.preferences.defaultProvider ?? 'claude';
 }
 
 /**

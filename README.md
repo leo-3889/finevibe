@@ -11,7 +11,6 @@
 |---|---|
 | **Upstream** | [elirantutia/vibeyard](https://github.com/elirantutia/vibeyard) |
 | **This fork** | [leo-3889/vibeyard](https://github.com/leo-3889/vibeyard) |
-| **Delta** | 14 commits ahead of `upstream/main` (`19bc19f`) |
 | **Upstream PR** | [#167](https://github.com/elirantutia/vibeyard/pull/167) |
 
 This README covers only what the fork adds. Everything else is upstream's.
@@ -26,19 +25,18 @@ the `CliProvider` abstraction absorbs a CLI the original authors never targeted.
 
 **Make hook-less CLIs first-class.** Live state normally arrives via Claude's hooks.
 CLIs without them rendered as dead boxes. A **polled transcript sync**
-(`session-transcript-sync.ts`) driven by declared capabilities fixes that. A new
-CLI plugs in with one reader — no watcher, IPC, or renderer change.
+(`session-transcript-sync.ts`) driven by declared capabilities fixes that.
+Pi and OMP use provider-specific transcript discovery and shared session sync.
 
 **Make profiles per tool, not per Claude.** One default per coding tool, resolved
 once at session creation and pinned. The `Tool · Profile` badge reads that same
 resolution, so the UI can't promise a profile the next session won't get.
 
-**Treat Windows as first-class.** Built and verified on Windows 11 (26200): path
+**Treat Windows as first-class.** Built and checked on Windows 11: path
 handling, `cmd.exe` argument limits, credential-store behaviour, installer shape.
 
-**Contribute back.** The delta ships as reviewable, upstream-shaped commits in
-[#167](https://github.com/elirantutia/vibeyard/pull/167). Fork-only identity —
-this README included — stays off the upstream PR on purpose.
+**Contribute back.** The multi-provider work is tracked in
+[#167](https://github.com/elirantutia/vibeyard/pull/167).
 
 ## What it does *not* do
 

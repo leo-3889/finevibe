@@ -5,7 +5,7 @@ import type { ShareMode, ShareMessage } from '../../shared/sharing-types.js';
 import { getTerminalInstance } from '../components/terminal-pane.js';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { ICE_CONFIG, sendMessage, waitForIceGathering, encodeConnectionCode, decodeConnectionCode } from './webrtc-utils.js';
-import { generateChallenge, computeChallengeResponse, bytesToHex, hexToBytes, validateShareKey } from './share-crypto.js';
+import { generateChallenge, computeChallengeResponse, bytesToHex, validateShareKey } from './share-crypto.js';
 
 interface HostPeer {
   sessionId: string;
@@ -20,6 +20,7 @@ interface HostPeer {
   keepaliveTimer: ReturnType<typeof setInterval> | null;
   missedPongs: number;
   serializeAddon: SerializeAddon;
+  tornDown: boolean;
 }
 
 const hostPeers = new Map<string, HostPeer>();
@@ -72,6 +73,7 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
     keepaliveTimer: null,
     missedPongs: 0,
     serializeAddon,
+    tornDown: false,
   };
 
   hostPeers.set(sessionId, hostPeer);
@@ -174,7 +176,7 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
     if (disconnectFired) return;
     disconnectFired = true;
     hostPeer.connected = false;
-    cleanup(sessionId);
+    teardown(hostPeer);
     for (const cb of disconnectedCbs) cb();
   };
 
@@ -219,9 +221,7 @@ export function stopShare(sessionId: string): void {
   if (hostPeer.connected) {
     try { sendMessage(hostPeer.dc, { type: 'end' }); } catch { /* ignore */ }
   }
-  cleanup(sessionId);
-  hostPeer.dc.close();
-  hostPeer.pc.close();
+  teardown(hostPeer);
 }
 
 export function broadcastData(sessionId: string, data: string): void {
@@ -248,24 +248,48 @@ export function getShareMode(sessionId: string): ShareMode | null {
   return hostPeers.get(sessionId)?.mode ?? null;
 }
 
-function cleanup(sessionId: string): void {
-  const hostPeer = hostPeers.get(sessionId);
-  if (!hostPeer) return;
-  if (hostPeer.keepaliveTimer) {
-    clearInterval(hostPeer.keepaliveTimer);
-    hostPeer.keepaliveTimer = null;
+/**
+ * Idempotent teardown for one specific peer instance. Closes both native
+ * resources (data channel and peer connection) and releases ownership.
+ *
+ * Safe to call from any terminal path (ICE disconnect/failed, channel close,
+ * auth failure/timeout, explicit stop, replacement). Handlers are detached
+ * before the natives are closed so the resulting close events cannot
+ * re-enter teardown. Ownership is only removed if this peer is still the
+ * owner of its session id, so a late teardown of a replaced peer cannot
+ * delete the replacement's map entry.
+ */
+function teardown(peer: HostPeer): void {
+  if (peer.tornDown) return;
+  peer.tornDown = true;
+
+  // Detach handlers so native close events cannot re-enter teardown.
+  peer.dc.onclose = null;
+  peer.dc.onopen = null;
+  peer.dc.onmessage = null;
+  peer.pc.oniceconnectionstatechange = null;
+
+  if (peer.keepaliveTimer) {
+    clearInterval(peer.keepaliveTimer);
+    peer.keepaliveTimer = null;
   }
-  if (hostPeer.authTimeout) {
-    clearTimeout(hostPeer.authTimeout);
-    hostPeer.authTimeout = null;
+  if (peer.authTimeout) {
+    clearTimeout(peer.authTimeout);
+    peer.authTimeout = null;
   }
-  hostPeer.serializeAddon.dispose();
-  hostPeers.delete(sessionId);
+  peer.serializeAddon.dispose();
+
+  try { peer.dc.close(); } catch { /* ignore */ }
+  try { peer.pc.close(); } catch { /* ignore */ }
+
+  if (hostPeers.get(peer.sessionId) === peer) {
+    hostPeers.delete(peer.sessionId);
+  }
 }
 
 export function _resetForTesting(): void {
-  for (const [sessionId] of hostPeers) {
-    stopShare(sessionId);
+  for (const peer of [...hostPeers.values()]) {
+    teardown(peer);
   }
   hostPeers.clear();
 }

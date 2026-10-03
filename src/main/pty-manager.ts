@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { ProviderId } from '../shared/types';
 import { parseEnvVars, partitionUserEnv } from '../shared/env-vars';
+import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from '../shared/launch-args';
 import { getProvider } from './providers/registry';
 import { registerSession } from './hook-status';
 import { installHooksOnly, installStatusLine } from './claude-cli';
@@ -228,6 +229,110 @@ export function resolveWindowsShell(
   };
 }
 
+/**
+ * The effective session storage mode for a launch. T2 always resolves
+ * 'default' (the profile's own sessions tree); 'custom-dir' and
+ * 'nonpersistent' are rejected pre-spawn until per-launch storage is
+ * tracked end-to-end.
+ */
+export type SessionStorageMode = 'default' | 'custom-dir' | 'nonpersistent';
+
+/**
+ * One effective launch: the executable, argv, environment,
+ * provider/profile identity and storage mode a session is spawned with.
+ * Resolved once in spawnPty before any side effect; the child environment
+ * and every lifecycle reader must agree on this single spec.
+ */
+export interface LaunchSpec {
+  executable: string;
+  argv: string[];
+  env: Record<string, string>;
+  providerId: ProviderId;
+  /** Pinned profile config dir; undefined = the provider's default agent dir. */
+  configDir: string | undefined;
+  /** Effective session storage mode for this launch. */
+  storageMode: SessionStorageMode;
+}
+
+/** Thrown when a launch request uses options Vibeyard cannot track. */
+export class LaunchSpecError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LaunchSpecError';
+  }
+}
+
+/**
+ * Resolve the single effective launch spec for a session: executable,
+ * argv, environment, provider/profile identity and storage mode.
+ *
+ * Profile isolation: the providers' buildEnv strips inherited native
+ * profile/storage selectors, and partitionUserEnv drops user env that
+ * would undo the pinned profile. Unsupported options (storage overrides,
+ * profile/session-identity flags in the extra args) are rejected here —
+ * before any side effect — with an actionable message.
+ */
+export function resolveLaunchSpec(params: {
+  sessionId: string;
+  cliSessionId: string | null;
+  isResume: boolean;
+  extraArgs: string;
+  providerId: ProviderId;
+  initialPrompt?: string;
+  systemPrompt?: string;
+  envVars: string;
+  configDir?: string;
+}): LaunchSpec {
+  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir } = params;
+  const provider = getProvider(providerId);
+  const issues: string[] = [];
+
+  const userEnv = parseEnvVars(envVars);
+  for (const key of findConflictingEnvKeys(userEnv)) {
+    issues.push(
+      `Environment variable ${key} is not supported: Vibeyard tracks sessions in the profile's default storage, ` +
+        'and a custom session dir would hide them from history, search and resume. Remove it from the session environment and start again.',
+    );
+  }
+
+  const env = provider.buildEnv(sessionId, withUtf8Locale({ ...process.env }) as Record<string, string>, { configDir });
+  // User-provided env vars are merged last so they can override provider-set
+  // vars like PATH ("user vars win") — EXCEPT the vars a provider owns for
+  // profile isolation, which would silently repoint the session at another
+  // login's config tree. Those are dropped and reported rather than applied.
+  const { allowed: userAllowed, dropped } = partitionUserEnv(userEnv);
+  if (dropped.length > 0) {
+    console.warn(
+      `Ignoring provider-owned env var(s) for session ${sessionId}: ${dropped.join(', ')} ` +
+        '— the pinned profile owns these.',
+    );
+  }
+  Object.assign(env, userAllowed);
+
+  // Conflict detection runs on the user's extra args only — never on the
+  // flags Vibeyard itself adds (e.g. its own --session/--resume).
+  for (const conflict of findConflictingLaunchFlags(tokenizeArgs(extraArgs))) {
+    issues.push(`${conflict.raw}: ${conflict.reason}`);
+  }
+
+  if (issues.length > 0) {
+    throw new LaunchSpecError(
+      'Unsupported launch options for this session:\n' +
+        issues.map((issue) => '  - ' + issue).join('\n') +
+        '\nRemove the options above and start the session again.',
+    );
+  }
+
+  return {
+    executable: provider.resolveBinaryPath(),
+    argv: provider.buildArgs({ sessionId, cliSessionId, isResume, extraArgs, initialPrompt, systemPrompt }),
+    env,
+    providerId,
+    configDir,
+    storageMode: 'default',
+  };
+}
+
 export async function spawnPty(
   sessionId: string,
   cwd: string,
@@ -239,9 +344,27 @@ export async function spawnPty(
   systemPrompt: string | undefined,
   envVars: string,
   onData: (data: string) => void,
-  onExit: (exitCode: number, signal?: number) => void,
+  onExit: (exitCode: number, signal?: number, pid?: number) => void,
   configDir?: string
 ): Promise<void> {
+  // Resolve the single effective launch spec (executable, argv, env,
+  // profile identity, storage mode) before ANY side effect — no session
+  // registration, hook install, PTY kill or spawn. Unsupported
+  // profile/storage/session options fail here with an actionable message
+  // instead of desyncing the child from the transcript readers. The
+  // rejection goes through onData + onExit (not a throw) because the
+  // renderer fires pty.create without awaiting; the exit callback tears
+  // down the watcher/sync state registered for this session.
+  let spec: LaunchSpec;
+  try {
+    spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir });
+  } catch (err) {
+    const message = err instanceof LaunchSpecError ? err.message : `Failed to prepare the launch: ${err}`;
+    onData('\r\n\x1b[31m' + message + '\x1b[0m\r\n');
+    onExit(1);
+    return;
+  }
+
   if (ptys.has(sessionId)) {
     replacedPtys.add(ptys.get(sessionId)!.process);
     killPty(sessionId);
@@ -297,29 +420,14 @@ export async function spawnPty(
     }
   }
 
-  const env = provider.buildEnv(sessionId, withUtf8Locale({ ...process.env }) as Record<string, string>, { configDir });
-  // User-provided env vars are merged last so they can override provider-set
-  // vars like PATH ("user vars win") — EXCEPT the vars a provider owns for
-  // profile isolation, which would silently repoint the session at another
-  // login's config tree. Those are dropped and reported rather than applied.
-  const { allowed: userEnv, dropped } = partitionUserEnv(parseEnvVars(envVars));
-  if (dropped.length > 0) {
-    console.warn(
-      `Ignoring provider-owned env var(s) for session ${sessionId}: ${dropped.join(', ')} ` +
-        '— the pinned profile owns these.'
-    );
-  }
-  Object.assign(env, userEnv);
-  const args = provider.buildArgs({ cliSessionId, isResume, extraArgs, initialPrompt, systemPrompt });
-  const resolvedShell = provider.resolveBinaryPath();
-  const { shell, args: spawnArgs } = resolveWindowsShell(resolvedShell, args);
+  const { shell, args: spawnArgs } = resolveWindowsShell(spec.executable, spec.argv);
 
   const ptyProcess = pty.spawn(shell, spawnArgs, {
     name: 'xterm-256color',
     cols: 120,
     rows: 30,
     cwd,
-    env,
+    env: spec.env,
   });
 
   ptyProcess.onData((data) => onData(data));
@@ -330,7 +438,7 @@ export async function spawnPty(
     if (current?.process === ptyProcess) {
       ptys.delete(sessionId);
     }
-    onExit(exitCode, signal);
+    onExit(exitCode, signal, ptyProcess.pid);
   });
 
   ptys.set(sessionId, { process: ptyProcess, sessionId });

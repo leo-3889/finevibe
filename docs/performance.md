@@ -47,11 +47,11 @@ Sources: [event reader](../src/main/bounded-event-reader.ts), [hook lifecycle](.
 
 ## Pi/OMP discovery and remaining costs
 
-Live registrations share one filename/generation history per sessions root. Each registration records its generation instead of retaining its own complete filename set. Registration still takes a fresh synchronous listing so pre-existing transcripts remain excluded even on filesystems with coarse timestamps.
+Pi/OMP launches use an exclusive session directory for transcript ownership. Live registrations share one filename/generation history per watched directory. Each registration records its generation instead of retaining its own complete filename set. Registration still takes a fresh synchronous listing so pre-existing transcripts remain excluded even on filesystems with coarse timestamps.
 
 During polling, unchanged directory listings are reused. Directory mtime changes and watched rename events invalidate listings; the next scan also refreshes a listing after its 30-second cache lifetime. The two-second poll remains in place. Polling still visits cached filenames and checks directory metadata. Root history is released when no registration uses it.
 
-This removes duplicate per-session snapshots and reduces idle directory enumeration. It does not move registration scans off the main thread, bound all native watcher allocation, or resolve the separate session-attribution issues. The broader Pi/OMP finding **PO-06 remains partially addressed**. See the [audit status](AUDIT_STATUS.md) for open findings and remaining work.
+This removes duplicate per-session snapshots and reduces idle directory enumeration. The per-launch directory and known resume ID address the earlier cross-tab attribution paths in code. Registration scans still run on the main thread, and watcher allocation and runtime resource use have not been measured at scale. **PO-06 remains partially addressed.** See the [audit status](AUDIT_STATUS.md) for the next measurement and validation work.
 
 Source: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts).
 

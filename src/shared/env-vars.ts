@@ -53,12 +53,14 @@ export function findInvalidEnvLines(text: string): string[] {
  * Environment variables owned by a provider's profile isolation rather than by
  * the user.
  *
- * `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR` relocate a CLI's entire config
- * tree, and `CLAUDE_IDE_SESSION_ID` keys the per-session status files that the
- * hooks and the statusLine write. Allowing a session's own `envVars` to override
- * any of these would silently point that session at a different login's config,
- * or make it write status under another session's key — defeating the pinned
- * profile with no visible signal.
+ * `CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR` and `PI_CONFIG_DIR` relocate a
+ * CLI's entire config tree, `PI_PROFILE` and `OMP_PROFILE` select a native
+ * profile (the Pi/OMP resolvers honor them over any relocated dir), and
+ * `CLAUDE_IDE_SESSION_ID` keys the per-session status files that the
+ * hooks and the statusLine write. Allowing a session's own `envVars` to
+ * override any of these would silently point that session at a different
+ * login's config, or make it write status under another session's key —
+ * defeating the pinned profile with no visible signal.
  *
  * `PATH` is deliberately NOT listed: overriding it is a supported use case
  * ("user vars win").
@@ -66,6 +68,9 @@ export function findInvalidEnvLines(text: string): string[] {
 export const PROVIDER_OWNED_ENV_KEYS: readonly string[] = [
   'CLAUDE_CONFIG_DIR',
   'PI_CODING_AGENT_DIR',
+  'PI_CONFIG_DIR',
+  'PI_PROFILE',
+  'OMP_PROFILE',
   'CLAUDE_IDE_SESSION_ID',
 ];
 

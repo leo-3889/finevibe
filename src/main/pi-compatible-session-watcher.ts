@@ -2,45 +2,61 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BrowserWindow } from 'electron';
 import { writeCliSessionId } from './hook-status';
-import { isWin, isMac } from './platform';
 import { readSessionHeaderSync } from './providers/pi-compatible-transcripts';
 
 /**
- * Shared session-id discovery watcher for Pi-compatible providers (Pi and
- * OMP). Neither has a hook system to report session IDs back to the host
- * app, so we watch the agent's sessions/ directory: every process creates a
- * new <ISO-timestamp>_<uuid>.jsonl whose head carries a session header with
- * the id and cwd (OMP prepends a `type:"title"` line in front of it). When
- * a new file appears for a pending UI session's project, we write a
- * .sessionid file so hook-status picks it up and forwards
- * session:cliSessionId — the same channel Codex uses. Providers whose CLI
- * self-titles or needs polled status (OMP, Pi) pass an onAdopted callback
- * to start mirroring via the merged session-transcript-sync module.
+ * Shared transcript-ownership watcher for Pi-compatible providers (Pi and
+ * OMP).
  *
- * A session is kept tracked after adoption (not dropped) so a later `/clear`
- * — which starts a brand-new transcript under a new id in the same cwd — is
- * re-adopted: the renderer's cliSessionId and the transcript-sync entry move
- * to the live conversation instead of freezing on the pre-clear one. That
- * re-adoption is bounded by CLEAR_ADOPTION_WINDOW_MS so an unrelated
- * external CLI run in the same directory can't hijack the tab.
+ * Ownership is process-scoped, not inferred: every launch runs with
+ * `--session-dir <dir>` pointing at a directory that only that launch
+ * writes to (see launch-session-dir.ts). A registration therefore names
+ * its exclusive directory, and a transcript file is attributed the moment
+ * it appears IN THAT DIRECTORY — no cwd matching, no timestamp freshness
+ * window, no cross-tab ambiguity. An external CLI run in the same project
+ * (or the same profile) writes to the user's default sessions tree, never
+ * into a per-launch dir, so it can never be adopted.
  *
- * Event-driven scans are coalesced by scheduleScan(), so an actively
- * appending transcript cannot drive a full-tree scan per write; the
- * POLL_INTERVAL_MS poll stays the correctness guarantee.
+ * Two attribution modes per registration:
+ *  - knownCliId: the CLI id is known before the first write (Pi fresh
+ *    launches pass a Vibeyard-generated id via `--session-id`; every
+ *    resume knows its id). The watcher adopts the file carrying exactly
+ *    that id.
+ *  - unknown id (OMP fresh launches): the first transcript to appear in
+ *    the exclusive dir is adopted — the directory guarantees it is this
+ *    process's.
  *
- * Parameterized only by the sessions-root resolver; Pi and OMP each get a
- * thin wrapper (pi-session-watcher.ts / omp-session-watcher.ts) with its
- * own registration state.
+ * A `/clear` (the CLI starting a brand-new transcript in the same storage
+ * root) is an ownership TRANSITION with the same evidence: a NEWER file
+ * appears in the session's own dir, and the adopted id follows it. Files
+ * that already existed at registration (a re-spawn reusing the same UI
+ * session dir) are snapshotted into the registration generation and can
+ * never be adopted.
  */
 
 export interface CompatibleSessionWatcherOptions {
   /** Called after a session id is adopted, for follow-up wiring (title sync). */
-  onAdopted?: (uiSessionId: string, cliSessionId: string, projectPath: string, configDir?: string) => void;
+  onAdopted?: (
+    uiSessionId: string,
+    cliSessionId: string,
+    projectPath: string,
+    configDir: string | undefined,
+    sessionDir: string | undefined
+  ) => void;
+}
+
+export interface RegisterPendingOptions {
+  /** Exclusive per-launch session dir; transcripts of this session appear only here. */
+  sessionDir?: string;
+  /** Known CLI session id (Pi fresh launches, every resume). */
+  knownCliId?: string;
+  /** Existing transcript path to seed as already adopted (resumes). */
+  adoptedFile?: string;
 }
 
 export interface CompatibleSessionWatcher {
   start(): void;
-  registerPending(sessionId: string, projectPath: string, configDir?: string): void;
+  registerPending(sessionId: string, projectPath: string, configDir: string | undefined, opts?: RegisterPendingOptions): void;
   unregister(sessionId: string): void;
   stop(): void;
 }
@@ -48,14 +64,18 @@ export interface CompatibleSessionWatcher {
 interface WatchedSession {
   projectPath: string;
   configDir?: string;
+  /** Exclusive per-launch dir this session's transcripts appear in. */
+  sessionDir: string;
+  /** CLI id known before the first write; undefined = first file wins. */
+  knownCliId?: string;
   /** Transcript files that existed at registration — never adopted. */
   knownGeneration: number;
   registeredAt: number;
   /**
-   * Set once this session's transcript is adopted. Kept (not deleted) so a
-   * later `/clear` — a newer transcript in the same cwd — can be
-   * re-adopted, keeping the synced title/status on the live conversation
-   * instead of the frozen pre-clear one.
+   * Set once this session's transcript is adopted (seeded on resume, or
+   * adopted on first write). Kept (not deleted) so a later `/clear` — a
+   * newer transcript under a new id in the SAME dir — can be re-adopted,
+   * keeping the synced title/status on the live conversation.
    */
   adoptedFile?: string;
   adoptedCliId?: string;
@@ -65,10 +85,6 @@ interface WatchedSession {
 interface Candidate {
   file: string;
   sessionId: string;
-  cwd: string;
-  /** Sessions root the file was found under — a candidate only matches
-   *  pending sessions registered against the same root (profile scoping). */
-  root: string;
   /** ISO timestamp parsed from the filename, or null when absent/unparseable. */
   fileTs: number | null;
 }
@@ -85,37 +101,11 @@ function filenameTimestampMs(file: string): number | null {
   return Number.isNaN(ts) ? null : ts;
 }
 
-// A CLI writes the transcript a few ms after the UI session registers; a
-// candidate stamped older than this window (minus tolerance) is an external
-// run in the same project and must not be adopted.
-const ADOPTION_TOLERANCE_MS = 5_000;
-
-/**
- * How far back a `/clear` re-adoption may look (Pass 2).
- *
- * A genuine `/clear` writes its new transcript within milliseconds and the
- * watcher reacts within one scan — at most SCAN_MIN_SPACING_MS when the
- * event path is alive, otherwise one POLL_INTERVAL_MS tick — so a few
- * seconds suffice in the normal case. The window is deliberately generous
- * (60s ≈ 20x that) to survive a slow spawn, a missed watch event or a
- * busy main thread, while still rejecting the failure mode a stale
- * registration-time `knownFiles` snapshot allows: an unrelated `omp`/`pi`
- * run launched directly in the same project directory (minutes or hours
- * old, still appending) being adopted as this session's `/clear`, which
- * repoints the tab's id, title and polled status at a foreign conversation.
- *
- * The trade-off is a re-adoption first seen more than a minute after the
- * clear (only possible when scanning was starved, e.g. no window open) is
- * skipped and the tab keeps tracking the pre-clear transcript — the
- * pre-window behaviour for every non-clear case anyway.
- */
-const CLEAR_ADOPTION_WINDOW_MS = 60_000;
-
 /**
  * Event-driven scan pacing. A transcript is appended continuously during
- * an agent turn, so the root watcher plus every per-cwd subdir watcher
- * fire many times per second; scanning on each event re-reads the header
- * (open + 8KB read + JSON.parse) of every transcript in the tree.
+ * an agent turn, so every per-launch-dir watcher fires many times per
+ * second; scanning on each event would re-read the header (open + 8KB read
+ * + JSON.parse) of every transcript in the tree.
  *
  *  - SCAN_DEBOUNCE_MS coalesces a burst into one scan. The timer is NOT
  *    re-armed while pending, so the window is measured from the burst's
@@ -132,15 +122,19 @@ const SCAN_MIN_SPACING_MS = 1_000;
 const POLL_INTERVAL_MS = 2_000;
 
 export function createCompatibleSessionWatcher(
-  sessionsRootOf: (configDir?: string) => string,
   options: CompatibleSessionWatcherOptions = {}
 ): CompatibleSessionWatcher {
   const watchedSessions = new Map<string, WatchedSession>();
   const assignedIds = new Set<string>();
-  // A single registration history per root replaces one full Set per session.
+  // One registration history per dir (files seen so far + generation
+  // counter), so a re-spawn reusing the same UI session dir cannot adopt
+  // the previous launch's transcripts.
   const histories = new Map<string, { generation: number; files: Map<string, number> }>();
   const directoryCache = new Map<string, { mtime: number; checked: number; names: string[] }>();
   const dirtyDirectories = new Set<string>();
+  // One native watcher per per-launch dir, shared by every session that
+  // uses it (a re-spawn reuses the dir).
+  const dirWatchers = new Map<string, fs.FSWatcher>();
 
   function readDirectory(dir: string, force = false): string[] {
     const cached = directoryCache.get(dir);
@@ -155,18 +149,16 @@ export function createCompatibleSessionWatcher(
     } catch { directoryCache.delete(dir); return []; }
   }
 
-  function refreshHistory(root: string, force = false): { generation: number; files: Map<string, number>; current: string[] } {
-    let history = histories.get(root);
-    if (!history) { history = { generation: 0, files: new Map() }; histories.set(root, history); }
+  /** Flat listing: per-launch dirs hold transcripts directly (no per-cwd subdirs). */
+  function refreshHistory(dir: string, force = false): { generation: number; files: Map<string, number>; current: string[] } {
+    let history = histories.get(dir);
+    if (!history) { history = { generation: 0, files: new Map() }; histories.set(dir, history); }
     const current: string[] = [];
-    for (const dir of readDirectory(root, force)) {
-      const directory = path.join(root, dir);
-      for (const name of readDirectory(directory, force)) {
-        if (!name.endsWith('.jsonl')) continue;
-        const file = path.join(directory, name);
-        if (!history.files.has(file)) history.files.set(file, ++history.generation);
-        current.push(file);
-      }
+    for (const name of readDirectory(dir, force)) {
+      if (!name.endsWith('.jsonl')) continue;
+      const file = path.join(dir, name);
+      if (!history.files.has(file)) history.files.set(file, ++history.generation);
+      current.push(file);
     }
     return { ...history, current };
   }
@@ -182,22 +174,11 @@ export function createCompatibleSessionWatcher(
     assignedIds.add(id);
   }
 
-  const watchers: fs.FSWatcher[] = [];
   let pollInterval: ReturnType<typeof setInterval> | null = null;
   /** Pending coalesced scan; non-null while a burst is being collapsed. */
   let scanTimer: ReturnType<typeof setTimeout> | null = null;
   /** When the last scan actually ran, so pacing sees poll scans too. */
   let lastScanAt = 0;
-
-  // Case-insensitive on Windows and macOS (both default to
-  // case-insensitive filesystems): drive-letter and path-case differences
-  // must not block the match.
-  const caseInsensitive = isWin || isMac;
-
-  function cwdMatches(a: string, b: string): boolean {
-    return caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
-  }
-
 
   /**
    * Commit an adoption: publish the id to the renderer, mark it assigned,
@@ -219,139 +200,86 @@ export function createCompatibleSessionWatcher(
     // Follow-up wiring (e.g. starting the transcript sync) must not undo an
     // adoption if the callback throws.
     try {
-      options.onAdopted?.(uiId, cand.sessionId, p.projectPath, p.configDir);
+      options.onAdopted?.(uiId, cand.sessionId, p.projectPath, p.configDir, p.sessionDir);
     } catch { /* best-effort */ }
     return true;
+  }
+
+  function collectCandidates(dir: string, knownGeneration: number): Candidate[] {
+    const history = refreshHistory(dir);
+    const out: Candidate[] = [];
+    for (const full of history.current) {
+      if ((history.files.get(full) ?? 0) <= knownGeneration) continue;
+      const header = readSessionHeaderSync(full);
+      if (!header || assignedIds.has(header.id)) continue;
+      out.push({ file: full, sessionId: header.id, fileTs: filenameTimestampMs(full) });
+    }
+    return out;
   }
 
   function scanForNewSessions(): void {
     if (watchedSessions.size === 0) return;
 
-    // One clock reading per scan so the scan floor and the Pass 2 clear
-    // window agree with each other.
-    const now = Date.now();
-    // Oldest filename timestamp that can still matter this scan. Each
-    // session contributes its own lower bound: an adopted one can only
-    // re-adopt inside the clear window, an un-adopted one waits for its
-    // first transcript — anything from registration on, clamped to the
-    // clear window. The clamp is safe because a pending session can only
-    // adopt a transcript created AFTER registration, and Pass 1's own
-    // freshness check (cand.fileTs >= registeredAt - ADOPTION_TOLERANCE_MS)
-    // already bounds adoption to recent files: a genuinely new transcript
-    // is by definition recent, so once the registration is older than the
-    // clear window the bound can tighten without losing any adoptable
-    // candidate (for a fresh registration the clamp is a no-op, since
-    // registeredAt is recent). Without it, an un-adopted session (e.g. a
-    // resumed one whose knownFiles snapshot covers everything on disk)
-    // would keep a hours-old floor and pay an 8KB header read for every
-    // transcript in the tree on every tick.
-    let floor = Number.POSITIVE_INFINITY;
-    for (const p of watchedSessions.values()) {
-      const lowerBound = p.adoptedFile
-        ? now - CLEAR_ADOPTION_WINDOW_MS
-        : Math.max(p.registeredAt - ADOPTION_TOLERANCE_MS, now - CLEAR_ADOPTION_WINDOW_MS);
-      if (lowerBound < floor) floor = lowerBound;
-    }
-
-    // Group by sessions root: one walk + one header read per root per scan,
-    // not one per watched session.
-    const byRoot = new Map<string, Array<[string, WatchedSession]>>();
     for (const [uiId, p] of watchedSessions) {
-      const root = sessionsRootOf(p.configDir);
-      if (!byRoot.has(root)) byRoot.set(root, []);
-      byRoot.get(root)!.push([uiId, p]);
-    }
+      const candidates = collectCandidates(p.sessionDir, p.knownGeneration);
+      if (candidates.length === 0) continue;
 
-    const candidates: Candidate[] = [];
-    for (const [root, sessions] of byRoot) {
-      const history = refreshHistory(root);
-      const oldestRegistration = Math.min(...sessions.map(([, session]) => session.knownGeneration));
-      for (const full of history.current) {
-        if ((history.files.get(full) ?? 0) <= oldestRegistration) continue;
-        const fileTs = filenameTimestampMs(full);
-        if (fileTs !== null && fileTs < floor) continue;
-        const header = readSessionHeaderSync(full);
-        if (!header || typeof header.cwd !== 'string' || assignedIds.has(header.id)) continue;
-        candidates.push({ file: full, sessionId: header.id, cwd: header.cwd, root, fileTs });
+      if (!p.adoptedFile) {
+        // Fresh adoption: claim this session's first transcript.
+        const match = p.knownCliId
+          ? candidates.find((c) => c.sessionId === p.knownCliId)
+          : candidates[0];
+        if (match) adopt(uiId, p, match);
+        continue;
       }
-    }
-    // Filenames start with an ISO timestamp — sort by name (plain string
-    // compare) so simultaneous sessions in the same project pair in start
-    // order, not readdir order.
-    candidates.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
 
-    const taken = new Set<string>();
-
-    // Pass 1 — fresh adoption: an un-adopted session claims its first
-    // transcript. Pending sessions take priority over clear re-adoption so a
-    // brand-new session in a project is never mistaken for another's clear.
-    for (const cand of candidates) {
-      const match = (byRoot.get(cand.root) ?? []).find(
-        ([uiId, p]) => !p.adoptedFile
-          && !taken.has(uiId)
-          && (histories.get(cand.root)?.files.get(cand.file) ?? 0) > p.knownGeneration
-          && (cand.fileTs === null || cand.fileTs >= p.registeredAt - ADOPTION_TOLERANCE_MS)
-          && cwdMatches(p.projectPath, cand.cwd)
-      );
-      if (!match) continue;
-      if (adopt(match[0], match[1], cand)) taken.add(match[0]);
-    }
-
-    // Pass 2 — `/clear` re-adoption: a NEWER unassigned transcript in the
-    // same cwd is the adopted session's fresh start. Applied only when
-    // exactly ONE adopted session maps to that (cwd, root): with several, a
-    // new transcript can't be safely attributed, so we leave the existing
-    // one (no worse than before). The candidate must be strictly newer than
-    // the currently-adopted file, carry a parseable timestamp, and be
-    // fresh — created inside CLEAR_ADOPTION_WINDOW_MS. The freshness bound
-    // is what stops an unrelated `omp`/`pi` run in the same directory from
-    // hijacking the tab: `knownFiles` is a snapshot taken at registration,
-    // so it can't tell a genuine clear from an external transcript that
-    // simply appeared later, but a genuine clear is always recent.
-    for (const cand of candidates) {
-      const candTs = cand.fileTs;
-      if (candTs === null) continue;
-      if (candTs < now - CLEAR_ADOPTION_WINDOW_MS) continue;
-      // A candidate that Pass 1 already handed to a pending session is no
-      // longer free. The candidate list is built before Pass 1 runs, so the
-      // `assignedIds` filter applied during collection does not reflect
-      // those adoptions — re-check here. Without this, Pass 2 can give an
-      // already-adopted session the transcript that belongs to another:
-      // two UI sessions sharing one cliSessionId resolve to the same
-      // transcript, so every title that transcript publishes renames both
-      // tabs on every surface.
-      if (assignedIds.has(cand.sessionId)) continue;
-      const matches = (byRoot.get(cand.root) ?? []).filter(
-        ([uiId, p]) => p.adoptedFile
-          && !taken.has(uiId)
-          && cand.file !== p.adoptedFile
-          && (histories.get(cand.root)?.files.get(cand.file) ?? 0) > p.knownGeneration
-          && (p.adoptedFileTs == null || candTs > p.adoptedFileTs)
-          && cwdMatches(p.projectPath, cand.cwd)
-      );
-      if (matches.length !== 1) continue;
-      if (adopt(matches[0][0], matches[0][1], cand)) taken.add(matches[0][0]);
+      // `/clear` re-adoption: a NEWER transcript in this session's own dir
+      // is its fresh start. The dir is exclusive to this session, so there
+      // is no ambiguity to resolve and no freshness window to bound — any
+      // new file here is this process's.
+      const match = candidates.find((c) => c.sessionId !== p.adoptedCliId);
+      if (match) adopt(uiId, p, match);
     }
   }
 
-  function registerPending(sessionId: string, projectPath: string, configDir?: string): void {
+  function registerPending(sessionId: string, projectPath: string, configDir: string | undefined, opts: RegisterPendingOptions = {}): void {
+    const { sessionDir, knownCliId, adoptedFile } = opts;
+    if (!sessionDir) return;
+    // A re-registration (re-spawn of the same UI session) replaces the
+    // entry: the fresh snapshot below re-baselines the generation, so the
+    // previous launch's files are excluded again.
+    const knownGeneration = refreshHistory(sessionDir, true).generation;
+    const seeded = adoptedFile
+      ? { adoptedFile, adoptedCliId: knownCliId, adoptedFileTs: filenameTimestampMs(adoptedFile) }
+      : {};
     watchedSessions.set(sessionId, {
       projectPath,
       configDir,
-      // Registration needs a fresh snapshot even on coarse-mtime filesystems.
-      knownGeneration: refreshHistory(sessionsRootOf(configDir), true).generation,
+      sessionDir,
+      knownCliId,
+      knownGeneration,
       registeredAt: Date.now(),
+      ...seeded,
     });
+    if (adoptedFile && knownCliId) rememberAssignedId(knownCliId);
+    watchDir(sessionDir);
   }
 
   function unregister(sessionId: string): void {
+    const p = watchedSessions.get(sessionId);
     watchedSessions.delete(sessionId);
-    const roots = new Set([...watchedSessions.values()].map(p => sessionsRootOf(p.configDir)));
-    for (const root of histories.keys()) {
-      if (roots.has(root)) continue;
-      histories.delete(root);
+    if (!p) return;
+    // Close the dir's watcher only when no other session uses it.
+    const stillUsed = [...watchedSessions.values()].some((s) => s.sessionDir === p.sessionDir);
+    if (!stillUsed) {
+      const w = dirWatchers.get(p.sessionDir);
+      if (w) {
+        try { w.close(); } catch { /* already closed */ }
+        dirWatchers.delete(p.sessionDir);
+      }
+      histories.delete(p.sessionDir);
       for (const dir of directoryCache.keys()) {
-        if (dir === root || path.dirname(dir) === root) { directoryCache.delete(dir); dirtyDirectories.delete(dir); }
+        if (dir === p.sessionDir) { directoryCache.delete(dir); dirtyDirectories.delete(dir); }
       }
     }
   }
@@ -388,20 +316,6 @@ export function createCompatibleSessionWatcher(
   function start(): void {
     if (pollInterval) return;
 
-    // Every watcher (the root plus each per-cwd subdir) feeds one
-    // coalescing queue: an active turn appends to the transcript
-    // continuously, so scanning per event would re-walk the whole tree
-    // many times per second.
-    const onEvent = () => scheduleScan();
-    const root = sessionsRootOf();
-    watchDir(root, onEvent);
-    // fs.watch is non-recursive on Windows/Linux and transcripts live one
-    // level down in per-cwd subdirs — watch those too. A brand-new subdir
-    // (first session in a project) is picked up by the polling fallback.
-    let subdirs: string[] = [];
-    try { subdirs = fs.readdirSync(root); } catch { /* no root yet */ }
-    for (const d of subdirs) watchDir(path.join(root, d), onEvent);
-
     // Look the window up per tick — a window destroyed and recreated (macOS
     // dock re-activate) must not kill the polling fallback for good.
     pollInterval = setInterval(() => {
@@ -411,22 +325,25 @@ export function createCompatibleSessionWatcher(
     }, POLL_INTERVAL_MS);
   }
 
-  function watchDir(dir: string, onEvent: () => void): void {
+  function watchDir(dir: string): void {
+    const existing = dirWatchers.get(dir);
+    if (existing) return;
     try {
-      watchers.push(fs.watch(dir, (event) => {
+      dirWatchers.set(dir, fs.watch(dir, (event) => {
         if (event === 'rename') dirtyDirectories.add(dir);
-        onEvent();
+        scheduleScan();
       }));
     } catch {
-      // Directory might not exist; polling covers it
+      // Directory might not exist yet; the polling fallback covers it.
+      dirWatchers.delete(dir);
     }
   }
 
   function stop(): void {
-    for (const w of watchers) {
+    for (const w of dirWatchers.values()) {
       try { w.close(); } catch { /* already closed */ }
     }
-    watchers.length = 0;
+    dirWatchers.clear();
     if (scanTimer) {
       clearTimeout(scanTimer);
       scanTimer = null;

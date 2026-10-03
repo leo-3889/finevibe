@@ -77,6 +77,7 @@ export function showTaskModal(
 
   let currentProviderId: ProviderId =
     task?.providerId
+    ?? appState.activeProject?.defaultProvider
     ?? appState.preferences.defaultProvider
     ?? 'claude';
   // Only the task's own explicit profile pre-selects the dropdown. "Default"
