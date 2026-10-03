@@ -8,7 +8,7 @@ import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, ma
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
 import { esc } from '../dom-utils.js';
-import { projectProfileBadge, providerProfileOptions, projectProviderId } from '../profile-utils.js';
+import { projectProfileBadge, providerProfileOptions } from '../profile-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree } from './file-tree.js';
 import {
   renderSessionHistory,
@@ -20,6 +20,7 @@ import { mountGitPanel, closeGitPanel } from './git-panel.js';
 import { gitChangeCount, onChange as onGitStatusChange } from '../git-status.js';
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW, ICON_SESSIONS, ICON_FILES, ICON_GIT } from '../icons.js';
 import { t } from '../i18n.js';
+import { promptProjectSettings } from './project-settings.js';
 
 type ProjectPanel = 'history' | 'files' | 'git' | null;
 const projectPanelOpen = new Map<string, ProjectPanel>();
@@ -760,20 +761,15 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   const separator = document.createElement('div');
   separator.className = 'tab-context-menu-separator';
 
-  // Project Settings — currently just the default profile, shown only when
-  // the project's current coding tool has profiles to choose from.
-  const profileOptions = providerProfileOptions(projectProviderId(project));
-  let settingsItem: HTMLDivElement | null = null;
-  if (profileOptions.length > 0) {
-    settingsItem = document.createElement('div');
-    settingsItem.className = 'tab-context-menu-item';
-    settingsItem.textContent = t('contextMenu.project.settings');
-    settingsItem.addEventListener('click', (e) => {
-      e.stopPropagation();
-      hideProjectContextMenu();
-      promptProjectSettings(project);
-    });
-  }
+  // Provider defaults can be changed even when no profiles have been created.
+  const settingsItem = document.createElement('div');
+  settingsItem.className = 'tab-context-menu-item';
+  settingsItem.textContent = t('contextMenu.project.settings');
+  settingsItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideProjectContextMenu();
+    promptProjectSettings(project);
+  });
 
   const removeItem = document.createElement('div');
   removeItem.className = 'tab-context-menu-item';
@@ -786,7 +782,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
 
   menu.appendChild(renameItem);
   menu.appendChild(closeAllItem);
-  if (settingsItem) menu.appendChild(settingsItem);
+  menu.appendChild(settingsItem);
   menu.appendChild(separator);
   menu.appendChild(removeItem);
   document.body.appendChild(menu);
@@ -802,28 +798,6 @@ function hideProjectContextMenu(): void {
     activeProjectContextMenu.remove();
     activeProjectContextMenu = null;
   }
-}
-
-/** Project-level settings dialog. Currently just the default profile. */
-function promptProjectSettings(project: ProjectRecord): void {
-  // The project's default profile applies to new sessions in this project;
-  // scope the picker to the project's current coding tool.
-  const profileOptions = providerProfileOptions(projectProviderId(project));
-  showModal(t('sidebar.projectSettings.title'), [
-    {
-      label: t('sidebar.projectSettings.defaultProfileLabel'),
-      id: 'profile',
-      type: 'select',
-      defaultValue: project.defaultProfileId ?? '',
-      options: [
-        { value: '', label: t('sidebar.defaultProfileOption') },
-        ...profileOptions,
-      ],
-    },
-  ], (values) => {
-    appState.setProjectDefaultProfile(project.id, values['profile'] || undefined);
-    closeModal();
-  });
 }
 
 let lastDiscussionsCount = -1;

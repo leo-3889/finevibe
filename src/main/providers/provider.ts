@@ -20,7 +20,7 @@ export interface CliProvider {
   resolveBinaryPath(): string;
   validatePrerequisites(): boolean;
   buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string>;
-  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[];
+  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[];
   installHooks(win?: BrowserWindow | null, projectPath?: string): Promise<void>;
   installStatusScripts(): void;
   cleanup(): void;
@@ -37,7 +37,7 @@ export interface CliProvider {
   reinstallSettings(): void;
   parseCostFromOutput?(rawText: string): { totalCostUsd: number } | null;
   /** Return the absolute path to the source transcript file for a prior session, if any. */
-  getTranscriptPath?(cliSessionId: string, projectPath: string, configDir?: string): string | null;
+  getTranscriptPath?(cliSessionId: string, projectPath: string, configDir?: string, sessionDir?: string): string | null;
   /** Cheap enumeration of every on-disk transcript for global session search. */
   discoverTranscripts?(signal?: AbortSignal): Promise<TranscriptDescriptor[]>;
   /** Read user-visible text (and optionally the cwd) out of one transcript file. */
@@ -53,13 +53,14 @@ export interface CliProvider {
   /**
    * Re-attach to on-disk state for a RESUMED session — one spawned with a
    * known `cliSessionId`, so `onSessionStarted` discovery never runs for
-   * it. Pi/OMP use this to join their sessions-tree watcher anyway, which
-   * is what lets the session follow a later `/clear`: the CLI starts a
-   * brand-new transcript under a new id in the same cwd, and the watcher
-   * re-adopts it (handing the new id to the transcript sync) instead of
-   * the tab freezing on the pre-clear conversation.
+   * it. Pi/OMP use this to seed their sessions watcher as an ADOPTED entry
+   * (known id + existing transcript path, inside the launch's exclusive
+   * session dir), which is what lets the session follow a later `/clear`:
+   * the CLI starts a brand-new transcript under a new id in the same dir,
+   * and the watcher re-adopts it (handing the new id to the transcript
+   * sync) instead of the tab freezing on the pre-clear conversation.
    */
-  onSessionResumed?(sessionId: string, cwd: string, win: BrowserWindow, configDir?: string): void;
+  onSessionResumed?(sessionId: string, cwd: string, win: BrowserWindow, configDir: string | undefined, cliSessionId: string): void;
   /**
    * The CLI's own title read from a resolved transcript path, or null when
    * it has none yet. Only meaningful for providers with

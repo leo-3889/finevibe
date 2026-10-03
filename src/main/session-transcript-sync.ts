@@ -46,8 +46,19 @@ interface TranscriptSyncEntry {
   cliSessionId: string;
   cwd: string;
   configDir?: string;
+  /**
+   * Exclusive per-launch session dir (Pi/OMP): the CLI writes this
+   * session's transcripts there, so path resolution checks it first.
+   */
+  sessionDir?: string;
   wantTitle: boolean;
   wantStatus: boolean;
+  /**
+   * True for a restored-but-not-yet-resumed session: mirror the CLI title only,
+   * never resurrect a stale status onto a dead tab. A later resume re-registers
+   * without this flag, which replaces the entry (see `isSameSync`).
+   */
+  titleOnly: boolean;
   /** Resolved transcript path; null until first resolved. */
   transcriptPath: string | null;
   lastTitle: string | null;
@@ -81,34 +92,42 @@ const RESOLVE_BACKOFF_CAP_MS = 60000;
 /**
  * Start mirroring a session's title/status. What to poll is derived from
  * the provider's capabilities (and the presence of the matching reader),
- * so callers just register a session and this decides. A no-op when the
- * provider offers neither.
+ * so callers just register a session and this decides. Returns true when a
+ * sync entry now exists for the session, false when the provider offers
+ * neither title nor status polling (a no-op).
  *
  * Re-registering is safe and is expected: the session-id watchers call this
  * again when they hand over a new `cliSessionId` (a `/clear` re-adoption).
  * The same conversation is left untouched; a changed id replaces the entry
  * AFTER closing the incumbent's watch, so the hand-off neither leaks the
  * old `fs.watch` nor re-emits the old title/status.
+ *
+ * `titleOnly` (used for restored-but-not-resumed sessions) mirrors the CLI
+ * title without resurrecting a stale status onto a dead tab; a later resume
+ * re-registers without it and replaces the entry.
  */
 export function registerTranscriptSync(
   sessionId: string,
   providerId: ProviderId,
   cliSessionId: string,
   cwd: string,
-  configDir?: string
-): void {
+  configDir?: string,
+  opts?: { titleOnly?: boolean; sessionDir?: string }
+): boolean {
   const provider = getProvider(providerId);
+  const titleOnly = opts?.titleOnly === true;
+  const sessionDir = opts?.sessionDir;
   const wantTitle = provider.meta.capabilities.selfTitles === true && !!provider.readSessionTitle;
-  const wantStatus = provider.meta.capabilities.polledStatus === true && !!provider.readSessionStatus;
-  if (!wantTitle && !wantStatus) return;
+  const wantStatus = !titleOnly && provider.meta.capabilities.polledStatus === true && !!provider.readSessionStatus;
+  if (!wantTitle && !wantStatus) return false;
   const prev = entries.get(sessionId);
-  if (prev && isSameSync(prev, providerId, cliSessionId, cwd, configDir)) {
+  if (prev && isSameSync(prev, providerId, cliSessionId, cwd, configDir, titleOnly, sessionDir)) {
     // Same conversation re-registered (e.g. a re-spawn of the same
     // session): the incumbent's cached path, last-written title/status and
     // live watch are all still valid. Replacing it would drop the watch and
     // re-emit an unchanged name as a fresh write.
     ensurePolling();
-    return;
+    return true;
   }
   // A `/clear` re-adoption hands us a new cliSessionId for the same UI
   // session. The incumbent owns an OPEN fs.watch on the old transcript;
@@ -120,8 +139,10 @@ export function registerTranscriptSync(
     cliSessionId,
     cwd,
     configDir,
+    sessionDir,
     wantTitle,
     wantStatus,
+    titleOnly,
     transcriptPath: null,
     lastTitle: null,
     lastStatus: null,
@@ -132,6 +153,7 @@ export function registerTranscriptSync(
     debounce: null,
   });
   ensurePolling();
+  return true;
 }
 
 export function unregisterTranscriptSync(sessionId: string): void {
@@ -161,13 +183,17 @@ function isSameSync(
   providerId: ProviderId,
   cliSessionId: string,
   cwd: string,
-  configDir?: string
+  configDir: string | undefined,
+  titleOnly: boolean,
+  sessionDir: string | undefined
 ): boolean {
   return (
     e.providerId === providerId &&
     e.cliSessionId === cliSessionId &&
     e.cwd === cwd &&
-    e.configDir === configDir
+    e.configDir === configDir &&
+    e.sessionDir === sessionDir &&
+    e.titleOnly === titleOnly
   );
 }
 
@@ -251,7 +277,7 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
   if (e.transcriptPath === null || !fs.existsSync(e.transcriptPath)) {
     if (e.nextResolveAt > Date.now()) return;
     try {
-      e.transcriptPath = provider.getTranscriptPath?.(e.cliSessionId, e.cwd, e.configDir) ?? null;
+      e.transcriptPath = provider.getTranscriptPath?.(e.cliSessionId, e.cwd, e.configDir, e.sessionDir) ?? null;
     } catch {
       e.transcriptPath = null;
     }

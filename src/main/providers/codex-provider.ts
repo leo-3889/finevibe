@@ -54,7 +54,7 @@ export class CodexProvider implements CliProvider {
     return env;
   }
 
-  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
+  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
     const args: string[] = [];
     if (opts.systemPrompt) {
       args.push('-c', `developer_instructions=${opts.systemPrompt}`);

@@ -397,7 +397,7 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    const cliProviderId = resolveCliProvider(this.state.preferences, providerId);
+    const cliProviderId = resolveCliProvider(this.state.preferences, providerId, project);
     // Pin the effective profile (explicit > project default > global default,
     // provider-matched) onto the session at creation so it stays sticky — resume
     // must reuse the same config dir even if a default changes later.
@@ -684,6 +684,16 @@ class AppState {
     this.emit('project-changed');
   }
 
+  setProjectCodingDefaults(projectId: string, providerId: ProviderId | undefined, profileId?: string): void {
+    const project = this.state.projects.find(p => p.id === projectId);
+    if (!project) return;
+    const effectiveProvider = providerId ?? this.state.preferences.defaultProvider ?? 'claude';
+    project.defaultProvider = providerId;
+    project.defaultProfileId = this.profiles.find(p => p.id === profileId && p.providerId === effectiveProvider)?.id;
+    this.persist();
+    this.emit('project-changed');
+  }
+
   /** Set (or clear) the global default profile for one provider. */
   setProviderDefaultProfile(providerId: ProviderId, profileId: string | undefined): void {
     const map = { ...this.state.preferences.defaultProfiles };
@@ -766,15 +776,16 @@ class AppState {
     return session;
   }
 
-  removeSession(projectId: string, sessionId: string, opts?: { exitReason?: string }): void {
+  removeSession(projectId: string, sessionId: string, opts?: { exitReason?: string; exitCode?: number; exitSignal?: number; processId?: number }): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
 
     // Archive CLI sessions before removing (cost data must be captured before session-removed triggers destroyTerminal)
     const session = project.sessions.find((s) => s.id === sessionId);
     if (session && isCliSession(session) && this.state.preferences.sessionHistoryEnabled) {
-      if (this.isArchivable(session, project)) {
-        this.archiveSession(project, session, opts);
+      const transcriptAvailable = this.isArchivable(session, project);
+      if (opts?.exitReason || transcriptAvailable) {
+        this.archiveSession(project, session, { ...opts, transcriptAvailable });
       }
     }
 
@@ -817,7 +828,7 @@ class AppState {
     );
   }
 
-  private archiveSession(project: ProjectRecord, session: SessionRecord, opts?: { exitReason?: string }): void {
+  private archiveSession(project: ProjectRecord, session: SessionRecord, opts?: { exitReason?: string; exitCode?: number; exitSignal?: number; processId?: number; transcriptAvailable?: boolean }): void {
     archiveSessionPure(project, session, opts);
     this.emit('history-changed', project.id);
   }
@@ -856,6 +867,7 @@ class AppState {
 
     const archived = project.sessionHistory?.find((a) => a.id === archivedSessionId);
     if (!archived || !archived.cliSessionId) return undefined;
+    if (archived.transcriptAvailable === false) return undefined;
 
     const existing = findCliSessionTab(project, archived.cliSessionId);
     if (existing) return this.activateExistingSession(project, existing);
@@ -878,6 +890,7 @@ class AppState {
 
     const archived = project.sessionHistory?.find((a) => a.id === archivedSessionId);
     if (!archived || !archived.cliSessionId) return undefined;
+    if (archived.transcriptAvailable === false) return undefined;
 
     const exists = await window.vibeyard.session.transcriptExists(
       archived.providerId,
@@ -886,7 +899,8 @@ class AppState {
       this.profileConfigDir(archived.providerId, archived.profileId),
     );
     if (!exists) {
-      this.removeHistoryEntry(projectId, archivedSessionId);
+      // Preserve crash diagnostics even when the transcript disappeared.
+      if (!archived.exitReason) this.removeHistoryEntry(projectId, archivedSessionId);
       return undefined;
     }
 

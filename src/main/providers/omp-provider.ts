@@ -2,15 +2,36 @@ import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, CliSessionStatus, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { removeEnvKey } from '../../shared/env-vars';
+import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { collectProfileRoots } from './transcript-utils';
 import { ompSessionsRoot, readTranscriptTitleSync } from './omp-transcripts';
-import { findTranscriptPathSync, scanTranscriptSessionsRoot, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession, stopOmpSessionWatcher } from '../omp-session-watcher';
+import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMeta, listLaunchSessionDirs, profileIdForConfigDir } from '../launch-session-dir';
 
 const binaryCache = { path: null as string | null };
+
+/**
+ * Per-launch identity, established by onSessionStarted/onSessionResumed
+ * BEFORE spawnPty runs (the pty:create handler calls the hook first):
+ *  - sessionDir: the exclusive `--session-dir` for this launch — the
+ *    process-scoped ownership signal the sessions watcher adopts by.
+ *  - resumeTarget: the transcript to resume — the resolved path when the
+ *    file is still on disk (OMP loads it in place), else the bare id.
+ *
+ * OMP (unlike Pi) generates the session id itself and has no `--session-id`
+ * flag, so a fresh launch's id is discovered from the first transcript in
+ * the exclusive dir.
+ */
+interface OmpLaunchState {
+  sessionDir: string;
+  resumeTarget: string | null;
+}
+
+const launchStates = new Map<string, OmpLaunchState>();
 
 export class OmpProvider implements CliProvider {
   readonly meta: CliProviderMeta = {
@@ -44,7 +65,16 @@ export class OmpProvider implements CliProvider {
   buildEnv(_sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env.PATH = getFullPath();
+    // Strip inherited profile/storage selectors case-insensitively so the
+    // pinned profile (below) is the single effective identity: the installed
+    // OMP resolver honors OMP_PROFILE (and legacy PI_PROFILE) over any
+    // relocated dir, so an inherited native profile must not silently
+    // repoint the child away from the tree Vibeyard tracks.
     removeEnvKey(env, 'PI_CODING_AGENT_DIR');
+    removeEnvKey(env, 'PI_CONFIG_DIR');
+    removeEnvKey(env, 'PI_PROFILE');
+    removeEnvKey(env, 'OMP_PROFILE');
+    removeEnvKey(env, 'PI_CODING_AGENT_SESSION_DIR');
     if (opts?.configDir) {
       // OMP honors Pi's PI_CODING_AGENT_DIR — relocates the whole agent dir
       // (default ~/.omp/agent).
@@ -52,14 +82,20 @@ export class OmpProvider implements CliProvider {
     }
     return env;
   }
-
-  buildArgs(opts: { cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
+  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
     const args: string[] = [];
+    // Every launch stores its transcripts in its own dir — the
+    // process-scoped ownership signal the sessions watcher adopts by.
+    const state = launchStates.get(opts.sessionId);
+    const sessionDir = state?.sessionDir ?? launchSessionDir('omp', opts.sessionId);
+    args.push('--session-dir', sessionDir);
     if (opts.isResume && opts.cliSessionId) {
-      args.push('--resume', opts.cliSessionId);
+      // Resume the exact transcript: the resolved path when it is still on
+      // disk, else the bare id.
+      args.push('--resume', state?.resumeTarget ?? opts.cliSessionId);
     }
     if (opts.extraArgs) {
-      args.push(...opts.extraArgs.split(/\s+/).filter(Boolean));
+      args.push(...tokenizeArgs(opts.extraArgs));
     }
     if (opts.systemPrompt) {
       args.push('--append-system-prompt', opts.systemPrompt);
@@ -78,6 +114,7 @@ export class OmpProvider implements CliProvider {
 
   cleanup(): void {
     stopOmpSessionWatcher();
+    launchStates.clear();
   }
 
   reinstallSettings(): void {}
@@ -97,20 +134,34 @@ export class OmpProvider implements CliProvider {
     return { statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} };
   }
 
-  // OMP has no hook system to report the session id — discover it from the
-  // sessions tree after spawn (see omp-session-watcher.ts).
+  // OMP has no hook system to report the session id, and (unlike Pi) no
+  // `--session-id` flag: the CLI generates the id itself. Ownership is
+  // still exact — the launch's exclusive `--session-dir` is the only
+  // place its transcript can appear, so the first file there is adopted.
   onSessionStarted(sessionId: string, cwd: string, _win: BrowserWindow, configDir?: string): void {
+    const sessionDir = launchSessionDir('omp', sessionId);
+    ensureLaunchSessionDir(sessionDir);
+    launchStates.set(sessionId, { sessionDir, resumeTarget: null });
+    writeLaunchSessionMeta(sessionDir, { providerId: 'omp', cwd, configDir, createdAt: new Date().toISOString() });
     startOmpSessionWatcher();
-    registerPendingOmpSession(sessionId, cwd, configDir);
+    registerPendingOmpSession(sessionId, cwd, configDir, { sessionDir });
   }
 
-  // A resumed session already knows its cli id, so onSessionStarted never
-  // runs for it. Join the sessions-tree watcher anyway: that is what lets a
-  // later `/clear` — a brand-new transcript under a new id in the same cwd
-  // — be re-adopted instead of the tab freezing on the pre-clear file.
-  onSessionResumed(sessionId: string, cwd: string, _win: BrowserWindow, configDir?: string): void {
+  // A resumed session already knows its cli id, so it is seeded as an
+  // ADOPTED entry (known id + its existing transcript path) — never as an
+  // unidentified pending entry. That is what lets a later `/clear` — a
+  // brand-new transcript under a new id in the launch's own dir — be
+  // re-adopted instead of the tab freezing on the pre-clear file.
+  onSessionResumed(sessionId: string, cwd: string, _win: BrowserWindow, configDir: string | undefined, cliSessionId: string): void {
+    const sessionDir = launchSessionDir('omp', sessionId);
+    ensureLaunchSessionDir(sessionDir);
+    // Legacy transcripts live in the default/profile trees; a post-`/clear`
+    // one lives in a previous launch's dir. Resolve before seeding.
+    const adoptedFile = this.getTranscriptPath(cliSessionId, cwd, configDir, sessionDir);
+    launchStates.set(sessionId, { sessionDir, resumeTarget: adoptedFile ?? cliSessionId });
+    writeLaunchSessionMeta(sessionDir, { providerId: 'omp', cwd, configDir, createdAt: new Date().toISOString() });
     startOmpSessionWatcher();
-    registerPendingOmpSession(sessionId, cwd, configDir);
+    registerPendingOmpSession(sessionId, cwd, configDir, { sessionDir, knownCliId: cliSessionId, adoptedFile: adoptedFile ?? undefined });
   }
 
   /**
@@ -144,10 +195,17 @@ export class OmpProvider implements CliProvider {
   }
 
   onSessionExited(sessionId: string): void {
+    launchStates.delete(sessionId);
     unregisterOmpSession(sessionId);
   }
 
-  getTranscriptPath(cliSessionId: string, projectPath: string, configDir?: string): string | null {
+  getTranscriptPath(cliSessionId: string, projectPath: string, configDir?: string, sessionDir?: string): string | null {
+    // The launch's own dir first (post-`/clear` transcripts live there),
+    // then the legacy default/profile trees.
+    if (sessionDir) {
+      const inDir = findTranscriptPathInFlatDir(sessionDir, cliSessionId, projectPath);
+      if (inDir) return inDir;
+    }
     return findTranscriptPathSync(ompSessionsRoot, cliSessionId, projectPath, configDir);
   }
 
@@ -161,6 +219,14 @@ export class OmpProvider implements CliProvider {
     for (const [root, profileId] of roots) {
       if (signal?.aborted) break;
       results.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+    }
+    // Plus every per-launch dir this app created (flat layout). Legacy
+    // history above is untouched; the sidecar carries each dir's profile.
+    for (const sessionDir of listLaunchSessionDirs(launchSessionBaseDir('omp'))) {
+      if (signal?.aborted) break;
+      const meta = readLaunchSessionMeta(sessionDir);
+      const profileId = profileIdForConfigDir('omp', meta?.configDir);
+      results.push(...await scanFlatSessionDir(sessionDir, profileId, signal));
     }
     return results;
   }

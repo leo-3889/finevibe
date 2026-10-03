@@ -113,6 +113,77 @@ describe('title mirroring', () => {
   });
 });
 
+describe('titleOnly (restored-session) mode', () => {
+  it('mirrors the title but not the status', () => {
+    provider = makeProvider({
+      selfTitles: true,
+      polledStatus: true,
+      title: { value: 'Restored title' },
+      status: { value: 'working' },
+      path: '/t.jsonl',
+    });
+    expect(registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj', undefined, { titleOnly: true })).toBe(true);
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteName).toHaveBeenCalledWith('ui-1', 'Restored title', 'cli-1');
+    expect(mockWriteStatus).not.toHaveBeenCalled();
+  });
+
+  it('a resume re-register (no flag) upgrades the entry to mirror status too', () => {
+    provider = makeProvider({
+      selfTitles: true,
+      polledStatus: true,
+      title: { value: 'T' },
+      status: { value: 'working' },
+      path: '/t.jsonl',
+    });
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj', undefined, { titleOnly: true });
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteStatus).not.toHaveBeenCalled();
+    // Resume re-registers the same conversation without the flag.
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'working');
+  });
+
+  it('re-registering with the same titleOnly flag keeps the entry (no re-emit)', () => {
+    provider = makeProvider({ selfTitles: true, title: { value: 'Stable' }, path: '/t.jsonl' });
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj', undefined, { titleOnly: true });
+    vi.advanceTimersByTime(2000);
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj', undefined, { titleOnly: true });
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteName).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false when the provider polls neither title nor status', () => {
+    provider = makeProvider({ path: '/t.jsonl' }); // no selfTitles, no polledStatus
+    expect(registerTranscriptSync('ui-1', 'codex', 'cli-1', '/proj')).toBe(false);
+  });
+
+  it('a released title-only entry leaves no stale watch and re-registers clean on resume', () => {
+    provider = makeProvider({
+      selfTitles: true,
+      polledStatus: true,
+      title: { value: 'T' },
+      status: { value: 'working' },
+      path: '/t.jsonl',
+    });
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj', undefined, { titleOnly: true });
+    vi.advanceTimersByTime(2000); // resolves the path, opens the watch, mirrors the title
+    expect(watchRecs.length).toBe(1);
+    expect(watchRecs[0].closed).toBe(false);
+    // Release: the tab was closed without ever being resumed.
+    unregisterTranscriptSync('ui-1');
+    expect(watchRecs[0].closed).toBe(true);
+    vi.advanceTimersByTime(4000);
+    expect(mockWriteName).toHaveBeenCalledTimes(1); // no writes after release
+    expect(mockWriteStatus).not.toHaveBeenCalled();
+    // Resume re-registers the same conversation without the flag.
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'working');
+  });
+});
+
 describe('status mirroring', () => {
   it('mirrors the status into the .status channel on the first tick', () => {
     provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: '/t.jsonl' });

@@ -93,6 +93,26 @@ describe('buildEnv', () => {
     const env = provider.buildEnv('sess-1', {}, { configDir: '/profiles/work' });
     expect(env.PI_CODING_AGENT_DIR).toBe('/profiles/work');
   });
+
+  it('strips inherited profile and storage selectors case-insensitively', () => {
+    const env = provider.buildEnv('sess-1', {
+      Pi_Config_Dir: '/inherited',
+      pi_profile: 'work',
+      PI_CODING_AGENT_SESSION_DIR: '/sessions',
+      SAFE: 'yes',
+    });
+    expect(env.PI_CONFIG_DIR).toBeUndefined();
+    expect(env.Pi_Config_Dir).toBeUndefined();
+    expect(env.PI_PROFILE).toBeUndefined();
+    expect(env.pi_profile).toBeUndefined();
+    expect(env.PI_CODING_AGENT_SESSION_DIR).toBeUndefined();
+    expect(env.SAFE).toBe('yes');
+  });
+
+  it('keeps the pinned profile when a configDir is given (default vs custom)', () => {
+    const env = provider.buildEnv('sess-1', { PI_CODING_AGENT_DIR: '/inherited' }, { configDir: '/profiles/work' });
+    expect(env.PI_CODING_AGENT_DIR).toBe('/profiles/work');
+  });
 });
 
 describe('buildArgs', () => {
@@ -127,6 +147,26 @@ describe('buildArgs', () => {
   it('combines resume, extraArgs, systemPrompt, and initialPrompt', () => {
     expect(provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--model x', systemPrompt: 'sp', initialPrompt: 'go' }))
       .toEqual(['--session', 'sid-1', '--model', 'x', '--append-system-prompt', 'sp', 'go']);
+  });
+
+  it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
+    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--append-system-prompt "Use concise replies"' }))
+      .toEqual(['--append-system-prompt', 'Use concise replies']);
+  });
+
+  it('preserves empty quoted extra args', () => {
+    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' }))
+      .toEqual(['--flag', '']);
+  });
+
+  it('keeps a system prompt starting with option characters as one argument', () => {
+    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: '--foo bar' }))
+      .toEqual(['--append-system-prompt', '--foo bar']);
+  });
+
+  it('keeps an initial prompt starting with option characters as one argument', () => {
+    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: '--foo' }))
+      .toEqual(['--foo']);
   });
 });
 

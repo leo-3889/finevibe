@@ -54,6 +54,32 @@ function addProject(name = 'Test', path = '/test') {
   return appState.addProject(name, path);
 }
 
+describe('project coding defaults', () => {
+  it('applies saved project defaults to new sessions and plans, preserving existing sessions', async () => {
+    const project = addProject();
+    appState.profiles.push({ id: 'omp-work', name: 'Work', providerId: 'omp', configDir: '/cfg/omp', managed: true, createdAt: 0 });
+    const old = appState.addSession(project.id, 'Old', undefined, 'claude')!;
+    appState.setProjectCodingDefaults(project.id, 'omp', 'omp-work');
+    expect(appState.addSession(project.id, 'New')).toMatchObject({ providerId: 'omp', profileId: 'omp-work' });
+    expect(appState.addPlanSession(project.id, 'Plan')).toMatchObject({ providerId: 'omp', profileId: 'omp-work' });
+    expect(old.providerId).toBe('claude');
+    expect(appState.addSession(project.id, 'Override', undefined, 'pi')?.providerId).toBe('pi');
+    const saved = mockSave.mock.calls.at(-1)![0];
+    mockLoad.mockResolvedValue(saved);
+    await appState.load();
+    expect(appState.projects[0]).toMatchObject({ defaultProvider: 'omp', defaultProfileId: 'omp-work' });
+  });
+  it('clears an incompatible profile when changing the provider and supports global fallback', () => {
+    const project = addProject();
+    appState.profiles.push(...PROFILES);
+    appState.setProjectCodingDefaults(project.id, 'omp', 'work');
+    expect(project.defaultProfileId).toBeUndefined();
+    appState.preferences.defaultProvider = 'pi';
+    appState.setProjectCodingDefaults(project.id, undefined);
+    expect(appState.addSession(project.id, 'Global')?.providerId).toBe('pi');
+  });
+});
+
 function addProjectWithSessions(count: number) {
   const project = addProject();
   const sessions = [];

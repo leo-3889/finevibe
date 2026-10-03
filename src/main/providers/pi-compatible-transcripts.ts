@@ -205,6 +205,8 @@ export interface SessionExitReason {
   reason: string;
   /** Severity marker the CLI recorded, e.g. 'fatal'. Absent when it recorded none. */
   kind?: string;
+  /** CLI timestamp of the exit marker, when present in the transcript. */
+  timestamp?: string;
 }
 
 /**
@@ -228,11 +230,12 @@ export function sessionExitReasonFromTail(tail: string | null): SessionExitReaso
       continue;
     }
     if (!entry || typeof entry !== 'object') return null;
-    const e = entry as { type?: unknown; customType?: unknown; data?: { reason?: unknown; kind?: unknown } };
+    const e = entry as { type?: unknown; customType?: unknown; timestamp?: unknown; data?: { reason?: unknown; kind?: unknown } };
     if (e.type === 'custom' && e.customType === 'session_exit') {
       return {
         reason: String(e.data?.reason ?? 'unknown'),
         ...(e.data?.kind !== undefined ? { kind: String(e.data.kind) } : {}),
+        ...(typeof e.timestamp === 'string' ? { timestamp: e.timestamp } : {}),
       };
     }
     // The last parseable line is ordinary activity, not a crash marker.
@@ -429,6 +432,33 @@ export function findTranscriptPathSync(
   }
 }
 
+/**
+ * Flat-layout twin of findTranscriptPathSync: per-launch session dirs
+ * (see launch-session-dir.ts) hold transcripts directly, with no per-cwd
+ * subdirs. Same authoritative cwd rule — a cwd-mismatched file is never
+ * returned.
+ */
+export function findTranscriptPathInFlatDir(
+  flatDir: string,
+  cliSessionId: string,
+  projectPath: string
+): string | null {
+  try {
+    if (!fs.existsSync(flatDir)) return null;
+    const suffix = `_${cliSessionId}.jsonl`;
+    for (const f of fs.readdirSync(flatDir)) {
+      if (!f.endsWith(suffix)) continue;
+      const full = path.join(flatDir, f);
+      const header = readSessionHeaderSync(full);
+      if (!header || header.id !== cliSessionId) continue;
+      if (sameCwd(header.cwd, projectPath)) return full;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Emit a descriptor per .jsonl in a sessions root, from the session header. */
 export async function scanTranscriptSessionsRoot(
   sessionsRoot: string,
@@ -463,6 +493,33 @@ export async function scanTranscriptSessionsRoot(
       }
     );
     for (const d of descriptors) if (d) out.push(d);
+  }
+  return out;
+}
+
+/**
+ * Flat-layout twin of scanTranscriptSessionsRoot: per-launch session dirs
+ * (see launch-session-dir.ts) hold transcripts directly. One dir holds a
+ * handful of files (one launch), so no concurrency cap is needed.
+ */
+export async function scanFlatSessionDir(
+  flatDir: string,
+  profileId: string | undefined,
+  signal?: AbortSignal
+): Promise<TranscriptDescriptor[]> {
+  let files: string[];
+  try {
+    files = await fs.promises.readdir(flatDir);
+  } catch {
+    return [];
+  }
+  const out: TranscriptDescriptor[] = [];
+  for (const f of files) {
+    if (signal?.aborted) return out;
+    if (!f.endsWith('.jsonl')) continue;
+    const transcriptPath = path.join(flatDir, f);
+    const header = await readSessionHeaderAsync(transcriptPath);
+    if (header) out.push({ cliSessionId: header.id, transcriptPath, projectCwd: header.cwd ?? '', profileId });
   }
   return out;
 }

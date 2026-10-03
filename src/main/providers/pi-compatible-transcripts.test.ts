@@ -171,6 +171,10 @@ const sessionExitWith = (data: Record<string, unknown>) =>
   JSON.stringify({ type: 'custom', customType: 'session_exit', data });
 
 describe('sessionExitReasonFromTail', () => {
+  it('preserves the exit marker timestamp for launch-time correlation', () => {
+    const marker = JSON.stringify({ type: 'custom', customType: 'session_exit', timestamp: '2026-10-03T10:00:00.000Z', data: { reason: 'sighup', kind: 'signal' } });
+    expect(sessionExitReasonFromTail(marker)).toEqual({ reason: 'sighup', kind: 'signal', timestamp: '2026-10-03T10:00:00.000Z' });
+  });
   it('extracts reason and kind from a trailing session_exit', () => {
     const tail = [
       assistant('toolUse'),

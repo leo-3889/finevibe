@@ -39,7 +39,7 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  if (archived.cliSessionId) {
+  if (archived.cliSessionId && archived.transcriptAvailable !== false) {
     const resumeItem = document.createElement('div');
     resumeItem.className = 'tab-context-menu-item';
     resumeItem.textContent = 'Resume';
@@ -232,7 +232,7 @@ function renderList(
     const item = document.createElement('div');
     item.className = 'history-item';
 
-    if (archived.cliSessionId) {
+    if (archived.cliSessionId && archived.transcriptAvailable !== false) {
       item.style.cursor = 'pointer';
       item.addEventListener('click', () => {
         void appState.resumeFromHistorySafe(project.id, archived.id);
@@ -259,7 +259,12 @@ function renderList(
       const badge = document.createElement('span');
       badge.className = 'history-crash-badge';
       badge.textContent = '\u26A0';
-      badge.title = `${t('session.crashedTitle')}: ${archived.exitReason}`;
+      const exitDetails = [
+        archived.processId !== undefined ? `PID ${archived.processId}` : null,
+        archived.exitCode !== undefined ? `code ${archived.exitCode}` : null,
+        archived.exitSignal !== undefined ? `signal ${archived.exitSignal}` : null,
+      ].filter(Boolean).join(', ');
+      badge.title = `${t('session.crashedTitle')}: ${archived.exitReason}${exitDetails ? ` (${exitDetails})` : ''}`;
       name.appendChild(badge);
     }
 
@@ -278,6 +283,18 @@ function renderList(
 
     const actions = document.createElement('div');
     actions.className = 'history-item-actions';
+
+    if (archived.exitReason && archived.cliSessionId && archived.transcriptAvailable !== false) {
+      const resumeBtn = document.createElement('button');
+      resumeBtn.className = 'history-resume-btn';
+      resumeBtn.textContent = 'Resume';
+      resumeBtn.title = 'Resume crashed session';
+      resumeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void appState.resumeFromHistorySafe(project.id, archived.id);
+      });
+      actions.appendChild(resumeBtn);
+    }
 
     const bookmarkBtn = document.createElement('button');
     bookmarkBtn.className = `history-bookmark-btn${archived.bookmarked ? ' bookmarked' : ''}`;

@@ -114,6 +114,16 @@ describe('teamMemberId propagation', () => {
 });
 
 describe('exitReason', () => {
+  it('keeps process details for a crashed session', () => {
+    const project = makeProject();
+    archiveSession(project, makeSession(), { exitReason: 'unhandled_rejection', exitCode: 1, exitSignal: 9, processId: 2028 });
+    expect(project.sessionHistory?.[0]).toMatchObject({ exitReason: 'unhandled_rejection', exitCode: 1, exitSignal: 9, processId: 2028 });
+  });
+  it('keeps a crash entry even when its transcript is unavailable', () => {
+    const project = makeProject();
+    archiveSession(project, makeSession({ cliSessionId: null }), { exitReason: 'unhandled_rejection', exitCode: 1, processId: 2028, transcriptAvailable: false });
+    expect(project.sessionHistory?.[0]).toMatchObject({ exitReason: 'unhandled_rejection', transcriptAvailable: false, processId: 2028 });
+  });
   it('archiveSession sets exitReason on the new entry when provided', () => {
     const project = makeProject();
     archiveSession(project, makeSession(), { exitReason: 'unhandled_rejection' });

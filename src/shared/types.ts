@@ -218,6 +218,12 @@ export interface ArchivedSession {
   } | null;
   /** Why the CLI process exited abnormally (e.g. 'unhandled_rejection'); absent on clean exit. */
   exitReason?: string;
+  /** Process metadata captured when this session ended; helps correlate OMP logs. */
+  exitCode?: number;
+  exitSignal?: number;
+  processId?: number;
+  /** False when a crash was recorded without a resumable transcript. */
+  transcriptAvailable?: boolean;
 }
 
 export interface InitialContextSnapshot {
@@ -305,6 +311,8 @@ export interface ProjectRecord {
   sessionHistory?: ArchivedSession[];
   insights?: ProjectInsightsData;
   defaultArgs?: string;
+  /** Coding provider for new sessions in this project; absent follows global default. */
+  defaultProvider?: ProviderId;
   /** Default profile applied to new sessions in this project (overridden per-session). */
   defaultProfileId?: string;
   defaultEnv?: string;

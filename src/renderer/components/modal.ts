@@ -77,6 +77,7 @@ export function showModal(
   onConfirm: (values: Record<string, string>) => void | Promise<void>,
   options?: ModalOptions,
 ): void {
+  cleanup();
   titleEl.textContent = title;
   btnConfirm.textContent = options?.confirmLabel ?? DEFAULT_CONFIRM_LABEL;
   bodyEl.innerHTML = '';
@@ -145,17 +146,17 @@ export function showModal(
 
   overlay.classList.remove('hidden');
 
-  // Focus first text input
+  // Select-only dialogs must take focus away from the terminal as well.
   const firstInput = bodyEl.querySelector('input[type="text"]') as HTMLInputElement | null;
   if (firstInput) {
     requestAnimationFrame(() => {
       firstInput.focus();
       firstInput.select();
     });
+  } else {
+    const firstControl = bodyEl.querySelector<HTMLElement>('button, textarea, input:not([type="hidden"])') ?? btnConfirm;
+    firstControl.focus();
   }
-
-  // Clean up previous listeners
-  cleanup();
 
   const handleConfirm = async () => {
     const values: Record<string, string> = {};
