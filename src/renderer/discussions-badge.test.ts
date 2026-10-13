@@ -9,6 +9,7 @@ const { mockAppState, appStateListeners } = vi.hoisted(() => {
   return {
     appStateListeners: listeners,
     mockAppState: {
+      loaded: true,
       discussionsLastSeen: undefined as string | undefined,
       setDiscussionsLastSeen: vi.fn((ts: string) => { mockAppState.discussionsLastSeen = ts; }),
       on: vi.fn((event: string, cb: () => void) => {

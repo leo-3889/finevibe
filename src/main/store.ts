@@ -10,6 +10,17 @@ const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+// loadState() re-read and re-parsed state.json on every call; state changes
+// flow through saveState/saveStateSync, so the parsed result is cached there
+// and reused here (fs:* guards and the synchronous startup-prefs channel run
+// loadState on hot paths). Tests manipulate fs mocks directly and must call
+// invalidateStateCache() between cases.
+let stateCache: PersistedState | null = null;
+
+export function invalidateStateCache(): void {
+  stateCache = null;
+}
+
 function defaultState(): PersistedState {
   return {
     version: 1,
@@ -20,6 +31,7 @@ function defaultState(): PersistedState {
 }
 
 export function loadState(): PersistedState {
+  if (stateCache) return stateCache;
   for (const file of [STATE_FILE, STATE_FILE + '.tmp']) {
     try {
       if (!fs.existsSync(file)) continue;
@@ -29,13 +41,15 @@ export function loadState(): PersistedState {
       if (file !== STATE_FILE) {
         console.warn('Recovered state from temp file');
       }
+      stateCache = parsed;
       return parsed;
     } catch {
       continue;
     }
   }
   console.warn('No valid state file found, using defaults');
-  return defaultState();
+  stateCache = defaultState();
+  return stateCache;
 }
 
 export function saveState(state: PersistedState): void {
@@ -43,6 +57,7 @@ export function saveState(state: PersistedState): void {
     clearTimeout(saveTimer);
   }
   lastState = state;
+  stateCache = state;
   knownProjectPaths = state.projects.map(p => p.path);
   saveTimer = setTimeout(() => {
     writeStateAtomically(state);
@@ -72,6 +87,7 @@ export function flushState(): void {
 }
 
 export function saveStateSync(state: PersistedState): void {
+  stateCache = state;
   knownProjectPaths = state.projects.map(p => p.path);
   writeStateAtomically(state);
 }

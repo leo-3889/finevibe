@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeUrl } from './navigation.js';
+import { normalizeUrl, navigateTo } from './navigation.js';
+import type { BrowserTabInstance } from './types.js';
+
+function makeInstance(): BrowserTabInstance {
+  return {
+    urlInput: { value: '' },
+    webview: { src: '' },
+    newTabPage: { style: { display: 'flex' } },
+  } as unknown as BrowserTabInstance;
+}
 
 describe('normalizeUrl', () => {
   it('prepends http:// to bare hostnames', () => {
@@ -38,7 +47,45 @@ describe('normalizeUrl', () => {
     expect(normalizeUrl('127.0.0.1:8080')).toBe('http://127.0.0.1:8080');
   });
 
-  it('preserves view-source: URLs', () => {
-    expect(normalizeUrl('view-source:https://example.com')).toBe('view-source:https://example.com');
+  it('blocks javascript: URLs', () => {
+    expect(normalizeUrl('javascript:alert(1)')).toBe('');
+  });
+
+  it('blocks view-source: URLs', () => {
+    expect(normalizeUrl('view-source:https://example.com')).toBe('');
+  });
+
+  it('blocks both schemes case-insensitively and after trimming', () => {
+    expect(normalizeUrl('JavaScript:alert(1)')).toBe('');
+    expect(normalizeUrl('  VIEW-SOURCE:https://example.com  ')).toBe('');
+  });
+});
+
+describe('navigateTo', () => {
+  it('does not navigate to javascript: URLs', () => {
+    const instance = makeInstance();
+    navigateTo(instance, 'javascript:alert(document.cookie)');
+    expect(instance.webview.src).toBe('');
+    expect(instance.urlInput.value).toBe('');
+  });
+
+  it('does not navigate on empty input', () => {
+    const instance = makeInstance();
+    navigateTo(instance, '   ');
+    expect(instance.webview.src).toBe('');
+  });
+
+  it('navigates to https URLs and hides the new-tab page', () => {
+    const instance = makeInstance();
+    navigateTo(instance, 'https://example.com');
+    expect(instance.webview.src).toBe('https://example.com');
+    expect(instance.urlInput.value).toBe('https://example.com');
+    expect(instance.newTabPage.style.display).toBe('none');
+  });
+
+  it('navigates to bare hostnames with http://', () => {
+    const instance = makeInstance();
+    navigateTo(instance, 'example.com');
+    expect(instance.webview.src).toBe('http://example.com');
   });
 });

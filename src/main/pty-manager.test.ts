@@ -536,6 +536,46 @@ describe('killPty', () => {
   });
 });
 
+describe('killPty arriving while spawnPty is still awaiting', () => {
+  it('kills the PTY the moment it registers instead of orphaning the CLI', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    // The renderer drops the session before the PTY exists, so the kill finds
+    // no registry entry and must be remembered for the pending spawn.
+    expect(killPty('pending-kill')).toBe(false);
+    await spawnPty('pending-kill', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockKill).toHaveBeenCalledTimes(1);
+
+    // And deregistered: no live handle an orphaned CLI could keep writing to.
+    mockWrite.mockClear();
+    writePty('pending-kill', 'input');
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it('drops the pending kill when the attempt never spawns, so a retry survives', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+    const firstExit = vi.fn();
+
+    expect(killPty('retry-after-failure')).toBe(false);
+    await spawnPty('retry-after-failure', '/project', null, false, '--no-session', 'omp', undefined, undefined, '', vi.fn(), firstExit);
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(firstExit).toHaveBeenCalledWith(1);
+
+    // The user fixes the arguments and re-spawns the same session id: the kill
+    // that belonged to the failed attempt must not tear down the new CLI.
+    await spawnPty('retry-after-failure', '/project', null, false, '', 'omp', undefined, undefined, '', vi.fn(), vi.fn());
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockKill).not.toHaveBeenCalled();
+    mockWrite.mockClear();
+    writePty('retry-after-failure', 'input');
+    expect(mockWrite).toHaveBeenCalledWith('input');
+  });
+});
+
 describe('PTY replacement exit ordering', () => {
   it('suppresses only the replaced process when the new process exits first', async () => {
     const oldProc = createMockPtyProcess();

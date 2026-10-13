@@ -1,6 +1,7 @@
 import { appState } from '../../state.js';
 import { shortcutManager, displayKeys } from '../../shortcuts.js';
 import { BROWSER_DEFAULT_PARTITION } from '../../../shared/types.js';
+import { isHttpUrl } from '../../../shared/url.js';
 import { showChromeImportModal } from '../chrome-import-modal.js';
 import {
   VIEWPORT_PRESETS,
@@ -650,6 +651,17 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     urlInput.value = e.url;
     appState.updateSessionBrowserTabUrl(sessionId, e.url);
     if (instance.flowMode) recordNavigationStep(e.url);
+  }) as EventListener);
+  // allowpopups above lets guest pages request windows. Without this handler a
+  // popup would open an in-app window inheriting this tab's session partition
+  // (possibly the imported-Cookie jar); the main window's setWindowOpenHandler
+  // does not cover webview guests. Deny every guest window open and hand
+  // http(s) targets to the OS browser via the validated app:openExternal path.
+  webview.addEventListener('new-window', ((e: CustomEvent & { url?: unknown }) => {
+    e.preventDefault();
+    if (typeof e.url === 'string' && isHttpUrl(e.url)) {
+      void window.vibeyard.app.openExternal(e.url).catch(() => {});
+    }
   }) as EventListener);
 
   webview.addEventListener('ipc-message', ((e: CustomEvent & { channel: string; args: unknown[] }) => {

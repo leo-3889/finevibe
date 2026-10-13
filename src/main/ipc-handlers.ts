@@ -394,6 +394,14 @@ export function registerIpcHandlers(): void {
     saveState(state);
   });
 
+  // Synchronous startup channel: the renderer applies theme/zoom before its
+  // first paint, before the async store:load resolves. Served from the
+  // in-memory state cache, so no file read happens on this path.
+  ipcMain.on('store:startup-prefs', (event) => {
+    const prefs = loadState().preferences;
+    event.returnValue = { theme: prefs.theme ?? null, zoomFactor: prefs.zoomFactor ?? null };
+  });
+
   // Provision (create) a profile's config dir. Returns the resolved absolute
   // path and whether it is the auto-managed location.
   ipcMain.handle('profiles:provision', (_event, profileId: string, customPath?: string, providerId?: ProviderId) => {

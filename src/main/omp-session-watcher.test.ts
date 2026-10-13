@@ -15,7 +15,7 @@ vi.mock('os', () => ({
   tmpdir: () => '/tmp',
 }));
 
-const electronMock = vi.hoisted(() => ({ windows: [] as any[] }));
+const electronMock = vi.hoisted(() => ({ windows: [] as { isDestroyed(): boolean }[] }));
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => electronMock.windows },
 }));
@@ -46,27 +46,36 @@ import {
   stopOmpSessionWatcher,
 } from './omp-session-watcher';
 
-const mockReaddirSync = vi.mocked(fs.readdirSync);
-const mockOpenSync = vi.mocked(fs.openSync);
-const mockReadSync = vi.mocked(fs.readSync);
-const mockCloseSync = vi.mocked(fs.closeSync);
+// The mock fs implements the subset the watcher uses; the real fs signatures
+// are wider (PathLike, ArrayBufferView). Type the handles against that subset.
+const mockReaddirSync = vi.mocked(fs.readdirSync as unknown as (p: string) => string[]);
+const mockOpenSync = vi.mocked(fs.openSync as unknown as (p: string) => number);
+const mockReadSync = vi.mocked(fs.readSync as unknown as (fd: number, target: Buffer) => number);
+const mockCloseSync = vi.mocked(fs.closeSync as unknown as (fd: number) => boolean);
 const mockWriteCliSessionId = vi.mocked(writeCliSessionId);
 const mockWatch = vi.mocked(fs.watch);
 
-const SESSIONS_ROOT = path.join('/mock/home', '.omp', 'agent', 'sessions');
+/**
+ * Every OMP launch gets an EXCLUSIVE per-launch session dir (see
+ * launch-session-dir.ts); the mock fs models them as flat dirs —
+ * transcripts appear directly inside. Paths are built with path.join so
+ * the expectations hold on Windows as well as POSIX CI runners.
+ */
+const APP_DATA = path.join('/mock', 'app-data');
+const DIR_UI1 = path.join(APP_DATA, 'omp-sessions', 'ui-1');
+const DIR_UI2 = path.join(APP_DATA, 'omp-sessions', 'ui-2');
+const DIR_PRO = path.join(APP_DATA, 'omp-sessions', 'ui-pro');
+const DIR_EXT = path.join('/mock', 'default-tree'); // external CLI run — never watched
 
 /**
- * Mock the sessions tree: readdirSync(sessionsRoot) returns the dir names,
- * readdirSync(sessionsRoot/<dir>) returns that dir's files. Anything else
- * throws ENOENT, as a real missing path would.
+ * Mock the launch dirs: readdirSync(dir) returns that dir's files.
+ * Anything else throws ENOENT, as a real missing path would.
  */
-function mockSessionsTree(sessionsRoot: string, filesByDir: Record<string, string[]>): void {
+function mockDirs(filesByDir: Record<string, string[]>): void {
   mockReaddirSync.mockImplementation((p: string) => {
-    if (p === sessionsRoot) return Object.keys(filesByDir);
-    for (const [dir, files] of Object.entries(filesByDir)) {
-      if (p === path.join(sessionsRoot, dir)) return files;
-    }
-    throw new Error('ENOENT');
+    const files = filesByDir[p];
+    if (!files) throw new Error('ENOENT');
+    return files;
   });
 }
 
@@ -111,24 +120,30 @@ function header(piId: string, cwd: string): string {
   return JSON.stringify({ type: 'session', version: 3, id: piId, timestamp: 't', cwd });
 }
 
-/** `<ISO timestamp>_<id>.jsonl` stamped `ageMs` before the (fake) current time. */
-function transcript(ageMs: number, id: string): string {
-  const d = new Date(Date.now() - ageMs);
-  const p = (n: number) => String(n).padStart(2, '0');
-  const ms = String(d.getUTCMilliseconds()).padStart(3, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}-${p(d.getUTCMinutes())}-${p(d.getUTCSeconds())}-${ms}Z_${id}.jsonl`;
+function startWatcher(): fs.FSWatcher & { close: () => void } {
+  // Fake native watcher — the fs.watch mock hands it to the implementation.
+  const mockWatcher = { close: vi.fn() } as unknown as fs.FSWatcher & { close: () => void };
+  mockWatch.mockReturnValue(mockWatcher);
+  startOmpSessionWatcher();
+  return mockWatcher;
 }
 
-function startWatcher(): void {
-  const mockWatcher = { close: vi.fn() };
-  mockWatch.mockReturnValue(mockWatcher as any);
-  startOmpSessionWatcher();
+/** The watch callback wired to a specific dir. */
+function watchCallbackFor(dir: string): (...args: unknown[]) => void {
+  const call = mockWatch.mock.calls.find((c) => c[0] === dir);
+  if (!call) throw new Error(`no fs.watch registered for ${dir}`);
+  return call[1] as (...args: unknown[]) => void;
+}
+
+function readdirCallsFor(dir: string): number {
+  return mockReaddirSync.mock.calls.filter((c) => c[0] === dir).length;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   stopOmpSessionWatcher();
+  mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
   // A live main window is available for the per-tick window lookup
   electronMock.windows = [{ isDestroyed: () => false }];
 });
@@ -139,63 +154,75 @@ afterEach(() => {
 });
 
 describe('registerPendingOmpSession', () => {
-  it('snapshots the existing files of the default sessions root', () => {
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['old.jsonl'] });
+  it('forces a fresh listing of the per-launch session dir', () => {
+    mockDirs({ [DIR_UI1]: ['old.jsonl'] });
 
-    registerPendingOmpSession('ui-1', '/proj');
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
 
-    expect(mockReaddirSync).toHaveBeenCalledWith(SESSIONS_ROOT);
-    expect(mockReaddirSync).toHaveBeenCalledWith(path.join(SESSIONS_ROOT, 'dir-a'));
+    // The registration snapshot is what excludes pre-existing files.
+    expect(mockReaddirSync).toHaveBeenCalledWith(DIR_UI1);
   });
 
-  it('snapshots the profile sessions root when a configDir is given', () => {
-    const profileRoot = path.join('/profiles/work', 'sessions');
-    mockSessionsTree(profileRoot, { 'dir-a': [] });
+  it('scans the profile launch dir when a configDir is given', () => {
+    mockDirs({ [DIR_PRO]: [] });
 
-    registerPendingOmpSession('ui-1', '/proj', '/profiles/work');
+    registerPendingOmpSession('ui-1', '/proj', '/profiles/work', { sessionDir: DIR_PRO });
 
-    expect(mockReaddirSync).toHaveBeenCalledWith(profileRoot);
+    expect(mockReaddirSync).toHaveBeenCalledWith(DIR_PRO);
   });
 
-  it('handles a missing sessions root gracefully', () => {
-    mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    expect(() => registerPendingOmpSession('ui-1', '/proj')).not.toThrow();
+  it('handles a missing launch dir gracefully', () => {
+    // Default mock: every readdir throws ENOENT (dir not created yet).
+    expect(() =>
+      registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 })
+    ).not.toThrow();
+  });
+
+  it('treats a registration without a sessionDir as a no-op', () => {
+    startWatcher();
+    registerPendingOmpSession('ui-x', '/proj', undefined);
+    vi.advanceTimersByTime(4_000);
+
+    expect(mockReaddirSync).not.toHaveBeenCalled();
+    expect(mockWatch).not.toHaveBeenCalled();
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
   });
 });
 
 describe('startOmpSessionWatcher', () => {
-  it('starts fs.watch on the default sessions root', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
+  it('starts fs.watch on the launch dir when a session registers', () => {
+    mockDirs({ [DIR_UI1]: [] });
+    startWatcher();
 
-    startOmpSessionWatcher();
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
 
-    expect(mockWatch).toHaveBeenCalledWith(SESSIONS_ROOT, expect.any(Function));
+    expect(mockWatch).toHaveBeenCalledWith(DIR_UI1, expect.any(Function));
   });
 
-  it('also watches existing per-cwd subdirs (fs.watch is non-recursive off-macOS)', () => {
-    mockReaddirSync.mockImplementation((p: string) => {
-      if (p === SESSIONS_ROOT) return ['--C--Users-me--'];
-      throw new Error('ENOENT');
-    });
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
+  it('watches each distinct launch dir exactly once', () => {
+    startWatcher();
+    mockDirs({ [DIR_UI1]: [], [DIR_UI2]: [] });
 
-    startOmpSessionWatcher();
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    registerPendingOmpSession('ui-2', '/proj', undefined, { sessionDir: DIR_UI2 });
+    // Re-spawn re-registering the same dir reuses its watcher.
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
 
-    expect(mockWatch).toHaveBeenCalledWith(SESSIONS_ROOT, expect.any(Function));
-    expect(mockWatch).toHaveBeenCalledWith(path.join(SESSIONS_ROOT, '--C--Users-me--'), expect.any(Function));
+    expect(mockWatch.mock.calls.filter((c) => c[0] === DIR_UI1)).toHaveLength(1);
+    expect(mockWatch.mock.calls.filter((c) => c[0] === DIR_UI2)).toHaveLength(1);
   });
 
-  it('does not start a second watcher if already started', () => {
-    mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
+  it('does not start a second polling fallback if already started', () => {
+    startWatcher();
+    startOmpSessionWatcher(); // double start must be idempotent
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
 
-    startOmpSessionWatcher();
-    startOmpSessionWatcher();
+    vi.advanceTimersByTime(2_000);
 
-    expect(mockWatch).toHaveBeenCalledTimes(1);
+    // Exactly the registration snapshot + ONE poll tick (a second interval
+    // would enumerate the launch dir twice per tick).
+    expect(readdirCallsFor(DIR_UI1)).toBe(2);
   });
 
   it('falls back to polling when fs.watch fails (dir missing)', () => {
@@ -204,112 +231,90 @@ describe('startOmpSessionWatcher', () => {
     expect(() => startOmpSessionWatcher()).not.toThrow();
 
     // Polling still works: a new transcript is discovered on the 2s tick
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-1', '/proj'));
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    mockDirs({ [DIR_UI1]: ['new.jsonl'] });
+    mockFirstLine(header('omp-1', '/proj'));
 
     vi.advanceTimersByTime(2000);
 
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-1');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'omp-1');
   });
 });
 
 describe('session ID assignment', () => {
-  it('assigns the pi session ID to a pending session on poll', () => {
+  it('assigns the omp session ID to a pending session on poll', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-session-1', '/proj');
-    // The transcript appears after registration
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-abc-123', '/proj'));
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-session-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    // The transcript appears after registration — in THIS session's dir.
+    mockDirs({ [DIR_UI1]: ['new.jsonl'] });
+    mockFirstLine(header('omp-abc-123', '/proj'));
 
     vi.advanceTimersByTime(2000);
 
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-session-1', 'pi-abc-123');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-session-1', 'omp-abc-123');
     expect(mockCloseSync).toHaveBeenCalledWith(42);
   });
 
   it('assigns on a coalesced fs.watch event without waiting for the poll', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-watch', '/proj'));
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    mockDirs({ [DIR_UI1]: ['new.jsonl'] });
+    mockFirstLine(header('omp-watch', '/proj'));
 
-    const watchCallback = mockWatch.mock.calls[0][1] as (...args: unknown[]) => void;
-    watchCallback();
+    watchCallbackFor(DIR_UI1)('rename');
     // The event path is debounced, not synchronous; it still lands well
     // before the 2s polling fallback.
     vi.advanceTimersByTime(250);
 
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-watch');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'omp-watch');
   });
 
   it('does not scan when there are no pending sessions', () => {
-    mockReaddirSync.mockReturnValue([] as any); // empty sessions root at start
     startWatcher();
 
-    const watchCallback = mockWatch.mock.calls[0][1] as (...args: unknown[]) => void;
-    watchCallback();
-    vi.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(4_000);
 
-    // Only the one-time subdir enumeration at start — no scan on watch event or tick
-    expect(mockReaddirSync).toHaveBeenCalledTimes(1);
-    expect(mockReaddirSync).toHaveBeenNthCalledWith(1, SESSIONS_ROOT);
+    // Nothing is registered — no launch dir is ever listed or read.
+    expect(mockReaddirSync).not.toHaveBeenCalled();
     expect(mockOpenSync).not.toHaveBeenCalled();
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
   });
 
-  it('pairs simultaneous same-project sessions in filename (timestamp) order, not readdir order', () => {
+  it('attributes each session to the transcript in its OWN launch dir, whatever the readdir order', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-first', '/proj');
-    registerPendingOmpSession('ui-second', '/proj');
+    mockDirs({ [DIR_UI1]: [], [DIR_UI2]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    registerPendingOmpSession('ui-2', '/proj', undefined, { sessionDir: DIR_UI2 });
 
-    // Both transcripts appear; readdir lists the NEWER one first.
-    // Timestamps are relative to "now" so they fall inside the adoption
-    // window (external runs stamped older than registration are skipped).
-    const stamp = (ageSec: number) => {
-      const d = new Date(Date.now() - ageSec * 1000);
-      const p = (n: number) => String(n).padStart(2, '0');
-      return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}-${p(d.getUTCMinutes())}-${p(d.getUTCSeconds())}-${p(d.getUTCMilliseconds())}Z`;
-    };
-    const older = `${stamp(3)}_pi-older.jsonl`;
-    const newer = `${stamp(0)}_pi-newer.jsonl`;
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [newer, older] });
-
-    let currentFile = '';
-    mockOpenSync.mockImplementation((p: string) => { currentFile = p; return 42; });
-    mockReadSync.mockImplementation((_fd: number, target: Buffer) => {
-      const line = currentFile.includes('pi-older') ? header('pi-older', '/proj') : header('pi-newer', '/proj');
-      const buf = Buffer.from(line);
-      buf.copy(target);
-      return buf.length;
+    // Ownership comes from the exclusive dir, not from pairing files to
+    // sessions by order — each session only ever sees its own dir.
+    mockDirs({ [DIR_UI1]: ['late.jsonl'], [DIR_UI2]: ['early.jsonl'] });
+    mockFilesByHeader({
+      'late.jsonl': header('omp-late', '/proj'),
+      'early.jsonl': header('omp-early', '/proj'),
     });
-    mockCloseSync.mockReturnValue(true);
 
     vi.advanceTimersByTime(2000);
 
-    // Oldest pending session gets the oldest transcript, not the first in readdir order
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-first', 'pi-older');
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-second', 'pi-newer');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'omp-late');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-2', 'omp-early');
   });
 
   it('does not scan when no window is available', () => {
     // The poll looks the window up per tick and skips the scan without one.
     electronMock.windows = [];
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
+    startWatcher();
 
-    startOmpSessionWatcher();
-
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-1', '/proj'));
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    mockDirs({ [DIR_UI1]: ['new.jsonl'] });
+    mockFirstLine(header('omp-1', '/proj'));
 
     vi.advanceTimersByTime(2000);
 
@@ -321,31 +326,34 @@ describe('session ID assignment', () => {
     startWatcher();
 
     // old.jsonl exists when the session registers — it must never be assigned
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['old.jsonl'] });
-    mockFirstLine(header('pi-old', '/proj'));
-    registerPendingOmpSession('ui-1', '/proj');
+    mockDirs({ [DIR_UI1]: ['old.jsonl'] });
+    mockFilesByHeader({ 'old.jsonl': header('omp-old', '/proj') });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
 
     // Only the pre-existing file is present — nothing new to assign
     vi.advanceTimersByTime(2000);
     expect(mockWriteCliSessionId).not.toHaveBeenCalled();
 
     // A genuinely new file appears — it is the only candidate
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['old.jsonl', 'new.jsonl'] });
-    mockFirstLine(header('pi-new', '/proj'));
+    mockDirs({ [DIR_UI1]: ['old.jsonl', 'new.jsonl'] });
+    mockFilesByHeader({ 'new.jsonl': header('omp-new', '/proj') });
     vi.advanceTimersByTime(2000);
 
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-new');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'omp-new');
+    expect(mockWriteCliSessionId).not.toHaveBeenCalledWith('ui-1', 'omp-old');
   });
 
-  it('skips headers whose cwd does not match the pending project', () => {
+  it('never adopts a file written outside the launch dir', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-other': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-other': ['new.jsonl'] });
-    mockFirstLine(header('pi-other', '/other-project'));
+    mockDirs({ [DIR_UI1]: [], [DIR_EXT]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    // An external CLI run (same project) writes to the default tree —
+    // ownership follows the exclusive dir, so this is never adopted.
+    mockDirs({ [DIR_UI1]: [], [DIR_EXT]: ['new.jsonl'] });
+    mockFirstLine(header('omp-external', '/proj'));
 
-    vi.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(4_000);
 
     expect(mockWriteCliSessionId).not.toHaveBeenCalled();
   });
@@ -353,11 +361,11 @@ describe('session ID assignment', () => {
   it('skips non-session and malformed first lines', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['a.jsonl', 'b.jsonl'] });
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    mockDirs({ [DIR_UI1]: ['a.jsonl', 'b.jsonl'] });
 
-    mockFirstLine(JSON.stringify({ type: 'message', id: 'pi-x', cwd: '/proj' }));
+    mockFirstLine(JSON.stringify({ type: 'message', id: 'omp-x', cwd: '/proj' }));
     vi.advanceTimersByTime(2000);
     expect(mockWriteCliSessionId).not.toHaveBeenCalled();
 
@@ -369,78 +377,81 @@ describe('session ID assignment', () => {
   it('skips unreadable files without throwing', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['gone.jsonl'] });
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    mockDirs({ [DIR_UI1]: ['gone.jsonl'] });
     mockOpenSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
     expect(() => vi.advanceTimersByTime(2000)).not.toThrow();
     expect(mockWriteCliSessionId).not.toHaveBeenCalled();
   });
 
-  it('does not assign the same pi session ID twice', () => {
+  it('does not assign the same omp session ID twice', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-dup', '/proj'));
+    mockDirs({ [DIR_UI1]: [], [DIR_UI2]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    mockDirs({ [DIR_UI1]: ['new.jsonl'], [DIR_UI2]: [] });
+    mockFirstLine(header('omp-dup', '/proj'));
 
     vi.advanceTimersByTime(2000);
     expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
 
-    // A second pending session for the same project: the only file is
-    // already assigned, so nothing new can be handed out
-    registerPendingOmpSession('ui-2', '/proj');
+    // A second session whose dir gains a file with the SAME id: the id is
+    // already assigned, so it is never handed out again.
+    registerPendingOmpSession('ui-2', '/proj', undefined, { sessionDir: DIR_UI2 });
+    mockDirs({ [DIR_UI1]: ['new.jsonl'], [DIR_UI2]: ['dup.jsonl'] });
     vi.advanceTimersByTime(2000);
     expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
   });
 
-  it('assigns the first matching file to the oldest pending session', () => {
+  it('adopts the exact file named by a known CLI id when the dir holds several', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-older', '/proj');
-    vi.advanceTimersByTime(100);
-    registerPendingOmpSession('ui-newer', '/proj');
-    // The transcript appears after both registrations
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-first', '/proj'));
+    mockDirs({ [DIR_UI1]: [] });
+    // Resumes always know their id; it is carried into the registration.
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1, knownCliId: 'omp-known' });
+    mockDirs({ [DIR_UI1]: ['other.jsonl', 'right.jsonl'] });
+    mockFilesByHeader({
+      'other.jsonl': header('omp-other', '/proj'),
+      'right.jsonl': header('omp-known', '/proj'),
+    });
 
     vi.advanceTimersByTime(2000);
 
-    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-older', 'pi-first');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'omp-known');
+    expect(mockWriteCliSessionId).not.toHaveBeenCalledWith('ui-1', 'omp-other');
   });
 
-  it('scans the profile sessions root for profiled sessions', () => {
+  it('adopts a profiled launch from its profile launch dir', () => {
     startWatcher();
 
-    const profileRoot = path.join('/profiles/work', 'sessions');
-    mockSessionsTree(profileRoot, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj', '/profiles/work');
-    mockSessionsTree(profileRoot, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-profile', '/proj'));
+    mockDirs({ [DIR_PRO]: [] });
+    registerPendingOmpSession('ui-1', '/proj', '/profiles/work', { sessionDir: DIR_PRO });
+    mockDirs({ [DIR_PRO]: ['new.jsonl'] });
+    mockFirstLine(header('omp-profile', '/proj'));
 
     vi.advanceTimersByTime(2000);
 
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-profile');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'omp-profile');
   });
 });
 
 describe('unregisterOmpSession', () => {
   it('removes a pending session so it is no longer assignable', () => {
-    startWatcher();
+    const mockWatcher = startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-gone', '/proj');
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-gone', '/proj', undefined, { sessionDir: DIR_UI1 });
     unregisterOmpSession('ui-gone');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-orphan', '/proj'));
+    mockDirs({ [DIR_UI1]: ['new.jsonl'] });
+    mockFirstLine(header('omp-orphan', '/proj'));
 
     vi.advanceTimersByTime(2000);
 
     expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+    // The unwatched dir's native watcher is released with its last session.
+    expect(mockWatcher.close).toHaveBeenCalled();
   });
 
   it('is a no-op for unknown session ids', () => {
@@ -449,14 +460,11 @@ describe('unregisterOmpSession', () => {
 });
 
 describe('stopOmpSessionWatcher', () => {
-  it('closes the watcher and clears pending state', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
+  it('closes the watchers and clears pending state', () => {
+    const mockWatcher = startWatcher();
 
-    startOmpSessionWatcher();
-
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
 
     stopOmpSessionWatcher();
 
@@ -468,9 +476,9 @@ describe('stopOmpSessionWatcher', () => {
     stopOmpSessionWatcher();
 
     // A late registration must not be picked up — the interval is gone
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-late', '/proj'));
-    registerPendingOmpSession('ui-late', '/proj');
+    mockDirs({ [DIR_UI1]: ['new.jsonl'] });
+    mockFirstLine(header('omp-late', '/proj'));
+    registerPendingOmpSession('ui-late', '/proj', undefined, { sessionDir: DIR_UI1 });
 
     vi.advanceTimersByTime(2000);
 
@@ -487,93 +495,108 @@ function titleHead(title: string, piId: string, cwd: string): string {
 }
 
 describe('title sync wiring', () => {
-  it('hands the adopted session to the transcript sync', () => {
+  it('hands the adopted session to the transcript sync with its launch dir', () => {
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(titleHead('Fix the flaky test', 'pi-title-1', '/proj'));
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    mockDirs({ [DIR_UI1]: ['new.jsonl'] });
+    mockFirstLine(titleHead('Fix the flaky test', 'omp-title-1', '/proj'));
 
     vi.advanceTimersByTime(2000);
 
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-title-1');
-    expect(mockRegisterTranscriptSync).toHaveBeenCalledWith('ui-1', 'omp', 'pi-title-1', '/proj', undefined);
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'omp-title-1');
+    expect(mockRegisterTranscriptSync).toHaveBeenCalledWith(
+      'ui-1', 'omp', 'omp-title-1', '/proj', undefined, { sessionDir: DIR_UI1 }
+    );
   });
 
   it('passes the profile configDir through to the transcript sync', () => {
     startWatcher();
 
-    const profileRoot = path.join('/profiles/work', 'sessions');
-    mockSessionsTree(profileRoot, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj', '/profiles/work');
-    mockSessionsTree(profileRoot, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(titleHead('Profile title', 'pi-prof', '/proj'));
+    mockDirs({ [DIR_PRO]: [] });
+    registerPendingOmpSession('ui-1', '/proj', '/profiles/work', { sessionDir: DIR_PRO });
+    mockDirs({ [DIR_PRO]: ['new.jsonl'] });
+    mockFirstLine(titleHead('Profile title', 'omp-prof', '/proj'));
 
     vi.advanceTimersByTime(2000);
 
-    expect(mockRegisterTranscriptSync).toHaveBeenCalledWith('ui-1', 'omp', 'pi-prof', '/proj', '/profiles/work');
+    expect(mockRegisterTranscriptSync).toHaveBeenCalledWith(
+      'ui-1', 'omp', 'omp-prof', '/proj', '/profiles/work', { sessionDir: DIR_PRO }
+    );
   });
 
   it('still adopts when the transcript sync callback throws', () => {
     mockRegisterTranscriptSync.mockImplementation(() => { throw new Error('boom'); });
     startWatcher();
 
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': ['new.jsonl'] });
-    mockFirstLine(header('pi-throw', '/proj'));
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
+    mockDirs({ [DIR_UI1]: ['new.jsonl'] });
+    mockFirstLine(header('omp-throw', '/proj'));
 
     vi.advanceTimersByTime(2000);
 
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'pi-throw');
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'omp-throw');
   });
 });
 
 describe('/clear re-adoption', () => {
-  it('re-adopts a newer transcript in the same cwd and re-fires the sync', () => {
+  it('re-adopts a newer transcript in its own launch dir and re-fires the sync', () => {
     startWatcher();
-    const t1 = 'new.jsonl'; // null fileTs → passes the fresh-adoption tolerance
-    const t2 = transcript(2_000, 'cli-2');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-1', '/proj');
+    const t1 = 'first.jsonl';
+    const t2 = 'second.jsonl';
+    mockDirs({ [DIR_UI1]: [] });
+    registerPendingOmpSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1 });
 
-    // First transcript appears → adopt cli-1.
-    mockFilesByHeader({ [t1]: header('cli-1', '/proj') });
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [t1] });
+    // First transcript appears → adopt omp-1.
+    mockFilesByHeader({ [t1]: header('omp-1', '/proj') });
+    mockDirs({ [DIR_UI1]: [t1] });
     vi.advanceTimersByTime(2000);
-    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-1', 'cli-1');
-    expect(mockRegisterTranscriptSync).toHaveBeenLastCalledWith('ui-1', 'omp', 'cli-1', '/proj', undefined);
+    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-1', 'omp-1');
+    expect(mockRegisterTranscriptSync).toHaveBeenLastCalledWith(
+      'ui-1', 'omp', 'omp-1', '/proj', undefined, { sessionDir: DIR_UI1 }
+    );
 
-    // /clear → a NEWER transcript with a new id in the same cwd.
-    mockFilesByHeader({ [t1]: header('cli-1', '/proj'), [t2]: header('cli-2', '/proj') });
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [t1, t2] });
+    // /clear → OMP writes a brand-new transcript (new id) in its OWN dir.
+    mockFilesByHeader({ [t1]: header('omp-1', '/proj'), [t2]: header('omp-2', '/proj') });
+    mockDirs({ [DIR_UI1]: [t1, t2] });
     vi.advanceTimersByTime(2000);
-    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-1', 'cli-2');
-    expect(mockRegisterTranscriptSync).toHaveBeenLastCalledWith('ui-1', 'omp', 'cli-2', '/proj', undefined);
+    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-1', 'omp-2');
+    expect(mockRegisterTranscriptSync).toHaveBeenLastCalledWith(
+      'ui-1', 'omp', 'omp-2', '/proj', undefined, { sessionDir: DIR_UI1 }
+    );
   });
 
-  it('does NOT re-adopt when two adopted sessions share the cwd (ambiguous)', () => {
+  it('re-adopts only the session whose own dir gained the newer transcript', () => {
     startWatcher();
     const a1 = 'a.jsonl';
     const b1 = 'b.jsonl';
-    const clear = transcript(2_000, 'clear');
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [] });
-    registerPendingOmpSession('ui-A', '/proj');
-    registerPendingOmpSession('ui-B', '/proj');
+    const clear = 'clear.jsonl';
+    mockDirs({ [DIR_UI1]: [], [DIR_UI2]: [] });
+    // Two tabs on the SAME project — the dirs, not the cwd, decide who a
+    // new transcript belongs to.
+    registerPendingOmpSession('ui-A', '/proj', undefined, { sessionDir: DIR_UI1 });
+    registerPendingOmpSession('ui-B', '/proj', undefined, { sessionDir: DIR_UI2 });
 
-    // Both adopt their first transcripts (paired by filename order).
     mockFilesByHeader({ [a1]: header('id-a', '/proj'), [b1]: header('id-b', '/proj') });
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [a1, b1] });
+    mockDirs({ [DIR_UI1]: [a1], [DIR_UI2]: [b1] });
     vi.advanceTimersByTime(2000);
     expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-A', 'id-a');
     expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-B', 'id-b');
-    const callsAfterFresh = mockWriteCliSessionId.mock.calls.length;
+    const callsForA = mockWriteCliSessionId.mock.calls.filter((c) => c[0] === 'ui-A').length;
 
-    // A newer transcript appears — ambiguous which session cleared → skip.
-    mockFilesByHeader({ [a1]: header('id-a', '/proj'), [b1]: header('id-b', '/proj'), [clear]: header('id-clear', '/proj') });
-    mockSessionsTree(SESSIONS_ROOT, { 'dir-a': [a1, b1, clear] });
+    // B runs /clear: the new transcript lands in B's dir only — A is
+    // untouched, and B follows its own dir's newest file.
+    mockFilesByHeader({
+      [a1]: header('id-a', '/proj'),
+      [b1]: header('id-b', '/proj'),
+      [clear]: header('id-clear', '/proj'),
+    });
+    mockDirs({ [DIR_UI1]: [a1], [DIR_UI2]: [b1, clear] });
     vi.advanceTimersByTime(2000);
-    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(callsAfterFresh);
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-B', 'id-clear');
+    expect(mockWriteCliSessionId.mock.calls.filter((c) => c[0] === 'ui-A')).toHaveLength(callsForA);
   });
 });

@@ -19,7 +19,7 @@ const header = (id: string, cwd: string, title?: string) =>
     id,
     timestamp: 't',
     cwd,
-    ...(title !== undefined ? { title, titleSource: 'auto' } : {}),
+    ...(title === undefined ? {} : { title, titleSource: 'auto' }),
   });
 
 const titleEntry = (title: string) =>
@@ -151,11 +151,11 @@ describe('readTranscriptStatusSync huge-entry fallback', () => {
         message: { role: 'assistant', stopReason: 'stop', content: big },
       });
       expect(hugeEntry.length).toBeGreaterThan(TAIL_READ_BYTES);
-      const content = [
+      const content = `${[
         header('s1', '/proj'),
         JSON.stringify({ type: 'message', message: { role: 'user', content: 'go' } }),
         hugeEntry,
-      ].join('\n') + '\n';
+      ].join('\n')}\n`;
       fs.writeFileSync(file, content);
       // The 16KB window lands entirely inside the huge final entry (no
       // complete line); the bounded fallback read must still surface its
@@ -164,6 +164,22 @@ describe('readTranscriptStatusSync huge-entry fallback', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('transcriptStatusFromTail cancellation (PO-04)', () => {
+  it('maps a cancelled assistant turn (aborted) to waiting, not working', () => {
+    expect(transcriptStatusFromTail(assistant('aborted'))).toBe('waiting');
+    expect(transcriptStatusFromTail([userMsg(), assistant('aborted')].join('\n'))).toBe('waiting');
+  });
+
+  it('resumes normally on the next turn: working, then completed on its clean stop', () => {
+    const cancelled = [userMsg(), assistant('aborted')].join('\n');
+    expect(transcriptStatusFromTail(cancelled)).toBe('waiting');
+    const nextTurn = [userMsg(), assistant('aborted'), userMsg()].join('\n');
+    expect(transcriptStatusFromTail(nextTurn)).toBe('working');
+    const nextTurnDone = [userMsg(), assistant('aborted'), userMsg(), assistant('stop')].join('\n');
+    expect(transcriptStatusFromTail(nextTurnDone)).toBe('completed');
   });
 });
 
@@ -218,11 +234,11 @@ describe('readSessionExitReasonSync', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-exit-'));
     try {
       const file = path.join(dir, 't.jsonl');
-      const content = [
+      const content = `${[
         header('s1', '/proj'),
         assistant('stop'),
         sessionExitWith({ reason: 'unhandled_rejection', kind: 'fatal' }),
-      ].join('\n') + '\n';
+      ].join('\n')}\n`;
       fs.writeFileSync(file, content);
       expect(readSessionExitReasonSync(file)).toEqual({ reason: 'unhandled_rejection', kind: 'fatal' });
     } finally {
@@ -235,7 +251,7 @@ describe('readSessionExitReasonSync', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-exit-'));
     try {
       const file = path.join(dir, 't.jsonl');
-      fs.writeFileSync(file, [header('s1', '/proj'), assistant('stop')].join('\n') + '\n');
+      fs.writeFileSync(file, `${[header('s1', '/proj'), assistant('stop')].join('\n')}\n`);
       expect(readSessionExitReasonSync(file)).toBeNull();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -256,7 +272,7 @@ describe('readSessionExitReasonSync', () => {
         },
       });
       expect(hugeExit.length).toBeGreaterThan(TAIL_READ_BYTES);
-      const content = [header('s1', '/proj'), assistant('stop'), hugeExit].join('\n') + '\n';
+      const content = `${[header('s1', '/proj'), assistant('stop'), hugeExit].join('\n')}\n`;
       fs.writeFileSync(file, content);
       // The 16KB window lands entirely inside the huge final line (no
       // complete line to parse); the bounded fallback read must still

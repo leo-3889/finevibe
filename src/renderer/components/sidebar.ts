@@ -19,7 +19,7 @@ import { attachHoverCard } from './hover-card.js';
 import { mountGitPanel, closeGitPanel } from './git-panel.js';
 import { gitChangeCount, onChange as onGitStatusChange } from '../git-status.js';
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW, ICON_SESSIONS, ICON_FILES, ICON_GIT } from '../icons.js';
-import { t } from '../i18n.js';
+import { getLocale, onLocaleChange, t } from '../i18n.js';
 import { promptProjectSettings } from './project-settings.js';
 
 type ProjectPanel = 'history' | 'files' | 'git' | null;
@@ -67,6 +67,9 @@ export function initSidebar(): void {
   });
   initDiscussionsBadge();
   onDiscussionsChange(renderDiscussions);
+  // Bootstrap renders run before initI18n() applies the persisted locale, so
+  // the card must re-translate when the locale changes, not only on badge moves.
+  onLocaleChange(renderDiscussions);
 
   initResizeHandle();
   appState.on('state-loaded', () => {
@@ -74,6 +77,10 @@ export function initSidebar(): void {
       sidebarEl.style.width = appState.sidebarWidth + 'px';
     }
     applySidebarCollapsed();
+    // initSidebar() runs before appState.load(), so the discussions link was
+    // shown from default preferences; re-apply visibility once the persisted
+    // sidebarViews preference is actually available.
+    applyDiscussionsVisibility();
     render();
   });
   appState.on('sidebar-toggled', applySidebarCollapsed);
@@ -104,7 +111,7 @@ export function initSidebar(): void {
     if (projectId !== appState.activeProjectId) return;
     const gitBtn = projectListEl.querySelector('.project-row.active .project-action-btn.git-toggle');
     const count = gitChangeCount(projectId);
-    const gitEnabled = appState.preferences.sidebarViews?.gitPanel ?? true;
+    const gitEnabled = appState.sidebarView('gitPanel');
     if (!gitBtn) {
       if (count !== null && gitEnabled) render();
       return;
@@ -166,11 +173,9 @@ function render(): void {
   projectListEl.innerHTML = '';
 
   const opts: RenderOpts = {
-    fileTreeEnabled: appState.preferences.sidebarViews?.fileTree ?? true,
-    historyEnabled:
-      (appState.preferences.sidebarViews?.sessionHistory ?? true) &&
-      appState.preferences.sessionHistoryEnabled,
-    gitEnabled: appState.preferences.sidebarViews?.gitPanel ?? true,
+    fileTreeEnabled: appState.sidebarView('fileTree'),
+    historyEnabled: appState.sidebarView('sessionHistory') && appState.preferences.sessionHistoryEnabled,
+    gitEnabled: appState.sidebarView('gitPanel'),
   };
 
   // Projects keep their user-controlled order (drag-and-drop reorderable); the
@@ -654,7 +659,7 @@ function initResizeHandle(): void {
 }
 
 function applyDiscussionsVisibility(): void {
-  const visible = appState.preferences.sidebarViews?.discussions ?? true;
+  const visible = appState.sidebarView('discussions');
   sidebarDiscussionsEl.classList.toggle('hidden', !visible);
 }
 
@@ -801,11 +806,14 @@ function hideProjectContextMenu(): void {
 }
 
 let lastDiscussionsCount = -1;
+let lastDiscussionsLocale = '';
 
 function renderDiscussions(): void {
   const count = getDiscussionsNewCount();
-  if (count === lastDiscussionsCount) return;
+  const locale = getLocale();
+  if (count === lastDiscussionsCount && locale === lastDiscussionsLocale) return;
   lastDiscussionsCount = count;
+  lastDiscussionsLocale = locale;
   // Two unread indicators: dot is shown only when sidebar is collapsed (icon visible),
   // inline badge is shown only when expanded (text visible). CSS picks one per mode.
   const dot = count > 0 ? '<span class="discussions-icon-dot"></span>' : '';

@@ -6,6 +6,8 @@ import type { Stats, ReadStream } from 'fs';
 vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
   readdirSync: vi.fn(),
+  statSync: vi.fn(),
+  readFileSync: vi.fn(),
   openSync: vi.fn(),
   readSync: vi.fn(),
   closeSync: vi.fn(),
@@ -13,7 +15,11 @@ vi.mock('fs', () => ({
   promises: { readFile: vi.fn(), readdir: vi.fn(), open: vi.fn(), stat: vi.fn() },
 }));
 vi.mock('os', () => ({ homedir: () => '/mock/home', tmpdir: () => '/tmp' }));
-vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: () => [] },
+  // launchSessionBaseDir() derives the per-launch session dirs from userData.
+  app: { getPath: () => '/mock/app-path' },
+}));
 vi.mock('../pty-manager', () => ({ getFullPath: () => '' }));
 vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
 
@@ -23,8 +29,10 @@ import { OmpProvider } from './omp-provider';
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReaddirSync = vi.mocked(fs.readdirSync);
 const mockOpenSync = vi.mocked(fs.openSync);
-const mockReadSync = vi.mocked(fs.readSync);
-const mockCloseSync = vi.mocked(fs.closeSync);
+// Mock fs implements the read subset the search uses; type against it, not the
+// full PathLike/ArrayBufferView signatures.
+const mockReadSync = vi.mocked(fs.readSync as unknown as (fd: number, target: Buffer) => number);
+const mockCloseSync = vi.mocked(fs.closeSync as unknown as (fd: number) => boolean);
 const mockReadFile = vi.mocked(fs.promises.readFile);
 const mockReaddir = vi.mocked(fs.promises.readdir);
 const mockOpen = vi.mocked(fs.promises.open);
@@ -113,6 +121,7 @@ describe('OmpProvider.getTranscriptPath()', () => {
 
 describe('OmpProvider.discoverTranscripts()', () => {
   it('emits a descriptor per .jsonl from the session header', async () => {
+    mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
     mockReaddir
       .mockResolvedValueOnce(['--C--Users-me--'] as any) // sessions/
       .mockResolvedValueOnce([FILE_NAME, 'notes.txt'] as any); // project dir
@@ -126,16 +135,38 @@ describe('OmpProvider.discoverTranscripts()', () => {
   });
 
   it('returns [] when the sessions root is missing', async () => {
+    mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
     mockReaddir.mockRejectedValueOnce(new Error('ENOENT'));
     expect(await new OmpProvider().discoverTranscripts()).toEqual([]);
   });
 
   it('skips unreadable files', async () => {
+    mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
     mockReaddir
       .mockResolvedValueOnce(['--C--Users-me--'] as any)
       .mockResolvedValueOnce([FILE_NAME] as any);
     mockOpen.mockRejectedValueOnce(new Error('EIO'));
     expect(await new OmpProvider().discoverTranscripts()).toEqual([]);
+  });
+
+  it('scans the per-launch session dirs under userData', async () => {
+    const base = path.join('/mock/app-path', 'omp-sessions');
+    mockReaddirSync.mockImplementation(((p: string) => (String(p) === base ? ['sess-1'] : [])) as any);
+    vi.mocked(fs.statSync).mockReturnValue({ isDirectory: () => true } as any);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      providerId: 'omp', cwd: 'C:\\Users\\me', createdAt: '2026-08-15T23:09:32.005Z',
+    }) as any);
+    mockReaddir
+      .mockResolvedValueOnce([] as any) // legacy default root — empty
+      .mockResolvedValueOnce([FILE_NAME, 'notes.txt'] as any); // per-launch dir (flat layout)
+    mockAsyncHeader(header(SID, 'C:\\Users\\me'));
+
+    const out = await new OmpProvider().discoverTranscripts();
+    expect(out).toHaveLength(1);
+    expect(out[0].cliSessionId).toBe(SID);
+    expect(out[0].projectCwd).toBe('C:\\Users\\me');
+    expect(out[0].transcriptPath).toBe(path.join(base, 'sess-1', FILE_NAME));
+    expect(out[0].profileId).toBeUndefined();
   });
 });
 

@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource } from '../shared/types';
-import { ZOOM_MIN, ZOOM_MAX } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, StartupPrefs } from '../shared/types';
+// Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
+// duplicated rather than imported because the main window runs with
+// sandbox: true, and a sandboxed preload's polyfilled require cannot load
+// local CommonJS files — only electron, events, timers and url.
+const ZOOM_MIN = 0.75;
+const ZOOM_MAX = 2.0;
 
 export type { CostData } from '../shared/types';
 
@@ -55,6 +60,7 @@ export interface VibeyardApi {
   store: {
     load(): Promise<unknown>;
     save(state: unknown): Promise<void>;
+    startupPrefs(): StartupPrefs;
   };
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
@@ -264,6 +270,9 @@ const api: VibeyardApi = {
   store: {
     load: () => ipcRenderer.invoke('store:load'),
     save: (state) => ipcRenderer.invoke('store:save', state),
+    // Sync round-trip: the renderer needs theme/zoom before its first paint,
+    // which is earlier than any invoke promise can resolve.
+    startupPrefs: () => ipcRenderer.sendSync('store:startup-prefs'),
   },
   profiles: {
     provision: (profileId, customPath, providerId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId),

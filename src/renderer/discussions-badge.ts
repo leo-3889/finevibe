@@ -48,6 +48,9 @@ async function poll(): Promise<void> {
 
 function startInterval(): void {
   if (pollTimer) return;
+  // A visibilitychange before load() would poll with an empty lastSeen and
+  // count every entry as new; the state-loaded subscription starts it instead.
+  if (!appState.loaded) return;
   if (document.hidden) return;
   poll();
   pollTimer = setInterval(poll, POLL_INTERVAL);

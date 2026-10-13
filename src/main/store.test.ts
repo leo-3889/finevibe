@@ -13,7 +13,7 @@ vi.mock('os', () => ({
 }));
 
 import * as fs from 'fs';
-import { loadState, saveState, flushState, saveStateSync } from './store';
+import { loadState, saveState, flushState, saveStateSync, invalidateStateCache } from './store';
 import type { PersistedState } from './store';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -32,6 +32,7 @@ const DEFAULT_STATE: PersistedState = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
+  invalidateStateCache();
 });
 
 afterEach(() => {

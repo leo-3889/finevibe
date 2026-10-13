@@ -11,16 +11,17 @@ const mockState = vi.hoisted(() => ({
     theme: 'dark' as 'dark' | 'light',
     defaultProvider: 'claude',
     sidebarViews: {
-      configSections: true,
       gitPanel: true,
       sessionHistory: true,
-      readinessSection: true,
       discussions: true,
+      fileTree: true,
+      activeSessions: true,
     },
     boardCardMetrics: true,
   },
   on: vi.fn(() => () => {}),
   setPreference: vi.fn(),
+  sidebarView: vi.fn((key: string) => (mockState.preferences.sidebarViews as Record<string, boolean>)[key] ?? true),
   setLocale: vi.fn(),
 }));
 

@@ -1,4 +1,4 @@
-import type { BoardColumn, BoardData, PersistedState, Preferences, ProjectRecord, SessionRecord } from '../../shared/types.js';
+import type { BoardColumn, BoardData, PersistedState, Preferences, ProjectRecord, SessionRecord, SidebarViews } from '../../shared/types.js';
 import { restoreCost } from '../session-cost.js';
 import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
@@ -19,6 +19,18 @@ export function createDefaultBoard(): BoardData {
  */
 export function hydrateLoadedState(state: PersistedState, defaultPreferences: Preferences): void {
   state.preferences = { ...defaultPreferences, ...state.preferences };
+  // Per-key merge: a save written before a new sidebar section existed must
+  // inherit its default instead of leaving the key undefined (the shallow
+  // spread above replaces the whole object).
+  const defaultViews = defaultPreferences.sidebarViews;
+  const savedViews = state.preferences.sidebarViews;
+  if (defaultViews) {
+    const views: SidebarViews = { ...defaultViews };
+    for (const key of Object.keys(views) as (keyof SidebarViews)[]) {
+      if (savedViews?.[key] !== undefined) views[key] = savedViews[key];
+    }
+    state.preferences.sidebarViews = views;
+  }
   // Legacy: a single global default profile → per-provider map, keyed on the
   // profile's own provider. A dangling id is dropped (it would never resolve).
   const legacyDefault = (state.preferences as { defaultProfileId?: string }).defaultProfileId;

@@ -56,7 +56,8 @@
     "files": [
       "dist/main/**/*",
       "dist/preload/**/*",
-      "dist/renderer/**/*"
+      "dist/renderer/**/*",
+      "build/icon.png"
     ],
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**"
@@ -87,15 +88,21 @@
       "icon": "build/icon.png"
     },
     "win": {
+      "artifactName": "Vibeyard-${version}-win-${arch}.${ext}",
       "target": [
         "nsis",
-        "portable"
+        "portable",
+        "zip"
       ],
       "icon": "build/icon.png"
     },
     "nsis": {
+      "artifactName": "Vibeyard-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "Vibeyard-${version}.${ext}"
     },
     "publish": {
       "provider": "github",

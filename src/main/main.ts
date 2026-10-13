@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, powerMonitor, shell } from 'electron';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
+import { pathToFileURL, fileURLToPath } from 'url';
 import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
 import { killAllPtys } from './pty-manager';
 import { flushState, loadState } from './store';
@@ -12,7 +12,7 @@ import { stopGitWatcher } from './git-watcher';
 import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
-import { isMac } from './platform';
+import { isMac, isWin } from './platform';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { isHttpUrl } from '../shared/url';
 
@@ -28,6 +28,36 @@ function requestConfirmClose(): void {
   }
 }
 
+// The only preload a <webview> guest may carry: the browser-tab inspect/draw
+// bridge, whose path the renderer obtains from app:getBrowserPreloadPath
+// (ipc-handlers) and sets as the webview's `preload` attribute. Its single
+// import is Electron's sandbox-safe ipcRenderer, so it keeps working with
+// nodeIntegration off and sandbox forced on.
+const BROWSER_GUEST_PRELOAD = path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js');
+
+function isBrowserGuestPreload(preload: string): boolean {
+  let candidate = preload.trim();
+  if (candidate.startsWith('file://')) {
+    try {
+      candidate = fileURLToPath(candidate);
+    } catch {
+      // The renderer writes the attribute as `file://${nativePath}`, which on
+      // Windows is not a valid file URL (file://C:\...). Strip the scheme and
+      // treat the remainder as a plain path.
+      candidate = candidate.slice('file://'.length);
+    }
+  }
+  try {
+    candidate = decodeURIComponent(candidate);
+  } catch {
+    // Not valid percent-encoding; compare the raw string (will not match).
+  }
+  candidate = path.normalize(candidate);
+  return isWin
+    ? candidate.toLowerCase() === BROWSER_GUEST_PRELOAD.toLowerCase()
+    : candidate === BROWSER_GUEST_PRELOAD;
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -41,7 +71,10 @@ function createWindow(): void {
       preload: path.join(__dirname, '..', '..', 'preload', 'preload', 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false, // needed for node-pty IPC
+      // The preload exposes the API surface purely through contextBridge and
+      // sandbox-safe electron modules (contextBridge/ipcRenderer/webFrame/
+      // webUtils); node-pty lives in the main process and is reached over IPC.
+      sandbox: true,
       webviewTag: true, // needed for browser-tab sessions
     },
   });
@@ -53,6 +86,27 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isHttpUrl(url)) shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  // A <webview> guest's `webpreferences` and `preload` are renderer-controlled
+  // (browser tabs). A compromised renderer could attach a guest with
+  // nodeIntegration=true or an arbitrary preload file to escape into a
+  // privileged process, so pin the guest shape before attachment: Node
+  // integration off, context isolation and sandbox forced on, and a preload
+  // kept ONLY when it is the shipped browser-tab-preload.js. URLs are
+  // deliberately not validated here — loading arbitrary remote pages is the
+  // browser-tab feature; this guard pins privileges, not destinations.
+  // In Electron 41 `will-attach-webview` is an event on the HOST webContents
+  // (absent from the App event set), and this window is the only webContents
+  // with webviewTag enabled.
+  mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    if (!webPreferences.preload || !isBrowserGuestPreload(webPreferences.preload)) {
+      // pi-lens-ignore: ts-delete-property
+      delete webPreferences.preload;
+    }
   });
 
   // The app document is the ONLY navigation target we ever allow. A stray anchor
@@ -122,11 +176,14 @@ app.whenReady().then(async () => {
   const pythonWarning = checkPythonAvailable();
   if (pythonWarning) {
     console.warn(pythonWarning);
-    dialog.showMessageBox(mainWindow!, {
-      type: 'warning',
-      title: 'Vibeyard — Python Not Found',
-      message: pythonWarning,
-    });
+    const owner = mainWindow;
+    if (owner) {
+      dialog.showMessageBox(owner, {
+        type: 'warning',
+        title: 'Vibeyard — Python Not Found',
+        message: pythonWarning,
+      });
+    }
   }
 
   // Install hooks and status scripts for available providers (after window creation so dialogs can attach)

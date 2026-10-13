@@ -108,6 +108,9 @@ export function readTranscriptTailSync(filePath: string, bytes = TAIL_READ_BYTES
  *     `tool_execution_start` marker) → `working`
  *   - clean finish (assistant `stop`) → `completed`
  *   - failed turn (assistant `error`) → `waiting`
+ *   - cancelled turn (assistant `aborted`) → `waiting`, never `completed`:
+ *     the renderer moves linked Kanban tasks to Done on `completed`, and a
+ *     cancelled turn did not finish. Mirrors Claude's StopFailure→waiting.
  * A trailing `session_exit` maps to null: the session is removed on PTY exit,
  * so there is nothing to report. Non-event lines (title, model_change, …) are
  * skipped.
@@ -141,10 +144,12 @@ function statusFromEntry(entry: Record<string, any>): CliSessionStatus | null {
     const role = entry.message?.role;
     if (role === 'assistant') {
       const stop = entry.message?.stopReason;
-      // Mirrors the hook convention: a clean finish (stop) is `completed`, a
-      // failed turn (error) is `waiting` — same as Claude's Stop/StopFailure.
-      // Anything else (toolUse / mid-turn) is still `working`.
-      if (stop === 'error') return 'waiting';
+      // Mirrors the hook convention: a clean finish (stop) is `completed`; a
+      // failed turn (error) or a cancelled turn (aborted) is `waiting` — same
+      // as Claude's Stop/StopFailure. The cancelled turn must NOT be
+      // `completed`: the renderer moves linked Kanban tasks to Done on
+      // `completed`. Anything else (toolUse / mid-turn) is still `working`.
+      if (stop === 'error' || stop === 'aborted') return 'waiting';
       return stop === 'stop' ? 'completed' : 'working';
     }
     if (role === 'user' || role === 'toolResult') return 'working';
@@ -159,9 +164,28 @@ function statusFromEntry(entry: Record<string, any>): CliSessionStatus | null {
  * is expensive, so its result is cached with the file size at read time.
  * An unchanged file is served from the cache; a changed size re-reads and
  * refreshes it. The entry is dropped the moment the small window yields a
- * status again (the file moved past the big entry), which bounds memory.
+ * status again (the file moved past the big entry).
+ *
+ * That delete alone does not bound memory: a closed session whose final
+ * entry exceeded the small window never yields a status again, so its
+ * entry would live for the process lifetime. The cache is therefore an LRU
+ * capped at MAX_STATUS_TAIL_CACHE paths — get-hits and sets move a key to
+ * the newest position, and sets past capacity evict the oldest key (Map
+ * iteration order).
  */
+export const MAX_STATUS_TAIL_CACHE = 512;
 const statusTailCache = new Map<string, { size: number; status: CliSessionStatus | null }>();
+
+/** LRU touch: re-insert so `filePath` becomes the newest Map entry, evicting the oldest past capacity. */
+function putStatusTailCache(filePath: string, entry: { size: number; status: CliSessionStatus | null }): void {
+  statusTailCache.delete(filePath);
+  statusTailCache.set(filePath, entry);
+  while (statusTailCache.size > MAX_STATUS_TAIL_CACHE) {
+    const oldest = statusTailCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    statusTailCache.delete(oldest);
+  }
+}
 
 /**
  * Convenience: read a transcript's tail and derive its status in one call.
@@ -185,14 +209,22 @@ export function readTranscriptStatusSync(filePath: string): CliSessionStatus | n
     return null;
   }
   const cached = statusTailCache.get(filePath);
-  if (cached && cached.size === size) return cached.status;
+  if (cached && cached.size === size) {
+    putStatusTailCache(filePath, cached);
+    return cached.status;
+  }
   const fallback = transcriptStatusFromTail(readTranscriptTailSync(filePath, MAX_STATUS_TAIL_BYTES));
-  statusTailCache.set(filePath, { size, status: fallback });
+  putStatusTailCache(filePath, { size, status: fallback });
   return fallback;
 }
 
 export function _resetStatusTailCacheForTesting(): void {
   statusTailCache.clear();
+}
+
+/** Cache contents, oldest key first (Map insertion order). Test-only. */
+export function _statusTailCacheSnapshotForTesting(): Array<{ filePath: string; size: number; status: CliSessionStatus | null }> {
+  return [...statusTailCache.entries()].map(([filePath, entry]) => ({ filePath, ...entry }));
 }
 
 /**

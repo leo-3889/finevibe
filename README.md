@@ -53,6 +53,11 @@ handling, `cmd.exe` argument limits, credential-store behaviour, installer shape
   beyond `src/main/platform.ts`, but neither OS was exercised.
 - **`pi` and `omp` must be on `PATH`** or the provider stays hidden — upstream
   behaviour, not a fork quirk.
+- **Fork builds still update from upstream.** The npm launcher and the packaged
+  auto-updater fetch releases from `elirantutia/vibeyard` unless
+  `VIBEYARD_RELEASE_REPO=owner/repo` is set, which points both at that fork's
+  releases (the fork must publish the same asset names, e.g.
+  `Vibeyard-<version>-win-<arch>.zip`).
 
 ## Sync
 

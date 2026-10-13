@@ -4,6 +4,11 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     globals: true,
+    // 169 files run in parallel; the heaviest legitimate suites (jsdom
+    // file-reader with 200k lines, sidebar module import) take 2-3s alone and
+    // cross vitest's 5s default on a loaded Windows machine — they flip red
+    // under contention without any regression. 15s keeps real hangs failing.
+    testTimeout: 15_000,
     environment: 'node',
     include: ['src/**/*.test.ts'],
     alias: {

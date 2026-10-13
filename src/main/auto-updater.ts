@@ -25,6 +25,16 @@ export function initAutoUpdater(): void {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
+  // Fork builds update from upstream unless VIBEYARD_RELEASE_REPO points at
+  // another `owner/repo` (same override the npm launcher honours).
+  const releaseRepo = process.env.VIBEYARD_RELEASE_REPO;
+  if (releaseRepo) {
+    const [owner, repo] = releaseRepo.split('/');
+    if (owner && repo) {
+      autoUpdater.setFeedURL({ provider: 'github', owner, repo, releaseType: 'release' });
+    }
+  }
+
   autoUpdater.on('update-available', (info) => {
     sendToRenderer('update:available', { version: info.version });
   });

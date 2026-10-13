@@ -3,7 +3,8 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { execSync, spawn } = require('child_process');
+const crypto = require('crypto');
+const { execFileSync, spawn } = require('child_process');
 const os = require('os');
 
 const { version } = require('../package.json');
@@ -11,11 +12,15 @@ const APP_DIR = path.join(os.homedir(), '.vibeyard', 'app');
 const VERSION_FILE = path.join(APP_DIR, 'version.json');
 const isWin = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
-const APP_PATH = isWin
-  ? path.join(APP_DIR, 'Vibeyard.exe')
-  : isMac ? path.join(APP_DIR, 'Vibeyard.app') : path.join(APP_DIR, 'Vibeyard.AppImage');
-const REPO = 'elirantutia/vibeyard';
+const appPathForPlatform = () => {
+  if (isWin) return path.join(APP_DIR, 'Vibeyard.exe');
+  if (isMac) return path.join(APP_DIR, 'Vibeyard.app');
+  return path.join(APP_DIR, 'Vibeyard.AppImage');
+};
+const APP_PATH = appPathForPlatform();
+const REPO = process.env.VIBEYARD_RELEASE_REPO || 'elirantutia/vibeyard';
 const RELEASES_URL = `https://github.com/${REPO}/releases`;
+const RELEASE_API_URL = `https://api.github.com/repos/${REPO}/releases/tags/v${version}`;
 
 function getAssetName() {
   if (isWin) {
@@ -39,20 +44,92 @@ function getInstalledVersion() {
   }
 }
 
-function followRedirects(url, maxRedirects = 10) {
+function followRedirects(url, maxRedirects = 10, headers = {}) {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) {
       return reject(new Error('Too many redirects'));
     }
-    const mod = url.startsWith('https') ? https : require('http');
-    mod.get(url, { headers: { 'User-Agent': 'vibeyard-cli' } }, (res) => {
+    // Never downgrade to http: only https targets are followed.
+    if (!url.startsWith('https://')) {
+      return reject(new Error(`Refusing non-HTTPS download URL: ${url}`));
+    }
+    https.get(url, { headers: { 'User-Agent': 'vibeyard-cli', ...headers } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        resolve(followRedirects(res.headers.location, maxRedirects - 1));
+        res.resume();
+        let nextUrl;
+        try {
+          nextUrl = new URL(res.headers.location, url).href;
+        } catch {
+          return reject(new Error(`Invalid redirect location from ${url}`));
+        }
+        resolve(followRedirects(nextUrl, maxRedirects - 1, headers));
       } else {
         resolve(res);
       }
     }).on('error', reject);
   });
+}
+
+function getJson(url) {
+  return followRedirects(url, 10, { Accept: 'application/vnd.github+json' }).then((res) => {
+    if (res.statusCode !== 200) {
+      throw new Error(`GitHub API responded with status ${res.statusCode}`);
+    }
+    return new Promise((resolve, reject) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('error', reject);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (err) {
+          reject(new Error(`GitHub API returned invalid JSON: ${err.message}`));
+        }
+      });
+    });
+  });
+}
+
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(file);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+// Returns true (digest matched), false (mismatch), or null (no digest
+// available — GitHub API failure or asset without a published digest).
+async function verifyAssetDigest(tmpFile, assetName) {
+  let digest;
+  try {
+    const release = await getJson(RELEASE_API_URL);
+    const assets = Array.isArray(release.assets) ? release.assets : [];
+    const asset = assets.find((a) => a && a.name === assetName);
+    if (!asset) {
+      console.log(`Asset ${assetName} not found in release metadata; skipping checksum verification.`);
+      return null;
+    }
+    if (typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(asset.digest)) {
+      console.log(`No sha256 digest published for ${assetName}; skipping checksum verification.`);
+      return null;
+    }
+    digest = asset.digest.slice('sha256:'.length).toLowerCase();
+  } catch (err) {
+    // Rate limits or API outages must not brick installs.
+    console.log(`Could not fetch release metadata (${err.message}); skipping checksum verification.`);
+    return null;
+  }
+  const actual = await sha256File(tmpFile);
+  if (actual !== digest) {
+    console.error(`Checksum mismatch for ${assetName}: expected ${digest}, got ${actual}.`);
+    return false;
+  }
+  console.log('Checksum verified.');
+  return true;
 }
 
 async function download(assetName) {
@@ -76,7 +153,7 @@ async function download(assetName) {
   const totalBytes = parseInt(res.headers['content-length'], 10) || 0;
   const totalMB = totalBytes ? (totalBytes / 1048576).toFixed(1) : null;
 
-  return new Promise((resolve, reject) => {
+  const zipPath = await new Promise((resolve, reject) => {
     let receivedBytes = 0;
     const file = fs.createWriteStream(tmpFile);
 
@@ -108,6 +185,13 @@ async function download(assetName) {
       resolve(tmpFile);
     });
   });
+
+  const verified = await verifyAssetDigest(zipPath, assetName);
+  if (verified === false) {
+    fs.rmSync(tmpFile, { force: true });
+    throw new Error(`Downloaded ${assetName} failed checksum verification. Download manually from: ${RELEASES_URL}`);
+  }
+  return zipPath;
 }
 
 function extract(zipPath) {
@@ -119,19 +203,18 @@ function extract(zipPath) {
     fs.renameSync(zipPath, APP_PATH);
     fs.chmodSync(APP_PATH, 0o755);
   } else if (isWin) {
-    // Use PowerShell to extract on Windows
-    // Escape single quotes for PowerShell single-quoted strings (e.g. O'Brien in username)
-    const psEscape = (p) => p.replace(/'/g, "''");
-    execSync(`powershell -NoProfile -Command "Expand-Archive -Force -Path '${psEscape(zipPath)}' -DestinationPath '${psEscape(APP_DIR)}'"`, { stdio: 'ignore' });
+    // Argument-array invocation: no shell string, so paths with quotes or
+    // `$` (e.g. usernames) cannot be re-interpreted.
+    execFileSync('powershell', ['-NoProfile', '-Command', 'Expand-Archive', '-Force', '-Path', zipPath, '-DestinationPath', APP_DIR], { stdio: 'ignore' });
   } else {
-    execSync(`unzip -oq "${zipPath}" -d "${APP_DIR}"`);
+    execFileSync('unzip', ['-oq', zipPath, '-d', APP_DIR], { stdio: 'ignore' });
   }
   if (isMac || isWin) fs.unlinkSync(zipPath);
 
   // Clear macOS quarantine flag
   if (isMac) {
     try {
-      execSync(`xattr -rd com.apple.quarantine "${APP_PATH}"`, { stdio: 'ignore' });
+      execFileSync('xattr', ['-rd', 'com.apple.quarantine', APP_PATH], { stdio: 'ignore' });
     } catch {
       // xattr may fail if no quarantine attribute
     }
@@ -203,6 +286,21 @@ Any other arguments are forwarded to the Vibeyard app.`);
   }
 
   launch(passthroughArgs);
+}
+
+// Exposed for tests (npm-launcher.test.ts); never imported in production.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    REPO,
+    RELEASES_URL,
+    RELEASE_API_URL,
+    getAssetName,
+    followRedirects,
+    getJson,
+    sha256File,
+    verifyAssetDigest,
+    download,
+  };
 }
 
 main().catch((err) => {

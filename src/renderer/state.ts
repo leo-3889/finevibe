@@ -1,5 +1,5 @@
 import type { VibeyardApi } from './types.js';
-import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout } from '../shared/types.js';
+import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout, SidebarViews } from '../shared/types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
@@ -122,6 +122,9 @@ class AppState {
   private nav = new NavHistory();
   /** sessionId → owning project + session record, kept in sync by the add/remove paths (O(1) lookups). */
   private sessionIndex = new Map<string, { project: ProjectRecord; session: SessionRecord }>();
+  /** False until load() completes; see the `loaded` getter. */
+  private loadedFlag = false;
+  private warnedPrematurePersist = false;
   /** Coalesced persist for high-frequency cost/context ticks (see scheduleCostFlush). */
   private pendingCostFlush = false;
   private costFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -196,17 +199,27 @@ class AppState {
       hydrateLoadedState(this.state, defaultPreferences);
     }
     ensureProjectDefaults(this.state);
+    // Everything below reads disk-backed state, so the state is loaded from
+    // here on — including the launch-count persist just below.
+    this.loadedFlag = true;
 
     if (!this.state.starPromptDismissed) {
       this.state.appLaunchCount = (this.state.appLaunchCount ?? 0) + 1;
       this.persist();
     }
     this.rebuildSessionIndex();
-
     this.emit('state-loaded');
   }
 
   private persist(): void {
+    // Persisting before load() would write the default in-memory state over the
+    // real state.json, which is how saved preferences silently vanish. Reads
+    // before load are fine — components initialize pre-load and re-apply on
+    // `state-loaded` (see docs/ui-conventions.md) — writes are not.
+    if (!this.loadedFlag && !this.warnedPrematurePersist) {
+      this.warnedPrematurePersist = true;
+      console.warn('[state] persisted before appState.load(); defaults would overwrite saved state');
+    }
     window.vibeyard.store.save(serializeForSave(this.state));
   }
 
@@ -309,8 +322,20 @@ class AppState {
     this.persist();
   }
 
+  /** True once load() has populated persisted state. */
+  get loaded(): boolean {
+    return this.loadedFlag;
+  }
+
   get preferences(): Preferences {
+    // May return defaults when read before load(); callers that render from
+    // this re-apply on `state-loaded`/`preferences-changed`.
     return this.state.preferences;
+  }
+
+  /** Sidebar-section lookup with the default-on fallback baked in. */
+  sidebarView(key: keyof SidebarViews): boolean {
+    return this.state.preferences.sidebarViews?.[key] ?? true;
   }
 
   setPreference<K extends keyof Preferences>(key: K, value: Preferences[K]): void {
@@ -1223,6 +1248,8 @@ export { createDefaultBoard };
 /** @internal Test-only: reset all module state */
 export function _resetForTesting(): void {
   (appState as any)['state'] = { version: 1, projects: [], activeProjectId: null, preferences: { ...defaultPreferences } };
+  (appState as any)['loadedFlag'] = false;
+  (appState as any)['warnedPrematurePersist'] = false;
   (appState as any)['listeners'] = new Map();
   (appState as any)['nav'] = new NavHistory();
   if ((appState as any)['costFlushTimer'] !== null) {

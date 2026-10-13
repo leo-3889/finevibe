@@ -19,6 +19,7 @@ vi.mock('./pi-compatible-transcripts', () => ({
     sessionsRoot: (configDir?: string) => require('path').join(configDir ?? dir, 'sessions'),
   }),
   findTranscriptPathSync: vi.fn(),
+  findTranscriptPathInFlatDir: vi.fn(() => null),
   scanTranscriptSessionsRoot: vi.fn(),
   indexCompatibleTranscript: vi.fn(),
   readTranscriptStatusSync: vi.fn(),
@@ -26,16 +27,22 @@ vi.mock('./pi-compatible-transcripts', () => ({
 }));
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession } from '../pi-session-watcher';
 import { PiProvider, _resetCachedPath } from './pi-provider';
-import { findTranscriptPathSync, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, findTranscriptPathInFlatDir, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 const mockReadFile = vi.mocked(fs.promises.readFile);
 const mockResolveBinary = vi.mocked(resolveBinary);
 const mockValidateBinaryExists = vi.mocked(validateBinaryExists);
 const mockStartPiSessionWatcher = vi.mocked(startPiSessionWatcher);
 const mockRegisterPendingPiSession = vi.mocked(registerPendingPiSession);
 const mockUnregisterPiSession = vi.mocked(unregisterPiSession);
+
+/** userData served by test/electron-stub.ts — 'electron' is aliased to it in vitest.config.ts. */
+const MOCK_USER_DATA = '/mock/app-path';
+/** The exclusive per-launch session dir a UI session id maps to (launch-session-dir.ts). */
+const sessionDirFor = (uiSessionId: string) => path.join(MOCK_USER_DATA, 'pi-sessions', uiSessionId);
 
 let provider: PiProvider;
 
@@ -116,57 +123,72 @@ describe('buildEnv', () => {
 });
 
 describe('buildArgs', () => {
-  it('returns [] for a fresh session with no extras', () => {
-    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' })).toEqual([]);
+  const dir = sessionDirFor('sess-1');
+  it('always starts with the exclusive per-launch --session-dir', () => {
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' }))
+      .toEqual(['--session-dir', dir]);
   });
 
-  it('returns ["--session", id] when resuming', () => {
-    expect(provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '' }))
-      .toEqual(['--session', 'sid-1']);
+  it('returns ["--session", id] after the session dir when resuming', () => {
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '' }))
+      .toEqual(['--session-dir', dir, '--session', 'sid-1']);
   });
 
   it('omits --session when isResume=false', () => {
-    expect(provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '' })).toEqual([]);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '' }))
+      .toEqual(['--session-dir', dir]);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
-    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--provider olla  --model thinking' }))
-      .toEqual(['--provider', 'olla', '--model', 'thinking']);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--provider olla  --model thinking' }))
+      .toEqual(['--session-dir', dir, '--provider', 'olla', '--model', 'thinking']);
   });
 
   it('appends --append-system-prompt when systemPrompt is provided', () => {
-    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' }))
-      .toEqual(['--append-system-prompt', 'You are the CMO.']);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' }))
+      .toEqual(['--session-dir', dir, '--append-system-prompt', 'You are the CMO.']);
   });
 
   it('appends initialPrompt as a positional message arg', () => {
-    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'Fix the bug' }))
-      .toEqual(['Fix the bug']);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'Fix the bug' }))
+      .toEqual(['--session-dir', dir, 'Fix the bug']);
   });
 
   it('combines resume, extraArgs, systemPrompt, and initialPrompt', () => {
-    expect(provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--model x', systemPrompt: 'sp', initialPrompt: 'go' }))
-      .toEqual(['--session', 'sid-1', '--model', 'x', '--append-system-prompt', 'sp', 'go']);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--model x', systemPrompt: 'sp', initialPrompt: 'go' }))
+      .toEqual(['--session-dir', dir, '--session', 'sid-1', '--model', 'x', '--append-system-prompt', 'sp', 'go']);
   });
 
   it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
-    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--append-system-prompt "Use concise replies"' }))
-      .toEqual(['--append-system-prompt', 'Use concise replies']);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--append-system-prompt "Use concise replies"' }))
+      .toEqual(['--session-dir', dir, '--append-system-prompt', 'Use concise replies']);
   });
 
   it('preserves empty quoted extra args', () => {
-    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' }))
-      .toEqual(['--flag', '']);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--flag ""' }))
+      .toEqual(['--session-dir', dir, '--flag', '']);
   });
 
   it('keeps a system prompt starting with option characters as one argument', () => {
-    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: '--foo bar' }))
-      .toEqual(['--append-system-prompt', '--foo bar']);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: '--foo bar' }))
+      .toEqual(['--session-dir', dir, '--append-system-prompt', '--foo bar']);
   });
 
   it('keeps an initial prompt starting with option characters as one argument', () => {
-    expect(provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: '--foo' }))
-      .toEqual(['--foo']);
+    expect(provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: '--foo' }))
+      .toEqual(['--session-dir', dir, '--foo']);
+  });
+
+  it('pins the --session-id established by onSessionStarted', () => {
+    provider.onSessionStarted!('ui-9', '/proj', {} as any);
+    expect(provider.buildArgs({ sessionId: 'ui-9', cliSessionId: null, isResume: false, extraArgs: '' }))
+      .toEqual(['--session-dir', sessionDirFor('ui-9'), '--session-id', expect.any(String)]);
+  });
+
+  it('resumes the target established by onSessionResumed', () => {
+    provider.onSessionResumed!('ui-10', '/proj', {} as any, undefined, 'cli-10');
+    expect(provider.buildArgs({ sessionId: 'ui-10', cliSessionId: 'cli-10', isResume: true, extraArgs: '' }))
+      .toEqual(['--session-dir', sessionDirFor('ui-10'), '--session', 'cli-10']);
   });
 });
 
@@ -194,12 +216,27 @@ describe('session id discovery hooks', () => {
   it('onSessionStarted starts the watcher and registers the pending session', () => {
     provider.onSessionStarted!('ui-1', '/proj', {} as any, '/profiles/work');
     expect(mockStartPiSessionWatcher).toHaveBeenCalled();
-    expect(mockRegisterPendingPiSession).toHaveBeenCalledWith('ui-1', '/proj', '/profiles/work');
+    expect(mockRegisterPendingPiSession).toHaveBeenCalledWith('ui-1', '/proj', '/profiles/work', {
+      sessionDir: sessionDirFor('ui-1'),
+      knownCliId: expect.any(String),
+    });
   });
 
   it('onSessionExited unregisters the pending session', () => {
     provider.onSessionExited!('ui-1');
     expect(mockUnregisterPiSession).toHaveBeenCalledWith('ui-1');
+  });
+
+  it('onSessionResumed registers the known cli id as an adopted entry', () => {
+    vi.mocked(findTranscriptPathInFlatDir).mockReturnValueOnce('/mock/launch/ui-4/cli-9.jsonl');
+    provider.onSessionResumed!('ui-4', '/proj', {} as any, '/profiles/work', 'cli-9');
+    expect(mockRegisterPendingPiSession).toHaveBeenCalledWith('ui-4', '/proj', '/profiles/work', {
+      sessionDir: sessionDirFor('ui-4'),
+      knownCliId: 'cli-9',
+      adoptedFile: '/mock/launch/ui-4/cli-9.jsonl',
+    });
+    // The launch's own dir is searched first for the adopted transcript.
+    expect(findTranscriptPathInFlatDir).toHaveBeenCalledWith(sessionDirFor('ui-4'), 'cli-9', '/proj');
   });
 });
 

@@ -384,6 +384,16 @@ export interface GithubRepo {
   repo: string;
 }
 
+/** Which sidebar sections the user has enabled in the Appearance preferences. */
+export interface SidebarViews {
+  gitPanel: boolean;
+  sessionHistory: boolean;
+  discussions: boolean;
+  fileTree: boolean;
+  /** Show the global cross-project "Active Sessions" section in the sidebar. */
+  activeSessions: boolean;
+}
+
 export interface Preferences {
   soundOnSessionWaiting: boolean;
   notificationsDesktop: boolean;
@@ -407,14 +417,7 @@ export interface Preferences {
   keybindings?: Record<string, string>;
   theme?: 'dark' | 'light';
   readinessExcludedProviders?: ProviderId[];
-  sidebarViews?: {
-    gitPanel: boolean;
-    sessionHistory: boolean;
-    discussions: boolean;
-    fileTree: boolean;
-    /** Show the global cross-project "Active Sessions" section in the sidebar. */
-    activeSessions: boolean;
-  };
+  sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;
   chromeImport?: ChromeImportSummary;
 }
@@ -451,6 +454,16 @@ export interface ChromeImportResult {
   cookieCount: number;
   skippedV11: number;
   errors: string[];
+}
+
+/**
+ * Theme/zoom slice served synchronously on the `store:startup-prefs` channel
+ * so the renderer can apply them before its first paint; the full state load
+ * follows asynchronously.
+ */
+export interface StartupPrefs {
+  theme: 'dark' | 'light' | null;
+  zoomFactor: number | null;
 }
 
 export const BROWSER_DEFAULT_PARTITION = 'persist:vibeyard-browser';

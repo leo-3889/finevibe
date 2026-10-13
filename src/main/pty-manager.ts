@@ -22,6 +22,15 @@ const ptys = new Map<string, PtyInstance>();
 // be consumed by a fast-exiting replacement before the old kill completes.
 const replacedPtys = new WeakSet<pty.IPty>();
 
+// Session ids whose killPty arrived while spawnPty was still awaiting (e.g.
+// Copilot hook install) — the window before the PTY lands in `ptys`. Without
+// this the kill is a no-op and the CLI then spawns orphaned: a live process
+// with no renderer session and no exit path. spawnPty consumes the marker
+// right after `ptys.set` and tears the new PTY down itself; every spawnPty
+// path that returns without spawning clears it, so a stale flag can never
+// kill a later re-spawn of the same id.
+const pendingKills = new Set<string>();
+
 /**
  * Get the full PATH by sourcing the user's login shell.
  * When Electron is launched from macOS Finder/Dock, process.env.PATH
@@ -359,6 +368,9 @@ export async function spawnPty(
   try {
     spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir });
   } catch (err) {
+    // Nothing will spawn for this session; drop any kill that arrived for
+    // it so a later re-spawn of the same id is not killed by a stale flag.
+    pendingKills.delete(sessionId);
     const message = err instanceof LaunchSpecError ? err.message : `Failed to prepare the launch: ${err}`;
     onData('\r\n\x1b[31m' + message + '\x1b[0m\r\n');
     onExit(1);
@@ -402,6 +414,7 @@ export async function spawnPty(
   // renderer fires pty.create without awaiting, so a throw would be a swallowed
   // rejection leaving a blank pane.
   if (providerId === 'claude' && configDir && getKeychainIsolationStatus().status === 'unsupported') {
+    pendingKills.delete(sessionId);
     onData(
       '\r\n\x1b[31mClaude profile login isolation is unavailable on this version of Claude Code:\r\n' +
         'all profiles would share one macOS keychain login, mixing the accounts.\r\n' +
@@ -422,13 +435,21 @@ export async function spawnPty(
 
   const { shell, args: spawnArgs } = resolveWindowsShell(spec.executable, spec.argv);
 
-  const ptyProcess = pty.spawn(shell, spawnArgs, {
-    name: 'xterm-256color',
-    cols: 120,
-    rows: 30,
-    cwd,
-    env: spec.env,
-  });
+  let ptyProcess: pty.IPty;
+  try {
+    ptyProcess = pty.spawn(shell, spawnArgs, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd,
+      env: spec.env,
+    });
+  } catch (err) {
+    // No PTY was registered: a kill that arrived during the awaits above
+    // has nothing to address and must not leak to a later re-spawn.
+    pendingKills.delete(sessionId);
+    throw err;
+  }
 
   ptyProcess.onData((data) => onData(data));
   ptyProcess.onExit(({ exitCode, signal }) => {
@@ -442,6 +463,15 @@ export async function spawnPty(
   });
 
   ptys.set(sessionId, { process: ptyProcess, sessionId });
+
+  // A killPty that arrived during the awaits above addressed this spawn —
+  // honour it now instead of leaving an orphaned CLI with no renderer
+  // session. No replacedPtys suppression: the renderer has already dropped
+  // the session, so the normal onExit teardown is the right cleanup path
+  // (a pty:exit for an unknown session is a no-op in the renderer).
+  if (pendingKills.delete(sessionId)) {
+    killPty(sessionId);
+  }
 }
 
 // node-pty on Windows throws synchronously from write/resize/kill when the
@@ -504,7 +534,12 @@ export function resizePty(sessionId: string, cols: number, rows: number): void {
 
 export function killPty(sessionId: string): boolean {
   const instance = ptys.get(sessionId);
-  if (!instance) return false;
+  if (!instance) {
+    // spawnPty may still be awaiting before the PTY lands in `ptys`;
+    // remember the kill so the pending spawn tears itself down on set.
+    pendingKills.add(sessionId);
+    return false;
+  }
   let killed = false;
   try {
     instance.process.kill();

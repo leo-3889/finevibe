@@ -67,4 +67,24 @@ describe('hydrateLoadedState', () => {
     expect(state.preferences.defaultProfiles).toBeUndefined();
     expect((state.preferences as { defaultProfileId?: string }).defaultProfileId).toBeUndefined();
   });
+
+  it('fills sidebarViews keys missing from an older save with defaults', () => {
+    const state = baseState({});
+    // Pre-discussions/activeSessions save: the object exists but lacks newer keys.
+    state.preferences = {
+      sidebarViews: { gitPanel: false, sessionHistory: true, discussions: false, fileTree: true },
+    } as unknown as PersistedState['preferences'];
+
+    hydrateLoadedState(state, {
+      sidebarViews: { gitPanel: true, sessionHistory: true, discussions: true, fileTree: true, activeSessions: true },
+    } as Preferences);
+
+    expect(state.preferences.sidebarViews).toEqual({
+      gitPanel: false,
+      sessionHistory: true,
+      discussions: false,
+      fileTree: true,
+      activeSessions: true,
+    });
+  });
 });

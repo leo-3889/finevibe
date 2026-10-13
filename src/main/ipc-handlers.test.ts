@@ -139,6 +139,7 @@ vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
 
 import { registerIpcHandlers } from './ipc-handlers';
+import { loadState } from './store';
 import { cleanupSessionStatus } from './hook-status';
 
 function makeProvider(): CliProvider {
@@ -467,4 +468,23 @@ it('cancels superseded IPC searches, palette cancellation and window destruction
   complete.forEach(resolve => resolve());
   await Promise.all([first, second, third]);
   expect(sender.listenerCount('destroyed')).toBe(0);
+});
+
+describe('store:startup-prefs', () => {
+  /** Call the sync channel the way `ipcRenderer.sendSync` does and read the reply. */
+  function reply(preferences: Record<string, unknown>): unknown {
+    // `projects` is populated so a payload that leaked the whole state fails.
+    vi.mocked(loadState).mockReturnValueOnce({ projects: [{ id: 'p' }], preferences } as never);
+    const event: { returnValue?: unknown } = {};
+    handlers.get('store:startup-prefs')!(event);
+    return event.returnValue;
+  }
+
+  it('serves the theme/zoom slice only, so startup never clones the full state', () => {
+    expect(reply({ theme: 'light', zoomFactor: 1.25 })).toEqual({ theme: 'light', zoomFactor: 1.25 });
+  });
+
+  it('reports never-saved preferences as null so the renderer keeps its defaults', () => {
+    expect(reply({})).toEqual({ theme: null, zoomFactor: null });
+  });
 });

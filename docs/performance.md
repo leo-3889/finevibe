@@ -51,9 +51,11 @@ Pi/OMP launches use an exclusive session directory for transcript ownership. Liv
 
 During polling, unchanged directory listings are reused. Directory mtime changes and watched rename events invalidate listings; the next scan also refreshes a listing after its 30-second cache lifetime. The two-second poll remains in place. Polling still visits cached filenames and checks directory metadata. Root history is released when no registration uses it.
 
+When a transcript's last meaningful entry does not fit the 16 Ki status window, the derived status is cached with the file size and reused while the size is unchanged. That cache is an LRU capped at 512 paths (`MAX_STATUS_TAIL_CACHE`): reads and writes move a path to the newest position and writes past capacity evict the oldest, so a closed session whose oversized final entry never yields a status again cannot pin an entry for the process lifetime. `loadState()` likewise serves the parsed `state.json` from an in-memory cache, refreshed by every save path; anything that rewrites the state file behind `saveState()`/`saveStateSync()` must call `invalidateStateCache()` first.
+
 This removes duplicate per-session snapshots and reduces idle directory enumeration. The per-launch directory and known resume ID address the earlier cross-tab attribution paths in code. Registration scans still run on the main thread, and watcher allocation and runtime resource use have not been measured at scale. **PO-06 remains partially addressed.** See the [audit status](AUDIT_STATUS.md) for the next measurement and validation work.
 
-Source: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts).
+Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), [fallback status reader](../src/main/providers/pi-compatible-transcripts.ts), and [state store](../src/main/store.ts).
 
 ## Evidence and open measurement
 
