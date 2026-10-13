@@ -1,0 +1,51 @@
+name: Ubuntu package
+
+# Builds an installable Debian package (.deb) of the current app without
+# cutting a release. deb builds need a Linux toolchain because node-pty and
+# better-sqlite3 are compiled natively (node-pty ships no linux prebuilds),
+# so this cannot run from a Windows/macOS checkout.
+#
+# Artifacts: download "vibeyard-deb-x64" from the run, then on Ubuntu:
+#   sudo apt install ./Vibeyard-<version>-linux-amd64.deb
+#
+# Tagged releases already publish the .deb via release.yml's build-linux job;
+# this workflow is for ad-hoc installable packages from any branch.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app
+        run: npm run build
+
+      - name: Package .deb
+        run: npx electron-builder --linux deb --x64 --publish never
+
+      - name: Verify package
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb | grep 'node-pty\|better_sqlite3'
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibeyard-deb-x64
+          path: dist/*.deb
+          if-no-files-found: error

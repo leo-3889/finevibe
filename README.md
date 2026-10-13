@@ -92,7 +92,6 @@ sudo apt install ./Vibeyard-<version>-linux-amd64.deb
 ```
 
 Tagged releases ship the same `.deb` (plus an AppImage) as release assets.
-Build mechanics and verification: [docs/packaging.md](docs/packaging.md).
 
 ## Contributing
 
