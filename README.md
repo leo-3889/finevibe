@@ -82,6 +82,17 @@ npm start     # builds main + preload + renderer, then launches
 npm test      # vitest
 ```
 
+### Ubuntu package
+
+Installable `.deb` builds: run the **Ubuntu package** workflow from the Actions
+tab and download the `vibeyard-deb-x64` artifact, then on the Ubuntu machine:
+
+```bash
+sudo apt install ./Vibeyard-<version>-linux-amd64.deb
+```
+
+Tagged releases ship the same `.deb` (plus an AppImage) as release assets.
+
 ## Contributing
 
 PRs here are welcome. Anything generally useful gets forwarded upstream — that
