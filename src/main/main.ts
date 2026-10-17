@@ -98,6 +98,13 @@ function createWindow(): void {
     minHeight: 500,
     title: 'Vibeyard',
     icon: path.join(__dirname, '..', '..', '..', 'build', 'icon.png'),
+    // A visible Windows menu bar latches on the Alt half of Alt+Tab (the
+    // alt-press flag is not reset on window blur), and the native menu bar then
+    // consumes the next Escape as "deactivate menu bar" — it never reaches the
+    // renderer, so xterm/PTY loses Escape while every other key flows through
+    // (electron/electron#12167, #2504; same class as microsoft/vscode#35010).
+    // Hide the bar; Alt still reveals it on demand (electron/electron#18518).
+    autoHideMenuBar: true,
     backgroundColor: '#000000',
     webPreferences: {
       preload: path.join(__dirname, '..', '..', 'preload', 'preload', 'preload.js'),
