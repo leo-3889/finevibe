@@ -2,8 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import { STATUS_DIR, getStatusLineScriptPath } from './hook-status';
+import { canonicalPath, readJsonSafe, readDirSafe } from './fs-utils';
 import { statusCmd as mkStatusCmd, stopStatusCmd as mkStopStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, captureToolFailureCmd as mkCaptureToolFailureCmd, installEventScript, wrapPythonHookCmd, installHookScripts } from './hook-commands';
-import { readJsonSafe, readDirSafe } from './fs-utils';
 import { parseFrontmatter } from './frontmatter';
 import { getSupportedHookEvents as computeSupportedHookEvents } from './claude-hook-versions';
 import { getClaudeVersion } from './providers/claude-version';
@@ -715,7 +715,12 @@ export function removeMcpServer(
         ]
       : []),
   ];
-  if (!allowed.includes(path.resolve(filePath))) {
+  // Compare canonical forms: the allowlist is built from homedir()/projectPath/
+  // configDir while the renderer echoes back whatever getClaudeConfig listed,
+  // and path.resolve normalizes neither drive-letter case nor junctions, so an
+  // exact string compare no-ops deletions on a listed server.
+  const target = canonicalPath(filePath);
+  if (!allowed.some((allowedPath) => canonicalPath(allowedPath) === target)) {
     throw new Error(`Not a writable MCP config path: ${JSON.stringify(filePath)}`);
   }
   const json = readJsonSafe(filePath);

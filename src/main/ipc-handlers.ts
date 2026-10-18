@@ -25,7 +25,7 @@ import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
-import { expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES } from './fs-utils';
+import { canonicalPath, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
 import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource } from '../shared/types';
@@ -60,7 +60,13 @@ const MAX_GIT_WATCHED_ROOTS = 200;
 function requireGitRoot(channel: string, projectPath: string): string {
   if (typeof projectPath !== 'string') throw new Error('Invalid project path');
   const resolved = path.resolve(projectPath);
-  if (!isWithinKnownProject(resolved) && !gitWatchedRoots.has(resolved)) {
+  // Register and compare in canonical form. The renderer spells the same
+  // directory differently (drive-letter case, separators, `..`, junctions) and
+  // isWithinKnownProject canonicalizes on its side, so a raw-string set let one
+  // spelling bypass a gate the other spelling passed - and counted as a second
+  // root, evicting a real watched worktree.
+  const canonical = canonicalPath(resolved);
+  if (!isWithinKnownProject(canonical) && !gitWatchedRoots.has(canonical)) {
     console.warn(`${channel} blocked: ${resolved} is not a known project or watched worktree`);
     throw new Error('Path is not within a known project');
   }
@@ -76,18 +82,6 @@ function requireGitFilePath(channel: string, root: string, filePath: string): st
     throw new Error('File path escapes the project');
   }
   return filePath;
-}
-
-/** Resolve existing links, including a link in an existing parent directory. */
-function canonicalPath(filePath: string): string {
-  const resolved = path.resolve(filePath);
-  try {
-    return fs.realpathSync(resolved);
-  } catch {
-    const parent = path.dirname(resolved);
-    if (parent === resolved) return resolved;
-    return path.join(canonicalPath(parent), path.basename(resolved));
-  }
 }
 
 function isWithin(root: string, target: string): boolean {
@@ -851,11 +845,16 @@ export function registerIpcHandlers(): void {
       console.warn(`git:watchProject blocked: ${resolved}`);
       return;
     }
-    if (gitWatchedRoots.size >= MAX_GIT_WATCHED_ROOTS) {
-      const oldest = gitWatchedRoots.values().next().value;
-      if (oldest !== undefined) gitWatchedRoots.delete(oldest);
+    // Canonical form is the set key, and re-registering a watched root must
+    // not evict the oldest entry.
+    const canonical = canonicalPath(resolved);
+    if (!gitWatchedRoots.has(canonical)) {
+      if (gitWatchedRoots.size >= MAX_GIT_WATCHED_ROOTS) {
+        const oldest = gitWatchedRoots.values().next().value;
+        if (oldest !== undefined) gitWatchedRoots.delete(oldest);
+      }
+      gitWatchedRoots.add(canonical);
     }
-    gitWatchedRoots.add(resolved);
     startGitWatcher(win, resolved);
   });
 

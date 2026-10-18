@@ -9,6 +9,24 @@ export function expandUserPath(filePath: string): string {
   return filePath;
 }
 
+/**
+ * Resolve existing links, including a link in an existing parent directory.
+ * Path *comparisons* must use this: the same directory can be spelled with a
+ * different drive-letter case, separator style, `..` segment, junction or
+ * link, and on Windows realpathSync also returns the real casing. Non-existent
+ * paths fall back to their resolved form with canonicalized parents.
+ */
+export function canonicalPath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    const parent = path.dirname(resolved);
+    if (parent === resolved) return resolved;
+    return path.join(canonicalPath(parent), path.basename(resolved));
+  }
+}
+
 export function readFileSafe(filePath: string): string | null {
   try {
     return fs.readFileSync(filePath, 'utf-8');

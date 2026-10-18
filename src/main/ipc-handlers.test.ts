@@ -123,7 +123,8 @@ vi.mock('./auto-updater', autoStub);
 vi.mock('./menu', autoStub);
 vi.mock('./readiness/analyzer', autoStub);
 vi.mock('./github-cli', autoStub);
-vi.mock('./fs-utils', () => ({
+vi.mock('./fs-utils', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./fs-utils')>(),
   expandUserPath: (p: string) => p,
   isBinaryBuffer: () => false,
   isMacPackagePath: () => false,
@@ -221,6 +222,88 @@ describe('project file read boundary', () => {
       knownPaths.push(root);
       const read = handlers.get('fs:readFile')!;
       expect(read({}, large)).toEqual({ ok: false, reason: 'error' });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('git:* root gate', () => {
+  it('blocks git handlers aimed at a cwd the renderer invented', async () => {
+    const gitStatus = await import('./git-status');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      const outside = path.join(root, 'worktree');
+      fs.mkdirSync(outside);
+
+      expect(() => handlers.get('git:getStatus')!({}, outside)).toThrow(/not within a known project/);
+      expect(() => handlers.get('git:getWorktrees')!({}, outside)).toThrow(/not within a known project/);
+      // The discard sink is the reason this gate exists at all. Its handler is
+      // async, so the gate surfaces as a rejection, not a synchronous throw.
+      await expect(handlers.get('git:discardFile')!({}, outside, 'x.txt')).rejects.toThrow(/not within a known project/);
+      expect(vi.mocked(gitStatus.getGitStatus)).not.toHaveBeenCalled();
+      expect(vi.mocked(gitStatus.getGitWorktrees)).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a known project directory', async () => {
+    const gitStatus = await import('./git-status');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      knownPaths.push(root);
+      handlers.get('git:getStatus')!({}, root);
+      expect(vi.mocked(gitStatus.getGitStatus)).toHaveBeenCalledWith(root);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a watched worktree git-capable after its project is closed', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      const project = path.join(root, 'project');
+      const worktree = path.join(project, '.wt', 'w1');
+      fs.mkdirSync(worktree, { recursive: true });
+      knownPaths.push(project);
+      handlers.get('git:watchProject')!({}, worktree);
+      knownPaths.length = 0;
+
+      expect(() => handlers.get('git:getStatus')!({}, worktree)).not.toThrow();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recognizes a watched root reached through a link', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      const project = path.join(root, 'project');
+      const worktree = path.join(project, '.wt', 'w1');
+      fs.mkdirSync(worktree, { recursive: true });
+      const alias = path.join(root, 'alias');
+      fs.symlinkSync(worktree, alias, process.platform === 'win32' ? 'junction' : 'dir');
+
+      knownPaths.push(project);
+      handlers.get('git:watchProject')!({}, worktree);
+      knownPaths.length = 0;
+
+      // Same directory, different spelling: the gate compares canonical paths,
+      // so the alias resolves to the registered root instead of counting as an
+      // unregistered cwd.
+      expect(() => handlers.get('git:getStatus')!({}, alias)).not.toThrow();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a git file path that escapes the root', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      knownPaths.push(root);
+      expect(() => handlers.get('git:getDiff')!({}, root, '../escape.txt', 'staged'))
+        .toThrow(/escapes the project/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
