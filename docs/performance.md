@@ -64,7 +64,7 @@ A full static audit of main + renderer verified every bound above against source
 
 | Structure | Location | Growth | Planned fix |
 | --- | --- | --- | --- |
-| `PersistedState.projects[].sessionHistory` | `src/shared/types.ts`, rows created for every session at spawn | one finalized row (~0.3–0.6 KB) per session ever, per project; the dominant term in every full-state save | retain-last-K (500) with bookmark exemption, mirroring the insights FIFO |
+| `PersistedState.projects[].sessionHistory` | `src/shared/types.ts`, rows created for every session at spawn | soft cap 500, but bookmarked and `active` rows are exempt from pruning, so a crash orphaned `active` row and bookmarks accumulate without limit; the dominant term in every full-state save | retain-last-K bookmarks (~50) and expire stale `active` rows whose session no longer exists |
 | Full-state serialization | `src/main/store.ts` `saveStateSync` | each save transiently holds object graph + JSON string + Buffer (~2–3× payload) | capped by the history fix; optional single-line (non-pretty) JSON |
 | Zip export sidecars | `src/main/session-export.ts` `readSidecars` | all sidecar files, `.events` included, buffered whole; the source `.events` file has no size cap on disk (64 KiB is the read budget, not the file size) | stream each sidecar with `createReadStream`, as the transcript already is |
 | xterm scrollback | all three `new Terminal({...})` sites | library default 1,000 lines/tab (~240 KB UTF-16 at 120 cols) — a bound by omission | set `scrollback` explicitly as a documented constant |

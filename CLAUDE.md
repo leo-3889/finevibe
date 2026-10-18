@@ -12,7 +12,7 @@ npx tsc -p tsconfig.renderer.json --noEmit
 git diff --check
 ```
 
-`npm start` builds before launching. There is no hot reload. `tsconfig.test.json` is not a supported gate yet: its legacy target and test mocks produce type errors; see [audit status](docs/AUDIT_STATUS.md).
+`npm start` builds before launching. There is no hot reload.
 
 ## Current contracts
 
