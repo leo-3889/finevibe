@@ -138,6 +138,8 @@
     "project": {
       "rename": "重命名",
       "closeAllSessions": "关闭所有会话",
+      "openInFileManager": "在{fileManager}中打开",
+      "copyPath": "复制路径",
       "settings": "项目设置…",
       "removeProject": "移除项目"
     },

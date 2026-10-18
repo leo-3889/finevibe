@@ -138,6 +138,8 @@
     "project": {
       "rename": "Rename",
       "closeAllSessions": "Close All Sessions",
+      "openInFileManager": "Open in {fileManager}",
+      "copyPath": "Copy Path",
       "settings": "Project Settings…",
       "removeProject": "Remove Project"
     },

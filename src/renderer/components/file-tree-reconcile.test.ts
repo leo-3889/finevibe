@@ -187,7 +187,7 @@ describe('show in file manager menu option', () => {
     await settle();
 
     const options = openMenu(container, '/proj/src');
-    expect(options.map((o) => o.label)).toEqual([`Open in ${FILE_MANAGER}`, 'Delete']);
+    expect(options.map((o) => o.label)).toEqual([`Open in ${FILE_MANAGER}`, 'Copy Path', 'Delete']);
 
     options[0].action();
     expect((globalThis as any).vibeyard.fs.showInFolder).toHaveBeenCalledWith('/proj/src');
@@ -201,10 +201,24 @@ describe('show in file manager menu option', () => {
 
     const options = openMenu(container, '/proj/a.ts');
     expect(options.map((o) => o.label)).toEqual([
-      'Open in Browser', `Reveal in ${FILE_MANAGER}`, 'Properties', 'Delete',
+      'Open in Browser', `Reveal in ${FILE_MANAGER}`, 'Copy Path', 'Properties', 'Delete',
     ]);
 
     options[1].action();
     expect((globalThis as any).vibeyard.fs.showInFolder).toHaveBeenCalledWith('/proj/a.ts');
+  });
+
+  it('copies the absolute path of a folder to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    dirContents.set('/proj', [entry('src', '/proj', true)]);
+    const container = document.createElement('div');
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container);
+    await settle();
+
+    const options = openMenu(container, '/proj/src');
+    options.find((o) => o.label === 'Copy Path')!.action();
+    expect(writeText).toHaveBeenCalledWith('/proj/src');
+    vi.unstubAllGlobals();
   });
 });

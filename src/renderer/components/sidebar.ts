@@ -9,7 +9,7 @@ import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
 import { esc } from '../dom-utils.js';
 import { projectProfileBadge, providerProfileOptions } from '../profile-utils.js';
-import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree } from './file-tree.js';
+import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree, FILE_MANAGER } from './file-tree.js';
 import {
   renderSessionHistory,
   closeSessionHistory,
@@ -763,6 +763,28 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
     });
   }
 
+  const openInFolderItem = document.createElement('div');
+  openInFolderItem.className = 'tab-context-menu-item';
+  openInFolderItem.textContent = t('contextMenu.project.openInFileManager', { fileManager: FILE_MANAGER });
+  openInFolderItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideProjectContextMenu();
+    void window.vibeyard.fs.showInFolder(project.path)
+      .then((result) => {
+        if (!result.ok) console.warn(`Failed to open ${project.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
+      })
+      .catch((err) => console.warn(`Failed to open ${project.path} in ${FILE_MANAGER}:`, err));
+  });
+
+  const copyPathItem = document.createElement('div');
+  copyPathItem.className = 'tab-context-menu-item';
+  copyPathItem.textContent = t('contextMenu.project.copyPath');
+  copyPathItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideProjectContextMenu();
+    navigator.clipboard.writeText(project.path).catch((err) => console.warn('clipboard write failed', err));
+  });
+
   const separator = document.createElement('div');
   separator.className = 'tab-context-menu-separator';
 
@@ -787,6 +809,8 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
 
   menu.appendChild(renameItem);
   menu.appendChild(closeAllItem);
+  menu.appendChild(openInFolderItem);
+  menu.appendChild(copyPathItem);
   menu.appendChild(settingsItem);
   menu.appendChild(separator);
   menu.appendChild(removeItem);

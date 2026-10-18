@@ -268,7 +268,7 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      showContextMenu(e.clientX, e.clientY, [showInFolderMenuOption(entry), deleteMenuOption(entry)]);
+      showContextMenu(e.clientX, e.clientY, [showInFolderMenuOption(entry), copyPathMenuOption(entry), deleteMenuOption(entry)]);
     });
     return [row, subContainer];
   }
@@ -295,6 +295,7 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
         },
       },
       showInFolderMenuOption(entry),
+      copyPathMenuOption(entry),
       {
         label: 'Properties',
         action: () => { showFileProperties(entry); },
@@ -471,6 +472,16 @@ function showInFolderMenuOption(entry: DirEntry): MenuOption {
       if (!result.ok) {
         console.warn(`Failed to show ${entry.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
       }
+    },
+  };
+}
+
+/** Copy the entry's absolute path to the clipboard (plain text, like the git panel's Copy Path). */
+function copyPathMenuOption(entry: DirEntry): MenuOption {
+  return {
+    label: 'Copy Path',
+    action: () => {
+      navigator.clipboard.writeText(entry.path).catch((err) => console.warn('clipboard write failed', err));
     },
   };
 }
