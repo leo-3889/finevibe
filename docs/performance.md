@@ -58,8 +58,29 @@ This removes duplicate per-session snapshots and reduces idle directory enumerat
 
 Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), [fallback status reader](../src/main/providers/pi-compatible-transcripts.ts), and [state store](../src/main/store.ts).
 
+## Static footprint audit (2026-10-18): growth structures
+
+A full static audit of main + renderer verified every bound above against source and found the registry/watcher/pane layers correctly bounded: no main-side PTY output buffering, no per-spawn listener accumulation, no watcher or polling retention for closed sessions, streaming launcher download, one-shot child processes reaped synchronously, and singleton timers only (four 2-second pollers, each a no-op while its registry is empty). The remaining structures that grow without a code cap:
+
+| Structure | Location | Growth | Planned fix |
+| --- | --- | --- | --- |
+| `PersistedState.projects[].sessionHistory` | `src/shared/types.ts`, rows created for every session at spawn | one finalized row (~0.3–0.6 KB) per session ever, per project; the dominant term in every full-state save | retain-last-K (500) with bookmark exemption, mirroring the insights FIFO |
+| Full-state serialization | `src/main/store.ts` `saveStateSync` | each save transiently holds object graph + JSON string + Buffer (~2–3× payload) | capped by the history fix; optional single-line (non-pretty) JSON |
+| Zip export sidecars | `src/main/session-export.ts` `readSidecars` | all sidecar files, `.events` included, buffered whole; the source `.events` file has no size cap on disk (64 KiB is the read budget, not the file size) | stream each sidecar with `createReadStream`, as the transcript already is |
+| xterm scrollback | all three `new Terminal({...})` sites | library default 1,000 lines/tab (~240 KB UTF-16 at 120 cols) — a bound by omission | set `scrollback` explicitly as a documented constant |
+| `hook-status` `lastMtimes` | `src/main/hook-status.ts` | rows for one-shot files (e.g. `.toolfailure`) linger after the file is unlinked, until session cleanup | delete the row when the file is unlinked; sweep names absent from `readdir` |
+| Push-only listener arrays | `sharing/share-manager.ts`, `session-inspector-state.ts` | no public unsubscribe; latent (today one module-scope caller each) | return unsubscribe closures, the pattern `state.ts` already uses |
+| File-tree directory cache | `src/renderer/components/file-tree.ts` `entryCache` | one entry list per directory expanded during the session, freed only on collapse/project removal | LRU cap (~2,000 directories) |
+| `ProjectRecord.githubLastSeen` | `src/shared/types.ts` | one entry per viewed PR/issue, forever | age-prune |
+
+Sources: [state store](../src/main/store.ts), [session export](../src/main/session-export.ts), [hook status](../src/main/hook-status.ts), [terminal pane](../src/renderer/components/terminal-pane.ts), [file tree](../src/renderer/components/file-tree.ts).
+
+## Measurement protocol for the live run
+
+The static audit defines what the numbers must confirm. Launch with `--js-flags="--expose-gc"`; sample `process.memoryUsage()` (main, via `--inspect`) and `Get-Process Vibeyard` working set (PowerShell, 60 s cadence, per-process rows) plus heap snapshots. Scenarios: **S1** 10 idle tabs → expect ≈ +0.2–0.4 MB/tab renderer, flat main; **S2** a ~100 MB output burst → renderer plateaus at scrollback capacity, main heap must not scale with the burst; **S3** 1 h idle with 10 live PTYs → growth < 5 MB/h (a linear rise implicates the 2 s pollers' per-file maps, `lastMtimes` first); **S4** open 50 sessions and close all → retained `Terminal`/`TranscriptSyncEntry`/reader counts return to baseline; **S5** state seeded with 5,000 history rows → time one persist, < 250 ms; **S6** export a session with a ≥50 MB `.events` sidecar → the main heap transient equals the buffered sidecar bytes (and collapses to chunk size once streaming lands). Record CSVs and snapshots under `bench/memory/<date>/`. Pass criteria: S3 < 5 MB/h, S4 within 10% of baseline, per-tab renderer cost within 2× the 240 KB estimate, S5 < 250 ms.
+
 ## Evidence and open measurement
 
 Automated tests cover repeated search beyond the memory-cache budget, shared indexing/cancellation, growing diff files, split UTF-8 event records, oversized events, navigation within a 200,000-line file, and directory-cache invalidation.
 
-Still needed: live Electron heap/RSS, main-thread delay, frame-time and watcher-handle measurements at increasing history/tab sizes; packaged preview/navigation checks; and sustained terminal-output profiling. Passing unit tests does not establish a speedup percentage or complete the broader Pi/OMP integration audit.
+Still needed: run the measurement protocol above (S1–S6) in a packaged app, plus packaged preview/navigation checks and sustained terminal-output profiling. Passing unit tests does not establish a speedup percentage or complete the broader Pi/OMP integration audit.
