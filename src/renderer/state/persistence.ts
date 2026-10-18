@@ -48,9 +48,18 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
     }
     if (project.sessionHistory) {
       const seenIds = new Set<string>();
+      const liveIds = new Set(project.sessions.map((s) => s.id));
       for (const entry of project.sessionHistory) {
         if (seenIds.has(entry.id)) entry.id = crypto.randomUUID();
         seenIds.add(entry.id);
+        // Pre-history-on-create entries are closed archives.
+        if (!entry.state) entry.state = 'closed';
+        // An 'active' entry whose live session did not survive the last quit
+        // (crash / hard kill skipped removeSession): finalize it on load.
+        if (entry.state === 'active' && !liveIds.has(entry.liveSessionId ?? '')) {
+          entry.state = 'closed';
+          entry.closedAt = entry.closedAt ?? new Date().toISOString();
+        }
       }
     }
   }

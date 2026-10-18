@@ -205,11 +205,20 @@ export interface ArchivedSession {
   providerId: ProviderId;
   cliSessionId: string | null;
   createdAt: string;
-  closedAt: string;
+  /** Absent while the session is still live (`state: 'active'`). */
+  closedAt?: string;
   bookmarked?: boolean;
   teamMemberId?: string;
   /** Preserved so a resumed session reuses the same profile config dir (CLAUDE_CONFIG_DIR). */
   profileId?: string;
+  /**
+   * 'active' while the owning Vibeyard session is live (history records the
+   * session from creation, not only at close); 'closed' (or absent, for
+   * entries written before the field existed) after finalization.
+   */
+  state?: 'active' | 'closed';
+  /** Live session id the active entry mirrors; finalization matches on it. */
+  liveSessionId?: string;
   cost: {
     totalCostUsd: number;
     totalInputTokens: number;

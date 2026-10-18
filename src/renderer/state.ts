@@ -3,7 +3,12 @@ import type { SessionRecord, ProjectRecord, Preferences, PersistedState, Archive
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
-import { archiveSession as archiveSessionPure } from './state/session-archive.js';
+import {
+  archiveSession as archiveSessionPure,
+  archiveSessionOnCreate,
+  findCreateEntry,
+  syncCreateEntryCliId,
+} from './state/session-archive.js';
 import {
   buildResumedSession,
   buildResumedSessionFromCliId,
@@ -126,7 +131,6 @@ class AppState {
   private loadedFlag = false;
   private warnedPrematurePersist = false;
   /** Coalesced persist for high-frequency cost/context ticks (see scheduleCostFlush). */
-  private pendingCostFlush = false;
   private costFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   private pushNav(sessionId: string | null | undefined): void {
@@ -193,7 +197,15 @@ class AppState {
   }
 
   async load(): Promise<void> {
-    const loaded = (await window.vibeyard.store.load()) as PersistedState | null;
+    let loaded: PersistedState | null = null;
+    try {
+      loaded = (await window.vibeyard.store.load()) as PersistedState | null;
+    } catch (err) {
+      // A failed load must not leave loadedFlag false forever: every later
+      // persist() would be dropped by the premature-persist guard and the
+      // session would silently never save anything.
+      console.error('[state] store.load() failed; starting from defaults', err);
+    }
     if (loaded && loaded.version === 1) {
       this.state = loaded;
       hydrateLoadedState(this.state, defaultPreferences);
@@ -215,10 +227,14 @@ class AppState {
     // Persisting before load() would write the default in-memory state over the
     // real state.json, which is how saved preferences silently vanish. Reads
     // before load are fine — components initialize pre-load and re-apply on
-    // `state-loaded` (see docs/ui-conventions.md) — writes are not.
-    if (!this.loadedFlag && !this.warnedPrematurePersist) {
-      this.warnedPrematurePersist = true;
-      console.warn('[state] persisted before appState.load(); defaults would overwrite saved state');
+    // `state-loaded` (see docs/ui-conventions.md) — writes are not, so the
+    // write itself is dropped, not just warned about.
+    if (!this.loadedFlag) {
+      if (!this.warnedPrematurePersist) {
+        this.warnedPrematurePersist = true;
+        console.warn('[state] persist before appState.load() dropped; defaults would overwrite saved state');
+      }
+      return;
     }
     window.vibeyard.store.save(serializeForSave(this.state));
   }
@@ -230,11 +246,9 @@ class AppState {
    * (the main-side store flushes on quit).
    */
   private scheduleCostFlush(): void {
-    this.pendingCostFlush = true;
     if (this.costFlushTimer !== null) return;
     this.costFlushTimer = setTimeout(() => {
       this.costFlushTimer = null;
-      this.pendingCostFlush = false;
       this.persist();
     }, 1000);
   }
@@ -452,6 +466,12 @@ class AppState {
   private commitNewSession(projectId: string, session: SessionRecord): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (project) this.sessionIndex.set(session.id, { project, session });
+    // History tracks CLI sessions from creation: a spawn shows in the history
+    // panel immediately, and a close finalizes the entry in place.
+    if (project && isCliSession(session) && this.state.preferences.sessionHistoryEnabled) {
+      archiveSessionOnCreate(project, session);
+      this.emit('history-changed', project.id);
+    }
     this.pushNav(session.id);
     this.persist();
     this.emit('session-added', { projectId, session });
@@ -807,10 +827,24 @@ class AppState {
 
     // Archive CLI sessions before removing (cost data must be captured before session-removed triggers destroyTerminal)
     const session = project.sessions.find((s) => s.id === sessionId);
-    if (session && isCliSession(session) && this.state.preferences.sessionHistoryEnabled) {
+    if (session && isCliSession(session)) {
       const transcriptAvailable = this.isArchivable(session, project);
-      if (opts?.exitReason || transcriptAvailable) {
-        this.archiveSession(project, session, { ...opts, transcriptAvailable });
+      // A creation entry exists for every live CLI session (history-on-create);
+      // finalize it on close even when there is no transcript — the row then
+      // carries `transcriptAvailable: false` and offers no Resume.
+      const hadCreateEntry = !!findCreateEntry(project, sessionId);
+      if (this.state.preferences.sessionHistoryEnabled) {
+        if (opts?.exitReason || transcriptAvailable || hadCreateEntry) {
+          this.archiveSession(project, session, { ...opts, transcriptAvailable, finalize: hadCreateEntry });
+        }
+      } else if (hadCreateEntry) {
+        // The row was created while the pref was on; closing with the pref
+        // off must still finalize it, or the row stays "Running" forever.
+        this.archiveSession(project, session, {
+          ...opts,
+          transcriptAvailable,
+          finalize: true,
+        });
       }
     }
 
@@ -850,10 +884,23 @@ class AppState {
       session.cliSessionId,
       project.path,
       this.profileConfigDir(providerId, session.profileId),
+      // Pi/OMP transcripts live only in the exclusive per-launch dir.
+      session.id,
     );
   }
 
-  private archiveSession(project: ProjectRecord, session: SessionRecord, opts?: { exitReason?: string; exitCode?: number; exitSignal?: number; processId?: number; transcriptAvailable?: boolean }): void {
+  private archiveSession(
+    project: ProjectRecord,
+    session: SessionRecord,
+    opts?: {
+      exitReason?: string;
+      exitCode?: number;
+      exitSignal?: number;
+      processId?: number;
+      transcriptAvailable?: boolean;
+      finalize?: boolean;
+    },
+  ): void {
     archiveSessionPure(project, session, opts);
     this.emit('history-changed', project.id);
   }
@@ -917,15 +964,28 @@ class AppState {
     if (!archived || !archived.cliSessionId) return undefined;
     if (archived.transcriptAvailable === false) return undefined;
 
+    // A row whose tab is still running activates that tab; resuming a live
+    // session would spawn a duplicate on the same CLI transcript.
+    if (archived.state === 'active' && archived.liveSessionId) {
+      const live = project.sessions.find((s) => s.id === archived.liveSessionId);
+      if (live) {
+        this.setActiveSession(projectId, live.id);
+        return live;
+      }
+    }
+
     const exists = await window.vibeyard.session.transcriptExists(
       archived.providerId,
       archived.cliSessionId,
       project.path,
       this.profileConfigDir(archived.providerId, archived.profileId),
+      // Pi/OMP transcripts live only in the exclusive per-launch dir.
+      archived.liveSessionId,
     );
     if (!exists) {
-      // Preserve crash diagnostics even when the transcript disappeared.
-      if (!archived.exitReason) this.removeHistoryEntry(projectId, archivedSessionId);
+      // Preserve crash diagnostics even when the transcript disappeared, and
+      // never drop the row of a tab that is still running.
+      if (!archived.exitReason && archived.state !== 'active') this.removeHistoryEntry(projectId, archivedSessionId);
       return undefined;
     }
 
@@ -976,6 +1036,8 @@ class AppState {
       project.path,
       resolved.name,
       sourceProfile?.configDir,
+      // Pi/OMP transcripts live only in the exclusive per-launch dir.
+      resolved.liveSessionId,
     );
 
     const session: SessionRecord = {
@@ -1030,6 +1092,11 @@ class AppState {
     }
 
     session.cliSessionId = cliSessionId;
+    // Mirror the discovered id onto the active history entry (spawned before
+    // the id existed) so the history row is resumable/live-linked immediately.
+    if (this.state.preferences.sessionHistoryEnabled && syncCreateEntryCliId(project, sessionId, cliSessionId)) {
+      this.emit('history-changed', project.id);
+    }
     this.persist();
     this.emit('session-changed');
   }
@@ -1071,7 +1138,7 @@ class AppState {
   setSessionBrowserIsolated(sessionId: string, isolated: boolean): void {
     const session = this.findSessionById(sessionId);
     if (!session) return;
-    if (!!session.browserIsolated === isolated) return;
+    if ((session.browserIsolated ?? false) === isolated) return;
     session.browserIsolated = isolated || undefined;
     this.persist();
   }
@@ -1084,9 +1151,12 @@ class AppState {
     if (session.type === 'kanban' || session.type === 'project-tab') return;
     session.name = name.slice(0, MAX_SESSION_NAME_LENGTH);
     if (userRenamed) session.userRenamed = true;
-    // Keep history entry in sync if this session was resumed from history
+    // Keep history in sync. A live tab updates its own row (created at
+    // spawn); rows closed earlier with the same cliSessionId are immutable
+    // history. Restored tabs (no active row) keep the legacy shared-row sync.
     if (session.cliSessionId && project.sessionHistory) {
-      const historyEntry = project.sessionHistory.find((a) => a.cliSessionId === session.cliSessionId);
+      const historyEntry = findCreateEntry(project, session.id)
+        ?? project.sessionHistory.find((a) => a.cliSessionId === session.cliSessionId && a.state !== 'active');
       if (historyEntry) {
         historyEntry.name = session.name;
         this.emit('history-changed', project.id);
@@ -1248,7 +1318,10 @@ export { createDefaultBoard };
 /** @internal Test-only: reset all module state */
 export function _resetForTesting(): void {
   (appState as any)['state'] = { version: 1, projects: [], activeProjectId: null, preferences: { ...defaultPreferences } };
-  (appState as any)['loadedFlag'] = false;
+  // Tests simulate post-load mutators: the premature-persist guard in
+  // persist() would drop every write these tests assert on. The guard's own
+  // behavior is covered explicitly (state.test.ts 'premature-persist guard').
+  (appState as any)['loadedFlag'] = true;
   (appState as any)['warnedPrematurePersist'] = false;
   (appState as any)['listeners'] = new Map();
   (appState as any)['nav'] = new NavHistory();
@@ -1256,7 +1329,6 @@ export function _resetForTesting(): void {
     clearTimeout((appState as any)['costFlushTimer']);
     (appState as any)['costFlushTimer'] = null;
   }
-  (appState as any)['pendingCostFlush'] = false;
 }
 
 export const appState = new AppState();

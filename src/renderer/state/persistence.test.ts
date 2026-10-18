@@ -88,3 +88,22 @@ describe('hydrateLoadedState', () => {
     });
   });
 });
+
+describe('hydrateLoadedState active rows', () => {
+  const rows = () => [
+    { id: 'a1', name: 'live', providerId: 'claude' as const, cliSessionId: 'cli-1', createdAt: '0', state: 'active' as const, liveSessionId: 's1' },
+    { id: 'a2', name: 'orphan', providerId: 'claude' as const, cliSessionId: 'cli-2', createdAt: '0', state: 'active' as const, liveSessionId: 'gone' },
+  ];
+
+  it('finalizes rows whose tab did not survive, keeps live ones', () => {
+    const state = baseState({});
+    state.projects[0].sessionHistory = rows();
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    const [live, orphan] = state.projects[0].sessionHistory!;
+    expect(live.state).toBe('active');
+    expect(orphan.state).toBe('closed');
+    expect(orphan.closedAt).toBeTruthy();
+  });
+});

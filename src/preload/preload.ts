@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, StartupPrefs } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, StartupPrefs, ArchivedSession } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -21,9 +21,11 @@ export interface VibeyardApi {
       onExit(callback: (sessionId: string, exitCode: number, signal?: number, exitReason?: string, pid?: number) => void): () => void;
   };
   session: {
-    buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string): Promise<string>;
-    transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): Promise<boolean>;
-    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): boolean;
+    buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string, liveSessionId?: string): Promise<string>;
+    transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): Promise<boolean>;
+    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): boolean;
+    /** Save-dialog backup of one session. `zip`: meta.json + provider transcript + sidecars; `file`: the transcript verbatim. Returns the written path or null when canceled. */
+    exportArchive(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file'): Promise<string | null>;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
     cancelDeepSearch(): void;
     onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
@@ -132,8 +134,8 @@ export interface VibeyardApi {
     callTool(id: string, name: string, args: Record<string, unknown>): Promise<{ success: boolean; data?: unknown; error?: string }>;
     readResource(id: string, uri: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
     getPrompt(id: string, name: string, args: Record<string, string>): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string): Promise<{ success: boolean; error?: string }>;
-    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string): Promise<{ success: boolean; error?: string }>;
+    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<{ success: boolean; error?: string }>;
+    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<{ success: boolean; error?: string }>;
   };
   readiness: {
     analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
@@ -201,12 +203,14 @@ const api: VibeyardApi = {
           callback(sessionId as string, exitCode as number, signal as number | undefined, exitReason as string | undefined, pid as number | undefined)),
   },
   session: {
-    buildResumeWithPrompt: (sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir) =>
-      ipcRenderer.invoke('session:buildResumeWithPrompt', sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir),
-    transcriptExists: (providerId, cliSessionId, projectPath, configDir) =>
-      ipcRenderer.invoke('session:transcriptExists', providerId, cliSessionId, projectPath, configDir),
-    transcriptExistsSync: (providerId, cliSessionId, projectPath, configDir) =>
-      ipcRenderer.sendSync('session:transcriptExistsSync', providerId, cliSessionId, projectPath, configDir),
+    buildResumeWithPrompt: (sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir, liveSessionId) =>
+      ipcRenderer.invoke('session:buildResumeWithPrompt', sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir, liveSessionId),
+    transcriptExists: (providerId, cliSessionId, projectPath, configDir, liveSessionId) =>
+      ipcRenderer.invoke('session:transcriptExists', providerId, cliSessionId, projectPath, configDir, liveSessionId),
+    transcriptExistsSync: (providerId, cliSessionId, projectPath, configDir, liveSessionId) =>
+      ipcRenderer.sendSync('session:transcriptExistsSync', providerId, cliSessionId, projectPath, configDir, liveSessionId),
+    exportArchive: (providerId, cliSessionId, projectPath, configDir, meta, format) =>
+      ipcRenderer.invoke('session:exportArchive', providerId, cliSessionId, projectPath, configDir, meta, format),
     cancelDeepSearch: () => ipcRenderer.send('session:cancelDeepSearch'),
     deepSearch: (query) =>
       ipcRenderer.invoke('session:deepSearch', query),
@@ -332,8 +336,8 @@ const api: VibeyardApi = {
     callTool: (id: string, name: string, args: Record<string, unknown>) => ipcRenderer.invoke('mcp:callTool', id, name, args),
     readResource: (id: string, uri: string) => ipcRenderer.invoke('mcp:readResource', id, uri),
     getPrompt: (id: string, name: string, args: Record<string, string>) => ipcRenderer.invoke('mcp:getPrompt', id, name, args),
-    addServer: (name: string, config: unknown, scope: 'user' | 'project', projectPath?: string) => ipcRenderer.invoke('mcp:addServer', name, config, scope, projectPath),
-    removeServer: (name: string, filePath: string, scope: 'user' | 'project', projectPath?: string) => ipcRenderer.invoke('mcp:removeServer', name, filePath, scope, projectPath),
+    addServer: (name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string) => ipcRenderer.invoke('mcp:addServer', name, config, scope, projectPath, configDir),
+    removeServer: (name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string) => ipcRenderer.invoke('mcp:removeServer', name, filePath, scope, projectPath, configDir),
   },
   readiness: {
     analyze: (projectPath: string, excludedProviders?: string[]) => ipcRenderer.invoke('readiness:analyze', projectPath, excludedProviders),

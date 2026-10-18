@@ -21,9 +21,9 @@ export function toggleBookmark(project: ProjectRecord, archivedSessionId: string
   return true;
 }
 
-/** Clear all non-bookmarked history entries. Always succeeds (sets to []). */
+/** Clear non-bookmarked, closed history entries. Running rows and bookmarks survive. */
 export function clearSessionHistory(project: ProjectRecord): void {
-  project.sessionHistory = project.sessionHistory?.filter((a) => a.bookmarked) ?? [];
+  project.sessionHistory = project.sessionHistory?.filter((a) => a.bookmarked || a.state === 'active') ?? [];
 }
 
 /** Find a session tab in this project that already has the given cliSessionId. */
@@ -37,6 +37,8 @@ export interface ResumeSourceData {
   name: string;
   /** Source session's profile, so its transcript can be located in the right config dir. */
   profileId?: string;
+  /** Live tab id, so Pi/OMP handoffs can resolve the exclusive per-launch transcript dir. */
+  liveSessionId?: string;
 }
 
 /** Resolve a resume source from either an archived entry id or a live session id. */
@@ -47,12 +49,12 @@ export function resolveResumeSource(
   if (source.archivedSessionId) {
     const archived = project.sessionHistory?.find((a) => a.id === source.archivedSessionId);
     if (!archived || !archived.providerId) return undefined;
-    return { providerId: archived.providerId, cliSessionId: archived.cliSessionId, name: archived.name, profileId: archived.profileId };
+    return { providerId: archived.providerId, cliSessionId: archived.cliSessionId, name: archived.name, profileId: archived.profileId, liveSessionId: archived.liveSessionId };
   }
   if (source.sessionId) {
     const existing = project.sessions.find((s) => s.id === source.sessionId);
     if (!existing || !existing.providerId) return undefined;
-    return { providerId: existing.providerId, cliSessionId: existing.cliSessionId, name: existing.name, profileId: existing.profileId };
+    return { providerId: existing.providerId, cliSessionId: existing.cliSessionId, name: existing.name, profileId: existing.profileId, liveSessionId: existing.id };
   }
   return undefined;
 }
