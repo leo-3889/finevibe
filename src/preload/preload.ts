@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, StartupPrefs, ArchivedSession } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -158,6 +158,8 @@ export interface VibeyardApi {
   };
   clipboard: {
     write(text: string, source?: ClipboardSource): Promise<void>;
+    readForPaste(): Promise<ClipboardPastePayload>;
+    saveImage(dataUrl: string): Promise<string | null>;
   };
   zoom: {
     set(factor: number): void;
@@ -360,6 +362,8 @@ const api: VibeyardApi = {
   },
   clipboard: {
     write: (text: string, source?: ClipboardSource) => ipcRenderer.invoke('clipboard:write', text, source),
+    readForPaste: () => ipcRenderer.invoke('clipboard:readForPaste'),
+    saveImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:saveImage', dataUrl),
   },
   zoom: {
     set: (factor: number) => {

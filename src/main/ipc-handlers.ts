@@ -4,9 +4,11 @@ import * as path from 'path';
 import * as os from 'os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomBytes } from 'node:crypto';
 import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from './pty-manager';
 import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
+import { fileURLToPath } from 'node:url';
 import { loadState, saveState, getKnownProjectPaths, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
@@ -28,7 +30,7 @@ import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './githu
 import { canonicalPath, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
-import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource } from '../shared/types';
+import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
 import { shouldWarnStatusLine } from './settings-guard';
 import { buildVibeyardignoreMatcher } from './vibeyardignore';
 import { setCloseConfirmed } from './close-state';
@@ -454,6 +456,152 @@ export function registerIpcHandlers(): void {
     if (source === 'selection' && isLinux) clipboard.writeText(text, 'selection');
   });
 
+  // Every provider takes attachments as a path — a file dropped on a terminal is
+  // injected as its path text. A clipboard payload with no path the CLI can read
+  // (a screenshot, a copied picture, a browser image) has no path, so main
+  // materialises one in the paste temp dir and the renderer injects that. Two
+  // entry points: main reads the clipboard itself for the keystrokes the renderer
+  // intercepts (Windows Ctrl+V, the context menu), and the renderer hands bytes
+  // over for a native paste event, whose file objects main cannot see.
+  const PASTE_DIR = path.join(os.tmpdir(), 'vibeyard-paste');
+  const PASTE_MAX_BYTES = 25 * 1024 * 1024;
+  const PASTE_IMAGE_EXT_BY_MIME: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/bmp': '.bmp',
+    'image/tiff': '.tiff',
+  };
+  let pasteFilesPruned = false;
+
+  async function writePastedFile(buffer: Buffer, ext: string): Promise<string | null> {
+    if (buffer.length === 0 || buffer.length > PASTE_MAX_BYTES) return null;
+    try {
+      await fs.promises.mkdir(PASTE_DIR, { recursive: true });
+      if (!pasteFilesPruned) {
+        pasteFilesPruned = true;
+        void pruneStaleImages(PASTE_DIR);
+      }
+      // The name is generated here; the renderer never supplies a path, so a paste
+      // cannot write outside the paste directory.
+      const filePath = path.join(
+        PASTE_DIR,
+        `paste-${Date.now()}-${randomBytes(4).toString('hex')}${ext}`,
+      );
+      await fs.promises.writeFile(filePath, buffer);
+      return filePath;
+    } catch (err) {
+      console.warn('Failed to store pasted clipboard file', err);
+      return null;
+    }
+  }
+
+  // A file list on the clipboard: a browser copy (FileNameW), a macOS Finder copy
+  // (NSFilenamesPboardType) or a Linux file-manager copy (text/uri-list). A file
+  // copied in Explorer or Finder reaches a native paste event as a File object
+  // whose real path the renderer resolves, and that route covers Windows/macOS;
+  // these formats cover the reads main performs on its own — the context menu, and
+  // Linux file managers, whose copies expose a URI list Chromium does not hand to
+  // a paste event as files.
+  function decodeXmlText(value: string): string {
+    return value
+      .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+      .replace(/&#(\d+);/g, (_match, dec: string) => String.fromCodePoint(Number(dec)))
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&');
+  }
+
+  function clipboardFilePaths(): string[] {
+    const paths: string[] = [];
+    try {
+      // FileNameW: UTF-16LE names, NUL-separated, double-NUL terminated.
+      for (const name of clipboard.readBuffer('FileNameW').toString('utf16le').split('\0')) {
+        if (name) paths.push(name);
+      }
+    } catch (err) {
+      console.warn('Failed to read clipboard file list', err);
+    }
+    if (paths.length === 0) {
+      try {
+        // CF_HDROP is a DROPFILES header followed by the name list. The header
+        // is pFiles (name-list offset) @0, pt @4-11, fWide @12 — Explorer sets
+        // fWide, so the names are UTF-16LE. Older senders use the OEM codepage,
+        // where a single-byte decode keeps ASCII paths intact.
+        const hdrop = clipboard.readBuffer('CF_HDROP');
+        if (hdrop.length >= 16) {
+          const offset = hdrop.readUInt32LE(0);
+          const wide = hdrop.readUInt32LE(12) !== 0;
+          const body = hdrop.subarray(Math.min(offset, hdrop.length));
+          const names = wide ? body.toString('utf16le') : body.toString('latin1');
+          for (const name of names.split('\0')) {
+            if (name) paths.push(name);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to read clipboard file drop list', err);
+      }
+    }
+    if (paths.length === 0) {
+      try {
+        // An old-style XML property list: <array><string>/path</string>…
+        const plist = clipboard.readBuffer('NSFilenamesPboardType').toString('utf8');
+        for (const match of plist.matchAll(/<string>([\s\S]*?)<\/string>/g)) {
+          paths.push(decodeXmlText(match[1]));
+        }
+      } catch (err) {
+        console.warn('Failed to read clipboard file URIs', err);
+      }
+    }
+    if (paths.length === 0) {
+      for (const line of clipboard.read('text/uri-list').split(/\r?\n/)) {
+        const uri = line.trim();
+        if (!uri.startsWith('file://')) continue;
+        try {
+          paths.push(fileURLToPath(uri));
+        } catch {
+          // A malformed URI is not a file the CLI can read.
+        }
+      }
+    }
+    return paths.filter((filePath) => path.isAbsolute(filePath));
+  }
+
+  ipcMain.handle('clipboard:readForPaste', async (): Promise<ClipboardPastePayload> => {
+    const formats = clipboard.availableFormats();
+    const text = clipboard.readText();
+    const files = clipboardFilePaths();
+    let imagePath: string | null = null;
+    if (files.length === 0 && formats.some((format) => format.toLowerCase().startsWith('image/'))) {
+      try {
+        // Electron normalises every image flavor (BMP, TIFF, DIB) to PNG, which
+        // every provider accepts as an attachment path.
+        const image = clipboard.readImage();
+        if (!image.isEmpty()) imagePath = await writePastedFile(image.toPNG(), '.png');
+      } catch (err) {
+        console.warn('Failed to read clipboard image', err);
+      }
+    }
+    // Rich-text copies (Word, OneNote, a browser selection) carry HTML next to
+    // plain text; with no text at all, the markup source is the only readable
+    // content, and a CLI reads markup happily.
+    const html = text.trim() === '' ? clipboard.readHTML().trim() : '';
+    return { text, html, files, imagePath, hasContent: formats.length > 0 || files.length > 0 };
+  });
+
+  ipcMain.handle('clipboard:saveImage', async (_event, dataUrl: string): Promise<string | null> => {
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(typeof dataUrl === 'string' ? dataUrl : '');
+    if (!match) return null;
+    const ext = PASTE_IMAGE_EXT_BY_MIME[match[1].toLowerCase()];
+    if (!ext) return null;
+    // The base64 length bounds the decoded size before the decode itself.
+    if (match[2].length > Math.ceil((PASTE_MAX_BYTES * 4) / 3)) return null;
+    return writePastedFile(Buffer.from(match[2], 'base64'), ext);
+  });
+
   ipcMain.handle(
     'provider:getConfig',
     async (_event, providerId: ProviderId, projectPath: string, configDir?: string) => {
@@ -694,7 +842,9 @@ export function registerIpcHandlers(): void {
   const SCREENSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
   let screenshotsPruned = false;
 
-  async function pruneOldScreenshots(dir: string): Promise<void> {
+  // Shared by both temp-image directories: browser screenshots and pasted
+  // clipboard images are throwaway attachments, older than a day is dead.
+  async function pruneStaleImages(dir: string): Promise<void> {
     try {
       const entries = await fs.promises.readdir(dir);
       const now = Date.now();
@@ -708,12 +858,12 @@ export function registerIpcHandlers(): void {
             await fs.promises.unlink(full);
           }
         } catch (err) {
-          console.warn('Failed to prune screenshot', full, err);
+          console.warn('Failed to prune temp image', full, err);
         }
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.warn('Failed to read screenshots dir for pruning', err);
+        console.warn('Failed to read temp image dir for pruning', err);
       }
     }
   }
@@ -732,7 +882,7 @@ export function registerIpcHandlers(): void {
     await fs.promises.mkdir(dir, { recursive: true });
     if (!screenshotsPruned) {
       screenshotsPruned = true;
-      void pruneOldScreenshots(dir);
+      void pruneStaleImages(dir);
     }
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
     const filePath = path.join(dir, `draw-${safeId}-${Date.now()}.png`);

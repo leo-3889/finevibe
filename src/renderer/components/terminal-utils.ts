@@ -4,14 +4,191 @@ import { shortcutManager } from '../shortcuts.js';
 import { isWin } from '../platform.js';
 import { appState } from '../state.js';
 import type { ClipboardSource } from '../../shared/types.js';
+import { FILE_PATH_DRAG_TYPE, NATIVE_FILES_DRAG_TYPE } from '../drag-types.js';
 
 type ExtraKeyHandler = (e: KeyboardEvent) => boolean | undefined;
 
 // Wraps text in bracketed-paste escapes when the shell has the mode enabled,
 // so it's delivered as a paste rather than character-by-character input.
 export function wrapBracketedPaste(terminal: Terminal, text: string): string {
+  // SAFETY: xterm keeps the live mode flags on `modes` at runtime; only the
+  // public Terminal type omits the field.
   const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
   return modes?.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
+}
+
+// The byte a terminal receives for Ctrl+V (⌘V delivered as Ctrl+V): DC1.
+const CTRL_V = '\x16';
+
+/**
+ * Paths a drag carried: an internal file-tree drag holds the path outright, a
+ * native OS drag (Explorer/Finder) exposes File objects whose real path the
+ * preload resolves. Providers take attachments as paths, so the pane injects the
+ * joined paths as if the user had typed them.
+ */
+function collectDroppedPaths(dt: DataTransfer | null): string[] {
+  if (!dt) return [];
+  const internal = dt.getData(FILE_PATH_DRAG_TYPE);
+  if (internal) return [internal];
+  const paths: string[] = [];
+  for (const file of dt.files) {
+    const path = window.vibeyard.fs.getDroppedFilePath(file);
+    if (path) paths.push(path);
+  }
+  return paths;
+}
+
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Paths for pasted files. A file copied from Explorer/Finder already has a
+ * filesystem path; a screenshot is an in-memory blob with none, so its bytes go to
+ * main and come back as a temp path. Either way the PTY receives path text — the
+ * same string a drop injects, and the only attachment shape all six providers read.
+ */
+async function pathsForPastedFiles(files: File[]): Promise<string[]> {
+  const paths: string[] = [];
+  for (const file of files) {
+    const realPath = window.vibeyard.fs.getDroppedFilePath(file);
+    if (realPath) {
+      paths.push(realPath);
+      continue;
+    }
+    if (!file.type.startsWith('image/')) continue;
+    const saved = await window.vibeyard.clipboard.saveImage(await readAsDataUrl(file));
+    if (saved) paths.push(saved);
+  }
+  return paths;
+}
+
+export type PasteOutcome = 'files' | 'text' | 'passthrough' | 'empty';
+
+/**
+ * Paste into a running terminal, for every flavor the clipboard carries.
+ *
+ * - Files — a native paste event's file objects (screenshots, copied pictures,
+ *   Explorer/Finder file copies) and main's file list (browser, macOS and Linux
+ *   copies) — become path text, mirroring the drop handler so every provider
+ *   takes them as attachments.
+ * - Text is sent wrapped in bracketed paste; a rich-text copy with no plain text
+ *   sends its markup source.
+ * - A flavor neither side translates forwards a literal Ctrl+V so the CLI runs its
+ *   own clipboard handling — in a plain terminal it would receive the keystroke;
+ *   an empty clipboard sends nothing.
+ *
+ * `data` is a native paste event's DataTransfer. There, text is left to xterm,
+ * which writes the clipboard string itself: only files need intervention. Without
+ * `data` the renderer intercepted the keystroke (Windows Ctrl+V, the context menu)
+ * and main's clipboard read is the only source.
+ */
+export async function pasteIntoTerminal(
+  terminal: Terminal,
+  writeToPty: (data: string) => void,
+  data?: DataTransfer | null
+): Promise<PasteOutcome> {
+  if (data && data.files.length > 0) {
+    const paths = await pathsForPastedFiles(Array.from(data.files));
+    if (paths.length > 0) {
+      writeToPty(wrapBracketedPaste(terminal, paths.join(' ') + ' '));
+      return 'files';
+    }
+  }
+  if (data) {
+    // Plain text is xterm's own paste path: it writes the clipboard string itself,
+    // so writing here would double it. A markup-only copy has nothing for that
+    // pipeline, and its source is the content a CLI can read.
+    if (data.getData('text/plain').trim() !== '') return 'text';
+    const html = data.getData('text/html').trim();
+    if (html === '') return 'empty';
+    writeToPty(wrapBracketedPaste(terminal, html));
+    return 'text';
+  }
+
+  const payload = await window.vibeyard.clipboard.readForPaste();
+  const paths = payload.imagePath ? [...payload.files, payload.imagePath] : payload.files;
+  // Files first, exactly as the native paste-event path above does: a file
+  // manager copy leaves the file NAME as the clipboard's plain text (Explorer
+  // sets FileName, Finder the display name), and that echo is a by-product —
+  // the file list is the content. Preferring the text pasted `report.pdf`
+  // where the same copy through a native paste event pasted its path.
+  if (paths.length > 0) {
+    writeToPty(wrapBracketedPaste(terminal, paths.join(' ') + ' '));
+    return 'files';
+  }
+  const text = payload.text.trim() !== '' ? payload.text : payload.html.trim();
+  if (text !== '') {
+    writeToPty(wrapBracketedPaste(terminal, text));
+    return 'text';
+  }
+  if (payload.hasContent) {
+    writeToPty(CTRL_V);
+    return 'passthrough';
+  }
+  return 'empty';
+}
+
+/**
+ * Call after the terminal's element exists. Attachments pasted with ⌘V / Ctrl+V /
+ * Ctrl+Shift+V: xterm's own paste listener lives on the textarea, moves text only,
+ * and consumes the keystroke, so a pasted screenshot, a copied file and a
+ * markup-only copy all reach nothing. Capture phase on the pane element sees the
+ * event first; a plain-text paste is left to xterm, which writes it itself.
+ */
+export function attachImagePasteHandler(
+  terminal: Terminal,
+  element: HTMLElement,
+  writeToPty: (data: string) => void
+): void {
+  element.addEventListener('paste', (e: ClipboardEvent) => {
+    const data = e.clipboardData;
+    if (!data) return;
+    if (data.files.length === 0 && data.getData('text/plain').trim() !== '') return;
+    e.preventDefault();
+    void pasteIntoTerminal(terminal, writeToPty, data).catch(() => {});
+  }, true);
+}
+
+/**
+ * Call after the terminal's element exists. Dropping a file on a terminal types
+ * its path into the PTY — the attachment shape every provider reads. `isReady`
+ * keeps a dead PTY from accepting a drop (a session pane: spawned, not exited).
+ */
+export function attachFileDropHandler(
+  terminal: Terminal,
+  element: HTMLElement,
+  writeToPty: (data: string) => void,
+  isReady: () => boolean
+): void {
+  element.addEventListener('dragover', (e: DragEvent) => {
+    if (!e.dataTransfer) return;
+    const types = e.dataTransfer.types;
+    if (!types.includes(FILE_PATH_DRAG_TYPE) && !types.includes(NATIVE_FILES_DRAG_TYPE)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    element.classList.add('drag-over');
+  });
+  element.addEventListener('dragleave', (e: DragEvent) => {
+    const next = e.relatedTarget as Node | null;
+    if (!next || !element.contains(next)) {
+      element.classList.remove('drag-over');
+    }
+  });
+  element.addEventListener('drop', (e: DragEvent) => {
+    element.classList.remove('drag-over');
+    const paths = collectDroppedPaths(e.dataTransfer);
+    if (paths.length === 0) return;
+    e.preventDefault();
+    if (!isReady()) return;
+    writeToPty(wrapBracketedPaste(terminal, paths.join(' ') + ' '));
+    terminal.focus();
+  });
 }
 
 // Every terminal copy goes through the main process rather than
@@ -60,13 +237,13 @@ export function collapseArmedTextareaOnContextMenu(terminal: Terminal): void {
  * - Cmd/Ctrl+F: bubbles up to document (prevents xterm from consuming it)
  * - Ctrl+Shift+C: copies selected text to clipboard
  * - Windows Ctrl+C: copies if selection exists, otherwise passes through as SIGINT
- * - Windows Ctrl+V: pastes clipboard content to PTY (requires writeToPty)
+ * - Windows Ctrl+V: pastes clipboard content to PTY, attachments included (requires writeToPty)
  *
  * Pass an optional `extend` handler for terminal-specific key behavior.
  * Return false to suppress the key, undefined to fall through to default.
  *
- * Pass `writeToPty` to enable Ctrl+V paste on Windows — it receives the
- * clipboard text and should forward it to the PTY.
+ * Pass `writeToPty` to enable Ctrl+V paste on Windows — it receives the payload
+ * (clipboard text, an attachment path, a literal Ctrl+V) and forwards it to the PTY.
  */
 export function attachClipboardCopyHandler(
   terminal: Terminal,
@@ -92,13 +269,12 @@ export function attachClipboardCopyHandler(
       return false;
     }
 
-    // Windows: Ctrl+V → async paste clipboard to PTY
+    // Windows: Ctrl+V → paste the clipboard, attachments included
     if (isWin && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key === 'v' && writeToPty) {
       if (e.type === 'keydown') {
-        navigator.clipboard.readText().then((text) => {
-          if (!text) return;
-          writeToPty(wrapBracketedPaste(terminal, text));
-        }).catch(() => {});
+        // preventDefault below suppresses Chromium's native paste, so no
+        // DataTransfer ever exists: main's clipboard read is the only source.
+        void pasteIntoTerminal(terminal, writeToPty).catch(() => {});
       }
       e.preventDefault(); // prevent native paste event from firing
       return false; // suppress \x16
@@ -118,5 +294,5 @@ export function loadWebglWithFallback(terminal: Terminal): void {
     const addon = new WebglAddon();
     terminal.loadAddon(addon);
     addon.onContextLoss(() => addon.dispose());
-  } catch {}
+  } catch { /* no WebGL context: the DOM renderer stays in use */ }
 }

@@ -1,9 +1,11 @@
 import { EventEmitter } from 'events';
 import { searchSessions } from './session-deep-search';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { CliProvider } from './providers/provider';
 import * as fs from 'fs';
+import { clipboard } from 'electron';
 import * as os from 'os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as path from 'path';
 
 /**
@@ -73,7 +75,16 @@ vi.mock('electron', () => ({
   },
   dialog: { showMessageBox: () => Promise.resolve({ response: 0 }) },
   shell: { openExternal: () => Promise.resolve() },
-  clipboard: { writeText: vi.fn(), readText: () => '' },
+  clipboard: {
+    writeText: vi.fn(),
+    readText: vi.fn(() => ''),
+    // Default: a format that is not on the clipboard. Tests override per format.
+    readBuffer: vi.fn(() => { throw new Error('format not on clipboard'); }),
+    read: vi.fn(() => ''),
+    readHTML: vi.fn(() => ''),
+    readImage: vi.fn(() => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) })),
+    availableFormats: vi.fn(() => [] as string[]),
+  },
 }));
 
 vi.mock('./pty-manager', () => ({
@@ -569,5 +580,107 @@ describe('store:startup-prefs', () => {
 
   it('reports never-saved preferences as null so the renderer keeps its defaults', () => {
     expect(reply({})).toEqual({ theme: null, zoomFactor: null });
+  });
+});
+
+// The main-read paste route (context menu, Windows Ctrl+V): a copied file
+// reaches main as one of four clipboard formats, and each decoder has a
+// layout the OS fixes in stone.
+describe('clipboard:readForPaste file lists', () => {
+
+  // clearAllMocks keeps per-test mockImplementation; restore each test's
+  // clipboard to the mock's defaults so the next read starts on an empty clipboard.
+  afterEach(() => {
+    for (const fn of [clipboard.readBuffer, clipboard.readText, clipboard.readHTML, clipboard.read, clipboard.availableFormats]) {
+      vi.mocked(fn as (...args: never[]) => unknown).mockReset();
+    }
+  });
+  function formatsWith(...names: string[]) {
+    vi.mocked(clipboard.availableFormats).mockReturnValue(names);
+  }
+
+  function bufferFor(format: string, build: () => Buffer) {
+    vi.mocked(clipboard.readBuffer).mockImplementation((fmt: string) => {
+      if (fmt === format) return build();
+      throw new Error(`${fmt} not on clipboard`);
+    });
+  }
+
+  // DROPFILES header: pFiles @0, pt @4-11, fWide @12; names follow at pFiles.
+  function dropfiles(names: string, wide: boolean, headerSize = 20): Buffer {
+    const body = Buffer.from(names, wide ? 'utf16le' : 'latin1');
+    const buf = Buffer.alloc(headerSize + body.length);
+    buf.writeUInt32LE(headerSize, 0);
+    buf.writeUInt32LE(wide ? 1 : 0, 12);
+    body.copy(buf, headerSize);
+    return buf;
+  }
+
+  async function readPaste(): Promise<{ text: string; html: string; files: string[]; imagePath: string | null }> {
+    return await handlers.get('clipboard:readForPaste')!({}) as never;
+  }
+
+  it('reads Explorer copies from CF_HDROP with the wide flag at offset 12', async () => {
+    // fWide lives at offset 12; offset 16 is fNoCompact (0 for Explorer).
+    // Reading fNoCompact decoded the UTF-16LE names as latin1, and every path
+    // collapsed to single characters that the absolute-path filter dropped.
+    formatsWith('FileNameW', 'CF_HDROP', 'text/plain');
+    bufferFor('CF_HDROP', () => dropfiles('C:\\repo\\report.pdf\0C:\\repo\\data.csv\0\0', true));
+    // Explorer echoes the file name as clipboard text; files must still win.
+    vi.mocked(clipboard.readText).mockReturnValue('report.pdf');
+
+    const payload = await readPaste();
+    expect(payload.files).toEqual(['C:\\repo\\report.pdf', 'C:\\repo\\data.csv']);
+    expect(payload.hasContent).toBe(true);
+  });
+
+  it('reads pre-wide CF_HDROP senders through the single-byte decode', async () => {
+    formatsWith('CF_HDROP');
+    bufferFor('CF_HDROP', () => dropfiles('D:\\notes\\a.txt\0\0', false));
+
+    expect((await readPaste()).files).toEqual(['D:\\notes\\a.txt']);
+  });
+
+  it('reads browser copies from FileNameW', async () => {
+    formatsWith('FileNameW');
+    bufferFor('FileNameW', () => Buffer.from('C:\\tmp\\shot.png\0C:\\tmp\\clip.mp4\0\0', 'utf16le'));
+
+    expect((await readPaste()).files).toEqual(['C:\\tmp\\shot.png', 'C:\\tmp\\clip.mp4']);
+  });
+
+  it('reads Finder copies from the XML plist and decodes entities', async () => {
+    formatsWith('NSFilenamesPboardType');
+    bufferFor('NSFilenamesPboardType', () => Buffer.from(
+      '<array><string>/tmp/a &amp; b.txt</string><string>/tmp/caf&#xE9;.md</string></array>',
+      'utf8',
+    ));
+
+    expect((await readPaste()).files).toEqual(['/tmp/a & b.txt', '/tmp/café.md']);
+  });
+
+  it('reads file-manager copies on Linux from text/uri-list, skipping web links', async () => {
+    const target = '/tmp/report.pdf';
+    // A rootless file URL is not absolute on Windows, so build the URL from a
+    // path the platform considers absolute; the handler decodes it back.
+    const uri = pathToFileURL(target).href;
+    vi.mocked(clipboard.read).mockReturnValue(`${uri}\r\nhttps://example.com/x\r\n`);
+
+    expect((await readPaste()).files).toEqual([fileURLToPath(uri)]);
+  });
+
+  it('drops relative names and keeps only paths a CLI can read', async () => {
+    formatsWith('FileNameW');
+    bufferFor('FileNameW', () => Buffer.from('notes.txt\0C:\\repo\\ok.md\0\0', 'utf16le'));
+
+    expect((await readPaste()).files).toEqual(['C:\\repo\\ok.md']);
+  });
+
+  it('sends markup source when a copy carries no plain text', async () => {
+    formatsWith('text/html');
+    vi.mocked(clipboard.readText).mockReturnValue('');
+    vi.mocked(clipboard.readHTML).mockReturnValue('<b>notes</b>');
+
+    const payload = await readPaste();
+    expect(payload.html).toBe('<b>notes</b>');
   });
 });

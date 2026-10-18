@@ -125,9 +125,13 @@ describe('terminal-context-menu', () => {
     expect(mockWriteText).not.toHaveBeenCalled();
   });
 
-  it('Paste click reads clipboard and writes to PTY', async () => {
-    const mockReadText = vi.fn().mockResolvedValue('pasted text');
-    Object.assign(navigator, { clipboard: { writeText: vi.fn(), readText: mockReadText } });
+  // The click is not a keystroke, so no paste event exists: the read goes to main,
+  // which also materialises a clipboard image as an attachment path.
+  it('Paste click writes the main-process clipboard text to the PTY', async () => {
+    const mockReadForPaste = vi.fn().mockResolvedValue({
+      text: 'pasted text', html: '', files: [], imagePath: null, hasContent: true,
+    });
+    (window as any).vibeyard = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
 
     const terminal = makeMockTerminal();
     showTerminalContextMenu(100, 100, terminal, writeToPty);
@@ -135,10 +139,45 @@ describe('terminal-context-menu', () => {
     const items = document.querySelectorAll('.tab-context-menu-item');
     (items[1] as HTMLElement).click();
 
-    expect(mockReadText).toHaveBeenCalled();
-    // Wait for the promise to resolve
+    expect(mockReadForPaste).toHaveBeenCalled();
     await vi.waitFor(() => {
       expect(writeToPty).toHaveBeenCalledWith('pasted text');
+    });
+  });
+
+  it('Paste click writes a clipboard image as an attachment path', async () => {
+    const mockReadForPaste = vi.fn().mockResolvedValue({
+      text: '', html: '', files: [], imagePath: '/tmp/vibeyard-paste/paste-3.png', hasContent: true,
+    });
+    (window as any).vibeyard = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
+
+    const terminal = makeMockTerminal();
+    showTerminalContextMenu(100, 100, terminal, writeToPty);
+
+    const items = document.querySelectorAll('.tab-context-menu-item');
+    (items[1] as HTMLElement).click();
+
+    await vi.waitFor(() => {
+      expect(writeToPty).toHaveBeenCalledWith('/tmp/vibeyard-paste/paste-3.png ');
+    });
+  });
+
+  // Files copied in a file manager arrive as a list main reads; the menu injects
+  // their paths exactly as a drop would.
+  it('Paste click writes a clipboard file list as attachment paths', async () => {
+    const mockReadForPaste = vi.fn().mockResolvedValue({
+      text: '', html: '', files: ['C:\\repo\\report.pdf', 'C:\\repo\\data.csv'], imagePath: null, hasContent: true,
+    });
+    (window as any).vibeyard = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
+
+    const terminal = makeMockTerminal();
+    showTerminalContextMenu(100, 100, terminal, writeToPty);
+
+    const items = document.querySelectorAll('.tab-context-menu-item');
+    (items[1] as HTMLElement).click();
+
+    await vi.waitFor(() => {
+      expect(writeToPty).toHaveBeenCalledWith('C:\\repo\\report.pdf C:\\repo\\data.csv ');
     });
   });
 

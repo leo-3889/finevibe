@@ -9,4 +9,8 @@ When planning a new feature, consider whether a Preferences setting is useful. U
 
 File-reader previews render bounded pages (2,000 lines / 128 Ki characters) rather than a DOM for the entire file. The partial-preview notice explains that search covers the displayed page and long lines may be truncated. Previous/Next and go-to-line navigate the source without splitting every line into a retained array. Both raw and rendered Markdown use the same page budget. Untracked Git diff previews reject inputs over 256 KiB, over 5,000 lines, or containing NUL bytes, with an explanatory message.
 
+Terminal attachments are paths. A file dropped on a session terminal or a project shell types its path into the PTY (`attachFileDropHandler`); a pasted screenshot or copied image is written to the paste temp directory first so the same path text can be injected (`pasteIntoTerminal` and `attachImagePasteHandler` in `src/renderer/components/terminal-utils.ts`, Windows Ctrl+V and the context menu read the clipboard through main). The provider reads the file, which keeps one contract across all six CLIs — do not add per-provider attachment handling. A clipboard flavor neither side translates forwards a literal Ctrl+V so the CLI can run its own paste; an empty clipboard sends nothing.
+
 See [performance and resource limits](performance.md) for the current user-facing limits. Preview search is page-local; navigation resets search decorations. Bounded rendered Markdown may end inside a block at a page boundary.
+
+Sources: [terminal input handlers](../src/renderer/components/terminal-utils.ts) and [clipboard paste IPC](../src/main/ipc-handlers.ts).

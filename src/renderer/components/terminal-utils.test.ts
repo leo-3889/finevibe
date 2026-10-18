@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockMatchesAnyShortcut, mockPlatform, mockPreferences, webglState } = vi.hoisted(() => ({
@@ -38,11 +39,46 @@ vi.mock('@xterm/addon-webgl', () => ({
   },
 }));
 
-import { attachClipboardCopyHandler, attachCopyOnSelect, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, pasteIntoTerminal } from './terminal-utils.js';
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
-const mockClipboardRead = vi.fn();
 const mockVibeyardClipboardWrite = vi.fn().mockResolvedValue(undefined);
+const mockReadForPaste = vi.fn();
+const mockSaveImage = vi.fn();
+const mockGetDroppedFilePath = vi.fn();
+
+// What main reports for a clipboard read; every case overrides what it varies on.
+function pastePayload(
+  overrides: Partial<{ text: string; html: string; files: string[]; imagePath: string | null; hasContent: boolean }> = {}
+) {
+  return { text: '', html: '', files: [], imagePath: null, hasContent: false, ...overrides };
+}
+
+// Stand-in for the DataTransfer of a native paste event.
+function fakeDataTransfer(files: File[] = [], text = '', html = ''): DataTransfer {
+  return {
+    files,
+    types: files.length > 0 ? ['Files'] : html ? ['text/html'] : ['text/plain'],
+    getData: (type: string) => (type === 'text/plain' ? text : type === 'text/html' ? html : ''),
+    dropEffect: '',
+    preventDefault: vi.fn(),
+  } as unknown as DataTransfer;
+}
+
+// Stand-in for the pane element the paste/drop handlers are attached to.
+class FakeElement {
+  private listeners = new Map<string, ((e: any) => void)[]>();
+  classList = { add: vi.fn(), remove: vi.fn() };
+  contains(node: unknown): boolean { return node === this; }
+  addEventListener(type: string, fn: (e: any) => void): void {
+    const existing = this.listeners.get(type) ?? [];
+    existing.push(fn);
+    this.listeners.set(type, existing);
+  }
+  fire(type: string, event: unknown): void {
+    for (const fn of this.listeners.get(type) ?? []) fn(event);
+  }
+}
 
 class FakeTerminal {
   private keyHandler: ((e: KeyboardEvent) => boolean) | null = null;
@@ -69,6 +105,7 @@ class FakeTerminal {
   element?: { addEventListener(type: string, fn: () => void): void };
   textarea?: { value: string; selectionRange: null | [number, number]; setSelectionRange(s: number, e: number): void };
   private contextMenuListener: (() => void) | null = null;
+  focus = vi.fn();
 
   open(): void {
     this.textarea = {
@@ -88,16 +125,27 @@ class FakeTerminal {
 function stubPlatform(platform: string) {
   vi.stubGlobal('navigator', {
     platform,
-    clipboard: { writeText: mockClipboardWrite, readText: mockClipboardRead },
+    clipboard: { writeText: mockClipboardWrite },
   });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockClipboardRead.mockResolvedValue('');
+  mockReadForPaste.mockResolvedValue(pastePayload());
+  mockSaveImage.mockResolvedValue(null);
+  mockGetDroppedFilePath.mockReturnValue('');
   mockMatchesAnyShortcut.mockReturnValue(false);
   mockPreferences.copyOnSelect = false;
-  vi.stubGlobal('window', { vibeyard: { clipboard: { write: mockVibeyardClipboardWrite } } });
+  vi.stubGlobal('window', {
+    vibeyard: {
+      clipboard: {
+        write: mockVibeyardClipboardWrite,
+        readForPaste: mockReadForPaste,
+        saveImage: mockSaveImage,
+      },
+      fs: { getDroppedFilePath: mockGetDroppedFilePath },
+    },
+  });
 });
 
 describe('attachClipboardCopyHandler (macOS)', () => {
@@ -250,10 +298,10 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+V returns false and pastes clipboard to PTY', async () => {
+  it('Ctrl+V returns false and pastes clipboard text to PTY', async () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();
-    mockClipboardRead.mockResolvedValue('pasted text');
+    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'pasted text', hasContent: true }));
     attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
 
     const result = terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
@@ -262,11 +310,41 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('pasted text'));
   });
 
+  it('Ctrl+V injects a clipboard image as an attachment path', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({
+      imagePath: 'C:\\Users\\me\\AppData\\Local\\Temp\\vibeyard-paste\\paste-1.png',
+      hasContent: true,
+    }));
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
+
+    await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith(
+      'C:\\Users\\me\\AppData\\Local\\Temp\\vibeyard-paste\\paste-1.png ',
+    ));
+  });
+
+  // A flavor neither side translates (a file copied in Explorer, a TIFF the
+  // clipboard API hides) must reach the CLI: in a plain terminal it gets Ctrl+V
+  // and reads the OS clipboard itself.
+  it('Ctrl+V forwards the literal control char for an untranslated flavor', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({ hasContent: true }));
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
+
+    await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('\x16'));
+  });
+
   it('Ctrl+V calls preventDefault to suppress native paste event', () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();
     const preventDefault = vi.fn();
-    mockClipboardRead.mockResolvedValue('text');
+    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'text', hasContent: true }));
     attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
 
     terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault });
@@ -278,7 +356,7 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     const terminal = new FakeTerminal();
     terminal.modes.bracketedPasteMode = true;
     const writeToPty = vi.fn();
-    mockClipboardRead.mockResolvedValue('pasted');
+    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'pasted', hasContent: true }));
     attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
 
     terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
@@ -289,12 +367,12 @@ describe('attachClipboardCopyHandler (Windows)', () => {
   it('Ctrl+V does not paste empty clipboard', async () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();
-    mockClipboardRead.mockResolvedValue('');
     attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
 
     terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
 
-    await Promise.resolve();
+    // A literal Ctrl+V in a shell means quoted-insert, so silence is the point.
+    await vi.waitFor(() => expect(mockReadForPaste).toHaveBeenCalled());
     expect(writeToPty).not.toHaveBeenCalled();
   });
 
@@ -310,7 +388,7 @@ describe('attachClipboardCopyHandler (Windows)', () => {
   it('Ctrl+V does not call writeToPty on keyup', async () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();
-    mockClipboardRead.mockResolvedValue('text');
+    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'text', hasContent: true }));
     attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
 
     terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keyup', preventDefault: vi.fn() });
@@ -456,5 +534,232 @@ describe('collapseArmedTextareaOnContextMenu', () => {
 
   it('is a no-op for a terminal that was never opened', () => {
     expect(() => collapseArmedTextareaOnContextMenu(new FakeTerminal() as any)).not.toThrow();
+  });
+});
+
+describe('pasteIntoTerminal (native paste event)', () => {
+  it('turns a pasted screenshot into an injected temp path', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    const shot = new File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' });
+    mockSaveImage.mockResolvedValue('/tmp/vibeyard-paste/paste-42.png');
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty, fakeDataTransfer([shot]));
+
+    expect(outcome).toBe('files');
+    expect(mockSaveImage).toHaveBeenCalledWith(expect.stringMatching(/^data:image\/png;base64,/));
+    expect(writeToPty).toHaveBeenCalledWith('/tmp/vibeyard-paste/paste-42.png ');
+  });
+
+  it('injects the real path of a copied file without re-saving its bytes', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    const file = new File([new Uint8Array([1])], 'diagram.png', { type: 'image/png' });
+    mockGetDroppedFilePath.mockReturnValue('C:\\repo\\diagram.png');
+
+    await pasteIntoTerminal(terminal as any, writeToPty, fakeDataTransfer([file]));
+
+    expect(mockSaveImage).not.toHaveBeenCalled();
+    expect(writeToPty).toHaveBeenCalledWith('C:\\repo\\diagram.png ');
+  });
+
+  it('wraps an injected attachment path in bracketed paste when the mode is on', async () => {
+    const terminal = new FakeTerminal();
+    terminal.modes.bracketedPasteMode = true;
+    const writeToPty = vi.fn();
+    const file = new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' });
+    mockSaveImage.mockResolvedValue('/tmp/paste-1.png');
+
+    await pasteIntoTerminal(terminal as any, writeToPty, fakeDataTransfer([file]));
+
+    expect(writeToPty).toHaveBeenCalledWith('\x1b[200~/tmp/paste-1.png \x1b[201~');
+  });
+
+  // Text is xterm's own paste path; intercepting it would double-write the PTY.
+  it('leaves a text-only paste to xterm', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty, fakeDataTransfer([], 'hello'));
+
+    expect(outcome).toBe('text');
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(mockReadForPaste).not.toHaveBeenCalled();
+  });
+
+  // A rich-text copy with no plain text has nothing for xterm's text pipeline.
+  it('sends the markup source of a markup-only paste event', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty, fakeDataTransfer([], '', '<p>hello</p>'));
+
+    expect(outcome).toBe('text');
+    expect(writeToPty).toHaveBeenCalledWith('<p>hello</p>');
+  });
+});
+
+describe('pasteIntoTerminal (main clipboard read)', () => {
+  it('injects a clipboard file list as paths, exactly like a drop', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({ files: ['/tmp/report.pdf', '/tmp/data.csv'] }));
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(outcome).toBe('files');
+    expect(writeToPty).toHaveBeenCalledWith('/tmp/report.pdf /tmp/data.csv ');
+  });
+
+  it('sends markup source when a rich-text copy carries no plain text', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({ html: '<b>notes</b>', hasContent: true }));
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(outcome).toBe('text');
+    expect(writeToPty).toHaveBeenCalledWith('<b>notes</b>');
+  });
+
+  // Word and browser copies ship HTML next to plain text; the CLI wants the text.
+  it('prefers plain text over the markup of the same copy', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'notes', html: '<b>notes</b>' }));
+
+    await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(writeToPty).toHaveBeenCalledWith('notes');
+  });
+
+  // A file-manager copy leaves the file NAME as plain text (Explorer sets
+  // FileName, Finder the display name). The native paste-event path treats the
+  // files as the content for the same copy; the main-read path must agree.
+  it('prefers a file list over the name echo a file-manager copy leaves as text', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'report.pdf', files: ['/tmp/report.pdf'] }));
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(outcome).toBe('files');
+    expect(writeToPty).toHaveBeenCalledWith('/tmp/report.pdf ');
+  });
+
+  it('appends a materialised image to the file list it injects', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({ files: ['/tmp/note.md'], imagePath: '/tmp/vibeyard-paste/paste-9.png' }));
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(outcome).toBe('files');
+    expect(writeToPty).toHaveBeenCalledWith('/tmp/note.md /tmp/vibeyard-paste/paste-9.png ');
+  });
+
+  it('forwards a literal Ctrl+V for a flavor neither side translates', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({ hasContent: true }));
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(outcome).toBe('passthrough');
+    expect(writeToPty).toHaveBeenCalledWith('\x16');
+  });
+
+  it('sends nothing for an empty clipboard', async () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(outcome).toBe('empty');
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('attachImagePasteHandler', () => {
+  it('claims a paste carrying files before xterm consumes the keystroke', () => {
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    const preventDefault = vi.fn();
+    attachImagePasteHandler(terminal as any, element as any, writeToPty);
+    const shot = new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' });
+    mockSaveImage.mockResolvedValue('/tmp/paste-7.png');
+
+    element.fire('paste', { clipboardData: fakeDataTransfer([shot]), preventDefault });
+
+    expect(preventDefault).toHaveBeenCalled();
+    return vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('/tmp/paste-7.png '));
+  });
+
+  it('ignores a text-only paste so xterm pastes it', () => {
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    const preventDefault = vi.fn();
+    attachImagePasteHandler(terminal as any, element as any, writeToPty);
+
+    element.fire('paste', { clipboardData: fakeDataTransfer([], 'text'), preventDefault });
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  it('claims a markup-only paste so the CLI receives the markup', () => {
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    const preventDefault = vi.fn();
+    attachImagePasteHandler(terminal as any, element as any, writeToPty);
+
+    element.fire('paste', { clipboardData: fakeDataTransfer([], '', '<em>hi</em>'), preventDefault });
+
+    expect(preventDefault).toHaveBeenCalled();
+    return vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('<em>hi</em>'));
+  });
+});
+
+describe('attachFileDropHandler', () => {
+  const droppedFile = () => new File([new Uint8Array([2])], 'photo.jpg', { type: 'image/jpeg' });
+
+  it('types a dropped file path into a live terminal', () => {
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    mockGetDroppedFilePath.mockReturnValue('C:\\repo\\photo.jpg');
+    attachFileDropHandler(terminal as any, element as any, writeToPty, () => true);
+
+    element.fire('drop', { dataTransfer: fakeDataTransfer([droppedFile()]), preventDefault: vi.fn() });
+
+    expect(writeToPty).toHaveBeenCalledWith('C:\\repo\\photo.jpg ');
+    expect(terminal.focus).toHaveBeenCalled();
+  });
+
+  it('ignores a drop on a terminal whose PTY is gone', () => {
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    mockGetDroppedFilePath.mockReturnValue('C:\\repo\\photo.jpg');
+    attachFileDropHandler(terminal as any, element as any, writeToPty, () => false);
+
+    element.fire('drop', { dataTransfer: fakeDataTransfer([droppedFile()]), preventDefault: vi.fn() });
+
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  it('ignores a drag carrying no files so the drop is left to Chromium', () => {
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const preventDefault = vi.fn();
+    attachFileDropHandler(terminal as any, element as any, vi.fn(), () => true);
+
+    element.fire('dragover', { dataTransfer: fakeDataTransfer([], 'some text'), preventDefault });
+
+    expect(preventDefault).not.toHaveBeenCalled();
   });
 });

@@ -754,3 +754,24 @@ export type TopFilesResult =
  * populates the X11 PRIMARY selection so middle-click paste works).
  */
 export type ClipboardSource = 'selection' | 'explicit';
+
+/**
+ * Every clipboard flavor the terminal can turn into input. Main owns the
+ * clipboard: it reads text, turns an image into `imagePath` (a file in the paste
+ * temp dir) and reads a file list as absolute paths, because every provider takes
+ * attachments as a path — a drop injects the same string. Precedence belongs to
+ * the renderer: text, files, image, markup, then a raw Ctrl+V forward for a
+ * flavor neither side translates; an empty clipboard sends nothing.
+ */
+export type ClipboardPastePayload = {
+  /** Plain text, the flavor a shell consumes verbatim. */
+  text: string;
+  /** Markup source, present only when a rich-text copy carries HTML and no text. */
+  html: string;
+  /** Absolute paths the clipboard carries a list of (browser/Finder/Explorer/Nautilus copies). */
+  files: string[];
+  /** Temp path for a clipboard image, which has no path of its own. */
+  imagePath: string | null;
+  /** False only for a truly empty clipboard; any other untranslated flavor forwards Ctrl+V. */
+  hasContent: boolean;
+};

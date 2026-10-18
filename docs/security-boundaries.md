@@ -1,6 +1,6 @@
 # Security boundaries
 
-The renderer sends privileged work through preload and main-process IPC. Validate project paths, including symlinks, before filesystem access. `statusFilePath()` validates UI session IDs before using them as filenames in the hook-status directory under `os.tmpdir()/vibeyard`.
+The renderer sends privileged work through preload and main-process IPC. Validate project paths, including symlinks, before filesystem access. `statusFilePath()` validates UI session IDs before using them as filenames in the hook-status directory under `os.tmpdir()/vibeyard`. A pasted clipboard image crosses the same boundary as bytes only: main generates the filename inside `os.tmpdir()/vibeyard-paste` and allowlists the image formats, so the renderer cannot aim a paste at a path.
 
 PTY arguments and environment variables cross a trust boundary. Keep `shell: false`, Windows argument quoting/rejection, and provider-owned environment filtering described in [provider contracts](provider-contracts.md). The embedded webview and Chrome-cookie import handle third-party content and account data; keep browser partitions and permission checks separate from terminal state.
 
