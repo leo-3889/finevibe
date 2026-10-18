@@ -3,6 +3,7 @@ import { handleToolFailure, onLargeFileAlert, _resetForTesting, type LargeFileAl
 import { appState, _resetForTesting as resetState } from '../state.js';
 import type { ToolFailureData } from '../../shared/types.js';
 import { TOKEN_TRUNCATION_SENTINEL } from '../../shared/constants.js';
+import path from 'node:path';
 
 const mockReadFile = vi.fn().mockResolvedValue({ ok: true, content: '' });
 
@@ -422,5 +423,61 @@ describe('handleToolFailure', () => {
 
     expect(alerts).toHaveLength(1);
     expect(alerts[0].filePath).toBe('/tmp/test/large.ts');
+  });
+});
+
+describe('Windows separators (a0ee463)', () => {
+  // Pre-fix, getRelativePath compared native separators: a hook-reported
+  // `C:\proj\...` path against a dialog-reported `C:\proj` project silently
+  // returned null, so handleToolFailure bailed and the alert never fired.
+  function setupWinProject(projectPath: string): string {
+    const project = appState.addProject('Win', projectPath);
+    return project.id;
+  }
+
+  it('alerts for a native backslash file path inside the project', async () => {
+    const projectId = setupWinProject(path.win32.join('C:\\', 'proj'));
+    const session = appState.addSession(projectId, 'Session 1')!;
+
+    const alerts: LargeFileAlert[] = [];
+    onLargeFileAlert((alert) => alerts.push(alert));
+
+    const winPath = path.win32.join('C:\\', 'proj', 'styles.css');
+    await handleToolFailure(session.id, makeReadFailure(winPath));
+
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].filePath).toBe(winPath);
+    expect(alerts[0].projectId).toBe(projectId);
+    expect(alerts[0].sessionId).toBe(session.id);
+  });
+
+  it('alerts when the project path carries a trailing backslash', async () => {
+    const projectId = setupWinProject(path.win32.join('C:\\', 'proj') + path.win32.sep);
+    const session = appState.addSession(projectId, 'Session 1')!;
+
+    const alerts: LargeFileAlert[] = [];
+    onLargeFileAlert((alert) => alerts.push(alert));
+
+    const winPath = path.win32.join('C:\\', 'proj', 'src', 'styles.css');
+    await handleToolFailure(session.id, makeReadFailure(winPath));
+
+    // Pre-fix: base became `C:\proj\` + '/', the prefix never matched.
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].filePath).toBe(winPath);
+  });
+
+  it('alerts for a slash-normalized file path under a backslash project path', async () => {
+    // The two sources disagree on separators (OS dialog `C:\proj`, hooks may
+    // report `/`); both sides are normalized before the prefix check.
+    const projectId = setupWinProject(path.win32.join('C:\\', 'proj'));
+    const session = appState.addSession(projectId, 'Session 1')!;
+
+    const alerts: LargeFileAlert[] = [];
+    onLargeFileAlert((alert) => alerts.push(alert));
+
+    await handleToolFailure(session.id, makeReadFailure('C:/proj/src/styles.css'));
+
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].filePath).toBe('C:/proj/src/styles.css');
   });
 });
