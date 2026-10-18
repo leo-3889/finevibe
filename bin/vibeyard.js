@@ -31,8 +31,10 @@ function getAssetName() {
       ? `Vibeyard-${version}-arm64-mac.zip`
       : `Vibeyard-${version}-mac.zip`;
   }
-  // Linux
-  return `Vibeyard-${version}-linux-${process.arch}.AppImage`;
+  // electron-builder expands ${arch} to `amd64` in linux artifact names
+  // (builder-util toLinuxArchString); requesting `x64` 404s every install.
+  // main() restricts linux to x64, so amd64 is the only published name.
+  return `Vibeyard-${version}-linux-amd64.AppImage`;
 }
 
 function getInstalledVersion() {
