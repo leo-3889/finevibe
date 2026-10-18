@@ -6,6 +6,8 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
+  // The MCP write allowlist compares canonical paths.
+  realpathSync: vi.fn((p: string) => p),
 }));
 
 vi.mock('os', () => ({
@@ -34,7 +36,7 @@ vi.mock('./hook-commands', () => ({
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { getClaudeConfig, installHooks, installHooksOnly, installStatusLine } from './claude-cli';
+import { addMcpServer, getClaudeConfig, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
 import { installEventScript } from './hook-commands';
 import { getClaudeVersion } from './providers/claude-version';
 
@@ -706,5 +708,131 @@ describe('installHooks', () => {
 
     const installed = vi.mocked(installEventScript).mock.calls.map(([name]) => name);
     expect(installed).not.toContain('claude_event_WorktreeCreate.py');
+  });
+});
+
+describe('removeMcpServer writable-path allowlist', () => {
+  it('accepts a listed config file the renderer spelled with different casing', () => {
+    // The allowlist is built from homedir()/projectPath/configDir; the renderer
+    // echoes back the path the list call produced. On Windows the same file
+    // arrives with different drive-letter and directory casing, so an exact
+    // string compare makes deleting a listed server a silent no-op.
+    vi.mocked(fs.realpathSync).mockImplementation(((p: string) => n(p).toLowerCase()) as typeof fs.realpathSync);
+    mockReadFileSync.mockImplementation((p: fs.PathLike) => {
+      if (n(String(p)).toLowerCase().endsWith('/.claude.json')) {
+        return JSON.stringify({ mcpServers: { leak: { command: 'x' } } });
+      }
+      throw new Error('ENOENT');
+    });
+
+    removeMcpServer('leak', '/Mock/Home/.claude.json', 'user');
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe('/Mock/Home/.claude.json');
+    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).mcpServers).toEqual({});
+  });
+
+  it('refuses a write target that is not a known MCP config file', () => {
+    vi.mocked(fs.realpathSync).mockImplementation(((p: string) => p) as typeof fs.realpathSync);
+
+    expect(() => removeMcpServer('x', '/mock/home/.ssh/authorized_keys', 'user'))
+      .toThrow(/Not a writable MCP config path/);
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+// 1c69afb: with a profile pinned through CLAUDE_CONFIG_DIR, MCP add/remove/get
+// must operate on the pinned profile's config dir. Before the fix, addMcpServer
+// always wrote ~/.claude.json and getClaudeConfig always read ~/.claude* — so a
+// profiled project registered servers against the default account and the panel
+// showed a config the launched CLI never reads; removeMcpServer's allowlist had
+// no configDir entries, so deleting a profile server threw.
+describe('profile-scoped MCP config', () => {
+  const profileDir = path.join('/mock/home', '.vibeyard', 'profiles', 'work');
+  const profileClaudeJson = path.join(profileDir, '.claude.json');
+  const profileConfig = (servers: Record<string, unknown>) => {
+    mockReadFileSync.mockImplementation((p: fs.PathLike) => {
+      if (n(String(p)) === n(profileClaudeJson)) return JSON.stringify({ mcpServers: servers });
+      throw new Error('ENOENT');
+    });
+  };
+
+  it('addMcpServer with a config dir writes the profile store, not ~/.claude.json', () => {
+    addMcpServer('github', { command: 'npx', args: ['-y', 'srv'] }, 'user', undefined, profileDir);
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe(n(profileClaudeJson));
+    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).mcpServers).toEqual({
+      github: { command: 'npx', args: ['-y', 'srv'] },
+    });
+  });
+
+  it('addMcpServer without a config dir keeps writing ~/.claude.json', () => {
+    addMcpServer('github', { url: 'http://x' }, 'user');
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe('/mock/home/.claude.json');
+  });
+
+  it('getClaudeConfig lists the profile store and not the default account\'s', async () => {
+    mockReadFileSync.mockImplementation((p: fs.PathLike) => {
+      const key = n(String(p));
+      if (key === n(profileClaudeJson)) return JSON.stringify({ mcpServers: { profileServer: { url: 'profile-url' } } });
+      if (key === '/mock/home/.claude.json') return JSON.stringify({ mcpServers: { defaultServer: { url: 'default-url' } } });
+      throw new Error('ENOENT');
+    });
+
+    const config = await getClaudeConfig('/project', profileDir);
+    expect(config.mcpServers).toEqual([
+      { name: 'profileServer', url: 'profile-url', status: 'configured', scope: 'user', filePath: profileClaudeJson },
+    ]);
+  });
+
+  it('removeMcpServer deletes from the profile store and writes back only that file', () => {
+    profileConfig({ keep: { command: 'k' }, zap: { command: 'z' } });
+
+    removeMcpServer('zap', profileClaudeJson, 'user', undefined, profileDir);
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe(n(profileClaudeJson));
+    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).mcpServers).toEqual({
+      keep: { command: 'k' },
+    });
+  });
+
+  it('removeMcpServer accepts the profile file echoed back with different case and separators', () => {
+    // 57a0f8a: the allowlist is built from configDir; the renderer echoes the
+    // listed path spelled with other casing/separators. Comparing canonical
+    // forms (realpath + case fold, mocked here as the folded FS) must accept
+    // it; an exact string compare threw and the delete no-opped.
+    vi.mocked(fs.realpathSync).mockImplementation(((p: string) => n(p).toLowerCase()) as typeof fs.realpathSync);
+    // The folded FS the realpath mock models is case-insensitive, like the
+    // Windows/macOS filesystems this tolerance targets: reads must answer for
+    // every spelling of the file, not just the exact one.
+    mockReadFileSync.mockImplementation((p: fs.PathLike) => {
+      if (n(String(p)).toLowerCase() === n(profileClaudeJson).toLowerCase()) {
+        return JSON.stringify({ mcpServers: { keep: { command: 'k' }, zap: { command: 'z' } } });
+      }
+      throw new Error('ENOENT');
+    });
+    const echoed = n(profileClaudeJson).toUpperCase();
+
+    removeMcpServer('zap', echoed, 'user', undefined, profileDir);
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(String(mockWriteFileSync.mock.calls[0][0])).toBe(echoed);
+    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).mcpServers).toEqual({
+      keep: { command: 'k' },
+    });
+  });
+
+  it('refuses a profile config file when no config dir was given', () => {
+    // The profile tree is writable only through a declared configDir; an
+    // unpinned remove must not write into it.
+    profileConfig({ zap: { command: 'z' } });
+
+    expect(() => removeMcpServer('zap', profileClaudeJson, 'user'))
+      .toThrow(/Not a writable MCP config path/);
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
   });
 });

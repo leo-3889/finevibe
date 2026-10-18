@@ -47,6 +47,7 @@ function loadLauncher(options: LoadOptions = {}) {
     mkdirSync: vi.fn(),
     rmSync: vi.fn(),
     renameSync: vi.fn(),
+    chmodSync: vi.fn(),
     unlinkSync: vi.fn(),
     writeFileSync: vi.fn(),
     createWriteStream: vi.fn(() => new Writable({ write(_chunk, _enc, cb) { cb(); } })),
@@ -95,6 +96,17 @@ function readingFile(content: Buffer) {
     s.end(content);
     return s;
   });
+}
+
+// The launcher auto-runs main() at load; its install chain (download → extract
+// → launch) is async with no exported handle, so tests wait on the observable
+// end state and surface the launcher's own error output on timeout.
+async function until(ready: () => boolean, diagnose: () => string = () => 'no observable result'): Promise<void> {
+  for (let tick = 0; tick < 1000; tick++) {
+    if (ready()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`launcher never reached the expected state: ${diagnose()}`);
 }
 
 describe('Linux npm launcher', () => {
@@ -322,4 +334,65 @@ describe('launcher download', () => {
     await expect(exports.download(asset)).resolves.toBe(tmpFile);
     expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('skipping checksum verification'));
   });
+});
+
+describe('launcher linux asset name', () => {
+  // electron-builder publishes the linux artifact as `-linux-amd64`; a launcher
+  // asking for `-linux-x64` gets a 404 and every fresh install fails.
+  const amd64Asset = `Vibeyard-${launcherVersion}-linux-amd64.AppImage`;
+  const appDir = path.join('/home/test', '.vibeyard', 'app');
+  const appPath = path.join(appDir, 'Vibeyard.AppImage');
+  const content = Buffer.from('vibeyard-appimage-payload');
+  const contentHex = crypto.createHash('sha256').update(content).digest('hex');
+
+  function servingAmd64Only() {
+    const downloadUrl = `https://github.com/elirantutia/vibeyard/releases/download/v${launcherVersion}/${amd64Asset}`;
+    const apiUrl = `https://api.github.com/repos/elirantutia/vibeyard/releases/tags/v${launcherVersion}`;
+    const httpsGet = vi.fn((url: string, _opts: unknown, cb: (res: FakeResponse) => void) => {
+      const known = url === downloadUrl || url === apiUrl;
+      const res = fakeResponse(known ? {} : { statusCode: 404 });
+      cb(res);
+      queueMicrotask(() => {
+        if (url === apiUrl) res.end(JSON.stringify({ assets: [{ name: amd64Asset, digest: `sha256:${contentHex}` }] }));
+        else if (url === downloadUrl) res.end(content);
+        else res.end('Not Found');
+      });
+      return { on: vi.fn() };
+    });
+    return { httpsGet, downloadUrl, apiUrl };
+  }
+
+  it('asks the release API for the linux-amd64 asset name on linux/x64', () => {
+    const { exports } = loadLauncher();
+    expect(exports.getAssetName()).toBe(amd64Asset);
+  });
+
+  it('downloads and installs the linux-amd64 AppImage on a fresh linux install', async () => {
+    const { httpsGet, downloadUrl, apiUrl } = servingAmd64Only();
+    const { exports, fakeFs, consoleError, spawn } = loadLauncher({ httpsGet, installedVersion: null });
+    fakeFs.createReadStream.mockImplementation(readingFile(content));
+
+    // A stale asset name 404s, so `until` reports the launcher's own error text;
+    // the generous timeout keeps that message ahead of vitest's default 5s.
+    await until(
+      () => spawn.mock.calls.length > 0,
+      () => consoleError.mock.calls.map((call) => String(call[0])).join('\n') || 'no launch and no launcher error',
+    );
+
+    const requested = httpsGet.mock.calls.map((call) => String(call[0]));
+    expect(requested).toContain(downloadUrl);
+    expect(requested).toContain(apiUrl);
+    expect(requested.filter((url) => url.includes('-linux-x64'))).toEqual([]);
+
+    // The downloaded asset becomes the AppImage the launcher runs.
+    expect(fakeFs.renameSync).toHaveBeenCalledWith(path.join(appDir, `${amd64Asset}.tmp`), appPath);
+    expect(fakeFs.chmodSync).toHaveBeenCalledWith(appPath, 0o755);
+    expect(fakeFs.writeFileSync).toHaveBeenCalledWith(
+      path.join(appDir, 'version.json'),
+      JSON.stringify({ version: launcherVersion }),
+    );
+    expect(spawn).toHaveBeenCalledWith(appPath, [], { detached: true, stdio: 'ignore' });
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(exports.RELEASE_API_URL).toBe(apiUrl);
+  }, 15000);
 });
