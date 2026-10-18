@@ -5,9 +5,17 @@ export function getSessionHistory(project: ProjectRecord | undefined): ArchivedS
   return project?.sessionHistory ?? [];
 }
 
-/** @returns true if the project has session history (regardless of whether the id matched) */
+/**
+ * Remove a closed history entry.
+ * @returns true when an entry was removed, false for a missing id and for the
+ * row of a running tab. An `active` row is the record that tab's close
+ * finalizes; deleting it makes the close archive a duplicate under a new id,
+ * so a live row is removed by closing the tab (or never, for bookmarks).
+ */
 export function removeHistoryEntry(project: ProjectRecord, archivedSessionId: string): boolean {
   if (!project.sessionHistory) return false;
+  const entry = project.sessionHistory.find((a) => a.id === archivedSessionId);
+  if (!entry || entry.state === 'active') return false;
   project.sessionHistory = project.sessionHistory.filter((a) => a.id !== archivedSessionId);
   return true;
 }

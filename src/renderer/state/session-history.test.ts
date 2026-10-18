@@ -406,9 +406,10 @@ describe('removeHistoryEntry()', () => {
     const session = appState.addSession(project.id, 'S1')!;
     activateSession(project.id, session.id, 'cli-emit-hist');
     appState.removeSession(project.id, session.id);
+    const entry = appState.getSessionHistory(project.id)[0];
     const cb = vi.fn();
     appState.on('history-changed', cb);
-    appState.removeHistoryEntry(project.id, session.id);
+    appState.removeHistoryEntry(project.id, entry.id);
     expect(cb).toHaveBeenCalledWith(project.id);
   });
 
@@ -417,9 +418,29 @@ describe('removeHistoryEntry()', () => {
     const session = appState.addSession(project.id, 'S1')!;
     activateSession(project.id, session.id, 'cli-persist');
     appState.removeSession(project.id, session.id);
+    const entry = appState.getSessionHistory(project.id)[0];
     mockSave.mockClear();
-    appState.removeHistoryEntry(project.id, session.id);
+    appState.removeHistoryEntry(project.id, entry.id);
     expect(mockSave).toHaveBeenCalled();
+  });
+
+  it('refuses the row of a running tab and allows it once closed', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-live-row');
+
+    const active = appState.getSessionHistory(project.id).find((h) => h.state === 'active');
+    expect(active?.liveSessionId).toBe(session.id);
+
+    appState.removeHistoryEntry(project.id, active!.id);
+    expect(appState.getSessionHistory(project.id).map((h) => h.id)).toContain(active!.id);
+
+    // Closing finalizes the row in place; only then is it removable history.
+    appState.removeSession(project.id, session.id);
+    expect(appState.getSessionHistory(project.id).find((h) => h.id === active!.id)?.state).toBe('closed');
+
+    appState.removeHistoryEntry(project.id, active!.id);
+    expect(appState.getSessionHistory(project.id).map((h) => h.id)).not.toContain(active!.id);
   });
 });
 

@@ -109,15 +109,21 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
     menu.appendChild(separator);
   }
 
-  const removeItem = document.createElement('div');
-  removeItem.className = 'tab-context-menu-item danger';
-  removeItem.textContent = t('session.history.removeFromHistory');
-  removeItem.addEventListener('click', (e) => {
-    e.stopPropagation();
-    hideHistoryContextMenu();
-    appState.removeHistoryEntry(project.id, archived.id);
-  });
-  menu.appendChild(removeItem);
+  // A running tab's row is the record its close finalizes. Removing it here
+  // makes the close archive a fresh entry under a new id (bookmark lost), so
+  // removal lives with the tab, not with the row - matching the sessions
+  // widget, and enforced in the state layer as well.
+  if (!isActive) {
+    const removeItem = document.createElement('div');
+    removeItem.className = 'tab-context-menu-item danger';
+    removeItem.textContent = t('session.history.removeFromHistory');
+    removeItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideHistoryContextMenu();
+      appState.removeHistoryEntry(project.id, archived.id);
+    });
+    menu.appendChild(removeItem);
+  }
 
   const backupItem = document.createElement('div');
   backupItem.className = 'tab-context-menu-item';
