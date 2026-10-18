@@ -8,7 +8,7 @@ import { showShareDialog } from '../share-dialog.js';
 import { isSharing } from '../../sharing/peer-host.js';
 import { endShare } from '../../sharing/share-manager.js';
 import { openInspector, isInspectorOpen, getInspectedSessionId, closeInspector } from '../session-inspector.js';
-import { hasMultipleAvailableProviders, getProviderCapabilities } from '../../provider-availability.js';
+import { hasMultipleAvailableProviders, getProviderCapabilities, getCachedProviderMetas } from '../../provider-availability.js';
 import { buildResumeWithProviderItems } from '../resume-with-provider-menu.js';
 import { isCliSession } from '../../session-utils.js';
 import { esc } from '../../dom-utils.js';
@@ -51,7 +51,11 @@ function tabNamePrefix(session: SessionRecord): string {
     case 'team': return `<span class="tab-team-badge">${ICON_TEAM}</span> `;
     default: {
       if (!hasMultipleAvailableProviders()) return '';
-      const providerId = session.providerId || 'claude';
+      // The prefix lands in tab.innerHTML (line ~375 escapes only the name).
+      // providerId comes from persisted state.json, which is user-editable,
+      // so only registry-known ids may reach the img attributes.
+      const rawId = session.providerId || 'claude';
+      const providerId = getCachedProviderMetas().some(m => m.id === rawId) ? rawId : 'claude';
       return `<img class="tab-provider-icon" src="assets/providers/${providerId}.png" alt="${providerId}" onerror="this.style.display='none'"> `;
     }
   }
@@ -370,6 +374,7 @@ export function render(): void {
     const namePrefix = tabNamePrefix(session);
     const shareIndicator = sharing ? `<span class="tab-share-indicator" title="${esc(t('tab.shareIndicatorTooltip'))}"></span>` : '';
     const statusDot = isSpecial ? '' : `<span class="tab-status ${status}" aria-hidden="true">${STATUS_GLYPH[status]}</span>`;
+    // pi-lens-ignore: xss-innerhtml
     tab.innerHTML = `
       ${statusDot}
       <span class="tab-name">${namePrefix}${esc(displayName)}</span>

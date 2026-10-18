@@ -20,7 +20,14 @@ export function chromeUserDataDir(): string | null {
 
 /** Returns the path to a specific profile inside the user-data dir. */
 export function chromeProfileDir(userDataDir: string, profileId: string): string {
-  return path.join(userDataDir, profileId);
+  // profileId is renderer-supplied import options: it must stay inside the
+  // Chrome user-data dir (Chrome's own ids are 'Default' / 'Profile N').
+  const dir = path.resolve(userDataDir, profileId);
+  const root = path.resolve(userDataDir);
+  if (dir !== root && !dir.startsWith(root + path.sep)) {
+    throw new Error(`Invalid Chrome profile id: ${JSON.stringify(profileId)}`);
+  }
+  return dir;
 }
 
 /** Returns the path to the Local State JSON file. */

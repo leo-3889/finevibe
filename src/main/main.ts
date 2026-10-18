@@ -57,6 +57,16 @@ function isBrowserGuestPreload(preload: string): boolean {
     ? candidate.toLowerCase() === BROWSER_GUEST_PRELOAD.toLowerCase()
     : candidate === BROWSER_GUEST_PRELOAD;
 }
+// Web permission allowlists. Without handlers Electron auto-approves every
+// permission request, so arbitrary browser-tab pages could silently take
+// camera/mic/geolocation in the partition holding imported Chrome cookies.
+// The app UI only ever touches the clipboard (copy path, paste into the
+// terminal); guests keep page clipboard writes and fullscreen.
+// 'notifications': the app's own desktop notifications (notification-desktop)
+// are shown from the host renderer; denying the web permission would silence
+// them for no security benefit — the host document is local app code.
+const HOST_PERMISSIONS = new Set(['clipboard-read', 'clipboard-sanitized-write', 'notifications']);
+const GUEST_PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen']);
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -87,6 +97,10 @@ function createWindow(): void {
     if (isHttpUrl(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+  const appSession = mainWindow.webContents.session;
+  appSession.setPermissionRequestHandler((_wc, permission, callback) =>
+    callback(HOST_PERMISSIONS.has(permission)));
+  appSession.setPermissionCheckHandler((_wc, permission) => HOST_PERMISSIONS.has(permission));
 
   // A <webview> guest's `webpreferences` and `preload` are renderer-controlled
   // (browser tabs). A compromised renderer could attach a guest with
@@ -106,6 +120,12 @@ function createWindow(): void {
     if (!webPreferences.preload || !isBrowserGuestPreload(webPreferences.preload)) {
       // pi-lens-ignore: ts-delete-property
       delete webPreferences.preload;
+    }
+    const guestSession = webPreferences.session;
+    if (guestSession) {
+      guestSession.setPermissionRequestHandler((_wc, permission, callback) =>
+        callback(GUEST_PERMISSIONS.has(permission)));
+      guestSession.setPermissionCheckHandler((_wc, permission) => GUEST_PERMISSIONS.has(permission));
     }
   });
 
