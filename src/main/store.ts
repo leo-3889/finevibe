@@ -92,13 +92,40 @@ export function saveStateSync(state: PersistedState): void {
   writeStateAtomically(state);
 }
 
+// fs.writeSync reports how many bytes it wrote and a single call is allowed to
+// stop short. Renaming a partially written temp file would replace a good
+// state.json with a truncated one, so keep writing from the offset the last
+// call stopped at; a descriptor that stops making progress aborts the write
+// rather than reaching the rename. The payload is a Buffer so byte offsets and
+// byte counts agree for non-ASCII project names.
+function writeFully(fd: number, payload: Buffer): void {
+  let offset = 0;
+  while (offset < payload.length) {
+    const written = fs.writeSync(fd, payload, offset);
+    if (written <= 0) {
+      throw new Error(`state write stalled at ${offset}/${payload.length} bytes`);
+    }
+    offset += written;
+  }
+}
+
 function writeStateAtomically(state: PersistedState): void {
   try {
     if (!fs.existsSync(STATE_DIR)) {
       fs.mkdirSync(STATE_DIR, { recursive: true });
     }
     const tmpFile = STATE_FILE + '.tmp';
-    fs.writeFileSync(tmpFile, JSON.stringify(state, null, 2), 'utf-8');
+    // fsync before rename: a crash between rename and data flush used to
+    // leave a truncated state.json whose .tmp recovery copy was already
+    // consumed by the rename — whole-state loss to defaults.
+    const payload = Buffer.from(JSON.stringify(state, null, 2), 'utf-8');
+    const fd = fs.openSync(tmpFile, 'w');
+    try {
+      writeFully(fd, payload);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmpFile, STATE_FILE);
   } catch (err) {
     console.error('Failed to save state:', err);
