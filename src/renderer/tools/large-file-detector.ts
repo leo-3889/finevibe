@@ -16,9 +16,15 @@ const excludedDirSet = new Set(EXCLUDED_DIRECTORIES);
 const hardcodedMatcher = picomatch([...DEFAULT_SCAN_IGNORE, ...EXTRA_ALERT_IGNORE], { basename: true });
 
 function getRelativePath(filePath: string, projectPath: string): string | null {
-  const base = projectPath.endsWith('/') ? projectPath : projectPath + '/';
-  if (!filePath.startsWith(base)) return null;
-  return filePath.slice(base.length);
+  // Project paths arrive from the OS dialog as `C:\proj` on Windows; hooks
+  // report file paths with native separators. Normalize both to '/' form so
+  // the prefix check and the '/'-splitting matchers work on every platform
+  // (raw `\` paths silently returned null on Windows).
+  const norm = (p: string) => p.replace(/\\/g, '/');
+  const base = norm(projectPath).replace(/\/+$/, '') + '/';
+  const target = norm(filePath);
+  if (!target.startsWith(base)) return null;
+  return target.slice(base.length);
 }
 
 function isExcludedPath(relative: string): boolean {

@@ -317,7 +317,30 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     systemPrompt = instance.pendingSystemPrompt;
     instance.pendingSystemPrompt = null;
   }
-  await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
+  try {
+    await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
+  } catch (err) {
+    // pty:create rejected (missing binary, ConPTY failure, provider spawn
+    // error). Callers fire spawnTerminal un-awaited, so a throw here becomes
+    // an unhandled rejection and the tab sits blank with no explanation.
+    instance.spawned = false;
+    removeSession(sessionId);
+    const failOverlay = document.createElement('div');
+    failOverlay.className = 'terminal-exit-overlay';
+    const box = document.createElement('div');
+    box.className = 'terminal-exit-message';
+    const line = document.createElement('div');
+    line.textContent = `Failed to start session: ${err instanceof Error ? err.message : String(err)}`;
+    const retry = document.createElement('button');
+    retry.className = 'respawn-btn';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => void spawnTerminal(sessionId));
+    box.appendChild(line);
+    box.appendChild(retry);
+    failOverlay.appendChild(box);
+    instance.element.appendChild(failOverlay);
+    return;
+  }
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
 
   // Callers fire this un-awaited and fit the pane immediately after, so that fit
