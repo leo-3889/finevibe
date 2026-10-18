@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
+import { setCloseConfirmed } from './close-state';
 
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const STARTUP_DELAY_MS = 10_000; // 10 seconds
@@ -16,7 +17,13 @@ export function checkForUpdates(): void {
 }
 
 export function quitAndInstall(): void {
-  autoUpdater.quitAndInstall();
+  // The default path runs app.quit() first; the close-confirmation handler
+  // preventDefaults that, so the NSIS installer launches against the live
+  // app and the process is force-killed externally, skipping flushState,
+  // killAllPtys and watcher teardown. Confirm the close (runs the normal
+  // teardown in the 'close' path) and let the installer kill the process.
+  setCloseConfirmed(true);
+  autoUpdater.quitAndInstall(true, true);
 }
 
 export function initAutoUpdater(): void {
