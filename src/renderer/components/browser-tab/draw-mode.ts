@@ -1,5 +1,5 @@
 import { appState } from '../../state.js';
-import { promptNewSession } from '../tab-bar.js';
+import { promptNewSession } from '../tab-bar/session-menu.js';
 import { setPendingPrompt } from '../terminal-pane.js';
 import type { BrowserTabInstance } from './types.js';
 import { positionPopover } from './popover.js';

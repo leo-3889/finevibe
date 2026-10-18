@@ -613,12 +613,6 @@ export function registerIpcHandlers(): void {
     }
   );
 
-  // Backward compatibility alias
-  ipcMain.handle('claude:getConfig', async (_event, projectPath: string) => {
-    const provider = getProvider('claude');
-    return provider.getConfig(projectPath);
-  });
-
   ipcMain.on('config:watchProject', (_event, providerId: ProviderId, projectPath: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;

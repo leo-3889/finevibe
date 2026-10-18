@@ -78,19 +78,6 @@ export function isBinaryBuffer(buf: Buffer): boolean {
   return false;
 }
 
-/** Sync wrapper that opens a file, sniffs the head, and closes. Returns true on binary or I/O failure. */
-export function isLikelyBinaryFile(absPath: string): boolean {
-  let fd: number;
-  try { fd = fs.openSync(absPath, 'r'); } catch { return true; }
-  try {
-    const head = Buffer.alloc(BINARY_SNIFF_BYTES);
-    const bytesRead = fs.readSync(fd, head, 0, BINARY_SNIFF_BYTES, 0);
-    return isBinaryBuffer(head.subarray(0, bytesRead));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 /**
  * macOS treats these directories as opaque *packages*: `shell.openPath` on one
  * hands it to its default handler — a `.app` starts running, an `.xcodeproj`

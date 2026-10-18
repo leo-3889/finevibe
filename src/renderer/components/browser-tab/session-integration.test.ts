@@ -25,7 +25,7 @@ vi.mock('../../state.js', () => ({
   },
 }));
 
-vi.mock('../tab-bar.js', () => ({
+vi.mock('../tab-bar/session-menu.js', () => ({
   promptNewSession,
 }));
 

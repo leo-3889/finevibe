@@ -30,8 +30,6 @@ export interface VibeyardApi {
     cancelDeepSearch(): void;
     onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
-    /** @deprecated Use onCliSessionId instead */
-    onClaudeSessionId(callback: (sessionId: string, claudeSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
     resyncStatus(): void;
@@ -77,10 +75,6 @@ export interface VibeyardApi {
     onConfigChanged(callback: () => void): () => void;
     installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
     removeAgent(slug: string): Promise<void>;
-  };
-  /** @deprecated Use provider namespace instead */
-  claude: {
-    getConfig(projectPath: string): Promise<ProviderConfig>;
   };
   git: {
     getStatus(path: string): Promise<unknown>;
@@ -222,9 +216,6 @@ const api: VibeyardApi = {
     onCliSessionId: (callback) =>
       onChannel('session:cliSessionId', (sessionId, cliSessionId) =>
         callback(sessionId as string, cliSessionId as string)),
-    onClaudeSessionId: (callback) =>
-      onChannel('session:claudeSessionId', (sessionId, claudeSessionId) =>
-        callback(sessionId as string, claudeSessionId as string)),
     onCostData: (callback) =>
       onChannel('session:costData', (sessionId, costData) =>
         callback(sessionId as string, costData as CostData)),
@@ -269,9 +260,6 @@ const api: VibeyardApi = {
     onConfigChanged: (callback) => onChannel('config:changed', callback),
     installAgent: (slug, content) => ipcRenderer.invoke('provider:installAgent', slug, content),
     removeAgent: (slug) => ipcRenderer.invoke('provider:removeAgent', slug),
-  },
-  claude: {
-    getConfig: (projectPath) => ipcRenderer.invoke('claude:getConfig', projectPath),
   },
   store: {
     load: () => ipcRenderer.invoke('store:load'),

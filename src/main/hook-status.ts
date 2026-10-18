@@ -249,8 +249,6 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
       const cliSessionId = fs.readFileSync(filePath, 'utf-8').trim();
       if (cliSessionId && !win.isDestroyed()) {
         win.webContents.send('session:cliSessionId', sessionId, cliSessionId);
-        // Backward compatibility
-        win.webContents.send('session:claudeSessionId', sessionId, cliSessionId);
       }
     } catch {
       // File may have been deleted between watch event and read

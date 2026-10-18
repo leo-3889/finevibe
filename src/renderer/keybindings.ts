@@ -1,7 +1,7 @@
 import { appState } from './state.js';
 import { closeSessionWithConfirm } from './session-close.js';
 import { promptNewProject, toggleSidebar, toggleGitPanel } from './components/sidebar.js';
-import { quickNewSession } from './components/tab-bar.js';
+import { quickNewSession } from './components/tab-bar/session-menu.js';
 import { toggleProjectTerminal } from './components/project-terminal.js';
 import { toggleDebugPanel } from './components/debug-panel.js';
 import { showPreferencesModal } from './components/preferences-modal.js';

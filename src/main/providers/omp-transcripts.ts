@@ -19,7 +19,4 @@ const { agentDir, sessionsRoot } = createCompatibleTranscriptModule(
   path.join(os.homedir(), '.omp', 'agent')
 );
 
-/** OMP's agent dir: ~/.omp/agent by default, relocated via PI_CODING_AGENT_DIR (profiles). */
-export const ompAgentDir = agentDir;
-
 export const ompSessionsRoot = sessionsRoot;

@@ -212,10 +212,6 @@ export function getTerminalInstance(sessionId: string): TerminalInstance | undef
   return instances.get(sessionId);
 }
 
-export function getAllInstances(): Map<string, TerminalInstance> {
-  return instances;
-}
-
 export function applyThemeToAllTerminals(theme: 'dark' | 'light'): void {
   const termTheme = getTerminalTheme(theme);
   for (const instance of instances.values()) {
@@ -356,12 +352,6 @@ export function showPane(sessionId: string, split: boolean): void {
   } else {
     instance.element.classList.remove('split');
   }
-}
-
-export function hidePane(sessionId: string): void {
-  const instance = instances.get(sessionId);
-  if (!instance) return;
-  instance.element.classList.add('hidden');
 }
 
 export function hideAllPanes(): void {

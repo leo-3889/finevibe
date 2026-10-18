@@ -2,7 +2,7 @@ import { appState } from '../../../state.js';
 import { esc, scoreColor } from '../../../dom-utils.js';
 import { loadProviderAvailability, getAvailableProviderMetas, getProviderAvailabilitySnapshot, getProviderDisplayName } from '../../../provider-availability.js';
 import { setPendingPrompt } from '../../terminal-pane.js';
-import { promptNewSession } from '../../tab-bar.js';
+import { promptNewSession } from '../../tab-bar/session-menu.js';
 import { attachHoverCard, hideHoverCard } from '../../hover-card.js';
 import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ReadinessResult, ReadinessEffort } from '../../../../shared/types.js';
 import type { WidgetFactory, WidgetHost, WidgetInstance } from './widget-host.js';

@@ -1101,11 +1101,6 @@ class AppState {
     this.emit('session-changed');
   }
 
-  /** @deprecated Use updateSessionCliId */
-  updateSessionClaudeId(projectId: string, sessionId: string, claudeSessionId: string): void {
-    this.updateSessionCliId(projectId, sessionId, claudeSessionId);
-  }
-
   hasSession(sessionId: string): boolean {
     return this.findSessionById(sessionId) !== undefined;
   }

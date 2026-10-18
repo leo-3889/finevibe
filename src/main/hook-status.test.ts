@@ -330,7 +330,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       expect(fs.readFileSync).not.toHaveBeenCalled();
     });
 
-    it('.sessionid sends session:cliSessionId and session:claudeSessionId', () => {
+    it('.sessionid sends session:cliSessionId', () => {
       const win = createMockWin();
       startWatching(win);
       registerSession('abc123');
@@ -339,7 +339,6 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       watchCallback!('change', 'abc123.sessionid');
 
       expect(mockSend).toHaveBeenCalledWith('session:cliSessionId', 'abc123', 'claude-session-xyz');
-      expect(mockSend).toHaveBeenCalledWith('session:claudeSessionId', 'abc123', 'claude-session-xyz');
     });
 
     it('.cost parses JSON and sends session:costData', () => {
@@ -519,9 +518,8 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 's1', 'waiting', '');
       expect(mockSend).toHaveBeenCalledWith('session:cliSessionId', 's2', 'claude-sess-1');
-      expect(mockSend).toHaveBeenCalledWith('session:claudeSessionId', 's2', 'claude-sess-1');
       expect(mockSend).toHaveBeenCalledWith('session:costData', 's3', { cost: {} });
-      expect(mockSend).toHaveBeenCalledTimes(4);
+      expect(mockSend).toHaveBeenCalledTimes(3);
     });
 
     it('is a no-op on destroyed window', () => {

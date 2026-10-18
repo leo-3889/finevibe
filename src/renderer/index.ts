@@ -1,6 +1,6 @@
 import { appState } from './state.js';
 import { initSidebar, promptNewProject } from './components/sidebar.js';
-import { initTabBar } from './components/tab-bar.js';
+import { initTabBar } from './components/tab-bar/index.js';
 import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
 import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals, refreshProfileLabels } from './components/terminal-pane.js';

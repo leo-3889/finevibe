@@ -3,7 +3,7 @@ import { createPlanModeRow } from '../dom-utils.js';
 import { setPendingPrompt } from './terminal-pane.js';
 import { getFileViewerInstance } from './file-viewer.js';
 import { getFileReaderInstance } from './file-reader.js';
-import { promptNewSession } from './tab-bar.js';
+import { promptNewSession } from './tab-bar/session-menu.js';
 import { wireSubmitDisabled } from './submit-disabled.js';
 
 type PaneKind = 'file-viewer' | 'file-reader';

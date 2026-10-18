@@ -15,11 +15,6 @@ export function buildContentsApiUrl(): string {
   return `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`;
 }
 
-export function buildRawUrl(filename: string): string {
-  const { owner, repo, branch, path } = TEAM_MEMBERS_REPO;
-  return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}/${filename}`;
-}
-
 export const TEAM_DOMAINS = [
   'product-design',
   'engineering-core',

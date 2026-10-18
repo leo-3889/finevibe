@@ -239,18 +239,6 @@ function activeKanbanContainer(): HTMLElement | null {
   return instance?.element ?? null;
 }
 
-export function destroyBoardView(): void {
-  if (boardEl) {
-    boardEl.remove();
-    boardEl = null;
-  }
-  lastBoardKey = '';
-  if (offDragEnd) {
-    offDragEnd();
-    offDragEnd = null;
-  }
-}
-
 function renderTagRow(container: HTMLElement, board: BoardData): void {
   container.innerHTML = '';
   container.style.display = '';

@@ -88,7 +88,7 @@ export function showTaskModal(
   let currentAssigneeId: string = task?.assigneeId ?? '';
   const initialPlanMode = task?.planMode ?? (mode === 'create');
   const { row: planModeRow, checkbox: planModeCheckbox } =
-    createPlanModeRow('Plan mode', initialPlanMode);
+    createPlanModeRow(t('board.taskModal.planModeLabel'), initialPlanMode);
 
   showModal(title, fields, (values) => {
     const prompt = values.prompt?.trim() ?? '';

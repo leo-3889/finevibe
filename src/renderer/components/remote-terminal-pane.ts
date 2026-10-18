@@ -121,27 +121,10 @@ export function showRemotePane(sessionId: string, split: boolean): void {
   }
 }
 
-export function hideRemotePane(sessionId: string): void {
-  const instance = instances.get(sessionId);
-  if (!instance) return;
-  instance.element.classList.add('hidden');
-}
-
 export function hideAllRemotePanes(): void {
   for (const [, instance] of instances) {
     instance.element.classList.add('hidden');
     instance.element.classList.remove('swarm-dimmed', 'swarm-unread');
-  }
-}
-
-export function fitRemoteTerminal(sessionId: string): void {
-  const instance = instances.get(sessionId);
-  if (!instance || instance.element.classList.contains('hidden')) return;
-
-  try {
-    instance.fitAddon.fit();
-  } catch {
-    // Element not yet visible
   }
 }
 

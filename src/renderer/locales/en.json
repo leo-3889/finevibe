@@ -458,7 +458,6 @@
     "descriptionOmp": "Oh my Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR (the same omp agent dir mechanism as Pi). Make sure the omp CLI is installed, then set up auth and models in that config directory after creating the profile.",
     "keychainUnsupported": "This version of Claude Code{version} stores every login under a single macOS keychain entry, so profiles can't keep accounts separate. Update Claude Code to create and use profiles.",
     "keychainUnknown": "Vibeyard can't yet confirm this Claude Code build isolates profile logins in the macOS keychain. Sign in to a profile once and isolation will be verified automatically.",
-    "defaultLabel": "Default profile",
     "empty": "No profiles yet.",
     "tagManaged": "managed",
     "tagCustom": "custom",

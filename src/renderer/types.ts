@@ -22,7 +22,6 @@ export interface VibeyardApi {
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
     cancelDeepSearch(): void;
-    onClaudeSessionId(callback: (sessionId: string, claudeSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
     onInspectorEvents(callback: (sessionId: string, events: InspectorEvent[]) => void): () => void;
@@ -68,10 +67,6 @@ export interface VibeyardApi {
     onConfigChanged(callback: () => void): () => void;
     installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
     removeAgent(slug: string): Promise<void>;
-  };
-  /** @deprecated Use provider namespace */
-  claude: {
-    getConfig(projectPath: string): Promise<ProviderConfig>;
   };
   git: {
     getStatus(path: string): Promise<unknown>;
