@@ -623,8 +623,14 @@ export function addMcpServer(
   config: McpServerConfig,
   scope: 'user' | 'project',
   projectPath?: string,
+  configDir?: string,
 ): void {
-  const filePath = path.join(homedir(), '.claude.json');
+  // A profiled CLI (CLAUDE_CONFIG_DIR) reads its user-scope MCP store under
+  // the profile dir; writing ~/.claude.json would land servers where that
+  // CLI never looks.
+  const filePath = configDir
+    ? path.join(configDir, '.claude.json')
+    : path.join(homedir(), '.claude.json');
   const json = readJsonSafe(filePath) ?? {};
 
   if (scope === 'project' && projectPath) {
@@ -653,7 +659,31 @@ export function removeMcpServer(
   filePath: string,
   scope: 'user' | 'project',
   projectPath?: string,
+  configDir?: string,
 ): void {
+  // filePath arrives via the renderer as an echo of the list results; it
+  // must name one of the known MCP config files, never an arbitrary
+  // renderer-chosen write target (this function writes the file back).
+  // Every source getClaudeConfig lists must be removable here, or deleting
+  // a listed server silently no-ops on the throw.
+  const allowed = [
+    path.resolve(path.join(homedir(), '.claude.json')),
+    path.resolve(path.join(homedir(), '.mcp.json')),
+    path.resolve(path.join(homedir(), '.claude', 'settings.json')),
+    ...(projectPath
+      ? [path.resolve(path.join(projectPath, '.mcp.json')), path.resolve(path.join(projectPath, '.claude', 'settings.json'))]
+      : []),
+    ...(configDir
+      ? [
+          path.resolve(path.join(configDir, '.claude.json')),
+          path.resolve(path.join(configDir, '.mcp.json')),
+          path.resolve(path.join(configDir, 'settings.json')),
+        ]
+      : []),
+  ];
+  if (!allowed.includes(path.resolve(filePath))) {
+    throw new Error(`Not a writable MCP config path: ${JSON.stringify(filePath)}`);
+  }
   const json = readJsonSafe(filePath);
   if (!json) return;
 
@@ -674,17 +704,24 @@ export function removeMcpServer(
   fs.writeFileSync(filePath, JSON.stringify(json, null, 2) + '\n');
 }
 
-export async function getClaudeConfig(projectPath: string): Promise<ClaudeConfig> {
+export async function getClaudeConfig(projectPath: string, configDir?: string): Promise<ClaudeConfig> {
   const home = homedir();
-  const claudeDir = path.join(home, '.claude');
+  // A profiled CLI (CLAUDE_CONFIG_DIR) keeps its whole user-scope tree under
+  // the profile dir — settings, agents, skills, commands, MCP store. Reading
+  // the default account's files shows/edits the wrong login's servers.
+  const claudeDir = configDir ?? path.join(home, '.claude');
 
   // MCP Servers from multiple sources (matching Claude CLI resolution order)
-  // 1. ~/.claude.json (user + local scope — primary location for `claude mcp add`)
-  const claudeJsonServers = readMcpFromClaudeJson(path.join(home, '.claude.json'), projectPath);
+  // 1. .claude.json in the user-scope tree (user + local scope — primary
+  //    location for `claude mcp add`)
+  const claudeJsonServers = readMcpFromClaudeJson(
+    configDir ? path.join(configDir, '.claude.json') : path.join(home, '.claude.json'),
+    projectPath,
+  );
   // 2. ~/.claude/settings.json and ~/.mcp.json (legacy/additional user scope)
   const userServers = readMcpServers(
     path.join(claudeDir, 'settings.json'),
-    path.join(home, '.mcp.json'),
+    configDir ? path.join(configDir, '.mcp.json') : path.join(home, '.mcp.json'),
     'user',
   );
   // 3. Project-level: .claude/settings.json and .mcp.json

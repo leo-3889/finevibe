@@ -17,7 +17,7 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
 
     const favorites = (project?.sessionHistory ?? [])
       .filter((a) => a.bookmarked === true)
-      .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''));
+      .sort((a, b) => (b.closedAt ?? b.createdAt).localeCompare(a.closedAt ?? a.createdAt));
 
     if (favorites.length === 0) {
       const empty = document.createElement('div');
@@ -64,8 +64,8 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
 
     const date = document.createElement('span');
     date.className = 'widget-sessions-date';
-    date.textContent = formatRelativeDate(archived.closedAt);
-    date.title = new Date(archived.closedAt).toLocaleString();
+    date.textContent = formatRelativeDate(archived.closedAt ?? archived.createdAt);
+    date.title = new Date(archived.closedAt ?? archived.createdAt).toLocaleString();
     meta.appendChild(date);
 
     if (archived.cost && archived.cost.totalCostUsd > 0) {

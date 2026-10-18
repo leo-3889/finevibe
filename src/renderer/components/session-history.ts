@@ -11,6 +11,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   codex: 'Codex CLI',
   copilot: 'GitHub Copilot',
   gemini: 'Gemini CLI',
+  pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 interface ProjectFilterState {
@@ -31,6 +33,39 @@ function hideHistoryContextMenu(): void {
   }
 }
 
+function showHistoryToast(message: string): void {
+  const el = document.createElement('div');
+  el.className = 'history-toast';
+  el.textContent = message;
+  el.style.cssText =
+    'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;' +
+    'padding:8px 14px;border-radius:6px;background:var(--bg-secondary,#222);color:var(--fg-primary,#eee);' +
+    'border:1px solid var(--border-color,#444);font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.4);';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+/** Save this session's durable record: `zip` = meta.json + transcript + sidecars; `file` = the transcript verbatim. */
+async function backupSession(project: ProjectRecord, archived: ArchivedSession, format: 'zip' | 'file'): Promise<void> {
+  const providerId = (archived.providerId || 'claude') as ProviderId;
+  const profile = archived.profileId
+    ? appState.profiles.find((p) => p.id === archived.profileId && p.providerId === providerId)
+    : undefined;
+  try {
+    const outPath = await window.vibeyard.session.exportArchive(
+      providerId,
+      archived.cliSessionId,
+      project.path,
+      profile?.configDir,
+      archived,
+      format,
+    );
+    if (outPath) showHistoryToast(`Export saved: ${outPath}`);
+  } catch (err) {
+    showHistoryToast(`Export failed: ${String((err as Error)?.message ?? err)}`);
+  }
+}
+
 function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, archived: ArchivedSession): void {
   hideHistoryContextMenu();
 
@@ -39,7 +74,10 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  if (archived.cliSessionId && archived.transcriptAvailable !== false) {
+  // Active rows (live sessions recorded at creation) finalize on close; they
+  // carry no closed transcript guarantee, so no Resume affordances.
+  const isActive = archived.state === 'active';
+  if (!isActive && archived.cliSessionId && archived.transcriptAvailable !== false) {
     const resumeItem = document.createElement('div');
     resumeItem.className = 'tab-context-menu-item';
     resumeItem.textContent = 'Resume';
@@ -51,14 +89,19 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
     menu.appendChild(resumeItem);
   }
 
-  const resumeWithItems = buildResumeWithProviderItems(
-    (archived.providerId || 'claude') as ProviderId,
-    (targetId) => {
-      hideHistoryContextMenu();
-      appState.resumeWithProvider(project.id, { archivedSessionId: archived.id }, targetId);
-    },
-  );
-  for (const el of resumeWithItems) menu.appendChild(el);
+  // Same gate as Resume above: an active row's transcript is being written by
+  // a live CLI; resuming it elsewhere spawns a second agent on the same
+  // conversation.
+  if (!isActive && archived.cliSessionId && archived.transcriptAvailable !== false) {
+    const resumeWithItems = buildResumeWithProviderItems(
+      (archived.providerId || 'claude') as ProviderId,
+      (targetId) => {
+        hideHistoryContextMenu();
+        appState.resumeWithProvider(project.id, { archivedSessionId: archived.id }, targetId);
+      },
+    );
+    for (const el of resumeWithItems) menu.appendChild(el);
+  }
 
   if (menu.firstChild) {
     const separator = document.createElement('div');
@@ -75,6 +118,32 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
     appState.removeHistoryEntry(project.id, archived.id);
   });
   menu.appendChild(removeItem);
+
+  const backupItem = document.createElement('div');
+  backupItem.className = 'tab-context-menu-item';
+  backupItem.textContent = 'Export session (zip)…';
+  backupItem.title = archived.cliSessionId
+    ? 'Save a zip with meta.json, the provider transcript file, and hook sidecars.'
+    : 'No CLI session id known: the zip contains meta.json only.';
+  backupItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideHistoryContextMenu();
+    void backupSession(project, archived, 'zip');
+  });
+  menu.appendChild(backupItem);
+
+  if (archived.cliSessionId) {
+    const fileItem = document.createElement('div');
+    fileItem.className = 'tab-context-menu-item';
+    fileItem.textContent = 'Export transcript (single file)…';
+    fileItem.title = 'Save the provider-native transcript file verbatim.';
+    fileItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideHistoryContextMenu();
+      void backupSession(project, archived, 'file');
+    });
+    menu.appendChild(fileItem);
+  }
 
   document.body.appendChild(menu);
   historyContextMenu = menu;
@@ -232,7 +301,14 @@ function renderList(
     const item = document.createElement('div');
     item.className = 'history-item';
 
-    if (archived.cliSessionId && archived.transcriptAvailable !== false) {
+    if (archived.state === 'active' && archived.liveSessionId) {
+      // Running row: clicking switches to the live tab (a live session is
+      // never "resumed" — that would duplicate the CLI session).
+      item.style.cursor = 'pointer';
+      item.addEventListener('click', () => {
+        appState.setActiveSession(project.id, archived.liveSessionId!);
+      });
+    } else if (archived.cliSessionId && archived.transcriptAvailable !== false) {
       item.style.cursor = 'pointer';
       item.addEventListener('click', () => {
         void appState.resumeFromHistorySafe(project.id, archived.id);
@@ -251,6 +327,13 @@ function renderList(
     const name = document.createElement('div');
     name.className = 'history-item-name';
     name.textContent = archived.name;
+    if (archived.state === 'active') {
+      const dot = document.createElement('span');
+      dot.className = 'history-active-dot';
+      dot.title = 'Session is running';
+      dot.style.cssText = 'display:inline-block;width:7px;height:7px;border-radius:50%;background:#3fb950;margin-right:6px;vertical-align:middle;';
+      name.appendChild(dot);
+    }
     name.title = archived.cliSessionId
       ? `${archived.name}\nSession ID: ${archived.cliSessionId}`
       : archived.name;
@@ -271,7 +354,7 @@ function renderList(
     const details = document.createElement('div');
     details.className = 'history-item-details';
     const parts: string[] = [];
-    parts.push(formatDate(archived.closedAt));
+    parts.push(archived.state === 'active' ? 'Running' : formatDate(archived.closedAt ?? archived.createdAt));
     if (archived.cost) {
       parts.push(`$${archived.cost.totalCostUsd.toFixed(2)}`);
     }
@@ -298,7 +381,7 @@ function renderList(
 
     const bookmarkBtn = document.createElement('button');
     bookmarkBtn.className = `history-bookmark-btn${archived.bookmarked ? ' bookmarked' : ''}`;
-    bookmarkBtn.innerHTML = archived.bookmarked ? '&#9733;' : '&#9734;';
+    bookmarkBtn.textContent = archived.bookmarked ? '★' : '☆';
     bookmarkBtn.title = archived.bookmarked ? 'Remove bookmark' : 'Bookmark session';
     bookmarkBtn.addEventListener('click', (e) => {
       e.stopPropagation();

@@ -25,10 +25,16 @@ export function showMemberSessionsModal(member: TeamMember, projectId: string): 
     .filter((s) => s.teamMemberId === member.id && isCliSession(s))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
+  // The spawn-time history record mirrors the live tab via liveSessionId and
+  // has cliSessionId === null until the CLI reports one; keying only on
+  // cliSessionId listed a running member session twice.
   const activeCliIds = new Set(active.map((s) => s.cliSessionId).filter(Boolean));
+  const activeLiveIds = new Set(active.map((s) => s.id));
   const archived = (project.sessionHistory ?? [])
-    .filter((a) => a.teamMemberId === member.id && !(a.cliSessionId && activeCliIds.has(a.cliSessionId)))
-    .sort((a, b) => b.closedAt.localeCompare(a.closedAt));
+    .filter((a) => a.teamMemberId === member.id
+      && !(a.cliSessionId && activeCliIds.has(a.cliSessionId))
+      && !(a.liveSessionId && activeLiveIds.has(a.liveSessionId)))
+    .sort((a, b) => (b.closedAt ?? b.createdAt).localeCompare(a.closedAt ?? a.createdAt));
 
   closeModal();
 
@@ -81,7 +87,7 @@ function archivedRow(entry: ArchivedSession, projectId: string): SessionRow {
   const provider = getProviderDisplayName(entry.providerId);
   return {
     name: entry.name,
-    meta: `Closed · ${formatRelative(Date.parse(entry.closedAt))}${canResume ? '' : ' · cannot resume'} · ${provider}`,
+    meta: `${entry.state === 'active' ? 'Running' : 'Closed'} · ${formatRelative(Date.parse(entry.closedAt ?? entry.createdAt))}${canResume ? '' : ' · cannot resume'} · ${provider}`,
     onClick: canResume
       ? () => {
           void appState.resumeFromHistorySafe(projectId, entry.id);
