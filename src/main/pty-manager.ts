@@ -538,6 +538,10 @@ export function killPty(sessionId: string): boolean {
     // spawnPty may still be awaiting before the PTY lands in `ptys`;
     // remember the kill so the pending spawn tears itself down on set.
     pendingKills.add(sessionId);
+    // A killed session that is never (re)spawned leaves its flag behind; a
+    // restart reuses the same id and would be killed by a stale entry. Bound
+    // the set by insertion order so the oldest unclaimed kills expire.
+    if (pendingKills.size > 100) pendingKills.delete(pendingKills.values().next().value as string);
     return false;
   }
   let killed = false;
