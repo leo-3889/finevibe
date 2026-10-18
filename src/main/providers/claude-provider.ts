@@ -131,8 +131,10 @@ export class ClaudeProvider implements CliProvider {
     stopConfigWatch();
   }
 
-  async getConfig(projectPath: string): Promise<ProviderConfig> {
-    return getClaudeConfig(projectPath);
+  async getConfig(projectPath: string, configDir?: string): Promise<ProviderConfig> {
+    // configDir is the project's pinned profile dir (provider.ts:34): the
+    // profiled CLI reads its MCP/agents/skills there, not in ~/.claude.
+    return getClaudeConfig(projectPath, configDir);
   }
 
   validateSettings(_projectPath?: string, configDir?: string): SettingsValidationResult {

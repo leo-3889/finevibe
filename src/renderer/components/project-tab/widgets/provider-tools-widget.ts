@@ -92,7 +92,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
     removeBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!confirm(`Remove MCP server "${server.name}"?`)) return;
-      await window.vibeyard.mcp.removeServer(server.name, server.filePath, server.scope, projectPath);
+      await window.vibeyard.mcp.removeServer(server.name, server.filePath, server.scope, projectPath, getEffectiveConfigDir('claude'));
       void refresh();
     });
     el.appendChild(removeBtn);
@@ -239,7 +239,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
       'MCP Servers',
       config.mcpServers.map(s => mcpItem(s, projectPath)),
       config.mcpServers.length,
-      providerId === 'claude' ? () => showMcpAddModal(() => void refresh()) : undefined,
+      providerId === 'claude' ? () => showMcpAddModal(() => void refresh(), getEffectiveConfigDir(providerId)) : undefined,
     ));
 
     body.appendChild(renderSection(
