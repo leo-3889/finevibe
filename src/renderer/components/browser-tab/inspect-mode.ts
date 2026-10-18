@@ -2,6 +2,7 @@ import type { BrowserTabInstance, ElementInfo } from './types.js';
 import { buildSelectorOptions } from './selector-ui.js';
 import { positionPopover } from './popover.js';
 import { getViewportContext } from './viewport.js';
+import { sanitizeArgPrompt, safeSend } from './prompt-utils.js';
 
 export function toggleInspectMode(instance: BrowserTabInstance): void {
   instance.inspectMode = !instance.inspectMode;
@@ -9,9 +10,9 @@ export function toggleInspectMode(instance: BrowserTabInstance): void {
   instance.recordBtn.disabled = instance.inspectMode;
   instance.drawBtn.disabled = instance.inspectMode;
   if (instance.inspectMode) {
-    instance.webview.send('enter-inspect-mode');
+    safeSend(instance.webview, 'enter-inspect-mode');
   } else {
-    instance.webview.send('exit-inspect-mode');
+    safeSend(instance.webview, 'exit-inspect-mode');
     instance.selectedElement = null;
     instance.inspectPanel.style.display = 'none';
   }
@@ -68,7 +69,7 @@ export function buildPrompt(instance: BrowserTabInstance): string | null {
 
   const vpCtx = getViewportContext(instance, instance.inspectAttachDimsCheckbox.checked);
 
-  return (
+  return sanitizeArgPrompt(
     `Regarding the <${info.tagName}> element at ${info.pageUrl}${vpCtx} ` +
     `(selector: '${info.activeSelector.value}'` +
     (info.textContent ? `, text: '${info.textContent}'` : '') +

@@ -5,6 +5,7 @@ import type { BrowserTabInstance } from './types.js';
 import { positionPopover } from './popover.js';
 import { getViewportContext } from './viewport.js';
 import { isWin } from '../../platform.js';
+import { sanitizeArgPrompt, safeSend } from './prompt-utils.js';
 
 export function toggleDrawMode(instance: BrowserTabInstance): void {
   instance.drawMode = !instance.drawMode;
@@ -12,11 +13,11 @@ export function toggleDrawMode(instance: BrowserTabInstance): void {
   instance.inspectBtn.disabled = instance.drawMode;
   instance.recordBtn.disabled = instance.drawMode;
   if (instance.drawMode) {
-    instance.webview.send('enter-draw-mode');
+    safeSend(instance.webview, 'enter-draw-mode');
     instance.drawInstructionInput.value = '';
     instance.drawInstructionInput.dispatchEvent(new Event('input'));
   } else {
-    instance.webview.send('exit-draw-mode');
+    safeSend(instance.webview, 'exit-draw-mode');
     instance.drawPanel.style.display = 'none';
   }
 }
@@ -29,7 +30,7 @@ export function positionDrawPopover(instance: BrowserTabInstance, x: number, y: 
 }
 
 export function clearDrawing(instance: BrowserTabInstance): void {
-  instance.webview.send('draw-clear');
+    safeSend(instance.webview, 'draw-clear');
   instance.drawPanel.style.display = 'none';
 }
 
@@ -69,9 +70,10 @@ export function buildDrawPrompt(instance: BrowserTabInstance, imagePath: string)
   const instruction = instance.drawInstructionInput.value.trim();
   const pageUrl = instance.urlInput.value;
   const vpCtx = getViewportContext(instance, instance.drawAttachDimsCheckbox.checked);
-  // On Windows, cmd.exe /c truncates arguments at newline characters.
+  // sanitizeArgPrompt collapses newlines on Windows (cmd truncation) and
+  // strips the quotes a user-typed instruction can carry into argv.
   const sep = isWin ? ' | ' : '\n';
-  return (
+  return sanitizeArgPrompt(
     `Regarding the page at ${pageUrl}${vpCtx}:${sep}` +
     `See annotated screenshot: ${imagePath}${sep}` +
     `${instruction}`

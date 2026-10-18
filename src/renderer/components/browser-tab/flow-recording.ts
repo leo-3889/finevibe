@@ -1,5 +1,6 @@
 import type { BrowserTabInstance, FlowStep } from './types.js';
 import { buildSelectorOptions } from './selector-ui.js';
+import { sanitizeArgPrompt, safeSend } from './prompt-utils.js';
 
 export function renderFlowSteps(instance: BrowserTabInstance): void {
   const list = instance.flowStepsList;
@@ -70,7 +71,13 @@ export function renderFlowSteps(instance: BrowserTabInstance): void {
   instance.flowPanelLabel.textContent = `Flow (${instance.flowSteps.length} steps)`;
 }
 
+// A page that navigates in a loop (auto-redirects, SPAs) appends a step per
+// navigation with no bound; the prompt builder concatenates them all into one
+// CLI argument. Cap keeps recording and the generated prompt finite.
+const MAX_FLOW_STEPS = 100;
+
 export function addFlowStep(instance: BrowserTabInstance, step: FlowStep): void {
+  if (instance.flowSteps.length >= MAX_FLOW_STEPS) return;
   instance.flowSteps.push(step);
   renderFlowSteps(instance);
 }
@@ -83,10 +90,10 @@ export function toggleFlowMode(instance: BrowserTabInstance): void {
   instance.inspectBtn.disabled = instance.flowMode;
   instance.drawBtn.disabled = instance.flowMode;
   if (instance.flowMode) {
-    instance.webview.send('enter-flow-mode');
+    safeSend(instance.webview, 'enter-flow-mode');
     instance.flowPanel.style.display = 'flex';
   } else {
-    instance.webview.send('exit-flow-mode');
+    safeSend(instance.webview, 'exit-flow-mode');
     if (instance.flowSteps.length === 0) {
       instance.flowPanel.style.display = 'none';
     }
@@ -124,7 +131,7 @@ export function buildFlowPrompt(instance: BrowserTabInstance): string | null {
     }
   });
 
-  return (
+  return sanitizeArgPrompt(
     `Recorded browser flow (${instance.flowSteps.length} steps):\n` +
     lines.join('\n') +
     `\n\nInstructions: ${instruction}`

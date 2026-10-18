@@ -13,7 +13,8 @@ import {
 } from './types.js';
 import { instances, getPreloadPath } from './instance.js';
 import { createPlanModeRow } from '../../dom-utils.js';
-import { navigateTo } from './navigation.js';
+import { navigateTo, normalizeUrl } from './navigation.js';
+import { safeSend } from './prompt-utils.js';
 import { applyViewport, openViewportDropdown, closeViewportDropdown } from './viewport.js';
 import { toggleInspectMode, showElementInfo, dismissInspect } from './inspect-mode.js';
 import {
@@ -497,7 +498,9 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   // Preload must be set before src to ensure the inspect script is injected
   getPreloadPath().then((p) => {
     webview.setAttribute('preload', `file://${p}`);
-    if (url) webview.src = url;
+    // Session-restored / toggle-supplied URLs bypass navigateTo; normalize so
+    // javascript:/view-source: can't reach the guest src directly.
+    if (url) { const n = normalizeUrl(url); if (n) webview.src = n; }
   });
 
   backBtn.addEventListener('click', () => webview.goBack());
@@ -561,7 +564,7 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     const parent = el.parentElement;
     const wasSplit = el.classList.contains('split');
     destroyBrowserTabPane(sessionId);
-    createBrowserTabPane(sessionId, currentUrl || undefined);
+    createBrowserTabPane(sessionId, (currentUrl && normalizeUrl(currentUrl)) || undefined);
     if (parent) attachBrowserTabToContainer(sessionId, parent);
     showBrowserTabPane(sessionId, wasSplit);
   });
@@ -651,6 +654,15 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     urlInput.value = e.url;
     appState.updateSessionBrowserTabUrl(sessionId, e.url);
     if (instance.flowMode) recordNavigationStep(e.url);
+  }) as EventListener);
+  // A full navigation discards the guest document, its mode flags and its
+  // listeners; the pane's buttons stay active while the page silently leaves
+  // the mode (recording stops, inspect clicks dead). Re-enter every active
+  // mode once the new document has finished loading.
+  webview.addEventListener('did-stop-loading', (() => {
+    if (instance.inspectMode) safeSend(webview, 'enter-inspect-mode');
+    if (instance.flowMode) safeSend(webview, 'enter-flow-mode');
+    if (instance.drawMode) safeSend(webview, 'enter-draw-mode');
   }) as EventListener);
   // allowpopups above lets guest pages request windows. Without this handler a
   // popup would open an in-app window inheriting this tab's session partition
