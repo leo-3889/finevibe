@@ -25,5 +25,13 @@ export const whichCmd = isWin ? 'where' : 'which';
 export const utf8LocaleEnv: Record<string, string> =
   isWin ? {} : isMac ? { LC_CTYPE: 'UTF-8' } : { LANG: 'C.UTF-8' };
 
-/** Python interpreter used by hook scripts. */
-export const pythonBin = isWin ? 'python' : '/usr/bin/python3';
+/** Python interpreter used by hook scripts. On Windows this starts as the
+ * bare `python` alias and is re-pointed by checkPythonAvailable() when only
+ * the `py` launcher exists (python.org installs without PATH). Exported as
+ * `let`: the bundler keeps the live binding, so every hook command template
+ * reads the resolved interpreter. */
+export let pythonBin = isWin ? 'python' : '/usr/bin/python3';
+
+export function setPythonBin(bin: string): void {
+  pythonBin = bin;
+}
