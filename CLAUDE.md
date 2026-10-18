@@ -22,6 +22,8 @@ git diff --check
 - [Performance and resource limits](docs/performance.md) — search cancellation/cache storage, preview paging, event retention and remaining measurements.
 - [UI conventions](docs/ui-conventions.md) — components, widgets, i18n and project layout.
 - [Claude hook compatibility](HOOKS.md) — version-specific event payloads and status mapping.
+- [Packaging and releases](docs/packaging.md) — artifact matrix, deb build requirements and verification.
+- [Feature reference](docs/FEATURES.md) — every feature with behavior, owning module, test mapping, numeric limits and coverage gaps.
 
 Use `src/main/platform.ts` for OS checks and platform path helpers. Build path expectations with `path.join` or `path.resolve` in tests, including on Windows.
 
