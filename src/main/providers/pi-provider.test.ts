@@ -2,9 +2,11 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
   promises: { readFile: vi.fn() },
 }));
-vi.mock('os', () => ({ homedir: () => '/mock/home' }));
+vi.mock('os', () => ({ homedir: () => '/mock/home', tmpdir: () => '/mock/tmp' }));
 vi.mock('../pty-manager', () => ({ getFullPath: () => '/usr/local/bin:/usr/bin' }));
 vi.mock('./resolve-binary', () => ({ resolveBinary: vi.fn(), validateBinaryExists: vi.fn() }));
 vi.mock('../pi-session-watcher', () => ({

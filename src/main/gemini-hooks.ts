@@ -56,7 +56,21 @@ function cleanHooks(existing: HooksConfig): HooksConfig {
 export function installGeminiHooks(): void {
   fs.mkdirSync(GEMINI_DIR, { recursive: true });
 
-  const settings = readJsonSafe(SETTINGS_PATH) ?? {};
+  // A corrupt settings.json must never be collapsed to hooks-only JSON —
+  // the write below would silently drop model, auth and every other user
+  // setting. Leave the file untouched; validation reports hooks as not
+  // installed, which is the honest state.
+  let settings: Record<string, unknown>;
+  try {
+    settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      settings = {};
+    } else {
+      console.warn(`gemini: ${SETTINGS_PATH} is not valid JSON; hooks not installed over a corrupt config`);
+      return;
+    }
+  }
   const existingHooks: HooksConfig = (settings.hooks ?? {}) as HooksConfig;
   const cleaned = cleanHooks(existingHooks);
 

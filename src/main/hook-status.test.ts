@@ -69,7 +69,7 @@ beforeEach(() => {
   vi.mocked(fs.rmdirSync).mockImplementation(vi.fn() as any);
   vi.mocked(fs.watch).mockImplementation((_path: any, cb: any) => {
     watchCallback = cb;
-    return { close: mockClose } as any;
+    return { close: mockClose, on: vi.fn() } as any;
   });
 
   watchCallback = null;
@@ -85,7 +85,7 @@ beforeEach(() => {
 
   vi.mocked(fs.watch).mockImplementation((_path: any, cb: any) => {
     watchCallback = cb;
-    return { close: mockClose } as any;
+    return { close: mockClose, on: vi.fn() } as any;
   });
 });
 

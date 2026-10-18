@@ -60,7 +60,10 @@ export class CodexProvider implements CliProvider {
       args.push('-c', `developer_instructions=${opts.systemPrompt}`);
     }
     if (opts.isResume && opts.cliSessionId) {
+      // `codex resume <id> [PROMPT]` takes a trailing prompt (openai/codex#26818):
+      // dropping it here silently loses a queued prompt on Restart Session.
       args.push('resume', opts.cliSessionId);
+      if (opts.initialPrompt) args.push(opts.initialPrompt);
     } else if (opts.initialPrompt) {
       args.push(opts.initialPrompt);
     }
@@ -89,9 +92,12 @@ export class CodexProvider implements CliProvider {
     stopConfigWatch();
   }
 
-  // Codex has no hook to report the session id — discover it by tailing
-  // ~/.codex/history.jsonl (see codex-session-watcher.ts).
+  // Codex hooks write .sessionid per session (exact). The history.jsonl
+  // watcher correlates by spawn order only: with two pending sessions, the
+  // entry produced by the newer one lands on the older tab (H1), so it runs
+  // only as the fallback for installs without complete hooks.
   onSessionStarted(sessionId: string, _cwd: string, win: BrowserWindow): void {
+    if (validateCodexHooks().hooks === 'complete') return;
     startCodexSessionWatcher(win);
     registerPendingCodexSession(sessionId);
   }

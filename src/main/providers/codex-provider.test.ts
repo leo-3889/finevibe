@@ -191,9 +191,9 @@ describe('buildArgs', () => {
     expect(args).toEqual(['fix the bug']);
   });
 
-  it('does not pass initialPrompt when resuming', () => {
+  it('passes the prompt as trailing positional when resuming', () => {
     const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'fix the bug' });
-    expect(args).toEqual(['resume', 'sid-1']);
+    expect(args).toEqual(['resume', 'sid-1', 'fix the bug']);
   });
 
   it('splits extraArgs on whitespace and appends', () => {

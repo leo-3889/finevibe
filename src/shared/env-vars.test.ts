@@ -46,6 +46,13 @@ describe('profile-owned environment', () => {
       dropped: ['OMP_PROFILE', 'pi_profile', 'PI_CONFIG_DIR', 'PI_CODING_AGENT_DIR'],
     });
   });
+
+  it('drops the per-session hook status keys in any casing', () => {
+    expect(partitionUserEnv({ VIBEYARD_SESSION_ID: 'x', claude_ide_session_id: 'y', SAFE: 'yes' })).toEqual({
+      allowed: { SAFE: 'yes' },
+      dropped: ['VIBEYARD_SESSION_ID', 'claude_ide_session_id'],
+    });
+  });
 });
 
 describe('findInvalidEnvLines', () => {

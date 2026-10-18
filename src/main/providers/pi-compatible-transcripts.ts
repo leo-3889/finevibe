@@ -74,8 +74,17 @@ export const TAIL_READ_BYTES = 16 * 1024;
  * TAIL_READ_BYTES (a big tool output / message fills the whole window, so
  * no complete line is present to parse). Bounded so a pathological huge
  * transcript can't make the poller read unboundedly.
+ *
+ * The bound must cover a real oversized entry, not just exceed it: OMP
+ * search turns end with a final message that embeds the whole search dump,
+ * routinely past 1 MiB. When the last entry exceeds this window the tail
+ * yields no status, `syncEntry` writes nothing, and the tab status stays
+ * frozen on its last value (`working`) for the rest of the session — the
+ * size-keyed cache keeps serving the null. 4 MiB covers the observed dumps;
+ * the read is bounded and cached by file size, so it repeats (per 2s poll)
+ * only while a >TAIL_READ_BYTES entry is actively being appended.
  */
-export const MAX_STATUS_TAIL_BYTES = 1024 * 1024;
+export const MAX_STATUS_TAIL_BYTES = 4 * 1024 * 1024;
 
 /** Read the tail of a file (bounded, never the whole transcript). */
 export function readTranscriptTailSync(filePath: string, bytes = TAIL_READ_BYTES): string | null {
@@ -244,14 +253,23 @@ export interface SessionExitReason {
 /**
  * Derive the exit reason from a transcript tail.
  *
- * The LAST parseable JSON line decides: it must be a `session_exit`
- * custom entry, otherwise the transcript ends with normal activity and
- * there is no reason to report. A mid-write tail line (the writer is
- * mid-flush) is ignored, scanning backwards for the last complete line.
+ * Scanning backwards from the end, the first `session_exit` custom entry
+ * reports the reason — but only across crash-flush appends. When the CLI
+ * dies it writes the marker and THEN flushes its pending tool calls after
+ * it (observed in live transcripts: an `isError` "Operation aborted"
+ * toolResult and a `tool_execution_start` entry following the marker), so
+ * the marker is not the last line. Any other entry type (user/assistant
+ * activity) means the transcript continued — a resume appending to the
+ * same file — and the old marker is history, not the current state, so
+ * nothing is reported. A mid-write tail line (the writer is mid-flush) is
+ * ignored, scanning backwards for the last complete line.
  */
 export function sessionExitReasonFromTail(tail: string | null): SessionExitReason | null {
   if (!tail) return null;
   const lines = tail.split(/\r?\n/).filter(Boolean);
+  // Bound the flush run so a pathological tail can't extend the scan.
+  const MAX_FLUSH_LINES = 32;
+  let flushSkipped = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
     let entry: unknown;
     try {
@@ -262,7 +280,13 @@ export function sessionExitReasonFromTail(tail: string | null): SessionExitReaso
       continue;
     }
     if (!entry || typeof entry !== 'object') return null;
-    const e = entry as { type?: unknown; customType?: unknown; timestamp?: unknown; data?: { reason?: unknown; kind?: unknown } };
+    const e = entry as {
+      type?: unknown;
+      customType?: unknown;
+      timestamp?: unknown;
+      message?: { role?: unknown };
+      data?: { reason?: unknown; kind?: unknown };
+    };
     if (e.type === 'custom' && e.customType === 'session_exit') {
       return {
         reason: String(e.data?.reason ?? 'unknown'),
@@ -270,8 +294,11 @@ export function sessionExitReasonFromTail(tail: string | null): SessionExitReaso
         ...(typeof e.timestamp === 'string' ? { timestamp: e.timestamp } : {}),
       };
     }
-    // The last parseable line is ordinary activity, not a crash marker.
-    return null;
+    const isFlushAppend =
+      (e.type === 'custom' && e.customType === 'tool_execution_start') ||
+      (e.type === 'message' && e.message?.role === 'toolResult');
+    if (!isFlushAppend) return null;
+    if (++flushSkipped > MAX_FLUSH_LINES) return null;
   }
   return null;
 }
@@ -301,6 +328,7 @@ export function readSessionExitReasonSync(filePath: string): SessionExitReason |
  * header and rewrites it in place when the title changes, so the header is
  * not always line 1. Parse the JSON entries of the first few lines.
  */
+// pi-lens-ignore: no-unsafe-dictionary-any
 function headEntries(window: string | null): Array<Record<string, any>> {
   if (!window) return [];
   const out: Array<Record<string, any>> = [];
@@ -406,7 +434,7 @@ const CASE_INSENSITIVE_PATHS = isWin || isMac;
  * case folded on Windows/macOS, where the same directory can legitimately
  * be spelled with different case (drive letter, Finder-vs-CLI path).
  */
-function sameCwd(a: string | undefined, b: string): boolean {
+export function sameCwd(a: string | undefined, b: string): boolean {
   if (typeof a !== 'string' || !a) return false;
   const strip = (p: string): string => {
     const trimmed = p.replace(/[\\/]+$/, '');

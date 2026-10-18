@@ -10,6 +10,7 @@ import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks, SESSION_ID
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { MAX_INDEX_FILE_BYTES, IndexTextBudget } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
+import { sameCwd } from './pi-compatible-transcripts';
 import type { BrowserWindow } from 'electron';
 
 const binaryCache = { path: null as string | null };
@@ -179,7 +180,7 @@ export class GeminiProvider implements CliProvider {
         const projectRootFile = path.join(tmpRoot, entry, '.project_root');
         try {
           const contents = fs.readFileSync(projectRootFile, 'utf-8').trim();
-          if (contents === projectPath) {
+          if (sameCwd(contents, projectPath)) {
             chatsDir = path.join(tmpRoot, entry, 'chats');
             break;
           }

@@ -38,7 +38,9 @@ function mockFiles(rawFiles: Record<string, string>): void {
   mockReadFileSync.mockImplementation((p: any) => {
     const content = files[n(String(p))];
     if (content !== undefined) return content;
-    throw new Error('ENOENT');
+    const err: NodeJS.ErrnoException = new Error('ENOENT');
+    err.code = 'ENOENT';
+    throw err;
   });
 }
 

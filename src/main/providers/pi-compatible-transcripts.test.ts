@@ -165,6 +165,35 @@ describe('readTranscriptStatusSync huge-entry fallback', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('surfaces the status of a final entry larger than the old 1 MiB fallback bound', () => {
+    // OMP search turns end with a final message embedding the whole search
+    // dump. At the old 1 MiB bound such an entry yielded no status, the
+    // poller wrote nothing, and the tab stayed frozen on its last status.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-tail-'));
+    try {
+      const file = path.join(dir, 't.jsonl');
+      const dump = 'x'.repeat(1.2 * 1024 * 1024);
+      const finalEntry = JSON.stringify({
+        type: 'message',
+        message: { role: 'assistant', stopReason: 'stop', content: dump },
+      });
+      const content = `${[
+        header('s1', '/proj'),
+        JSON.stringify({ type: 'message', message: { role: 'user', content: 'search again' } }),
+        JSON.stringify({ type: 'custom', customType: 'tool_execution_start', data: { toolName: 'grep' } }),
+        JSON.stringify({ type: 'message', message: { role: 'toolResult', toolName: 'grep', content: dump } }),
+        finalEntry,
+      ].join('\n')}\n`;
+      fs.writeFileSync(file, content);
+      // The entry exceeds 1 MiB and fills both the 16KB window and (at the
+      // old bound) the fallback read; the widened window must parse it.
+      expect(finalEntry.length).toBeGreaterThan(1024 * 1024);
+      expect(readTranscriptStatusSync(file)).toBe('completed');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('transcriptStatusFromTail cancellation (PO-04)', () => {
@@ -214,6 +243,33 @@ describe('sessionExitReasonFromTail', () => {
 
   it('returns null when the last parseable line is not a session_exit', () => {
     const tail = [sessionExit(), assistant('stop')].join('\n');
+    expect(sessionExitReasonFromTail(tail)).toBeNull();
+  });
+
+  it('reports the reason across crash-flush appends written after the marker', () => {
+    // Live OMP transcripts append the pending tool-call flush AFTER the
+    // marker (an isError "Operation aborted" toolResult and a
+    // tool_execution_start), so the marker is not the last line.
+    const tail = [
+      sessionExitWith({ reason: 'unhandled_rejection', kind: 'fatal' }),
+      JSON.stringify({
+        type: 'custom',
+        customType: 'tool_execution_start',
+        data: { toolCallId: 'c1', toolName: 'wait' },
+      }),
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'toolResult', toolName: 'wait', content: [{ type: 'text', text: 'Operation aborted' }], isError: true },
+      }),
+    ].join('\n');
+    expect(sessionExitReasonFromTail(tail)).toEqual({ reason: 'unhandled_rejection', kind: 'fatal' });
+  });
+
+  it('stops scanning at a bounded flush run', () => {
+    const flushes = Array.from({ length: 40 }, (_, i) =>
+      JSON.stringify({ type: 'custom', customType: 'tool_execution_start', data: { toolCallId: `c${i}` } }),
+    );
+    const tail = [sessionExit(), ...flushes].join('\n');
     expect(sessionExitReasonFromTail(tail)).toBeNull();
   });
 
