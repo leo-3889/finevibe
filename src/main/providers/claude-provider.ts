@@ -10,11 +10,20 @@ import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { installStatusLineScript, cleanupAll as cleanupHookStatus } from '../hook-status';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
-import { installHooksOnly, installStatusLine, getClaudeConfig } from '../claude-cli';
+import { getClaudeConfig } from '../claude-cli';
 import { guardedInstall, validateSettings, reinstallSettings } from '../settings-guard';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE, collectProfileRoots } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
+
+/**
+ * A renderer-supplied cliSessionId is joined into the transcript path, so it
+ * must be the file's name, not a path. Claude names transcripts `<uuid>.jsonl`
+ * (see UUID_RE); ids from other producers are slug shaped, so this is the
+ * permissive superset hook-status.ts uses for its `.status` names:
+ * [A-Za-z0-9._-], no leading dot (a relative/hidden name), 128-char cap.
+ */
+const TRANSCRIPT_ID_RE = /^(?!\.)[A-Za-z0-9._-]{1,128}$/;
 
 const binaryCache = { path: null as string | null };
 
@@ -154,6 +163,13 @@ export class ClaudeProvider implements CliProvider {
   }
 
   getTranscriptPath(cliSessionId: string, projectPath: string, configDir?: string): string | null {
+    // The id arrives from the renderer (`session:transcriptExists`,
+    // `session:exportArchive`, the resume path) and is joined into a path
+    // whose existence is reported back to it, so a `../../x` id is an
+    // existsSync oracle over the whole filesystem. Transcripts Claude writes
+    // are named `<uuid>.jsonl`; anything else is not an id. Same shape as
+    // hook-status' UI_SESSION_ID_RE: [A-Za-z0-9._-], no leading dot, capped.
+    if (!TRANSCRIPT_ID_RE.test(cliSessionId)) return null;
     // Claude encodes the project path by replacing any non-alphanumeric char with '-'
     const slug = projectPath.replace(/[^a-zA-Z0-9]/g, '-');
     const root = configDir ?? path.join(os.homedir(), '.claude');

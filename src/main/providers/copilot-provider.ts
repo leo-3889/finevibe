@@ -16,6 +16,17 @@ import { writeAgentFile, deleteAgentFile } from './agent-files';
 
 const binaryCache = { path: null as string | null };
 
+/**
+ * `cliSessionId` arrives from the renderer (`session:transcriptExists`,
+ * `session:exportArchive`, the resume path) and is joined straight into
+ * `~/.copilot/session-state/<id>/events.jsonl`, and the answer the caller
+ * gets back is "does that file exist" — so a `../../x` id is a filesystem-wide
+ * existsSync oracle. Copilot names session dirs by UUID (see UUID_RE in
+ * discoverTranscripts); this is the permissive superset hook-status.ts uses
+ * for its `.status` names: [A-Za-z0-9._-], no leading dot, 128-char cap.
+ */
+const TRANSCRIPT_ID_RE = /^(?!\.)[A-Za-z0-9._-]{1,128}$/;
+
 export class CopilotProvider implements CliProvider {
   readonly meta: CliProviderMeta = {
     id: 'copilot',
@@ -56,7 +67,13 @@ export class CopilotProvider implements CliProvider {
   buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
     const args: string[] = [];
     if (opts.isResume && opts.cliSessionId) {
+      // terminal-pane hands the queued prompt to pty.create for every
+      // startup-arg provider, so dropping it on resume silently loses a
+      // browser-tab / team / Restart Session prompt delivered to a dormant
+      // session. `--resume=<id>` then `-i <prompt>` is the shape Gemini uses
+      // for the same case (gemini-provider.ts:114-122).
       args.push(`--resume=${opts.cliSessionId}`);
+      if (opts.initialPrompt) args.push('-i', opts.initialPrompt);
     } else if (opts.initialPrompt) {
       args.push('-i', opts.initialPrompt);
     }
@@ -114,6 +131,10 @@ export class CopilotProvider implements CliProvider {
   }
 
   getTranscriptPath(cliSessionId: string, _projectPath: string): string | null {
+    // Non-ids are rejected before the join, not after the existsSync: the
+    // caller only learns "this path exists", which is exactly the oracle a
+    // traversal id is after (see TRANSCRIPT_ID_RE).
+    if (!TRANSCRIPT_ID_RE.test(cliSessionId)) return null;
     const filePath = path.join(os.homedir(), '.copilot', 'session-state', cliSessionId, 'events.jsonl');
     return fs.existsSync(filePath) ? filePath : null;
   }

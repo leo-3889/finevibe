@@ -112,6 +112,7 @@ const CONFLICTING_FLAG_REASONS: Record<string, string> = {
   '--session-dir': "Vibeyard tracks sessions in the profile's default storage; a custom session dir would hide them from history, search and resume.",
   '--no-session': 'Vibeyard needs the session to be persisted to track it; --no-session (ephemeral) is not supported.',
   '--session': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing --session.',
+  '--session-id': 'Vibeyard pins --session-id with the id it tracks the transcript by; a later --session-id makes the CLI write under an id the session watcher never sees, so title, status, archive and resume all stop working.',
   '--resume': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing --resume.',
   '--continue': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing --continue.',
   '-r': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing -r.',
@@ -146,6 +147,9 @@ export function findConflictingLaunchFlags(args: string[]): LaunchFlagConflict[]
  */
 export const UNSUPPORTED_STORAGE_ENV_KEYS: readonly string[] = [
   'PI_CODING_AGENT_SESSION_DIR',
+  // CODEX_HOME relocates both the hooks Vibeyard installs at ~/.codex and the
+  // rollout dir its watcher scans, so the child would silently stop reporting.
+  'CODEX_HOME',
 ];
 
 /** Case-insensitive match of env keys against the unsupported storage selectors. */

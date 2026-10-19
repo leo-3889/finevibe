@@ -264,6 +264,27 @@ describe('getTranscriptPath', () => {
     const out = provider.getTranscriptPath('abc-123', '/tmp/proj', '/mock/home/.vibeyard/profiles/work');
     expect(out).toBe(path.join('/mock/home/.vibeyard/profiles/work', 'projects', '-tmp-proj', 'abc-123.jsonl'));
   });
+
+  it('refuses a session id that is a path, not a file name', () => {
+    // The renderer only learns "this path exists", so a `../` id is a
+    // filesystem-wide existsSync probe (and the resume/export paths echo the
+    // result back). The id gate runs before the join.
+    mockExistsSync.mockReturnValue(true);
+
+    expect(provider.getTranscriptPath('../../.ssh/id_rsa', '/tmp/proj')).toBeNull();
+    expect(provider.getTranscriptPath('.hidden', '/tmp/proj')).toBeNull();
+    expect(provider.getTranscriptPath('a'.repeat(129), '/tmp/proj')).toBeNull();
+    expect(mockExistsSync).not.toHaveBeenCalled();
+  });
+
+  it('accepts the UUID Claude names transcripts with', () => {
+    mockExistsSync.mockReturnValue(true);
+    const uuid = '0f8e2f6a-1e2c-4a44-9b3f-2a1d0c9b8a77';
+
+    expect(provider.getTranscriptPath(uuid, '/tmp/proj')).toBe(
+      path.join('/mock/home', '.claude', 'projects', '-tmp-proj', `${uuid}.jsonl`),
+    );
+  });
 });
 
 describe('parseCostFromOutput', () => {

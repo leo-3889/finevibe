@@ -194,9 +194,9 @@ describe('buildArgs', () => {
     expect(args).toEqual(['-i', 'fix the bug']);
   });
 
-  it('does not pass initialPrompt when resuming', () => {
+  it('passes the queued prompt on the resume branch too (terminal-pane hands it over for every startup-arg provider)', () => {
     const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'fix the bug' });
-    expect(args).toEqual(['--resume=sid-1']);
+    expect(args).toEqual(['--resume=sid-1', '-i', 'fix the bug']);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
@@ -291,5 +291,27 @@ describe('other methods', () => {
     const win = { id: 1 } as any;
     provider.startConfigWatcher(win, '/project');
     expect(mockStartConfigWatcher).toHaveBeenCalledWith(win, '/project', 'copilot');
+  });
+});
+
+describe('getTranscriptPath', () => {
+  const uuid = '0f8e2f6a-1e2c-4a44-9b3f-2a1d0c9b8a77';
+
+  it('resolves the session-state events file for a session id', () => {
+    mockExistsSync.mockReturnValue(true);
+
+    expect(provider.getTranscriptPath(uuid, '/proj'))
+      .toBe(path.join('/mock/home', '.copilot', 'session-state', uuid, 'events.jsonl'));
+  });
+
+  it('refuses a session id that is a path, not a directory name', () => {
+    // The caller sees only "exists"/"missing", which is the oracle a `../` id
+    // is after; the id gate runs before the join, so nothing is probed.
+    mockExistsSync.mockReturnValue(true);
+
+    expect(provider.getTranscriptPath('../../.ssh', '/proj')).toBeNull();
+    expect(provider.getTranscriptPath('.hidden', '/proj')).toBeNull();
+    expect(provider.getTranscriptPath(uuid + '/events', '/proj')).toBeNull();
+    expect(mockExistsSync).not.toHaveBeenCalled();
   });
 });
