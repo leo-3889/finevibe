@@ -1,9 +1,69 @@
-import { ipcMain } from 'electron';
+import { BrowserWindow, dialog, ipcMain } from 'electron';
 import * as mcpClient from './mcp-client';
 
+/** Loopback names for dev MCP servers; URL.parser lowercases the host. */
+const LOCAL_HOSTS: Record<string, true> = { localhost: true, '127.0.0.1': true, '::1': true, '[::1]': true };
+
+/**
+ * SSRF gate for renderer-supplied MCP URLs: the client transports are SSE +
+ * StreamableHTTP (URL over http(s) only), so every other scheme is rejected
+ * outright. Non-loopback http(s) needs an explicit user confirm.
+ * Empty URL = stdio-style config: nothing to gate.
+ */
+export function mcpUrlPolicy(url: string): { ok: boolean; needsConfirm: boolean; reason?: string } {
+  const trimmed = url.trim();
+  if (!trimmed) return { ok: true, needsConfirm: false };
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { ok: false, needsConfirm: false, reason: 'Invalid MCP URL' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, needsConfirm: false, reason: `Unsupported MCP URL scheme "${parsed.protocol}" (http/https only)` };
+  }
+  const host = parsed.hostname;
+  if (host in LOCAL_HOSTS || /^127(\.\d{1,3}){3}$/.test(host) || host.endsWith('.localhost')) {
+    return { ok: true, needsConfirm: false };
+  }
+  return { ok: true, needsConfirm: true };
+}
+
+async function confirmRemoteHost(host: string): Promise<boolean> {
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    title: 'Connect to MCP server?',
+    message: `Connect to ${host}?`,
+    detail: 'Vibeyard will send requests to this host from the main process. Only continue for servers you trust.',
+    buttons: ['Cancel', 'Confirm'],
+    defaultId: 0,
+    cancelId: 0,
+  };
+  const win = BrowserWindow.getFocusedWindow();
+  const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  return response === 1;
+}
+
 export function registerMcpHandlers(): void {
-  ipcMain.handle('mcp:connect', (_event, id: string, url: string) =>
-    mcpClient.connect(id, url));
+  // Errors go back as McpResult.error: the renderer's doConnect renders
+  // result.error and a rejected invoke would leave the pane stuck on
+  // "Connecting...", so the result channel is the surfacing mechanism here.
+  ipcMain.handle('mcp:connect', async (_event, id: string, url: string) => {
+    const policy = mcpUrlPolicy(url);
+    if (!policy.ok) return { success: false, error: policy.reason ?? 'Rejected MCP URL' };
+    if (policy.needsConfirm) {
+      let host = url;
+      try {
+        host = new URL(url.trim()).hostname;
+      } catch {
+        // Policy already parsed it; unreachable. Keep the raw string as label.
+      }
+      if (!(await confirmRemoteHost(host))) {
+        return { success: false, error: `Connection to ${host} cancelled` };
+      }
+    }
+    return mcpClient.connect(id, url);
+  });
 
   ipcMain.handle('mcp:disconnect', (_event, id: string) =>
     mcpClient.disconnect(id));
