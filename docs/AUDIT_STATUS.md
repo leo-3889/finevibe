@@ -4,7 +4,7 @@ This is the current work queue for a local LLM. The work described below under "
 
 ## Status 2026-10-19 (audit remediation, `fix/audit-remediation`)
 
-Merged remediation commits on the branch, newest first: `32af0b4` index and resolve compressed `.jsonl.zst` Codex rollouts; `ffcd283` coalesce persist bursts with a leading-edge throttle; `9b206f9` quote dropped/pasted paths and wire the remote pane menu; `6af0c7a` suppress app shortcuts while typing and inside modals; `2db2e70` reject path syntax in agent file slugs; `e866e4a` pin the interpreter in the Windows status hook. Adjacent landings on the same branch: `7c0d22a` dead exports/IPC shims removal (the 2026-10-18 cleanup, now committed) and `6fb4739` on-demand Ubuntu `.deb` packaging.
+Merged remediation commits on the branch, newest first: `2a27ed9` attribute Codex sessions by rollout cwd, not global spawn order; `5b8cc6a` typed `costUpdate` mocks and a `cliSessionId` round-trip assertion; `c6de6a5` policy-gate MCP connect URLs with a loopback exemption and user confirm; `0d314a2` contracts re-synced with the remediation commits; `57a16f4` targeted suites for the test deserts (board, tab-list, split-layout, modal-shell, file-watcher); `32af0b4` index and resolve compressed `.jsonl.zst` Codex rollouts; `ffcd283` coalesce persist bursts with a leading-edge throttle; `9b206f9` quote dropped/pasted paths and wire the remote pane menu; `6af0c7a` suppress app shortcuts while typing and inside modals; `2db2e70` reject path syntax in agent file slugs; `e866e4a` pin the interpreter in the Windows status hook. Adjacent landings on the same branch: `7c0d22a` dead exports/IPC shims removal (the 2026-10-18 cleanup, now committed) and `6fb4739` on-demand Ubuntu `.deb` packaging.
 
 Fixed this session:
 
@@ -15,15 +15,16 @@ Fixed this session:
 - Dropped/pasted terminal paths shell-quoted, POSIX single-quote / Windows double-quote (`9b206f9`).
 - Renderer persist: leading-edge 200 ms throttle with `beforeunload` flush; main-side store fsync-on-rename unchanged (`ffcd283`).
 - Codex rollouts indexed/resolved as plain `.jsonl` and compressed `.jsonl.zst` (`32af0b4`).
-- Codex session-id fallback watcher: per-cwd rollout `session_meta` attribution replaces the global `history.jsonl` FIFO, so external runs no longer hijack tabs (in the branch worktree; parent-owned commit).
-- MCP connect-URL policy `mcpUrlPolicy`: http/https only, loopback passes, non-loopback http(s) needs user confirm (in the branch worktree; sibling-owned commit).
+- Codex session-id fallback watcher: per-cwd rollout `session_meta` attribution replaces the global `history.jsonl` FIFO, so external runs no longer hijack tabs (`2a27ed9`).
+- MCP connect-URL policy `mcpUrlPolicy`: http/https only, loopback passes, non-loopback http(s) needs user confirm (`c6de6a5`).
+- The terminal context-menu Paste test still pinned the pre-`9b206f9` unquoted path list; it never ran red because its forks worker repeatedly timed out at startup, so the suite reported 166/173 files. Expectation updated to the quoted contract (`docs/ui-conventions.md`).
 
 Still open:
 
 - Launch-dir rule dedup (P2).
 - `extraArgs` quoting (P2).
-- MCP URL policy regression-suite completion; the policy itself is in the branch worktree awaiting its commit.
-- Remaining test-coverage deserts; a concurrent sweep is adding the targeted suites.
+- MCP URL policy regression-suite completion; the policy itself is committed (`c6de6a5`).
+- Remaining test-coverage deserts: the readiness checkers and the keychain path (the board/tab-list/split-layout/modal-shell/file-watcher deserts landed in `57a16f4`).
 
 Contracts re-synced with these commits: [provider contracts](provider-contracts.md), [session lifecycle](session-lifecycle.md), [performance](performance.md), [security boundaries](security-boundaries.md), [UI conventions](ui-conventions.md).
 
@@ -62,7 +63,13 @@ The older A-01–A-13, F-01–F-09, and R-01–R-04 audit items were implemented
 
 ## Last recorded validation
 
+- 2026-10-19 full gate on `fix/audit-remediation`: `npx vitest run --maxWorkers=4` → 173 files / 2,471 passed / 1 skipped (exit 0, 58 s); root `npx tsc -p tsconfig.json --noEmit` 0 errors; renderer `npx tsc -p tsconfig.renderer.json --noEmit` 0 errors; `git diff --check` clean. Unmodified `npm test` on this host exits 1: the default pool times out starting 7 of 173 forks workers, so those files never run — the run reports 166 files green plus 7 unhandled pool errors, which hides real failures (that is how the stale context-menu Paste assertion survived). Capping workers is the reproducible way to run the gate here. No packaged-app runtime verification.
 - Full gate re-passed on 2026-10-13 on the committed tree: `npm test` 170 files / 2,399 passed / 1 skipped; `npm run build`; renderer `tsc --noEmit`; `git diff --check`. (First green run was 2026-10-10: 169 files / 2,391 passed / 1 skipped; added since: `src/renderer/components/sidebar-preferences.test.ts` and the pending-`killPty` cases in `src/main/pty-manager.test.ts`.)
+- 2026-10-18 gate re-passed on `rebuild` after a session was cut off mid-edit (pi-lens killed it). Three closed items, all static/unit-tested — **no packaged-app runtime verification**:
+  - **Profile-scoped MCP config (regression).** The renderer passed a 5th `configDir` argument to `mcp.addServer`/`removeServer`, and `claude-provider.ts` passed `configDir` to `getClaudeConfig`, but `claude-cli.ts` (add/remove/get), `ipc-handlers.ts` (mcp handlers), `preload.ts` and `types.ts` dropped it — so profiled projects wrote/read the default account's `~/.claude.json`. Recovered the configDir-aware `addMcpServer`/`removeMcpServer`/`getClaudeConfig` (from lost commits `1c69afb`/`57a0f8a`), moved `canonicalPath` into `fs-utils.ts`, and wired `configDir` through the IPC handler, preload bridge and renderer type. Fixed 4 `claude-cli.test.ts` failures and the 2 renderer `tsc` `TS2554` arity errors. Contract recorded in [provider contracts](provider-contracts.md).
+  - **Linux launcher asset name.** `bin/vibeyard.js` asked the release API for `-linux-x64`; electron-builder publishes `-linux-amd64`, so every fresh Linux install 404'd. Now maps the arch slug to `amd64`. 2 `npm-launcher.test.ts` failures green.
+  - **`validatePrerequisites` cleanup.** Deleted the dead Claude-only `validatePrerequisites` free export (closes the 2026-10-10 audit "should be reconciled" note) and its test; the live path is the per-provider `provider.validatePrerequisites()`. `checkPythonAvailable` now probes the `python` alias then the `py -3` launcher and repoints the `pythonBin` live binding (`platform.ts` `setPythonBin`) so hook scripts follow a PATH-less python.org install. New `prerequisites.test.ts` (4 cases).
+- 2026-10-18 full gate on the committed tree: `npm test` 170 files / 2,414 passed / 1 skipped; `npm run build`; renderer + main `tsc --noEmit`; `git diff --check` clean.
 - 2026-10-10 diagnostics sweep + fixes: launcher (`bin/vibeyard.js`) now uses `execFileSync` argument arrays (no shell string, so paths with quotes/`$` cannot be reinterpreted) and drops the nested-ternary `APP_PATH`; `main.ts` guards the `mainWindow!` null case; `github-cli.ts` wraps `JSON.parse` and uses `which.length > 0`. `vitest.config.ts` sets `testTimeout: 15_000` — the heavy jsdom file-reader/sidebar suites run 2–3s alone and crossed vitest's 5s default under the 169-file parallel load, failing spuriously. Five watcher/search suites retyped their fs mock handles to the subset they actually implement. Remaining sweep warnings (extensionless relative imports, `console.warn`, `Record<string, unknown>` payloads, test `path.join`) were dispositioned as false-positives/suppressed with per-finding reasons; the CommonJS build and repo console convention make them intentional. Full gate re-passed twice after these edits.
 - Focused cache-stub + transcript suites passed in isolation (39 tests) before the full run.
 - Fresh `omp --print --no-session --no-title` exited 0 after the OMP pi-lens copy was uninstalled. The intermittent workload and packaged UI were not verified.
