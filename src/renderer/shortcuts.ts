@@ -182,6 +182,30 @@ export function eventToAccelerator(e: KeyboardEvent): string | null {
   return parts.join('+');
 }
 
+/**
+ * True while a real text entry owns the keyboard: renames, prompts,
+ * search fields, board cards. The xterm helper textarea is deliberately
+ * NOT a typing target — terminal panes forward keys to the PTY and app
+ * shortcuts (Ctrl+T, Ctrl+W, Ctrl+1-9) must keep working there.
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  if (el.closest?.('.xterm')) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+    || el.isContentEditable === true || el.contentEditable === 'true';
+}
+
+/** True while any modal overlay is visible (shared modal.ts overlay + modal-shell overlays). */
+function isModalOpen(): boolean {
+  const main = document.getElementById('modal-overlay');
+  if (main && !main.classList.contains('hidden')) return true;
+  for (const el of document.querySelectorAll<HTMLElement>('.modal-overlay')) {
+    if (!el.classList.contains('hidden') && el.style.display !== 'none') return true;
+  }
+  return false;
+}
 export class ShortcutManager {
   private shortcuts: ShortcutDef[] = [];
 
@@ -242,17 +266,38 @@ export class ShortcutManager {
     return id in overrides;
   }
 
+  /**
+   * View-level shortcuts stay live while a text field has focus: they are
+   * pure view toggles (zoom, panels, help) and cannot destroy data. The
+   * rest — close-session, tab navigation, quick-open, new-session — are
+   * suppressed while typing (renames, prompts, board cards): Ctrl+W mid
+   * rename used to close the session.
+   */
+  private static readonly FIELD_SAFE = new Set([
+    'zoom-in', 'zoom-out', 'zoom-reset',
+    'toggle-sidebar', 'toggle-inspector', 'toggle-split',
+    'debug-panel', 'git-panel', 'help',
+  ]);
+
   /** Match a keyboard event to a shortcut and execute its handler */
   matchEvent(e: KeyboardEvent): boolean {
     const overrides = appState.preferences.keybindings ?? {};
 
+    const inField = isTypingTarget(e.target);
+    const inModal = isModalOpen();
+
     for (const shortcut of this.shortcuts) {
       const keys = overrides[shortcut.id] ?? shortcut.defaultKeys;
-      if (matchesAccelerator(e, keys) && shortcut.handler) {
-        e.preventDefault();
-        shortcut.handler();
-        return true;
-      }
+      if (!matchesAccelerator(e, keys) || !shortcut.handler) continue;
+      // A modal swallows app navigation: its own inputs are focused and
+      // ESC/Enter are owned by the dialog. Only the always-safe view
+      // toggles and Help pass through.
+      if (inModal && shortcut.id !== 'zoom-in' && shortcut.id !== 'zoom-out'
+          && shortcut.id !== 'zoom-reset' && shortcut.id !== 'help') continue;
+      if (inField && !ShortcutManager.FIELD_SAFE.has(shortcut.id)) continue;
+      e.preventDefault();
+      shortcut.handler();
+      return true;
     }
     return false;
   }
