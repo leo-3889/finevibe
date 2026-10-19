@@ -279,10 +279,44 @@ function prepareSettings(configDir: string = defaultClaudeDir()): { settings: Re
   return { settings, cleaned };
 }
 
+/**
+ * Write settings.json atomically, mirroring store.ts writeStateAtomically:
+ * payload -> sibling .tmp -> fsync -> rename. A plain writeFileSync can die
+ * mid-write (crash, power loss) and leave a truncated settings.json; Claude
+ * Code would then read - and rewrite - a half-written config, silently
+ * losing the user's hooks. fsync before the rename matters: renaming an
+ * unflushed temp file re-creates the same truncation window on crash.
+ */
+function writeSettingsAtomically(settingsPath: string, payload: string): void {
+  // The temp file sits next to the target so the rename stays on one
+  // filesystem (the atomicity guarantee).
+  const tmpFile = settingsPath + '.tmp';
+  const buf = Buffer.from(payload, 'utf-8');
+  const fd = fs.openSync(tmpFile, 'w');
+  try {
+    // fs.writeSync reports how many bytes it wrote and a single call is
+    // allowed to stop short; keep writing from the offset it stopped at.
+    // A descriptor that stops making progress aborts the write, so a
+    // partial payload never reaches the rename.
+    let offset = 0;
+    while (offset < buf.length) {
+      const written = fs.writeSync(fd, buf, offset);
+      if (written <= 0) {
+        throw new Error(`settings write stalled at ${offset}/${buf.length} bytes`);
+      }
+      offset += written;
+    }
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmpFile, settingsPath);
+}
+
 function writeSettings(settings: Record<string, unknown>, configDir: string = defaultClaudeDir()): void {
   const settingsPath = path.join(configDir, 'settings.json');
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  writeSettingsAtomically(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 }
 
 /**

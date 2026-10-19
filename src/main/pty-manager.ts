@@ -31,6 +31,14 @@ const replacedPtys = new WeakSet<pty.IPty>();
 // kill a later re-spawn of the same id.
 const pendingKills = new Set<string>();
 
+// Session ids with a spawnPty in flight: registered at the entry of
+// spawnPty and dropped when that call completes (resolve, early return or
+// throw — the finally in spawnPty owns the delete). killPty records a
+// pendingKill ONLY for ids in this set: a kill addressed to an id nothing
+// is spawning (a session whose PTY already crashed, e.g.) is stale, and
+// remembering it would tear down a future PTY resumed under the same id.
+const spawningInFlight = new Set<string>();
+
 /**
  * Get the full PATH by sourcing the user's login shell.
  * When Electron is launched from macOS Finder/Dock, process.env.PATH
@@ -356,121 +364,131 @@ export async function spawnPty(
   onExit: (exitCode: number, signal?: number, pid?: number) => void,
   configDir?: string
 ): Promise<void> {
-  // Resolve the single effective launch spec (executable, argv, env,
-  // profile identity, storage mode) before ANY side effect — no session
-  // registration, hook install, PTY kill or spawn. Unsupported
-  // profile/storage/session options fail here with an actionable message
-  // instead of desyncing the child from the transcript readers. The
-  // rejection goes through onData + onExit (not a throw) because the
-  // renderer fires pty.create without awaiting; the exit callback tears
-  // down the watcher/sync state registered for this session.
-  let spec: LaunchSpec;
+  // Register the in-flight spawn BEFORE any side effect: the window
+  // between this request and the PTY landing in `ptys` is exactly where a
+  // killPty must leave a pendingKill (see spawningInFlight). The finally
+  // covers every exit — resolve, early return and throw — so an id can
+  // never stay marked in flight after its spawn is gone.
+  spawningInFlight.add(sessionId);
   try {
-    spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir });
-  } catch (err) {
-    // Nothing will spawn for this session; drop any kill that arrived for
-    // it so a later re-spawn of the same id is not killed by a stale flag.
-    pendingKills.delete(sessionId);
-    const message = err instanceof LaunchSpecError ? err.message : `Failed to prepare the launch: ${err}`;
-    onData('\r\n\x1b[31m' + message + '\x1b[0m\r\n');
-    onExit(1);
-    return;
-  }
-
-  if (ptys.has(sessionId)) {
-    replacedPtys.add(ptys.get(sessionId)!.process);
-    killPty(sessionId);
-  }
-
-  registerSession(sessionId);
-
-  const provider = getProvider(providerId);
-
-  // Copilot CLI loads hooks from <cwd>/.github/hooks/*.json, so we must
-  // install the hook file before spawning the binary. Other providers use
-  // global config and are already handled at app boot.
-  if (providerId === 'copilot') {
+    // Resolve the single effective launch spec (executable, argv, env,
+    // profile identity, storage mode) before ANY side effect — no session
+    // registration, hook install, PTY kill or spawn. Unsupported
+    // profile/storage/session options fail here with an actionable message
+    // instead of desyncing the child from the transcript readers. The
+    // rejection goes through onData + onExit (not a throw) because the
+    // renderer fires pty.create without awaiting; the exit callback tears
+    // down the watcher/sync state registered for this session.
+    let spec: LaunchSpec;
     try {
-      await provider.installHooks(null, cwd);
+      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir });
     } catch (err) {
-      console.warn('Failed to install Copilot hooks for project:', cwd, err);
+      // Nothing will spawn for this session; drop any kill that arrived for
+      // it so a later re-spawn of the same id is not killed by a stale flag.
+      pendingKills.delete(sessionId);
+      const message = err instanceof LaunchSpecError ? err.message : `Failed to prepare the launch: ${err}`;
+      onData('\r\n\x1b[31m' + message + '\x1b[0m\r\n');
+      onExit(1);
+      return;
     }
-  }
 
-  // Profile support: a Claude session bound to a profile uses an isolated
-  // config dir, so Vibeyard's hooks + statusLine (boot-installed into ~/.claude)
-  // must also be installed there or cost/activity tracking silently breaks.
-  // Fresh profile dirs have no foreign statusLine, so install directly (the
-  // guarded/consent flow stays bound to the shared ~/.claude). Both calls are
-  // idempotent, mirroring the per-spawn Copilot install above.
-  // Guardrail: on macOS, older Claude Code builds reuse a single keychain entry
-  // ("Claude Code-credentials") for every config dir, so logging into one
-  // profile silently overwrites every other profile's token — the accounts
-  // bleed into each other (anthropics/claude-code#20553). Don't spawn a profile
-  // session when isolation is known-broken; surface why in the pane and exit
-  // rather than running under a config dir whose login isn't actually separate.
-  // ('unknown' — a newer build we can't yet confirm — is allowed, never
-  // falsely blocked.) The reason is written via onData (not thrown) because the
-  // renderer fires pty.create without awaiting, so a throw would be a swallowed
-  // rejection leaving a blank pane.
-  if (providerId === 'claude' && configDir && getKeychainIsolationStatus().status === 'unsupported') {
-    pendingKills.delete(sessionId);
-    onData(
-      '\r\n\x1b[31mClaude profile login isolation is unavailable on this version of Claude Code:\r\n' +
-        'all profiles would share one macOS keychain login, mixing the accounts.\r\n' +
-        'Update Claude Code, then start the profile session again.\x1b[0m\r\n',
-    );
-    onExit(1);
-    return;
-  }
+    if (ptys.has(sessionId)) {
+      replacedPtys.add(ptys.get(sessionId)!.process);
+      killPty(sessionId);
+    }
 
-  if (providerId === 'claude' && configDir) {
+    registerSession(sessionId);
+
+    const provider = getProvider(providerId);
+
+    // Copilot CLI loads hooks from <cwd>/.github/hooks/*.json, so we must
+    // install the hook file before spawning the binary. Other providers use
+    // global config and are already handled at app boot.
+    if (providerId === 'copilot') {
+      try {
+        await provider.installHooks(null, cwd);
+      } catch (err) {
+        console.warn('Failed to install Copilot hooks for project:', cwd, err);
+      }
+    }
+
+    // Profile support: a Claude session bound to a profile uses an isolated
+    // config dir, so Vibeyard's hooks + statusLine (boot-installed into ~/.claude)
+    // must also be installed there or cost/activity tracking silently breaks.
+    // Fresh profile dirs have no foreign statusLine, so install directly (the
+    // guarded/consent flow stays bound to the shared ~/.claude). Both calls are
+    // idempotent, mirroring the per-spawn Copilot install above.
+    // Guardrail: on macOS, older Claude Code builds reuse a single keychain entry
+    // ("Claude Code-credentials") for every config dir, so logging into one
+    // profile silently overwrites every other profile's token — the accounts
+    // bleed into each other (anthropics/claude-code#20553). Don't spawn a profile
+    // session when isolation is known-broken; surface why in the pane and exit
+    // rather than running under a config dir whose login isn't actually separate.
+    // ('unknown' — a newer build we can't yet confirm — is allowed, never
+    // falsely blocked.) The reason is written via onData (not thrown) because the
+    // renderer fires pty.create without awaiting, so a throw would be a swallowed
+    // rejection leaving a blank pane.
+    if (providerId === 'claude' && configDir && getKeychainIsolationStatus().status === 'unsupported') {
+      pendingKills.delete(sessionId);
+      onData(
+        '\r\n\x1b[31mClaude profile login isolation is unavailable on this version of Claude Code:\r\n' +
+          'all profiles would share one macOS keychain login, mixing the accounts.\r\n' +
+          'Update Claude Code, then start the profile session again.\x1b[0m\r\n',
+      );
+      onExit(1);
+      return;
+    }
+
+    if (providerId === 'claude' && configDir) {
+      try {
+        installHooksOnly(configDir);
+        installStatusLine(configDir);
+      } catch (err) {
+        console.warn('Failed to install hooks into profile config dir:', configDir, err);
+      }
+    }
+
+    const { shell, args: spawnArgs } = resolveWindowsShell(spec.executable, spec.argv);
+
+    let ptyProcess: pty.IPty;
     try {
-      installHooksOnly(configDir);
-      installStatusLine(configDir);
+      ptyProcess = pty.spawn(shell, spawnArgs, {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd,
+        env: spec.env,
+      });
     } catch (err) {
-      console.warn('Failed to install hooks into profile config dir:', configDir, err);
+      // No PTY was registered: a kill that arrived during the awaits above
+      // has nothing to address and must not leak to a later re-spawn.
+      pendingKills.delete(sessionId);
+      throw err;
     }
-  }
 
-  const { shell, args: spawnArgs } = resolveWindowsShell(spec.executable, spec.argv);
-
-  let ptyProcess: pty.IPty;
-  try {
-    ptyProcess = pty.spawn(shell, spawnArgs, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd,
-      env: spec.env,
+    ptyProcess.onData((data) => onData(data));
+    ptyProcess.onExit(({ exitCode, signal }) => {
+      if (replacedPtys.delete(ptyProcess)) return;
+      // Only remove from map if this PTY is still the active one for this session
+      const current = ptys.get(sessionId);
+      if (current?.process === ptyProcess) {
+        ptys.delete(sessionId);
+      }
+      onExit(exitCode, signal, ptyProcess.pid);
     });
-  } catch (err) {
-    // No PTY was registered: a kill that arrived during the awaits above
-    // has nothing to address and must not leak to a later re-spawn.
-    pendingKills.delete(sessionId);
-    throw err;
-  }
 
-  ptyProcess.onData((data) => onData(data));
-  ptyProcess.onExit(({ exitCode, signal }) => {
-    if (replacedPtys.delete(ptyProcess)) return;
-    // Only remove from map if this PTY is still the active one for this session
-    const current = ptys.get(sessionId);
-    if (current?.process === ptyProcess) {
-      ptys.delete(sessionId);
+    ptys.set(sessionId, { process: ptyProcess, sessionId });
+
+    // A killPty that arrived during the awaits above addressed this spawn —
+    // honour it now instead of leaving an orphaned CLI with no renderer
+    // session. No replacedPtys suppression: the renderer has already dropped
+    // the session, so the normal onExit teardown is the right cleanup path
+    // (a pty:exit for an unknown session is a no-op in the renderer).
+    if (pendingKills.delete(sessionId)) {
+      killPty(sessionId);
     }
-    onExit(exitCode, signal, ptyProcess.pid);
-  });
-
-  ptys.set(sessionId, { process: ptyProcess, sessionId });
-
-  // A killPty that arrived during the awaits above addressed this spawn —
-  // honour it now instead of leaving an orphaned CLI with no renderer
-  // session. No replacedPtys suppression: the renderer has already dropped
-  // the session, so the normal onExit teardown is the right cleanup path
-  // (a pty:exit for an unknown session is a no-op in the renderer).
-  if (pendingKills.delete(sessionId)) {
-    killPty(sessionId);
+  } finally {
+    spawningInFlight.delete(sessionId);
   }
 }
 
@@ -535,6 +553,11 @@ export function resizePty(sessionId: string, cols: number, rows: number): void {
 export function killPty(sessionId: string): boolean {
   const instance = ptys.get(sessionId);
   if (!instance) {
+    // Only a spawn that is genuinely in flight can claim a pending kill.
+    // For any other unknown id — a session whose PTY already crashed, e.g.
+    // — the kill is stale: the PTY it addressed is gone, and remembering
+    // the flag would tear down the next PTY resumed under the same id.
+    if (!spawningInFlight.has(sessionId)) return false;
     // spawnPty may still be awaiting before the PTY lands in `ptys`;
     // remember the kill so the pending spawn tears itself down on set.
     pendingKills.add(sessionId);

@@ -582,13 +582,13 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       const win = createMockWin();
       registerSession('s1');
 
-      // First poll seeds mtimes
       vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
       vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1000 } as any);
 
       startWatching(win);
 
-      // Advance to trigger first poll — seeds mtimes, no handleFileChange
+      // First poll processes the file, but readFileSync is not mocked to
+      // valid JSON yet, so the read fails and nothing reaches the window.
       await vi.advanceTimersByTimeAsync(2000);
       expect(mockSend).not.toHaveBeenCalled();
 
@@ -615,6 +615,28 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       // Same mtime — no change
       await vi.advanceTimersByTimeAsync(2000);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('processes a file that appears between polls', async () => {
+      const win = createMockWin();
+      registerSession('s1');
+
+      // Seed an empty directory, then a file lands between two polls. The
+      // discovering poll has prev === undefined for it: recording the mtime
+      // alone swallowed the event — the file is never re-read, so the
+      // status/cost/sessionid update was lost until the next change.
+      vi.mocked(fs.promises.readdir).mockResolvedValue([] as any);
+      startWatching(win);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(mockSend).not.toHaveBeenCalled();
+
+      vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
+      vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1500 } as any);
+      const costData = { cost: { total: 0.25 }, context_window: {} };
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
+
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
     });
 
     it('stops polling on cleanupAll', () => {

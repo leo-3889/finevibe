@@ -6,6 +6,14 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
+  // writeSettings writes atomically: open/write/fsync/close on a sibling
+  // .tmp, then rename onto the target. writeSync returns the full
+  // remaining length so the write loop finishes in one step.
+  openSync: vi.fn(() => 7),
+  writeSync: vi.fn((_fd: number, payload: Uint8Array, offset?: number) => payload.length - (offset ?? 0)),
+  fsyncSync: vi.fn(),
+  closeSync: vi.fn(),
+  renameSync: vi.fn(),
   // The MCP write allowlist compares canonical paths.
   realpathSync: vi.fn((p: string) => p),
 }));
@@ -44,6 +52,18 @@ const mockReadFileSync = vi.mocked(fs.readFileSync);
 const mockReaddirSync = vi.mocked(fs.readdirSync);
 const mockWriteFileSync = vi.mocked(fs.writeFileSync);
 const mockMkdirSync = vi.mocked(fs.mkdirSync);
+const mockOpenSync = vi.mocked(fs.openSync);
+const mockWriteSync = vi.mocked(fs.writeSync);
+const mockFsyncSync = vi.mocked(fs.fsyncSync);
+const mockCloseSync = vi.mocked(fs.closeSync);
+const mockRenameSync = vi.mocked(fs.renameSync);
+
+// writeSettings() lands payloads through openSync/writeSync/renameSync, not
+// writeFileSync. Settings payloads in write order — each settings.json write
+// fills its .tmp with exactly one writeSync (the mock writes everything).
+function settingsWrites(): string[] {
+  return mockWriteSync.mock.calls.map((c) => String(c[1]));
+}
 
 // Normalize paths for cross-platform comparison
 const n = (p: string) => p.replace(/\\/g, '/');
@@ -374,25 +394,56 @@ describe('install into a profile config dir', () => {
   it('installHooksOnly writes to the given config dir, not ~/.claude', () => {
     installHooksOnly(profileDir);
     expect(mockMkdirSync).toHaveBeenCalledWith(profileDir, { recursive: true });
-    expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
-    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe(n(path.join(profileDir, 'settings.json')));
+    expect(mockRenameSync).toHaveBeenCalledTimes(1);
+    expect(n(String(mockRenameSync.mock.calls[0][1]))).toBe(n(path.join(profileDir, 'settings.json')));
     // Default ~/.claude/settings.json must not be touched.
-    const touchedDefault = mockWriteFileSync.mock.calls.some(
-      (c) => n(String(c[0])) === '/mock/home/.claude/settings.json',
+    const touchedDefault = mockRenameSync.mock.calls.some(
+      (c) => n(String(c[1])) === '/mock/home/.claude/settings.json',
     );
     expect(touchedDefault).toBe(false);
   });
 
   it('installStatusLine writes to the given config dir', () => {
     installStatusLine(profileDir);
-    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe(n(path.join(profileDir, 'settings.json')));
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    expect(n(String(mockRenameSync.mock.calls[0][1]))).toBe(n(path.join(profileDir, 'settings.json')));
+    const written = JSON.parse(settingsWrites()[0]);
     expect(written.statusLine.type).toBe('command');
   });
 
   it('defaults to ~/.claude when no config dir is given', () => {
     installHooksOnly();
-    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe('/mock/home/.claude/settings.json');
+    expect(n(String(mockRenameSync.mock.calls[0][1]))).toBe('/mock/home/.claude/settings.json');
+  });
+});
+
+describe('writeSettings atomic write', () => {
+  it('writes settings.json to a .tmp, fsyncs, then renames over the target', () => {
+    installHooksOnly();
+
+    const tmpPath = path.join('/mock/home', '.claude', 'settings.json.tmp');
+    const targetPath = path.join('/mock/home', '.claude', 'settings.json');
+    expect(mockOpenSync).toHaveBeenCalledWith(tmpPath, 'w');
+    expect(mockRenameSync).toHaveBeenCalledWith(tmpPath, targetPath);
+    // No direct writeFileSync against settings.json — the payload must go
+    // through the temp file, never the live path.
+    const direct = mockWriteFileSync.mock.calls.some(
+      (c) => n(String(c[0])) === '/mock/home/.claude/settings.json',
+    );
+    expect(direct).toBe(false);
+    // Ordering: open < write < fsync < close < rename. fsync must land
+    // before the rename (a crash between rename and flush used to leave a
+    // truncated settings.json), and the fd must not leak past the rename.
+    const openOrder = mockOpenSync.mock.invocationCallOrder[0];
+    const writeOrder = mockWriteSync.mock.invocationCallOrder[0];
+    const fsyncOrder = mockFsyncSync.mock.invocationCallOrder[0];
+    const closeOrder = mockCloseSync.mock.invocationCallOrder[0];
+    const renameOrder = mockRenameSync.mock.invocationCallOrder[0];
+    expect(openOrder).toBeLessThan(writeOrder);
+    expect(writeOrder).toBeLessThan(fsyncOrder);
+    expect(fsyncOrder).toBeLessThan(closeOrder);
+    expect(closeOrder).toBeLessThan(renameOrder);
+    // The payload that lands on disk is the settings JSON.
+    expect(JSON.parse(settingsWrites()[0]).hooks).toBeDefined();
   });
 });
 
@@ -422,10 +473,10 @@ describe('installHooks', () => {
 
     expect(mockMkdirSync).toHaveBeenCalledWith(path.join('/mock/home', '.claude'), { recursive: true });
     // installHooks calls installHooksOnly (write 1) + installStatusLine (write 2)
-    expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
+    expect(mockWriteSync).toHaveBeenCalledTimes(2);
 
     // First write contains hooks
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     expect(written.hooks).toBeDefined();
     expect(written.hooks.UserPromptSubmit).toBeDefined();
     expect(written.hooks.Stop).toBeDefined();
@@ -433,7 +484,7 @@ describe('installHooks', () => {
     expect(written.hooks.SessionStart).toBeDefined();
 
     // Second write adds statusLine
-    const withStatusLine = JSON.parse(String(mockWriteFileSync.mock.calls[1][1]));
+    const withStatusLine = JSON.parse(settingsWrites()[1]);
     expect(withStatusLine.statusLine).toBeDefined();
     expect(withStatusLine.statusLine.type).toBe('command');
   });
@@ -455,7 +506,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     const promptHooks = written.hooks.UserPromptSubmit;
     // Should have the existing user hook matcher + the new vibeyard matcher
     expect(promptHooks.length).toBe(2);
@@ -482,7 +533,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     // The old vibeyard hook should be replaced, not duplicated
     const stopHooks = written.hooks.Stop;
     const vibeyardHookCount = stopHooks.reduce((count: number, m: { hooks: Array<{ command: string }> }) =>
@@ -497,7 +548,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     const hookEvents = Object.keys(written.hooks);
 
     const coreEvents = [
@@ -553,7 +604,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     const stopCommands = written.hooks.Stop
       .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks)
       .map((h: { command: string }) => h.command);
@@ -571,7 +622,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     const stopCommands = written.hooks.Stop
       .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks)
       .map((h: { command: string }) => h.command);
@@ -611,7 +662,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     const commandsFor = (event: string) => hookCommandsFor(written, event);
 
     expect(commandsFor('PostToolUseFailure').some((c: string) => c.includes('.toolfailure'))).toBe(true);
@@ -628,7 +679,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const hookEvents = Object.keys(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).hooks);
+    const hookEvents = Object.keys(JSON.parse(settingsWrites()[0]).hooks);
     expect(hookEvents).toContain('PermissionDenied');
     expect(hookEvents).not.toContain('PostToolUseFailure');
   });
@@ -638,7 +689,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     const timeoutsFor = (event: string) => hookHandlersFor(written, event).map((h) => h.timeout);
 
     expect(timeoutsFor('SessionEnd')).toEqual([5]);
@@ -703,7 +754,7 @@ describe('installHooks', () => {
 
     installHooks();
 
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(settingsWrites()[0]);
     expect(Object.keys(written.hooks)).not.toContain('WorktreeCreate');
 
     const installed = vi.mocked(installEventScript).mock.calls.map(([name]) => name);

@@ -342,11 +342,13 @@ async function pollForChanges(win: BrowserWindow): Promise<void> {
         const prev = lastMtimes.get(filename);
         // `!==`, not `>`: `.name` is deleted and rewritten on /clear, and a
         // recreated file can carry a coarser, non-increasing timestamp.
+        // `prev === undefined` means the file appeared between polls (or the
+        // poll loop just started) — process it like any other change; a file
+        // created and last-written inside one interval would otherwise be
+        // recorded and never delivered. The 2s poll cadence is the debounce.
         if (prev !== mtime) {
           lastMtimes.set(filename, mtime);
-          if (prev !== undefined) {
-            handleFileChange(win, filename);
-          }
+          handleFileChange(win, filename);
         }
       } catch {
         // File may have been deleted between readdir and stat

@@ -43,7 +43,7 @@ vi.mock('./providers/nvm', () => ({
 import * as fs from 'fs';
 import * as child_process from 'child_process';
 import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, LaunchSpecError } from './pty-manager';
-import { initProviders } from './providers/registry';
+import { getProvider, initProviders } from './providers/registry';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -536,15 +536,54 @@ describe('killPty', () => {
   });
 });
 
+describe('stale kills (no spawn in flight)', () => {
+  it('does not kill a resumed PTY when the kill arrives after the old PTY exited', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(proc);
+    await spawnPty('resumed', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    proc._emitExit(1); // crash: the PTY is gone from the registry
+
+    // A late kill for the crashed session: nothing is spawning for this id,
+    // so the kill addresses a PTY that no longer exists. Remembering it
+    // used to tear down the next PTY resumed under the same id.
+    expect(killPty('resumed')).toBe(false);
+    expect(mockKill).not.toHaveBeenCalled();
+
+    const resumed = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(resumed);
+    await spawnPty('resumed', '/project', 'cli-1', true, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    expect(mockKill).not.toHaveBeenCalled();
+    mockWrite.mockClear();
+    writePty('resumed', 'input');
+    expect(mockWrite).toHaveBeenCalledWith('input');
+  });
+
+  it('ignores a kill for an id that was never spawned, so a later spawn survives', async () => {
+    expect(killPty('never-spawned')).toBe(false);
+
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(proc);
+    await spawnPty('never-spawned', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    expect(mockKill).not.toHaveBeenCalled();
+    mockWrite.mockClear();
+    writePty('never-spawned', 'input');
+    expect(mockWrite).toHaveBeenCalledWith('input');
+  });
+});
+
 describe('killPty arriving while spawnPty is still awaiting', () => {
   it('kills the PTY the moment it registers instead of orphaning the CLI', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    // The renderer drops the session before the PTY exists, so the kill finds
-    // no registry entry and must be remembered for the pending spawn.
-    expect(killPty('pending-kill')).toBe(false);
-    await spawnPty('pending-kill', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    // The renderer drops the session while spawnPty is awaiting the Copilot
+    // hook install — the kill lands inside the in-flight window, so it is
+    // remembered and the new PTY is torn down as soon as it registers.
+    const copilot = getProvider('copilot');
+    vi.spyOn(copilot, 'installHooks').mockImplementation(async () => {
+      expect(killPty('pending-kill')).toBe(false);
+    });
+    await spawnPty('pending-kill', '/project', null, false, '', 'copilot', undefined, undefined, '', vi.fn(), vi.fn());
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     expect(mockKill).toHaveBeenCalledTimes(1);
@@ -556,19 +595,30 @@ describe('killPty arriving while spawnPty is still awaiting', () => {
   });
 
   it('drops the pending kill when the attempt never spawns, so a retry survives', async () => {
-    const proc = createMockPtyProcess();
-    mockSpawn.mockReturnValue(proc);
-    const firstExit = vi.fn();
+    // The kill lands inside the in-flight window, then pty.spawn fails:
+    // there is nothing to kill, and the flag must not leak to the retry.
+    const copilot = getProvider('copilot');
+    let killedOnce = false;
+    vi.spyOn(copilot, 'installHooks').mockImplementation(async () => {
+      if (!killedOnce) {
+        killedOnce = true;
+        expect(killPty('retry-after-failure')).toBe(false);
+      }
+    });
+    mockSpawn.mockImplementationOnce(() => {
+      throw new Error('spawn failed');
+    });
 
-    expect(killPty('retry-after-failure')).toBe(false);
-    await spawnPty('retry-after-failure', '/project', null, false, '--no-session', 'omp', undefined, undefined, '', vi.fn(), firstExit);
-    expect(mockSpawn).not.toHaveBeenCalled();
-    expect(firstExit).toHaveBeenCalledWith(1);
+    await expect(
+      spawnPty('retry-after-failure', '/project', null, false, '', 'copilot', undefined, undefined, '', vi.fn(), vi.fn()),
+    ).rejects.toThrow('spawn failed');
 
-    // The user fixes the arguments and re-spawns the same session id: the kill
+    // The user fixes the problem and re-spawns the same session id: the kill
     // that belonged to the failed attempt must not tear down the new CLI.
-    await spawnPty('retry-after-failure', '/project', null, false, '', 'omp', undefined, undefined, '', vi.fn(), vi.fn());
-    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(proc);
+    await spawnPty('retry-after-failure', '/project', null, false, '', 'copilot', undefined, undefined, '', vi.fn(), vi.fn());
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
     expect(mockKill).not.toHaveBeenCalled();
     mockWrite.mockClear();
     writePty('retry-after-failure', 'input');

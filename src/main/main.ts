@@ -18,6 +18,28 @@ import { isHttpUrl } from '../shared/url';
 
 let mainWindow: BrowserWindow | null = null;
 
+// Single-instance gate. A second launch must not start a second main
+// process: two mains would race for the same state.json, the same PTY
+// sessions and the same STATUS_DIR status files. The loser quits
+// immediately; the winner focuses its existing window when a relaunch
+// happens, so launching again behaves like "focus Vibeyard". The gate
+// sits at module scope — requestSingleInstanceLock() must run
+// synchronously at startup, before app.whenReady resolves. (Gate is
+// smoke-tested in main-single-instance.test.ts via mocked electron.)
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const win = mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow
+      : BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 function requestConfirmClose(): void {
   const win = BrowserWindow.getAllWindows()[0];
   if (win && !win.isDestroyed()) {
