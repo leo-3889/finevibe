@@ -5,6 +5,7 @@ import * as os from 'os';
 import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { getCopilotConfig, AGENT_EXT } from '../copilot-config';
@@ -60,7 +61,7 @@ export class CopilotProvider implements CliProvider {
       args.push('-i', opts.initialPrompt);
     }
     if (opts.extraArgs) {
-      args.push(...opts.extraArgs.split(/\s+/).filter(Boolean));
+      args.push(...tokenizeArgs(opts.extraArgs));
     }
     return args;
   }

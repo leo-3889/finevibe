@@ -209,6 +209,16 @@ describe('buildArgs', () => {
     expect(args).toEqual(['--resume=sid-1', '--model', 'gpt-5.2']);
   });
 
+  it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    expect(args).toEqual(['--model', 'my model']);
+  });
+
+  it('preserves empty quoted extra args', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    expect(args).toEqual(['--flag', '']);
+  });
+
   it('does not emit a system-prompt flag (Copilot CLI has none; team chat is gated off this provider)', () => {
     const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).not.toContain('--system-prompt');

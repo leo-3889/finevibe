@@ -206,6 +206,16 @@ describe('buildArgs', () => {
     expect(args).toEqual(['resume', 'sid-1', '--model', 'gpt-4o']);
   });
 
+  it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    expect(args).toEqual(['--model', 'my model']);
+  });
+
+  it('preserves empty quoted extra args', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    expect(args).toEqual(['--flag', '']);
+  });
+
   it('passes systemPrompt via -c developer_instructions config override', () => {
     const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).toEqual(['-c', 'developer_instructions=You are the CMO.']);

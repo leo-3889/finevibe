@@ -190,6 +190,16 @@ describe('buildArgs', () => {
     expect(args).toEqual(['-r', 'sid-1', '--verbose']);
   });
 
+  it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    expect(args).toEqual(['--model', 'my model']);
+  });
+
+  it('preserves empty quoted extra args', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    expect(args).toEqual(['--flag', '']);
+  });
+
   it('passes initialPrompt as positional arg', () => {
     const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
     expect(args).toEqual(['fix the linter']);

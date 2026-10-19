@@ -190,6 +190,16 @@ describe('buildArgs', () => {
     expect(args).toEqual(['-r', 'sid-1', '--model', 'gemini-2.5-flash']);
   });
 
+  it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    expect(args).toEqual(['--model', 'my model']);
+  });
+
+  it('preserves empty quoted extra args', () => {
+    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    expect(args).toEqual(['--flag', '']);
+  });
+
   it('appends -i flag when initialPrompt is provided', () => {
     const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'Fix the hooks config' });
     expect(args).toEqual(['-i', 'Fix the hooks config']);

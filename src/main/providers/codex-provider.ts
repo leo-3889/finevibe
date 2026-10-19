@@ -5,6 +5,7 @@ import * as zlib from 'zlib';
 import * as os from 'os';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { getCodexConfig } from '../codex-config';
@@ -69,7 +70,7 @@ export class CodexProvider implements CliProvider {
       args.push(opts.initialPrompt);
     }
     if (opts.extraArgs) {
-      args.push(...opts.extraArgs.split(/\s+/).filter(Boolean));
+      args.push(...tokenizeArgs(opts.extraArgs));
     }
     return args;
   }
