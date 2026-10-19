@@ -8,12 +8,14 @@ import { createAppMenu } from './menu';
 import { restartAndResync } from './hook-status';
 import { initProviders, getAllProviders } from './providers/registry';
 import { initAutoUpdater } from './auto-updater';
+import { ensureAgentmemoryRunning } from './agentmemory-manager';
 import { stopGitWatcher } from './git-watcher';
 import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
 import { isMac, isWin } from './platform';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
+import { pinWebviewGuest } from './webview-guest-pin';
 import { isHttpUrl } from '../shared/url';
 
 let mainWindow: BrowserWindow | null = null;
@@ -214,6 +216,18 @@ app.whenReady().then(async () => {
   }
 
   initAutoUpdater();
+
+  // Model A: opportunistically ensure the shared agentmemory engine is running
+  // before any agent session spawns, so its first MCP connect hits a live
+  // daemon. Fire-and-forget: a cold boot (engine self-install) must never block
+  // startup. The daemon is shared by all agent CLIs, so it is intentionally NOT
+  // stopped on quit (see before-quit) — that would sever memory outside Vibeyard.
+  if (loadState().preferences.agentmemoryAutoStart !== false) {
+    void ensureAgentmemoryRunning().then(
+      (s) => console.log(`[agentmemory] ${s.running ? `running${s.serviceVersion ? ` v${s.serviceVersion}` : ''}` : 'not running'}`),
+      (err: unknown) => console.warn('[agentmemory] ensure failed:', (err as Error).message),
+    );
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

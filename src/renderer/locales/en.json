@@ -568,6 +568,15 @@
     "debugModeLabel": "Debug Mode",
     "versionLoaded": "Version: {ver}"
   },
+  "agentmemory": {
+    "autoStart": "Start agent memory engine on launch",
+    "probing": "Checking…",
+    "running": "Running",
+    "stopped": "Not running",
+    "startButton": "Start Engine",
+    "starting": "Starting…",
+    "openConsole": "Open Console"
+  },
   "preferencesNav": {
     "browser": "Browser",
     "shortcuts": "Shortcuts",
@@ -576,7 +585,8 @@
     "help": "Help",
     "about": "About",
     "general": "General",
-    "appearance": "Appearance"
+    "appearance": "Appearance",
+    "agentmemory": "Agent Memory"
   },
   "session": {
     "crashedTitle": "Session ended unexpectedly",

@@ -1,12 +1,11 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
 // local CommonJS files — only electron, events, timers and url.
 const ZOOM_MIN = 0.75;
 const ZOOM_MAX = 2.0;
-
 export type { CostData } from '../shared/types';
 
 export interface VibeyardApi {
@@ -108,6 +107,11 @@ export interface VibeyardApi {
     onQuitting(callback: () => void): () => void;
     onConfirmClose(callback: () => void): () => void;
     closeConfirmed(): void;
+  };
+
+  agentmemory: {
+    status(): Promise<AgentmemoryStatus>;
+    start(): Promise<AgentmemoryStatus>;
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
@@ -304,6 +308,10 @@ const api: VibeyardApi = {
     onQuitting: (cb: () => void) => onChannel('app:quitting', cb),
     onConfirmClose: (cb: () => void) => onChannel('app:confirmClose', cb),
     closeConfirmed: () => { ipcRenderer.send('app:closeConfirmed'); },
+  },
+  agentmemory: {
+    status: () => ipcRenderer.invoke('agentmemory:status'),
+    start: () => ipcRenderer.invoke('agentmemory:start'),
   },
   browser: {
     saveScreenshot: (sessionId: string, dataUrl: string) =>

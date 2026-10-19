@@ -18,6 +18,7 @@ import { startGitWatcher, notifyGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
+import { probeAgentmemory, ensureAgentmemoryRunning } from './agentmemory-manager';
 import { createAppMenu } from './menu';
 import { getProvider, getProviderMeta, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
@@ -1281,6 +1282,9 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('update:checkNow', () => checkForUpdates());
   ipcMain.handle('update:install', () => quitAndInstall());
+
+  ipcMain.handle('agentmemory:status', () => probeAgentmemory());
+  ipcMain.handle('agentmemory:start', () => ensureAgentmemoryRunning());
 
   ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude') => {
     try {
