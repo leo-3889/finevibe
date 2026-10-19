@@ -38,6 +38,12 @@ describe('serializeForSave', () => {
     expect(s.pendingSystemPrompt).toBeUndefined();
   });
 
+  it('preserves cliSessionId through a serialize → hydrate round trip (resume depends on it)', () => {
+    const out = serializeForSave(baseState({ cliSessionId: 'cli-42' }));
+    hydrateLoadedState(out, {} as Preferences);
+    expect(out.projects[0].sessions[0].cliSessionId).toBe('cli-42');
+  });
+
   it('passes the top-level profiles array through unchanged', () => {
     const state = baseState({});
     state.profiles = [{ id: 'work', name: 'Work', providerId: 'claude', configDir: '/cfg/work', managed: true, createdAt: 0 }];

@@ -34,7 +34,7 @@ vi.mock('../provider-availability.js', () => ({
 
 import { appState, _resetForTesting } from '../state';
 import { resolveProfile, resolveProjectFilePath } from './specialized-sessions.js';
-import type { Profile, ProjectRecord } from '../../shared/types.js';
+import type { BoardData, BoardTask, Profile, ProjectRecord } from '../../shared/types.js';
 import { getCost } from '../session-cost.js';
 const mockGetCost = vi.mocked(getCost);
 
@@ -297,8 +297,9 @@ describe('removeProfile reference cleanup', () => {
     appState.setProviderDefaultProfile('claude', profile.id);
     const session = appState.addSession(project.id, 'S', undefined, 'claude', profile.id)!;
     project.sessionHistory = [{ id: 'a', name: 'old', providerId: 'claude', cliSessionId: 'c', createdAt: '0', closedAt: '0', profileId: profile.id, cost: null }];
-    project.board = project.board ?? ({ tasks: [], columns: [] } as any);
-    const task = { id: 't1', title: 'T', prompt: 'p', columnId: 'col-1', order: 0, profileId: profile.id, createdAt: 0, updatedAt: 0 } as any;
+    const board: BoardData = project.board ?? { tasks: [], columns: [] };
+    project.board = board;
+    const task: BoardTask = { id: 't1', title: 'T', prompt: 'p', columnId: 'col-1', order: 0, profileId: profile.id, createdAt: 0, updatedAt: 0 };
     project.board.tasks.push(task);
 
     appState.removeProfile(profile.id);
