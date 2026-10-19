@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { countFileLines, getTrackedFiles } from './utils';
+import type { ReadinessCheck } from '../../shared/types';
+import { countFileLines, getTrackedFiles, computeCategoryScore } from './utils';
 
 vi.mock('child_process');
 
@@ -77,5 +78,34 @@ describe('getTrackedFiles', () => {
     vi.mocked(execSync).mockImplementation(() => { throw new Error('not a git repository'); });
 
     expect(getTrackedFiles('/repo')).toEqual([]);
+  });
+});
+
+/** Minimal scored row; tests override only the fields computeCategoryScore reads. */
+function check(over: Partial<ReadinessCheck>): ReadinessCheck {
+  return { id: 'c', name: 'c', status: 'pass', description: '', score: 0, maxScore: 100, ...over };
+}
+
+describe('computeCategoryScore', () => {
+  it('returns 0 for an empty category', () => {
+    expect(computeCategoryScore([])).toBe(0);
+  });
+
+  it('averages weighted scores and rounds to the nearest integer', () => {
+    expect(computeCategoryScore([check({ score: 1, maxScore: 3 })])).toBe(33);
+    expect(computeCategoryScore([check({ score: 2, maxScore: 3 })])).toBe(67);
+    expect(computeCategoryScore([check({ score: 100 }), check({ score: 80 })])).toBe(90);
+  });
+
+  it('excludes informational rows from numerator and denominator', () => {
+    // A failing informational row must not drag a fully passing category down:
+    // if it were counted, (100 + 0) / (100 + 100) would score 50.
+    const checks = [check({ score: 100 }), check({ score: 0, informational: true })];
+    expect(computeCategoryScore(checks)).toBe(100);
+  });
+
+  it('returns 0 when every row is informational, not NaN', () => {
+    // Guarding the divide-by-zero the analyzer would surface as a NaN category score.
+    expect(computeCategoryScore([check({ score: 100, informational: true })])).toBe(0);
   });
 });
