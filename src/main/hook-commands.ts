@@ -1,8 +1,9 @@
 /**
  * Platform-aware hook command generators.
  *
- * Hook commands always invoke pre-installed Python scripts in STATUS_DIR
- * rather than inlining Python source into `sh -c '...'`. Inlining was fragile
+ * Hook commands always invoke pre-installed Python scripts in SCRIPT_DIR
+ * (`~/.vibeyard/run`, see hook-status.ts) rather than inlining Python source
+ * into `sh -c '...'`. Inlining was fragile
  * because Python string literals containing single quotes (e.g. `r'${DIR}'`)
  * terminated the outer shell single-quoted string, producing broken hooks
  * that exited non-zero with no stderr.
@@ -17,10 +18,12 @@ import { STATUS_DIR, SCRIPT_DIR } from './hook-status';
 import { isWin, pythonBin as PY } from './platform';
 import { STOP_INFLIGHT_TRUST_MS } from '../shared/constants';
 
-// Python helper scripts are written to STATUS_DIR via installEventScript()
-// and cleaned up on app exit. Shared scripts are installed once via
-// installHookScripts(); provider-specific event scripts are installed per
-// session.
+// Python helper scripts are written to SCRIPT_DIR by installEventScript() and
+// are deliberately kept on exit (hook-status.ts cleanup: deleting them races
+// with CLI processes that outlive the app, and they are reinstalled on
+// launch). Shared scripts are installed once via installHookScripts();
+// provider-specific event scripts are installed per session. Status/event
+// DATA files, by contrast, live in STATUS_DIR and are cleaned up.
 
 let scriptsInstalled = false;
 
@@ -38,7 +41,7 @@ let scriptsInstalled = false;
 export const STOP_STALE_MS = STOP_INFLIGHT_TRUST_MS;
 
 /**
- * Ensure the shared Python helper scripts exist in STATUS_DIR.
+ * Ensure the shared Python helper scripts exist in SCRIPT_DIR.
  */
 export function installHookScripts(): void {
   if (scriptsInstalled) return;
@@ -191,9 +194,22 @@ export function statusCmd(
     // Pinned interpreter, like every other generator: bare `python` is the
     // Store stub on many machines, and on `py -3`-only boxes it fails —
     // silently killing every event:status hook (tabs never show working).
+    // NOTE: PowerShell's Set-Content in status_writer.py is truncate-then-write
+    // like the old POSIX branch, and has no cheap atomic rename from a shell
+    // one-liner; the Python writer is left as-is because NTFS mtime is 100 ns,
+    // far below the 2 s poll cadence, so the lost-update window below is a
+    // POSIX (coarse-mtime tmpfs/HFS+) hazard.
     return `${PY} "${py}" "${event}" "${status}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
   }
-  return `sh -c 'mkdir -p ${STATUS_DIR} && echo ${event}:${status} > ${STATUS_DIR}/$${sessionIdVar}.status ${hookMarker}'`;
+  // Write to a temp name, then rename into place. `>` truncates the target
+  // before writing, and on a coarse-mtime filesystem (1 s tmpfs, HFS+) the
+  // truncate and the final write share one mtime tick: hook-status.ts re-reads
+  // a .status file only when its mtime CHANGES and validates the content
+  // against a 4-value allowlist, so a reader that sampled the file mid-write
+  // records the truncate's mtime, sees the empty/partial content rejected, and
+  // never re-reads the completed value — the transition is dropped forever.
+  // `mv` within one directory is atomic and stamps the final mtime.
+  return `sh -c 'mkdir -p ${STATUS_DIR} && echo ${event}:${status} > ${STATUS_DIR}/$${sessionIdVar}.status.tmp && mv ${STATUS_DIR}/$${sessionIdVar}.status.tmp ${STATUS_DIR}/$${sessionIdVar}.status ${hookMarker}'`;
 }
 
 /**
@@ -235,7 +251,7 @@ export function captureToolFailureCmd(
 }
 
 /**
- * Write a Python event script to STATUS_DIR.
+ * Write a Python event script to SCRIPT_DIR.
  * Call this before `wrapPythonHookCmd` to ensure the script file exists.
  *
  * @param scriptName Unique name for the .py file
@@ -248,7 +264,7 @@ export function installEventScript(scriptName: string, pythonCode: string): void
 
 /**
  * Return a hook command that invokes a pre-installed Python event script.
- * The script must already exist in STATUS_DIR — call `installEventScript`
+ * The script must already exist in SCRIPT_DIR — call `installEventScript`
  * first.
  *
  * @param scriptName Unique name for the .py file

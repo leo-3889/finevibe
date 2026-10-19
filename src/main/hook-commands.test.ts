@@ -10,7 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { stopStatusCmd, installHookScripts, STOP_STALE_MS } from './hook-commands';
-import { pythonBin } from './platform';
+import { pythonBin, isWin } from './platform';
 
 // `fs` is mocked module-wide above; the executed-script suite below needs the
 // real thing to stage a temp dir and read back what the hook wrote.
@@ -40,6 +40,121 @@ describe('statusCmd interpreter pinning', () => {
     } finally {
       vi.doUnmock('./platform');
       vi.resetModules();
+    }
+  });
+
+  it('quotes event, status, session var and marker in positional order on Windows', async () => {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./platform')>();
+      return { ...actual, isWin: true, pythonBin: 'py -3' };
+    });
+    try {
+      const { statusCmd } = await import('./hook-commands');
+      const cmd = statusCmd('UserPromptSubmit', 'working', 'SID', HOOK_MARKER);
+      // status_writer.py parses argv positionally with every field quoted; a
+      // shape drift silently kills every event:status hook.
+      const m = cmd.match(/^py -3 "([^"]+)" "([^"]+)" "([^"]+)" "([^"]+)" "([^"]+)" "([^"]*)"$/);
+      expect(m, `unparsable command shape: ${cmd}`).not.toBeNull();
+      expect(m![1].endsWith('/status_writer.py')).toBe(true);
+      expect(m![2]).toBe('UserPromptSubmit');
+      expect(m![3]).toBe('working');
+      expect(m![4]).toBe('SID');
+      expect(m![5]).toContain('vibeyard');
+      expect(m![6]).toBe(HOOK_MARKER);
+    } finally {
+      vi.doUnmock('./platform');
+      vi.resetModules();
+    }
+  });
+
+  it('emits the sh -c mkdir/echo pipeline on the POSIX branch', async () => {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./platform')>();
+      return { ...actual, isWin: false };
+    });
+    try {
+      const { statusCmd } = await import('./hook-commands');
+      const cmd = statusCmd('Stop', 'completed', 'SID', HOOK_MARKER);
+      // No python on this branch — it must not mention an interpreter at all.
+      expect(cmd.startsWith(`sh -c 'mkdir -p `)).toBe(true);
+      expect(cmd).toContain('&& echo Stop:completed > ');
+      // `$SID` — the CLI expands the session-var name at hook runtime.
+      expect(cmd).toContain('$SID.status');
+      expect(cmd.trimEnd().endsWith(`${HOOK_MARKER}'`)).toBe(true);
+      expect(cmd).not.toContain('python');
+    } finally {
+      vi.doUnmock('./platform');
+      vi.resetModules();
+    }
+  });
+});
+
+describe('statusCmd POSIX atomic write', () => {
+  // hook-status.ts re-reads a .status file only when its mtime CHANGES and
+  // validates the content against a 4-value allowlist. `echo > file` truncates
+  // the target first, so on a coarse-mtime filesystem (1 s tmpfs, HFS+) the
+  // truncate and the final write share one mtime tick: a poll that samples the
+  // file mid-write records the truncate's mtime, rejects the empty content,
+  // and never re-reads the finished value — the status transition is dropped
+  // forever. The generator must therefore write a temp name and rename.
+  async function posixStatusCmd(event: string, status: string): Promise<string> {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./platform')>();
+      return { ...actual, isWin: false };
+    });
+    try {
+      const { statusCmd } = await import('./hook-commands');
+      return statusCmd(event, status, 'SID', HOOK_MARKER);
+    } finally {
+      vi.doUnmock('./platform');
+      vi.resetModules();
+    }
+  }
+
+  it('redirects into a .status.tmp name, never the watched file', async () => {
+    const cmd = await posixStatusCmd('UserPromptSubmit', 'working');
+    const redirects = cmd.match(/>\s*[^&']+/g) ?? [];
+    expect(redirects.length).toBe(1);
+    expect(redirects[0].trim().endsWith('$SID.status.tmp')).toBe(true);
+  });
+
+  it('renames the temp file into place inside the same directory', async () => {
+    const cmd = await posixStatusCmd('UserPromptSubmit', 'working');
+    expect(cmd).toContain('&& mv ');
+    const mv = cmd.match(/mv (\S+) (\S+)/);
+    expect(mv, `no mv in: ${cmd}`).not.toBeNull();
+    expect(mv![1].endsWith('$SID.status.tmp')).toBe(true);
+    expect(mv![2].endsWith('$SID.status')).toBe(true);
+    // Same directory: a cross-directory mv is not atomic.
+    expect(mv![1].replace(/\.tmp$/, '')).toBe(mv![2]);
+  });
+
+  it.runIf(!isWin)('leaves exactly one watched file with the allowlisted value', async () => {
+    const cmd = await posixStatusCmd('Stop', 'completed');
+    const body = cmd.slice(`sh -c '`.length, -1);
+    const sid = `vibeyard-atomic-${process.pid}`;
+    // Paths straight out of the generated command, so the test follows the
+    // generator's own STATUS_DIR rather than duplicating it.
+    const target = cmd.match(/mv \S+ (\S+)/)![1].replace('$SID', sid);
+    const tmpName = `${target}.tmp`;
+    realFs.rmSync(target, { force: true });
+    realFs.rmSync(tmpName, { force: true });
+    try {
+      const res = spawnSync('sh', ['-c', body], {
+        env: { ...process.env, SID: sid },
+        encoding: 'utf8',
+      });
+      expect(res.status, res.stderr).toBe(0);
+      // The consumer trims and splits on the first colon, then allowlists the
+      // status; anything else is silently dropped.
+      expect(realFs.readFileSync(target, 'utf8').trim()).toBe('Stop:completed');
+      expect(realFs.existsSync(tmpName)).toBe(false);
+    } finally {
+      realFs.rmSync(target, { force: true });
+      realFs.rmSync(tmpName, { force: true });
     }
   });
 });
@@ -75,6 +190,37 @@ describe('stopStatusCmd', () => {
 
   it('defaults the staleness window to 10 minutes', () => {
     expect(STOP_STALE_MS).toBe(600000);
+  });
+
+  // The pythonAvailable gate above (and the behaviour suite below) only skips
+  // EXECUTING the script. These construction assertions run on every machine:
+  // the interpreter-pinning/quoting/argv-order contract is what the statusCmd
+  // bug class violated, so it must never be environment-optional.
+  it('invokes exactly the pinned pythonBin binding, never bare python', () => {
+    const cmd = stopStatusCmd('CLAUDE_IDE_SESSION_ID', HOOK_MARKER);
+    // Hooks must spawn the LIVE pythonBin binding — whatever
+    // prerequisites.checkPythonAvailable() repointed to on this machine.
+    expect(cmd.startsWith(`${pythonBin} "`)).toBe(true);
+    if (pythonBin !== 'python') expect(cmd.startsWith('python ')).toBe(false);
+  });
+
+  it('quotes every argv field in the positional order the writer parses', () => {
+    const cmd = stopStatusCmd('CLAUDE_IDE_SESSION_ID', HOOK_MARKER);
+    const esc = pythonBin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // The generator quotes EVERY field, including the numeric one — the
+    // writer reads argv[3] as a string and int()s it, so shell-quoting the
+    // digits is required for the "every field quoted" contract. The anchored
+    // ^...$ pins argv to exactly five quoted fields (script, sid var, dir,
+    // stale ms, marker) in the writer's parse order; a sixth token fails.
+    const m = cmd.match(new RegExp(`^${esc} "([^"]+)" "([^"]+)" "([^"]+)" "(\\d+)" "([^"]*)"$`));
+    expect(m, `unparsable command shape: ${cmd}`).not.toBeNull();
+    // Script resolved under SCRIPT_DIR, slashes normalized for sh/python.
+    expect(m![1].endsWith('/stop_status_writer.py')).toBe(true);
+    expect(m![2]).toBe('CLAUDE_IDE_SESSION_ID');
+    expect(m![3]).toBe(m![3].replace(/\\/g, '/')); // status dir normalized
+    expect(m![3]).toContain('vibeyard');
+    expect(m![4]).toBe(String(STOP_STALE_MS));
+    expect(m![5]).toBe(HOOK_MARKER);
   });
 });
 
