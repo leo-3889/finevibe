@@ -45,8 +45,32 @@ function rememberAssignedId(id: string): void {
 const MTIME_SKEW_MS = 60_000;
 /** Rollout meta is the first line; 64 KB covers any realistic session_meta. */
 const META_READ_BYTES = 64 * 1024;
-/** Compressed rollouts are decompressed whole for the meta; skip huge ones. */
+/** Compressed rollouts are decompressed whole for the meta; skip huge ones.
+ * The 8 MiB gate bounds the compressed read; the decompressed peak is bounded
+ * in practice by `metaCache` below, which parses each file once per change. */
 const MAX_COMPRESSED_META_FILE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Parsed `session_meta` per rollout, keyed by path and invalidated by
+ * (mtime, size). The first line never changes once written, so without this
+ * cache every scan re-read - and for `.jsonl.zst` fully decompressed,
+ * allocating roughly 10x the compressed size - every rollout in today's
+ * directory, up to twice a second, for the whole life of a pending tab.
+ */
+const MAX_META_CACHE_ENTRIES = 256;
+const metaCache = new Map<string, { mtimeMs: number; size: number; meta: { id?: string; cwd?: string } | null }>();
+
+function readCachedMeta(filePath: string, mtimeMs: number, size: number): { id?: string; cwd?: string } | null {
+  const cached = metaCache.get(filePath);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.meta;
+  const meta = readSessionMeta(filePath);
+  if (metaCache.size >= MAX_META_CACHE_ENTRIES) {
+    const oldest = metaCache.keys().next().value;
+    if (oldest !== undefined) metaCache.delete(oldest);
+  }
+  metaCache.set(filePath, { mtimeMs, size, meta });
+  return meta;
+}
 
 function normCwd(p: string): string {
   let s = path.resolve(p);
@@ -66,8 +90,14 @@ function idFromFilename(file: string): string | undefined {
   return rest.slice(tsLen + 1);
 }
 
+/** Newest-first: the historical tree is walked oldest-recent-last. */
 function readdirSortedDesc(dir: string): string[] {
   try { return fs.readdirSync(dir).sort().reverse(); } catch { return []; }
+}
+
+/** Oldest-first: rollouts inside one day pair with pending tabs FIFO. */
+function readdirSortedAsc(dir: string): string[] {
+  try { return fs.readdirSync(dir).sort(); } catch { return []; }
 }
 
 /**
@@ -113,10 +143,31 @@ function readSessionMeta(filePath: string): { id?: string; cwd?: string } | null
   }
 }
 
-function assign(uiSessionId: string, codexSessionId: string): void {
+/**
+ * Publish an assignment. Returns false when the id could not be written, in
+ * which case NOTHING is mutated: the tab stays pending and the id stays
+ * unclaimed, so the next scan retries.
+ *
+ * The write must never escape: this runs inside the 2 s poll interval and the
+ * watch-debounce timer, and `src/main` has no `uncaughtException` handler, so
+ * an EMFILE/ENOSPC/EACCES here would kill the main process and every live PTY
+ * in every provider with it. Same rule as the Pi/OMP watcher's `adopt()`.
+ */
+function assign(uiSessionId: string, codexSessionId: string): boolean {
+  try {
+    writeCliSessionId(uiSessionId, codexSessionId);
+  } catch {
+    // Disk full / permissions — keep prior state, retry on the next scan.
+    return false;
+  }
   rememberAssignedId(codexSessionId);
   pendingSessions.delete(uiSessionId);
-  writeCliSessionId(uiSessionId, codexSessionId);
+  return true;
+}
+
+/** Pad a `YYYY/MM/DD` path segment so names compare lexicographically. */
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
 }
 
 /** Scan rollout files newer than the oldest pending registration, per-cwd FIFO. */
@@ -126,33 +177,60 @@ function scanRollouts(): void {
   for (const p of pendingSessions.values()) oldestAdded = Math.min(oldestAdded, p.addedAt);
   const minMtime = oldestAdded - MTIME_SKEW_MS;
 
+  // The tree is zero-padded `YYYY/MM/DD` and the walk is newest-first, so the
+  // registration date prunes it by NAME: a directory sorting below the oldest
+  // registration can only hold older rollouts. Gating on names - instead of
+  // stat'ing every day directory the user ever created - keeps a scan at
+  // O(recent days) no matter how much Codex history exists.
+  const minDate = new Date(minMtime);
+  const minYear = String(minDate.getFullYear());
+  const minMonth = pad2(minDate.getMonth() + 1);
+  const minDay = pad2(minDate.getDate());
+
   for (const year of readdirSortedDesc(SESSIONS_ROOT)) {
+    if (year < minYear) break;
     const yearDir = path.join(SESSIONS_ROOT, year);
+    const atMinYear = year === minYear;
     for (const month of readdirSortedDesc(yearDir)) {
+      if (atMinYear && month < minMonth) break;
       const monthDir = path.join(yearDir, month);
+      const atMinMonth = atMinYear && month === minMonth;
       for (const day of readdirSortedDesc(monthDir)) {
+        if (atMinMonth && day < minDay) break;
         const dayDir = path.join(monthDir, day);
         let dayFiles: string[];
         try {
           // Day directory mtime: a day with no new rollouts can't match.
           if (fs.statSync(dayDir).mtimeMs < minMtime) continue;
-          dayFiles = readdirSortedDesc(dayDir);
+          // Oldest rollout first. Pending tabs are matched in registration
+          // order, so descending files paired the OLDEST tab with the NEWEST
+          // rollout: two Codex tabs in one repo (both rollouts created within
+          // one scan window) swapped transcripts, titles and resume targets.
+          dayFiles = readdirSortedAsc(dayDir);
         } catch {
           continue;
         }
         for (const file of dayFiles) {
           if (!file.startsWith('rollout-')) continue;
           if (!file.endsWith('.jsonl') && !file.endsWith('.jsonl.zst')) continue;
+          // The id is in the FILENAME. Deduping on it before any I/O is what
+          // keeps an already-assigned rollout from being re-read - and, for
+          // `.zst`, fully decompressed - on every scan.
+          const tailId = idFromFilename(file);
+          if (tailId && assignedCodexIds.has(tailId)) continue;
           const filePath = path.join(dayDir, file);
           let mtimeMs: number;
+          let size: number;
           try {
-            mtimeMs = fs.statSync(filePath).mtimeMs;
+            const st = fs.statSync(filePath);
+            mtimeMs = st.mtimeMs;
+            size = st.size;
           } catch {
             continue;
           }
           if (mtimeMs < minMtime) continue;
-          const meta = readSessionMeta(filePath);
-          const codexId = meta?.id ?? idFromFilename(file);
+          const meta = readCachedMeta(filePath, mtimeMs, size);
+          const codexId = meta?.id ?? tailId;
           if (!codexId || assignedCodexIds.has(codexId)) continue;
 
           // Oldest pending whose cwd matches the rollout. Unmatched rollouts
@@ -171,7 +249,9 @@ function scanRollouts(): void {
             match = pendingSessions.keys().next().value ?? null;
           }
           if (match) {
-            assign(match, codexId);
+            // A failed id write leaves the tab pending; keep scanning so a
+            // later registration in this cwd can still match this rollout.
+            if (!assign(match, codexId)) continue;
             if (pendingSessions.size === 0) return;
           }
         }
@@ -229,5 +309,6 @@ export function stopCodexSessionWatcher(): void {
     scanTimer = null;
   }
   pendingSessions.clear();
+  metaCache.clear();
   assignedCodexIds.clear();
 }

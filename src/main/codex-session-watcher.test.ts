@@ -5,6 +5,10 @@ import type { BrowserWindow } from 'electron';
 
 const SESSIONS_ROOT = path.join(path.sep + 'mock', 'home', '.codex', 'sessions');
 
+// The cost claims (one meta parse per file per change, not per scan) are
+// counted inside the fs mock: `zlib`'s ESM namespace cannot be spied.
+const counters = vi.hoisted(() => ({ readFileSync: 0, openSync: 0 }));
+
 // Virtual filesystem: 'set(vfs, dirPath, entries)' style helpers below.
 // values: string = file content; object with mtimeMs = file with mtime.
 type VfsFile = { content: string; mtimeMs: number };
@@ -34,13 +38,14 @@ vi.mock('fs', () => ({
     return [...vfs.get(p)!.entries.keys()];
   },
   readFileSync: (p: string) => {
+    counters.readFileSync++;
     const parent = vfs.get(path.dirname(p));
     const v = parent?.entries.get(path.basename(p));
     if (!v || v === 'dir') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     // latin1: compressed .zst content is stored as a byte-per-char string.
     return Buffer.from(v.content, 'latin1');
   },
-  openSync: (p: string) => p,
+  openSync: (p: string) => { counters.openSync++; return p; },
   readSync: (_fd: string, buf: Buffer, _o: number, len: number, _pos: number) => {
     const parent = vfs.get(path.dirname(_fd));
     const v = parent?.entries.get(path.basename(_fd));
@@ -79,9 +84,12 @@ const mockWatch = vi.mocked(fs.watch);
 const fakeWin = {} as unknown as BrowserWindow;
 
 function mkDay(date: Date): string {
-  const y = date.getUTCFullYear().toString();
-  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(date.getUTCDate()).padStart(2, '0');
+  // Local-time components: Codex names the tree from local time and the
+  // watcher prunes it by local date, so a UTC-named fixture would be pruned
+  // outright on machines east of UTC.
+  const y = date.getFullYear().toString();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
   const dayPath = path.join(SESSIONS_ROOT, y, m, d);
   for (const p of [path.join(SESSIONS_ROOT, y, m), dayPath]) {
     if (!vfs.has(p)) vfs.set(p, { mtimeMs: NOW, entries: new Map() });
@@ -123,6 +131,8 @@ function scanAll(): void {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
+  counters.readFileSync = 0;
+  counters.openSync = 0;
   vi.clearAllMocks();
   stopCodexSessionWatcher();
   vfs = new Map();
@@ -268,8 +278,83 @@ describe('codex rollout attribution (per-cwd FIFO)', () => {
 
     expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'codex-1');
   });
-});
 
+  it('keeps the tab pending when the id write fails, and retries it next scan', () => {
+    // The write runs inside the poll interval and the watch-debounce timer and
+    // src/main has no uncaughtException handler: an EMFILE/ENOSPC/EACCES that
+    // escaped here killed the main process and every live PTY with it.
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-1', { cwd: '/repo/alpha' });
+    mockWriteCliSessionId.mockImplementationOnce(() => {
+      throw Object.assign(new Error('EMFILE'), { code: 'EMFILE' });
+    });
+
+    expect(() => scanAll()).not.toThrow();
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
+
+    // Nothing was claimed, so the next scan retries the same tab/rollout pair.
+    scanAll();
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(2);
+    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-1', 'codex-1');
+  });
+
+  it('pairs the oldest pending tab with the oldest same-cwd rollout', () => {
+    // Two Codex tabs in one repo, both rollouts created inside one scan
+    // window. Files are visited oldest-first so the FIFO the docstring
+    // promises actually holds; descending order swapped the transcripts.
+    registerPendingCodexSession('ui-old', '/repo/alpha');
+    registerPendingCodexSession('ui-new', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    // Codex names files `rollout-<ts>-<id>`, so name order == creation order.
+    addRollout(day, 'aaa-first', { cwd: '/repo/alpha' });
+    addRollout(day, 'zzz-second', { cwd: '/repo/alpha' });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(2);
+    expect(mockWriteCliSessionId).toHaveBeenNthCalledWith(1, 'ui-old', 'aaa-first');
+    expect(mockWriteCliSessionId).toHaveBeenNthCalledWith(2, 'ui-new', 'zzz-second');
+  });
+
+  it('prunes day directories older than the oldest registration by name', () => {
+    // A stale day directory whose mtimes look brand new (a restore, a tool
+    // touching it, a clock change): the mtime gate alone would re-enter it and
+    // hand its rollout to a tab that never ran it. The date-name gate skips it.
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const staleDay = mkDay(new Date(NOW - 40 * 24 * 3600 * 1000));
+    addRollout(staleDay, 'codex-stale', { cwd: '/repo/alpha', mtimeMs: NOW });
+    vfs.get(staleDay)!.mtimeMs = NOW;
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+  });
+
+  it('parses a rollout meta once per change, not once per scan', () => {
+    // An unmatched (foreign-cwd) rollout is revisited every scan for the whole
+    // life of a pending tab. Without the meta cache each scan re-read it - and
+    // for `.jsonl.zst` decompressed it whole, allocating ~10x the compressed
+    // size - up to twice a second.
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-foreign', { cwd: '/other/project', zst: true });
+
+    scanAll();
+    expect(counters.readFileSync).toBe(1);
+
+    scanAll();
+    scanAll();
+    // Two more scans, zero extra reads: the parsed meta is cached by
+    // (path, mtime, size), so the decompression cost is paid once per change.
+    expect(counters.readFileSync).toBe(1);
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+  });
+});
 describe('startCodexSessionWatcher()', () => {
   it('watches the sessions dir recursively and polls as fallback', () => {
     startCodexSessionWatcher(fakeWin);

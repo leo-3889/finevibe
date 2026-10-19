@@ -1,10 +1,14 @@
 import { vi } from 'vitest';
 import * as path from 'path';
 import { isWin } from '../platform';
+import { PassThrough } from 'stream';
+import { once } from 'events';
 
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
   statSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  createReadStream: vi.fn(),
+  promises: { stat: vi.fn() },
 }));
 
 vi.mock('os', () => ({
@@ -30,6 +34,7 @@ vi.mock('../config-watcher', () => ({
 
 vi.mock('../codex-session-watcher', () => ({
   startCodexSessionWatcher: vi.fn(),
+  stopCodexSessionWatcher: vi.fn(),
   registerPendingCodexSession: vi.fn(),
   unregisterCodexSession: vi.fn(),
 }));
@@ -47,9 +52,12 @@ import { CodexProvider, _resetCachedPath } from './codex-provider';
 import { getCodexConfig } from '../codex-config';
 import { startConfigWatcher, stopConfigWatcher } from '../config-watcher';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks } from '../codex-hooks';
+import { stopCodexSessionWatcher } from '../codex-session-watcher';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
+const mockStat = vi.mocked(fs.promises.stat);
+const mockCreateReadStream = vi.mocked(fs.createReadStream);
 const mockExecSync = vi.mocked(execSync);
 const fileStat = { isFile: () => true } as fs.Stats;
 const mockGetCodexConfig = vi.mocked(getCodexConfig);
@@ -58,6 +66,7 @@ const mockStopConfigWatcher = vi.mocked(stopConfigWatcher);
 const mockInstallCodexHooks = vi.mocked(installCodexHooks);
 const mockValidateCodexHooks = vi.mocked(validateCodexHooks);
 const mockCleanupCodexHooks = vi.mocked(cleanupCodexHooks);
+const mockStopCodexSessionWatcher = vi.mocked(stopCodexSessionWatcher);
 
 let provider: CodexProvider;
 
@@ -163,9 +172,13 @@ describe('buildEnv', () => {
     expect(env.VIBEYARD_SESSION_ID).toBe('sess-123');
   });
 
-  it('preserves existing env vars', () => {
-    const env = provider.buildEnv('sess-123', { CODEX_HOME: '/custom', OTHER: 'val' });
-    expect(env.CODEX_HOME).toBe('/custom');
+  it('strips an inherited CODEX_HOME and preserves other env vars', () => {
+    // Hooks are installed at, and the rollout watcher scans, the hardcoded
+    // ~/.codex: a relocated home silently loses .sessionid, statusLine,
+    // titles, archive and resume.
+    const env = provider.buildEnv('sess-123', { CODEX_HOME: '/work/codex', codex_home: '/other', OTHER: 'val' });
+    expect(env.CODEX_HOME).toBeUndefined();
+    expect(env.codex_home).toBeUndefined();
     expect(env.OTHER).toBe('val');
   });
 });
@@ -222,6 +235,52 @@ describe('buildArgs', () => {
   });
 });
 
+describe('indexTranscript', () => {
+  // CodexProvider is a singleton and session-deep-search indexes up to
+  // TRANSCRIPT_IO_CONCURRENCY transcripts through it at once, so an index cwd
+  // kept on the instance is shared state: in the interleaving below the second
+  // run's consumer reset wiped the first run's cwd, and run A returned file
+  // B's cwd — which the search index persists, so the session palette then
+  // opens/resumes the transcript in the wrong repo.
+  it('returns each transcript\'s own cwd when two indexings interleave on one provider', async () => {
+    const fileA = '/mock/home/sessions/2026-03-28/rollout-a.jsonl';
+    const fileB = '/mock/home/sessions/2026-03-28/rollout-b.jsonl';
+    const meta = (cwd: string) => JSON.stringify({ type: 'session_meta', payload: { cwd } });
+    const userMsg = (text: string) =>
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text }] } });
+    const streamA = new PassThrough();
+    const streamB = new PassThrough();
+    mockStat.mockResolvedValue({ size: 256 } as fs.Stats);
+    mockCreateReadStream.mockReturnValueOnce(streamA as unknown as fs.ReadStream);
+    mockCreateReadStream.mockReturnValueOnce(streamB as unknown as fs.ReadStream);
+
+    // Gate on the stream's own signals, never the clock: 'resume' fires once
+    // the provider's readline has attached its (earlier-registered) data
+    // listener, so a write issued after it reaches the provider's consumer
+    // before this continuation resumes — every `await` below lands exactly
+    // after that file's session_meta has been consumed.
+    const runA = provider.indexTranscript(fileA);
+    await once(streamA, 'resume');
+    const deliveredA = once(streamA, 'data');
+    streamA.write(`${meta('/repo/a')}\n${userMsg('alpha prompt')}\n`);
+    await deliveredA;
+
+    const runB = provider.indexTranscript(fileB);
+    await once(streamB, 'resume');
+    const deliveredB = once(streamB, 'data');
+    streamB.write(`${meta('/repo/b')}\n${userMsg('beta prompt')}\n`);
+    await deliveredB;
+
+    streamA.end();
+    const resA = await runA;
+    streamB.end();
+    const resB = await runB;
+
+    expect(resA).toEqual({ text: 'alpha prompt', cwd: '/repo/a' });
+    expect(resB).toEqual({ text: 'beta prompt', cwd: '/repo/b' });
+  });
+});
+
 describe('getShiftEnterSequence', () => {
   it('returns null (Codex uses Ctrl+J instead)', () => {
     expect(provider.getShiftEnterSequence()).toBeNull();
@@ -240,10 +299,15 @@ describe('hooks integration', () => {
     expect(result).toEqual({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
   });
 
-  it('cleanup calls cleanupCodexHooks and stopConfigWatcher', () => {
+  it('cleanup stops the config watcher, the hooks and the rollout session watcher', () => {
     provider.cleanup();
     expect(mockStopConfigWatcher).toHaveBeenCalled();
     expect(mockCleanupCodexHooks).toHaveBeenCalled();
+    // The rollout watcher is a recursive fs.watch plus a 2s interval with no
+    // other production caller: without this it survives quit, and a scan
+    // armed inside its 500ms arming window fires after cleanupAll() deleted
+    // STATUS_DIR and recreates os.tmpdir()/vibeyard with a .sessionid file.
+    expect(mockStopCodexSessionWatcher).toHaveBeenCalled();
   });
 
   it('reinstallSettings delegates to installCodexHooks', () => {

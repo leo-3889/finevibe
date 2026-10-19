@@ -5,12 +5,13 @@ import * as zlib from 'zlib';
 import * as os from 'os';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { getCodexConfig } from '../codex-config';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks, SESSION_ID_VAR } from '../codex-hooks';
-import { startCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from '../codex-session-watcher';
+import { startCodexSessionWatcher, stopCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from '../codex-session-watcher';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
@@ -53,6 +54,12 @@ export class CodexProvider implements CliProvider {
     const env = { ...baseEnv };
     env[SESSION_ID_VAR] = sessionId;
     env.PATH = getFullPath();
+    // Hooks are installed at, and the rollout watcher scans, the hardcoded
+    // ~/.codex: an inherited CODEX_HOME moves the child's config.toml and
+    // rollouts out of reach, silently losing .sessionid, statusLine, titles,
+    // archive and resume. Session-level values are rejected pre-spawn by
+    // UNSUPPORTED_STORAGE_ENV_KEYS.
+    removeEnvKey(env, 'CODEX_HOME');
     return env;
   }
 
@@ -84,6 +91,12 @@ export class CodexProvider implements CliProvider {
   cleanup(): void {
     stopConfigWatch();
     cleanupCodexHooks();
+    // The rollout watcher is a recursive fs.watch plus a 2s interval: without
+    // this it survives quit, and a scan armed within its 500ms arming window
+    // fires after cleanupAll() deleted STATUS_DIR and recreates
+    // os.tmpdir()/vibeyard with a .sessionid file (Pi/OMP do the same in their
+    // cleanup()).
+    stopCodexSessionWatcher();
   }
 
   startConfigWatcher(win: BrowserWindow, projectPath: string): void {
@@ -199,7 +212,7 @@ export class CodexProvider implements CliProvider {
     if (size > MAX_INDEX_FILE_BYTES) return { text: '', cwd: '' };
     if (transcriptPath.endsWith('.zst')) return this.indexCompressedTranscript(transcriptPath);
 
-    const { consume, budget } = this.createLineConsumer();
+    const { consume, budget, cwd } = this.createLineConsumer();
     const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES - 1 });
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
@@ -210,7 +223,7 @@ export class CodexProvider implements CliProvider {
       lines.close();
       input.destroy();
     }
-    return { text: budget.join(), cwd: this.indexedCwd };
+    return { text: budget.join(), cwd: cwd() };
   }
 
   /**
@@ -220,7 +233,7 @@ export class CodexProvider implements CliProvider {
    * write is in the plain path.
    */
   private async indexCompressedTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {
-    const { consume, budget } = this.createLineConsumer();
+    const { consume, budget, cwd } = this.createLineConsumer();
     const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES * 8 - 1 });
     const zstd = zlib.createZstdDecompress();
     input.pipe(zstd);
@@ -236,20 +249,21 @@ export class CodexProvider implements CliProvider {
       zstd.destroy();
       input.destroy();
     }
-    return { text: budget.join(), cwd: this.indexedCwd };
+    return { text: budget.join(), cwd: cwd() };
   }
 
-  /** cwd of the last indexed transcript; reset by createLineConsumer. */
-  private indexedCwd = '';
-
-  private createLineConsumer(): { consume: (line: string) => void; budget: IndexTextBudget } {
+  private createLineConsumer(): { consume: (line: string) => void; budget: IndexTextBudget; cwd: () => string } {
     const budget = new IndexTextBudget();
-    this.indexedCwd = '';
+    // Per-index cwd, never a provider field: session-deep-search indexes up to
+    // TRANSCRIPT_IO_CONCURRENCY (4) transcripts through this singleton at
+    // once, so a shared field made one call return (and persist) another
+    // transcript's cwd, which then resumes the session in the wrong repo.
+    let cwd = '';
     const consume = (line: string): void => {
       if (!line.trim() || budget.full) return;
       try {
         const entry = JSON.parse(line);
-        if (!this.indexedCwd && entry.type === 'session_meta' && entry.payload?.cwd) this.indexedCwd = entry.payload.cwd;
+        if (!cwd && entry.type === 'session_meta' && entry.payload?.cwd) cwd = entry.payload.cwd;
         if (entry.type !== 'response_item') return;
         const p = entry.payload;
         if (!p || p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) return;
@@ -262,7 +276,7 @@ export class CodexProvider implements CliProvider {
         // partial-write tolerance
       }
     };
-    return { consume, budget };
+    return { consume, budget, cwd: () => cwd };
   }
 }
 
