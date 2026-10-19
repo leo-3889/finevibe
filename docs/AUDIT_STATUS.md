@@ -2,7 +2,7 @@
 
 This is the current work queue for a local LLM. The work described below under "Implemented" is committed on `main`; read the current code and diff before editing. Code and unit-test coverage do not establish behavior in a running or packaged Electron app.
 
-## Status 2026-10-19 (audit remediation, `fix/audit-remediation`)
+## Status 2026-10-19 (audit remediation, merged into `rebuild`)
 
 Merged remediation commits on the branch, newest first: `2a27ed9` attribute Codex sessions by rollout cwd, not global spawn order; `5b8cc6a` typed `costUpdate` mocks and a `cliSessionId` round-trip assertion; `c6de6a5` policy-gate MCP connect URLs with a loopback exemption and user confirm; `0d314a2` contracts re-synced with the remediation commits; `57a16f4` targeted suites for the test deserts (board, tab-list, split-layout, modal-shell, file-watcher); `32af0b4` index and resolve compressed `.jsonl.zst` Codex rollouts; `ffcd283` coalesce persist bursts with a leading-edge throttle; `9b206f9` quote dropped/pasted paths and wire the remote pane menu; `6af0c7a` suppress app shortcuts while typing and inside modals; `2db2e70` reject path syntax in agent file slugs; `e866e4a` pin the interpreter in the Windows status hook. Adjacent landings on the same branch: `7c0d22a` dead exports/IPC shims removal (the 2026-10-18 cleanup, now committed) and `6fb4739` on-demand Ubuntu `.deb` packaging.
 
@@ -19,12 +19,14 @@ Fixed this session:
 - MCP connect-URL policy `mcpUrlPolicy`: http/https only, loopback passes, non-loopback http(s) needs user confirm (`c6de6a5`).
 - The terminal context-menu Paste test still pinned the pre-`9b206f9` unquoted path list; it never ran red because its forks worker repeatedly timed out at startup, so the suite reported 166/173 files. Expectation updated to the quoted contract (`docs/ui-conventions.md`).
 
-Still open:
+Closed after the merge (P2 backlog):
 
-- Launch-dir rule dedup (P2).
-- `extraArgs` quoting (P2).
-- MCP URL policy regression-suite completion; the policy itself is committed (`c6de6a5`).
-- Remaining test-coverage deserts: the readiness checkers and the keychain path (the board/tab-list/split-layout/modal-shell/file-watcher deserts landed in `57a16f4`).
+- `extraArgs` quoting (`a0e3f35`): Claude, Codex, Copilot and Gemini split the user's extra args on whitespace, so a quoted value reached the CLI as separate arguments; all six providers now share `tokenizeArgs`, matching the pre-spawn `findConflictingLaunchFlags` check. Two tests per provider.
+- MCP URL policy suite completed and one real hole closed (`7ebb920`): the gate exempted every `*.localhost` hostname on the string alone and performs no DNS, so a hosts-file/resolver mapping reached a routable host with no confirm. Exemption is exact hosts now; reject/decline paths assert connector state through a stateful registry fake instead of mock counts.
+- Readiness and keychain test deserts (`5ecd97c`): instruction-file checker boundaries, permission-denied classification, `computeCategoryScore` (informational rows excluded from both numerator and denominator), and the keychain verdict paths.
+- Launch-dir rule dedup: the three IPC paths that re-implemented the pi/omp session-dir gate inline now call the existing `resolveLaunchSessionDir`. **Lands with the working-tree commit** — it edits `src/main/ipc-handlers.ts`, which carries unrelated uncommitted work.
+
+Still open: item 4 (measure watcher cost in the running app) and item 5 (live integration in a built app) below. Neither has ever been measured; nothing in this file establishes packaged-app behavior.
 
 Contracts re-synced with these commits: [provider contracts](provider-contracts.md), [session lifecycle](session-lifecycle.md), [performance](performance.md), [security boundaries](security-boundaries.md), [UI conventions](ui-conventions.md).
 
@@ -63,6 +65,7 @@ The older A-01–A-13, F-01–F-09, and R-01–R-04 audit items were implemented
 
 ## Last recorded validation
 
+- 2026-10-19 full gate on `rebuild` after the merge and the P2 backlog: `npx vitest run --maxWorkers=4` → 174 files / 2,516 passed / 1 skipped (exit 0); `tsc --noEmit` 0 errors for `tsconfig.json`, `tsconfig.renderer.json`, `tsconfig.preload.json`, `tsconfig.main.json`; `npm run build` exit 0; `git diff --check` clean. The merge was `--ff-only` (33 commits, zero merge commits, `rebuild` was a strict ancestor), so history stays linear. Unpushed at this point: `rebuild` 9 → 13+ commits ahead of `fork/main`, `main` 23 ahead of `fork/main`, `fix/audit-remediation` (now deleted) was never pushed — nothing on this lineage exists on any remote.
 - 2026-10-19 full gate on `fix/audit-remediation`: `npx vitest run --maxWorkers=4` → 173 files / 2,471 passed / 1 skipped (exit 0, 58 s); root `npx tsc -p tsconfig.json --noEmit` 0 errors; renderer `npx tsc -p tsconfig.renderer.json --noEmit` 0 errors; `git diff --check` clean. Unmodified `npm test` on this host exits 1: the default pool times out starting 7 of 173 forks workers, so those files never run — the run reports 166 files green plus 7 unhandled pool errors, which hides real failures (that is how the stale context-menu Paste assertion survived). Capping workers is the reproducible way to run the gate here. No packaged-app runtime verification.
 - Full gate re-passed on 2026-10-13 on the committed tree: `npm test` 170 files / 2,399 passed / 1 skipped; `npm run build`; renderer `tsc --noEmit`; `git diff --check`. (First green run was 2026-10-10: 169 files / 2,391 passed / 1 skipped; added since: `src/renderer/components/sidebar-preferences.test.ts` and the pending-`killPty` cases in `src/main/pty-manager.test.ts`.)
 - 2026-10-18 gate re-passed on `rebuild` after a session was cut off mid-edit (pi-lens killed it). Three closed items, all static/unit-tested — **no packaged-app runtime verification**:
