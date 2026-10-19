@@ -65,7 +65,7 @@ A full static audit of main + renderer verified every bound above against source
 | Structure | Location | Growth | Planned fix |
 | --- | --- | --- | --- |
 | `PersistedState.projects[].sessionHistory` | `src/shared/types.ts`, rows created for every session at spawn | soft cap 500, but bookmarked and `active` rows are exempt from pruning, so a crash orphaned `active` row and bookmarks accumulate without limit; the dominant term in every full-state save | retain-last-K bookmarks (~50) and expire stale `active` rows whose session no longer exists |
-| Full-state serialization | `src/main/store.ts` `saveStateSync` | each save transiently holds object graph + JSON string + Buffer (~2–3× payload) | capped by the history fix; optional single-line (non-pretty) JSON |
+| Renderer persist burst | `src/renderer/state.ts` `persist()` → `src/main/store.ts` `saveStateSync` | fixed `ffcd283`: each persist serializes the whole state and structured-clones it over IPC, and mutation bursts (kanban sync, session moves, title adoption) used to pay that per mutation | leading-edge 200 ms throttle coalesces a burst to one IPC, `beforeunload` flushes; the store's per-save transient (object graph + JSON string + Buffer, ~2–3× payload) remains, capped by the history fix |
 | Zip export sidecars | `src/main/session-export.ts` `readSidecars` | all sidecar files, `.events` included, buffered whole; the source `.events` file has no size cap on disk (64 KiB is the read budget, not the file size) | stream each sidecar with `createReadStream`, as the transcript already is |
 | xterm scrollback | all three `new Terminal({...})` sites | library default 1,000 lines/tab (~240 KB UTF-16 at 120 cols) — a bound by omission | set `scrollback` explicitly as a documented constant |
 | `hook-status` `lastMtimes` | `src/main/hook-status.ts` | rows for one-shot files (e.g. `.toolfailure`) linger after the file is unlinked, until session cleanup | delete the row when the file is unlinked; sweep names absent from `readdir` |
@@ -82,5 +82,7 @@ The static audit defines what the numbers must confirm. Launch with `--js-flags=
 ## Evidence and open measurement
 
 Automated tests cover repeated search beyond the memory-cache budget, shared indexing/cancellation, growing diff files, split UTF-8 event records, oversized events, navigation within a 200,000-line file, and directory-cache invalidation.
+
+The persist throttle (`ffcd283`) is covered by `src/renderer/state.test.ts`. Measurement note: mutations inside one 200 ms window coalesce to a single serialize + IPC (leading edge fires the first mutation immediately), so S5-style persist timing counts one persist per burst, not per mutation; a lone mutation never waits behind the window.
 
 Still needed: run the measurement protocol above (S1–S6) in a packaged app, plus packaged preview/navigation checks and sustained terminal-output profiling. Passing unit tests does not establish a speedup percentage or complete the broader Pi/OMP integration audit.

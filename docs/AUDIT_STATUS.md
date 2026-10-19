@@ -2,6 +2,31 @@
 
 This is the current work queue for a local LLM. The work described below under "Implemented" is committed on `main`; read the current code and diff before editing. Code and unit-test coverage do not establish behavior in a running or packaged Electron app.
 
+## Status 2026-10-19 (audit remediation, `fix/audit-remediation`)
+
+Merged remediation commits on the branch, newest first: `32af0b4` index and resolve compressed `.jsonl.zst` Codex rollouts; `ffcd283` coalesce persist bursts with a leading-edge throttle; `9b206f9` quote dropped/pasted paths and wire the remote pane menu; `6af0c7a` suppress app shortcuts while typing and inside modals; `2db2e70` reject path syntax in agent file slugs; `e866e4a` pin the interpreter in the Windows status hook. Adjacent landings on the same branch: `7c0d22a` dead exports/IPC shims removal (the 2026-10-18 cleanup, now committed) and `6fb4739` on-demand Ubuntu `.deb` packaging.
+
+Fixed this session:
+
+- `statusCmd` pins the probed interpreter (`py -3`-style) like every other Windows hook generator — bare `python` there is the App Execution alias and silently killed every `event:status` hook (`e866e4a`).
+- Agent file slugs reject path syntax before becoming file names (`2db2e70`).
+- Shortcut guard: destructive app shortcuts suppressed while typing and under modal overlays; xterm excluded (`6af0c7a`).
+- Remote pane context menu wired; read-only panes drop menu writes (`9b206f9`).
+- Dropped/pasted terminal paths shell-quoted, POSIX single-quote / Windows double-quote (`9b206f9`).
+- Renderer persist: leading-edge 200 ms throttle with `beforeunload` flush; main-side store fsync-on-rename unchanged (`ffcd283`).
+- Codex rollouts indexed/resolved as plain `.jsonl` and compressed `.jsonl.zst` (`32af0b4`).
+- Codex session-id fallback watcher: per-cwd rollout `session_meta` attribution replaces the global `history.jsonl` FIFO, so external runs no longer hijack tabs (in the branch worktree; parent-owned commit).
+- MCP connect-URL policy `mcpUrlPolicy`: http/https only, loopback passes, non-loopback http(s) needs user confirm (in the branch worktree; sibling-owned commit).
+
+Still open:
+
+- Launch-dir rule dedup (P2).
+- `extraArgs` quoting (P2).
+- MCP URL policy regression-suite completion; the policy itself is in the branch worktree awaiting its commit.
+- Remaining test-coverage deserts; a concurrent sweep is adding the targeted suites.
+
+Contracts re-synced with these commits: [provider contracts](provider-contracts.md), [session lifecycle](session-lifecycle.md), [performance](performance.md), [security boundaries](security-boundaries.md), [UI conventions](ui-conventions.md).
+
 ## Status 2026-10-18 (resumed after pi-lens crashes)
 
 - The 2026-10-18 cleanup audit was applied to the working tree (uncommitted): 14 fully dead exports, the `session:claudeSessionId` and `claude:getConfig` IPC shims, dead locale keys, the superseded `src/renderer/components/tab-bar.ts` monolith (the live `tab-bar/` directory is untouched), unreferenced `tsconfig.test.json`, and the doc-drift fixes — 37 files, net −147 lines, staged deletions included. Verified on this tree: renderer `tsc --noEmit` clean; `npm test` 170 files / 2,470 passed / 1 skipped (one forks-worker start timeout on `file-reader.test.ts`, passed 10/10 in isolation — machine-load flake, same class as the 2026-10-10 notes); `git diff --check` clean.
