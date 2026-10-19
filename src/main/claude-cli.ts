@@ -3,6 +3,7 @@ import * as path from 'path';
 import { homedir } from 'os';
 import { STATUS_DIR, getStatusLineScriptPath } from './hook-status';
 import { canonicalPath, readJsonSafe, readDirSafe } from './fs-utils';
+import { getKnownProjectPaths, loadState } from './store';
 import { statusCmd as mkStatusCmd, stopStatusCmd as mkStopStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, captureToolFailureCmd as mkCaptureToolFailureCmd, installEventScript, wrapPythonHookCmd, installHookScripts } from './hook-commands';
 import { parseFrontmatter } from './frontmatter';
 import { getSupportedHookEvents as computeSupportedHookEvents } from './claude-hook-versions';
@@ -650,6 +651,31 @@ export type McpServerConfig =
   | { url: string };
 
 /**
+ * The config dirs the app itself hands out as a CLI config root. `configDir`
+ * arrives verbatim from the mcp:* IPC args and the write target is derived
+ * from it, so an unvalidated value is an arbitrary-file-write sink: whatever
+ * `<dir>/.claude.json` it names is read back as the MCP config of the next
+ * CLI launched with that CLAUDE_CONFIG_DIR, which executes the servers in it.
+ * Legitimate values are a stored profile's dir (`CLAUDE_CONFIG_DIR`) and dirs
+ * inside a known project. Canonical compare, exactly like the file allowlist
+ * in removeMcpServer: the renderer spells the
+ * same dir with other casing, separators or a junction, and `path.resolve`
+ * normalizes none of those.
+ */
+function isManagedMcpConfigDir(configDir: string): boolean {
+  const target = canonicalPath(configDir);
+  const roots = [
+    ...(loadState().profiles ?? []).map((p) => p.configDir),
+    ...getKnownProjectPaths(),
+  ];
+  return roots.some((rootPath) => {
+    const root = canonicalPath(rootPath);
+    const rel = path.relative(root, target);
+    return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
+  });
+}
+
+/**
  * Add an MCP server to ~/.claude.json at user or project scope.
  */
 export function addMcpServer(
@@ -662,6 +688,10 @@ export function addMcpServer(
   // A profiled CLI (CLAUDE_CONFIG_DIR) reads its user-scope MCP store under
   // the profile dir; writing ~/.claude.json would land servers where that
   // CLI never looks.
+  // Canonical allowlist, as in removeMcpServer: configDir is renderer-chosen.
+  if (configDir && !isManagedMcpConfigDir(configDir)) {
+    throw new Error(`Not a writable MCP config path: ${JSON.stringify(path.join(configDir, '.claude.json'))}`);
+  }
   const filePath = configDir
     ? path.join(configDir, '.claude.json')
     : path.join(homedir(), '.claude.json');

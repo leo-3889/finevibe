@@ -42,6 +42,17 @@ vi.mock('./hook-commands', () => ({
   wrapPythonHookCmd: vi.fn((_name: string, _code: string, marker: string) => `capture-event .events ${marker}`),
 }));
 
+// The MCP config-dir allowlist asks the store which config dirs the app
+// handed out (profiles) and which projects it knows; both are state the
+// tests hand it directly.
+const storeProfiles = vi.hoisted(() => [] as { configDir: string }[]);
+const storeProjects = vi.hoisted(() => [] as string[]);
+
+vi.mock('./store', () => ({
+  loadState: () => ({ profiles: storeProfiles }),
+  getKnownProjectPaths: () => storeProjects,
+}));
+
 import * as fs from 'fs';
 import * as path from 'path';
 import { addMcpServer, getClaudeConfig, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
@@ -70,6 +81,8 @@ const n = (p: string) => p.replace(/\\/g, '/');
 
 beforeEach(() => {
   vi.clearAllMocks();
+  storeProfiles.length = 0;
+  storeProjects.length = 0;
   // Default: all reads/dirs fail (empty state)
   mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
   mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
@@ -808,6 +821,11 @@ describe('profile-scoped MCP config', () => {
     });
   };
 
+  beforeEach(() => {
+    // The add-side config-dir gate accepts only dirs the store handed out.
+    storeProfiles.push({ configDir: profileDir });
+  });
+
   it('addMcpServer with a config dir writes the profile store, not ~/.claude.json', () => {
     addMcpServer('github', { command: 'npx', args: ['-y', 'srv'] }, 'user', undefined, profileDir);
 
@@ -823,6 +841,41 @@ describe('profile-scoped MCP config', () => {
 
     expect(mockWriteFileSync).toHaveBeenCalledOnce();
     expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe('/mock/home/.claude.json');
+  });
+
+  it('addMcpServer refuses a config dir the store never handed out', () => {
+    // `configDir` is a verbatim IPC arg and the target is `<configDir>/.claude.json`,
+    // which the CLI reads on its next launch - a `~/.ssh` here plants a file in
+    // the one directory whose contents other daemons act on.
+    expect(() => addMcpServer('x', { url: 'http://x' }, 'user', undefined, path.join('/mock/home', '.ssh')))
+      .toThrow(/Not a writable MCP config path/);
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('addMcpServer accepts a config dir below a known project', () => {
+    // Custom profile paths live anywhere the user picked, including inside a
+    // project; the gate is the store's dir list, not the managed root.
+    storeProjects.push('/project');
+    const insideProject = path.join('/project', '.vibeyard-config');
+    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+
+    addMcpServer('github', { url: 'http://x' }, 'user', undefined, insideProject);
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(n(String(mockWriteFileSync.mock.calls[0][0])))
+      .toBe(n(path.join(insideProject, '.claude.json')));
+  });
+
+  it('addMcpServer accepts the profile dir spelled with other casing', () => {
+    // Canonical compare, as on the remove side: the store records
+    // C:\profiles\work, the renderer sends c:\profiles\work.
+    vi.mocked(fs.realpathSync).mockImplementation(((p: string) => n(p).toLowerCase()) as typeof fs.realpathSync);
+
+    addMcpServer('github', { url: 'http://x' }, 'user', undefined, n(profileDir).toUpperCase());
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(n(String(mockWriteFileSync.mock.calls[0][0])).toLowerCase())
+      .toBe(n(profileClaudeJson).toLowerCase());
   });
 
   it('getClaudeConfig lists the profile store and not the default account\'s', async () => {
