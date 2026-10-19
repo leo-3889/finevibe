@@ -188,7 +188,10 @@ export function statusCmd(
   if (isWin) {
     const py = path.join(SCRIPT_DIR, 'status_writer.py').replace(/\\/g, '/');
     const dir = STATUS_DIR.replace(/\\/g, '/');
-    return `python "${py}" "${event}" "${status}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
+    // Pinned interpreter, like every other generator: bare `python` is the
+    // Store stub on many machines, and on `py -3`-only boxes it fails —
+    // silently killing every event:status hook (tabs never show working).
+    return `${PY} "${py}" "${event}" "${status}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
   }
   return `sh -c 'mkdir -p ${STATUS_DIR} && echo ${event}:${status} > ${STATUS_DIR}/$${sessionIdVar}.status ${hookMarker}'`;
 }

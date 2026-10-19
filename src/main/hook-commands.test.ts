@@ -22,6 +22,28 @@ const pythonAvailable = spawnSync(pythonBin, ['-c', 'pass']).status === 0;
 
 const HOOK_MARKER = '# vibeyard-hook';
 
+describe('statusCmd interpreter pinning', () => {
+  // Regression: the Windows branch used to emit bare `python`, the Store
+  // stub on many machines — every event:status hook died silently while
+  // Stop/cost hooks (which use pythonBin) kept working.
+  it('invokes the pinned pythonBin, never bare python, on Windows', async () => {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./platform')>();
+      return { ...actual, isWin: true, pythonBin: 'py -3' };
+    });
+    try {
+      const { statusCmd } = await import('./hook-commands');
+      const cmd = statusCmd('UserPromptSubmit', 'working', 'SID', HOOK_MARKER);
+      expect(cmd.startsWith('py -3 "')).toBe(true);
+      expect(cmd.startsWith('python ')).toBe(false);
+    } finally {
+      vi.doUnmock('./platform');
+      vi.resetModules();
+    }
+  });
+});
+
 /**
  * Source of a script that installHookScripts() wrote, by filename.
  *
