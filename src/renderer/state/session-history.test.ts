@@ -421,6 +421,7 @@ describe('removeHistoryEntry()', () => {
     const entry = appState.getSessionHistory(project.id)[0];
     mockSave.mockClear();
     appState.removeHistoryEntry(project.id, entry.id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -484,6 +485,7 @@ describe('clearSessionHistory()', () => {
     appState.removeSession(project.id, session.id);
     mockSave.mockClear();
     appState.clearSessionHistory(project.id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -546,6 +548,7 @@ describe('toggleBookmark()', () => {
     const entry = appState.getSessionHistory(project.id)[0];
     mockSave.mockClear();
     appState.toggleBookmark(project.id, entry.id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -696,6 +699,7 @@ describe('resumeFromHistory()', () => {
 
     const archived = appState.getSessionHistory(project.id)[0];
     appState.resumeFromHistory(project.id, archived.id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -874,6 +878,7 @@ describe('openCliSession()', () => {
     const project = addProject();
     mockSave.mockClear();
     appState.openCliSession(project.id, 'cli-persist', 'S');
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 

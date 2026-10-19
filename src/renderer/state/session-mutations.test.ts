@@ -72,6 +72,7 @@ describe('setActiveSession()', () => {
     mockSave.mockClear();
     appState.setActiveSession(project.id, sessions[0].id);
     expect(appState.activeProject!.activeSessionId).toBe(sessions[0].id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 });
@@ -83,6 +84,7 @@ describe('updateSessionCliId()', () => {
     mockSave.mockClear();
     appState.updateSessionCliId(project.id, session.id, 'claude-abc');
     expect(appState.activeSession!.cliSessionId).toBe('claude-abc');
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -177,6 +179,7 @@ describe('renameSession()', () => {
     mockSave.mockClear();
     appState.renameSession(project.id, session.id, 'New');
     expect(appState.activeSession!.name).toBe('New');
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 

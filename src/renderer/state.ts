@@ -122,6 +122,8 @@ const defaultPreferences: Preferences = {
 };
 
 class AppState {
+  /** Leading-edge persist throttle window; see persist(). */
+  static readonly PERSIST_THROTTLE_MS = 200;
   private state: PersistedState = { version: 1, projects: [], activeProjectId: null, preferences: { ...defaultPreferences } };
   private listeners = new Map<EventType, Set<EventCallback>>();
   private nav = new NavHistory();
@@ -132,6 +134,9 @@ class AppState {
   private warnedPrematurePersist = false;
   /** Coalesced persist for high-frequency cost/context ticks (see scheduleCostFlush). */
   private costFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Leading-edge persist throttle (see persist). */
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPersistAt = 0;
 
   private pushNav(sessionId: string | null | undefined): void {
     this.nav.push(sessionId);
@@ -236,7 +241,37 @@ class AppState {
       }
       return;
     }
+    // Leading-edge throttle: the first mutation saves immediately, mutations
+    // inside the following 200 ms coalesce into one trailing save. Each
+    // persist serializes the whole state and structured-clones it over IPC;
+    // mutation bursts (kanban sync, session moves, title adoption) used to
+    // pay that cost per mutation. Leading edge means a lone mutation is
+    // never exposed to the crash window a pure trailing debounce adds.
+    const elapsed = Date.now() - this.lastPersistAt;
+    if (elapsed >= AppState.PERSIST_THROTTLE_MS && this.persistTimer === null) {
+      this.writeStateNow();
+      return;
+    }
+    if (this.persistTimer !== null) return; // trailing save already armed
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.writeStateNow();
+    }, AppState.PERSIST_THROTTLE_MS - elapsed);
+  }
+
+  /** Serialize + ship right now; the only writer of the store. */
+  private writeStateNow(): void {
+    this.lastPersistAt = Date.now();
     window.vibeyard.store.save(serializeForSave(this.state));
+  }
+
+  /** Drop the armed trailing save and write immediately (quit paths, tests). */
+  flushPersist(): void {
+    if (this.persistTimer !== null) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.writeStateNow();
   }
 
   /**
@@ -1324,6 +1359,11 @@ export function _resetForTesting(): void {
     clearTimeout((appState as any)['costFlushTimer']);
     (appState as any)['costFlushTimer'] = null;
   }
+  if ((appState as any)['persistTimer'] !== null) {
+    clearTimeout((appState as any)['persistTimer']);
+    (appState as any)['persistTimer'] = null;
+  }
+  (appState as any)['lastPersistAt'] = 0;
 }
 
 export const appState = new AppState();

@@ -291,6 +291,12 @@ async function main(): Promise<void> {
   // Load persisted state
   await appState.load();
 
+// A trailing throttled persist (state.ts) may be armed at window close;
+// write it out synchronously before the renderer dies. The main-side store
+// additionally fsyncs on rename, so the only loss window is a renderer
+// crash with no unload — bounded by the throttle window.
+window.addEventListener('beforeunload', () => appState.flushPersist());
+
   // Re-derive titles for sessions restored from a previous run (see
   // collectRestoredSelfTitlingSessions). Main mirrors each tab's title from
   // its transcript only when the conversation id is already known; an unknown

@@ -229,6 +229,7 @@ describe('persist()', () => {
     const project = addProject();
     mockSave.mockClear();
     appState.addSession(project.id, 'S1');
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 });
@@ -397,6 +398,7 @@ describe('renameProject()', () => {
     mockSave.mockClear();
     appState.renameProject(p.id, 'New');
     expect(changedCb).toHaveBeenCalled();
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 });
@@ -575,6 +577,7 @@ describe('reorderProject()', () => {
     mockSave.mockClear();
     appState.reorderProject(0, 1);
     expect(cb).toHaveBeenCalledTimes(1);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 });
@@ -702,6 +705,7 @@ describe('updateSessionCliId()', () => {
 
     expect(sessions[0].cliSessionId).toBe('cli-1');
     expect(cb).toHaveBeenCalledTimes(1);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -738,15 +742,50 @@ describe('updateSessionCliId()', () => {
 
 // --- Session History Tests ---
 
-function mockCostData() {
-  mockGetCost.mockReturnValue({
-    totalCostUsd: 0.42,
-    totalInputTokens: 1000,
-    totalOutputTokens: 500,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    totalDurationMs: 5000,
-    totalApiDurationMs: 3000,
+describe('persist throttle', () => {
+  // A burst of mutations (kanban sync, session moves) serialized the whole
+  // state and cloned it over IPC per mutation. Leading edge: the first
+  // mutation saves at once; later ones coalesce into one trailing save.
+  it('coalesces a mutation burst into one trailing save', () => {
+    vi.useFakeTimers();
+    try {
+      appState.setPreference('theme', 'light'); // leading save
+      appState.setPreference('theme', 'dark');
+      appState.setPreference('theme', 'light');
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(250);
+      expect(mockSave).toHaveBeenCalledTimes(2);
+      expect(mockSave.mock.calls[1][0].preferences.theme).toBe('light');
+    } finally {
+      vi.useRealTimers();
+    }
   });
-}
 
+  it('flushPersist writes the armed trailing state and disarms the timer', () => {
+    vi.useFakeTimers();
+    try {
+      appState.setPreference('theme', 'light'); // leading
+      appState.setPreference('theme', 'dark');  // trailing armed
+      appState.flushPersist();
+      expect(mockSave).toHaveBeenCalledTimes(2);
+      expect(mockSave.mock.calls[1][0].preferences.theme).toBe('dark');
+      vi.advanceTimersByTime(300);
+      expect(mockSave).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('saves immediately again once the throttle window has passed', () => {
+    vi.useFakeTimers();
+    try {
+      appState.setPreference('theme', 'light');
+      vi.advanceTimersByTime(250);
+      appState.setPreference('theme', 'dark'); // leading again, not trailing
+      expect(mockSave).toHaveBeenCalledTimes(2);
+      expect(mockSave.mock.calls[1][0].preferences.theme).toBe('dark');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

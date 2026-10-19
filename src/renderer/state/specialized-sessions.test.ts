@@ -64,6 +64,7 @@ describe('project coding defaults', () => {
     expect(appState.addPlanSession(project.id, 'Plan')).toMatchObject({ providerId: 'omp', profileId: 'omp-work' });
     expect(old.providerId).toBe('claude');
     expect(appState.addSession(project.id, 'Override', undefined, 'pi')?.providerId).toBe('pi');
+    appState.flushPersist();
     const saved = mockSave.mock.calls.at(-1)![0];
     mockLoad.mockResolvedValue(saved);
     await appState.load();
@@ -79,27 +80,6 @@ describe('project coding defaults', () => {
     expect(appState.addSession(project.id, 'Global')?.providerId).toBe('pi');
   });
 });
-
-function addProjectWithSessions(count: number) {
-  const project = addProject();
-  const sessions = [];
-  for (let i = 0; i < count; i++) {
-    sessions.push(appState.addSession(project.id, `Session ${i + 1}`)!);
-  }
-  return { project, sessions };
-}
-
-function mockCostData() {
-  mockGetCost.mockReturnValue({
-    totalCostUsd: 0.42,
-    totalInputTokens: 1000,
-    totalOutputTokens: 500,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    totalDurationMs: 5000,
-    totalApiDurationMs: 3000,
-  });
-}
 
 describe('addDiffViewerSession()', () => {
   it('creates a diff-viewer session', () => {
