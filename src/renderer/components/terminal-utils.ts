@@ -21,6 +21,26 @@ export function wrapBracketedPaste(terminal: Terminal, text: string): string {
 const CTRL_V = '\x16';
 
 /**
+ * Quote a filesystem path for the shell owning the PTY. Unquoted paths with
+ * spaces reached the prompt as separate arguments — dropping `My File.pdf`
+ * typed two tokens every provider reads as two missing files.
+ * POSIX: single quotes, embedded `'` escaped as '\''.
+ * Windows: double quotes; `\"` is the cmd convention (and accepted by
+ * PowerShell-adjacent shells), trailing `\` before the closing quote
+ * doubled so it cannot swallow it.
+ */
+export function quoteShellPath(p: string): string {
+  if (p === '') return "''";
+  if (!/[\s"'\\`$!*[\]?{}()&#|;<>=^~]/.test(p)) return p;
+  if (isWin) {
+    let s = p.replace(/"/g, '\\"');
+    if (/\\$/.test(s)) s += '\\';
+    return `"${s}"`;
+  }
+  return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Paths a drag carried: an internal file-tree drag holds the path outright, a
  * native OS drag (Explorer/Finder) exposes File objects whose real path the
  * preload resolves. Providers take attachments as paths, so the pane injects the
@@ -96,7 +116,7 @@ export async function pasteIntoTerminal(
   if (data && data.files.length > 0) {
     const paths = await pathsForPastedFiles(Array.from(data.files));
     if (paths.length > 0) {
-      writeToPty(wrapBracketedPaste(terminal, paths.join(' ') + ' '));
+      writeToPty(wrapBracketedPaste(terminal, paths.map(quoteShellPath).join(' ') + ' '));
       return 'files';
     }
   }
@@ -119,7 +139,7 @@ export async function pasteIntoTerminal(
   // the file list is the content. Preferring the text pasted `report.pdf`
   // where the same copy through a native paste event pasted its path.
   if (paths.length > 0) {
-    writeToPty(wrapBracketedPaste(terminal, paths.join(' ') + ' '));
+    writeToPty(wrapBracketedPaste(terminal, paths.map(quoteShellPath).join(' ') + ' '));
     return 'files';
   }
   const text = payload.text.trim() !== '' ? payload.text : payload.html.trim();
@@ -186,7 +206,7 @@ export function attachFileDropHandler(
     if (paths.length === 0) return;
     e.preventDefault();
     if (!isReady()) return;
-    writeToPty(wrapBracketedPaste(terminal, paths.join(' ') + ' '));
+    writeToPty(wrapBracketedPaste(terminal, paths.map(quoteShellPath).join(' ') + ' '));
     terminal.focus();
   });
 }

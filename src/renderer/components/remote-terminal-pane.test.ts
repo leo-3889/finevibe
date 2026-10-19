@@ -29,6 +29,11 @@ vi.mock('../state.js', () => ({
   },
 }));
 
+const mockShowContextMenu = vi.hoisted(() => vi.fn());
+vi.mock('./terminal-context-menu.js', () => ({
+  showTerminalContextMenu: (...args: unknown[]) => mockShowContextMenu(...args),
+}));
+
 class FakeClassList {
   private values = new Set<string>();
 
@@ -62,7 +67,17 @@ class FakeElement {
     return child;
   }
 
-  addEventListener(): void {}
+  listeners = new Map<string, Array<(e: any) => void>>();
+
+  addEventListener(type: string, handler: (e: any) => void): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(handler);
+    this.listeners.set(type, list);
+  }
+
+  fire(type: string, event: any = {}): void {
+    for (const handler of this.listeners.get(type) ?? []) handler(event);
+  }
 
   remove(): void {
     if (!this.parentElement) return;
@@ -180,5 +195,47 @@ describe('attachRemoteToContainer()', () => {
 
     expect(first.children).toEqual([]);
     expect(second.children).toEqual([element]);
+  });
+});
+
+describe('remote pane context menu', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.stubGlobal('document', new FakeDocument());
+  });
+
+  it('opens the terminal context menu wired to the data channel (readwrite)', async () => {
+    const { createRemoteTerminalPane, getRemoteTerminalInstance, _resetForTesting } = await import('./remote-terminal-pane.js');
+    _resetForTesting();
+    const onInput = vi.fn();
+    createRemoteTerminalPane('remote-menu', 'readwrite', 80, 24, onInput);
+    const element = getRemoteTerminalInstance('remote-menu')!.element as unknown as FakeElement;
+
+    element.fire('contextmenu', { clientX: 10, clientY: 20, preventDefault: vi.fn() });
+
+    expect(mockShowContextMenu).toHaveBeenCalledTimes(1);
+    const [x, y, , write] = mockShowContextMenu.mock.calls[0] as [
+      number, number, unknown, (data: string) => void,
+    ];
+    expect(x).toBe(10);
+    expect(y).toBe(20);
+    write('ls\r');
+    expect(onInput).toHaveBeenCalledWith('ls\r');
+  });
+
+  it('read-only panes get a context menu whose writes are dropped', async () => {
+    const { createRemoteTerminalPane, getRemoteTerminalInstance, _resetForTesting } = await import('./remote-terminal-pane.js');
+    _resetForTesting();
+    const onInput = vi.fn();
+    createRemoteTerminalPane('remote-ro', 'readonly', 80, 24, onInput);
+    const element = getRemoteTerminalInstance('remote-ro')!.element as unknown as FakeElement;
+
+    element.fire('contextmenu', { clientX: 1, clientY: 2, preventDefault: vi.fn() });
+
+    expect(mockShowContextMenu).toHaveBeenCalledTimes(1);
+    const write = mockShowContextMenu.mock.calls[0][3] as (data: string) => void;
+    write('rm -rf /\r');
+    expect(onInput).not.toHaveBeenCalled();
   });
 });

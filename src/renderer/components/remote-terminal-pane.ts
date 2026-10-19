@@ -7,6 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { appState } from '../state.js';
 import { attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
+import { showTerminalContextMenu } from './terminal-context-menu.js';
 
 interface RemoteTerminalInstance {
   terminal: Terminal;
@@ -55,7 +56,18 @@ export function createRemoteTerminalPane(
   statusBar.appendChild(modeLabel);
   statusBar.appendChild(disconnectBtn);
   element.appendChild(statusBar);
-
+  // Copy / Select all / Paste on right-click, same as local panes. Read-only
+  // panes get a write function that drops everything: the menu's Paste must
+  // not reach a peer's PTY through a viewer.
+  element.addEventListener('contextmenu', (e: MouseEvent) => {
+    e.preventDefault();
+    showTerminalContextMenu(
+      e.clientX,
+      e.clientY,
+      terminal,
+      mode === 'readwrite' ? onInput : () => {},
+    );
+  });
   const terminal = new Terminal({
     theme: getTerminalTheme(appState.preferences.theme ?? 'dark'),
     fontSize: 14,

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockMatchesAnyShortcut, mockPlatform, mockPreferences, webglState } = vi.hoisted(() => ({
   mockMatchesAnyShortcut: vi.fn(() => false),
@@ -39,7 +39,7 @@ vi.mock('@xterm/addon-webgl', () => ({
   },
 }));
 
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, pasteIntoTerminal } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath } from './terminal-utils.js';
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
 const mockVibeyardClipboardWrite = vi.fn().mockResolvedValue(undefined);
@@ -322,7 +322,7 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
 
     await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith(
-      'C:\\Users\\me\\AppData\\Local\\Temp\\vibeyard-paste\\paste-1.png ',
+      '"C:\\Users\\me\\AppData\\Local\\Temp\\vibeyard-paste\\paste-1.png" ',
     ));
   });
 
@@ -538,6 +538,11 @@ describe('collapseArmedTextareaOnContextMenu', () => {
 });
 
 describe('pasteIntoTerminal (native paste event)', () => {
+  beforeEach(() => {
+    mockPlatform.isMac = false;
+    mockPlatform.isWin = true;
+  });
+
   it('turns a pasted screenshot into an injected temp path', async () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();
@@ -560,7 +565,7 @@ describe('pasteIntoTerminal (native paste event)', () => {
     await pasteIntoTerminal(terminal as any, writeToPty, fakeDataTransfer([file]));
 
     expect(mockSaveImage).not.toHaveBeenCalled();
-    expect(writeToPty).toHaveBeenCalledWith('C:\\repo\\diagram.png ');
+    expect(writeToPty).toHaveBeenCalledWith('"C:\\repo\\diagram.png" ');
   });
 
   it('wraps an injected attachment path in bracketed paste when the mode is on', async () => {
@@ -727,6 +732,12 @@ describe('attachImagePasteHandler', () => {
 describe('attachFileDropHandler', () => {
   const droppedFile = () => new File([new Uint8Array([2])], 'photo.jpg', { type: 'image/jpeg' });
 
+  beforeEach(() => {
+    // The stubbed dropped paths below are Windows-shaped; match the shell.
+    mockPlatform.isMac = false;
+    mockPlatform.isWin = true;
+  });
+
   it('types a dropped file path into a live terminal', () => {
     const terminal = new FakeTerminal();
     const element = new FakeElement();
@@ -736,8 +747,33 @@ describe('attachFileDropHandler', () => {
 
     element.fire('drop', { dataTransfer: fakeDataTransfer([droppedFile()]), preventDefault: vi.fn() });
 
-    expect(writeToPty).toHaveBeenCalledWith('C:\\repo\\photo.jpg ');
+    expect(writeToPty).toHaveBeenCalledWith('"C:\\repo\\photo.jpg" ');
     expect(terminal.focus).toHaveBeenCalled();
+  });
+
+  it('quotes a dropped path with spaces into a single token', () => {
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    mockGetDroppedFilePath.mockReturnValue('C:\\My Docs\\photo.jpg');
+    attachFileDropHandler(terminal as any, element as any, writeToPty, () => true);
+
+    element.fire('drop', { dataTransfer: fakeDataTransfer([droppedFile()]), preventDefault: vi.fn() });
+
+    expect(writeToPty).toHaveBeenCalledWith('"C:\\My Docs\\photo.jpg" ');
+  });
+
+  it('leaves a plain POSIX path unquoted', () => {
+    mockPlatform.isWin = false;
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    mockGetDroppedFilePath.mockReturnValue('/home/u/photo.jpg');
+    attachFileDropHandler(terminal as any, element as any, writeToPty, () => true);
+
+    element.fire('drop', { dataTransfer: fakeDataTransfer([droppedFile()]), preventDefault: vi.fn() });
+
+    expect(writeToPty).toHaveBeenCalledWith('/home/u/photo.jpg ');
   });
 
   it('ignores a drop on a terminal whose PTY is gone', () => {
@@ -761,5 +797,36 @@ describe('attachFileDropHandler', () => {
     element.fire('dragover', { dataTransfer: fakeDataTransfer([], 'some text'), preventDefault });
 
     expect(preventDefault).not.toHaveBeenCalled();
+  });
+});
+
+describe('quoteShellPath', () => {
+  afterEach(() => {
+    mockPlatform.isWin = false;
+  });
+
+  it('leaves shell-safe paths untouched', () => {
+    expect(quoteShellPath('photo.jpg')).toBe('photo.jpg');
+    expect(quoteShellPath('/home/u/a-b_c.2.txt')).toBe('/home/u/a-b_c.2.txt');
+  });
+
+  it('quotes an empty path so it survives as one token', () => {
+    expect(quoteShellPath('')).toBe("''");
+  });
+
+  it('POSIX: single-quotes spaces and escapes embedded single quotes', () => {
+    mockPlatform.isWin = false;
+    expect(quoteShellPath('My File.pdf')).toBe("'My File.pdf'");
+    expect(quoteShellPath("it's.txt")).toBe("'it'\\''s.txt'");
+    expect(quoteShellPath('a$b.txt')).toBe("'a$b.txt'");
+    expect(quoteShellPath('a`b.txt')).toBe("'a`b.txt'");
+  });
+
+  it('Windows: double-quotes spaces and escapes embedded double quotes', () => {
+    mockPlatform.isWin = true;
+    expect(quoteShellPath('C:\\My Docs\\a.txt')).toBe('"C:\\My Docs\\a.txt"');
+    expect(quoteShellPath('C:\\a"b.txt')).toBe('"C:\\a\\"b.txt"');
+    // A trailing backslash must not swallow the closing quote.
+    expect(quoteShellPath('C:\\My Dir\\')).toBe('"C:\\My Dir\\\\"');
   });
 });
