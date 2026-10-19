@@ -135,7 +135,13 @@ export function joinShare(offer: string, passphrase: string): { guestId: string;
     if (disconnectFired) return;
     disconnectFired = true;
     guestPeer.connected = false;
-    cleanupGuest(guestId);
+    // Peer-loss paths (dc.onclose, ICE disconnected/failed) must close the
+    // natives, not just drop the map entry: an open RTCPeerConnection keeps
+    // sending ICE connectivity checks toward the departed host (leaking local
+    // IP:port to the peer we just left) and stays unreclaimable until reload.
+    // disconnectGuest is idempotent — the dc.onclose fan-out from its own
+    // dc.close() re-enters as a no-op (guest already removed from the map).
+    disconnectGuest(guestId);
     for (const cb of disconnectedCbs) cb();
   };
 
