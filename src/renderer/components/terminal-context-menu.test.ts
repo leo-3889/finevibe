@@ -163,7 +163,9 @@ describe('terminal-context-menu', () => {
   });
 
   // Files copied in a file manager arrive as a list main reads; the menu injects
-  // their paths exactly as a drop would.
+  // their paths exactly as a drop would, shell-quoted (`quoteShellPath`). jsdom's
+  // `navigator.platform` is empty, so the PTY shell is treated as POSIX here:
+  // single quotes. The Windows double-quote branch is covered in terminal-utils.
   it('Paste click writes a clipboard file list as attachment paths', async () => {
     const mockReadForPaste = vi.fn().mockResolvedValue({
       text: '', html: '', files: ['C:\\repo\\report.pdf', 'C:\\repo\\data.csv'], imagePath: null, hasContent: true,
@@ -177,7 +179,7 @@ describe('terminal-context-menu', () => {
     (items[1] as HTMLElement).click();
 
     await vi.waitFor(() => {
-      expect(writeToPty).toHaveBeenCalledWith('C:\\repo\\report.pdf C:\\repo\\data.csv ');
+      expect(writeToPty).toHaveBeenCalledWith("'C:\\repo\\report.pdf' 'C:\\repo\\data.csv' ");
     });
   });
 
