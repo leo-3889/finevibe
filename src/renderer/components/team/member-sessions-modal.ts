@@ -4,6 +4,7 @@ import { closeModal, registerModalCleanup } from '../modal.js';
 import { pushModal } from '../modal-manager.js';
 import { isCliSession } from '../../session-utils.js';
 import { getProviderDisplayName } from '../../provider-availability.js';
+import { getLocale, t } from '../../i18n.js';
 
 const overlay = document.getElementById('modal-overlay')!;
 const titleEl = document.getElementById('modal-title')!;
@@ -38,13 +39,13 @@ export function showMemberSessionsModal(member: TeamMember, projectId: string): 
 
   closeModal();
 
-  titleEl.textContent = `Sessions with ${member.name}`;
+  titleEl.textContent = t('team.sessions.title', { name: member.name });
   bodyEl.innerHTML = '';
 
   if (active.length === 0 && archived.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'team-sessions-empty';
-    empty.textContent = `No chat sessions yet for ${member.name}.`;
+    empty.textContent = t('team.sessions.empty', { name: member.name });
     bodyEl.appendChild(empty);
   } else {
     const list = document.createElement('div');
@@ -57,7 +58,7 @@ export function showMemberSessionsModal(member: TeamMember, projectId: string): 
   }
 
   btnConfirm.style.display = 'none';
-  btnCancel.textContent = 'Close';
+  btnCancel.textContent = t('team.sessions.closeButton');
   overlay.classList.remove('hidden');
 
   const handleCancel = () => closeModal();
@@ -74,7 +75,10 @@ function activeRow(session: SessionRecord, projectId: string): SessionRow {
   const provider = getProviderDisplayName(session.providerId ?? 'claude');
   return {
     name: session.name,
-    meta: `Open · started ${formatRelative(Date.parse(session.createdAt))} · ${provider}`,
+    meta: t('team.sessions.openMeta', {
+      time: formatRelative(Date.parse(session.createdAt)),
+      provider,
+    }),
     onClick: () => {
       appState.setActiveSession(projectId, session.id);
       closeModal();
@@ -85,9 +89,15 @@ function activeRow(session: SessionRecord, projectId: string): SessionRow {
 function archivedRow(entry: ArchivedSession, projectId: string): SessionRow {
   const canResume = !!entry.cliSessionId;
   const provider = getProviderDisplayName(entry.providerId);
+  const parts = [
+    entry.state === 'active' ? t('team.sessions.running') : t('team.sessions.closed'),
+    formatRelative(Date.parse(entry.closedAt ?? entry.createdAt)),
+  ];
+  if (!canResume) parts.push(t('team.sessions.cannotResume'));
+  parts.push(provider);
   return {
     name: entry.name,
-    meta: `${entry.state === 'active' ? 'Running' : 'Closed'} · ${formatRelative(Date.parse(entry.closedAt ?? entry.createdAt))}${canResume ? '' : ' · cannot resume'} · ${provider}`,
+    meta: parts.join(' · '),
     onClick: canResume
       ? () => {
           void appState.resumeFromHistorySafe(projectId, entry.id);
@@ -129,16 +139,26 @@ const RELATIVE_UNITS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
   ['second', 1000],
 ];
 
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+let rtf: Intl.RelativeTimeFormat | null = null;
+let rtfLocale = '';
+
+function relativeFormatter(): Intl.RelativeTimeFormat {
+  const locale = getLocale();
+  if (!rtf || rtfLocale !== locale) {
+    rtfLocale = locale;
+    rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  }
+  return rtf;
+}
 
 function formatRelative(timestamp: number): string {
-  if (!Number.isFinite(timestamp)) return 'unknown';
+  if (!Number.isFinite(timestamp)) return t('team.sessions.unknownTime');
   const diffMs = timestamp - Date.now();
   const absMs = Math.abs(diffMs);
   for (const [unit, ms] of RELATIVE_UNITS) {
     if (absMs >= ms || unit === 'second') {
-      return rtf.format(Math.round(diffMs / ms), unit);
+      return relativeFormatter().format(Math.round(diffMs / ms), unit);
     }
   }
-  return rtf.format(0, 'second');
+  return relativeFormatter().format(0, 'second');
 }

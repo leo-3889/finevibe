@@ -1,6 +1,7 @@
 import { appState, type SessionRecord } from './state.js';
 import { getStatus } from './session-activity.js';
 import { showConfirmDialog } from './components/modal.js';
+import { t } from './i18n.js';
 
 function projectSessions(projectId: string): SessionRecord[] {
   return appState.projects.find((p) => p.id === projectId)?.sessions ?? [];
@@ -28,12 +29,12 @@ function confirmAndClose(
   }
   const isSingle = active.length === 1;
   showConfirmDialog(
-    isSingle ? 'Close session' : 'Close sessions',
+    isSingle ? t('sessionClose.closeTitleOne') : t('sessionClose.closeTitleOther'),
     isSingle
-      ? `'${active[0].name}' is still active. Closing will interrupt it.`
-      : `${active.length} sessions are still active. Closing will interrupt them.`,
+      ? t('sessionClose.closeMessageOne', { name: active[0].name })
+      : t('sessionClose.closeMessageOther', { count: active.length }),
     {
-      confirmLabel: isSingle ? 'Close' : 'Close all',
+      confirmLabel: isSingle ? t('sessionClose.closeConfirmOne') : t('sessionClose.closeConfirmOther'),
       onConfirm: remove,
     },
   );
@@ -122,12 +123,12 @@ export function confirmAppClose(onConfirm: () => void): void {
   }
   const isSingle = count === 1;
   showConfirmDialog(
-    'Quit Vibeyard',
+    t('sessionClose.quitTitle'),
     isSingle
-      ? 'A session is still active. Quitting will interrupt it.'
-      : `${count} sessions are still active. Quitting will interrupt them.`,
+      ? t('sessionClose.quitMessageOne')
+      : t('sessionClose.quitMessageOther', { count }),
     {
-      confirmLabel: 'Quit',
+      confirmLabel: t('sessionClose.quitConfirm'),
       onConfirm,
     },
   );

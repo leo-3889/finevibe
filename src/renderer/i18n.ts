@@ -37,6 +37,15 @@ function lookupByKey(key: string, locale: Locale): string | undefined {
 }
 
 /**
+ * True when `key` resolves under the current locale (including the
+ * English fallback). Lets display-time callers fall back to their own
+ * default text instead of rendering the raw key.
+ */
+export function hasKey(key: string): boolean {
+  return lookupByKey(key, currentLocale) !== undefined || lookupByKey(key, 'en') !== undefined;
+}
+
+/**
  * Translate a dot-path key under the current locale. Falls back to
  * English when the key is missing in the active locale; warns and
  * returns the key itself when also missing in English. Optional

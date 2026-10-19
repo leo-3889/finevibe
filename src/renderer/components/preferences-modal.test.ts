@@ -59,6 +59,8 @@ vi.mock('../shortcuts.js', () => ({
   },
   displayKeys: vi.fn(() => ''),
   eventToAccelerator: vi.fn(() => null),
+  shortcutLabel: vi.fn((def: { label: string }) => def.label),
+  shortcutCategoryLabel: vi.fn((category: string) => category),
 }));
 vi.mock('../provider-availability.js', () => ({
   loadProviderAvailability: vi.fn(async () => {}),

@@ -1,5 +1,6 @@
 import { appState } from './state.js';
 import { isMac } from './platform.js';
+import { hasKey, t } from './i18n.js';
 
 export interface ShortcutDef {
   id: string;
@@ -16,6 +17,12 @@ interface ShortcutDefault {
   defaultKeys: string;
 }
 
+/**
+ * English defaults, kept as stable ids + display fallbacks. `id` is the
+ * keybinding storage key on `preferences.keybindings` — never localize it.
+ * Labels/categories are translated at display time via `shortcutLabel`
+ * and `shortcutCategoryLabel`.
+ */
 export const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'new-session', label: 'New Session', category: 'Sessions', defaultKeys: 'CmdOrCtrl+T' },
   { id: 'new-session-alt', label: 'New Session (Alt)', category: 'Sessions', defaultKeys: 'CmdOrCtrl+Shift+N' },
@@ -52,6 +59,18 @@ export const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'browser-reload', label: 'Reload Page', category: 'Browser', defaultKeys: 'CmdOrCtrl+R' },
   { id: 'browser-hard-reload', label: 'Hard Reload (Bypass Cache)', category: 'Browser', defaultKeys: 'CmdOrCtrl+Shift+R' },
 ];
+
+/** Localized display label for a shortcut; falls back to its English default. */
+export function shortcutLabel(def: { id: string; label: string }): string {
+  const key = `shortcuts.${def.id}.label`;
+  return hasKey(key) ? t(key) : def.label;
+}
+
+/** Localized category header; falls back to the raw (English) category name. */
+export function shortcutCategoryLabel(category: string): string {
+  const key = `shortcuts.category.${category}`;
+  return hasKey(key) ? t(key) : category;
+}
 
 /** Convert accelerator string to platform-specific display string */
 export function displayKeys(accelerator: string): string {

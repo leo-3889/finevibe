@@ -366,6 +366,16 @@
       "backAriaLabel": "返回",
       "addedGlyph": "✓  {label}",
       "addGlyph": "+  {label}"
+    },
+    "sessions": {
+      "title": "与 {name} 的会话",
+      "empty": "「{name}」暂无聊天会话。",
+      "closeButton": "关闭",
+      "openMeta": "打开 · 开始于 {time} · {provider}",
+      "running": "运行中",
+      "closed": "已关闭",
+      "cannotResume": "无法恢复",
+      "unknownTime": "未知"
     }
   },
   "projectTab": {
@@ -397,7 +407,48 @@
   "shortcuts": {
     "resetButton": "重置",
     "resetTooltip": "恢复默认",
-    "recordingPrompt": "请按键…"
+    "recordingPrompt": "请按键…",
+    "category": {
+      "Sessions": "会话",
+      "Panels": "面板",
+      "Search & Help": "搜索与帮助",
+      "View": "视图",
+      "Browser": "浏览器"
+    },
+    "new-session": { "label": "新建会话" },
+    "new-session-alt": { "label": "新建会话（Alt）" },
+    "new-project": { "label": "新建项目" },
+    "goto-session-1": { "label": "转到会话 1" },
+    "goto-session-2": { "label": "转到会话 2" },
+    "goto-session-3": { "label": "转到会话 3" },
+    "goto-session-4": { "label": "转到会话 4" },
+    "goto-session-5": { "label": "转到会话 5" },
+    "goto-session-6": { "label": "转到会话 6" },
+    "goto-session-7": { "label": "转到会话 7" },
+    "goto-session-8": { "label": "转到会话 8" },
+    "goto-session-9": { "label": "转到会话 9" },
+    "next-session": { "label": "下一个会话" },
+    "prev-session": { "label": "上一个会话" },
+    "tab-back": { "label": "后退（标签历史）" },
+    "tab-forward": { "label": "前进（标签历史）" },
+    "toggle-sidebar": { "label": "切换侧边栏" },
+    "toggle-split": { "label": "切换分屏模式" },
+    "project-terminal": { "label": "项目终端" },
+    "project-terminal-alt": { "label": "项目终端（Alt）" },
+    "debug-panel": { "label": "调试面板" },
+    "git-panel": { "label": "Git 面板" },
+    "quick-open": { "label": "快速打开文件" },
+    "session-search": { "label": "搜索所有会话" },
+    "find-in-terminal": { "label": "查找" },
+    "goto-line": { "label": "跳转到行" },
+    "help": { "label": "帮助" },
+    "close-session": { "label": "关闭会话" },
+    "toggle-inspector": { "label": "切换会话检查器" },
+    "zoom-in": { "label": "放大" },
+    "zoom-out": { "label": "缩小" },
+    "zoom-reset": { "label": "重置缩放" },
+    "browser-reload": { "label": "重新加载页面" },
+    "browser-hard-reload": { "label": "强制重新加载（绕过缓存）" }
   },
   "profiles": {
     "heading": "CLI 配置文件",
@@ -530,6 +581,54 @@
   },
   "session": {
     "crashedTitle": "会话异常结束",
-    "crashedBody": "会话已崩溃：{reason}"
+    "crashedBody": "会话已崩溃：{reason}",
+    "history": {
+      "exportSaved": "导出已保存：{path}",
+      "exportFailed": "导出失败：{err}",
+      "resume": "恢复会话",
+      "removeFromHistory": "从历史中移除",
+      "exportZip": "导出会话（zip）…",
+      "exportZipTooltip": "保存包含 meta.json、提供方 transcript 文件和 hook sidecar 的 zip 压缩包。",
+      "exportZipNoIdTooltip": "未知 CLI 会话 id：压缩包中仅包含 meta.json。",
+      "exportTranscript": "导出 transcript（单文件）…",
+      "exportTranscriptTooltip": "原样保存提供方原生 transcript 文件。",
+      "empty": "暂无会话历史",
+      "filterPlaceholder": "过滤历史…",
+      "bookmarked": "已收藏",
+      "clearButton": "清空历史",
+      "clearTitle": "清空会话历史",
+      "clearMessage": "清空「{name}」下所有未收藏的会话？已收藏的会话将保留。此操作无法撤销。",
+      "clearConfirm": "清空",
+      "running": "运行中",
+      "runningTooltip": "会话正在运行",
+      "sessionId": "会话 ID：{id}",
+      "resumeCrashedTooltip": "恢复崩溃的会话",
+      "removeBookmarkTooltip": "取消收藏",
+      "bookmarkTooltip": "收藏会话",
+      "moreItems": "还有 {count} 条…"
+    }
+  },
+  "sessionClose": {
+    "closeTitleOne": "关闭会话",
+    "closeTitleOther": "关闭会话",
+    "closeMessageOne": "「{name}」仍在活动。关闭将中断它。",
+    "closeMessageOther": "有 {count} 个会话仍在活动。关闭将中断它们。",
+    "closeConfirmOne": "关闭",
+    "closeConfirmOther": "全部关闭",
+    "quitTitle": "退出 Vibeyard",
+    "quitMessageOne": "仍有会话在活动。退出将中断它。",
+    "quitMessageOther": "有 {count} 个会话仍在活动。退出将中断它们。",
+    "quitConfirm": "退出"
+  },
+  "debugPanel": {
+    "title": "事件调试",
+    "allEvents": "全部事件",
+    "filterBySession": "按会话 ID 过滤",
+    "clearSessionFilter": "清除会话过滤",
+    "autoScrollOn": "自动滚动：开",
+    "autoScrollOff": "自动滚动：关",
+    "clear": "清除",
+    "eventCount": "{count} 个事件",
+    "filteredSuffix": " （已过滤：{filters}）"
   }
 }

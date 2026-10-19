@@ -366,6 +366,16 @@
       "backAriaLabel": "Back",
       "addedGlyph": "✓  {label}",
       "addGlyph": "+  {label}"
+    },
+    "sessions": {
+      "title": "Sessions with {name}",
+      "empty": "No chat sessions yet for {name}.",
+      "closeButton": "Close",
+      "openMeta": "Open · started {time} · {provider}",
+      "running": "Running",
+      "closed": "Closed",
+      "cannotResume": "cannot resume",
+      "unknownTime": "unknown"
     }
   },
   "projectTab": {
@@ -397,7 +407,48 @@
   "shortcuts": {
     "resetButton": "Reset",
     "resetTooltip": "Reset to default",
-    "recordingPrompt": "Press keys..."
+    "recordingPrompt": "Press keys...",
+    "category": {
+      "Sessions": "Sessions",
+      "Panels": "Panels",
+      "Search & Help": "Search & Help",
+      "View": "View",
+      "Browser": "Browser"
+    },
+    "new-session": { "label": "New Session" },
+    "new-session-alt": { "label": "New Session (Alt)" },
+    "new-project": { "label": "New Project" },
+    "goto-session-1": { "label": "Go to Session 1" },
+    "goto-session-2": { "label": "Go to Session 2" },
+    "goto-session-3": { "label": "Go to Session 3" },
+    "goto-session-4": { "label": "Go to Session 4" },
+    "goto-session-5": { "label": "Go to Session 5" },
+    "goto-session-6": { "label": "Go to Session 6" },
+    "goto-session-7": { "label": "Go to Session 7" },
+    "goto-session-8": { "label": "Go to Session 8" },
+    "goto-session-9": { "label": "Go to Session 9" },
+    "next-session": { "label": "Next Session" },
+    "prev-session": { "label": "Previous Session" },
+    "tab-back": { "label": "Back (Tab History)" },
+    "tab-forward": { "label": "Forward (Tab History)" },
+    "toggle-sidebar": { "label": "Toggle Sidebar" },
+    "toggle-split": { "label": "Toggle Split Mode" },
+    "project-terminal": { "label": "Project Terminal" },
+    "project-terminal-alt": { "label": "Project Terminal (Alt)" },
+    "debug-panel": { "label": "Debug Panel" },
+    "git-panel": { "label": "Git Panel" },
+    "quick-open": { "label": "Quick Open File" },
+    "session-search": { "label": "Search All Sessions" },
+    "find-in-terminal": { "label": "Find" },
+    "goto-line": { "label": "Go to Line" },
+    "help": { "label": "Help" },
+    "close-session": { "label": "Close Session" },
+    "toggle-inspector": { "label": "Toggle Session Inspector" },
+    "zoom-in": { "label": "Zoom In" },
+    "zoom-out": { "label": "Zoom Out" },
+    "zoom-reset": { "label": "Reset Zoom" },
+    "browser-reload": { "label": "Reload Page" },
+    "browser-hard-reload": { "label": "Hard Reload (Bypass Cache)" }
   },
   "profiles": {
     "heading": "CLI profiles",
@@ -530,6 +581,54 @@
   },
   "session": {
     "crashedTitle": "Session ended unexpectedly",
-    "crashedBody": "The session crashed: {reason}"
+    "crashedBody": "The session crashed: {reason}",
+    "history": {
+      "exportSaved": "Export saved: {path}",
+      "exportFailed": "Export failed: {err}",
+      "resume": "Resume",
+      "removeFromHistory": "Remove from history",
+      "exportZip": "Export session (zip)…",
+      "exportZipTooltip": "Save a zip with meta.json, the provider transcript file, and hook sidecars.",
+      "exportZipNoIdTooltip": "No CLI session id known: the zip contains meta.json only.",
+      "exportTranscript": "Export transcript (single file)…",
+      "exportTranscriptTooltip": "Save the provider-native transcript file verbatim.",
+      "empty": "No session history yet",
+      "filterPlaceholder": "Filter history...",
+      "bookmarked": "Bookmarked",
+      "clearButton": "Clear History",
+      "clearTitle": "Clear session history",
+      "clearMessage": "Clear all non-bookmarked sessions for \"{name}\"? Bookmarked sessions will be kept. This cannot be undone.",
+      "clearConfirm": "Clear",
+      "running": "Running",
+      "runningTooltip": "Session is running",
+      "sessionId": "Session ID: {id}",
+      "resumeCrashedTooltip": "Resume crashed session",
+      "removeBookmarkTooltip": "Remove bookmark",
+      "bookmarkTooltip": "Bookmark session",
+      "moreItems": "{count} more items..."
+    }
+  },
+  "sessionClose": {
+    "closeTitleOne": "Close session",
+    "closeTitleOther": "Close sessions",
+    "closeMessageOne": "'{name}' is still active. Closing will interrupt it.",
+    "closeMessageOther": "{count} sessions are still active. Closing will interrupt them.",
+    "closeConfirmOne": "Close",
+    "closeConfirmOther": "Close all",
+    "quitTitle": "Quit Vibeyard",
+    "quitMessageOne": "A session is still active. Quitting will interrupt it.",
+    "quitMessageOther": "{count} sessions are still active. Quitting will interrupt them.",
+    "quitConfirm": "Quit"
+  },
+  "debugPanel": {
+    "title": "Event Debug",
+    "allEvents": "All Events",
+    "filterBySession": "Filter by session ID",
+    "clearSessionFilter": "Clear session filter",
+    "autoScrollOn": "Auto-scroll: ON",
+    "autoScrollOff": "Auto-scroll: OFF",
+    "clear": "Clear",
+    "eventCount": "{count} events",
+    "filteredSuffix": " (filtered: {filters})"
   }
 }
