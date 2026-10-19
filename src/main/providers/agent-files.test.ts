@@ -1,77 +1,48 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import * as path from 'path';
-import { deleteAgentFile, writeAgentFile } from './agent-files';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { writeAgentFile, deleteAgentFile } from './agent-files';
 
-vi.mock('fs', () => {
-  const mkdirSync = vi.fn();
-  const writeFile = vi.fn(async () => undefined);
-  const unlink = vi.fn(async () => undefined);
-  return {
-    mkdirSync,
-    promises: { writeFile, unlink },
-  };
-});
+describe('agent-files slug guard', () => {
+  // The slug arrives from the renderer over provider:installAgent; a slug
+  // with path syntax used to be a write/unlink primitive outside the agents
+  // dir ("../../evil", absolute fragments, separators).
+  let dir: string;
+  let outside: string;
 
-import * as fs from 'fs';
-
-const mkdirSync = vi.mocked(fs.mkdirSync);
-const writeFile = vi.mocked(fs.promises.writeFile);
-const unlink = vi.mocked(fs.promises.unlink);
-
-beforeEach(() => {
-  mkdirSync.mockReset();
-  writeFile.mockReset().mockResolvedValue(undefined as never);
-  unlink.mockReset().mockResolvedValue(undefined as never);
-});
-
-describe('writeAgentFile', () => {
-  it('creates the directory recursively and writes UTF-8', async () => {
-    const dir = path.join('/home/u', '.claude', 'agents');
-    const result = await writeAgentFile(dir, 'cmo', '---\nname: cmo\n---\nhi');
-
-    expect(mkdirSync).toHaveBeenCalledWith(dir, { recursive: true });
-    expect(writeFile).toHaveBeenCalledWith(path.join(dir, 'cmo.md'), '---\nname: cmo\n---\nhi', 'utf8');
-    expect(result.filePath).toBe(path.join(dir, 'cmo.md'));
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-files-'));
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-outside-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
   });
 
-  it('overwrites existing files (writeFile is the destination)', async () => {
-    const dir = path.join('/x');
-    await writeAgentFile(dir, 'a', 'one');
-    await writeAgentFile(dir, 'a', 'two');
-    expect(writeFile).toHaveBeenLastCalledWith(path.join(dir, 'a.md'), 'two', 'utf8');
+  it('writes a well-formed slug inside the dir', async () => {
+    const { filePath } = await writeAgentFile(dir, 'review-bot.v1', 'content');
+    expect(filePath).toBe(path.join(dir, 'review-bot.v1.md'));
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('content');
   });
 
-  it('honors a custom extension', async () => {
-    const dir = path.join('/home/u', '.copilot', 'agents');
-    const result = await writeAgentFile(dir, 'cmo', 'body', '.agent.md');
-
-    expect(writeFile).toHaveBeenCalledWith(path.join(dir, 'cmo.agent.md'), 'body', 'utf8');
-    expect(result.filePath).toBe(path.join(dir, 'cmo.agent.md'));
-  });
-});
-
-describe('deleteAgentFile', () => {
-  it('unlinks the agent file', async () => {
-    const dir = path.join('/home/u', '.codex', 'agents');
-    await deleteAgentFile(dir, 'cmo');
-    expect(unlink).toHaveBeenCalledWith(path.join(dir, 'cmo.md'));
+  it('rejects traversal slugs without touching the filesystem', async () => {
+    const victim = path.join(outside, 'evil.md');
+    await expect(writeAgentFile(dir, '../evil', 'x')).rejects.toThrow(/Unsafe agent slug/);
+    await expect(writeAgentFile(dir, '..\\..\\evil', 'x')).rejects.toThrow(/Unsafe agent slug/);
+    expect(fs.existsSync(victim)).toBe(false);
+    expect(fs.readdirSync(dir)).toHaveLength(0);
   });
 
-  it('honors a custom extension', async () => {
-    const dir = path.join('/home/u', '.copilot', 'agents');
-    await deleteAgentFile(dir, 'cmo', '.agent.md');
-    expect(unlink).toHaveBeenCalledWith(path.join(dir, 'cmo.agent.md'));
+  it('rejects separator and empty slugs on delete', async () => {
+    const victim = path.join(outside, 'target.md');
+    fs.writeFileSync(victim, 'keep');
+    await expect(deleteAgentFile(dir, '../../target')).rejects.toThrow(/Unsafe agent slug/);
+    await expect(deleteAgentFile(dir, '')).rejects.toThrow(/Unsafe agent slug/);
+    expect(fs.existsSync(victim)).toBe(true);
   });
 
-  it('swallows ENOENT', async () => {
-    const err = Object.assign(new Error('nope'), { code: 'ENOENT' });
-    unlink.mockRejectedValueOnce(err);
-    await expect(deleteAgentFile('/x', 'gone')).resolves.toBeUndefined();
-  });
-
-  it('rethrows non-ENOENT errors', async () => {
-    const err = Object.assign(new Error('perm'), { code: 'EACCES' });
-    unlink.mockRejectedValueOnce(err);
-    await expect(deleteAgentFile('/x', 'cmo')).rejects.toThrow('perm');
+  it('delete of a safe slug swallows ENOENT', async () => {
+    await expect(deleteAgentFile(dir, 'ghost')).resolves.toBeUndefined();
   });
 });
