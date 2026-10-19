@@ -208,9 +208,9 @@ Dedicated branch `feat/rename` off the integration tip (merge into integration o
 - **N1 Identity (coordinator, one commit):** `package.json` — `name`, `bin`, `build.appId`, `build.productName`, 4× `artifactName`, `publish.owner/repo`, mac `NSMicrophoneUsageDescription` string; `build/vibeyard-black.png` → new filename (git mv); icons copied to new name if needed.
 - **N2 Launcher/updater (coordinator, same wave):** `bin/vibeyard.js` → new bin name (package.json `bin` updated), internal 15 occurrences, release-repo defaults, `VIBEYARD_RELEASE_REPO` → new env var with **one-release back-compat read of the old name** (per Q6); `auto-updater.ts` feed logic + env override; `npm-launcher.test.ts` + `auto-updater.test.ts` updated in the same commit.
 - **N3 Runtime data paths + migration:** every userData-derived path (browser partitions `vibeyard-browser-iso-*`, per-launch session dirs, store `state.json`, export/hook/partition dirs, deep-search dirs — enumerate via `app.getPath` callsites, not grep alone). Per Q6: first-launch migration shim (copy old userData → new dir once, marker file, keep old dir), old partition-prefix string flows from a constant. Test: disk-backed migration test (precedent: `store.integration.test.ts`).
+- **N4 Source sweep (up to 4 parallel workers, dir-sliced):** classify the 674 src occurrences: (a) user-visible strings → locales + window/menu titles, (b) symbols/identifiers → `lsp rename` per symbol, never text-rename across files, (c) comments/test fixtures → ast_edit/grep waves, (d) env var names → coordinated with N2. Test fixtures renamed to the new name; **zero tests may pin the old name** after this wave.
 - **N5 Repo surface (1 worker):** human-facing set only (§7A E1): README, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, HOOKS.md, CLAUDE.md, `docs/*` headers, `.github/` templates + `package-ubuntu.yml`, `.gitignore`. History docs now live in `<llm>/` — sweep them in a separate base-folder pass (same classification, not part of the repo gate); recorded hashes/titles in history docs are never rewritten.
 - **N6 Verification:** full gate (§10) + `npx electron-builder --win --dir --publish never` smoke (no upload, no signing) + `git grep -i vibeyard` → must return **only** the allow-list: historical docs (per Q7), `README.upstream.md`, migration shim strings, author repo URLs; plus `grep -ri vibeyard <llm>/` after the base-folder pass. Launch `npm start` once; observe window title, userData dir created at the new path, updater feed, browser-tab partition creation.
-- **N6 Verification:** full gate (§10) + `npx electron-builder --win --dir --publish never` smoke (no upload, no signing) + `git grep -i vibeyard` → must return **only** the allow-list: historical docs (per Q7), `README.upstream.md`, migration shim strings, author repo URLs. Launch `npm start` once; observe window title, userData dir created at the new path, updater feed, browser-tab partition creation.
 - Sequencing: N1+N2 first (one commit, coordinator), then N3, then N4∥N5, then N6. Any collision with a running remediation wave is resolved by finishing the wave first — rename is serialized against everything.
 
 ## 9. Coordination, state, recovery
@@ -238,17 +238,15 @@ Known host flake: forks-worker startup timeouts — rerun the specific file in i
 ## 11. Deliverables checklist (= §0.3 completion contract, operational view)
 
 - [ ] `<llm>/audits/2026-10-19-{cleanup,performance,architecture,merge-map}.md` (performance with measurement tables)
-- [ ] `docs/audits/2026-10-19-consolidated-backlog.md` + user scope approval recorded
+- [ ] `<llm>/audits/2026-10-19-consolidated-backlog.md` + user scope approval recorded
 - [ ] Remediation commits on `audit-2026-10-19`, green full gate per wave
 - [ ] Wave E: repo tracks human-facing docs only; `<llm>/` holds the LLM set + rules README; CLAUDE.md pointer; links repaired (G9)
 - [ ] Merge plan executed (local only), branch-deletion list recorded
 - [ ] Final report appended to `<llm>/AUDIT_STATUS.md` (exact test counts, hashes of every gate, remaining open items incl. item 5 live integration)
 - [ ] State file `<llm>/state/` closed with final wave table
-- [ ] State file closed with final wave table
 
 ## 12. Explicit non-goals / off-limits
 No push/PR/issues; no history rewrite on pushed branches; stashes untouched (triage in W4 report only); `dev/` untouched; CHANGELOG history and git history untouched (moved LLM docs remain in history — separation is prospective, per §7A); **`<llm>/` contents are NEVER committed** (§2.8); no new binary assets without Q1 answer (icon set ships with the answer); no packaged publishing; no pi-lens; no dependency upgrades outside a named finding.
-No push/PR/issues; no history rewrite on pushed branches; stashes untouched (triage in W4 report only); `dev/` untouched; CHANGELOG history and git history untouched; no new binary assets without Q1 answer (icon set ships with the answer); no packaged publishing; no pi-lens; no dependency upgrades outside a named finding.
 
 ## 13. Time budget
 
