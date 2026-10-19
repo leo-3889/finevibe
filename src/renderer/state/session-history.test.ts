@@ -388,8 +388,19 @@ describe('removeHistoryEntry()', () => {
   });
 
   it('no-op for nonexistent project', () => {
-    // Should not throw
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-re-noop');
+    appState.removeSession(project.id, session.id);
+    const cb = vi.fn();
+    appState.on('history-changed', cb);
+    mockSave.mockClear();
     appState.removeHistoryEntry('bad-project', 'bad-id');
+    // The real project's archived row survives; the bad-id call emits and
+    // persists nothing.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 
   it('no-op for nonexistent entry id', () => {
@@ -490,8 +501,19 @@ describe('clearSessionHistory()', () => {
   });
 
   it('no-op for nonexistent project', () => {
-    // Should not throw
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-clear-noop');
+    appState.removeSession(project.id, session.id);
+    const cb = vi.fn();
+    appState.on('history-changed', cb);
+    mockSave.mockClear();
     appState.clearSessionHistory('nonexistent');
+    // A missing project must not clear (or touch) the real project's rows,
+    // emit an event, or schedule a save.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 
   it('preserves bookmarked sessions when clearing', () => {
@@ -553,12 +575,38 @@ describe('toggleBookmark()', () => {
   });
 
   it('no-op for nonexistent project', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-bm-badproj');
+    appState.removeSession(project.id, session.id);
+    const cb = vi.fn();
+    appState.on('history-changed', cb);
+    mockSave.mockClear();
     appState.toggleBookmark('bad-project', 'bad-id');
+    // The real project's entry survives untouched; nothing is emitted or
+    // persisted for a lookup that matched no project.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(appState.getSessionHistory(project.id)[0].bookmarked).toBeFalsy();
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 
   it('no-op for nonexistent entry', () => {
     const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-bm-noop');
+    appState.removeSession(project.id, session.id);
+    expect(appState.getSessionHistory(project.id)[0].bookmarked).toBeFalsy();
+    const cb = vi.fn();
+    appState.on('history-changed', cb);
+    mockSave.mockClear();
     appState.toggleBookmark(project.id, 'nonexistent');
+    // The real entry keeps its flag and count; the failed toggle emits and
+    // persists nothing.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(appState.getSessionHistory(project.id)[0].bookmarked).toBeFalsy();
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 
   it('archived entries from same session via /clear get unique IDs', () => {

@@ -4,7 +4,16 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     globals: true,
-    // 169 files run in parallel; the heaviest legitimate suites (jsdom
+    // Cap forks workers. The default pool spawns cores-1 workers, and on this
+    // Windows host 7 of 173 workers timed out *at startup* (2026-10-18): those
+    // files never ran, yet the run reported 166 passed. The cap is the fix;
+    // raising testTimeout alone just hides the same startup timeout longer.
+    // Vitest 4 removed `poolOptions`: nesting `maxWorkers` there is silently
+    // ignored (it only prints a DEPRECATED warning), so the cap must be
+    // top-level to have any effect.
+    pool: 'forks',
+    maxWorkers: 4,
+    // 174 files run in parallel; the heaviest legitimate suites (jsdom
     // file-reader with 200k lines, sidebar module import) take 2-3s alone and
     // cross vitest's 5s default on a loaded Windows machine — they flip red
     // under contention without any regression. 15s keeps real hangs failing.

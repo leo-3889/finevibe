@@ -141,20 +141,36 @@ describe('board-state', () => {
       expect(updated!.prompt).toBe('p');
     });
 
-    it('updates updatedAt timestamp', () => {
-      const task = addTask({ title: 'T', prompt: 'p' })!;
-      const originalUpdatedAt = task.updatedAt;
-      // Small delay to ensure timestamp differs
-      updateTask(task.id, { title: 'Changed' });
-      const board = getBoard()!;
-      const updated = board.tasks.find(t => t.id === task.id);
-      expect(updated!.updatedAt).toBeGreaterThanOrEqual(originalUpdatedAt);
+    it('advances updatedAt when a real update lands', () => {
+      // The clock is pinned and stepped, so strict `>` proves updateTask
+      // stamps updatedAt. The old `>=` against a non-decreasing in-process
+      // clock could never fail, and the "Small delay to ensure timestamp
+      // differs" comment described a delay that does not exist in the test.
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(1_900_000_000_000);
+        const task = addTask({ title: 'T', prompt: 'p' })!;
+        expect(task.updatedAt).toBe(1_900_000_000_000);
+        vi.setSystemTime(1_900_000_005_000);
+        updateTask(task.id, { title: 'Changed' });
+        const updated = getBoard()!.tasks.find(t => t.id === task.id)!;
+        expect(updated.updatedAt).toBeGreaterThan(task.createdAt);
+        expect(updated.updatedAt).toBe(1_900_000_005_000);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('no-ops for unknown taskId', () => {
-      updateTask('nonexistent', { title: 'X' });
-      // Should not throw
+      const task = addTask({ title: 'T', prompt: 'p' })!;
+      const originalUpdatedAt = task.updatedAt;
+      deleteTask(task.id);
       expect(getBoard()!.tasks).toHaveLength(0);
+      // A write naming an unknown task must not create, resurrect, reorder,
+      // mutate, or timestamp-restamp any task.
+      updateTask('nonexistent', { title: 'X' });
+      expect(getBoard()!.tasks).toHaveLength(0);
+      expect(task.updatedAt).toBe(originalUpdatedAt);
     });
 
     it('updates profileId', () => {
@@ -232,8 +248,8 @@ describe('board-state', () => {
     });
 
     it('moves task within same column (reorder)', () => {
-      const t1 = addTask({ title: 'T1', prompt: 'p' })!;
-      const t2 = addTask({ title: 'T2', prompt: 'p' })!;
+      addTask({ title: 'T1', prompt: 'p' });
+      addTask({ title: 'T2', prompt: 'p' });
       const t3 = addTask({ title: 'T3', prompt: 'p' })!;
       // Move t3 to position 0
       moveTask(t3.id, 'col-backlog', 0);
@@ -243,9 +259,9 @@ describe('board-state', () => {
     });
 
     it('reindexes source column after move', () => {
-      const t1 = addTask({ title: 'T1', prompt: 'p' })!;
+      addTask({ title: 'T1', prompt: 'p' });
       const t2 = addTask({ title: 'T2', prompt: 'p' })!;
-      const t3 = addTask({ title: 'T3', prompt: 'p' })!;
+      addTask({ title: 'T3', prompt: 'p' });
       moveTask(t2.id, 'col-running', 0);
       const backlogTasks = getTasksForColumn('col-backlog');
       expect(backlogTasks).toHaveLength(2);
