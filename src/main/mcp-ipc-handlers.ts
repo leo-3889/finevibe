@@ -1,13 +1,17 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import * as mcpClient from './mcp-client';
 
-/** Loopback names for dev MCP servers; URL.parser lowercases the host. */
+/** Exact loopback hosts for dev MCP servers; URL.parser lowercases the host. */
 const LOCAL_HOSTS: Record<string, true> = { localhost: true, '127.0.0.1': true, '::1': true, '[::1]': true };
 
 /**
  * SSRF gate for renderer-supplied MCP URLs: the client transports are SSE +
  * StreamableHTTP (URL over http(s) only), so every other scheme is rejected
  * outright. Non-loopback http(s) needs an explicit user confirm.
+ * The exemption is exact-host plus the 127/8 literal — never a name suffix:
+ * the gate does no DNS, so trusting a `.localhost` suffix would hand the
+ * decision to whatever the resolver/hosts file says, and `evil.localhost`
+ * would reach a routable address with no confirm.
  * Empty URL = stdio-style config: nothing to gate.
  */
 export function mcpUrlPolicy(url: string): { ok: boolean; needsConfirm: boolean; reason?: string } {
@@ -23,7 +27,7 @@ export function mcpUrlPolicy(url: string): { ok: boolean; needsConfirm: boolean;
     return { ok: false, needsConfirm: false, reason: `Unsupported MCP URL scheme "${parsed.protocol}" (http/https only)` };
   }
   const host = parsed.hostname;
-  if (host in LOCAL_HOSTS || /^127(\.\d{1,3}){3}$/.test(host) || host.endsWith('.localhost')) {
+  if (host in LOCAL_HOSTS || /^127(\.\d{1,3}){3}$/.test(host)) {
     return { ok: true, needsConfirm: false };
   }
   return { ok: true, needsConfirm: true };
