@@ -35,7 +35,6 @@ import { shouldWarnStatusLine } from './settings-guard';
 import { buildVibeyardignoreMatcher } from './vibeyardignore';
 import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
-import { launchSessionDir } from './launch-session-dir';
 import { getKeychainIsolationStatus } from './claude-keychain';
 
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
@@ -230,9 +229,7 @@ export function registerIpcHandlers(): void {
       // sessionDir (Pi/OMP) is the launch's exclusive transcript dir:
       // path resolution checks it first, so a post-`/clear` transcript is
       // found where the CLI wrote it, not only in the legacy trees.
-      const sessionDir = providerId === 'pi' || providerId === 'omp'
-        ? launchSessionDir(providerId, sessionId)
-        : undefined;
+      const sessionDir = resolveLaunchSessionDir(providerId, sessionId);
       registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir });
       // ...and let the provider re-attach to its own on-disk state,
       // seeding the sessions watcher as an ADOPTED entry (known id +
@@ -284,7 +281,7 @@ export function registerIpcHandlers(): void {
           let transcriptPath = getSyncedTranscriptPath(sessionId);
           if (!transcriptPath && cliSessionId) {
             try {
-              transcriptPath = provider.getTranscriptPath?.(cliSessionId, cwd, configDir, providerId === 'omp' || providerId === 'pi' ? launchSessionDir(providerId, sessionId) : undefined) ?? null;
+              transcriptPath = provider.getTranscriptPath?.(cliSessionId, cwd, configDir, resolveLaunchSessionDir(providerId, sessionId)) ?? null;
             } catch {
               transcriptPath = null;
             }
@@ -795,9 +792,7 @@ export function registerIpcHandlers(): void {
         // Pi/OMP: the restored tab's launch dir is derivable from its UI
         // session id, so a post-`/clear` transcript written to it before
         // the restart is resolvable without any persisted mapping.
-        const sessionDir = s.providerId === 'pi' || s.providerId === 'omp'
-          ? launchSessionDir(s.providerId, s.sessionId)
-          : undefined;
+        const sessionDir = resolveLaunchSessionDir(s.providerId, s.sessionId);
         if (registerTranscriptSync(s.sessionId, s.providerId, s.cliSessionId, s.cwd, s.configDir, { titleOnly: true, sessionDir })) {
           registerSession(s.sessionId);
         }

@@ -24,6 +24,17 @@ function makeStat(mtime: number): Awaited<ReturnType<typeof fs.promises.stat>> {
   return { mtimeMs: mtime } as Awaited<ReturnType<typeof fs.promises.stat>>;
 }
 
+// Concurrency gates for the cap tests: every indexTranscript call parks on a
+// promise that ONLY the test resolves, so peak concurrency is a property the
+// scheduler is forced to produce. The old `setTimeout(resolve, 1)` let the OS
+// decide: under fork contention 1ms timers coalesce, every call completes
+// before the next starts, peak === 1, and the lower bound goes RED with no
+// regression.
+async function waitFor(cond: () => boolean, label: string) {
+  for (let i = 0; i < 2000 && !cond(); i++) await new Promise((r) => setTimeout(r, 0));
+  expect(cond(), `timed out waiting for: ${label}`).toBe(true);
+}
+
 interface FakeProviderOpts {
   id: ProviderId;
   descriptors?: TranscriptDescriptor[];
@@ -61,6 +72,7 @@ describe('searchSessions()', () => {
   it('limits transcript indexing to four concurrent files per provider', async () => {
     let active = 0;
     let peak = 0;
+    const parked: Array<() => void> = [];
     const provider = fakeProvider({
       id: 'claude',
       descriptors: Array.from({ length: 12 }, (_, i) => ({ cliSessionId: `s${i}`, transcriptPath: `/p${i}` })),
@@ -68,15 +80,34 @@ describe('searchSessions()', () => {
     provider.indexTranscript = async () => {
       active++;
       peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      await new Promise<void>((resolve) => parked.push(resolve));
       active--;
       return { text: 'match', cwd: '' };
     };
     providersForTest.push(provider);
     mockStat.mockResolvedValue(makeStat(1));
-    await searchSessions('match');
-    expect(peak).toBeLessThanOrEqual(4);
+
+    let finished = false;
+    const search = searchSessions('match').then((r) => { finished = true; return r; });
+
+    // Lower bound: four indexing calls sit in flight at once — none resolved
+    // by the test yet — so peak > 1 is a scheduler property, not timer luck.
+    await waitFor(() => parked.length >= 4, 'four indexing calls parked concurrently');
     expect(peak).toBeGreaterThan(1);
+
+    // Upper bound: 12 descriptors are queued, so a fifth in-flight index
+    // would mean the cap is gone — assert it before releasing anything.
+    await Promise.resolve();
+    expect(parked.length).toBe(4);
+
+    // Release in waves; the cap must hold until the last transcript.
+    while (!finished) {
+      for (const resolve of parked.splice(0)) resolve();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    await search;
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(active).toBe(0);
   });
 
   it('returns empty when no providers are registered', async () => {
@@ -324,24 +355,39 @@ describe('searchSessions()', () => {
 
 
 it('shares reads and keeps aggregate indexing concurrency at four across requests', async () => {
-  let active = 0, peak = 0;
-  const provider = fakeProvider({ id: 'claude', descriptors: Array.from({length: 30}, (_, i) => ({cliSessionId: 's'+i, transcriptPath: '/p'+i})) });
+  let active = 0, peak = 0, finished = false;
+  const parked: Array<() => void> = [];
+  const provider = fakeProvider({ id: 'claude', descriptors: Array.from({length: 30}, (_, i) => ({cliSessionId: `s${i}`, transcriptPath: `/p${i}`})) });
   const index = vi.fn(async () => {
     peak = Math.max(peak, ++active);
-    await new Promise(resolve => setTimeout(resolve, 1));
+    await new Promise<void>(resolve => parked.push(resolve));
     active--;
     return {text: 'shared match', cwd: ''};
   });
   provider.indexTranscript = index;
   providersForTest.push(provider); mockStat.mockResolvedValue(makeStat(1));
-  await Promise.all([searchSessions('match'), searchSessions('shared')]);
+  const all = Promise.all([searchSessions('match'), searchSessions('shared')]).then(r => { finished = true; return r; });
+  // Aggregate lower bound: both requests share the pool, so four indexings
+  // from the pair are parked at once — forced by the test's gates, not 1ms
+  // timer coalescing under fork contention.
+  await waitFor(() => parked.length >= 4, 'aggregate pool saturated across both requests');
+  expect(peak).toBe(4);
+  // Aggregate upper bound: 60 queued paths across the two requests, and the
+  // shared pool must never start a fifth indexing before one is released.
+  await Promise.resolve();
+  expect(parked.length).toBe(4);
+  while (!finished) {
+    for (const resolve of parked.splice(0)) resolve();
+    await new Promise(r => setTimeout(r, 0));
+  }
+  await all;
   expect(peak).toBeLessThanOrEqual(4);
   expect(index).toHaveBeenCalledTimes(30);
 });
 
 it('stops scheduling transcript reads after cancellation', async () => {
   const controller = new AbortController();
-  const provider = fakeProvider({ id: 'claude', descriptors: Array.from({length: 1000}, (_, i) => ({cliSessionId: 's'+i, transcriptPath: '/p'+i})) });
+  const provider = fakeProvider({ id: 'claude', descriptors: Array.from({length: 1000}, (_, i) => ({cliSessionId: `s${i}`, transcriptPath: `/p${i}`})) });
   provider.indexTranscript = vi.fn(async () => { controller.abort(); return {text: 'match', cwd: ''}; });
   providersForTest.push(provider); mockStat.mockResolvedValue(makeStat(1));
   expect(await searchSessions('match', controller.signal)).toEqual([]);
@@ -355,7 +401,7 @@ it('does not reparse unchanged transcripts when the corpus exceeds the memory ca
     return record?.mtime === version.mtime ? record : null;
   });
   vi.mocked(writeSearchIndex).mockImplementation(async (_provider, source, data) => { disk.set(source, data); });
-  const provider = fakeProvider({ id: 'claude', descriptors: Array.from({length: 1000}, (_, i) => ({cliSessionId: 's'+i, transcriptPath: '/p'+i})) });
+  const provider = fakeProvider({ id: 'claude', descriptors: Array.from({length: 1000}, (_, i) => ({cliSessionId: `s${i}`, transcriptPath: `/p${i}`})) });
   provider.indexTranscript = vi.fn(async () => ({text: 'match ' + 'x'.repeat(51194), cwd: ''}));
   providersForTest.push(provider); mockStat.mockResolvedValue(makeStat(1));
   await searchSessions('match');

@@ -46,14 +46,111 @@ export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId:
   return path.join(launchSessionBaseDir(providerId), safe);
 }
 
+/**
+ * Retention window for per-launch dirs. A launch's transcripts are the only
+ * thing inside, and global search surfaces them by mtime, so a dir with no
+ * activity for 30 days is dead weight: unbounded growth on disk plus ~2 sync
+ * syscalls per dir on EVERY global session search (docs/performance.md).
+ */
+export const LAUNCH_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Upper bound on dirs examined per prune pass, so startup never stalls on a huge tree. */
+const PRUNE_SCAN_LIMIT = 2_000;
+
+/** Bases already swept this process — pruning runs at most once per base. */
+const prunedBases = new Set<string>();
+
 /** Create the per-launch dir (and its base) so the CLI never races us. */
 export function ensureLaunchSessionDir(sessionDir: string): void {
+  // Called on every Pi/OMP start/resume, strictly before the CLI is spawned,
+  // so the first call is the earliest hook that is guaranteed to run in a
+  // process that launches these CLIs.
+  pruneLaunchSessionDirsOnce(path.dirname(sessionDir));
   try {
     fs.mkdirSync(sessionDir, { recursive: true });
   } catch {
     // The CLI creates the dir on its first write; the watcher tolerates a
     // missing dir (empty listing) until it appears.
   }
+}
+
+function pruneLaunchSessionDirsOnce(base: string): void {
+  if (prunedBases.has(base)) return;
+  prunedBases.add(base);
+  try {
+    pruneLaunchSessionDirs(base);
+  } catch {
+    // Retention is best-effort; a failed sweep costs disk, never a launch.
+  }
+}
+
+/**
+ * Delete per-launch dirs under `base` with no activity inside the retention
+ * window. Returns the number removed.
+ *
+ * A dir is expired only when EVERY timestamp it exposes is older than the
+ * window: the sidecar's `createdAt`, the newest `*.jsonl` mtime, and the dir's
+ * own mtime (the last-activity proxy for dirs written before the sidecar
+ * existed, and for dirs whose CLI never produced a transcript). Unknown ages
+ * are never treated as expired.
+ *
+ * Safety: entries are lstat'ed, never stat'ed, so a symlinked dir is skipped
+ * rather than followed, and every removal path is built by joining `base` with
+ * one readdir name, i.e. it is strictly under `base`.
+ */
+export function pruneLaunchSessionDirs(base: string, now = Date.now()): number {
+  let names: string[];
+  try {
+    names = fs.readdirSync(base);
+  } catch {
+    return 0;
+  }
+  const cutoff = now - LAUNCH_SESSION_RETENTION_MS;
+  let removed = 0;
+  for (const name of names.slice(0, PRUNE_SCAN_LIMIT)) {
+    const dir = path.join(base, name);
+    let dirStat: fs.Stats;
+    try {
+      dirStat = fs.lstatSync(dir);
+    } catch {
+      continue;
+    }
+    if (!dirStat.isDirectory()) continue;
+    const created = Date.parse(readLaunchSessionMeta(dir)?.createdAt ?? '');
+    const newest = newestTranscriptMtime(dir);
+    // 0 = "no transcripts" sentinel from newestTranscriptMtime(); a real mtime
+    // is always > 0, so it must not read as a (very old) age.
+    const ages = [created, newest, dirStat.mtimeMs].filter(a => Number.isFinite(a) && a > 0);
+    if (!ages.length || ages.some(a => a > cutoff)) continue;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      removed++;
+    } catch {
+      // Locked by the CLI on Windows, or vanished — retry next launch.
+    }
+  }
+  return removed;
+}
+
+/** Newest `*.jsonl` mtime in a dir; 0 when there are none. Symlinks ignored. */
+function newestTranscriptMtime(dir: string): number {
+  let newest = 0;
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue;
+    try {
+      const st = fs.lstatSync(path.join(dir, name));
+      if (st.isFile() && st.mtimeMs > newest) newest = st.mtimeMs;
+    } catch {
+      // Vanished between readdir and stat.
+    }
+  }
+  return newest;
 }
 
 export interface LaunchSessionMeta {
@@ -94,18 +191,32 @@ export function readLaunchSessionMeta(sessionDir: string): LaunchSessionMeta | n
   }
 }
 
-/** Every per-launch session dir under the provider's base dir. */
-export function listLaunchSessionDirs(base: string): string[] {
+/**
+ * Per-launch session dirs under `base` that are inside the retention window.
+ *
+ * Runs on every global session search, so dirs with no recent activity are
+ * filtered here by the same rule pruneLaunchSessionDirs() deletes on: their
+ * transcripts are all older than the window, so search could only surface
+ * entries retention is about to remove — while paying a stat per dir for
+ * thousands of them.
+ */
+export function listLaunchSessionDirs(base: string, maxAgeMs = LAUNCH_SESSION_RETENTION_MS): string[] {
   let names: string[];
   try {
     names = fs.readdirSync(base);
   } catch {
     return [];
   }
+  const cutoff = Date.now() - maxAgeMs;
   const out: string[] = [];
   for (const name of names) {
+    const dir = path.join(base, name);
     try {
-      if (fs.statSync(path.join(base, name)).isDirectory()) out.push(path.join(base, name));
+      // lstat, not stat: a symlink in the search path is never followed.
+      const st = fs.lstatSync(dir);
+      if (!st.isDirectory()) continue;
+      if (st.mtimeMs > cutoff) out.push(dir);
+      else if (newestTranscriptMtime(dir) > cutoff) out.push(dir);
     } catch {
       // Vanished between readdir and stat — skip.
     }

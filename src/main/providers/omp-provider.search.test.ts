@@ -7,6 +7,10 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
   readdirSync: vi.fn(),
   statSync: vi.fn(),
+  // listLaunchSessionDirs() lstats entries (a symlink in the search path is
+  // never followed); a default missing from this factory makes the listing
+  // throw into its own catch and silently report no dirs.
+  lstatSync: vi.fn(() => ({ isDirectory: () => true, isFile: () => true, mtimeMs: Date.now() })),
   readFileSync: vi.fn(),
   openSync: vi.fn(),
   readSync: vi.fn(),
@@ -152,7 +156,11 @@ describe('OmpProvider.discoverTranscripts()', () => {
   it('scans the per-launch session dirs under userData', async () => {
     const base = path.join('/mock/app-path', 'omp-sessions');
     mockReaddirSync.mockImplementation(((p: string) => (String(p) === base ? ['sess-1'] : [])) as any);
-    vi.mocked(fs.statSync).mockReturnValue({ isDirectory: () => true } as any);
+    // A dir with activity inside the retention window: retention-filtered dirs
+    // are not scanned by global search (see launch-session-dir.test.ts).
+    vi.mocked(fs.lstatSync).mockReturnValue(
+      { isDirectory: () => true, isFile: () => true, mtimeMs: Date.now() } as any,
+    );
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       providerId: 'omp', cwd: 'C:\\Users\\me', createdAt: '2026-08-15T23:09:32.005Z',
     }) as any);
