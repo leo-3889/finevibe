@@ -93,14 +93,15 @@ export class CodexProvider implements CliProvider {
     stopConfigWatch();
   }
 
-  // Codex hooks write .sessionid per session (exact). The history.jsonl
-  // watcher correlates by spawn order only: with two pending sessions, the
-  // entry produced by the newer one lands on the older tab (H1), so it runs
-  // only as the fallback for installs without complete hooks.
-  onSessionStarted(sessionId: string, _cwd: string, win: BrowserWindow): void {
+  // Codex hooks write .sessionid per session (exact). The rollout watcher
+  // correlates by cwd (per-cwd FIFO over the session_meta of new rollout
+  // files): a global spawn-order FIFO let external `codex` runs hijack the
+  // oldest pending tab, so it runs only as the fallback for installs
+  // without complete hooks.
+  onSessionStarted(sessionId: string, cwd: string, win: BrowserWindow): void {
     if (validateCodexHooks().hooks === 'complete') return;
     startCodexSessionWatcher(win);
-    registerPendingCodexSession(sessionId);
+    registerPendingCodexSession(sessionId, cwd);
   }
 
   onSessionExited(sessionId: string): void {

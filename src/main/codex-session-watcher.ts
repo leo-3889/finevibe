@@ -1,19 +1,33 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { BrowserWindow } from 'electron';
+import * as zlib from 'zlib';
+import type { BrowserWindow } from 'electron';
 import { writeCliSessionId } from './hook-status';
 
-const HISTORY_PATH = path.join(os.homedir(), '.codex', 'history.jsonl');
-
 /**
- * Codex CLI has no hook system to report session IDs back to the host app.
- * Instead, we tail ~/.codex/history.jsonl for new entries and extract the
- * session_id, then write a .sessionid file so hook-status picks it up.
+ * Codex CLI has no hook system that reliably reports session IDs back to the
+ * host app. When hooks are incomplete, we attribute new rollout files
+ * (`~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl[.zst]`) to the
+ * Vibeyard tabs that launched Codex.
+ *
+ * Attribution is per-cwd FIFO: a rollout's `session_meta` line carries the
+ * cwd Codex ran in, and only tabs registered for that cwd are eligible.
+ * Before this, attribution was a global FIFO over `~/.codex/history.jsonl`
+ * — a shared, global file — so any external `codex` run (terminal, CI)
+ * hijacked the oldest pending tab, giving it a foreign transcript and a
+ * wrong resume target.
  */
 
-// Maps UI session ID → registration timestamp (for FIFO ordering)
-const pendingSessions = new Map<string, number>();
+const SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
+
+interface PendingCodexSession {
+  /** Normalized cwd of the launched session; only matching rollouts assign. */
+  cwd: string;
+  addedAt: number;
+}
+
+const pendingSessions = new Map<string, PendingCodexSession>();
 const assignedCodexIds = new Set<string>();
 // Bounded: the set exists to dedupe ids already handed out; evict oldest
 // (Sets preserve insertion order) so it can't grow for the app's lifetime.
@@ -27,125 +41,177 @@ function rememberAssignedId(id: string): void {
   assignedCodexIds.add(id);
 }
 
-let watcher: fs.FSWatcher | null = null;
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-let lastSize = 0;
-let pendingLine = '';
-const MAX_HISTORY_READ_BYTES = 256 * 1024;
-const MAX_HISTORY_LINE_CHARS = 1024 * 1024;
+/** Clock-skew tolerance: file mtimes vs Date.now() across FS boundaries. */
+const MTIME_SKEW_MS = 60_000;
+/** Rollout meta is the first line; 64 KB covers any realistic session_meta. */
+const META_READ_BYTES = 64 * 1024;
+/** Compressed rollouts are decompressed whole for the meta; skip huge ones. */
+const MAX_COMPRESSED_META_FILE_BYTES = 8 * 1024 * 1024;
 
-function readNewEntries(): void {
-  if (pendingSessions.size === 0) return;
+function normCwd(p: string): string {
+  let s = path.resolve(p);
+  if (process.platform === 'win32') s = s.toLowerCase();
+  while (s.length > 1 && (s.endsWith(path.sep) || s.endsWith('/'))) s = s.slice(0, -1);
+  return s;
+}
 
-  let stat: fs.Stats;
+/** Codex names rollouts `rollout-<YYYY-MM-DDTHH-MM-SS>-<id>.jsonl[.zst]`;
+ * the id tail lets us attribute a rollout whose meta line hasn't landed. */
+function idFromFilename(file: string): string | undefined {
+  const base = file.endsWith('.zst') ? file.slice(0, -'.zst'.length) : file;
+  if (!base.startsWith('rollout-') || !base.endsWith('.jsonl')) return;
+  const rest = base.slice('rollout-'.length, -'.jsonl'.length);
+  const tsLen = '2026-01-01T00-00-00'.length; // fixed-width timestamp segment
+  if (rest.length <= tsLen + 1 || rest[tsLen] !== '-') return;
+  return rest.slice(tsLen + 1);
+}
+
+function readdirSortedDesc(dir: string): string[] {
+  try { return fs.readdirSync(dir).sort().reverse(); } catch { return []; }
+}
+
+/**
+ * Parse a rollout's first line (`session_meta`). Returns the CLI session id
+ * and cwd, or null when the file is unreadable/not yet a valid rollout
+ * (Codex creates the file before the meta line lands).
+ */
+function readSessionMeta(filePath: string): { id?: string; cwd?: string } | null {
   try {
-    stat = fs.statSync(HISTORY_PATH);
-  } catch {
-    return;
-  }
-
-  if (stat.size < lastSize) {
-    lastSize = 0;
-    pendingLine = '';
-  }
-  if (stat.size === lastSize) return;
-
-  let fd: number | null = null;
-  try {
-    fd = fs.openSync(HISTORY_PATH, 'r');
-    const buf = Buffer.alloc(Math.min(stat.size - lastSize, MAX_HISTORY_READ_BYTES));
-    const bytesRead = fs.readSync(fd, buf, 0, buf.length, lastSize);
-    lastSize += bytesRead;
-    if (bytesRead === 0) return;
-    const data = pendingLine + buf.toString('utf-8', 0, bytesRead);
-    const lastNewline = data.lastIndexOf('\n');
-    if (lastNewline < 0) {
-      pendingLine = data.length <= MAX_HISTORY_LINE_CHARS ? data : '';
-      return;
-    }
-    const lines = data.slice(0, lastNewline).split('\n').filter(Boolean);
-    pendingLine = data.slice(lastNewline + 1);
-    if (pendingLine.length > MAX_HISTORY_LINE_CHARS) pendingLine = '';
-
-    for (const line of lines) {
+    let head: string;
+    if (filePath.endsWith('.zst')) {
+      const size = fs.statSync(filePath).size;
+      if (size > MAX_COMPRESSED_META_FILE_BYTES) return null;
+      // A rollout being appended to can end mid-frame; decode what we can.
+      const raw = fs.readFileSync(filePath);
+      let text: Buffer;
       try {
-        const entry = JSON.parse(line);
-        const codexSessionId: string | undefined = entry.session_id;
-        if (!codexSessionId || assignedCodexIds.has(codexSessionId)) continue;
-
-        // Assign to the oldest pending UI session
-        let oldestId: string | null = null;
-        let oldestTime = Infinity;
-        for (const [uiId, addedAt] of pendingSessions) {
-          if (addedAt < oldestTime) {
-            oldestTime = addedAt;
-            oldestId = uiId;
-          }
-        }
-
-        if (oldestId) {
-          rememberAssignedId(codexSessionId);
-          pendingSessions.delete(oldestId);
-
-          writeCliSessionId(oldestId, codexSessionId);
-          if (pendingSessions.size === 0) break;
-        }
+        text = zlib.zstdDecompressSync(raw);
       } catch {
-        // Skip malformed lines
+        text = Buffer.alloc(0);
+      }
+      head = text.subarray(0, META_READ_BYTES).toString('utf-8');
+    } else {
+      const fd = fs.openSync(filePath, 'r');
+      try {
+        const buf = Buffer.alloc(META_READ_BYTES);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        head = buf.subarray(0, n).toString('utf-8');
+      } finally {
+        fs.closeSync(fd);
       }
     }
+    const firstLine = head.split('\n', 1)[0];
+    if (!firstLine.trim()) return null;
+    const entry = JSON.parse(firstLine);
+    if (entry.type !== 'session_meta' || !entry.payload) return null;
+    return {
+      id: typeof entry.payload.id === 'string' ? entry.payload.id : undefined,
+      cwd: typeof entry.payload.cwd === 'string' ? entry.payload.cwd : undefined,
+    };
   } catch {
-    // File read error
-  } finally {
-    if (fd !== null) {
-      try { fs.closeSync(fd); } catch { /* already closed */ }
+    return null;
+  }
+}
+
+function assign(uiSessionId: string, codexSessionId: string): void {
+  rememberAssignedId(codexSessionId);
+  pendingSessions.delete(uiSessionId);
+  writeCliSessionId(uiSessionId, codexSessionId);
+}
+
+/** Scan rollout files newer than the oldest pending registration, per-cwd FIFO. */
+function scanRollouts(): void {
+  if (pendingSessions.size === 0) return;
+  let oldestAdded = Infinity;
+  for (const p of pendingSessions.values()) oldestAdded = Math.min(oldestAdded, p.addedAt);
+  const minMtime = oldestAdded - MTIME_SKEW_MS;
+
+  for (const year of readdirSortedDesc(SESSIONS_ROOT)) {
+    const yearDir = path.join(SESSIONS_ROOT, year);
+    for (const month of readdirSortedDesc(yearDir)) {
+      const monthDir = path.join(yearDir, month);
+      for (const day of readdirSortedDesc(monthDir)) {
+        const dayDir = path.join(monthDir, day);
+        let dayFiles: string[];
+        try {
+          // Day directory mtime: a day with no new rollouts can't match.
+          if (fs.statSync(dayDir).mtimeMs < minMtime) continue;
+          dayFiles = readdirSortedDesc(dayDir);
+        } catch {
+          continue;
+        }
+        for (const file of dayFiles) {
+          if (!file.startsWith('rollout-')) continue;
+          if (!file.endsWith('.jsonl') && !file.endsWith('.jsonl.zst')) continue;
+          const filePath = path.join(dayDir, file);
+          let mtimeMs: number;
+          try {
+            mtimeMs = fs.statSync(filePath).mtimeMs;
+          } catch {
+            continue;
+          }
+          if (mtimeMs < minMtime) continue;
+          const meta = readSessionMeta(filePath);
+          const codexId = meta?.id ?? idFromFilename(file);
+          if (!codexId || assignedCodexIds.has(codexId)) continue;
+
+          // Oldest pending whose cwd matches the rollout. Unmatched rollouts
+          // (external runs, other cwds) are skipped and revisited: their id
+          // stays unassigned so a later registration in that cwd can match.
+          let match: string | null = null;
+          if (meta?.cwd) {
+            const rolloutCwd = normCwd(meta.cwd);
+            for (const [uiId, p] of pendingSessions) {
+              if (p.cwd === rolloutCwd) { match = uiId; break; }
+            }
+          } else if (pendingSessions.size === 1) {
+            // Meta unreadable (file mid-creation, exotic format): with exactly
+            // one pending tab the rollout is unambiguous. With several, stay
+            // hands-off — guessing is what hijacked tabs before.
+            match = pendingSessions.keys().next().value ?? null;
+          }
+          if (match) {
+            assign(match, codexId);
+            if (pendingSessions.size === 0) return;
+          }
+        }
+      }
     }
   }
 }
 
-export function registerPendingCodexSession(sessionId: string): void {
-  // Only advance lastSize when first session registers, so we don't skip
-  // entries that arrived between multiple rapid registrations
-  if (pendingSessions.size === 0) {
-    try {
-      const stat = fs.statSync(HISTORY_PATH);
-      lastSize = stat.size;
-    } catch {
-      lastSize = 0;
-    }
-    pendingLine = '';
-  }
-
-  pendingSessions.set(sessionId, Date.now());
+export function registerPendingCodexSession(sessionId: string, cwd: string): void {
+  pendingSessions.set(sessionId, { cwd: normCwd(cwd), addedAt: Date.now() });
 }
 
 export function unregisterCodexSession(sessionId: string): void {
   pendingSessions.delete(sessionId);
 }
 
-export function startCodexSessionWatcher(win: BrowserWindow): void {
-  if (watcher) return;
+let watcher: fs.FSWatcher | null = null;
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+let scanTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const dir = path.dirname(HISTORY_PATH);
+export function startCodexSessionWatcher(_win: BrowserWindow): void {
+  if (watcher || pollInterval) return;
+
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    watcher = fs.watch(dir, (_event, filename) => {
-      if (filename === 'history.jsonl' && pendingSessions.size > 0) {
-        readNewEntries();
-      }
+    fs.mkdirSync(SESSIONS_ROOT, { recursive: true });
+    watcher = fs.watch(SESSIONS_ROOT, { recursive: true }, () => {
+      // Codex appends in bursts; coalesce watch events into one scan.
+      if (scanTimer !== null) return;
+      scanTimer = setTimeout(() => {
+        scanTimer = null;
+        scanRollouts();
+      }, 500);
     });
   } catch {
-    // Directory might not exist; fall through to polling
+    // Directory watch unavailable; fall through to polling only.
   }
 
-  // Polling fallback — fs.watch can miss events on some systems. Look the
-  // window up per tick so a destroyed-and-recreated window doesn't kill the
-  // polling fallback for good.
+  // Polling fallback — fs.watch can miss events on some systems.
   pollInterval = setInterval(() => {
-    if (pendingSessions.size > 0) {
-      const win = BrowserWindow.getAllWindows()[0];
-      if (win && !win.isDestroyed()) readNewEntries();
-    }
+    if (pendingSessions.size > 0) scanRollouts();
   }, 2000);
 }
 
@@ -158,8 +224,10 @@ export function stopCodexSessionWatcher(): void {
     clearInterval(pollInterval);
     pollInterval = null;
   }
+  if (scanTimer !== null) {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
   pendingSessions.clear();
   assignedCodexIds.clear();
-  lastSize = 0;
-  pendingLine = '';
 }

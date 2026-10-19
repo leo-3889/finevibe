@@ -1,35 +1,67 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as path from 'path';
+import * as zlib from 'zlib';
+import type { BrowserWindow } from 'electron';
+
+const SESSIONS_ROOT = path.join(path.sep + 'mock', 'home', '.codex', 'sessions');
+
+// Virtual filesystem: 'set(vfs, dirPath, entries)' style helpers below.
+// values: string = file content; object with mtimeMs = file with mtime.
+type VfsFile = { content: string; mtimeMs: number };
+type VfsDir = { mtimeMs: number; entries: Map<string, VfsFile | 'dir'> };
+let vfs: Map<string, VfsDir>;
+
+const NOW = 1_800_000_000_000; // fixed clock base
 
 vi.mock('fs', () => ({
-  statSync: vi.fn(),
-  openSync: vi.fn(),
-  readSync: vi.fn(),
-  closeSync: vi.fn(),
-  writeFileSync: vi.fn(),
-  mkdirSync: vi.fn(),
-  watch: vi.fn(),
+  statSync: (p: string) => {
+    const dirs = vfs;
+    const parent = dirs.get(path.dirname(p));
+    const base = path.basename(p);
+    if (parent && parent.entries.has(base)) {
+      const v = parent.entries.get(base);
+      if (v === 'dir') {
+        const d = dirs.get(p)!;
+        return { mtimeMs: d.mtimeMs, size: 0, isDirectory: () => true };
+      }
+      return { mtimeMs: v.mtimeMs, size: v.content.length, isDirectory: () => false };
+    }
+    if (dirs.has(p)) return { mtimeMs: dirs.get(p)!.mtimeMs, size: 0, isDirectory: () => true };
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  },
+  readdirSync: (p: string) => {
+    if (!vfs.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return [...vfs.get(p)!.entries.keys()];
+  },
+  readFileSync: (p: string) => {
+    const parent = vfs.get(path.dirname(p));
+    const v = parent?.entries.get(path.basename(p));
+    if (!v || v === 'dir') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    // latin1: compressed .zst content is stored as a byte-per-char string.
+    return Buffer.from(v.content, 'latin1');
+  },
+  openSync: (p: string) => p,
+  readSync: (_fd: string, buf: Buffer, _o: number, len: number, _pos: number) => {
+    const parent = vfs.get(path.dirname(_fd));
+    const v = parent?.entries.get(path.basename(_fd));
+    if (!v || v === 'dir') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    const bytes = Buffer.from(v.content, 'utf-8').subarray(0, len);
+    bytes.copy(buf, 0);
+    return bytes.length;
+  },
+  closeSync: () => {},
+  mkdirSync: () => {},
+  watch: vi.fn(() => ({ close: vi.fn() })),
 }));
 
-vi.mock('os', () => ({
-  homedir: () => '/mock/home',
-  tmpdir: () => '/tmp',
-}));
-
+vi.mock('os', () => ({ homedir: () => path.join(path.sep + 'mock', 'home') }));
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false }] },
 }));
-
-const { STATUS_DIR: MOCK_STATUS_DIR } = vi.hoisted(() => {
-  const path = require('path');
-  return { STATUS_DIR: path.join('/tmp', 'vibeyard') };
-});
-
 vi.mock('./hook-status', () => ({
-  STATUS_DIR: MOCK_STATUS_DIR,
+  STATUS_DIR: path.join(path.sep + 'tmp', 'vibeyard'),
   writeCliSessionId: vi.fn(),
 }));
-
-import * as path from 'path';
 
 import * as fs from 'fs';
 import { writeCliSessionId } from './hook-status';
@@ -40,21 +72,61 @@ import {
   stopCodexSessionWatcher,
 } from './codex-session-watcher';
 
-const mockStatSync = vi.mocked(fs.statSync);
-const mockOpenSync = vi.mocked(fs.openSync);
-const mockReadSync = vi.mocked(fs.readSync);
-const mockCloseSync = vi.mocked(fs.closeSync);
 const mockWriteCliSessionId = vi.mocked(writeCliSessionId);
 const mockWatch = vi.mocked(fs.watch);
 
-function createMockWin(): any {
-  return { isDestroyed: () => false, webContents: { send: vi.fn() } };
+// Structural stub: the watcher never touches the window (it writes .sessionid files).
+const fakeWin = {} as unknown as BrowserWindow;
+
+function mkDay(date: Date): string {
+  const y = date.getUTCFullYear().toString();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  const dayPath = path.join(SESSIONS_ROOT, y, m, d);
+  for (const p of [path.join(SESSIONS_ROOT, y, m), dayPath]) {
+    if (!vfs.has(p)) vfs.set(p, { mtimeMs: NOW, entries: new Map() });
+  }
+  const ym = path.join(SESSIONS_ROOT, y);
+  if (!vfs.has(ym)) {
+    vfs.set(ym, { mtimeMs: NOW, entries: new Map([[m, 'dir']]) });
+    const root = vfs.get(SESSIONS_ROOT)!;
+    if (!root.entries.has(y)) root.entries.set(y, 'dir');
+  }
+  vfs.get(path.join(SESSIONS_ROOT, y, m))!.entries.set(d, 'dir');
+  return dayPath;
+}
+
+function addRollout(
+  dayPath: string,
+  id: string,
+  opts: { cwd?: string | null; mtimeMs?: number; zst?: boolean; raw?: string } = {},
+): string {
+  const name = `rollout-2026-10-19T00-00-00-${id}.jsonl${opts.zst ? '.zst' : ''}`;
+  const meta = opts.raw !== undefined
+    ? opts.raw
+    : opts.cwd === null
+      ? 'not-json'
+      : JSON.stringify({ type: 'session_meta', payload: { id, cwd: opts.cwd } });
+  const content = opts.zst
+    ? zlib.zstdCompressSync(Buffer.from(meta + '\n', 'utf-8')).toString('latin1')
+    : meta + '\n';
+  vfs.get(dayPath)!.entries.set(name, { content, mtimeMs: opts.mtimeMs ?? NOW });
+  vfs.get(dayPath)!.mtimeMs = opts.mtimeMs ?? NOW;
+  return path.join(dayPath, name);
+}
+
+function scanAll(): void {
+  // Trigger the debounced scan path deterministically.
+  vi.advanceTimersByTime(2100);
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
   vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+  vi.clearAllMocks();
   stopCodexSessionWatcher();
+  vfs = new Map();
+  vfs.set(SESSIONS_ROOT, { mtimeMs: NOW, entries: new Map() });
 });
 
 afterEach(() => {
@@ -62,256 +134,147 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('registerPendingCodexSession', () => {
-  it('records the current history file size on first registration', () => {
-    mockStatSync.mockReturnValue({ size: 500 } as fs.Stats);
-    registerPendingCodexSession('ui-1');
-    expect(mockStatSync).toHaveBeenCalled();
+describe('codex rollout attribution (per-cwd FIFO)', () => {
+  it('assigns a rollout whose session_meta cwd matches a pending tab', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-1', { cwd: '/repo/alpha' });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'codex-1');
   });
 
-  it('does not reset lastSize when a second session registers', () => {
-    // First registration at size 100
-    mockStatSync.mockReturnValue({ size: 100 } as fs.Stats);
-    registerPendingCodexSession('ui-1');
+  it('skips a rollout from a foreign cwd (external codex run)', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'external-1', { cwd: '/other/project' });
 
-    // File grows to 200 (new entry written for ui-1)
-    mockStatSync.mockReturnValue({ size: 200 } as fs.Stats);
-    registerPendingCodexSession('ui-2');
+    scanAll();
 
-    // statSync should only be called once (for ui-1), not for ui-2
-    // because pendingSessions was non-empty when ui-2 registered
-    expect(mockStatSync).toHaveBeenCalledTimes(1);
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
   });
 
-  it('handles missing history file gracefully', () => {
-    mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    expect(() => registerPendingCodexSession('ui-1')).not.toThrow();
+  it('lands a matching rollout on the right tab, not the oldest tab (hijack regression)', () => {
+    // The global FIFO used to hand every new id to the oldest pending tab:
+    // the beta rollout landed on alpha's tab.
+    registerPendingCodexSession('ui-alpha', '/repo/alpha');
+    registerPendingCodexSession('ui-beta', '/repo/beta');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-beta', { cwd: '/repo/beta' });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-beta', 'codex-beta');
+  });
+
+  it('assigns same-cwd rollouts oldest-pending-first', () => {
+    registerPendingCodexSession('ui-old', '/repo/alpha');
+    registerPendingCodexSession('ui-new', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-1', { cwd: '/repo/alpha' });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-old', 'codex-1');
+  });
+
+  it('assigns an unreadable-meta rollout only with exactly one pending tab', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-x', { raw: '{"type":"session_meta"}' }); // no cwd in meta
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'codex-x');
+  });
+
+  it('stays hands-off on unreadable meta with multiple pending tabs', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    registerPendingCodexSession('ui-2', '/repo/beta');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-x', { raw: '{"type":"session_meta"}' });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+  });
+
+  it('reads session_meta from compressed .jsonl.zst rollouts', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-z', { cwd: '/repo/alpha', zst: true });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'codex-z');
+  });
+
+  it('ignores rollouts older than every pending registration', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    // Outside the clock-skew window: a run that predates the tab.
+    addRollout(day, 'codex-old', { cwd: '/repo/alpha', mtimeMs: NOW - 10 * 60_000 });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+  });
+
+  it('stops assigning once unregistered', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    unregisterCodexSession('ui-1');
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-1', { cwd: '/repo/alpha' });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+  });
+
+  it('assigns each codex id at most once across scans', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-1', { cwd: '/repo/alpha' });
+
+    scanAll();
+    registerPendingCodexSession('ui-2', '/repo/alpha');
+    scanAll(); // same rollout, already-assigned id must not be handed out again
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes cwd for comparison (trailing sep + Windows case)', () => {
+    // normCwd resolves paths against the process cwd; use absolute POSIX-style
+    // paths so resolve() is identity on the test platform.
+    registerPendingCodexSession('ui-1', path.resolve('/repo/alpha') + path.sep);
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-1', { cwd: path.resolve('/repo/alpha') });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'codex-1');
   });
 });
 
-describe('startCodexSessionWatcher', () => {
-  it('starts fs.watch on ~/.codex directory', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
-
-    const win = createMockWin();
-    startCodexSessionWatcher(win);
-
-    const { join } = require('path');
-    expect(mockWatch).toHaveBeenCalledWith(
-      join('/mock/home', '.codex'),
-      expect.any(Function)
-    );
-  });
-
-  it('does not start a second watcher if already started', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
-
-    const win = createMockWin();
-    startCodexSessionWatcher(win);
-    startCodexSessionWatcher(win);
-
+describe('startCodexSessionWatcher()', () => {
+  it('watches the sessions dir recursively and polls as fallback', () => {
+    startCodexSessionWatcher(fakeWin);
+    expect(mockWatch).toHaveBeenCalledWith(SESSIONS_ROOT, { recursive: true }, expect.any(Function));
+    startCodexSessionWatcher(fakeWin);
     expect(mockWatch).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('session ID assignment via polling', () => {
-  it('assigns codex session ID to oldest pending session on poll', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
-
-    const win = createMockWin();
-    startCodexSessionWatcher(win);
-
-    // Register a pending session — file starts at size 0
-    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
-    registerPendingCodexSession('ui-session-1');
-
-    // Simulate history.jsonl growing with a new entry
-    const newLine = '{"session_id":"codex-abc-123","ts":1774904000,"text":"hello"}\n';
-    const buf = Buffer.from(newLine);
-    mockStatSync.mockReturnValue({ size: buf.length } as fs.Stats);
-    mockOpenSync.mockReturnValue(42);
-    mockReadSync.mockImplementation((_fd, target: Buffer) => {
-      buf.copy(target);
-      return buf.length;
-    });
-
-    // Trigger poll interval (2000ms)
-    vi.advanceTimersByTime(2000);
-
-    // Should have written the .sessionid file
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-session-1', 'codex-abc-123');
-    expect(mockCloseSync).toHaveBeenCalledWith(42);
-  });
-
-  it('waits for a partial JSONL line and assigns it after the remaining bytes arrive', () => {
-    mockWatch.mockReturnValue({ close: vi.fn() } as any);
-    startCodexSessionWatcher(createMockWin());
-    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
-    registerPendingCodexSession('ui-partial');
-    const line = Buffer.from('{"session_id":"codex-partial","text":"hello"}\n');
-    const split = 17;
-    let visible = split;
-    mockStatSync.mockImplementation(() => ({ size: visible } as fs.Stats));
-    mockOpenSync.mockReturnValue(42);
-    mockReadSync.mockImplementation(((_fd: number, target: Buffer, _offset: number, length: number, position: number) => {
-      const chunk = line.subarray(position, Math.min(position + length, visible));
-      chunk.copy(target);
-      return chunk.length;
-    }) as any);
-
-    vi.advanceTimersByTime(2000);
-    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
-    visible = line.length;
-    vi.advanceTimersByTime(2000);
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-partial', 'codex-partial');
-  });
-
-  it('assigns two pending sessions from two lines in one append', () => {
-    mockWatch.mockReturnValue({ close: vi.fn() } as any);
-    startCodexSessionWatcher(createMockWin());
-    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
-    registerPendingCodexSession('ui-first');
-    vi.advanceTimersByTime(10);
-    registerPendingCodexSession('ui-second');
-    const data = Buffer.from('{"session_id":"codex-first"}\n{"session_id":"codex-second"}\n');
-    mockStatSync.mockReturnValue({ size: data.length } as fs.Stats);
-    mockOpenSync.mockReturnValue(42);
-    mockReadSync.mockImplementation(((_fd: number, target: Buffer) => data.copy(target)) as any);
-    vi.advanceTimersByTime(2000);
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-first', 'codex-first');
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-second', 'codex-second');
-  });
-
-  it('assigns to oldest pending session when multiple are pending', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
-
-    const win = createMockWin();
-    startCodexSessionWatcher(win);
-
-    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
-    registerPendingCodexSession('ui-older');
-
-    // Advance time so second session has a later addedAt
-    vi.advanceTimersByTime(100);
-    registerPendingCodexSession('ui-newer');
-
-    const newLine = '{"session_id":"codex-first","ts":1774904000,"text":"hey"}\n';
-    const buf = Buffer.from(newLine);
-    mockStatSync.mockReturnValue({ size: buf.length } as fs.Stats);
-    mockOpenSync.mockReturnValue(10);
-    mockReadSync.mockImplementation((_fd, target: Buffer) => {
-      buf.copy(target);
-      return buf.length;
-    });
-
-    vi.advanceTimersByTime(2000);
-
-    // Should assign to the older session
-    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-older', 'codex-first');
-  });
-
-  it('does not assign the same codex session ID twice', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
-
-    const win = createMockWin();
-    startCodexSessionWatcher(win);
-
-    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
-    registerPendingCodexSession('ui-1');
-
-    // First entry
-    const line1 = '{"session_id":"codex-dup","ts":1774904000,"text":"a"}\n';
-    const buf1 = Buffer.from(line1);
-    mockStatSync.mockReturnValue({ size: buf1.length } as fs.Stats);
-    mockOpenSync.mockReturnValue(10);
-    mockReadSync.mockImplementation((_fd, target: Buffer) => {
-      buf1.copy(target);
-      return buf1.length;
-    });
-    vi.advanceTimersByTime(2000);
-
-    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
-
-    // Register another pending session (pendingSessions was empty, so lastSize resets)
-    mockStatSync.mockReturnValue({ size: buf1.length } as fs.Stats);
-    registerPendingCodexSession('ui-2');
-
-    // Same codex session ID appears again (second message in same session)
-    const line2 = '{"session_id":"codex-dup","ts":1774904100,"text":"b"}\n';
-    const buf2 = Buffer.from(line2);
-    const totalSize = buf1.length + buf2.length;
-    mockStatSync.mockReturnValue({ size: totalSize } as fs.Stats);
-    mockOpenSync.mockReturnValue(11);
-    mockReadSync.mockImplementation((_fd, target: Buffer) => {
-      buf2.copy(target);
-      return buf2.length;
-    });
-    vi.advanceTimersByTime(2000);
-
-    // Should NOT have written a second .sessionid (same codex ID)
-    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not read when no pending sessions', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
-
-    const win = createMockWin();
-    startCodexSessionWatcher(win);
-
-    vi.advanceTimersByTime(2000);
-
-    // statSync should not be called for reading (only watcher setup)
-    expect(mockOpenSync).not.toHaveBeenCalled();
-  });
-});
-
-describe('unregisterCodexSession', () => {
-  it('removes a pending session so it is no longer assignable', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
-
-    const win = createMockWin();
-    startCodexSessionWatcher(win);
-
-    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
-    registerPendingCodexSession('ui-gone');
-    unregisterCodexSession('ui-gone');
-
-    const newLine = '{"session_id":"codex-orphan","ts":1774904000,"text":"x"}\n';
-    const buf = Buffer.from(newLine);
-    mockStatSync.mockReturnValue({ size: buf.length } as fs.Stats);
-    mockOpenSync.mockReturnValue(10);
-    mockReadSync.mockImplementation((_fd, target: Buffer) => {
-      buf.copy(target);
-      return buf.length;
-    });
-
-    vi.advanceTimersByTime(2000);
-
-    // No .sessionid file should be written
-    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
-  });
-});
-
-describe('stopCodexSessionWatcher', () => {
-  it('closes watcher and clears state', () => {
-    const mockWatcher = { close: vi.fn() };
-    mockWatch.mockReturnValue(mockWatcher as any);
-
-    const win = createMockWin();
-    startCodexSessionWatcher(win);
-
-    mockStatSync.mockReturnValue({ size: 0 } as fs.Stats);
-    registerPendingCodexSession('ui-1');
-
-    stopCodexSessionWatcher();
-
-    expect(mockWatcher.close).toHaveBeenCalled();
   });
 });
