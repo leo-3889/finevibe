@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, powerMonitor, shell } from 'electron';
 import * as path from 'path';
-import { pathToFileURL, fileURLToPath } from 'url';
+import { pathToFileURL } from 'url';
 import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
 import { killAllPtys } from './pty-manager';
 import { flushState, loadState } from './store';
@@ -57,38 +57,16 @@ function requestConfirmClose(): void {
 // nodeIntegration off and sandbox forced on.
 const BROWSER_GUEST_PRELOAD = path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js');
 
-function isBrowserGuestPreload(preload: string): boolean {
-  let candidate = preload.trim();
-  if (candidate.startsWith('file://')) {
-    try {
-      candidate = fileURLToPath(candidate);
-    } catch {
-      // The renderer writes the attribute as `file://${nativePath}`, which on
-      // Windows is not a valid file URL (file://C:\...). Strip the scheme and
-      // treat the remainder as a plain path.
-      candidate = candidate.slice('file://'.length);
-    }
-  }
-  try {
-    candidate = decodeURIComponent(candidate);
-  } catch {
-    // Not valid percent-encoding; compare the raw string (will not match).
-  }
-  candidate = path.normalize(candidate);
-  return isWin
-    ? candidate.toLowerCase() === BROWSER_GUEST_PRELOAD.toLowerCase()
-    : candidate === BROWSER_GUEST_PRELOAD;
-}
-// Web permission allowlists. Without handlers Electron auto-approves every
-// permission request, so arbitrary browser-tab pages could silently take
-// camera/mic/geolocation in the partition holding imported Chrome cookies.
-// The app UI only ever touches the clipboard (copy path, paste into the
-// terminal); guests keep page clipboard writes and fullscreen.
-// 'notifications': the app's own desktop notifications (notification-desktop)
-// are shown from the host renderer; denying the web permission would silence
-// them for no security benefit — the host document is local app code.
-const HOST_PERMISSIONS = new Set(['clipboard-read', 'clipboard-sanitized-write', 'notifications']);
-const GUEST_PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen']);
+// The app UI only ever needs clipboard reads (copy path) and its own desktop
+// notifications; camera/mic/geolocation/MIDI are denied for the host renderer
+// as well. Guest partitions get their own allowlist, pinned at attach time in
+// webview-guest-pin.ts (guest pages are remote content by design).
+const HOST_PERMISSIONS: Record<string, true> = {
+  'clipboard-read': true,
+  'clipboard-sanitized-write': true,
+  notifications: true,
+};
+const isHostPermission = (permission: string): boolean => Object.hasOwn(HOST_PERMISSIONS, permission);
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -128,8 +106,8 @@ function createWindow(): void {
   });
   const appSession = mainWindow.webContents.session;
   appSession.setPermissionRequestHandler((_wc, permission, callback) =>
-    callback(HOST_PERMISSIONS.has(permission)));
-  appSession.setPermissionCheckHandler((_wc, permission) => HOST_PERMISSIONS.has(permission));
+    callback(isHostPermission(permission)));
+  appSession.setPermissionCheckHandler((_wc, permission) => isHostPermission(permission));
 
   // A <webview> guest's `webpreferences` and `preload` are renderer-controlled
   // (browser tabs). A compromised renderer could attach a guest with
@@ -143,19 +121,11 @@ function createWindow(): void {
   // (absent from the App event set), and this window is the only webContents
   // with webviewTag enabled.
   mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
-    webPreferences.nodeIntegration = false;
-    webPreferences.contextIsolation = true;
-    webPreferences.sandbox = true;
-    if (!webPreferences.preload || !isBrowserGuestPreload(webPreferences.preload)) {
-      // pi-lens-ignore: ts-delete-property
-      delete webPreferences.preload;
-    }
-    const guestSession = webPreferences.session;
-    if (guestSession) {
-      guestSession.setPermissionRequestHandler((_wc, permission, callback) =>
-        callback(GUEST_PERMISSIONS.has(permission)));
-      guestSession.setPermissionCheckHandler((_wc, permission) => GUEST_PERMISSIONS.has(permission));
-    }
+    // The permission allowlist is resolved from the guest's `partition` string
+    // inside pinWebviewGuest: `webPreferences.session` is a main-process
+    // Session object and is never populated for a webview guest, so reading it
+    // left the allowlist uninstalled (Electron auto-approves everything).
+    pinWebviewGuest(webPreferences, BROWSER_GUEST_PRELOAD);
   });
 
   // The app document is the ONLY navigation target we ever allow. A stray anchor

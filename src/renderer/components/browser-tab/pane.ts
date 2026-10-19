@@ -1,7 +1,6 @@
 import { appState } from '../../state.js';
 import { shortcutManager, displayKeys } from '../../shortcuts.js';
 import { BROWSER_DEFAULT_PARTITION } from '../../../shared/types.js';
-import { isHttpUrl } from '../../../shared/url.js';
 import { showChromeImportModal } from '../chrome-import-modal.js';
 import {
   VIEWPORT_PRESETS,
@@ -216,7 +215,14 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   // SAFETY: Electron's <webview> tag has no DOM lib typing; WebviewElement describes the members this file uses.
   const webview = document.createElement('webview') as unknown as WebviewElement;
   webview.className = 'browser-webview';
-  webview.setAttribute('allowpopups', '');
+  // SAFETY: no `allowpopups` — with it, a guest window.open()/target=_blank
+  // attaches as a nested webview in THIS tab's partition, inheriting the
+  // session cookie jar (possibly the imported Chrome one). Without it the
+  // popup has no attach target and Electron denies it. The old renderer-side
+  // `new-window` intercept was dead code: Electron removed that event
+  // (deprecated v30, gone by v32), so popups cannot be routed to
+  // app:openExternal from the renderer on v41. Main's will-attach-webview
+  // pinning (main.ts) is the backstop for any attach that does happen.
   webview.setAttribute('webpreferences', 'backgroundThrottling=false');
   const partition = isIsolated
     ? `persist:vibeyard-browser-iso-${sessionId}`
@@ -664,17 +670,6 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     if (instance.flowMode) safeSend(webview, 'enter-flow-mode');
     if (instance.drawMode) safeSend(webview, 'enter-draw-mode');
   }) as EventListener);
-  // allowpopups above lets guest pages request windows. Without this handler a
-  // popup would open an in-app window inheriting this tab's session partition
-  // (possibly the imported-Cookie jar); the main window's setWindowOpenHandler
-  // does not cover webview guests. Deny every guest window open and hand
-  // http(s) targets to the OS browser via the validated app:openExternal path.
-  webview.addEventListener('new-window', ((e: CustomEvent & { url?: unknown }) => {
-    e.preventDefault();
-    if (typeof e.url === 'string' && isHttpUrl(e.url)) {
-      void window.vibeyard.app.openExternal(e.url).catch(() => {});
-    }
-  }) as EventListener);
 
   webview.addEventListener('ipc-message', ((e: CustomEvent & { channel: string; args: unknown[] }) => {
     if (e.channel === 'element-selected') {
@@ -720,15 +715,15 @@ export function destroyBrowserTabPane(sessionId: string): void {
   instances.delete(sessionId);
 
   document.removeEventListener('mousedown', instance.viewportOutsideClickHandler);
-  try { dismissSendMenu(instance); } catch {}
+  try { dismissSendMenu(instance); } catch { /* menu already torn down */ }
 
   // <webview> calls throw if it isn't attached + dom-ready yet. Guard each
   // one individually so a failure can't skip instance.element.remove() below.
-  try { if (instance.inspectMode) instance.webview.send('exit-inspect-mode'); } catch {}
-  try { if (instance.flowMode) instance.webview.send('exit-flow-mode'); } catch {}
-  try { if (instance.drawMode) instance.webview.send('exit-draw-mode'); } catch {}
-  try { instance.webview.stop(); } catch {}
-  try { instance.webview.src = 'about:blank'; } catch {}
+  try { if (instance.inspectMode) instance.webview.send('exit-inspect-mode'); } catch { /* guest not attached */ }
+  try { if (instance.flowMode) instance.webview.send('exit-flow-mode'); } catch { /* guest not attached */ }
+  try { if (instance.drawMode) instance.webview.send('exit-draw-mode'); } catch { /* guest not attached */ }
+  try { instance.webview.stop(); } catch { /* guest not attached */ }
+  try { instance.webview.src = 'about:blank'; } catch { /* guest not attached */ }
 
   instance.element.remove();
 }
