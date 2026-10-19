@@ -259,7 +259,23 @@ export function registerIpcHandlers(): void {
             win.webContents.send('pty:data', sessionId, data);
           }
         },
-        (exitCode, signal, pid) => {
+        (exitCode, signal, pid, spawnRejectedReason) => {
+          if (spawnRejectedReason) {
+            // The launch was rejected before a PTY existed, so this is not a
+            // process exit: the pane already carries the actionable reason
+            // (written via pty:data), and no transcript can exist yet, so the
+            // exit-reason read below is skipped. The reason travels verbatim
+            // as the spawn-rejected sentinel and the renderer keeps the pane
+            // open instead of archiving/notifying a crash.
+            unregisterTranscriptSync(sessionId);
+            cleanupSessionStatus(sessionId);
+            provider.onSessionExited?.(sessionId);
+            const rejectedWin = BrowserWindow.getAllWindows()[0];
+            if (rejectedWin && !rejectedWin.isDestroyed()) {
+              rejectedWin.webContents.send('pty:exit', sessionId, exitCode, signal, spawnRejectedReason, pid);
+            }
+            return;
+          }
           // pty-manager suppresses the replaced process's callback before it
           // reaches this handler, regardless of which PTY exits first.
           // The session is about to be destroyed — read the CLI's own crash

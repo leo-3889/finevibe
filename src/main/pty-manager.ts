@@ -5,6 +5,7 @@ import * as path from 'path';
 import type { ProviderId } from '../shared/types';
 import { parseEnvVars, partitionUserEnv } from '../shared/env-vars';
 import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from '../shared/launch-args';
+import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
 import { registerSession } from './hook-status';
 import { installHooksOnly, installStatusLine } from './claude-cli';
@@ -361,7 +362,10 @@ export async function spawnPty(
   systemPrompt: string | undefined,
   envVars: string,
   onData: (data: string) => void,
-  onExit: (exitCode: number, signal?: number, pid?: number) => void,
+  // `spawnRejectedReason` is set only by the pre-spawn rejections below: no PTY
+  // ever existed for this session, so the exit is not a process exit. Real PTY
+  // exits leave it undefined.
+  onExit: (exitCode: number, signal?: number, pid?: number, spawnRejectedReason?: string) => void,
   configDir?: string
 ): Promise<void> {
   // Register the in-flight spawn BEFORE any side effect: the window
@@ -375,10 +379,13 @@ export async function spawnPty(
     // profile identity, storage mode) before ANY side effect — no session
     // registration, hook install, PTY kill or spawn. Unsupported
     // profile/storage/session options fail here with an actionable message
-    // instead of desyncing the child from the transcript readers. The
-    // rejection goes through onData + onExit (not a throw) because the
+    // instead of desyncing the child from the transcript readers.
+    // The rejection goes through onData + onExit (not a throw) because the
     // renderer fires pty.create without awaiting; the exit callback tears
-    // down the watcher/sync state registered for this session.
+    // down the watcher/sync state registered for this session. The sentinel
+    // reason says "no PTY ever existed", so the renderer keeps the pane open
+    // with this message readable instead of archiving a crash for a session
+    // that never spawned.
     let spec: LaunchSpec;
     try {
       spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir });
@@ -388,7 +395,7 @@ export async function spawnPty(
       pendingKills.delete(sessionId);
       const message = err instanceof LaunchSpecError ? err.message : `Failed to prepare the launch: ${err}`;
       onData('\r\n\x1b[31m' + message + '\x1b[0m\r\n');
-      onExit(1);
+      onExit(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
       return;
     }
 
@@ -427,7 +434,9 @@ export async function spawnPty(
     // ('unknown' — a newer build we can't yet confirm — is allowed, never
     // falsely blocked.) The reason is written via onData (not thrown) because the
     // renderer fires pty.create without awaiting, so a throw would be a swallowed
-    // rejection leaving a blank pane.
+    // rejection leaving a blank pane — and a plain exit code would read as a
+    // crash, so the reason goes out as the spawn-rejected sentinel and the
+    // renderer leaves the pane up.
     if (providerId === 'claude' && configDir && getKeychainIsolationStatus().status === 'unsupported') {
       pendingKills.delete(sessionId);
       onData(
@@ -435,7 +444,7 @@ export async function spawnPty(
           'all profiles would share one macOS keychain login, mixing the accounts.\r\n' +
           'Update Claude Code, then start the profile session again.\x1b[0m\r\n',
       );
-      onExit(1);
+      onExit(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
       return;
     }
 

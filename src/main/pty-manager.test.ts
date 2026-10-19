@@ -2,12 +2,13 @@ import { vi } from 'vitest';
 import * as path from 'path';
 import { isMac, isWin } from './platform';
 
-const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir } = vi.hoisted(() => ({
+const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockWrite: vi.fn(),
   mockResize: vi.fn(),
   mockKill: vi.fn(),
   mockExecFile: vi.fn(),
+  mockKeychainIsolation: vi.fn(() => ({ status: 'supported' as 'supported' | 'unsupported' | 'unknown', version: null as string | null })),
   mockNvmDefaultNodeBinDir: vi.fn(() => null as string | null),
 }));
 
@@ -40,9 +41,14 @@ vi.mock('./providers/nvm', () => ({
   findBinaryInNvm: vi.fn(() => null),
 }));
 
+vi.mock('./claude-keychain', () => ({
+  getKeychainIsolationStatus: mockKeychainIsolation,
+}));
+
 import * as fs from 'fs';
 import * as child_process from 'child_process';
 import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, LaunchSpecError } from './pty-manager';
+import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider, initProviders } from './providers/registry';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -67,6 +73,7 @@ function createMockPtyProcess() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockExistsSync.mockReturnValue(false);
+  mockKeychainIsolation.mockReturnValue({ status: 'supported', version: null });
   initProviders();
 });
 
@@ -273,7 +280,7 @@ describe('spawnPty', () => {
     }
   });
 
-  it('rejects unsupported extra args before spawning (actionable message, exit 1, no PTY)', () => {
+  it('rejects unsupported extra args before spawning (actionable message, spawn-rejected, no PTY)', () => {
     const onData = vi.fn();
     const onExit = vi.fn();
     spawnPty('s1', '/project', null, false, '--no-session', 'omp', undefined, undefined, '', onData, onExit);
@@ -281,7 +288,36 @@ describe('spawnPty', () => {
     expect(mockSpawn).not.toHaveBeenCalled();
     expect(onData).toHaveBeenCalledTimes(1);
     expect(onData.mock.calls[0][0]).toContain('--no-session');
-    expect(onExit).toHaveBeenCalledWith(1);
+    // The sentinel — not a bare exit code — is what tells the renderer the
+    // pane must survive so the "remove these options" message stays readable.
+    expect(onExit).toHaveBeenCalledWith(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
+  });
+
+  it('reports a genuine exit code 1 as a plain process exit (no spawn-rejected sentinel)', () => {
+    const proc = createMockPtyProcess();
+    (proc as unknown as { pid: number }).pid = 2028;
+    mockSpawn.mockReturnValue(proc);
+    const onExit = vi.fn();
+
+    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), onExit);
+    proc._emitExit(1, 0);
+
+    // Exactly three positional args: a 4th would tell the renderer to keep the
+    // pane, which is exactly wrong for a process that really died.
+    expect(onExit).toHaveBeenCalledWith(1, 0, 2028);
+  });
+
+  it('reports a Claude profile blocked by keychain isolation as spawn-rejected (no PTY)', () => {
+    mockKeychainIsolation.mockReturnValue({ status: 'unsupported', version: '2.1.19' });
+    const onData = vi.fn();
+    const onExit = vi.fn();
+
+    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', onData, onExit, '/profiles/work');
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData.mock.calls[0][0]).toContain('keychain login, mixing the accounts');
+    expect(onExit).toHaveBeenCalledWith(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
   });
 
   it('spawns with tokenized (quoted) extra args', () => {

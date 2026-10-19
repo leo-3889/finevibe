@@ -1,4 +1,5 @@
 import { appState } from './state.js';
+import { isSpawnRejectedExitReason } from '../shared/constants.js';
 import { initSidebar, promptNewProject } from './components/sidebar.js';
 import { initTabBar } from './components/tab-bar/index.js';
 import { initSplitLayout } from './components/split-layout.js';
@@ -212,6 +213,13 @@ async function main(): Promise<void> {
     if (isShellSessionId(sessionId)) {
       handleShellPtyExit(sessionId, exitCode);
     } else if (!isMcpSession(sessionId) && !isQuitting) {
+      // A rejected launch never produced a PTY: the pane already shows the
+      // actionable reason (pty:data wrote it just before this exit), so
+      // tearing the terminal down in this same turn hides the message and
+      // archives a crash badge + crash notification for a process that never
+      // ran. Keep the pane and the tab — the operator reads why, then closes
+      // it (closing archives without an exitReason, i.e. no crash badge).
+      if (isSpawnRejectedExitReason(exitReason)) return;
       // End any active P2P share for this session
       if (isSharing(sessionId)) {
         endShare(sessionId);

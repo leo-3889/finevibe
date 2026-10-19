@@ -66,3 +66,25 @@ export const TOKEN_TRUNCATION_SENTINEL = 'read-truncated-by-token-cap';
  * resolves to 'working' (STOP_FALLBACK_MS). They must not drift.
  */
 export const STOP_INFLIGHT_TRUST_MS = 600000;
+
+/**
+ * `pty:exit` exitReason sentinel for a session whose launch was REJECTED
+ * before a PTY ever existed (unsupported launch flags/env, Claude profile
+ * keychain isolation unavailable). `spawnPty` writes the actionable reason
+ * into the pane with `pty:data` and then fires its exit callback, so the
+ * renderer receives a message and an exit in the same turn: destroying the
+ * terminal there makes the "remove these options" text unreadable, and
+ * archiving the row renders a crash badge plus a desktop crash notification
+ * for a process that never ran.
+ *
+ * Producer: `spawnPty` (src/main/pty-manager.ts), forwarded verbatim by the
+ * `pty:create` exit callback. Consumer: the renderer's `pty:exit` handler,
+ * which keeps the pane (no destroy, no crash archive, no crash notification)
+ * when `isSpawnRejectedExitReason()` is true.
+ */
+export const SPAWN_REJECTED_EXIT_REASON = 'spawn-rejected';
+
+/** True when a `pty:exit` reason marks a pre-spawn rejection, not a process exit. */
+export function isSpawnRejectedExitReason(exitReason?: string): boolean {
+  return exitReason === SPAWN_REJECTED_EXIT_REASON;
+}
