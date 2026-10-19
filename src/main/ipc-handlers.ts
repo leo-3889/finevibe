@@ -1261,10 +1261,17 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) => analyzeReadiness(projectPath, excludedProviders));
+  // Both run git in the renderer-named cwd (`git ls-files` for the readiness
+  // scan, `git remote get-url` for the repo detect), so both take the same
+  // root gate as the 13 git:* handlers: a known project or a watched worktree.
+  ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) =>
+    analyzeReadiness(requireGitRoot('readiness:analyze', projectPath), excludedProviders)
+  );
 
   ipcMain.handle('github:isAvailable', () => isGhAvailable());
-  ipcMain.handle('github:detectRepo', (_event, projectPath: string) => detectRepo(projectPath));
+  ipcMain.handle('github:detectRepo', (_event, projectPath: string) =>
+    detectRepo(requireGitRoot('github:detectRepo', projectPath))
+  );
   ipcMain.handle('github:listPRs', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
     listPullRequests(repo, { state, max })
   );

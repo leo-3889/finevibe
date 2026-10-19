@@ -104,6 +104,32 @@ describe('listPullRequests', () => {
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
+  it('rejects a repo that escapes the repos/ scope, without calling gh', async () => {
+    // `gh api` requests the path with the user's token and resolves `..`
+    // before sending, so `repos/../user` reads /user; a leading '-' is a gh
+    // flag, and `%2e%2e` decodes to `..` on the way to the router.
+    for (const repo of ['../user', 'foo/../user', 'owner/-x', '%2e%2e/user', 'owner//x', 'owner/repo/extra']) {
+      const result = await listPullRequests(repo, { state: 'open', max: 5 });
+      expect(result.ok, repo).toBe(false);
+      expect(result.error, repo).toBe('Invalid repo. Expected owner/name.');
+    }
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('encodes the accepted segments into the request path', async () => {
+    // Dots are legal in GitHub repo names (pages repos), so they survive; the
+    // encoding is what keeps a literal `%2e%2e` from becoming `..`.
+    simulateExecFile(null, '/usr/local/bin/gh\n');
+    simulateExecFile(null, '[]');
+
+    const result = await listPullRequests('leo-3889/leo-3889.github.io', { state: 'open', max: 5 });
+
+    expect(result.ok).toBe(true);
+    const [, args] = mockExecFile.mock.calls[1] as unknown as [string, string[]];
+    expect(args[1]).toMatch(/^repos\/leo-3889\/leo-3889\.github\.io\/pulls\?/);
+    expect(args[1]).not.toContain('%2e');
+  });
+
   it('passes the right gh api args and returns parsed items', async () => {
     // first call: which gh
     simulateExecFile(null, '/usr/local/bin/gh\n');
@@ -193,6 +219,18 @@ describe('listIssues', () => {
   it('rejects invalid repo without calling gh', async () => {
     const result = await listIssues('not-a-repo', { state: 'open', max: 5 });
     expect(result.ok).toBe(false);
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects a name that would inject search qualifiers, without calling gh', async () => {
+    // `q` carries `repo:<repo>` verbatim, so a space or colon in the name
+    // becomes an extra operator and a dot segment is a path step for the
+    // endpoints a future caller builds from the same value.
+    for (const repo of ['../user', 'foo/bar is:pr user:evil', 'owner/-x', 'owner/repo/extra']) {
+      const result = await listIssues(repo, { state: 'open', max: 5 });
+      expect(result.ok, repo).toBe(false);
+      expect(result.error, repo).toBe('Invalid repo. Expected owner/name.');
+    }
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 });

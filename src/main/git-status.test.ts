@@ -17,7 +17,7 @@ vi.mock('fs', () => ({
 import { execFile } from 'child_process';
 import { promises as fsPromises } from 'fs';
 import * as path from 'path';
-import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitDiscardFile } from './git-status';
+import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitDiscardFile, checkoutGitBranch, createGitBranch } from './git-status';
 
 const mockExecFile = vi.mocked(execFile);
 const mockRm = vi.mocked(fsPromises.rm);
@@ -373,4 +373,49 @@ it('bounds an untracked file that grows after stat', async () => {
     read: async (buffer: Buffer, offset: number, length: number) => { buffer.fill(120, offset, offset + length); return {bytesRead: length}; }, close } as any);
   expect(await getGitDiff('/repo', 'growing', 'untracked')).toContain('too large');
   expect(close).toHaveBeenCalledOnce();
+});
+
+describe('checkoutGitBranch / createGitBranch branch-name gate', () => {
+  const argv = () => mockExecFile.mock.calls.map((c) => c[1] as string[]);
+
+  it('refuses a flag-shaped branch before git ever sees it', async () => {
+    // `git checkout -f` force-discards the working tree. The renderer owns the
+    // branch string, so the leading '-' has to die here, not in argv.
+    await expect(checkoutGitBranch('/repo', '-f')).rejects.toThrow(/Invalid branch name/);
+    await expect(createGitBranch('/repo', '-f')).rejects.toThrow(/Invalid branch name/);
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('validates with git check-ref-format before checking out', async () => {
+    simulateExecFile(null, ''); // check-ref-format passes
+    simulateExecFile(null, ''); // checkout
+
+    await checkoutGitBranch('/repo', 'feature/x');
+
+    expect(argv()).toEqual([
+      ['check-ref-format', '--branch', 'feature/x'],
+      ['checkout', 'feature/x'],
+    ]);
+  });
+
+  it('creates on a validated ref only', async () => {
+    simulateExecFile(null, '');
+    simulateExecFile(null, '');
+
+    await createGitBranch('/repo', 'new-branch');
+
+    expect(argv()).toEqual([
+      ['check-ref-format', '--branch', 'new-branch'],
+      ['checkout', '-b', 'new-branch'],
+    ]);
+  });
+
+  it('stops when git rejects the ref name', async () => {
+    // `a..b` is the double-dot rev range git refuses for a branch name.
+    simulateExecFile({ message: 'fatal: invalid ref format' } as ExecFileException, '');
+
+    await expect(checkoutGitBranch('/repo', 'a..b')).rejects.toThrow(/Invalid branch name/);
+
+    expect(argv()).toEqual([['check-ref-format', '--branch', 'a..b']]);
+  });
 });

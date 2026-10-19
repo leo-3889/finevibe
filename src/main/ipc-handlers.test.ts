@@ -7,18 +7,17 @@ import { clipboard } from 'electron';
 import * as os from 'os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as path from 'path';
+import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 
 /**
  * Focused on the `pty:create` lifecycle: which provider hook fires for a
  * fresh vs a resumed spawn, and the ORDER of the teardown calls in the PTY
- * exit callback / spawn-failure catch. pty-manager now suppresses a replaced
- * process's callback before it reaches this handler.
  *
  * `calls` records lifecycle events in the order they happen, so the
  * assertions are about sequence rather than membership.
  */
 
-type ExitCallback = (exitCode: number, signal?: number, pid?: number) => void;
+type ExitCallback = (exitCode: number, signal?: number, pid?: number, spawnRejectedReason?: string) => void;
 
 const calls = vi.hoisted(() => [] as string[]);
 const handlers = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
@@ -153,6 +152,8 @@ vi.mock('../shared/token-estimate', autoStub);
 import { registerIpcHandlers } from './ipc-handlers';
 import { loadState } from './store';
 import { cleanupSessionStatus } from './hook-status';
+import { analyzeReadiness } from './readiness/analyzer';
+import { detectRepo } from './github-cli';
 
 function makeProvider(): CliProvider {
   return {
@@ -321,6 +322,44 @@ describe('git:* root gate', () => {
   });
 });
 
+describe('readiness/github git-executing handlers share the root gate', () => {
+  it('blocks a cwd the renderer invented before any git runs', async () => {
+    // Both handlers shell out to git in the named cwd (`git ls-files`,
+    // `git remote get-url`) - the same sink the 13 git:* handlers gate.
+    // The analyzer/detectRepo stubs are the autoStub proxies; importing them
+    // statically is what lets these assertions see the calls.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      const outside = path.join(root, 'invented');
+      fs.mkdirSync(outside);
+
+      expect(() => handlers.get('readiness:analyze')!({}, outside))
+        .toThrow(/not within a known project/);
+      expect(() => handlers.get('github:detectRepo')!({}, outside))
+        .toThrow(/not within a known project/);
+      expect(vi.mocked(analyzeReadiness)).not.toHaveBeenCalled();
+      expect(vi.mocked(detectRepo)).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs them for a known project, on the resolved path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      knownPaths.push(root);
+
+      await handlers.get('readiness:analyze')!({}, root, ['codex']);
+      await handlers.get('github:detectRepo')!({}, root);
+
+      expect(vi.mocked(analyzeReadiness)).toHaveBeenCalledWith(root, ['codex']);
+      expect(vi.mocked(detectRepo)).toHaveBeenCalledWith(root);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('pty:create provider hooks', () => {
   it('a fresh session registers for cli-session-id discovery', async () => {
     await create('ui-1', null);
@@ -453,6 +492,29 @@ describe('pty:exit crash reason', () => {
     exitCallback()(1);
     expect(provider.readSessionExitReason).toHaveBeenCalledWith('/sessions/dir-a/2026.jsonl');
     expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, 'unhandled_rejection', undefined);
+  });
+
+  it('sends the spawn-rejected sentinel verbatim when no PTY ever existed', async () => {
+    // A launch rejected before the PTY spawn writes its reason into the pane
+    // via pty:data; the renderer must see a sentinel, not a crash reason, or
+    // it destroys that pane and archives a crash for a session that never ran.
+    provider.readSessionExitReason = vi.fn(() => ({ reason: 'unhandled_rejection', kind: 'fatal' }));
+    mockGetSyncedPath.mockReturnValue('/sessions/dir-a/2026.jsonl');
+    await create('ui-1', 'cli-1', { isResume: true });
+    calls.length = 0;
+    exitCallback()(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
+    // No transcript can exist for a session that never spawned — the whole
+    // exit-reason read is skipped, so a stale marker cannot be blamed on it.
+    expect(provider.readSessionExitReason).not.toHaveBeenCalled();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+    expect(calls).toEqual(['unregister', 'exited']);
+  });
+
+  it('keeps reporting a real exit code 1 as the crash reason the renderer archives', async () => {
+    mockGetSyncedPath.mockReturnValue(null);
+    await create('ui-1', 'cli-1', { isResume: true });
+    exitCallback()(1);
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, 'exited with code 1', undefined);
   });
 
   it('falls back to the exit code when no transcript path is resolved', async () => {

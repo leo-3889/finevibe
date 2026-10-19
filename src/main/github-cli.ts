@@ -129,16 +129,41 @@ async function ghApi<T = unknown>(apiPath: string, opts: GhApiOptions = {}): Pro
   }
 }
 
+/**
+ * `repo` arrives verbatim from the renderer and steers a `gh api` request made
+ * with the user's token: as the request path (`repos/<repo>/pulls`) and, for
+ * the search endpoint, inside the `q=repo:<repo>` qualifier.
+ *
+ * A `..` segment is resolved away before the request goes out, so
+ * `repos/../user` escapes the `repos/<owner>/<name>` scope and reads any
+ * endpoint the token can reach; a leading `-` is parsed by gh as a flag; a
+ * space or colon in the name escapes the `repo:` qualifier and injects search
+ * operators. GitHub's own grammar is one segment of alphanumerics with inner
+ * `.`/`_`/`-` (owners drop the dot), so require exactly two such segments and
+ * percent-encode them for the path — encoding also makes `%2e%2e` (which
+ * decodes to `..` server-side) inert while leaving a plain `owner/name`
+ * byte-identical. Returns null for anything else.
+ */
+function encodeRepoPath(repo: string): string | null {
+  const segments = repo.split('/');
+  if (segments.length !== 2) return null;
+  for (const segment of segments) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment)) return null;
+  }
+  return segments.map(encodeURIComponent).join('/');
+}
+
 export interface ListOptions {
   state: 'open' | 'closed' | 'all';
   max: number;
 }
 
 export async function listPullRequests(repo: string, opts: ListOptions): Promise<GithubFetchResult> {
-  if (!repo || !repo.includes('/')) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
+  const encoded = repo ? encodeRepoPath(repo) : null;
+  if (!encoded) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
   if (!(await isGhAvailable())) return { ok: false, error: 'gh CLI not installed' };
   try {
-    const items = await ghApi<GithubItem[]>(`repos/${repo}/pulls`, {
+    const items = await ghApi<GithubItem[]>(`repos/${encoded}/pulls`, {
       query: { state: opts.state, per_page: Math.min(Math.max(opts.max, 1), GITHUB_MAX_PER_PAGE), sort: 'updated', direction: 'desc' },
     });
     return { ok: true, items: items.slice(0, opts.max) };
@@ -148,7 +173,9 @@ export async function listPullRequests(repo: string, opts: ListOptions): Promise
 }
 
 export async function listIssues(repo: string, opts: ListOptions): Promise<GithubFetchResult> {
-  if (!repo || !repo.includes('/')) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
+  // The validated name feeds a `repo:` qualifier, not a path, so the plain
+  // spelling goes into `q`; the check is what keeps it one qualifier.
+  if (!repo || !encodeRepoPath(repo)) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
   if (!(await isGhAvailable())) return { ok: false, error: 'gh CLI not installed' };
   try {
     // /issues endpoint returns PRs too — search API filters server-side via is:issue.
