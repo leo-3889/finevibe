@@ -21,10 +21,10 @@ vi.mock('../codex-session-watcher', () => ({
 vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { Readable } from 'stream';
 import { CodexProvider } from './codex-provider';
 
-const mockReadFile = vi.mocked(fs.promises.readFile);
 const mockReaddir = vi.mocked(fs.promises.readdir);
 
 const UUID = '019d3512-caf9-7b50-8d2b-ccccdcf8ff14';
@@ -96,5 +96,83 @@ describe('CodexProvider.indexTranscript()', () => {
     const r = await new CodexProvider().indexTranscript('/p');
     expect(r.text).toContain('part one');
     expect(r.text).toContain('part two');
+  });
+});
+
+describe('CodexProvider .jsonl.zst transcripts', () => {
+  // Recent Codex builds compress every rollout to `.jsonl.zst`; before this
+  // the provider matched only `.jsonl`, so resume/transcripts were dead on
+  // every modern install.
+  const zlib = require('zlib') as typeof import('zlib');
+
+  function mockIndexFileZst(jsonl: string): void {
+    const compressed = zlib.zstdCompressSync(Buffer.from(jsonl, 'utf-8'));
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: compressed.length } as fs.Stats);
+    vi.mocked(fs.createReadStream).mockReturnValueOnce(Readable.from([compressed]) as fs.ReadStream);
+  }
+
+  it('discoverTranscripts matches .jsonl.zst rollout files', async () => {
+    mockReaddir
+      .mockResolvedValueOnce([dir('2026')] as any)
+      .mockResolvedValueOnce([dir('10')] as any)
+      .mockResolvedValueOnce([dir('10')] as any)
+      .mockResolvedValueOnce([
+        file(`rollout-2026-10-10T22-12-14-${UUID}.jsonl.zst`),
+      ] as any);
+
+    const out = await new CodexProvider().discoverTranscripts();
+    expect(out).toHaveLength(1);
+    expect(out[0].cliSessionId).toBe(UUID);
+  });
+
+  it('getTranscriptPath resolves the compressed file', () => {
+    const readdirSync = vi.mocked(fs.readdirSync);
+    readdirSync
+      .mockReturnValueOnce(['2026'])
+      .mockReturnValueOnce(['10'])
+      .mockReturnValueOnce(['10'])
+      .mockReturnValueOnce([`rollout-2026-10-10T22-12-14-${UUID}.jsonl.zst`]);
+
+    const p = new CodexProvider().getTranscriptPath(UUID, '/proj');
+    expect(p).toBe(path.join('/mock/home/.codex/sessions', '2026', '10', '10', `rollout-2026-10-10T22-12-14-${UUID}.jsonl.zst`));
+  });
+
+  it('indexTranscript decompresses zst and extracts cwd + user text', async () => {
+    const jsonl = makeJsonl([
+      { type: 'session_meta', payload: { cwd: 'C:\\repo', id: UUID } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [
+        { type: 'input_text', text: 'compressed prompt' },
+      ] } },
+    ]);
+    mockIndexFileZst(jsonl);
+    const r = await new CodexProvider().indexTranscript(`/p/rollout-x-${UUID}.jsonl.zst`);
+    expect(r.cwd).toBe('C:\\repo');
+    expect(r.text).toContain('compressed prompt');
+  });
+
+  it('indexTranscript tolerates a truncated zstd tail frame (incremental compression)', async () => {
+    // Codex compresses incrementally: concatenated frames, the newest frame
+    // truncated mid-write. A single frame decoded atomically yields nothing
+    // when cut, so stage two frames — the head must decode, the tail die.
+    const head = makeJsonl([
+      { type: 'session_meta', payload: { cwd: '/repo', id: UUID } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [
+        { type: 'input_text', text: 'first frame survives' },
+      ] } },
+    ]);
+    const tail = makeJsonl([
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [
+        { type: 'input_text', text: 'tail frame is cut off' },
+      ] } },
+    ]);
+    const c1 = zlib.zstdCompressSync(Buffer.from(head + '\n', 'utf-8'));
+    const c2 = zlib.zstdCompressSync(Buffer.from(tail + '\n', 'utf-8'));
+    const truncated = Buffer.concat([c1, c2.subarray(0, Math.max(1, c2.length >> 1))]);
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: truncated.length } as fs.Stats);
+    vi.mocked(fs.createReadStream).mockReturnValueOnce(Readable.from([truncated]) as fs.ReadStream);
+
+    const r = await new CodexProvider().indexTranscript(`/p/rollout-x-${UUID}.jsonl.zst`);
+    // Best-effort: at least the head frame's content is indexed; no throw.
+    expect(r.text).toContain('first frame survives');
   });
 });

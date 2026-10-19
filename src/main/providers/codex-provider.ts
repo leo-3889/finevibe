@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as readline from 'readline';
 import * as path from 'path';
+import * as zlib from 'zlib';
 import * as os from 'os';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
@@ -12,9 +13,9 @@ import { startCodexSessionWatcher, registerPendingCodexSession, unregisterCodexS
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
-import type { BrowserWindow } from 'electron';
+const CODEX_FILE_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/i;
 
-const CODEX_FILE_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+import type { BrowserWindow } from 'electron';
 
 const binaryCache = { path: null as string | null };
 
@@ -138,7 +139,7 @@ export class CodexProvider implements CliProvider {
     try {
       const root = path.join(os.homedir(), '.codex', 'sessions');
       const suffix = `-${cliSessionId}.jsonl`;
-      // sessions are partitioned as YYYY/MM/DD/rollout-<ts>-<id>.jsonl.
+      // sessions are partitioned as YYYY/MM/DD/rollout-<ts>-<id>.jsonl[.zst].
       // Walk newest-first and return on first match.
       for (const year of descSortedReaddir(root)) {
         const yearDir = path.join(root, year);
@@ -147,7 +148,7 @@ export class CodexProvider implements CliProvider {
           for (const day of descSortedReaddir(monthDir)) {
             const dayDir = path.join(monthDir, day);
             for (const file of descSortedReaddir(dayDir)) {
-              if (file.endsWith(suffix)) return path.join(dayDir, file);
+              if (file.endsWith(suffix) || file.endsWith(`${suffix}.zst`)) return path.join(dayDir, file);
             }
           }
         }
@@ -157,7 +158,6 @@ export class CodexProvider implements CliProvider {
       return null;
     }
   }
-
   async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
     const root = path.join(os.homedir(), '.codex', 'sessions');
     const out: TranscriptDescriptor[] = [];
@@ -195,37 +195,72 @@ export class CodexProvider implements CliProvider {
       return { text: '', cwd: '' };
     }
     if (size > MAX_INDEX_FILE_BYTES) return { text: '', cwd: '' };
+    if (transcriptPath.endsWith('.zst')) return this.indexCompressedTranscript(transcriptPath);
 
-    let cwd = '';
-    const budget = new IndexTextBudget();
-
+    const { consume, budget } = this.createLineConsumer();
     const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES - 1 });
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
-      for await (const line of lines) {
-        if (!line.trim() || budget.full) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (!cwd && entry.type === 'session_meta' && entry.payload?.cwd) cwd = entry.payload.cwd;
-          if (entry.type !== 'response_item') continue;
-          const p = entry.payload;
-          if (!p || p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) continue;
-          let text = '';
-          for (const block of p.content) {
-            if (block && typeof block.text === 'string') text += block.text + '\n';
-          }
-          if (text) budget.push(text);
-        } catch {
-          // partial-write tolerance
-        }
-      }
+      for await (const line of lines) consume(line);
     } catch {
       // Best-effort: keep whatever was extracted before the stream failed.
     } finally {
       lines.close();
       input.destroy();
     }
-    return { text: budget.join(), cwd };
+    return { text: budget.join(), cwd: this.indexedCwd };
+  }
+
+  /**
+   * Recent Codex builds compress rollouts to `.jsonl.zst`. The index only
+   * needs the head, so decompress a bounded prefix; a truncated tail frame
+   * (Codex compresses incrementally) is tolerated the same way a partial
+   * write is in the plain path.
+   */
+  private async indexCompressedTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {
+    const { consume, budget } = this.createLineConsumer();
+    const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES * 8 - 1 });
+    const zstd = zlib.createZstdDecompress();
+    input.pipe(zstd);
+    input.on('error', () => { /* best-effort, same as the plain path */ });
+    zstd.on('error', () => { /* truncated tail frame: keep the decompressed head */ });
+    const lines = readline.createInterface({ input: zstd, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) consume(line);
+    } catch {
+      // Best-effort: keep whatever was extracted before decompression failed.
+    } finally {
+      lines.close();
+      zstd.destroy();
+      input.destroy();
+    }
+    return { text: budget.join(), cwd: this.indexedCwd };
+  }
+
+  /** cwd of the last indexed transcript; reset by createLineConsumer. */
+  private indexedCwd = '';
+
+  private createLineConsumer(): { consume: (line: string) => void; budget: IndexTextBudget } {
+    const budget = new IndexTextBudget();
+    this.indexedCwd = '';
+    const consume = (line: string): void => {
+      if (!line.trim() || budget.full) return;
+      try {
+        const entry = JSON.parse(line);
+        if (!this.indexedCwd && entry.type === 'session_meta' && entry.payload?.cwd) this.indexedCwd = entry.payload.cwd;
+        if (entry.type !== 'response_item') return;
+        const p = entry.payload;
+        if (!p || p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) return;
+        let text = '';
+        for (const block of p.content) {
+          if (block && typeof block.text === 'string') text += block.text + '\n';
+        }
+        if (text) budget.push(text);
+      } catch {
+        // partial-write tolerance
+      }
+    };
+    return { consume, budget };
   }
 }
 
