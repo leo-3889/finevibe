@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockMatchesAnyShortcut, mockPlatform, mockPreferences, webglState } = vi.hoisted(() => ({
+const { mockMatchesAnyShortcut, mockMatchEvent, mockPlatform, mockPreferences, webglState } = vi.hoisted(() => ({
   mockMatchesAnyShortcut: vi.fn(() => false),
+  mockMatchEvent: vi.fn(() => false),
   mockPlatform: { isMac: false, isWin: false, isLinux: true },
   mockPreferences: { copyOnSelect: false } as { copyOnSelect: boolean },
   webglState: {
@@ -11,7 +12,10 @@ const { mockMatchesAnyShortcut, mockPlatform, mockPreferences, webglState } = vi
   },
 }));
 vi.mock('../shortcuts.js', () => ({
-  shortcutManager: { matchesAnyShortcut: (...args: unknown[]) => mockMatchesAnyShortcut(...args) },
+  shortcutManager: {
+    matchesAnyShortcut: (...args: unknown[]) => mockMatchesAnyShortcut(...args),
+    matchEvent: (...args: unknown[]) => mockMatchEvent(...args),
+  },
 }));
 vi.mock('../platform.js', () => ({
   get isMac() { return mockPlatform.isMac; },
@@ -135,6 +139,7 @@ beforeEach(() => {
   mockSaveImage.mockResolvedValue(null);
   mockGetDroppedFilePath.mockReturnValue('');
   mockMatchesAnyShortcut.mockReturnValue(false);
+  mockMatchEvent.mockReturnValue(false);
   mockPreferences.copyOnSelect = false;
   vi.stubGlobal('window', {
     vibeyard: {
@@ -419,7 +424,7 @@ describe('attachClipboardCopyHandler app shortcut suppression', () => {
 
   it('returns false when key matches a registered app shortcut', () => {
     const terminal = new FakeTerminal();
-    mockMatchesAnyShortcut.mockReturnValue(true);
+    mockMatchEvent.mockReturnValue(true); // handler acted: key consumed
     attachClipboardCopyHandler(terminal as any);
 
     const result = terminal.simulateKey({ ctrlKey: true, key: 'j', type: 'keydown' });
@@ -429,12 +434,61 @@ describe('attachClipboardCopyHandler app shortcut suppression', () => {
 
   it('falls through to default when key does not match any shortcut', () => {
     const terminal = new FakeTerminal();
-    mockMatchesAnyShortcut.mockReturnValue(false);
     attachClipboardCopyHandler(terminal as any);
 
     const result = terminal.simulateKey({ key: 'a', type: 'keydown' });
 
     expect(result).toBe(true);
+  });
+
+  it('sends Ctrl+L to the PTY in a CLI terminal (goto-line handler declines)', () => {
+    // matchEvent false = the accelerator matched but the handler no-oped
+    // (no file-reader session) and did NOT preventDefault. Returning true
+    // here is what lets \x0c reach readline — the Ctrl+L dead-key bug.
+    const terminal = new FakeTerminal();
+    mockMatchEvent.mockReturnValue(false);
+    attachClipboardCopyHandler(terminal as any);
+
+    const result = terminal.simulateKey({ ctrlKey: true, key: 'l', type: 'keydown' });
+
+    expect(mockMatchEvent).toHaveBeenCalled();
+    expect(result).toBe(true);
+  });
+
+  it('suppresses Ctrl+L for a file-reader session (goto-line handler acts)', () => {
+    const terminal = new FakeTerminal();
+    mockMatchEvent.mockReturnValue(true);
+    attachClipboardCopyHandler(terminal as any);
+
+    const result = terminal.simulateKey({ ctrlKey: true, key: 'l', type: 'keydown' });
+
+    expect(result).toBe(false);
+  });
+
+  it('sends Ctrl+R to the PTY outside a browser tab and suppresses it inside one', () => {
+    // browser-reload declines for non-browser sessions (Ctrl+R is readline
+    // reverse-search); it acts for browser-tab sessions.
+    const terminal = new FakeTerminal();
+    attachClipboardCopyHandler(terminal as any);
+
+    mockMatchEvent.mockReturnValue(false);
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'r', type: 'keydown' })).toBe(true);
+
+    mockMatchEvent.mockReturnValue(true);
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'r', type: 'keydown' })).toBe(false);
+  });
+
+  it('suppresses keyup of any registered accelerator via matchesAnyShortcut', () => {
+    // keyup has no handler to run; it stays suppressed for registered
+    // accelerators so xterm never processes a consumed shortcut's release.
+    const terminal = new FakeTerminal();
+    mockMatchesAnyShortcut.mockReturnValue(true);
+    attachClipboardCopyHandler(terminal as any);
+
+    const result = terminal.simulateKey({ ctrlKey: true, key: 'j', type: 'keyup' });
+
+    expect(mockMatchEvent).not.toHaveBeenCalled();
+    expect(result).toBe(false);
   });
 });
 

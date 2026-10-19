@@ -258,6 +258,10 @@ export function collapseArmedTextareaOnContextMenu(terminal: Terminal): void {
  * - Ctrl+Shift+C: copies selected text to clipboard
  * - Windows Ctrl+C: copies if selection exists, otherwise passes through as SIGINT
  * - Windows Ctrl+V: pastes clipboard content to PTY, attachments included (requires writeToPty)
+ * - App accelerators: runs the shortcut dispatcher so a consumed key never
+ *   reaches the PTY, while a handler that declines in the current context
+ *   (Ctrl+L in a CLI terminal, Ctrl+R outside a browser tab) leaves the key
+ *   to xterm as ordinary input.
  *
  * Pass an optional `extend` handler for terminal-specific key behavior.
  * Return false to suppress the key, undefined to fall through to default.
@@ -300,8 +304,14 @@ export function attachClipboardCopyHandler(
       return false; // suppress \x16
     }
 
-    // Let registered app shortcuts bubble to document listener
-    if (shortcutManager.matchesAnyShortcut(e)) return false;
+    // App accelerators: run the dispatcher here (keydown only) so its
+    // verdict decides xterm. A handler that acted consumed the key — the PTY
+    // must not also get the bytes. A handler that declined (context guard)
+    // leaves the event un-prevented, so xterm writes it to the PTY: readline
+    // clear-screen and reverse-search work in Claude Code/Codex/Gemini/Pi
+    // TUIs. keyup has no handler to run; suppress it for every registered
+    // accelerator, as before.
+    if (e.type === 'keydown' ? shortcutManager.matchEvent(e) : shortcutManager.matchesAnyShortcut(e)) return false;
 
     return extend?.(e) ?? true;
   });

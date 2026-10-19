@@ -18,11 +18,21 @@ import { toggleInspector } from './components/session-inspector.js';
 import { zoomIn, zoomOut, zoomReset } from './zoom.js';
 import { getBrowserTabInstance } from './components/browser-tab/instance.js';
 
+/**
+ * Wrap a fire-and-forget action: it unconditionally performs its command,
+ * so the key is consumed. Handlers with context guards report their own
+ * verdict; a false verdict leaves the key to the focused widget (see
+ * ShortcutDef.handler).
+ */
+const acts = (fn: () => void): (() => boolean) => () => { fn(); return true; };
+
 export function initKeybindings(): void {
-  const handleCloseSession = () => {
+  const handleCloseSession = (): boolean => {
     const project = appState.activeProject;
     const session = appState.activeSession;
-    if (project && session) closeSessionWithConfirm(project.id, session.id);
+    if (!project || !session) return false;
+    closeSessionWithConfirm(project.id, session.id);
+    return true;
   };
 
   // Menu IPC listeners — handle clicks on Electron menu items.
@@ -39,24 +49,24 @@ export function initKeybindings(): void {
   window.vibeyard.menu.onCloseSession(handleCloseSession);
 
   // Register shortcut handlers — the single authority for keyboard shortcuts.
-  shortcutManager.registerHandler('new-session', quickNewSession);
-  shortcutManager.registerHandler('new-session-alt', quickNewSession);
-  shortcutManager.registerHandler('new-project', promptNewProject);
+  shortcutManager.registerHandler('new-session', acts(quickNewSession));
+  shortcutManager.registerHandler('new-session-alt', acts(quickNewSession));
+  shortcutManager.registerHandler('new-project', acts(promptNewProject));
   for (let i = 1; i <= 9; i++) {
-    shortcutManager.registerHandler(`goto-session-${i}`, () => appState.gotoSession(i - 1));
+    shortcutManager.registerHandler(`goto-session-${i}`, acts(() => appState.gotoSession(i - 1)));
   }
-  shortcutManager.registerHandler('next-session', () => appState.cycleSession(1));
-  shortcutManager.registerHandler('prev-session', () => appState.cycleSession(-1));
-  shortcutManager.registerHandler('tab-back', () => appState.navigateBack());
-  shortcutManager.registerHandler('tab-forward', () => appState.navigateForward());
-  shortcutManager.registerHandler('toggle-sidebar', toggleSidebar);
-  shortcutManager.registerHandler('toggle-split', () => appState.toggleSwarm());
-  shortcutManager.registerHandler('project-terminal', toggleProjectTerminal);
-  shortcutManager.registerHandler('project-terminal-alt', toggleProjectTerminal);
-  shortcutManager.registerHandler('debug-panel', toggleDebugPanel);
-  shortcutManager.registerHandler('git-panel', toggleGitPanel);
-  shortcutManager.registerHandler('quick-open', showQuickOpen);
-  shortcutManager.registerHandler('session-search', showSessionSearchPalette);
+  shortcutManager.registerHandler('next-session', acts(() => appState.cycleSession(1)));
+  shortcutManager.registerHandler('prev-session', acts(() => appState.cycleSession(-1)));
+  shortcutManager.registerHandler('tab-back', acts(() => appState.navigateBack()));
+  shortcutManager.registerHandler('tab-forward', acts(() => appState.navigateForward()));
+  shortcutManager.registerHandler('toggle-sidebar', acts(toggleSidebar));
+  shortcutManager.registerHandler('toggle-split', acts(() => appState.toggleSwarm()));
+  shortcutManager.registerHandler('project-terminal', acts(toggleProjectTerminal));
+  shortcutManager.registerHandler('project-terminal-alt', acts(toggleProjectTerminal));
+  shortcutManager.registerHandler('debug-panel', acts(toggleDebugPanel));
+  shortcutManager.registerHandler('git-panel', acts(toggleGitPanel));
+  shortcutManager.registerHandler('quick-open', acts(showQuickOpen));
+  shortcutManager.registerHandler('session-search', acts(showSessionSearchPalette));
   shortcutManager.registerHandler('find-in-terminal', () => {
     const shellPanel = document.getElementById('project-terminal-panel');
     if (shellPanel && !shellPanel.classList.contains('hidden') &&
@@ -64,54 +74,70 @@ export function initKeybindings(): void {
       const shellSessionId = getActiveShellSessionId();
       if (shellSessionId) {
         showSearchBar(shellSessionId, ShellTerminalSearchBackend(shellSessionId));
-        return;
+        return true;
       }
     }
 
     const session = appState.activeSession;
-    if (!session) return;
+    if (!session) return false;
 
     if (session.type === 'file-reader') {
       const instance = getFileReaderInstance(session.id);
-      if (!instance) return;
+      if (!instance) return false;
       const body = instance.element.querySelector('.file-reader-body') as HTMLElement;
-      if (!body) return;
+      if (!body) return false;
       showSearchBar(session.id, new DomSearchBackend(body, getFileReaderTextSelector(session.id)));
+      return true;
     } else if (session.type === 'diff-viewer') {
       const instance = getFileViewerInstance(session.id);
-      if (!instance) return;
+      if (!instance) return false;
       const body = instance.element.querySelector('.file-viewer-body') as HTMLElement;
-      if (!body) return;
+      if (!body) return false;
       showSearchBar(session.id, new DomSearchBackend(body, '.diff-line'));
+      return true;
     } else {
       const sessionId = getFocusedSessionId();
-      if (sessionId) showSearchBar(sessionId, TerminalSearchBackend(sessionId));
+      if (!sessionId) return false;
+      showSearchBar(sessionId, TerminalSearchBackend(sessionId));
+      return true;
     }
   });
   shortcutManager.registerHandler('goto-line', () => {
     const session = appState.activeSession;
-    if (session?.type === 'file-reader') {
-      showGoToLineBar(session.id);
-    }
+    if (session?.type !== 'file-reader') return false;
+    showGoToLineBar(session.id);
+    return true;
   });
-  shortcutManager.registerHandler('help', () => showPreferencesModal('help'));
+  shortcutManager.registerHandler('help', acts(() => showPreferencesModal('help')));
   shortcutManager.registerHandler('close-session', handleCloseSession);
-  shortcutManager.registerHandler('toggle-inspector', toggleInspector);
-  shortcutManager.registerHandler('zoom-in', zoomIn);
-  shortcutManager.registerHandler('zoom-out', zoomOut);
-  shortcutManager.registerHandler('zoom-reset', zoomReset);
+  shortcutManager.registerHandler('toggle-inspector', acts(toggleInspector));
+  shortcutManager.registerHandler('zoom-in', acts(zoomIn));
+  shortcutManager.registerHandler('zoom-out', acts(zoomOut));
+  shortcutManager.registerHandler('zoom-reset', acts(zoomReset));
   shortcutManager.registerHandler('browser-reload', () => {
     const session = appState.activeSession;
-    if (session?.type !== 'browser-tab') return;
-    getBrowserTabInstance(session.id)?.webview.reload();
+    // Outside a browser tab Ctrl+R must reach the terminal PTY (readline
+    // reverse-search); only a browser-tab session can act on it.
+    if (session?.type !== 'browser-tab') return false;
+    const instance = getBrowserTabInstance(session.id);
+    if (!instance) return false;
+    instance.webview.reload();
+    return true;
   });
   shortcutManager.registerHandler('browser-hard-reload', () => {
     const session = appState.activeSession;
-    if (session?.type !== 'browser-tab') return;
-    getBrowserTabInstance(session.id)?.webview.reloadIgnoringCache();
+    if (session?.type !== 'browser-tab') return false;
+    const instance = getBrowserTabInstance(session.id);
+    if (!instance) return false;
+    instance.webview.reloadIgnoringCache();
+    return true;
   });
 
   document.addEventListener('keydown', (e) => {
+    // A terminal's custom key handler runs the dispatcher at the xterm gate
+    // (so a consumed shortcut never reaches the PTY); the consumed event
+    // bubbles here already prevented — do not run its handler a second time.
+    if (e.defaultPrevented) return;
     shortcutManager.matchEvent(e);
   });
 }

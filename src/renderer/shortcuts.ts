@@ -7,7 +7,7 @@ export interface ShortcutDef {
   label: string;
   category: string;
   defaultKeys: string;
-  handler: (() => void) | null;
+  handler: (() => boolean) | null;
 }
 
 interface ShortcutDefault {
@@ -197,12 +197,35 @@ function isTypingTarget(target: EventTarget | null): boolean {
     || el.isContentEditable === true || el.contentEditable === 'true';
 }
 
+/**
+ * Every keyboard-driven overlay root the app can open. The first two are the
+ * shared modal.ts root and the modal-shell dialogs (hidden via the `hidden`
+ * class, so keep :not(.hidden) on them). The rest are full-screen overlays
+ * created outside modal-shell — share/join dialogs, the team picker, quick
+ * open, the session palette, and the browser-tab flow picker / send menu —
+ * which are invisible to `.modal-overlay` and were the gap left by 6af0c7a:
+ * Ctrl+W behind the team detail overlay killed the tab's PTY. Excluded on
+ * purpose: terminal-exit-overlay and browser-drag-overlay are non-interactive
+ * decorations, not keyboard owners.
+ */
+const OVERLAY_SELECTOR = [
+  '#modal-overlay:not(.hidden)',
+  '.modal-overlay:not(.hidden)',
+  '.share-overlay',
+  '.team-picker-overlay',
+  '.team-picker-detail-overlay',
+  '.quick-open-overlay',
+  '.session-palette-overlay',
+  '.flow-picker-overlay',
+  '.send-menu-overlay',
+].join(',');
+
 /** True while any modal overlay is visible (shared modal.ts overlay + modal-shell overlays). */
 function isModalOpen(): boolean {
-  const main = document.getElementById('modal-overlay');
-  if (main && !main.classList.contains('hidden')) return true;
-  for (const el of document.querySelectorAll<HTMLElement>('.modal-overlay')) {
-    if (!el.classList.contains('hidden') && el.style.display !== 'none') return true;
+  for (const el of document.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR)) {
+    // Most overlays are removed from the DOM on close; the browser-tab flow
+    // picker and send menu are display-toggled, so honour inline hiding.
+    if (el.style.display !== 'none') return true;
   }
   return false;
 }
@@ -214,7 +237,7 @@ export class ShortcutManager {
   }
 
   /** Register a handler for a shortcut id */
-  registerHandler(id: string, handler: () => void): void {
+  registerHandler(id: string, handler: () => boolean): void {
     const shortcut = this.shortcuts.find((s) => s.id === id);
     if (shortcut) {
       shortcut.handler = handler;
@@ -295,8 +318,12 @@ export class ShortcutManager {
       if (inModal && shortcut.id !== 'zoom-in' && shortcut.id !== 'zoom-out'
           && shortcut.id !== 'zoom-reset' && shortcut.id !== 'help') continue;
       if (inField && !ShortcutManager.FIELD_SAFE.has(shortcut.id)) continue;
+      // The handler owns the verdict: it returns true only when it acted in
+      // the current context. Declined keys keep their default behavior, so
+      // Ctrl+L reaches the PTY in a CLI terminal (readline clear-screen) and
+      // Ctrl+R reaches browser-key passthrough outside a browser tab.
+      if (!shortcut.handler()) continue;
       e.preventDefault();
-      shortcut.handler();
       return true;
     }
     return false;
