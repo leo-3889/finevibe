@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
+import { PassThrough } from 'stream';
 import os from 'os';
 import path from 'path';
 import JSZip from 'jszip';
@@ -128,6 +129,46 @@ describe('exportSessionArchive() zip', () => {
     expect(res).toBeNull();
     await expect(fs.access(out)).rejects.toThrow();
   });
+
+  // The transcript file can vanish while the user sits in the save dialog:
+  // Codex compacts its rollouts (.jsonl -> .jsonl.zst) under ~/.codex/sessions.
+  // The stream is created at zip time, so the read error surfaces mid-pipe.
+  // `pipe()` returns the destination, so an error listener chained off the
+  // pipe only sees write-side failures: before the fix this was an unhandled
+  // 'error' event (no uncaughtException handler in src/main) and the promise
+  // never settled.
+  it('rejects and removes the partial zip when the zip stream errors', async () => {
+    const transcript = path.join(tmp, 'rollout.jsonl');
+    await fs.writeFile(transcript, 'A\nB');
+    getTranscriptPath.mockReturnValue(transcript);
+    const out = path.join(tmp, 'out.zip');
+    showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });
+    const boom = new Error('ENOENT: transcript compacted mid-export');
+    const spy = vi.spyOn(JSZip.prototype, 'generateNodeStream').mockImplementation(() => {
+      const s = new PassThrough();
+      // Microtask, not a timer: the executor body (which registers the error
+      // handler and pipes) is synchronous, so this fires exactly after it.
+      // Chunks FIRST, then the error — the ordering a real JSZip stream
+      // produces: zip header/entry bytes have already been piped into the
+      // destination (its fd is open and the partial file exists on disk)
+      // when the compacted transcript read fails mid-stream.
+      queueMicrotask(() => {
+        s.write(Buffer.from('PK\u0003\u0004partial-archive-bytes'));
+        s.emit('error', boom);
+      });
+      return s as unknown as NodeJS.ReadableStream;
+    });
+    try {
+      await expect(exportSessionArchive(win, params())).rejects.toThrow(boom);
+      // No half-written archive left behind for the user to trust. The
+      // destination fd is left OPEN by `pipe()` on a source error, so this
+      // pins that production closes the fd before unlinking — on Windows an
+      // open handle makes the unlink EPERM and the partial zip survives.
+      await expect(fs.access(out)).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('exportSessionArchive() single file', () => {
@@ -160,7 +201,7 @@ describe('exportSessionArchive() single file', () => {
   it('resolves Pi transcripts through the launch dir', async () => {
     const transcript = path.join(tmp, 'pi.jsonl');
     await fs.writeFile(transcript, 'P');
-    getTranscriptPath.mockImplementation((id: string, _p: string, _c: string, sessionDir?: string) =>
+    getTranscriptPath.mockImplementation((_id: string, _p: string, _c: string, sessionDir?: string) =>
       sessionDir === 'pi-launch-ui-9' ? transcript : null);
     const out = path.join(tmp, 'pi.jsonl');
     showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });

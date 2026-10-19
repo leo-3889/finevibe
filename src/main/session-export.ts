@@ -130,13 +130,31 @@ export async function exportSessionArchive(
     zip.file(`sidecars/${name}`, data);
   }
 
-  await new Promise<void>((resolve, reject) => {
-    const out = createWriteStream(filePath);
-    zip.generateNodeStream({ type: 'nodebuffer', streamFiles: true, compression: 'DEFLATE', compressionOptions: { level: 6 } })
-      .pipe(out)
-      .on('error', reject);
-    finished(out).then(resolve, reject);
-  });
+  // `pipe()` returns the DESTINATION, so an error listener chained off it only
+  // sees write-side failures. A source-side error — the transcript file being
+  // removed underneath us (Codex compacts .jsonl into .jsonl.zst while the user
+  // sits in the save dialog) — then surfaces as an unhandled 'error' event on
+  // the zip stream: src/main installs no uncaughtException handler, so it is a
+  // crash, and this promise never settles.
+  const out = createWriteStream(filePath);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const stream = zip.generateNodeStream({ type: 'nodebuffer', streamFiles: true, compression: 'DEFLATE', compressionOptions: { level: 6 } });
+      stream.on('error', reject);
+      stream.pipe(out);
+      finished(out).then(resolve, reject);
+    });
+  } catch (err) {
+    // A half-written zip is not a backup: leave no file the user will trust.
+    // The fd MUST be closed before the unlink: `pipe()` leaves the
+    // destination open when the SOURCE errors, and Windows refuses unlink()
+    // on a file with an open handle (EPERM) — the partial archive survived
+    // the cleanup on exactly the platform this IDE ships to.
+    out.destroy();
+    await finished(out).catch(() => {});
+    await fs.unlink(filePath).catch(() => {});
+    throw err;
+  }
   return filePath;
 }
 
