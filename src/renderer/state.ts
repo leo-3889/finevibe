@@ -247,7 +247,13 @@ class AppState {
     // mutation bursts (kanban sync, session moves, title adoption) used to
     // pay that cost per mutation. Leading edge means a lone mutation is
     // never exposed to the crash window a pure trailing debounce adds.
-    const elapsed = Date.now() - this.lastPersistAt;
+    // Clamped at zero: a backwards wall-clock jump (resume-from-suspend NTP
+    // correction, restored VM snapshot) makes `elapsed` negative, arming the
+    // trailing save for `PERSIST_THROTTLE_MS - elapsed` — minutes/hours —
+    // while the armed-timer guard below drops every persist, so mutations
+    // stay memory-only for that whole window. Clamping bounds the worst
+    // case to one throttle window.
+    const elapsed = Math.max(0, Date.now() - this.lastPersistAt);
     if (elapsed >= AppState.PERSIST_THROTTLE_MS && this.persistTimer === null) {
       this.writeStateNow();
       return;

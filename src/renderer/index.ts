@@ -299,10 +299,11 @@ async function main(): Promise<void> {
   // Load persisted state
   await appState.load();
 
-// A trailing throttled persist (state.ts) may be armed at window close;
-// write it out synchronously before the renderer dies. The main-side store
-// additionally fsyncs on rename, so the only loss window is a renderer
-// crash with no unload — bounded by the throttle window.
+// A trailing throttled persist (state.ts) may be armed at renderer unload;
+// write it out before the renderer dies. This is the guarantee for
+// renderer-only unloads (reload): on the app.quit() path this listener runs
+// AFTER main's before-quit flushState(), and the quit-path guarantee is
+// main writing the last state payload it received — not this IPC.
 window.addEventListener('beforeunload', () => appState.flushPersist());
 
   // Re-derive titles for sessions restored from a previous run (see

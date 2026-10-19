@@ -26,30 +26,63 @@ function defaultState(): PersistedState {
     version: 1,
     projects: [],
     activeProjectId: null,
-    preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en' },
+    preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true },
   };
 }
 
+// Startup recovery reads state.json and its .tmp sibling. writeStateAtomically
+// fsyncs the temp file *before* the rename, so a crash with the data durable
+// and the rename not yet durable leaves state.json at the PREVIOUS save and
+// .tmp at the newest one. Reading state.json there silently loses the newest
+// snapshot, and the first save opens .tmp with 'w' and destroys it. So when
+// both parse, the newer mtime wins; the consumed .tmp is always unlinked,
+// because a stale copy left behind is what a later corrupt state.json would
+// resurrect.
 export function loadState(): PersistedState {
   if (stateCache) return stateCache;
+  const valid: { main?: PersistedState; tmp?: PersistedState } = {};
   for (const file of [STATE_FILE, STATE_FILE + '.tmp']) {
     try {
       if (!fs.existsSync(file)) continue;
       const raw = fs.readFileSync(file, 'utf-8');
       const parsed = JSON.parse(raw) as PersistedState;
       if (parsed.version !== 1) continue;
-      if (file !== STATE_FILE) {
-        console.warn('Recovered state from temp file');
-      }
-      stateCache = parsed;
-      return parsed;
+      if (file === STATE_FILE) valid.main = parsed;
+      else valid.tmp = parsed;
     } catch {
       continue;
     }
   }
+  let picked: PersistedState | undefined = valid.main;
+  if (valid.tmp) {
+    const tmpNewer = valid.main ? stateFileIsNewer(STATE_FILE + '.tmp', STATE_FILE) : true;
+    if (tmpNewer) {
+      picked = valid.tmp;
+      console.warn('Recovered state from temp file');
+    }
+    try {
+      fs.unlinkSync(STATE_FILE + '.tmp');
+    } catch {
+      // Vanished (or the file system refuses) — the next save truncates it.
+    }
+  }
+  if (picked) {
+    stateCache = picked;
+    return picked;
+  }
   console.warn('No valid state file found, using defaults');
   stateCache = defaultState();
   return stateCache;
+}
+
+// mtime resolution is coarse (10 ms on NTFS), so a tie keeps state.json — the
+// file the app has been writing to all along.
+function stateFileIsNewer(candidate: string, reference: string): boolean {
+  try {
+    return fs.statSync(candidate).mtimeMs > fs.statSync(reference).mtimeMs;
+  } catch {
+    return false;
+  }
 }
 
 export function saveState(state: PersistedState): void {
@@ -81,6 +114,15 @@ export function getKnownProjectPaths(): string[] {
 }
 
 export function flushState(): void {
+  // The quit path calls this from `before-quit`. The debounced timer must die
+  // with the flush: left armed, it fires after teardown and writes state.json
+  // a second time while the app-data directory is being torn down (Windows
+  // logout / roaming profile), surfacing the write error as an unhandled
+  // exception in the timer, and it keeps the loop alive for up to 300ms.
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
   if (lastState) {
     saveStateSync(lastState);
   }

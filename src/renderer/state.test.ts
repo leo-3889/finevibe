@@ -788,4 +788,22 @@ describe('persist throttle', () => {
       vi.useRealTimers();
     }
   });
+
+  it('arms the trailing save for the throttle window, not a clock skew', () => {
+    // A backwards wall-clock jump (resume-from-suspend NTP correction,
+    // restored VM snapshot) puts lastPersistAt in the future. Without the
+    // Math.max clamp in persist(), the timer arms for 200 ms + skew and the
+    // armed-timer guard drops every later mutation, leaving them memory-only.
+    vi.useFakeTimers();
+    try {
+      appState.setPreference('theme', 'light'); // leading save → lastPersistAt = now
+      vi.setSystemTime(Date.now() - 60_000);    // clock jumps behind it
+      appState.setPreference('theme', 'dark');  // trailing save must arm for ~200 ms
+      vi.advanceTimersByTime(250);
+      expect(mockSave).toHaveBeenCalledTimes(2);
+      expect(mockSave.mock.calls[1][0].preferences.theme).toBe('dark');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
