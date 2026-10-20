@@ -31,6 +31,10 @@ interface TerminalInstance {
   isResume: boolean;
   wasResumed: boolean;
   spawned: boolean;
+  /** True only once `pty:create` has resolved, i.e. main has a PTY registered
+   * for this session. `spawned` is set BEFORE the await (it guards re-entry),
+   * so anything that writes to the PTY must gate on this flag. */
+  ptyReady: boolean;
   exited: boolean;
   pendingPrompt: string | null;
   pendingSystemPrompt: string | null;
@@ -145,6 +149,7 @@ export function createTerminalPane(
     isResume,
     wasResumed: isResume,
     spawned: false,
+    ptyReady: false,
     exited: false,
     pendingPrompt: null,
     pendingSystemPrompt: null,
@@ -198,7 +203,7 @@ export function createTerminalPane(
     }
   });
 
-  attachFileDropHandler(terminal, element, writeToPty, () => instance.spawned && !instance.exited);
+  attachFileDropHandler(terminal, element, writeToPty, () => instance.ptyReady && !instance.exited);
 
   xtermWrap.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -286,6 +291,7 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     // error). Callers fire spawnTerminal un-awaited, so a throw here becomes
     // an unhandled rejection and the tab sits blank with no explanation.
     instance.spawned = false;
+    instance.ptyReady = false;
     removeSession(sessionId);
     const failOverlay = document.createElement('div');
     failOverlay.className = 'terminal-exit-overlay';
@@ -303,6 +309,10 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     instance.element.appendChild(failOverlay);
     return;
   }
+  // From here main has a registered PTY. Before this line `spawned` was
+  // already true while `pty:create` was suspended (Copilot awaits a hook
+  // install), and a file dropped into the pane was written to nothing.
+  instance.ptyReady = true;
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
 
   // Callers fire this un-awaited and fit the pane immediately after, so that fit
@@ -439,6 +449,9 @@ export function destroyTerminal(sessionId: string): void {
   instance.terminal.dispose();
   instance.element.remove();
   instances.delete(sessionId);
+  // A destroyed pane must not stay "focused": the rail and the keyboard
+  // routing read this id to decide where a paste/keystroke belongs.
+  if (focusedSessionId === sessionId) focusedSessionId = null;
   removeSession(sessionId);
   removeCostSession(sessionId);
   removeContextSession(sessionId);

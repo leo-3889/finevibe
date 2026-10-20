@@ -121,7 +121,51 @@ async function spawnShell(instance: ShellTerminalInstance, projectPath: string):
   const overlay = instance.element.querySelector('.terminal-exit-overlay');
   if (overlay) overlay.remove();
 
-  await window.vibeyard.pty.createShell(instance.sessionId, projectPath);
+  try {
+    await window.vibeyard.pty.createShell(instance.sessionId, projectPath);
+  } catch (err) {
+    // `activateShellInstance` fires this un-awaited. A rejected `createShell`
+    // (missing shell binary, ConPTY failure) used to surface as an unhandled
+    // rejection: the tab stayed blank, and `spawned === true` blocked every
+    // later retry. Mirror the session pane's failure overlay.
+    instance.spawned = false;
+    appendExitOverlay(
+      instance,
+      `Failed to start shell: ${err instanceof Error ? err.message : String(err)}`,
+      'Retry',
+      () => spawnShell(instance, projectPath),
+    );
+  }
+}
+
+/**
+ * The pane overlay carrying a message and one action (exit notice, spawn
+ * failure). Built with DOM APIs, never innerHTML: the message includes
+ * exception text, which must not be parsed as markup.
+ */
+function appendExitOverlay(
+  instance: ShellTerminalInstance,
+  message: string,
+  buttonLabel: string,
+  onRestart: () => void,
+): void {
+  const overlay = document.createElement('div');
+  overlay.className = 'terminal-exit-overlay';
+  const box = document.createElement('div');
+  box.className = 'terminal-exit-message';
+  const line = document.createElement('div');
+  line.textContent = message;
+  const button = document.createElement('button');
+  button.className = 'respawn-btn';
+  button.textContent = buttonLabel;
+  button.addEventListener('click', () => {
+    overlay.remove();
+    onRestart();
+  });
+  box.appendChild(line);
+  box.appendChild(button);
+  overlay.appendChild(box);
+  instance.element.appendChild(overlay);
 }
 
 function activateShellInstance(instance: ShellTerminalInstance): void {
@@ -318,22 +362,12 @@ export function handleShellPtyExit(sessionId: string, exitCode: number): void {
   if (!instance) return;
   instance.spawned = false;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'terminal-exit-overlay';
-  overlay.innerHTML = `
-    <div class="terminal-exit-message">
-      <div>Shell exited (code: ${exitCode})</div>
-      <button class="respawn-btn">Restart</button>
-    </div>
-  `;
-  overlay.querySelector('.respawn-btn')!.addEventListener('click', () => {
-    overlay.remove();
+  appendExitOverlay(instance, `Shell exited (code: ${exitCode})`, 'Restart', () => {
     const project = appState.projects.find(p => p.id === instance.projectId);
     if (project) {
       spawnShell(instance, project.path);
     }
   });
-  instance.element.appendChild(overlay);
 }
 
 function isShellSessionId(sessionId: string): boolean {

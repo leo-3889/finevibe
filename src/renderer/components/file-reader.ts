@@ -40,11 +40,6 @@ function isHtmlFile(filePath: string): boolean {
 
 const instances = new Map<string, FileReaderInstance>();
 let unwatchFileChanged: (() => void) | null = null;
-// Pending coalesced reloads: a burst of fs changes for the same file (atomic
-// saves, editor events) is drained as one reload per session after the
-// main-process 150ms coalescing window, instead of overlapping full re-reads.
-const pendingReloads = new Set<string>();
-let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
 function renderFileContent(content: string, firstLine = 1): HTMLElement {
   const wrapper = document.createElement('div');
@@ -158,7 +153,7 @@ function renderBody(instance: FileReaderInstance): void {
   if (preview.limited) {
     const notice = document.createElement('div');
     notice.className = 'file-reader-preview-notice';
-    notice.textContent = 'Partial preview from line ' + preview.firstLine + '. Search covers this preview only; long lines may be truncated. ';
+    notice.textContent = `Partial preview from line ${preview.firstLine}. Search covers this preview only; long lines may be truncated. `;
     for (const [label, first] of [['Previous', Math.max(1, preview.firstLine - PREVIEW_LINES)], ['Next', preview.nextLine]] as const) {
       const button = document.createElement('button');
       button.textContent = label;
@@ -236,6 +231,11 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
   } catch {
     showFileReaderMessage(body, 'Failed to load file');
     instance.unsupported = true;
+    // Same terminal state as the sibling failures above. `loaded` gates both
+    // the fs watcher's reload path and the re-entry guard at the top of this
+    // function, so leaving it false here means the pane never re-reads the
+    // file on change and re-runs the failing read on every activation.
+    instance.loaded = true;
   }
 }
 

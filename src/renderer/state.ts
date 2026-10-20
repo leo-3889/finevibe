@@ -383,18 +383,21 @@ class AppState {
   }
 
   get preferences(): Preferences {
-    // May return defaults when read before load(); callers that render from
-    // this re-apply on `state-loaded`/`preferences-changed`.
-    return this.state.preferences;
+    // Single accessor (P2-84): a persisted state file may omit
+    // `preferences`; `load()` normalizes via `hydrateLoadedState`, and this
+    // lazy fill covers reads before `load()` (pre-hydration defaults).
+    // Callers that render from this re-apply on
+    // `state-loaded`/`preferences-changed`.
+    return (this.state.preferences ??= { ...defaultPreferences });
   }
 
   /** Sidebar-section lookup with the default-on fallback baked in. */
   sidebarView(key: keyof SidebarViews): boolean {
-    return this.state.preferences.sidebarViews?.[key] ?? true;
+    return this.preferences.sidebarViews?.[key] ?? true;
   }
 
   setPreference<K extends keyof Preferences>(key: K, value: Preferences[K]): void {
-    this.state.preferences[key] = value;
+    this.preferences[key] = value;
     this.persist();
     this.emit('preferences-changed');
   }
@@ -468,7 +471,7 @@ class AppState {
   ): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
-    const providerId = resolvePlanProvider(project, this.state.preferences, providerIdOverride);
+    const providerId = resolvePlanProvider(project, this.preferences, providerIdOverride);
     const args = buildPlanSessionArgs(project, getProviderCapabilities(providerId), planMode);
     return this.addSession(projectId, name, args, providerId, profileId);
   }
@@ -477,11 +480,11 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    const cliProviderId = resolveCliProvider(this.state.preferences, providerId, project);
+    const cliProviderId = resolveCliProvider(this.preferences, providerId, project);
     // Pin the effective profile (explicit > project default > global default,
     // provider-matched) onto the session at creation so it stays sticky — resume
     // must reuse the same config dir even if a default changes later.
-    const pinnedProfileId = resolveProfile({ profileId }, project, this.state.preferences, cliProviderId, this.profiles)?.id;
+    const pinnedProfileId = resolveProfile({ profileId }, project, this.preferences, cliProviderId, this.profiles)?.id;
     const session = buildCliSession({
       name,
       providerId: cliProviderId,
@@ -509,7 +512,7 @@ class AppState {
     if (project) this.sessionIndex.set(session.id, { project, session });
     // History tracks CLI sessions from creation: a spawn shows in the history
     // panel immediately, and a close finalizes the entry in place.
-    if (project && isCliSession(session) && this.state.preferences.sessionHistoryEnabled) {
+    if (project && isCliSession(session) && this.preferences.sessionHistoryEnabled) {
       archiveSessionOnCreate(project, session);
       this.emit('history-changed', project.id);
     }
@@ -746,7 +749,7 @@ class AppState {
         if (task.profileId === id) task.profileId = undefined;
       }
     }
-    const defaultProfiles = this.state.preferences.defaultProfiles;
+    const defaultProfiles = this.preferences.defaultProfiles;
     if (defaultProfiles) {
       for (const providerId of Object.keys(defaultProfiles)) {
         if (defaultProfiles[providerId as ProviderId] === id) delete defaultProfiles[providerId as ProviderId];
@@ -773,7 +776,7 @@ class AppState {
   setProjectCodingDefaults(projectId: string, providerId: ProviderId | undefined, profileId?: string): void {
     const project = this.state.projects.find(p => p.id === projectId);
     if (!project) return;
-    const effectiveProvider = providerId ?? this.state.preferences.defaultProvider ?? 'claude';
+    const effectiveProvider = providerId ?? this.preferences.defaultProvider ?? 'claude';
     project.defaultProvider = providerId;
     project.defaultProfileId = this.profiles.find(p => p.id === profileId && p.providerId === effectiveProvider)?.id;
     this.persist();
@@ -782,7 +785,7 @@ class AppState {
 
   /** Set (or clear) the global default profile for one provider. */
   setProviderDefaultProfile(providerId: ProviderId, profileId: string | undefined): void {
-    const map = { ...this.state.preferences.defaultProfiles };
+    const map = { ...this.preferences.defaultProfiles };
     if (profileId) map[providerId] = profileId;
     else delete map[providerId];
     this.setPreference('defaultProfiles', map);
@@ -800,7 +803,7 @@ class AppState {
     const backend = resolveTeamChatBackend(
       member,
       project,
-      this.state.preferences,
+      this.preferences,
       activeSession,
       this.profiles,
       overrideProviderId,
@@ -874,7 +877,7 @@ class AppState {
       // finalize it on close even when there is no transcript — the row then
       // carries `transcriptAvailable: false` and offers no Resume.
       const hadCreateEntry = !!findCreateEntry(project, sessionId);
-      if (this.state.preferences.sessionHistoryEnabled) {
+      if (this.preferences.sessionHistoryEnabled) {
         if (opts?.exitReason || transcriptAvailable || hadCreateEntry) {
           this.archiveSession(project, session, { ...opts, transcriptAvailable, finalize: hadCreateEntry });
         }
@@ -1135,7 +1138,7 @@ class AppState {
     session.cliSessionId = cliSessionId;
     // Mirror the discovered id onto the active history entry (spawned before
     // the id existed) so the history row is resumable/live-linked immediately.
-    if (this.state.preferences.sessionHistoryEnabled && syncCreateEntryCliId(project, sessionId, cliSessionId)) {
+    if (this.preferences.sessionHistoryEnabled && syncCreateEntryCliId(project, sessionId, cliSessionId)) {
       this.emit('history-changed', project.id);
     }
     this.persist();
