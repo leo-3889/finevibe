@@ -166,6 +166,22 @@ describe('mcpUrlPolicy', () => {
     }
   });
 
+  it('requires confirm for Object.prototype member names used as hosts (P2-51)', () => {
+    // The gate read `host in LOCAL_HOSTS`, which walks the prototype chain:
+    // `constructor`, `__proto__` and `toString` are inherited keys, so those
+    // hosts hit the loopback exemption and reached needsConfirm:false — the
+    // confirm dialog was bypassed against the doc's own exact-host promise.
+    // The exemption must cover own keys only.
+    for (const url of [
+      'http://constructor/',
+      'http://__proto__/',
+      'http://toString/',
+      'http://hasOwnProperty:8080/mcp',
+    ]) {
+      expect(mcpUrlPolicy(url)).toEqual({ ok: true, needsConfirm: true });
+    }
+  });
+
   it('accepts stdio-style configs with no URL', () => {
     expect(mcpUrlPolicy('')).toEqual({ ok: true, needsConfirm: false });
     expect(mcpUrlPolicy('   ')).toEqual({ ok: true, needsConfirm: false });

@@ -5,6 +5,7 @@ import { isWin } from '../platform.js';
 import { appState } from '../state.js';
 import type { ClipboardSource } from '../../shared/types.js';
 import { FILE_PATH_DRAG_TYPE, NATIVE_FILES_DRAG_TYPE } from '../drag-types.js';
+import { showAlertBanner } from './alert-banner.js';
 
 type ExtraKeyHandler = (e: KeyboardEvent) => boolean | undefined;
 
@@ -24,20 +25,56 @@ const CTRL_V = '\x16';
  * Quote a filesystem path for the shell owning the PTY. Unquoted paths with
  * spaces reached the prompt as separate arguments — dropping `My File.pdf`
  * typed two tokens every provider reads as two missing files.
- * POSIX: single quotes, embedded `'` escaped as '\''.
- * Windows: double quotes; `\"` is the cmd convention (and accepted by
- * PowerShell-adjacent shells), trailing `\` before the closing quote
- * doubled so it cannot swallow it.
+ * POSIX: single quotes, embedded `'` escaped as '\''; single quotes have no
+ * toggle, so an embedded `"` rides through safely — the branch is sound.
+ * Windows: double quotes, trailing `\` before the closing quote doubled so it
+ * cannot swallow it. A path containing `"` is refused (null): cmd.exe toggles
+ * its quoted state on every `"` and honours no escape for it, so `\"` CLOSES
+ * the quoted region and leaves everything after it live — the old escape made
+ * `x"y & calc.exe` arm `& calc.exe` on the command line. The spawn path
+ * rejects quote-bearing arguments outright for the same reason
+ * (main/pty-manager.ts, quoteArgForCmdExe); this quoter refuses the shape the
+ * spawn path rejects (P1-20).
  */
-export function quoteShellPath(p: string): string {
+export function quoteShellPath(p: string): string | null {
   if (p === '') return "''";
   if (!/[\s"'\\`$!*[\]?{}()&#|;<>=^~]/.test(p)) return p;
   if (isWin) {
-    let s = p.replace(/"/g, '\\"');
+    if (p.includes('"')) return null;
+    let s = p;
     if (/\\$/.test(s)) s += '\\';
     return `"${s}"`;
   }
   return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Quote a whole path list for one PTY write, splitting off what the shell
+ * cannot carry: a refused path never reaches the prompt.
+ */
+function quotePathsForPty(paths: string[]): { text: string; refused: string[] } {
+  const accepted: string[] = [];
+  const refused: string[] = [];
+  for (const p of paths) {
+    const quoted = quoteShellPath(p);
+    if (quoted === null) refused.push(p);
+    else accepted.push(quoted);
+  }
+  return { text: accepted.join(' '), refused };
+}
+
+// The drop/paste twin of the spawn path's rejection (P1-20): a path cmd.exe
+// cannot carry is refused, not injected. Surfaced the way live panes surface
+// every other refusal — the pane alert banner.
+function showQuoteRejection(paths: string[]): void {
+  showAlertBanner({
+    className: 'insight-alert-info',
+    icon: '\u26A0',
+    message:
+      'Cannot pass a path containing a double quote through the Windows shell: ' +
+      'cmd.exe has no escape for a literal quote. Refused: ' +
+      paths.map((p) => `"${p}"`).join(', '),
+  });
 }
 
 /**
@@ -116,7 +153,9 @@ export async function pasteIntoTerminal(
   if (data && data.files.length > 0) {
     const paths = await pathsForPastedFiles(Array.from(data.files));
     if (paths.length > 0) {
-      writeToPty(wrapBracketedPaste(terminal, paths.map(quoteShellPath).join(' ') + ' '));
+      const { text, refused } = quotePathsForPty(paths);
+      if (refused.length > 0) showQuoteRejection(refused);
+      if (text !== '') writeToPty(wrapBracketedPaste(terminal, text + ' '));
       return 'files';
     }
   }
@@ -139,7 +178,9 @@ export async function pasteIntoTerminal(
   // the file list is the content. Preferring the text pasted `report.pdf`
   // where the same copy through a native paste event pasted its path.
   if (paths.length > 0) {
-    writeToPty(wrapBracketedPaste(terminal, paths.map(quoteShellPath).join(' ') + ' '));
+    const { text, refused } = quotePathsForPty(paths);
+    if (refused.length > 0) showQuoteRejection(refused);
+    if (text !== '') writeToPty(wrapBracketedPaste(terminal, text + ' '));
     return 'files';
   }
   const text = payload.text.trim() !== '' ? payload.text : payload.html.trim();
@@ -206,7 +247,10 @@ export function attachFileDropHandler(
     if (paths.length === 0) return;
     e.preventDefault();
     if (!isReady()) return;
-    writeToPty(wrapBracketedPaste(terminal, paths.map(quoteShellPath).join(' ') + ' '));
+    const { text, refused } = quotePathsForPty(paths);
+    if (refused.length > 0) showQuoteRejection(refused);
+    if (text === '') return;
+    writeToPty(wrapBracketedPaste(terminal, text + ' '));
     terminal.focus();
   });
 }

@@ -103,12 +103,6 @@ function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPa
 }
 
 
-function esc(s: string): string {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
 function discardConfirmMessage(entry: GitFileEntry): string {
   if (entry.area !== 'untracked') {
     return `Discard changes to "${entry.path}"? This cannot be undone.`;
@@ -117,12 +111,11 @@ function discardConfirmMessage(entry: GitFileEntry): string {
   return `Delete untracked ${kind} "${entry.path}"?`;
 }
 
-function statusBadge(entry: GitFileEntry): string {
+function statusLetter(entry: GitFileEntry): string {
   const letterMap: Record<string, string> = {
     added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: '?', conflicted: 'U',
   };
-  const letter = letterMap[entry.status] || '?';
-  return `<span class="git-file-badge ${entry.status}">${letter}</span>`;
+  return letterMap[entry.status] || '?';
 }
 
 function createActionButton(title: string, icon: string, onClick: (e: Event) => void): HTMLButtonElement {
@@ -300,7 +293,19 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
       if (rendered >= MAX_FILES) break;
       const item = document.createElement('div');
       item.className = 'config-item config-item-clickable';
-      item.innerHTML = `${statusBadge(entry)}<span class="config-item-detail" title="${esc(entry.path)}">${esc(entry.path)}</span>`;
+      // DOM nodes, not innerHTML interpolation: a POSIX-legal filename
+      // containing `"` closed the title attribute and injected markup
+      // (P2-102); property/textContent assignment makes that unrepresentable
+      // (the provider-tools-widget shape).
+      const badge = document.createElement('span');
+      badge.className = `git-file-badge ${entry.status}`;
+      badge.textContent = statusLetter(entry);
+      item.appendChild(badge);
+      const detail = document.createElement('span');
+      detail.className = 'config-item-detail';
+      detail.title = entry.path;
+      detail.textContent = entry.path;
+      item.appendChild(detail);
 
       // Hover action buttons
       const actions = document.createElement('span');

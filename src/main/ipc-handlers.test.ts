@@ -747,3 +747,45 @@ describe('clipboard:readForPaste file lists', () => {
     expect(payload.html).toBe('<b>notes</b>');
   });
 });
+
+// P2-108: an `ipcMain.on` body runs on Electron's main-process dispatch path
+// and src/main installs no uncaughtException handler (the only mentions in
+// src/main are comments stating its absence), so a throw escaping any `on`
+// body is a fatal main-process exception — every live PTY and window dies.
+// Every `on` body must therefore swallow-and-log, and the sendSync twins must
+// answer with a benign shape.
+describe('ipcMain.on bodies are non-fatal', () => {
+  it('swallows a throw from a non-string payload instead of killing the main process', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The real registry throws `Unknown CLI provider: …` for ids it does
+      // not know (registry.ts), and the git/fs bodies hit
+      // ERR_INVALID_ARG_TYPE inside path.resolve on the same payload.
+      mockGetProvider.mockImplementation(() => {
+        throw new Error('Unknown CLI provider: [object Object]');
+      });
+      expect(() => handlers.get('config:watchProject')!({}, {}, '/proj')).not.toThrow();
+      expect(() => handlers.get('git:watchProject')!({}, {})).not.toThrow();
+      expect(() => handlers.get('fs:unwatchDir')!({}, {})).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a sync channel answers with a benign shape when its body throws', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(loadState).mockImplementationOnce(() => {
+        throw new Error('state cache corrupted');
+      });
+      const event: { returnValue?: unknown } = {};
+      expect(() => handlers.get('store:startup-prefs')!(event)).not.toThrow();
+      // The renderer's sendSync gets the never-saved shape, not an
+      // "interface not implemented" throw on its own side.
+      expect(event.returnValue).toEqual({ theme: null, zoomFactor: null });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

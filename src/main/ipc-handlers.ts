@@ -205,6 +205,29 @@ interface RestoredSession {
   createdAt: string;
 }
 
+/**
+ * An `ipcMain.on` body runs on Electron's main-process dispatch path, and
+ * src/main installs no uncaughtException handler — a throw escaping an `on`
+ * body is a fatal main-process exception that kills every live PTY and
+ * window (P2-108; the P2-84 sendSync class). `ipcMain.handle` bodies are
+ * safe (invoke rejects the promise), so only `on` bodies need this wrap:
+ * log in the channels' console.warn convention and swallow. A sendSync
+ * channel must always answer, and passes `syncFallback` — the benign shape
+ * it replies with when the body throws.
+ */
+type IpcOnHandler = (event: Electron.IpcMainEvent, ...args: any[]) => void;
+
+function safeOn(channel: string, fn: IpcOnHandler, syncFallback?: () => unknown): IpcOnHandler {
+  return (event, ...args) => {
+    try {
+      fn(event, ...args);
+    } catch (err) {
+      console.warn(`${channel} failed:`, err);
+      if (syncFallback) event.returnValue = syncFallback();
+    }
+  };
+}
+
 export function registerIpcHandlers(): void {
   ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
@@ -373,13 +396,13 @@ export function registerIpcHandlers(): void {
     );
   });
 
-  ipcMain.on('pty:write', (_event, sessionId: string, data: string) => {
+  ipcMain.on('pty:write', safeOn('pty:write', (_event, sessionId: string, data: string) => {
     writePty(sessionId, data);
-  });
+  }));
 
-  ipcMain.on('pty:resize', (_event, sessionId: string, cols: number, rows: number) => {
+  ipcMain.on('pty:resize', safeOn('pty:resize', (_event, sessionId: string, cols: number, rows: number) => {
     resizePty(sessionId, cols, rows);
-  });
+  }));
 
   ipcMain.handle('pty:kill', (_event, sessionId: string) => {
     killPty(sessionId);
@@ -439,10 +462,10 @@ export function registerIpcHandlers(): void {
   // Synchronous startup channel: the renderer applies theme/zoom before its
   // first paint, before the async store:load resolves. Served from the
   // in-memory state cache, so no file read happens on this path.
-  ipcMain.on('store:startup-prefs', (event) => {
+  ipcMain.on('store:startup-prefs', safeOn('store:startup-prefs', (event) => {
     const prefs = loadState().preferences;
     event.returnValue = { theme: prefs.theme ?? null, zoomFactor: prefs.zoomFactor ?? null };
-  });
+  }, () => ({ theme: null, zoomFactor: null })));
 
   // Provision (create) a profile's config dir. Returns the resolved absolute
   // path and whether it is the auto-managed location.
@@ -627,12 +650,12 @@ export function registerIpcHandlers(): void {
     }
   );
 
-  ipcMain.on('config:watchProject', (_event, providerId: ProviderId, projectPath: string) => {
+  ipcMain.on('config:watchProject', safeOn('config:watchProject', (_event, providerId: ProviderId, projectPath: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
     const provider = getProvider(providerId);
     provider.startConfigWatcher?.(win, projectPath);
-  });
+  }));
 
   ipcMain.handle('provider:getMeta', (_event, providerId: ProviderId) => {
     return getProviderMeta(providerId);
@@ -697,9 +720,9 @@ export function registerIpcHandlers(): void {
     transcriptExists(providerId, cliSessionId, projectPath, configDir, liveSessionId));
   // Synchronous variant: the renderer gates session archiving on this at close time,
   // where the surrounding remove/persist/emit logic must stay synchronous.
-  ipcMain.on('session:transcriptExistsSync', (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string) => {
+  ipcMain.on('session:transcriptExistsSync', safeOn('session:transcriptExistsSync', (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string) => {
     event.returnValue = transcriptExists(providerId, cliSessionId, projectPath, configDir, liveSessionId);
-  });
+  }, () => true));
   ipcMain.handle('session:exportArchive', async (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file') => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
     if (!win) throw new Error('no window');
@@ -707,7 +730,9 @@ export function registerIpcHandlers(): void {
   });
 
   const searches = new WeakMap<Electron.WebContents, AbortController>();
-  ipcMain.on('session:cancelDeepSearch', (event) => searches.get(event.sender)?.abort());
+  ipcMain.on('session:cancelDeepSearch', safeOn('session:cancelDeepSearch', (event) => {
+    searches.get(event.sender)?.abort();
+  }));
   ipcMain.handle('session:deepSearch', async (event, query: string) => {
     searches.get(event.sender)?.abort();
     const controller = new AbortController();
@@ -755,10 +780,10 @@ export function registerIpcHandlers(): void {
   // title already on disk produces no further fs event — without this, turning
   // "Auto-name sessions" back on would leave existing tabs unnamed until their
   // title happened to change.
-  ipcMain.on('session:resyncStatus', () => {
+  ipcMain.on('session:resyncStatus', safeOn('session:resyncStatus', () => {
     const w = BrowserWindow.getAllWindows()[0];
     if (w) resyncAllSessions(w);
-  });
+  }));
 
   // Re-derive titles for sessions restored from a previous run. A Pi/OMP tab
   // only ever learns the CLI's own title while a live PTY drives
@@ -806,7 +831,7 @@ export function registerIpcHandlers(): void {
 
   // Drop the restored-session sync registered above when a tab is closed without
   // ever being resumed (a live PTY tears its own down on exit).
-  ipcMain.on('session:release', (_event, sessionId: string) => {
+  ipcMain.on('session:release', safeOn('session:release', (_event, sessionId: string) => {
     unregisterTranscriptSync(sessionId);
     cleanupSessionStatus(sessionId);
     // Isolated browser partitions (pane.ts: persist:vibeyard-browser-iso-<id>)
@@ -822,21 +847,21 @@ export function registerIpcHandlers(): void {
           .catch((err) => console.warn('clearStorageData failed:', err));
       }
     }
-  });
+  }));
 
-  ipcMain.on('app:focus', () => {
+  ipcMain.on('app:focus', safeOn('app:focus', () => {
     app.focus({ steal: true });
     const win = BrowserWindow.getAllWindows()[0];
     if (win && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
       win.focus();
     }
-  });
+  }));
 
-  ipcMain.on('app:closeConfirmed', () => {
+  ipcMain.on('app:closeConfirmed', safeOn('app:closeConfirmed', () => {
     setCloseConfirmed(true);
     app.quit();
-  });
+  }));
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('app:getBrowserPreloadPath', () =>
@@ -991,7 +1016,7 @@ export function registerIpcHandlers(): void {
     notifyGitChanged();
   });
 
-  ipcMain.on('git:watchProject', (_event, projectPath: string) => {
+  ipcMain.on('git:watchProject', safeOn('git:watchProject', (_event, projectPath: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
     const resolved = path.resolve(projectPath);
@@ -1012,7 +1037,7 @@ export function registerIpcHandlers(): void {
       gitWatchedRoots.add(canonical);
     }
     startGitWatcher(win, resolved);
-  });
+  }));
 
   ipcMain.handle('git:listBranches', (_event, projectPath: string) => listGitBranches(requireGitRoot('git:listBranches', projectPath)));
 
@@ -1239,18 +1264,18 @@ export function registerIpcHandlers(): void {
       shell.showItemInFolder(resolved);
     }));
 
-  ipcMain.on('fs:watchDir', (event, dirPath: string) => {
+  ipcMain.on('fs:watchDir', safeOn('fs:watchDir', (event, dirPath: string) => {
     const resolved = path.resolve(dirPath);
     if (!isAllowedReadPath(resolved)) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win) setFileWatcherWindow(win);
     watchDir(resolved);
-  });
+  }));
 
-  ipcMain.on('fs:unwatchDir', (_event, dirPath: string) => {
+  ipcMain.on('fs:unwatchDir', safeOn('fs:unwatchDir', (_event, dirPath: string) => {
     const resolved = path.resolve(dirPath);
     unwatchDir(resolved);
-  });
+  }));
 
   ipcMain.handle('stats:getCache', () => {
     try {

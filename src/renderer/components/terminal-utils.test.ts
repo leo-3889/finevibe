@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockMatchesAnyShortcut, mockMatchEvent, mockPlatform, mockPreferences, webglState } = vi.hoisted(() => ({
+const { mockMatchesAnyShortcut, mockMatchEvent, mockPlatform, mockPreferences, mockActiveSession, webglState } = vi.hoisted(() => ({
   mockMatchesAnyShortcut: vi.fn(() => false),
   mockMatchEvent: vi.fn(() => false),
   mockPlatform: { isMac: false, isWin: false, isLinux: true },
   mockPreferences: { copyOnSelect: false } as { copyOnSelect: boolean },
+  // The pane-alert banner attaches to the active session's mounted pane
+  // (P1-20 rejections surface there).
+  mockActiveSession: { current: null as { id: string } | null },
   webglState: {
     shouldThrow: false,
     lastInstance: null as null | { dispose: ReturnType<typeof vi.fn>; fireContextLoss: () => void },
@@ -23,7 +26,11 @@ vi.mock('../platform.js', () => ({
   get isLinux() { return mockPlatform.isLinux; },
 }));
 vi.mock('../state.js', () => ({
-  appState: { get preferences() { return mockPreferences; } },
+  appState: {
+    get preferences() { return mockPreferences; },
+    get activeSession() { return mockActiveSession.current; },
+    on: () => {},
+  },
 }));
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
@@ -68,6 +75,24 @@ function fakeDataTransfer(files: File[] = [], text = '', html = ''): DataTransfe
     preventDefault: vi.fn(),
   } as unknown as DataTransfer;
 }
+
+// Mount the pane shape the pane-alert banner attaches to.
+function mountPaneForBanner(): HTMLElement {
+  const pane = document.createElement('div');
+  pane.className = 'terminal-pane';
+  pane.dataset.sessionId = 't1';
+  const wrap = document.createElement('div');
+  wrap.className = 'xterm-wrap';
+  pane.appendChild(wrap);
+  document.body.appendChild(pane);
+  mockActiveSession.current = { id: 't1' };
+  return pane;
+}
+
+afterEach(() => {
+  document.body.innerHTML = '';
+  mockActiveSession.current = null;
+});
 
 // Stand-in for the pane element the paste/drop handlers are attached to.
 class FakeElement {
@@ -656,6 +681,22 @@ describe('pasteIntoTerminal (native paste event)', () => {
     expect(outcome).toBe('text');
     expect(writeToPty).toHaveBeenCalledWith('<p>hello</p>');
   });
+
+  it('refuses a pasted file whose Windows path carries a double quote (P1-20)', async () => {
+    const pane = mountPaneForBanner();
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    const file = new File([new Uint8Array([1])], 'x"y & calc.exe', { type: 'image/png' });
+    mockGetDroppedFilePath.mockReturnValue('C:\\x"y & calc.exe');
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty, fakeDataTransfer([file]));
+
+    // The spawn path rejects quote-bearing args outright; the paste twin
+    // must inject nothing and say why.
+    expect(outcome).toBe('files');
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(pane.querySelector('.insight-alert-message')?.textContent).toContain('x"y & calc.exe');
+  });
 });
 
 describe('pasteIntoTerminal (main clipboard read)', () => {
@@ -736,6 +777,24 @@ describe('pasteIntoTerminal (main clipboard read)', () => {
 
     expect(outcome).toBe('empty');
     expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  it('refuses the quoted paths of a clipboard file list and keeps the rest (P1-20)', async () => {
+    mockPlatform.isWin = true;
+    const pane = mountPaneForBanner();
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({
+      files: ['C:\\x"y & calc.exe', 'C:\\ok.md'],
+      hasContent: true,
+    }));
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(outcome).toBe('files');
+    expect(writeToPty).toHaveBeenCalledWith('"C:\\ok.md" ');
+    expect(pane.querySelector('.insight-alert-message')?.textContent).toContain('x"y & calc.exe');
+    mockPlatform.isWin = false;
   });
 });
 
@@ -852,6 +911,40 @@ describe('attachFileDropHandler', () => {
 
     expect(preventDefault).not.toHaveBeenCalled();
   });
+
+  it('refuses a dropped Windows path carrying a double quote, surfacing the rejection (P1-20)', () => {
+    const pane = mountPaneForBanner();
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    mockGetDroppedFilePath.mockReturnValue('C:\\x"y & calc.exe');
+    attachFileDropHandler(terminal as any, element as any, writeToPty, () => true);
+
+    element.fire('drop', { dataTransfer: fakeDataTransfer([droppedFile()]), preventDefault: vi.fn() });
+
+    // cmd.exe toggles quoting on every `"`: nothing reaches the prompt, and
+    // the pane shows the refusal the spawn path makes.
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(terminal.focus).not.toHaveBeenCalled();
+    expect(pane.querySelector('.insight-alert-message')?.textContent).toContain('x"y & calc.exe');
+  });
+
+  it('types the accepted paths of a mixed drop and flags the refused one', () => {
+    const pane = mountPaneForBanner();
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    mockGetDroppedFilePath
+      .mockReturnValueOnce('C:\\x"y & calc.exe')
+      .mockReturnValueOnce('C:\\repo\\photo.jpg');
+    const file = () => new File([new Uint8Array([2])], 'photo.jpg', { type: 'image/jpeg' });
+    attachFileDropHandler(terminal as any, element as any, writeToPty, () => true);
+
+    element.fire('drop', { dataTransfer: fakeDataTransfer([file(), file()]), preventDefault: vi.fn() });
+
+    expect(writeToPty).toHaveBeenCalledWith('"C:\\repo\\photo.jpg" ');
+    expect(pane.querySelector('.insight-alert-message')?.textContent).toContain('x"y & calc.exe');
+  });
 });
 
 describe('quoteShellPath', () => {
@@ -874,13 +967,26 @@ describe('quoteShellPath', () => {
     expect(quoteShellPath("it's.txt")).toBe("'it'\\''s.txt'");
     expect(quoteShellPath('a$b.txt')).toBe("'a$b.txt'");
     expect(quoteShellPath('a`b.txt')).toBe("'a`b.txt'");
+    // Single quotes carry a literal double quote safely — the POSIX branch
+    // is sound and keeps quoting what the Windows branch refuses.
+    expect(quoteShellPath('a"b.txt')).toBe("'a\"b.txt'");
   });
 
-  it('Windows: double-quotes spaces and escapes embedded double quotes', () => {
+  it('Windows: double-quotes spaces and doubles a trailing backslash', () => {
     mockPlatform.isWin = true;
     expect(quoteShellPath('C:\\My Docs\\a.txt')).toBe('"C:\\My Docs\\a.txt"');
-    expect(quoteShellPath('C:\\a"b.txt')).toBe('"C:\\a\\"b.txt"');
     // A trailing backslash must not swallow the closing quote.
     expect(quoteShellPath('C:\\My Dir\\')).toBe('"C:\\My Dir\\\\"');
+  });
+
+  it('Windows: refuses a path containing a double quote (P1-20)', () => {
+    // The spawn path rejects quote-bearing args outright (pty-manager's
+    // quoteArgForCmdExe): cmd.exe toggles quoting on every `"` and honours
+    // no escape, so the old `\"` form CLOSED the quoted region and left
+    // `y & calc.exe` live on the command line. The quoter refuses the shape
+    // the spawn path refuses; null tells the caller to reject, not inject.
+    mockPlatform.isWin = true;
+    expect(quoteShellPath('C:\\a"b.txt')).toBeNull();
+    expect(quoteShellPath('x"y & calc.exe')).toBeNull();
   });
 });

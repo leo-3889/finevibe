@@ -15,7 +15,12 @@ vi.mock('../git-status.js', () => ({
 }));
 vi.mock('../session-activity.js', () => ({ onChange: vi.fn() }));
 vi.mock('./file-viewer.js', () => ({ showFileViewer: vi.fn() }));
-vi.mock('../dom-utils.js', () => ({ areaLabel: (area: string) => area }));
+vi.mock('../dom-utils.js', async (importOriginal) => ({
+  // Real esc (quote-safe, P2-102); areaLabel stays the identity stub the
+  // header assertions are written against.
+  ...(await importOriginal<typeof import('../dom-utils.js')>()),
+  areaLabel: (area: string) => area,
+}));
 
 import { _test, _resetForTesting, mountGitPanel, closeGitPanel } from './git-panel.js';
 import { appState } from '../state.js';
@@ -214,5 +219,28 @@ describe('git-panel mountGitPanel — reload gating', () => {
     closeGitPanel();
     mountGitPanel(project, makeContainer());
     expect(getFiles).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('git-panel loadFiles — path rendering (P2-102)', () => {
+  it('renders a filename containing a double quote as a literal, not an attribute injection', async () => {
+    const body = makeBody();
+    const path = 'x" onmouseover="alert(1).ts';
+    await primeWithFiles(body, '/repo', [{ path, status: 'modified', area: 'working' }]);
+    const detail = body.querySelector('.config-item-detail')!;
+    // Pre-fix, the raw `"` closed the interpolated title attribute and the
+    // payload became a live onmouseover attribute.
+    expect(detail.getAttribute('title')).toBe(path);
+    expect(detail.textContent).toBe(path);
+    expect(detail.getAttribute('onmouseover')).toBeNull();
+    expect(body.querySelector('[onmouseover]')).toBeNull();
+  });
+
+  it('renders the status badge as a literal letter span', async () => {
+    const body = makeBody();
+    await primeWithFiles(body, '/repo', [{ path: 'a.ts', status: 'modified', area: 'working' }]);
+    const badge = body.querySelector('.git-file-badge')!;
+    expect(badge.textContent).toBe('M');
+    expect(badge.className).toBe('git-file-badge modified');
   });
 });

@@ -1,8 +1,16 @@
-/** Escape a string for safe insertion into innerHTML. */
+/**
+ * Escape a string for safe insertion into innerHTML — text nodes and quoted
+ * attribute values alike. The DOM text serializer handles `&<>` but never
+ * `"`, and attribute sites interpolate this inside `"…"` (git-panel `title`,
+ * active-sessions-panel `data-project-id`/`data-session-id`/`title`,
+ * project-terminal `data-shell-id`), so a filename containing `"` closed the
+ * attribute and injected markup (P2-102). Serialize quotes explicitly; in a
+ * text node `&quot;` still renders as `"`, so no call site changes.
+ */
 export function esc(s: string): string {
   const el = document.createElement('span');
   el.textContent = s;
-  return el.innerHTML;
+  return el.innerHTML.replace(/"/g, '&quot;');
 }
 
 const AREA_LABELS: Record<string, string> = { staged: 'Staged', working: 'Changes', untracked: 'Untracked', conflicted: 'Conflicted' };

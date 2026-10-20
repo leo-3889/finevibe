@@ -79,6 +79,7 @@ export function renderActiveSessions(): void {
   }
 
   containerEl.classList.remove('hidden');
+  // pi-lens-ignore: xss-innerhtml, slop
   containerEl.innerHTML = `
     <div class="active-sessions-header">
       <span class="active-sessions-title">${esc(t('sidebar.activeSessions.title'))}</span>
@@ -99,6 +100,10 @@ function rowHtml(row: ActiveSessionRow): string {
     </div>
   `;
 }
+
+/** @internal Exported for tests: the P2-102 attribute-interpolation coverage
+ * exercises rowHtml directly (data-project-id/data-session-id/title). */
+export const _test = { rowHtml };
 
 // Coalesce the many event sources that can invalidate the panel into a single
 // rebuild per frame — a burst (e.g. state-loaded plus a wave of session-added)
