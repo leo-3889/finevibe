@@ -57,6 +57,13 @@ export const LAUNCH_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** Upper bound on dirs examined per prune pass, so startup never stalls on a huge tree. */
 const PRUNE_SCAN_LIMIT = 2_000;
 
+let pruneScanLimit = PRUNE_SCAN_LIMIT;
+
+/** @internal Test-only: lower the per-pass scan bound; null restores the default. */
+export function _setPruneScanLimitForTesting(limit: number | null): void {
+  pruneScanLimit = limit ?? PRUNE_SCAN_LIMIT;
+}
+
 /** Bases already swept this process — pruning runs at most once per base. */
 const prunedBases = new Set<string>();
 
@@ -97,6 +104,14 @@ function pruneLaunchSessionDirsOnce(base: string): void {
  * Safety: entries are lstat'ed, never stat'ed, so a symlinked dir is skipped
  * rather than followed, and every removal path is built by joining `base` with
  * one readdir name, i.e. it is strictly under `base`.
+ *
+ * Scan bound: at most `pruneScanLimit` dirs are examined per pass. On an
+ * over-limit base the scan is ordered by dir mtime ascending (P2-57), so the
+ * dirs it CAN examine are the oldest ones — the deletion candidates. By the
+ * AND rule above a dir with an in-window mtime is undeletable, so the
+ * unexamined mtime tail can only be young dirs; expired dirs that overflow
+ * the bound are collected by the next launch's pass. Cost: one extra lstat
+ * per dir (one syscall, no recursion), incurred only on over-limit bases.
  */
 export function pruneLaunchSessionDirs(base: string, now = Date.now()): number {
   let names: string[];
@@ -107,7 +122,8 @@ export function pruneLaunchSessionDirs(base: string, now = Date.now()): number {
   }
   const cutoff = now - LAUNCH_SESSION_RETENTION_MS;
   let removed = 0;
-  for (const name of names.slice(0, PRUNE_SCAN_LIMIT)) {
+  const scan = names.length > pruneScanLimit ? oldestDirsFirst(base, names) : names;
+  for (const name of scan.slice(0, pruneScanLimit)) {
     const dir = path.join(base, name);
     let dirStat: fs.Stats;
     try {
@@ -130,6 +146,28 @@ export function pruneLaunchSessionDirs(base: string, now = Date.now()): number {
     }
   }
   return removed;
+}
+
+/**
+ * readdir names whose dirs exist, ordered by mtime ascending (oldest first);
+ * non-dirs and entries that vanish between readdir and lstat go last, so
+ * they never displace an examination slot — the loop's lstat rules skip them
+ * unchanged. One lstat per name — see the scan-bound note above.
+ */
+function oldestDirsFirst(base: string, names: string[]): string[] {
+  const dated: Array<[name: string, mtimeMs: number]> = [];
+  const rest: string[] = [];
+  for (const name of names) {
+    try {
+      const st = fs.lstatSync(path.join(base, name));
+      if (st.isDirectory()) dated.push([name, st.mtimeMs]);
+      else rest.push(name);
+    } catch {
+      rest.push(name);
+    }
+  }
+  dated.sort((a, b) => a[1] - b[1]);
+  return dated.map(([name]) => name).concat(rest);
 }
 
 /** Newest `*.jsonl` mtime in a dir; 0 when there are none. Symlinks ignored. */

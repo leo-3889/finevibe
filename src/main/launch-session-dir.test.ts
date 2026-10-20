@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -17,6 +17,7 @@ import {
   pruneLaunchSessionDirs,
   listLaunchSessionDirs,
   LAUNCH_SESSION_RETENTION_MS,
+  _setPruneScanLimitForTesting,
 } from './launch-session-dir';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -128,6 +129,64 @@ describe('pruneLaunchSessionDirs()', () => {
     expect(pruneLaunchSessionDirs(base, Date.now())).toBe(0);
     expect(fs.existsSync(inside)).toBe(true);
     expect(fs.existsSync(path.join(base, 'linked'))).toBe(true);
+  });
+});
+
+describe('pruneLaunchSessionDirs() scan bound (P2-57)', () => {
+  afterEach(() => _setPruneScanLimitForTesting(null));
+
+  it('examines the oldest dirs first, reaching expired dirs hidden past the raw readdir slice', () => {
+    // 13 dirs, limit 6. The young dirs occupy the whole raw readdir prefix
+    // (names a*), pushing every expired dir (z*) past the slice boundary:
+    // an unsorted slice(0, limit) would never examine — never delete — them,
+    // and every launch adds another dir.
+    _setPruneScanLimitForTesting(6);
+    const young = [0, 1, 2, 3, 4, 5, 6].map(i =>
+      makeDir(`a${i}`, { createdAt: RECENT, transcripts: [RECENT] }),
+    );
+    const expired = [0, 1, 2, 3, 4].map(i =>
+      makeDir(`z${i}`, { createdAt: OLD - i * DAY_MS, dirMtime: OLD - i * DAY_MS }),
+    );
+    expect(fs.readdirSync(base).length).toBeGreaterThan(6);
+    expect(pruneLaunchSessionDirs(base, Date.now())).toBe(5);
+    for (const d of expired) expect(fs.existsSync(d)).toBe(false);
+    for (const d of young) expect(fs.existsSync(d)).toBe(true);
+  });
+
+  it('examines exactly the oldest `limit` dirs and finishes the job on the next pass', () => {
+    // 5 expired dirs (z0 oldest … z4 newest) + 1 young, limit 3: one pass is
+    // bounded, so it deletes the 3 OLDEST expired dirs; the survivors' mtimes
+    // still lead every future scan.
+    _setPruneScanLimitForTesting(3);
+    const dirs = [0, 1, 2, 3, 4].map(i => makeDir(`z${i}`, { dirMtime: OLD - (4 - i) * DAY_MS }));
+    const young = makeDir('a-young', { createdAt: RECENT, transcripts: [RECENT] });
+    expect(pruneLaunchSessionDirs(base, Date.now())).toBe(3);
+    expect(dirs.filter(d => fs.existsSync(d)).map(d => path.basename(d))).toEqual(['z3', 'z4']);
+    expect(fs.existsSync(young)).toBe(true);
+    expect(pruneLaunchSessionDirs(base, Date.now())).toBe(2);
+    expect(fs.readdirSync(base)).toEqual(['a-young']);
+  });
+
+  it.runIf(!isWin)('sorts with lstat only: the oldest entry may be a symlink and is never followed', () => {
+    // The symlink is the oldest entry and sorts first in raw readdir order;
+    // the sort must lstat (not stat) it, park it behind the real dirs, and
+    // the bounded scan must delete the two expired dirs without touching it.
+    _setPruneScanLimitForTesting(2);
+    const target = path.join(userData.path, 'p2-57-target');
+    fs.mkdirSync(target, { recursive: true });
+    const inside = path.join(target, 'precious.jsonl');
+    fs.writeFileSync(inside, 'user data');
+    fs.utimesSync(target, new Date(OLD - 10 * DAY_MS), new Date(OLD - 10 * DAY_MS));
+    fs.symlinkSync(target, path.join(base, 'a-linked'), 'dir');
+    const dead1 = makeDir('b-dead-1', { dirMtime: OLD });
+    const dead2 = makeDir('b-dead-2', { dirMtime: OLD - DAY_MS });
+    const live = makeDir('c-live', { createdAt: RECENT, transcripts: [RECENT] });
+    expect(pruneLaunchSessionDirs(base, Date.now())).toBe(2);
+    expect(fs.existsSync(dead1)).toBe(false);
+    expect(fs.existsSync(dead2)).toBe(false);
+    expect(fs.existsSync(live)).toBe(true);
+    expect(fs.existsSync(inside)).toBe(true);
+    expect(fs.existsSync(path.join(base, 'a-linked'))).toBe(true);
   });
 });
 
