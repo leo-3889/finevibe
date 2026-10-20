@@ -45,30 +45,42 @@ function rememberAssignedId(id: string): void {
 const MTIME_SKEW_MS = 60_000;
 /** Rollout meta is the first line; 64 KB covers any realistic session_meta. */
 const META_READ_BYTES = 64 * 1024;
-/** Compressed rollouts are decompressed whole for the meta; skip huge ones.
- * The 8 MiB gate bounds the compressed read; the decompressed peak is bounded
- * in practice by `metaCache` below, which parses each file once per change. */
+/** A `.zst` meta read touches at most this many compressed bytes: the frame
+ * header plus the first blocks. `session_meta` is the FIRST line of the frame,
+ * so this prefix covers it, and a cut mid-frame decodes to the blocks it
+ * already holds (Node's sync zstd returns the partial output). The whole file
+ * used to be read and decompressed to use 64 KB of it: a rollout near
+ * `MAX_COMPRESSED_META_FILE_BYTES` was materialized twice, synchronously, on
+ * the main process, per pairing. */
+const META_PREFIX_BYTES = 256 * 1024;
+/** Compressed rollouts above this size are skipped for meta entirely. The
+ * prefix read makes the sync path cheap; this gate bounds the async
+ * full-decode fallback in `scheduleFullDecode`. */
 const MAX_COMPRESSED_META_FILE_BYTES = 8 * 1024 * 1024;
 
 /**
  * Parsed `session_meta` per rollout, keyed by path and invalidated by
  * (mtime, size). The first line never changes once written, so without this
- * cache every scan re-read - and for `.jsonl.zst` fully decompressed,
- * allocating roughly 10x the compressed size - every rollout in today's
- * directory, up to twice a second, for the whole life of a pending tab.
+ * cache every scan re-read - and for `.jsonl.zst` decompressed, up to
+ * `META_PREFIX_BYTES` of it - every rollout in today's directory, up to twice
+ * a second, for the whole life of a pending tab.
  */
 const MAX_META_CACHE_ENTRIES = 256;
 const metaCache = new Map<string, { mtimeMs: number; size: number; meta: { id?: string; cwd?: string } | null }>();
 
-function readCachedMeta(filePath: string, mtimeMs: number, size: number): { id?: string; cwd?: string } | null {
-  const cached = metaCache.get(filePath);
-  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.meta;
-  const meta = readSessionMeta(filePath);
+function cacheMeta(filePath: string, mtimeMs: number, size: number, meta: { id?: string; cwd?: string } | null): void {
   if (metaCache.size >= MAX_META_CACHE_ENTRIES) {
     const oldest = metaCache.keys().next().value;
     if (oldest !== undefined) metaCache.delete(oldest);
   }
   metaCache.set(filePath, { mtimeMs, size, meta });
+}
+
+function readCachedMeta(filePath: string, mtimeMs: number, size: number): { id?: string; cwd?: string } | null {
+  const cached = metaCache.get(filePath);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.meta;
+  const meta = readSessionMeta(filePath);
+  cacheMeta(filePath, mtimeMs, size, meta);
   return meta;
 }
 
@@ -100,44 +112,124 @@ function readdirSortedAsc(dir: string): string[] {
   try { return fs.readdirSync(dir).sort(); } catch { return []; }
 }
 
+/** Read at most `limit` bytes from the head of a file — never the whole file. */
+function readHead(filePath: string, limit: number): Buffer {
+  const buf = Buffer.alloc(limit);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    return buf.subarray(0, fs.readSync(fd, buf, 0, limit, 0));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Parse a rollout's first line as `session_meta`; throws on non-JSON. */
+function parseMetaLine(text: string): { id?: string; cwd?: string } | null {
+  const firstLine = text.split('\n', 1)[0];
+  if (!firstLine.trim()) return null;
+  const entry = JSON.parse(firstLine);
+  if (entry.type !== 'session_meta' || !entry.payload) return null;
+  return {
+    id: typeof entry.payload.id === 'string' ? entry.payload.id : undefined,
+    cwd: typeof entry.payload.cwd === 'string' ? entry.payload.cwd : undefined,
+  };
+}
+
+/** `.zst` files with a full decode in flight — one fallback per file. */
+const fullDecodes = new Set<string>();
+
+/**
+ * Last-resort meta read for a `.zst` rollout whose bounded prefix carried no
+ * usable `session_meta` line: stream the file through the zstd decoder, stop
+ * at the first line, and publish the result into `metaCache` for the next
+ * scan. Off the pairing path by design — the scan that schedules this returns
+ * null (the tab stays pending, the same outcome as a meta line that has not
+ * landed) and the 500 ms/2 s cadence picks the cached result up.
+ *
+ * Bounded and self-limiting: it decodes at most `META_READ_BYTES` of output
+ * (nothing proportional to the file is ever materialized) and a rollout that
+ * yields no meta is cached as null for its current `(mtime, size)`, so the
+ * same file version is decoded once, never once per scan.
+ */
+function scheduleFullDecode(filePath: string): void {
+  if (fullDecodes.has(filePath)) return;
+  fullDecodes.add(filePath);
+  let settled = false;
+  const finish = (meta: { id?: string; cwd?: string } | null) => {
+    if (settled) return;
+    settled = true;
+    fullDecodes.delete(filePath);
+    try {
+      const st = fs.statSync(filePath);
+      cacheMeta(filePath, st.mtimeMs, st.size, meta);
+    } catch {
+      // Vanished mid-decode: there is no file left to attribute.
+    }
+  };
+  let input: fs.ReadStream;
+  let decoder: zlib.ZstdDecompress;
+  try {
+    input = fs.createReadStream(filePath);
+    decoder = zlib.createZstdDecompress();
+  } catch {
+    finish(null);
+    return;
+  }
+  const bail = () => {
+    input.destroy();
+    decoder.destroy();
+    finish(null);
+  };
+  let head = Buffer.alloc(0);
+  const publish = () => {
+    let meta: { id?: string; cwd?: string } | null = null;
+    try {
+      meta = parseMetaLine(head.subarray(0, META_READ_BYTES).toString('utf-8'));
+    } catch {
+      meta = null;
+    }
+    finish(meta);
+  };
+  input.on('error', bail);
+  decoder.on('error', bail);
+  decoder.on('data', (chunk: Buffer) => {
+    head = Buffer.concat([head, chunk]);
+    if (head.indexOf(0x0a) >= 0 || head.length >= META_READ_BYTES) {
+      input.destroy();
+      decoder.destroy();
+      publish();
+    }
+  });
+  decoder.on('end', publish);
+  input.pipe(decoder);
+}
+
 /**
  * Parse a rollout's first line (`session_meta`). Returns the CLI session id
  * and cwd, or null when the file is unreadable/not yet a valid rollout
  * (Codex creates the file before the meta line lands).
+ *
+ * A `.zst` rollout is read as a bounded prefix (`META_PREFIX_BYTES`), never
+ * whole: the meta line is the first thing inside the frame, so the prefix
+ * decodes to it, and a rollout near the size gate is no longer read and
+ * decompressed twice, synchronously, per pairing attempt.
  */
 function readSessionMeta(filePath: string): { id?: string; cwd?: string } | null {
   try {
-    let head: string;
-    if (filePath.endsWith('.zst')) {
-      const size = fs.statSync(filePath).size;
-      if (size > MAX_COMPRESSED_META_FILE_BYTES) return null;
-      // A rollout being appended to can end mid-frame; decode what we can.
-      const raw = fs.readFileSync(filePath);
-      let text: Buffer;
-      try {
-        text = zlib.zstdDecompressSync(raw);
-      } catch {
-        text = Buffer.alloc(0);
-      }
-      head = text.subarray(0, META_READ_BYTES).toString('utf-8');
-    } else {
-      const fd = fs.openSync(filePath, 'r');
-      try {
-        const buf = Buffer.alloc(META_READ_BYTES);
-        const n = fs.readSync(fd, buf, 0, buf.length, 0);
-        head = buf.subarray(0, n).toString('utf-8');
-      } finally {
-        fs.closeSync(fd);
-      }
+    if (!filePath.endsWith('.zst')) {
+      return parseMetaLine(readHead(filePath, META_READ_BYTES).toString('utf-8'));
     }
-    const firstLine = head.split('\n', 1)[0];
-    if (!firstLine.trim()) return null;
-    const entry = JSON.parse(firstLine);
-    if (entry.type !== 'session_meta' || !entry.payload) return null;
-    return {
-      id: typeof entry.payload.id === 'string' ? entry.payload.id : undefined,
-      cwd: typeof entry.payload.cwd === 'string' ? entry.payload.cwd : undefined,
-    };
+    if (fs.statSync(filePath).size > MAX_COMPRESSED_META_FILE_BYTES) return null;
+    let text: Buffer;
+    try {
+      // A rollout being appended to can end mid-frame; decode what we can.
+      text = zlib.zstdDecompressSync(readHead(filePath, META_PREFIX_BYTES));
+    } catch {
+      text = Buffer.alloc(0);
+    }
+    const meta = parseMetaLine(text.subarray(0, META_READ_BYTES).toString('utf-8'));
+    if (!meta) scheduleFullDecode(filePath);
+    return meta;
   } catch {
     return null;
   }

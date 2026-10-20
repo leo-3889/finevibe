@@ -1,6 +1,6 @@
 vi.mock('./session-search-index', () => ({ readSearchIndex: vi.fn(async () => null), writeSearchIndex: vi.fn(async () => {}), pruneSearchIndex: vi.fn(async () => {}) }));
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import type { CliProvider, TranscriptDescriptor } from './providers/provider';
+import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './providers/provider';
 import type { ProviderId } from '../shared/types';
 
 vi.mock('fs', () => ({
@@ -15,7 +15,7 @@ vi.mock('./providers/registry', () => ({
 }));
 
 import * as fs from 'fs';
-import { readSearchIndex, writeSearchIndex } from './session-search-index';
+import { readSearchIndex, writeSearchIndex, pruneSearchIndex } from './session-search-index';
 import { searchSessions, _resetForTesting } from './session-deep-search';
 
 const mockStat = vi.mocked(fs.promises.stat);
@@ -39,9 +39,15 @@ interface FakeProviderOpts {
   id: ProviderId;
   descriptors?: TranscriptDescriptor[];
   index?: Record<string, { text: string; cwd: string }>;
+  /** Roots whose scan failed: the pass is reported incomplete (P2-70). */
+  incompleteRoots?: string[];
   discoverThrows?: boolean;
   omitDiscover?: boolean;
   omitIndex?: boolean;
+}
+
+function discovery(descriptors: TranscriptDescriptor[], incompleteRoots: string[] = []): TranscriptDiscovery {
+  return { descriptors, complete: incompleteRoots.length === 0, incompleteRoots };
 }
 
 function fakeProvider(opts: FakeProviderOpts): CliProvider {
@@ -51,7 +57,7 @@ function fakeProvider(opts: FakeProviderOpts): CliProvider {
   if (!opts.omitDiscover) {
     provider.discoverTranscripts = async () => {
       if (opts.discoverThrows) throw new Error('boom');
-      return opts.descriptors ?? [];
+      return discovery(opts.descriptors ?? [], opts.incompleteRoots);
     };
   }
   if (!opts.omitIndex) {
@@ -292,7 +298,7 @@ describe('searchSessions()', () => {
     const indexSpy = vi.fn(async () => ({ text: 'cached body content', cwd: '/x' }));
     const provider: CliProvider = {
       meta: { id: 'claude', displayName: 'c', binaryName: 'c', capabilities: {} as any, defaultContextWindowSize: 0 },
-      discoverTranscripts: async () => [{ cliSessionId: 'a', transcriptPath: '/a' }],
+      discoverTranscripts: async () => discovery([{ cliSessionId: 'a', transcriptPath: '/a' }]),
       indexTranscript: indexSpy,
     } as unknown as CliProvider;
     providersForTest.push(provider);
@@ -307,7 +313,7 @@ describe('searchSessions()', () => {
     const indexSpy = vi.fn(async () => ({ text: 'updated body content', cwd: '/x' }));
     const provider: CliProvider = {
       meta: { id: 'claude', displayName: 'c', binaryName: 'c', capabilities: {} as any, defaultContextWindowSize: 0 },
-      discoverTranscripts: async () => [{ cliSessionId: 'a', transcriptPath: '/a' }],
+      discoverTranscripts: async () => discovery([{ cliSessionId: 'a', transcriptPath: '/a' }]),
       indexTranscript: indexSpy,
     } as unknown as CliProvider;
     providersForTest.push(provider);
@@ -317,6 +323,34 @@ describe('searchSessions()', () => {
     await searchSessions('updated body');
     await searchSessions('updated body');
     expect(indexSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the derived index when a root scan reported incomplete (P2-70)', async () => {
+    // The prune allow-list is over the WHOLE corpus: pruning off a partial
+    // (or empty) descriptor list unlinks every index entry the scan failed
+    // to see, and every later search re-reads the entire corpus. A root
+    // whose readdir threw transiently must therefore suspend the prune.
+    providersForTest.push(fakeProvider({
+      id: 'claude',
+      descriptors: [{ cliSessionId: 'a', transcriptPath: '/a' }],
+      incompleteRoots: ['/mock/home/.claude/projects'],
+      index: { '/a': { text: 'survivor body content', cwd: '' } },
+    }));
+    mockStat.mockResolvedValue(makeStat(1));
+    const results = await searchSessions('survivor body');
+    expect(results).toHaveLength(1); // the partial scan still answers
+    expect(pruneSearchIndex).not.toHaveBeenCalled();
+  });
+
+  it('prunes with the full descriptor list on a complete pass', async () => {
+    providersForTest.push(fakeProvider({
+      id: 'claude',
+      descriptors: [{ cliSessionId: 'a', transcriptPath: '/a' }],
+      index: { '/a': { text: 'complete body content', cwd: '' } },
+    }));
+    mockStat.mockResolvedValue(makeStat(1));
+    await searchSessions('complete body');
+    expect(pruneSearchIndex).toHaveBeenCalledWith('claude', ['/a']);
   });
 
   it('drops zero-score sessions', async () => {

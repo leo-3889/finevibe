@@ -1,7 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { CliProvider } from './provider';
 import type { CliProviderMeta } from '../../shared/types';
-import { initProviders, registerProvider, getProvider, getAllProviders, getProviderMeta, getAllProviderMetas } from './registry';
+import { initProviders, registerProvider, getProvider, getAllProviders, getProviderMeta, getAllProviderMetas, getAvailableProviderIds, invalidateAvailabilityCache } from './registry';
+
+// Real providers probe the filesystem/subprocesses through resolve-binary;
+// stub it so availability probes are instant and deterministic. The spy
+// counts probes for the availability-cache tests.
+const mockValidateBinaryExists = vi.hoisted(() => vi.fn(() => true));
+const mockInvalidateBinaryCache = vi.hoisted(() => vi.fn());
+vi.mock('./resolve-binary', () => ({
+  resolveBinary: (name: string, cache: { path: string | null }) => (cache.path ??= name),
+  validateBinaryExists: mockValidateBinaryExists,
+  invalidateBinaryCache: mockInvalidateBinaryCache,
+}));
 
 const fakeMeta: CliProviderMeta = {
   id: 'copilot',
@@ -23,11 +34,11 @@ const fakeMeta: CliProviderMeta = {
   defaultContextWindowSize: 128_000,
 };
 
-function makeFakeProvider(meta: CliProviderMeta): CliProvider {
+function makeFakeProvider(meta: CliProviderMeta, validatePrerequisites: () => boolean = () => true): CliProvider {
   return {
     meta,
     resolveBinaryPath: () => '/usr/bin/fake',
-    validatePrerequisites: () => true,
+    validatePrerequisites,
     buildEnv: (_sid, env) => env,
     buildArgs: () => [],
     installHooks: async () => {},
@@ -118,5 +129,48 @@ describe('getAllProviderMetas', () => {
     expect(metas.map(m => m.id)).toContain('copilot');
     expect(metas.map(m => m.id)).toContain('pi');
     expect(metas.map(m => m.id)).toContain('omp');
+  });
+});
+
+describe('getAvailableProviderIds', () => {
+  it('returns ids of providers whose prerequisites validate', () => {
+    const ids = getAvailableProviderIds();
+    expect(ids).toContain('claude');
+    expect(ids).toContain('codex');
+  });
+
+  it('caches probes: the second call does not re-run validatePrerequisites', () => {
+    const probe = vi.fn(() => true);
+    registerProvider(makeFakeProvider(fakeMeta, probe));
+
+    const ids = getAvailableProviderIds();
+    expect(ids).toContain('copilot');
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    getAvailableProviderIds();
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidateAvailabilityCache clears the cache', () => {
+    const probe = vi.fn(() => true);
+    registerProvider(makeFakeProvider(fakeMeta, probe));
+    getAvailableProviderIds();
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    invalidateAvailabilityCache();
+    getAvailableProviderIds();
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidateAvailabilityCache also clears the binary probe cache', () => {
+    invalidateAvailabilityCache();
+    expect(mockInvalidateBinaryCache).toHaveBeenCalled();
+  });
+
+  it('registerProvider invalidates, so a freshly registered provider appears', () => {
+    getAvailableProviderIds();
+    const fake = makeFakeProvider({ ...fakeMeta, id: 'pi' }, () => false);
+    registerProvider(fake);
+    expect(getAvailableProviderIds()).not.toContain('pi');
   });
 });

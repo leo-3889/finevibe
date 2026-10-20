@@ -109,7 +109,35 @@ export function resolveBinary(binaryName: string, cache: { path: string | null }
   return binaryName;
 }
 
+// Availability probe cache (audit P3-5): the probe below walks every common
+// bin dir, scans nvm, and spawns `which`/`npm prefix -g` — on every
+// `provider.validatePrerequisites()` call (startup, readiness analysis, the
+// provider IPC). Positive results are cached for the process, matching
+// resolveBinary's resolved-path cache; negative results expire after
+// NEGATIVE_PROBE_TTL_MS so a CLI installed after app start is picked up
+// without a restart. invalidateBinaryCache() clears both on provider
+// install/uninstall and settings changes (see registry.invalidateAvailabilityCache).
+const NEGATIVE_PROBE_TTL_MS = 30_000;
+const probeCache = new Map<string, { exists: boolean; checkedAt: number }>();
+
 export function validateBinaryExists(binaryName: string): boolean {
+  const hit = probeCache.get(binaryName);
+  if (hit && (hit.exists || Date.now() - hit.checkedAt < NEGATIVE_PROBE_TTL_MS)) {
+    return hit.exists;
+  }
+  const exists = probeBinaryExists(binaryName);
+  probeCache.set(binaryName, { exists, checkedAt: Date.now() });
+  return exists;
+}
+
+/** Drop cached availability for one binary (or all) so the next probe
+ *  re-scans. Called by registry.invalidateAvailabilityCache(). */
+export function invalidateBinaryCache(binaryName?: string): void {
+  if (binaryName === undefined) probeCache.clear();
+  else probeCache.delete(binaryName);
+}
+
+function probeBinaryExists(binaryName: string): boolean {
   for (const dir of COMMON_BIN_DIRS) {
     if (findBinaryInDir(dir, binaryName)) return true;
   }

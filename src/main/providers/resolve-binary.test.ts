@@ -29,7 +29,7 @@ vi.mock('../pty-manager', () => ({
 }));
 
 import * as fs from 'fs';
-import { resolveBinary, validateBinaryExists } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, invalidateBinaryCache } from './resolve-binary';
 
 const mockStatSync = vi.mocked(fs.statSync);
 
@@ -39,6 +39,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   mockExecSync.mockImplementation(() => { throw new Error('not found'); });
+  invalidateBinaryCache();
 });
 
 describe('resolveBinary (Windows)', () => {
@@ -160,5 +161,56 @@ describe('validateBinaryExists (Windows)', () => {
 
   it('returns false when all methods fail', () => {
     expect(validateBinaryExists('claude')).toBe(false);
+  });
+
+  it('caches positive results: the second call spawns no probes', () => {
+    // Resolve via `where` (subprocess) so the probe count is meaningful.
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.startsWith('where')) return 'C:\\bin\\claude.cmd\n';
+      throw new Error('not found');
+    });
+
+    expect(validateBinaryExists('claude')).toBe(true);
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    expect(probesAfterFirst).toBeGreaterThan(0);
+
+    // Any probe on a cache hit throws: bin dirs, nvm, which and npm prefix
+    // must all stay untouched on the second call (audit P3-5).
+    mockExecSync.mockImplementation(() => { throw new Error('SUBPROCESS ON CACHE HIT'); });
+    mockStatSync.mockImplementation(() => { throw new Error('FS PROBE ON CACHE HIT'); });
+
+    expect(validateBinaryExists('claude')).toBe(true);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('caches negative results for the TTL and re-probes after it expires', () => {
+    vi.useFakeTimers();
+    try {
+      expect(validateBinaryExists('claude')).toBe(false);
+      const probesAfterFirst = mockExecSync.mock.calls.length;
+      expect(probesAfterFirst).toBeGreaterThan(0);
+
+      expect(validateBinaryExists('claude')).toBe(false);
+      expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+
+      vi.setSystemTime(Date.now() + 31_000);
+      expect(validateBinaryExists('claude')).toBe(false);
+      expect(mockExecSync.mock.calls.length).toBeGreaterThan(probesAfterFirst);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('invalidateBinaryCache clears the entry for one binary', () => {
+    expect(validateBinaryExists('claude')).toBe(false);
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+
+    invalidateBinaryCache('gemini');
+    expect(validateBinaryExists('claude')).toBe(false);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+
+    invalidateBinaryCache('claude');
+    expect(validateBinaryExists('claude')).toBe(false);
+    expect(mockExecSync.mock.calls.length).toBeGreaterThan(probesAfterFirst);
   });
 });

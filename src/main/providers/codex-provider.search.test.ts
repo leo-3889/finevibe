@@ -55,15 +55,28 @@ describe('CodexProvider.discoverTranscripts()', () => {
         file('README.md'),
       ] as any);
 
-    const out = await new CodexProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new CodexProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].cliSessionId).toBe(UUID);
     expect(out[0].transcriptPath).toContain(`rollout-2026-03-28T18-31-57-${UUID}.jsonl`);
   });
 
-  it('returns [] when root is missing', async () => {
-    mockReaddir.mockRejectedValueOnce(new Error('ENOENT'));
-    expect(await new CodexProvider().discoverTranscripts()).toEqual([]);
+  it('reports a complete empty pass when the root is missing', async () => {
+    mockReaddir.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    expect(await new CodexProvider().discoverTranscripts())
+      .toEqual({ descriptors: [], complete: true, incompleteRoots: [] });
+  });
+
+  it('marks the pass incomplete when a day dir readdir fails transiently (P2-70)', async () => {
+    mockReaddir
+      .mockResolvedValueOnce([dir('2026')] as any)
+      .mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }));
+
+    const { descriptors: out, complete, incompleteRoots } = await new CodexProvider().discoverTranscripts();
+    expect(out).toEqual([]);
+    expect(complete).toBe(false);
+    expect(incompleteRoots).toEqual([path.join('/mock/home', '.codex', 'sessions')]);
   });
 });
 
@@ -120,7 +133,8 @@ describe('CodexProvider .jsonl.zst transcripts', () => {
         file(`rollout-2026-10-10T22-12-14-${UUID}.jsonl.zst`),
       ] as any);
 
-    const out = await new CodexProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new CodexProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].cliSessionId).toBe(UUID);
   });

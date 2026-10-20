@@ -48,11 +48,13 @@ vi.mock('../codex-hooks', () => ({
 
 import * as fs from 'fs';
 import { execSync } from 'child_process';
-import { CodexProvider, _resetCachedPath } from './codex-provider';
+import { CodexProvider, _resetCachedPath, _resetHookValidationCache } from './codex-provider';
 import { getCodexConfig } from '../codex-config';
 import { startConfigWatcher, stopConfigWatcher } from '../config-watcher';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks } from '../codex-hooks';
 import { stopCodexSessionWatcher } from '../codex-session-watcher';
+import { invalidateBinaryCache } from './resolve-binary';
+import { startCodexSessionWatcher, registerPendingCodexSession } from '../codex-session-watcher';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -67,6 +69,8 @@ const mockInstallCodexHooks = vi.mocked(installCodexHooks);
 const mockValidateCodexHooks = vi.mocked(validateCodexHooks);
 const mockCleanupCodexHooks = vi.mocked(cleanupCodexHooks);
 const mockStopCodexSessionWatcher = vi.mocked(stopCodexSessionWatcher);
+const mockStartCodexSessionWatcher = vi.mocked(startCodexSessionWatcher);
+const mockRegisterPendingCodexSession = vi.mocked(registerPendingCodexSession);
 
 let provider: CodexProvider;
 
@@ -74,6 +78,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
+  _resetHookValidationCache();
+  invalidateBinaryCache();
+  mockValidateCodexHooks.mockReturnValue({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
   provider = new CodexProvider();
 });
 
@@ -313,6 +320,58 @@ describe('hooks integration', () => {
   it('reinstallSettings delegates to installCodexHooks', () => {
     provider.reinstallSettings();
     expect(mockInstallCodexHooks).toHaveBeenCalled();
+  });
+});
+
+describe('onSessionStarted hooks validation cache', () => {
+  const win = { id: 1 } as any;
+
+  it('does not re-validate hooks synchronously on the second launch within the TTL', () => {
+    provider.onSessionStarted('s1', '/p1', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);
+
+    provider.onSessionStarted('s2', '/p2', win);
+    // The launch path must not run the file validation a second time (audit P3-5).
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);
+    expect(mockStartCodexSessionWatcher).not.toHaveBeenCalled();
+  });
+
+  it('reuses the cached missing-hooks verdict for the watcher fallback', () => {
+    mockValidateCodexHooks.mockReturnValue({ statusLine: 'vibeyard', hooks: 'missing', hookDetails: {} });
+    provider.onSessionStarted('s1', '/p1', win);
+    provider.onSessionStarted('s2', '/p2', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);
+    // Every hookless session still registers with the rollout watcher.
+    expect(mockStartCodexSessionWatcher).toHaveBeenCalledTimes(2);
+    expect(mockRegisterPendingCodexSession).toHaveBeenCalledWith('s1', '/p1');
+    expect(mockRegisterPendingCodexSession).toHaveBeenCalledWith('s2', '/p2');
+  });
+
+  it('reinstallSettings clears the cache so the next launch re-validates', () => {
+    provider.onSessionStarted('s1', '/p1', win);
+    provider.reinstallSettings();
+    provider.onSessionStarted('s2', '/p2', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(2);
+  });
+
+  it('installHooks clears the cache', async () => {
+    provider.onSessionStarted('s1', '/p1', win);
+    await provider.installHooks();
+    provider.onSessionStarted('s2', '/p2', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(2);
+  });
+
+  it('validateSettings refreshes the cache with a fresh result', () => {
+    provider.validateSettings();
+    provider.onSessionStarted('s1', '/p1', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleanup clears the cache', () => {
+    provider.onSessionStarted('s1', '/p1', win);
+    provider.cleanup();
+    provider.onSessionStarted('s2', '/p2', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(2);
   });
 });
 

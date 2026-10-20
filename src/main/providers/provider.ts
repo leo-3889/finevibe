@@ -15,6 +15,19 @@ export interface TranscriptDescriptor {
   profileId?: string;
 }
 
+/**
+ * One discovery pass over a provider's transcript roots. `complete` is false
+ * when a root scan threw anything other than "root missing" (EIO/EPERM/EACCES
+ * on a mounted tree): the descriptor list is then a partial corpus, so the
+ * caller MUST NOT prune the provider's derived index from it. `incompleteRoots`
+ * carries the failing roots in scan order for the caller's log.
+ */
+export interface TranscriptDiscovery {
+  descriptors: TranscriptDescriptor[];
+  complete: boolean;
+  incompleteRoots: string[];
+}
+
 export interface CliProvider {
   readonly meta: CliProviderMeta;
   resolveBinaryPath(): string;
@@ -38,8 +51,15 @@ export interface CliProvider {
   parseCostFromOutput?(rawText: string): { totalCostUsd: number } | null;
   /** Return the absolute path to the source transcript file for a prior session, if any. */
   getTranscriptPath?(cliSessionId: string, projectPath: string, configDir?: string, sessionDir?: string): string | null;
-  /** Cheap enumeration of every on-disk transcript for global session search. */
-  discoverTranscripts?(signal?: AbortSignal): Promise<TranscriptDescriptor[]>;
+  /**
+   * Cheap enumeration of every on-disk transcript for global session search.
+   * The result reports completeness: a root whose scan threw a real error
+   * (EIO/EPERM on a mounted tree) yields a partial descriptor list, and the
+   * caller MUST NOT prune the provider's derived index from it — pruning a
+   * partial list reads as "this provider has no transcripts" and unlinks the
+   * whole corpus, so every later search re-reads every transcript (P2-70).
+   */
+  discoverTranscripts?(signal?: AbortSignal): Promise<TranscriptDiscovery>;
   /** Read user-visible text (and optionally the cwd) out of one transcript file. */
   indexTranscript?(transcriptPath: string): Promise<{ text: string; cwd: string }>;
   startConfigWatcher?(win: BrowserWindow, projectPath: string): void;

@@ -50,6 +50,7 @@ import { getCopilotConfig } from '../copilot-config';
 import { startConfigWatcher, stopConfigWatcher } from '../config-watcher';
 import { installCopilotHooks, validateCopilotHooks, cleanupCopilotHooks } from '../copilot-hooks';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
+import { invalidateBinaryCache } from './resolve-binary';
 
 const mockStatSync = vi.mocked(fs.statSync);
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -68,6 +69,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
+  invalidateBinaryCache();
   provider = new CopilotProvider();
 });
 

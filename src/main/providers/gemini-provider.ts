@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { CliProvider, TranscriptDescriptor } from './provider';
+import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
@@ -9,7 +9,7 @@ import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { getGeminiConfig } from '../gemini-config';
 import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks, SESSION_ID_VAR } from '../gemini-hooks';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
-import { MAX_INDEX_FILE_BYTES, IndexTextBudget } from './transcript-utils';
+import { MAX_INDEX_FILE_BYTES, IndexTextBudget, TranscriptDiscoveryScan, readdirForDiscovery, isMissingRootError } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 import { sameCwd } from './pi-compatible-transcripts';
 import type { BrowserWindow } from 'electron';
@@ -223,56 +223,56 @@ export class GeminiProvider implements CliProvider {
     }
   }
 
-  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDiscovery> {
+    // The tmp root is the scan root: a readdir failure on it, on an
+    // existing project's chats dir, or an unreadable (non-missing)
+    // .project_root marks the pass incomplete — a partial scan must not
+    // prune the derived index (P2-70). Files that vanished mid-scan
+    // (ENOENT) stay per-file tolerances, not scan failures.
     const tmpRoot = path.join(os.homedir(), '.gemini', 'tmp');
-    let keys: string[];
-    try {
-      keys = await fs.promises.readdir(tmpRoot);
-    } catch {
-      return [];
-    }
-    const out: TranscriptDescriptor[] = [];
-    for (const key of keys) {
-      if (signal?.aborted) return out;
-      const projectDir = path.join(tmpRoot, key);
-      let projectCwd = '';
-      try {
-        projectCwd = (await fs.promises.readFile(path.join(projectDir, '.project_root'), 'utf-8')).trim();
-      } catch {
-        continue;
-      }
-      const chatsDir = path.join(projectDir, 'chats');
-      let files: string[];
-      try {
-        files = await fs.promises.readdir(chatsDir);
-      } catch {
-        continue;
-      }
-      for (const file of files) {
-        if (signal?.aborted) return out;
-        if (!file.startsWith('session-') || !file.endsWith('.json')) continue;
-        const transcriptPath = path.join(chatsDir, file);
-        // The indexer indexes files above MAX_INDEX_FILE_BYTES to empty text,
-        // so skip them here too — reading a whole oversized transcript just
-        // to extract its id would pay for content search can never use.
-        let size: number;
+    const scan = new TranscriptDiscoveryScan();
+    await scan.collect(tmpRoot, async () => {
+      const keys = await readdirForDiscovery(tmpRoot);
+      for (const key of keys) {
+        if (signal?.aborted) return;
+        const projectDir = path.join(tmpRoot, key);
+        let projectCwd = '';
         try {
-          size = (await fs.promises.stat(transcriptPath)).size;
-        } catch {
-          continue;
+          projectCwd = (await fs.promises.readFile(path.join(projectDir, '.project_root'), 'utf-8')).trim();
+        } catch (err) {
+          // A dir under tmp/ without .project_root is not a Gemini project.
+          // Any other read failure means this project's chats are unseen.
+          if (isMissingRootError(err)) continue;
+          throw err;
         }
-        if (size > MAX_INDEX_FILE_BYTES) continue;
-        let cliSessionId: string | null = null;
-        try {
-          cliSessionId = await readSessionId(transcriptPath, size);
-        } catch {
-          continue;
+        const chatsDir = path.join(projectDir, 'chats');
+        const files = await readdirForDiscovery(chatsDir);
+        for (const file of files) {
+          if (signal?.aborted) return;
+          if (!file.startsWith('session-') || !file.endsWith('.json')) continue;
+          const transcriptPath = path.join(chatsDir, file);
+          // The indexer indexes files above MAX_INDEX_FILE_BYTES to empty text,
+          // so skip them here too — reading a whole oversized transcript just
+          // to extract its id would pay for content search can never use.
+          let size: number;
+          try {
+            size = (await fs.promises.stat(transcriptPath)).size;
+          } catch {
+            continue;
+          }
+          if (size > MAX_INDEX_FILE_BYTES) continue;
+          let cliSessionId: string | null = null;
+          try {
+            cliSessionId = await readSessionId(transcriptPath, size);
+          } catch {
+            continue;
+          }
+          if (!cliSessionId) continue;
+          scan.descriptors.push({ cliSessionId, transcriptPath, projectCwd, projectSlug: key });
         }
-        if (!cliSessionId) continue;
-        out.push({ cliSessionId, transcriptPath, projectCwd, projectSlug: key });
       }
-    }
-    return out;
+    });
+    return scan.result();
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

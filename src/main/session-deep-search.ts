@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import type { DeepSearchResult } from '../shared/types';
-import type { CliProvider, TranscriptDescriptor } from './providers/provider';
+import type { CliProvider, TranscriptDiscovery } from './providers/provider';
 import { getAllProviders } from './providers/registry';
 import { readSearchIndex, writeSearchIndex, pruneSearchIndex } from './session-search-index';
 import { TRANSCRIPT_IO_CONCURRENCY, TRANSCRIPT_TEXT_SEPARATOR, mapWithConcurrency } from './providers/transcript-utils';
@@ -35,34 +35,95 @@ function evictOldest(): void {
 export function _resetForTesting(): void {
   textCache.clear();
   cacheChars = 0;
+  activeReads = 0;
+  drainReadQueue();
+  inFlight.clear();
 }
 
 let activeReads = 0;
-const readWaiters: Array<() => void> = [];
+/** Queued reads resolve true on a permit hand-off, false when an abort drains the queue. */
+const readWaiters: Array<(granted: boolean) => void> = [];
 const inFlight = new Map<string, Promise<CacheEntry>>();
 
-async function getCachedIndex(provider: CliProvider, transcriptPath: string): Promise<CacheEntry> {
-  const key = provider.meta.id + ':' + transcriptPath;
+/** A read whose caller aborted; rejects the queued item so its permit returns. */
+class ReadAbortedError extends Error {
+  constructor() { super('Transcript read aborted'); }
+}
+
+/**
+ * Race `work` against `signal`. The fs promises have no deadline of their own
+ * and cannot be cancelled: a stalled read (offline SMB/NFS home, a
+ * filter-driver lock) never settles, and four of them pinned the whole gate
+ * permanently. The raced-away promise keeps running in the background, but
+ * its permit comes back to the pool (P2-71).
+ */
+function raceAbort<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(new ReadAbortedError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new ReadAbortedError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    const clear = (): void => signal.removeEventListener('abort', onAbort);
+    work.then(
+      (value) => { clear(); resolve(value); },
+      (err) => { clear(); reject(err); },
+    );
+  });
+}
+
+/** Take a permit, or queue. Resolves false only when a drain wakes the item. */
+function acquirePermit(): Promise<boolean> {
+  if (activeReads < TRANSCRIPT_IO_CONCURRENCY) {
+    activeReads++;
+    return Promise.resolve(true);
+  }
+  return new Promise<boolean>(resolve => { readWaiters.push(resolve); });
+}
+
+/** Hand the permit to the next item, or give it back to the pool. */
+function releasePermit(): void {
+  const next = readWaiters.shift();
+  if (next) next(true);
+  else activeReads--;
+}
+
+/**
+ * Wake every queued item with no permit (P2-71): cancellation has to end the
+ * whole queue, not just the items already in flight, or a search aborted
+ * behind four stalled reads leaves items parked forever. A woken item that
+ * is not itself aborted was drained by a *different* search's cancellation,
+ * so it goes back to the queue; an aborted one rejects.
+ */
+function drainReadQueue(): void {
+  while (readWaiters.length) readWaiters.shift()!(false);
+}
+
+/** Resolve holding exactly one permit; throw (holding none) on abort. */
+async function acquireRead(signal?: AbortSignal): Promise<void> {
+  for (;;) {
+    if (await acquirePermit()) return;
+    if (signal?.aborted) throw new ReadAbortedError();
+  }
+}
+
+async function getCachedIndex(provider: CliProvider, transcriptPath: string, signal?: AbortSignal): Promise<CacheEntry> {
+  const key = `${provider.meta.id}:${transcriptPath}`;
   const pending = inFlight.get(key);
   if (pending) return pending;
   const work = (async () => {
-    if (activeReads >= TRANSCRIPT_IO_CONCURRENCY) await new Promise<void>(resolve => readWaiters.push(resolve));
-    else activeReads++;
-    try { return await readIndex(provider, transcriptPath); }
-    finally {
-      const next = readWaiters.shift();
-      if (next) next(); else activeReads--;
-    }
+    await acquireRead(signal);
+    try { return await readIndex(provider, transcriptPath, signal); }
+    finally { releasePermit(); }
   })();
   inFlight.set(key, work);
   try { return await work; } finally { if (inFlight.get(key) === work) inFlight.delete(key); }
 }
 
-async function readIndex(provider: CliProvider, transcriptPath: string): Promise<CacheEntry> {
+async function readIndex(provider: CliProvider, transcriptPath: string, signal?: AbortSignal): Promise<CacheEntry> {
   try {
-    const stat = await fs.promises.stat(transcriptPath);
+    const stat = await raceAbort(fs.promises.stat(transcriptPath), signal);
     const mtime = stat.mtimeMs;
-    const key = provider.meta.id + ":" + transcriptPath;
+    const key = `${provider.meta.id}:${transcriptPath}`;
     const cached = textCache.get(key);
     if (cached && cached.mtime === mtime && cached.size === stat.size && cached.ctime === stat.ctimeMs) {
       // Move-to-end for true LRU semantics on cache hits.
@@ -72,9 +133,9 @@ async function readIndex(provider: CliProvider, transcriptPath: string): Promise
     }
 
     const version = { mtime, size: stat.size, ctime: stat.ctimeMs };
-    const saved = await readSearchIndex(provider.meta.id, transcriptPath, version);
-    const { text, cwd } = saved ?? await provider.indexTranscript!(transcriptPath);
-    if (!saved) await writeSearchIndex(provider.meta.id, transcriptPath, { text, cwd, ...version });
+    const saved = await raceAbort(readSearchIndex(provider.meta.id, transcriptPath, version), signal);
+    const { text, cwd } = saved ?? await raceAbort(provider.indexTranscript!(transcriptPath), signal);
+    if (!saved) await raceAbort(writeSearchIndex(provider.meta.id, transcriptPath, { text, cwd, ...version }), signal);
     const entry: CacheEntry = { text, textLower: text.toLowerCase(), cwd, ...version };
     const old = textCache.get(key);
     if (old) {
@@ -88,7 +149,11 @@ async function readIndex(provider: CliProvider, transcriptPath: string): Promise
       cacheChars += size;
     }
     return entry;
-  } catch {
+  } catch (err) {
+    // An abort is not a read failure: reject so the queued item ends now and
+    // its permit returns to the pool. Every other failure keeps the empty
+    // entry — one unreadable transcript must not fail the whole search.
+    if (signal?.aborted) throw err;
     return { text: '', textLower: '', cwd: '', mtime: 0 };
   }
 }
@@ -136,10 +201,10 @@ function extractSnippet(text: string, textLower: string, query: string): string 
 
 async function searchOneProvider(provider: CliProvider, query: string, signal?: AbortSignal): Promise<DeepSearchResult[]> {
   if (!provider.discoverTranscripts || !provider.indexTranscript || signal?.aborted) return [];
-  let descriptors: TranscriptDescriptor[];
-  try { descriptors = await provider.discoverTranscripts(signal); } catch { return []; }
+  let discovery: TranscriptDiscovery;
+  try { discovery = await provider.discoverTranscripts(signal); } catch { return []; }
   if (signal?.aborted) return [];
-  // Only compact results escape each worker; evicted transcript text can be collected immediately.
+  const descriptors = discovery.descriptors;
   // Only compact results escape each worker; evicted transcript text can be collected immediately.
   // The same CLI session id can legitimately appear under two profiles (copied
   // history), so the dedup key is profile + cliSessionId; provider is already
@@ -147,10 +212,17 @@ async function searchOneProvider(provider: CliProvider, query: string, signal?: 
   const best = new Map<string, DeepSearchResult>();
   await mapWithConcurrency(descriptors, TRANSCRIPT_IO_CONCURRENCY, async (desc) => {
     if (signal?.aborted) return;
-    const entry = await getCachedIndex(provider, desc.transcriptPath);
+    let entry: CacheEntry;
+    try {
+      entry = await getCachedIndex(provider, desc.transcriptPath, signal);
+    } catch {
+      // Aborted, or a read that failed even after the abort race ended it:
+      // this transcript is simply not searchable in this pass.
+      return;
+    }
     if (signal?.aborted || !entry.textLower) return;
     const score = scoreFuzzy(entry.textLower, query);
-    const identity = (desc.profileId ?? '') + '\u0000' + desc.cliSessionId;
+    const identity = `${desc.profileId ?? ''}\u0000${desc.cliSessionId}`;
     const previous = best.get(identity);
     if (!score || (previous && previous.score >= score)) return;
     best.set(identity, {
@@ -160,18 +232,35 @@ async function searchOneProvider(provider: CliProvider, query: string, signal?: 
       derivedName: deriveName(entry.text), profileId: desc.profileId,
     });
   });
-  if (!signal?.aborted) await pruneSearchIndex(provider.meta.id, descriptors.map(d => d.transcriptPath));
+  // A root whose scan threw is not evidence its transcripts are gone: pruning
+  // off a partial list unlinks the provider's whole derived index, and every
+  // later search then re-reads the entire corpus. Keep the index and say so —
+  // one warn per failed root (P2-70).
+  for (const root of discovery.incompleteRoots) {
+    console.warn(`[session-search] transcript discovery incomplete for ${provider.meta.id} (${root}); keeping the derived index`);
+  }
+  if (!signal?.aborted && discovery.complete) {
+    await pruneSearchIndex(provider.meta.id, descriptors.map(d => d.transcriptPath));
+  }
   return [...best.values()];
 }
 
 export async function searchSessions(query: string, signal?: AbortSignal): Promise<DeepSearchResult[]> {
   if (!query.trim() || signal?.aborted) return [];
-  const results: DeepSearchResult[] = [];
-  // Avoid multiplying discovery/index workers across all providers.
-  for (const provider of getAllProviders()) {
-    if (signal?.aborted) return [];
-    for (const result of await searchOneProvider(provider, query, signal)) results.push(result);
+  // Cancellation has to reach the items queued behind the read gate, not
+  // only the ones in flight (P2-71).
+  const onAbort = signal && (() => drainReadQueue());
+  if (signal && onAbort) signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const results: DeepSearchResult[] = [];
+    // Avoid multiplying discovery/index workers across all providers.
+    for (const provider of getAllProviders()) {
+      if (signal?.aborted) return [];
+      for (const result of await searchOneProvider(provider, query, signal)) results.push(result);
+    }
+    results.sort((a, b) => b.score - a.score);
+    return signal?.aborted ? [] : results.slice(0, 20);
+  } finally {
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
   }
-  results.sort((a, b) => b.score - a.score);
-  return signal?.aborted ? [] : results.slice(0, 20);
 }

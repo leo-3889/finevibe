@@ -52,6 +52,13 @@ export async function writeSearchIndex(provider: string, source: string, data: R
   finally { if (temporary) await fs.unlink(temporary).catch(() => {}); }
 }
 
+/**
+ * Delete the provider's index records whose source transcript is no longer
+ * listed. `sources` is an allow-list over the whole corpus, so a partial (or
+ * empty) list deletes every other record: callers only reach this from a
+ * discovery pass that reported `complete: true`, because a root whose readdir
+ * threw reads as "no transcripts" and would wipe the derived index (P2-70).
+ */
 export async function pruneSearchIndex(provider: string, sources: string[]): Promise<void> {
   try {
     const dir = directory(provider);

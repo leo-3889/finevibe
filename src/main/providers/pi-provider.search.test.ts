@@ -131,17 +131,29 @@ describe('PiProvider.discoverTranscripts()', () => {
       .mockResolvedValueOnce([FILE_NAME, 'notes.txt'] as any); // project dir
     mockAsyncHeader(header(SID, 'C:\\Users\\me'));
 
-    const out = await new PiProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new PiProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].cliSessionId).toBe(SID);
     expect(out[0].projectCwd).toBe('C:\\Users\\me');
     expect(out[0].transcriptPath).toContain(FILE_NAME);
   });
 
-  it('returns [] when the sessions root is missing', async () => {
+  it('reports a complete empty pass when the sessions root is missing', async () => {
     mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
-    mockReaddir.mockRejectedValueOnce(new Error('ENOENT'));
-    expect(await new PiProvider().discoverTranscripts()).toEqual([]);
+    mockReaddir.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    expect(await new PiProvider().discoverTranscripts())
+      .toEqual({ descriptors: [], complete: true, incompleteRoots: [] });
+  });
+
+  it('marks the pass incomplete when the sessions root readdir fails transiently (P2-70)', async () => {
+    mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
+    mockReaddir.mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }));
+
+    const { descriptors: out, complete, incompleteRoots } = await new PiProvider().discoverTranscripts();
+    expect(out).toEqual([]);
+    expect(complete).toBe(false);
+    expect(incompleteRoots).toHaveLength(1);
   });
 
   it('skips unreadable files', async () => {
@@ -150,7 +162,9 @@ describe('PiProvider.discoverTranscripts()', () => {
       .mockResolvedValueOnce(['--C--Users-me--'] as any)
       .mockResolvedValueOnce([FILE_NAME] as any);
     mockOpen.mockRejectedValueOnce(new Error('EIO'));
-    expect(await new PiProvider().discoverTranscripts()).toEqual([]);
+    // A per-file read failure is per-file tolerance, not a scan-root failure.
+    expect(await new PiProvider().discoverTranscripts())
+      .toEqual({ descriptors: [], complete: true, incompleteRoots: [] });
   });
 
   it('scans the per-launch session dirs under userData', async () => {
@@ -169,7 +183,8 @@ describe('PiProvider.discoverTranscripts()', () => {
       .mockResolvedValueOnce([FILE_NAME, 'notes.txt'] as any); // per-launch dir (flat layout)
     mockAsyncHeader(header(SID, 'C:\\Users\\me'));
 
-    const out = await new PiProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new PiProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].cliSessionId).toBe(SID);
     expect(out[0].projectCwd).toBe('C:\\Users\\me');

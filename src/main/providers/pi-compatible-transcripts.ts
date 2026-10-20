@@ -10,6 +10,7 @@ import {
   IndexTextBudget,
   TRANSCRIPT_IO_CONCURRENCY,
   mapWithConcurrency,
+  readdirForDiscovery,
 } from './transcript-utils';
 
 /**
@@ -535,24 +536,23 @@ export function findTranscriptPathInFlatDir(
   }
 }
 
-/** Emit a descriptor per .jsonl in a sessions root, from the session header. */
+/**
+ * Emit a descriptor per .jsonl in a sessions root, from the session header.
+ * A readdir failure on the root or on an existing project dir (other than
+ * "missing") propagates: the caller marks the discovery pass incomplete so
+ * the derived index is not pruned off a partial scan (P2-70).
+ */
 export async function scanTranscriptSessionsRoot(
   sessionsRoot: string,
   profileId: string | undefined,
   signal?: AbortSignal
 ): Promise<TranscriptDescriptor[]> {
-  let dirs: string[];
-  try {
-    dirs = await fs.promises.readdir(sessionsRoot);
-  } catch {
-    return [];
-  }
+  const dirs = await readdirForDiscovery(sessionsRoot);
   const out: TranscriptDescriptor[] = [];
   for (const dir of dirs) {
     if (signal?.aborted) return out;
     const dirPath = path.join(sessionsRoot, dir);
-    let files: string[];
-    try { files = await fs.promises.readdir(dirPath); } catch { continue; }
+    const files = await readdirForDiscovery(dirPath);
     // Header reads are independent, but one project dir can hold hundreds
     // of transcripts — cap the fan-out so a search never opens them all
     // at once.
@@ -583,12 +583,7 @@ export async function scanFlatSessionDir(
   profileId: string | undefined,
   signal?: AbortSignal
 ): Promise<TranscriptDescriptor[]> {
-  let files: string[];
-  try {
-    files = await fs.promises.readdir(flatDir);
-  } catch {
-    return [];
-  }
+  const files = await readdirForDiscovery(flatDir);
   const out: TranscriptDescriptor[] = [];
   for (const f of files) {
     if (signal?.aborted) return out;

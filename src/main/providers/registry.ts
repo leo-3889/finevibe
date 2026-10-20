@@ -1,5 +1,6 @@
 import type { ProviderId, CliProviderMeta } from '../../shared/types';
 import type { CliProvider } from './provider';
+import { invalidateBinaryCache } from './resolve-binary';
 import { ClaudeProvider } from './claude-provider';
 import { CodexProvider } from './codex-provider';
 import { CopilotProvider } from './copilot-provider';
@@ -20,6 +21,7 @@ export function initProviders(): void {
 
 export function registerProvider(provider: CliProvider): void {
   providers.set(provider.meta.id, provider);
+  invalidateAvailabilityCache();
 }
 
 export function getProvider(id: ProviderId): CliProvider {
@@ -42,8 +44,26 @@ export function getAllProviderMetas(): CliProviderMeta[] {
   return getAllProviders().map(p => p.meta);
 }
 
+// Availability probes (validatePrerequisites → validateBinaryExists: bin-dir
+// scans, nvm walk, `which`/`npm prefix -g` subprocesses) used to run for all
+// six providers on every getAvailableProviderIds call (readiness analysis,
+// the provider IPC). The result is cached for the process; the explicit
+// invalidation hook below clears it plus the binary probe cache. Call it
+// after provider install/uninstall or a settings change that moves binaries
+// on PATH. registerProvider runs it, so initProviders refreshes at startup.
+let availabilityCache: ProviderId[] | null = null;
+
 export function getAvailableProviderIds(): ProviderId[] {
-  return getAllProviders()
-    .filter(p => p.validatePrerequisites())
-    .map(p => p.meta.id);
+  if (!availabilityCache) {
+    availabilityCache = getAllProviders()
+      .filter(p => p.validatePrerequisites())
+      .map(p => p.meta.id);
+  }
+  return availabilityCache;
+}
+
+/** Explicit invalidation hook for the cached availability probes. */
+export function invalidateAvailabilityCache(): void {
+  availabilityCache = null;
+  invalidateBinaryCache();
 }

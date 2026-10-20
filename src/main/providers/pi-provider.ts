@@ -2,13 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
-import type { CliProvider, TranscriptDescriptor } from './provider';
+import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, CliSessionStatus, McpServer, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
-import { collectProfileRoots } from './transcript-utils';
+import { collectProfileRoots, TranscriptDiscoveryScan } from './transcript-utils';
 import { piAgentDir, piSessionsRoot } from './pi-transcripts';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
@@ -237,16 +237,19 @@ export class PiProvider implements CliProvider {
     return readSessionExitReasonSync(transcriptPath);
   }
 
-  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDiscovery> {
     // Search the default agent dir plus every pi profile's config dir, so
     // global session search surfaces transcripts created under an isolated
     // profile. Each root carries its profileId (undefined = default) so
-    // resume can reopen against the right config dir.
+    // resume can reopen against the right config dir. A root whose scan
+    // throws (other than "root missing") marks the pass incomplete (P2-70).
     const roots = collectProfileRoots('pi', piSessionsRoot(), 'sessions');
-    const results: TranscriptDescriptor[] = [];
+    const scan = new TranscriptDiscoveryScan();
     for (const [root, profileId] of roots) {
       if (signal?.aborted) break;
-      results.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+      await scan.collect(root, async () => {
+        scan.descriptors.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+      });
     }
     // Plus every per-launch dir this app created (flat layout). Legacy
     // history above is untouched; the sidecar carries each dir's profile.
@@ -254,9 +257,11 @@ export class PiProvider implements CliProvider {
       if (signal?.aborted) break;
       const meta = readLaunchSessionMeta(sessionDir);
       const profileId = profileIdForConfigDir('pi', meta?.configDir);
-      results.push(...await scanFlatSessionDir(sessionDir, profileId, signal));
+      await scan.collect(sessionDir, async () => {
+        scan.descriptors.push(...await scanFlatSessionDir(sessionDir, profileId, signal));
+      });
     }
-    return results;
+    return scan.result();
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

@@ -3,7 +3,7 @@ import * as readline from 'readline';
 import * as path from 'path';
 import * as os from 'os';
 import type { BrowserWindow } from 'electron';
-import type { CliProvider, TranscriptDescriptor } from './provider';
+import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
@@ -13,7 +13,7 @@ import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfig
 import { getClaudeConfig } from '../claude-cli';
 import { guardedInstall, validateSettings, reinstallSettings } from '../settings-guard';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
-import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE, collectProfileRoots } from './transcript-utils';
+import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE, collectProfileRoots, TranscriptDiscoveryScan, readdirForDiscovery } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 
 /**
@@ -27,26 +27,21 @@ const TRANSCRIPT_ID_RE = /^(?!\.)[A-Za-z0-9._-]{1,128}$/;
 
 const binaryCache = { path: null as string | null };
 
-/** Enumerate every on-disk transcript under one `.../projects` root, tagged with its profile. */
+/**
+ * Enumerate every on-disk transcript under one `.../projects` root, tagged
+ * with its profile. A readdir failure on an existing dir (EIO/EPERM on a
+ * mounted tree) propagates: the caller marks the pass incomplete so the
+ * derived index is not pruned off a partial scan (P2-70).
+ */
 async function scanProjectsRoot(root: string, profileId?: string, signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
-  let entries: fs.Dirent[];
-  try {
-    entries = await fs.promises.readdir(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
+  const entries = await readdirForDiscovery(root, true);
   const out: TranscriptDescriptor[] = [];
   for (const slugEntry of entries) {
     if (signal?.aborted) return out;
     if (!slugEntry.isDirectory()) continue;
     const slug = slugEntry.name;
     const slugPath = path.join(root, slug);
-    let files: string[];
-    try {
-      files = await fs.promises.readdir(slugPath);
-    } catch {
-      continue;
-    }
+    const files = await readdirForDiscovery(slugPath);
     for (const file of files) {
       if (!file.endsWith('.jsonl')) continue;
       const cliSessionId = file.slice(0, -6);
@@ -177,18 +172,22 @@ export class ClaudeProvider implements CliProvider {
     return fs.existsSync(filePath) ? filePath : null;
   }
 
-  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDiscovery> {
     // Search the default config dir plus every claude profile's config dir, so
     // global session search surfaces transcripts created under an isolated profile.
     // Each root carries its profileId (undefined = default ~/.claude) so resume
-    // can reopen against the right config dir.
+    // can reopen against the right config dir. A root whose scan throws (other
+    // than "root missing") is reported incomplete: the caller must not prune
+    // the derived index off this partial corpus (P2-70).
     const roots = collectProfileRoots('claude', path.join(os.homedir(), '.claude', 'projects'), 'projects');
-    const out: TranscriptDescriptor[] = [];
+    const scan = new TranscriptDiscoveryScan();
     for (const [root, profileId] of roots) {
-      if (signal?.aborted) return out;
-      out.push(...await scanProjectsRoot(root, profileId, signal));
+      if (signal?.aborted) break;
+      await scan.collect(root, async () => {
+        scan.descriptors.push(...await scanProjectsRoot(root, profileId, signal));
+      });
     }
-    return out;
+    return scan.result();
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

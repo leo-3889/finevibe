@@ -15,6 +15,7 @@ vi.mock('../config-watcher', () => ({ startConfigWatcher: () => {}, stopConfigWa
 vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { GeminiProvider } from './gemini-provider';
 
 const mockReadFile = vi.mocked(fs.promises.readFile);
@@ -37,7 +38,8 @@ describe('GeminiProvider.discoverTranscripts()', () => {
       .mockResolvedValueOnce(source as any);
     vi.mocked(fs.promises.stat).mockResolvedValue({ size: source.length } as fs.Stats);
 
-    const out = await new GeminiProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new GeminiProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].cliSessionId).toBe(FULL_ID);
     expect(out[0].projectCwd).toBe('/Users/me/dev/forty-api');
@@ -47,8 +49,21 @@ describe('GeminiProvider.discoverTranscripts()', () => {
 
   it('skips project keys missing .project_root', async () => {
     mockReaddir.mockResolvedValueOnce(['orphan'] as any);
-    mockReadFile.mockRejectedValueOnce(new Error('ENOENT'));
-    expect(await new GeminiProvider().discoverTranscripts()).toEqual([]);
+    mockReadFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    expect(await new GeminiProvider().discoverTranscripts())
+      .toEqual({ descriptors: [], complete: true, incompleteRoots: [] });
+  });
+
+  it('marks the pass incomplete when a chats dir readdir fails transiently (P2-70)', async () => {
+    mockReaddir
+      .mockResolvedValueOnce(['proj'] as any) // tmp/
+      .mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' })); // chats/
+    mockReadFile.mockResolvedValueOnce('/repo\n' as any); // .project_root
+
+    const { descriptors: out, complete, incompleteRoots } = await new GeminiProvider().discoverTranscripts();
+    expect(out).toEqual([]);
+    expect(complete).toBe(false);
+    expect(incompleteRoots).toEqual([path.join('/mock/home', '.gemini', 'tmp')]);
   });
 });
 
@@ -60,7 +75,8 @@ describe('GeminiProvider.discoverTranscripts() read bounds', () => {
     mockReadFile.mockResolvedValueOnce('/repo\n' as any); // .project_root
     vi.mocked(fs.promises.stat).mockResolvedValue({ size: 100 * 1024 * 1024 } as fs.Stats);
 
-    const out = await new GeminiProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new GeminiProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toEqual([]);
     // Only the .project_root read happened — the oversized transcript was
     // never read, only stat-ed.
@@ -84,7 +100,8 @@ describe('GeminiProvider.discoverTranscripts() read bounds', () => {
     vi.mocked(fs.promises.stat).mockResolvedValue({ size } as fs.Stats);
     vi.mocked(fs.promises.open).mockResolvedValue({ read, close } as any);
 
-    const out = await new GeminiProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new GeminiProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].cliSessionId).toBe(FULL_ID);
     expect(read).toHaveBeenCalledTimes(1);
@@ -97,14 +114,14 @@ describe('GeminiProvider.discoverTranscripts() read bounds', () => {
 
   it('re-discovers unchanged small transcripts with bounded reads only', async () => {
     const source = JSON.stringify({ sessionId: FULL_ID, messages: [] });
-    mockReaddir.mockImplementation(((dir: any) =>
+    mockReaddir.mockImplementation((async (dir: any) =>
       String(dir).endsWith('chats') ? ['session-2026-01-01T00-00-aaaaaaaa.json'] : ['proj']) as any);
     mockReadFile.mockImplementation(async (file: any) =>
       String(file).endsWith('.project_root') ? '/repo\n' : source);
     vi.mocked(fs.promises.stat).mockResolvedValue({ size: source.length } as fs.Stats);
 
     for (let i = 0; i < 2; i++) {
-      const out = await new GeminiProvider().discoverTranscripts();
+      const { descriptors: out } = await new GeminiProvider().discoverTranscripts();
       expect(out).toHaveLength(1);
       expect(out[0].cliSessionId).toBe(FULL_ID);
     }

@@ -41,6 +41,7 @@ import { GeminiProvider, _resetCachedPath } from './gemini-provider';
 import { getGeminiConfig } from '../gemini-config';
 import { startConfigWatcher, stopConfigWatcher } from '../config-watcher';
 import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks } from '../gemini-hooks';
+import { invalidateBinaryCache } from './resolve-binary';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -59,6 +60,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
+  invalidateBinaryCache();
   provider = new GeminiProvider();
 });
 

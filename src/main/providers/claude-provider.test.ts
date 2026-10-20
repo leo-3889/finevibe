@@ -33,6 +33,7 @@ vi.mock('../claude-cli', () => ({
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { ClaudeProvider, _resetCachedPath } from './claude-provider';
+import { invalidateBinaryCache } from './resolve-binary';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -45,6 +46,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
+  invalidateBinaryCache();
   provider = new ClaudeProvider();
 });
 

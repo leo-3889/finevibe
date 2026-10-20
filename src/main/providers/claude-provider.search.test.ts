@@ -46,9 +46,10 @@ beforeEach(() => {
 });
 
 describe('ClaudeProvider.discoverTranscripts()', () => {
-  it('returns [] when projects root is missing', async () => {
-    mockReaddir.mockRejectedValueOnce(new Error('ENOENT'));
-    expect(await new ClaudeProvider().discoverTranscripts()).toEqual([]);
+  it('reports a complete empty pass when the projects root is missing', async () => {
+    mockReaddir.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    expect(await new ClaudeProvider().discoverTranscripts())
+      .toEqual({ descriptors: [], complete: true, incompleteRoots: [] });
   });
 
   it('lists every UUID-named JSONL across slugs', async () => {
@@ -57,7 +58,8 @@ describe('ClaudeProvider.discoverTranscripts()', () => {
       .mockResolvedValueOnce([`${FAKE_UUID}.jsonl`, 'history.jsonl'] as any)
       .mockResolvedValueOnce([`${FAKE_UUID}.jsonl`] as any);
 
-    const out = await new ClaudeProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new ClaudeProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(2);
     expect(out[0].cliSessionId).toBe(FAKE_UUID);
     expect(out[0].projectSlug).toBe('proj-a');
@@ -69,20 +71,24 @@ describe('ClaudeProvider.discoverTranscripts()', () => {
       .mockResolvedValueOnce([file('file.json'), dir('validslug')] as any)
       .mockResolvedValueOnce(['notes.jsonl', `${FAKE_UUID}.jsonl`] as any);
 
-    const out = await new ClaudeProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new ClaudeProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].projectSlug).toBe('validslug');
   });
 
-  it('skips slugs whose readdir fails', async () => {
+  it('marks the pass incomplete when a slug readdir fails transiently (P2-70)', async () => {
     mockReaddir
       .mockResolvedValueOnce([dir('ok'), dir('bad')] as any)
       .mockResolvedValueOnce([`${FAKE_UUID}.jsonl`] as any)
-      .mockRejectedValueOnce(new Error('EACCES'));
+      .mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
 
-    const out = await new ClaudeProvider().discoverTranscripts();
-    expect(out).toHaveLength(1);
-    expect(out[0].projectSlug).toBe('ok');
+    const { descriptors: out, complete, incompleteRoots } = await new ClaudeProvider().discoverTranscripts();
+    // The partial corpus is not reportable as the truth: descriptors are
+    // dropped and the root is named, so the caller keeps the derived index.
+    expect(out).toEqual([]);
+    expect(complete).toBe(false);
+    expect(incompleteRoots).toEqual([path.join('/mock/home', '.claude', 'projects')]);
   });
 
   it('unions the default config dir with every claude profile config dir', async () => {
@@ -100,7 +106,8 @@ describe('ClaudeProvider.discoverTranscripts()', () => {
       .mockResolvedValueOnce([dir('proj-work')] as any)
       .mockResolvedValueOnce([`${FAKE_UUID}.jsonl`] as any);
 
-    const out = await new ClaudeProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new ClaudeProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(2);
     const def = out.find(d => d.transcriptPath.includes('proj-default'));
     const work = out.find(d => d.transcriptPath.includes(path.join('profiles', 'work')));
