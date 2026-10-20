@@ -137,6 +137,47 @@ describe('joinShare', () => {
     expect(lastPc!.close).toHaveBeenCalled();
   });
 
+  // P2-64: the host has a 10 s auth timeout; without a guest twin an
+  // abandoned join (channel opens, host never answers the handshake, ICE
+  // never fires disconnected) kept a live RTCPeerConnection and a
+  // pendingJoinHandles entry until app quit.
+  it('reclaims an abandoned join when no auth-result arrives within the host-parity timeout', () => {
+    vi.useFakeTimers();
+    try {
+      const { handle } = joinShare('offer-code', '0123456789abcdef0123456789abcdef');
+      const authFailed = vi.fn();
+      const onDisc = vi.fn();
+      handle.onAuthFailed(authFailed);
+      handle.onDisconnected(onDisc);
+      const dc = attachChannel(); // channel open, host silent from here on
+      vi.advanceTimersByTime(10_000);
+      expect(authFailed).toHaveBeenCalledWith('Authentication timed out');
+      expect(dc.close).toHaveBeenCalledTimes(1);
+      // The PC must CLOSE, not just be dropped from the map: an open PC
+      // keeps emitting ICE connectivity checks toward the departed host.
+      expect(lastPc!.close).toHaveBeenCalledTimes(1);
+      expect(onDisc).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a successful auth-result disarms the auth timeout', () => {
+    vi.useFakeTimers();
+    try {
+      const { handle } = joinShare('offer-code', '0123456789abcdef0123456789abcdef');
+      const onDisc = vi.fn();
+      handle.onDisconnected(onDisc);
+      const dc = attachChannel();
+      deliver(dc, { type: 'auth-result', ok: true });
+      vi.advanceTimersByTime(60_000);
+      expect(onDisc).not.toHaveBeenCalled();
+      expect(lastPc!.close).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('ignores non-auth messages before authentication completes', () => {
     const { handle } = joinShare('offer-code', '0123456789abcdef0123456789abcdef');
     const onData = vi.fn();

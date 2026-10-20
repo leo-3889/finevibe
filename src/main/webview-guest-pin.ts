@@ -40,6 +40,7 @@ export interface GuestWebPreferences {
   nodeIntegration?: boolean;
   contextIsolation?: boolean;
   sandbox?: boolean;
+  webviewTag?: boolean;
   preload?: string;
   partition?: string;
 }
@@ -101,8 +102,11 @@ export function pinGuestPermissions(partition: string | undefined): boolean {
 
 /**
  * `will-attach-webview` handler body: Node integration off, context isolation
- * and sandbox forced on, a preload kept ONLY when it is the shipped
- * browser-tab preload, and the guest partition's permission allowlist pinned.
+ * and sandbox forced on, `webviewTag` forced OFF so a remote page cannot nest
+ * a `<webview>` into the guest's own partition (the imported Chrome cookie
+ * jar) with an un-pinned webpreferences, a preload kept ONLY when it is the
+ * shipped browser-tab preload, and the guest partition's permission allowlist
+ * pinned.
  */
 export function pinWebviewGuest(
   webPreferences: GuestWebPreferences,
@@ -111,6 +115,7 @@ export function pinWebviewGuest(
   webPreferences.nodeIntegration = false;
   webPreferences.contextIsolation = true;
   webPreferences.sandbox = true;
+  webPreferences.webviewTag = false;
   if (!webPreferences.preload || !isBrowserGuestPreload(webPreferences.preload, browserGuestPreload)) {
     // pi-lens-ignore: ts-delete-property
     delete webPreferences.preload;

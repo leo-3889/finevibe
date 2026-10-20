@@ -8,6 +8,7 @@ import {
   type ElementInfo,
   type FlowPickerAction,
   type FlowPickerMetadata,
+  type FlowStep,
   type WebviewElement,
 } from './types.js';
 import { instances, getPreloadPath } from './instance.js';
@@ -24,7 +25,7 @@ import {
   sendDrawToCustomSession,
   positionDrawPopover,
 } from './draw-mode.js';
-import { addFlowStep, clearFlow, toggleFlowMode } from './flow-recording.js';
+import { addFlowStep, clearFlow, renderFlowSteps, toggleFlowMode } from './flow-recording.js';
 import { showFlowPicker, dismissFlowPicker } from './flow-picker.js';
 import {
   deliverDraw,
@@ -37,6 +38,12 @@ import {
 } from './session-integration.js';
 import { showSendMenu, dismissSendMenu } from './send-menu.js';
 import { wireSubmitDisabled } from '../submit-disabled.js';
+
+// P2-106: drawing strokes live ONLY inside the guest page, and the isolation
+// toggle destroys that guest; the pane exports the geometry from the old
+// webview and parks it here until the fresh guest enters draw mode.
+type DrawStroke = { x: number; y: number }[];
+const pendingDrawStrokes = new Map<string, DrawStroke[]>();
 
 export function createBrowserTabPane(sessionId: string, url?: string): void {
   if (instances.has(sessionId)) return;
@@ -564,15 +571,10 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   recordBtn.addEventListener('click', () => toggleFlowMode(instance));
   drawBtn.addEventListener('click', () => toggleDrawMode(instance));
   isolationBtn.addEventListener('click', () => {
-    const newIsolated = !appState.findSessionWithProject(sessionId)?.session?.browserIsolated;
-    appState.setSessionBrowserIsolated(sessionId, newIsolated);
-    const currentUrl = urlInput.value;
-    const parent = el.parentElement;
-    const wasSplit = el.classList.contains('split');
-    destroyBrowserTabPane(sessionId);
-    createBrowserTabPane(sessionId, (currentUrl && normalizeUrl(currentUrl)) || undefined);
-    if (parent) attachBrowserTabToContainer(sessionId, parent);
-    showBrowserTabPane(sessionId, wasSplit);
+    // One teardown path fixes P2-100 (the identical partition name across
+    // the rebuild keeps the isolated jar alive) and P2-106 (the rebuild
+    // dropped flow steps, strokes and the inspect selection).
+    void rebuildForIsolationToggle();
   });
   importBtn.addEventListener('click', () => { showChromeImportModal(); });
   drawClearBtn.addEventListener('click', () => clearDrawing(instance));
@@ -668,7 +670,16 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   webview.addEventListener('did-stop-loading', (() => {
     if (instance.inspectMode) safeSend(webview, 'enter-inspect-mode');
     if (instance.flowMode) safeSend(webview, 'enter-flow-mode');
-    if (instance.drawMode) safeSend(webview, 'enter-draw-mode');
+    if (instance.drawMode) {
+      safeSend(webview, 'enter-draw-mode');
+      // P2-106: strokes exported from the pre-toggle guest replay into the
+      // fresh guest's canvas (the preload redraws the geometry).
+      const strokes = pendingDrawStrokes.get(sessionId);
+      if (strokes) {
+        pendingDrawStrokes.delete(sessionId);
+        try { webview.send('draw-load-strokes', strokes); } catch { /* guest not ready */ }
+      }
+    }
   }) as EventListener);
 
   webview.addEventListener('ipc-message', ((e: CustomEvent & { channel: string; args: unknown[] }) => {
@@ -685,6 +696,124 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     }
   }) as EventListener);
 
+  // P2-106: the drawing lives ONLY in the guest's canvas — the toggle
+  // destroys that guest, so the strokes must be pulled out of it first. The
+  // guest answers on its own event loop; a dead guest must not hang the
+  // toggle, hence the timeout.
+  function exportDrawStrokes(): Promise<DrawStroke[]> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value: DrawStroke[]): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        webview.removeEventListener('ipc-message', onMessage as EventListener);
+        resolve(value);
+      };
+      const onMessage = (e: Event): void => {
+        const msg = e as CustomEvent & { channel: string; args: unknown[] };
+        if (msg.channel === 'draw-strokes') finish((msg.args[0] as DrawStroke[]) ?? []);
+      };
+      const timer = setTimeout(() => finish([]), 250);
+      webview.addEventListener('ipc-message', onMessage as EventListener);
+      try { webview.send('draw-export-strokes'); } catch { finish([]); }
+    });
+  }
+
+  // P2-100 + P2-106 — the plan's ONE teardown path. The toggle used to be a
+  // bare destroy+create on the SAME sessionId: the isolated partition name
+  // is derived from it, so it was identical before and after (no storage
+  // teardown — an isolated login survived the toggle for the app's life),
+  // and flow steps, draw strokes and the inspect selection were silently
+  // dropped mid-session.
+  async function rebuildForIsolationToggle(): Promise<void> {
+    const newIsolated = !appState.findSessionWithProject(sessionId)?.session?.browserIsolated;
+    const strokes = instance.drawMode ? await exportDrawStrokes() : null;
+    const currentUrl = urlInput.value;
+    const parent = el.parentElement;
+    const wasSplit = el.classList.contains('split');
+    const handoff = {
+      inspectMode: instance.inspectMode,
+      selectedElement: instance.selectedElement,
+      instruction: instructionInput.value,
+      flowMode: instance.flowMode,
+      flowSteps: instance.flowSteps,
+      flowInstruction: flowInstructionInput.value,
+      drawMode: instance.drawMode,
+      drawInstruction: drawInstructionInput.value,
+    };
+    appState.setSessionBrowserIsolated(sessionId, newIsolated);
+    // P2-100: BOTH toggle directions route through this session's isolated
+    // jar (`persist:vibeyard-browser-iso-${sessionId}`), so EVERY toggle
+    // clears it: entering isolation starts from a clean jar, and leaving
+    // isolation takes the isolated cookies/localStorage with it. The shared
+    // default partition is deliberately NOT touched — it backs every other
+    // browser tab and the imported Chrome cookie jar.
+    window.vibeyard.browser.clearIsolatedStorage(sessionId);
+    destroyBrowserTabPane(sessionId);
+    createBrowserTabPane(sessionId, (currentUrl && normalizeUrl(currentUrl)) || undefined);
+    const fresh = instances.get(sessionId);
+    if (fresh) applyIsolationHandoff(fresh, handoff, strokes);
+    if (parent) attachBrowserTabToContainer(sessionId, parent);
+    showBrowserTabPane(sessionId, wasSplit);
+  }
+
+}
+
+/**
+ * P2-106: restore the pane-carried session state the destroy+create drops.
+ * The mode FLAGS are restored, not just the data — the fresh guest's
+ * did-stop-loading handler re-enters every active mode, and exported draw
+ * strokes ride along with the draw flag (pendingDrawStrokes →
+ * 'draw-load-strokes' into the new guest).
+ */
+function applyIsolationHandoff(
+  fresh: BrowserTabInstance,
+  handoff: {
+    inspectMode: boolean;
+    selectedElement: ElementInfo | null;
+    instruction: string;
+    flowMode: boolean;
+    flowSteps: FlowStep[];
+    flowInstruction: string;
+    drawMode: boolean;
+    drawInstruction: string;
+  },
+  strokes: DrawStroke[] | null,
+): void {
+  if (handoff.flowSteps.length > 0) {
+    fresh.flowSteps = handoff.flowSteps;
+    renderFlowSteps(fresh);
+  }
+  if (handoff.flowInstruction) fresh.flowInstructionInput.value = handoff.flowInstruction;
+  if (handoff.flowMode) {
+    fresh.flowMode = true;
+    fresh.recordBtn.classList.add('active');
+    fresh.recordBtn.textContent = '\u25A0 Stop';
+    fresh.inspectBtn.disabled = true;
+    fresh.drawBtn.disabled = true;
+  }
+  if (handoff.inspectMode) {
+    fresh.inspectMode = true;
+    fresh.inspectBtn.classList.add('active');
+    fresh.recordBtn.disabled = true;
+    fresh.drawBtn.disabled = true;
+  }
+  if (handoff.selectedElement) {
+    showElementInfo(fresh, handoff.selectedElement, 24, 24);
+  }
+  if (handoff.instruction) {
+    fresh.instructionInput.value = handoff.instruction;
+    fresh.instructionInput.dispatchEvent(new Event('input'));
+  }
+  if (handoff.drawMode) {
+    fresh.drawMode = true;
+    fresh.drawBtn.classList.add('active');
+    fresh.inspectBtn.disabled = true;
+    fresh.recordBtn.disabled = true;
+    if (strokes && strokes.length > 0) pendingDrawStrokes.set(fresh.sessionId, strokes);
+  }
+  if (handoff.drawInstruction) fresh.drawInstructionInput.value = handoff.drawInstruction;
 }
 
 export function attachBrowserTabToContainer(sessionId: string, container: HTMLElement): void {

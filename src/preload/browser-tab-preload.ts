@@ -24,6 +24,11 @@ let drawCtx: CanvasRenderingContext2D | null = null;
 let drawing = false;
 let strokeCompleted = false;
 
+// Stroke geometry kept next to the canvas bitmap: one array of points per
+// stroke, so the pane can hand a drawing over to the next guest (see the
+// draw-export-strokes / draw-load-strokes bridge at the bottom).
+let strokes: { x: number; y: number }[][] = [];
+
 function applyDrawStyles(ctx: CanvasRenderingContext2D): void {
   ctx.lineWidth = 3;
   ctx.lineCap = 'round';
@@ -60,11 +65,13 @@ function onDrawPointerDown(e: PointerEvent): void {
   e.stopPropagation();
   if (strokeCompleted && drawCanvas) {
     drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+    strokes = [];
     strokeCompleted = false;
   }
   drawing = true;
   drawCtx.beginPath();
   drawCtx.moveTo(e.clientX, e.clientY);
+  strokes.push([{ x: e.clientX, y: e.clientY }]);
 }
 
 function onDrawPointerMove(e: PointerEvent): void {
@@ -72,6 +79,7 @@ function onDrawPointerMove(e: PointerEvent): void {
   e.preventDefault();
   drawCtx.lineTo(e.clientX, e.clientY);
   drawCtx.stroke();
+  strokes[strokes.length - 1]?.push({ x: e.clientX, y: e.clientY });
 }
 
 function onDrawPointerUp(e: PointerEvent): void {
@@ -79,6 +87,7 @@ function onDrawPointerUp(e: PointerEvent): void {
   e.preventDefault();
   drawing = false;
   strokeCompleted = true;
+  strokes[strokes.length - 1]?.push({ x: e.clientX, y: e.clientY });
   ipcRenderer.sendToHost('draw-stroke-end', { x: e.clientX, y: e.clientY });
 }
 
@@ -117,7 +126,7 @@ function exitDrawMode(): void {
     drawCanvas.removeEventListener('pointerup', onDrawPointerUp, true);
     drawCanvas.removeEventListener('pointercancel', onDrawPointerUp, true);
     if (drawCtx) drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-    drawCanvas.remove();
+    strokes = [];
     drawCanvas = null;
     drawCtx = null;
   }
@@ -128,6 +137,7 @@ function clearDrawing(): void {
   if (drawCtx && drawCanvas) {
     drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
   }
+  strokes = [];
   strokeCompleted = false;
 }
 
@@ -300,6 +310,32 @@ ipcRenderer.on('exit-flow-mode', () => exitFlowMode());
 ipcRenderer.on('enter-draw-mode', () => enterDrawMode());
 ipcRenderer.on('exit-draw-mode', () => exitDrawMode());
 ipcRenderer.on('draw-clear', () => clearDrawing());
+// Isolation-toggle handoff (renderer components/browser-tab/pane.ts, P2-106):
+// strokes are canvas geometry kept alongside the bitmap, so the pane can
+// export them before destroying this guest and replay them into the fresh
+// guest on the new partition.
+ipcRenderer.on('draw-export-strokes', () => {
+  ipcRenderer.sendToHost('draw-strokes', strokes);
+});
+ipcRenderer.on('draw-load-strokes', (_event, loaded: unknown) => {
+  if (!drawMode || !drawCtx || !Array.isArray(loaded)) return;
+  strokes = [];
+  for (const raw of loaded as { x: unknown; y: unknown }[][]) {
+    if (!Array.isArray(raw)) continue;
+    const stroke = raw
+      .filter((p) => Number.isFinite(Number(p?.x)) && Number.isFinite(Number(p?.y)))
+      .map((p) => ({ x: Number(p.x), y: Number(p.y) }));
+    if (stroke.length < 2) continue;
+    strokes.push(stroke);
+    drawCtx.beginPath();
+    drawCtx.moveTo(stroke[0].x, stroke[0].y);
+    for (const p of stroke.slice(1)) drawCtx.lineTo(p.x, p.y);
+    drawCtx.stroke();
+  }
+  // A loaded drawing is a full picture, not a completed single stroke: the
+  // next pointerdown must ADD a stroke, not clear the canvas.
+  strokeCompleted = false;
+});
 ipcRenderer.on('flow-do-click', (_event, selector: string) => {
   const el = document.querySelector(selector);
   if (el instanceof HTMLElement) {

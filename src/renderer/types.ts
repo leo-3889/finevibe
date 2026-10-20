@@ -103,6 +103,7 @@ export interface VibeyardApi {
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
+    clearIsolatedStorage(sessionId: string): void;
   };
   chromeImport: {
     listProfiles(): Promise<ChromeProfile[]>;

@@ -105,11 +105,16 @@ describe('pinWebviewGuest', () => {
       nodeIntegration: true,
       contextIsolation: false,
       sandbox: false,
+      // P2-115: `webpreferences` is renderer-authored (browser-tab pane), so
+      // a compromised renderer can ask for a nested <webview> the guest page
+      // then attaches into the SAME partition — with no pinning applied.
+      webviewTag: true,
     };
     attach(webPreferences);
     expect(webPreferences.nodeIntegration).toBe(false);
     expect(webPreferences.contextIsolation).toBe(true);
     expect(webPreferences.sandbox).toBe(true);
+    expect(webPreferences.webviewTag).toBe(false);
   });
 
   it('keeps only the shipped browser-tab preload', () => {

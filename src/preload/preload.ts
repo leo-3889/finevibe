@@ -115,6 +115,7 @@ export interface VibeyardApi {
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
+    clearIsolatedStorage(sessionId: string): void;
   };
   chromeImport: {
     listProfiles(): Promise<ChromeProfile[]>;
@@ -316,6 +317,8 @@ const api: VibeyardApi = {
   browser: {
     saveScreenshot: (sessionId: string, dataUrl: string) =>
       ipcRenderer.invoke('browser:saveScreenshot', sessionId, dataUrl),
+    clearIsolatedStorage: (sessionId: string) =>
+      ipcRenderer.send('browser:clearIsolatedStorage', sessionId),
   },
   chromeImport: {
     listProfiles: () => ipcRenderer.invoke('chromeImport:listProfiles'),

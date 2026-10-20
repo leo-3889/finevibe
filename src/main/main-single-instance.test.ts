@@ -78,6 +78,12 @@ vi.mock('electron', () => {
     },
     powerMonitor: { on: vi.fn() },
     shell: { openExternal: vi.fn() },
+    // main.ts registers the browser:clearIsolatedStorage jar clear on
+    // ipcMain and resolves the isolated partition through session.
+    ipcMain: { on: vi.fn() },
+    session: {
+      fromPartition: vi.fn(() => ({ clearStorageData: vi.fn(async () => {}) })),
+    },
   };
 });
 

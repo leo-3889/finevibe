@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, powerMonitor, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell } from 'electron';
+import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
@@ -14,7 +15,7 @@ import { stopConfigWatcher } from './config-watcher';
 import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
-import { isMac, isWin } from './platform';
+import { isMac } from './platform';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
 import { isHttpUrl } from '../shared/url';
@@ -98,15 +99,19 @@ function createWindow(): void {
 
   // A <webview> guest's `webpreferences` and `preload` are renderer-controlled
   // (browser tabs). A compromised renderer could attach a guest with
-  // nodeIntegration=true or an arbitrary preload file to escape into a
-  // privileged process, so pin the guest shape before attachment: Node
-  // integration off, context isolation and sandbox forced on, and a preload
-  // kept ONLY when it is the shipped browser-tab-preload.js. URLs are
-  // deliberately not validated here — loading arbitrary remote pages is the
-  // browser-tab feature; this guard pins privileges, not destinations.
+  // nodeIntegration=true, webviewTag=true (letting the remote page nest a
+  // <webview> into the same partition, un-pinned) or an arbitrary preload file
+  // to escape into a privileged process, so pin the guest shape before
+  // attachment: Node integration and webviewTag off, context isolation and
+  // sandbox forced on, and a preload kept ONLY when it is the shipped
+  // browser-tab-preload.js. URLs are deliberately not validated here — loading
+  // arbitrary remote pages is the browser-tab feature; this guard pins
+  // privileges, not destinations.
   // In Electron 41 `will-attach-webview` is an event on the HOST webContents
-  // (absent from the App event set), and this window is the only webContents
-  // with webviewTag enabled.
+  // (absent from the App event set). It is listened to only on this window,
+  // the only webContents with webviewTag enabled; guests get webviewTag
+  // forced off by the pin, so a guest can never host an attach that bypasses
+  // this handler.
   mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
     // The permission allowlist is resolved from the guest's `partition` string
     // inside pinWebviewGuest: `webPreferences.session` is a main-process
@@ -194,6 +199,24 @@ function startMainProcess(): void {
       return;
     }
 
+    // P2-100 companion (renderer: components/browser-tab/pane.ts isolation
+    // toggle). The toggle rebuilds the pane on the SAME sessionId, so the
+    // isolated partition name is identical before and after; the renderer
+    // must clear that jar on every toggle and `clearStorageData` lives in
+    // main. Restricted to the isolated-partition pattern with the same
+    // format guard as `session:release` (ipc-handlers.ts) — the shared
+    // default partition (every other browser tab, the imported Chrome jar)
+    // is not clearable from the renderer.
+    ipcMain.on('browser:clearIsolatedStorage', (_event, sessionId: unknown) => {
+      if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return;
+      const partDir = path.join(app.getPath('userData'), 'Partitions', `vibeyard-browser-iso-${sessionId}`);
+      // Existence guard: releasing/clearing a session that never browsed in
+      // isolation must not materialise a partition via fromPartition().
+      if (!fs.existsSync(partDir)) return;
+      session.fromPartition(`persist:vibeyard-browser-iso-${sessionId}`)
+        .clearStorageData()
+        .catch((err) => console.warn('clearStorageData failed:', err));
+    });
     registerIpcHandlers();
     const state = loadState();
     createAppMenu(state.preferences?.debugMode ?? false);
