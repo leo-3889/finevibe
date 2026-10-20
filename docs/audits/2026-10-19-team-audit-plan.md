@@ -61,7 +61,7 @@ Re-verify every line at Phase 0; the tree moves.
 - **Remotes:** `origin` = `elirantutia/vibeyard` (upstream, push target exists), `fork` = `leo-3889/vibeyard`.
 - **Naming surface:** 844 case-insensitive `vibeyard` occurrences across 198 files. `src/`: 674 occurrences / 171 files. Identity-bearing sites: `package.json` (`name`, `bin.vibeyard`, `build.appId=com.vibeyard.app`, `build.productName=Vibeyard`, 4× `artifactName`, `publish.owner/repo=elirantutia/vibeyard`), `bin/vibeyard.js` (15×), `VIBEYARD_RELEASE_REPO` env override (`auto-updater.ts:37`, npm launcher), userData consumers (`ipc-handlers.ts:818` partition prefix `vibeyard-browser-iso-`), locales en/zh-CN, `.github/workflows/package-ubuntu.yml`, issue templates, `build/vibeyard-black.png`, all docs.
 - **Known open work items** (from `docs/AUDIT_STATUS.md`): PO-06 watcher cost never measured; item 5 live/packaged integration never exercised; pi/omp/codex/gemini `getTranscriptPath` id guards NOT fixed; launch-dir rule dedup lands "with the working-tree commit".
-- **Host constraints:** default Vitest pool times out forks workers on this machine and silently reports unrun files as green — **always** `npx vitest run --maxWorkers=4`. pi-lens disarmed (killed sessions on 2026-10-18); do not reinstall. No hot reload.
+- **Host constraints:** default Vitest pool times out forks workers on this machine and silently reports unrun files as green — the cap is now structural (`maxWorkers: 4` in `vitest.config.ts:15`, top-level because Vitest 4 ignores the nested `poolOptions`), so plain `npx vitest run` is capped; do not raise it. pi-lens disarmed (killed sessions on 2026-10-18); do not reinstall. No hot reload.
 - **Doc surface (separation input, §7A):** tracked LLM-only docs: `docs/AUDIT_STATUS.md`, `docs/audits/2026-10-10-full-audit.md`, `docs/OMP_SESSION_DROPS_2026-10-03.md`, `docs/OMP_SESSION_VANISH_2026-10-18.md`, `personas/` (14 files), `.claude/commands/` (3), `.claude/skills/` (2). Human-facing: `README.md`, `README.upstream.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`, `CLAUDE.md`, `HOOKS.md`, `docs/{FEATURES,packaging,performance,provider-contracts,security-boundaries,session-lifecycle,ui-conventions}.md`. Inbound refs to LLM-only docs live in `docs/performance.md` + `docs/security-boundaries.md` (repaired by Wave E). This plan file is untracked → plain move, no commit.
 
 ## 2. Hard rules (every phase, every worker)
@@ -224,14 +224,14 @@ Dedicated branch `feat/rename` off the integration tip (merge into integration o
 ## 10. Gate (every merge into the integration branch)
 
 ```bash
+npm run build                          # tsc tsconfig.main.json + tsconfig.preload.json, esbuild renderer, copy-assets (package.json:40)
+npm run typecheck                      # tsconfig.renderer.json --noEmit  +  tsconfig.main-tests.json (package.json:51)
+npx tsc -p tsconfig.json --noEmit      # root project; the only leg neither script above covers
 npx vitest run --maxWorkers=4          # expect ≥ baseline counts, exit 0
-npx tsc -p tsconfig.json --noEmit
-npx tsc -p tsconfig.renderer.json --noEmit
-npx tsc -p tsconfig.preload.json --noEmit
-npx tsc -p tsconfig.main.json --noEmit
-npm run build
-git diff --check
+git diff --check                        # scope to the delta on a CRLF checkout — see dev/audit/gate.sh:34-39
 ```
+
+`npm run typecheck` gained the main-test leg on 2026-10-20: `tsconfig.main-tests.json` extends `tsconfig.main.json` with `noEmit`, `types: ["node","vitest/globals"]` and an empty `exclude`, so `src/main/**/*.ts` and `src/shared/**/*.ts` including every `*.test.ts` are type-checked (`tsconfig.main-tests.json:1-13`). `.github/workflows/ci.yml:29-36` runs build → typecheck → test on all three OSes. `dev/audit/gate.sh` is the scripted gate (N vitest runs, delta-scoped whitespace check, advisory doc-pointer check; it refuses WSL at `:11-14`).
 
 Known host flake: forks-worker startup timeouts — rerun the specific file in isolation before calling a wave red (precedent in AUDIT_STATUS 2026-10-18/19).
 
