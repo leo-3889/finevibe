@@ -15,15 +15,114 @@ export function expandUserPath(filePath: string): string {
  * different drive-letter case, separator style, `..` segment, junction or
  * link, and on Windows realpathSync also returns the real casing. Non-existent
  * paths fall back to their resolved form with canonicalized parents.
+ *
+ * P2-59: every gated `fs:`/`git:` IPC canonicalizes its target *and* its
+ * allowed roots, synchronously, on the main process. Canonical forms are
+ * cached: the parent walk of a non-existent target stops at the first
+ * existing ancestor and the whole chain is ONE target-cache entry (LRU, short
+ * TTL, so a path that a `create`/`write`/`stat` gate saw missing is re-solved
+ * soon after it appears). Roots — project dirs, CLI config dirs — change only
+ * with the store, so they go through {@link canonicalRoot} and live until
+ * {@link invalidateCanonicalPathCache}. The cache changes throughput, not
+ * policy: every returned value equals the pre-cache implementation's for the
+ * same filesystem state.
  */
+/** Target-LRU bound; gate traffic revisits a handful of roots repeatedly. */
+export const TARGET_CANONICAL_CACHE_MAX = 256;
+/** How long a target's canonical form may serve; roots are not TTL'd. */
+export const TARGET_CANONICAL_TTL_MS = 5_000;
+
+const rootCanonicalCache = new Map<string, string>();
+const targetCanonicalCache = new Map<string, { value: string; expiresAt: number }>();
+
 export function canonicalPath(filePath: string): string {
   const resolved = path.resolve(filePath);
-  try {
-    return fs.realpathSync(resolved);
-  } catch {
-    const parent = path.dirname(resolved);
-    if (parent === resolved) return resolved;
-    return path.join(canonicalPath(parent), path.basename(resolved));
+  const hit = targetCanonicalCache.get(resolved);
+  if (hit !== undefined) {
+    if (hit.expiresAt > Date.now()) {
+      // Insertion order doubles as recency: re-inserting on a hit makes the
+      // size cap evict the least recently used entry.
+      targetCanonicalCache.delete(resolved);
+      targetCanonicalCache.set(resolved, hit);
+      return hit.value;
+    }
+    targetCanonicalCache.delete(resolved);
+  }
+  const value = canonicalChain(resolved);
+  targetCanonicalCache.set(resolved, { value, expiresAt: Date.now() + TARGET_CANONICAL_TTL_MS });
+  if (targetCanonicalCache.size > TARGET_CANONICAL_CACHE_MAX) {
+    const oldest = targetCanonicalCache.keys().next().value;
+    if (oldest !== undefined) targetCanonicalCache.delete(oldest);
+  }
+  return value;
+}
+
+/**
+ * Canonicalize a gate ROOT (project dir, CLI config dir). Roots are re-read
+ * from the store on every gate call, so caching the canonical form is what
+ * keeps one slow root (OneDrive, dead mount, spun-down drive) off the hot
+ * path after its first resolution. Entries live for the process and are
+ * dropped by {@link invalidateCanonicalPathCache}.
+ */
+export function canonicalRoot(dirPath: string): string {
+  const resolved = path.resolve(dirPath);
+  const hit = rootCanonicalCache.get(resolved);
+  if (hit !== undefined) return hit;
+  const value = canonicalChain(resolved);
+  rootCanonicalCache.set(resolved, value);
+  return value;
+}
+
+/** Drop every cached canonical form (project add/remove, configDir change). */
+export function invalidateCanonicalPathCache(): void {
+  rootCanonicalCache.clear();
+  targetCanonicalCache.clear();
+}
+
+let lastRootsSignature: string | null = null;
+
+/**
+ * Store-persist hook (wired at `store:save`): the root cache is keyed on the
+ * project set and the profile configDirs, so invalidate when a state write
+ * changes exactly those. Every other state write (preferences, session
+ * history) leaves the cache warm.
+ */
+export function invalidateCanonicalPathIfRootsChanged(state: {
+  projects?: { path?: unknown }[];
+  profiles?: { configDir?: unknown }[];
+}): void {
+  const signature = JSON.stringify([
+    (state.projects ?? []).map(p => p.path),
+    (state.profiles ?? []).map(p => p.configDir),
+  ]);
+  const changed = lastRootsSignature === null || signature !== lastRootsSignature;
+  lastRootsSignature = signature;
+  if (changed) invalidateCanonicalPathCache();
+}
+
+/**
+ * realpath the deepest existing ancestor and re-append the missing tail. The
+ * walk stops at the first existing ancestor, so a non-existent path costs one
+ * bounded chain instead of a `realpathSync` recursion per level; an
+ * unresolvable filesystem root falls back to the resolved form.
+ */
+function canonicalChain(resolved: string): string {
+  const missing: string[] = [];
+  let current = resolved;
+  for (;;) {
+    let real: string;
+    try {
+      real = fs.realpathSync(current);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return missing.length === 0 ? current : path.join(current, ...missing);
+      }
+      missing.unshift(path.basename(current));
+      current = parent;
+      continue;
+    }
+    return missing.length === 0 ? real : path.join(real, ...missing);
   }
 }
 

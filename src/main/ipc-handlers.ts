@@ -28,7 +28,7 @@ import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
-import { canonicalPath, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES } from './fs-utils';
+import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
 import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
@@ -46,7 +46,7 @@ const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
 function isWithinKnownProject(resolvedPath: string): boolean {
   const target = canonicalPath(resolvedPath);
   const paths = getKnownProjectPaths();
-  return paths.some(p => isWithin(canonicalPath(p), target));
+  return paths.some(p => isWithin(canonicalRoot(p), target));
 }
 
 /**
@@ -67,7 +67,7 @@ function requireGitRoot(channel: string, projectPath: string): string {
   // isWithinKnownProject canonicalizes on its side, so a raw-string set let one
   // spelling bypass a gate the other spelling passed - and counted as a second
   // root, evicting a real watched worktree.
-  const canonical = canonicalPath(resolved);
+  const canonical = canonicalRoot(resolved);
   if (!isWithinKnownProject(canonical) && !gitWatchedRoots.has(canonical)) {
     console.warn(`${channel} blocked: ${resolved} is not a known project or watched worktree`);
     throw new Error('Path is not within a known project');
@@ -79,7 +79,7 @@ function requireGitRoot(channel: string, projectPath: string): string {
 function requireGitFilePath(channel: string, root: string, filePath: string): string {
   if (typeof filePath !== 'string') throw new Error('Invalid file path');
   const joined = path.resolve(root, filePath);
-  if (!isWithin(canonicalPath(root), canonicalPath(joined))) {
+  if (!isWithin(canonicalRoot(root), canonicalPath(joined))) {
     console.warn(`${channel} blocked: ${filePath} escapes ${root}`);
     throw new Error('File path escapes the project');
   }
@@ -146,7 +146,7 @@ function isAllowedReadPath(resolvedPath: string): boolean {
   }
 
   const target = canonicalPath(resolvedPath);
-  return allowedPaths.some(allowed => isWithin(canonicalPath(allowed), target));
+  return allowedPaths.some(allowed => isWithin(canonicalRoot(allowed), target));
 }
 
 /**
@@ -433,7 +433,7 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('store:save', (_event, state: PersistedState) => {
-    saveState(state);
+    invalidateCanonicalPathIfRootsChanged(state); saveState(state);
   });
 
   // Synchronous startup channel: the renderer applies theme/zoom before its
@@ -1003,7 +1003,7 @@ export function registerIpcHandlers(): void {
     }
     // Canonical form is the set key, and re-registering a watched root must
     // not evict the oldest entry.
-    const canonical = canonicalPath(resolved);
+    const canonical = canonicalRoot(resolved);
     if (!gitWatchedRoots.has(canonical)) {
       if (gitWatchedRoots.size >= MAX_GIT_WATCHED_ROOTS) {
         const oldest = gitWatchedRoots.values().next().value;
