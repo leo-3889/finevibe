@@ -5,9 +5,20 @@ import type { ChromeProfile, ChromeImportProgress, ChromeImportResult } from '..
 
 let cleanupFn: (() => void) | null = null;
 
+// Module scope: a dismissed modal detaches its import; a re-opened modal
+// must not start a second concurrent run on the same profile/partition.
+let importInFlight = false;
+
 export async function showChromeImportModal(onClosed?: () => void): Promise<void> {
   cleanupFn?.();
   cleanupFn = null;
+
+  // P2-109: dismissal detaches an in-flight import — progress events must
+  // stop writing into detached DOM, and late promise continuations must
+  // not touch it either.
+  let disposed = false;
+  let unsubProgress: (() => void) | null = null;
+  let liveUnsub: (() => void) | null = null;
 
   const { overlay, body, actions, titleEl } = createModalShell({
     id: 'chrome-import-overlay',
@@ -88,7 +99,7 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
       cookiesBar.style.display = 'flex';
       statusLine.textContent = 'Starting…';
 
-      const unsub = window.vibeyard.chromeImport.onProgress((p: ChromeImportProgress) => {
+      unsubProgress = window.vibeyard.chromeImport.onProgress((p: ChromeImportProgress) => {
         if (p.stage === 'starting') statusLine.textContent = 'Reading Chrome data…';
         else if (p.stage === 'copy') statusLine.textContent = 'Copying database files…';
         else if (p.stage === 'cookies') {
@@ -103,27 +114,40 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
         }
       });
 
-      let result: ChromeImportResult;
+      importInFlight = true;
+      let result: ChromeImportResult | null = null;
+      let runErr: Error | null = null;
       try {
         result = await window.vibeyard.chromeImport.run({
           profileId: select!.getValue(),
         });
       } catch (err) {
-        unsub();
-        statusLine.textContent = `Failed: ${(err as Error).message}`;
+        runErr = err as Error;
+      }
+      importInFlight = false;
+      unsubProgress?.();
+      unsubProgress = null;
+      if (disposed) return; // modal dismissed mid-import: detached, no DOM writes
+
+      if (runErr) {
+        statusLine.textContent = `Failed: ${runErr.message}`;
         cancelBtn.disabled = false;
         cancelBtn.textContent = 'Close';
         return;
       }
-      unsub();
 
       // Replace progress with summary
       progressBox.innerHTML = '';
       const summary = document.createElement('div');
       summary.className = 'chrome-import-summary';
-      const lines: string[] = [`Imported ${result.cookieCount} cookies`];
-      if (result.skippedV11 > 0) lines.push(`Skipped ${result.skippedV11} entries (Chrome v11 App-Bound Encryption)`);
-      if (result.errors.length > 0) lines.push(`${result.errors.length} errors`);
+      const lines: string[] = [`Imported ${result!.cookieCount} cookies`];
+      if (result!.skippedV11 > 0) lines.push(`Skipped ${result!.skippedV11} entries (Chrome v11 App-Bound Encryption)`);
+      if (result!.errors.length > 0) {
+        // P2-49: show the actual reasons (e.g. keychain denial), not a bare
+        // error count that lets a failed import read as a success.
+        const shown = result!.errors.slice(0, 3).join(' · ');
+        lines.push(result!.errors.length > 3 ? `${shown} (+${result!.errors.length - 3} more errors)` : shown);
+      }
       summary.textContent = lines.join(' · ');
       progressBox.appendChild(summary);
 
@@ -134,6 +158,11 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
   }
 
   function close() {
+    disposed = true;
+    // P2-109: detach the in-flight import now — no cancel channel exists in
+    // main, so dismissal stops all renderer writes for this run immediately.
+    unsubProgress?.();
+    unsubProgress = null;
     overlay.style.display = 'none';
     cleanupFn?.();
     cleanupFn = null;
@@ -143,9 +172,33 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
   cancelBtn.addEventListener('click', close);
   const teardownDismiss = bindModalDismiss({ overlay, onClose: close });
 
+  // P2-109: re-open while a detached import is still running — offer live
+  // progress of that run, not a second concurrent import.
+  if (importInFlight) {
+    importBtn.disabled = true;
+    note.textContent =
+      'An import is already running in the background. Wait for it to finish before starting another.';
+    progressBox.style.display = 'block';
+    statusLine.textContent = 'Import running…';
+    liveUnsub = window.vibeyard.chromeImport.onProgress((p: ChromeImportProgress) => {
+      if (p.stage === 'cookies') {
+        cookiesBar.style.display = 'flex';
+        updateBar(cookiesBar, p.done ?? 0, p.total ?? 0);
+        statusLine.textContent = `Importing cookies… ${p.done ?? 0}/${p.total ?? 0}`;
+      } else if (p.stage === 'done' || p.stage === 'error') {
+        liveUnsub?.();
+        liveUnsub = null;
+        importBtn.disabled = false;
+        statusLine.textContent = p.stage === 'done' ? 'Previous import finished.' : `Error: ${p.message || 'Unknown error'}`;
+      }
+    });
+  }
+
   cleanupFn = () => {
     select?.destroy();
     teardownDismiss();
+    liveUnsub?.();
+    liveUnsub = null;
   };
 
   overlay.style.display = 'flex';

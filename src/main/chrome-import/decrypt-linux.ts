@@ -8,21 +8,31 @@ const IV = Buffer.alloc(16, ' ');
 const FALLBACK_PASS = 'peanuts';
 
 let cachedKey: Buffer | null = null;
+let keyringError: string | null = null;
+
+/** Bounded so a keyring/D-Bus unlock that can never be answered (headless)
+ * cannot block the app. */
+const KEYRING_TIMEOUT_MS = 10_000;
 
 function trySecretTool(): string | null {
+  let timedOut = false;
   for (const app of ['chrome', 'chromium']) {
     try {
       const out = execFileSync(
         'secret-tool',
         ['lookup', 'application', app],
-        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: KEYRING_TIMEOUT_MS },
       );
       const v = out.trim();
       if (v) return v;
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ETIMEDOUT') timedOut = true;
       // not found, try next
     }
   }
+  keyringError = timedOut
+    ? 'Chrome keyring lookup timed out; used the default keyring password'
+    : 'Chrome keyring password not found (secret-tool lookup failed); used the default keyring password';
   return null;
 }
 
@@ -53,6 +63,12 @@ export function stripDomainHash(plaintext: Buffer, hasDomainHash: boolean): stri
   return plaintext.toString('utf-8');
 }
 
+/** Why the keyring passphrase lookup fell back to the default password, if it did. */
+export function getKeyError(): string | null {
+  return keyringError;
+}
+
 export function _resetCache(): void {
   cachedKey = null;
+  keyringError = null;
 }

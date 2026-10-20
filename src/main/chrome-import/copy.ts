@@ -4,11 +4,16 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 
 /**
- * Snapshots the Cookies and Login Data DBs (and their journals) from the
- * Chrome profile dir into a unique temp dir. Works while Chrome is running:
- * tries fs.copyFileSync first, and on EBUSY (Windows lock) retries via a
- * buffered readFileSync + writeFileSync pair which Chrome's shared-cache
- * sqlite mode tolerates.
+ * Snapshots the Cookies and Login Data DBs from the Chrome profile dir into
+ * a unique temp dir. Works while Chrome is running: tries fs.copyFileSync
+ * first, and on EBUSY (Windows lock) retries via a buffered readFileSync +
+ * writeFileSync pair which Chrome's shared-cache sqlite mode tolerates.
+ *
+ * The SQLite `-journal` sidecars are deliberately NOT copied: a page copy
+ * plus a mid-transaction journal makes SQLite treat the snapshot as an
+ * interrupted transaction, and opening that copy readonly fails with
+ * SQLITE_READONLY (import silently yields 0 rows). With only the main file,
+ * the reader opens the copy read-write and recovers cleanly.
  *
  * Returns the temp dir; caller is responsible for cleanup().
  */
@@ -19,7 +24,7 @@ export interface Snapshot {
   cleanup: () => void;
 }
 
-const FILES_TO_COPY = ['Cookies', 'Cookies-journal', 'Login Data', 'Login Data-journal'];
+const FILES_TO_COPY = ['Cookies', 'Login Data'];
 
 function copyOne(src: string, dest: string): boolean {
   try {
