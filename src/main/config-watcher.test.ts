@@ -37,15 +37,19 @@ beforeEach(() => {
   mockClose.mockClear();
   mockSend.mockClear();
 
-  vi.mocked(fs.watchFile).mockImplementation((filePath: any, _opts: any, cb: any) => {
-    watchFileCallbacks.set(n(String(filePath)), cb);
-    return {} as any;
-  });
+  // The fs.watchFile overloads type the listener with 2 args; the mock keeps
+  // the 3-arg (path, options, cb) shape production calls it with.
+  vi.mocked(fs.watchFile as unknown as (filePath: string, opts: unknown, cb: unknown) => unknown)
+    .mockImplementation((filePath: string, _opts: unknown, cb: unknown) => {
+      watchFileCallbacks.set(n(String(filePath)), cb as () => void);
+      return {} as any;
+    });
   vi.mocked(fs.unwatchFile).mockImplementation(vi.fn() as any);
-  vi.mocked(fs.watch).mockImplementation((dirPath: any, _opts: any, cb: any) => {
-    watchDirCallbacks.set(n(String(dirPath)), cb);
-    return { close: mockClose, on: vi.fn().mockReturnThis() } as any;
-  });
+  vi.mocked(fs.watch as unknown as (dirPath: string, opts: unknown, cb: unknown) => unknown)
+    .mockImplementation((dirPath: string, _opts: unknown, cb: unknown) => {
+      watchDirCallbacks.set(n(String(dirPath)), cb as () => void);
+      return { close: mockClose, on: vi.fn().mockReturnThis() } as any;
+    });
 
   // Clean up any previous watcher state
   stopConfigWatcher();
