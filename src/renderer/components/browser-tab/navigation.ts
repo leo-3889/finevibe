@@ -1,12 +1,14 @@
 import type { BrowserTabInstance } from './types.js';
 
-const KNOWN_SCHEMES = /^(https?|file|ftp|ftps|about|chrome|data|blob|view-source|javascript|mailto):/i;
+const KNOWN_SCHEMES = /^(https?|file|ftp|ftps|about|chrome|data|blob|mailto):/i;
+// javascript: is self-XSS bait and view-source: serves no feature; normalizing
+// either to '' makes navigateTo (which no-ops on empty) refuse them.
+const BLOCKED_SCHEMES = /^(javascript|view-source):/i;
 
 export function normalizeUrl(url: string): string {
   const trimmed = url.trim();
-  if (trimmed && !KNOWN_SCHEMES.test(trimmed)) {
-    return 'http://' + trimmed;
-  }
+  if (!trimmed || BLOCKED_SCHEMES.test(trimmed)) return '';
+  if (!KNOWN_SCHEMES.test(trimmed)) return 'http://' + trimmed;
   return trimmed;
 }
 

@@ -78,9 +78,19 @@ export function forwardResize(sessionId: string, cols: number, rows: number): vo
 
 export async function joinRemoteSession(projectId: string, offer: string, passphrase: string, onConnected?: () => void): Promise<{ answer: string }> {
   const { handle } = joinShare(offer, passphrase);
-  const answer = await handle.getAnswer();
-
+  // Register synchronously: getAnswer() can reject (wrong key, malformed
+  // SDP), and the RTCPeerConnection joinShare created must stay reachable
+  // by disconnect/cleanup on that path — one leaked PC per failed join
+  // otherwise, until a renderer reload.
   pendingJoinHandles.add(handle);
+  let answer: string;
+  try {
+    answer = await handle.getAnswer();
+  } catch (err) {
+    pendingJoinHandles.delete(handle);
+    try { handle.disconnect(); } catch { /* peer already torn down */ }
+    throw err;
+  }
 
   // Set up init handler to create the remote session once the connection is established.
   // This happens asynchronously after the host accepts our answer.

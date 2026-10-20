@@ -21,9 +21,11 @@ export const createSessionsWidget: WidgetFactory = (host) => {
       ? cfg.recentLimit
       : DEFAULT_SESSIONS_CONFIG.recentLimit;
 
+    // Active rows have no closedAt — sort on the same effective timestamp
+    // the display line uses, or new Running rows sort last and slice out.
     const fullHistory = appState.getSessionHistory(host.projectId)
       .slice()
-      .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''));
+      .sort((a, b) => (b.closedAt ?? b.createdAt).localeCompare(a.closedAt ?? a.createdAt));
     const history = fullHistory.slice(0, recentLimit);
 
     if (history.length === 0) {
@@ -75,8 +77,8 @@ export const createSessionsWidget: WidgetFactory = (host) => {
 
     const date = document.createElement('span');
     date.className = 'widget-sessions-date';
-    date.textContent = formatRelativeDate(archived.closedAt);
-    date.title = new Date(archived.closedAt).toLocaleString();
+    date.textContent = formatRelativeDate(archived.closedAt ?? archived.createdAt);
+    date.title = new Date(archived.closedAt ?? archived.createdAt).toLocaleString();
     meta.appendChild(date);
 
     if (archived.cost && archived.cost.totalCostUsd > 0) {
@@ -93,7 +95,7 @@ export const createSessionsWidget: WidgetFactory = (host) => {
     const bookmarkBtn = document.createElement('button');
     bookmarkBtn.type = 'button';
     bookmarkBtn.className = `widget-sessions-bookmark-btn${isBookmarked ? ' bookmarked' : ''}`;
-    bookmarkBtn.innerHTML = isBookmarked ? '&#9733;' : '&#9734;';
+    bookmarkBtn.textContent = isBookmarked ? '★' : '☆';
     bookmarkBtn.title = isBookmarked ? 'Remove bookmark' : 'Bookmark session';
     bookmarkBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -101,16 +103,20 @@ export const createSessionsWidget: WidgetFactory = (host) => {
     });
     row.appendChild(bookmarkBtn);
 
-    const removeBtn = document.createElement('button');
-    removeBtn.type = 'button';
-    removeBtn.className = 'widget-sessions-remove-btn';
-    removeBtn.innerHTML = '&times;';
-    removeBtn.title = 'Remove from history';
-    removeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      appState.removeHistoryEntry(host.projectId, archived.id);
-    });
-    row.appendChild(removeBtn);
+    // Live rows finalize on close; deleting the bookmark hides the running
+    // session and re-archives it under a new id ("Running rows survive").
+    if (archived.state !== 'active') {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'widget-sessions-remove-btn';
+      removeBtn.innerHTML = '&times;';
+      removeBtn.title = 'Remove from history';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        appState.removeHistoryEntry(host.projectId, archived.id);
+      });
+      row.appendChild(removeBtn);
+    }
 
     if (archived.cliSessionId) {
       row.addEventListener('click', () => {

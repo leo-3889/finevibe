@@ -5,7 +5,7 @@ import { t } from '../../i18n.js';
 import type { PreferencesContext, SectionController } from './section.js';
 import { toggleRow } from './shared.js';
 
-type SidebarViews = { gitPanel: boolean; sessionHistory: boolean; discussions: boolean; fileTree: boolean; activeSessions: boolean };
+import type { SidebarViews } from '../../../shared/types.js';
 
 export function createAppearanceSection(ctx: PreferencesContext): SectionController {
   let themeSelect: CustomSelectInstance | null = null;
@@ -61,7 +61,6 @@ export function createAppearanceSection(ctx: PreferencesContext): SectionControl
       sidebarHeading.textContent = t('appearance.sidebarViews');
       container.appendChild(sidebarHeading);
 
-      const views = appState.preferences.sidebarViews ?? { gitPanel: true, sessionHistory: true, discussions: true, fileTree: true, activeSessions: true };
       const toggles: { key: keyof SidebarViews; label: string }[] = [
         { key: 'fileTree', label: t('appearance.fileTree') },
         { key: 'gitPanel', label: t('appearance.gitPanel') },
@@ -72,7 +71,7 @@ export function createAppearanceSection(ctx: PreferencesContext): SectionControl
 
       const checkboxes = {} as Record<keyof SidebarViews, HTMLInputElement>;
       for (const toggle of toggles) {
-        const { row, checkbox } = toggleRow(`pref-sidebar-${toggle.key}`, toggle.label, views[toggle.key] ?? true);
+        const { row, checkbox } = toggleRow(`pref-sidebar-${toggle.key}`, toggle.label, appState.sidebarView(toggle.key));
         container.appendChild(row);
         checkboxes[toggle.key] = checkbox;
       }

@@ -2,8 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import { STATUS_DIR, getStatusLineScriptPath } from './hook-status';
+import { canonicalPath, readJsonSafe, readDirSafe } from './fs-utils';
+import { getKnownProjectPaths, loadState } from './store';
 import { statusCmd as mkStatusCmd, stopStatusCmd as mkStopStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, captureToolFailureCmd as mkCaptureToolFailureCmd, installEventScript, wrapPythonHookCmd, installHookScripts } from './hook-commands';
-import { readJsonSafe, readDirSafe } from './fs-utils';
 import { parseFrontmatter } from './frontmatter';
 import { getSupportedHookEvents as computeSupportedHookEvents } from './claude-hook-versions';
 import { getClaudeVersion } from './providers/claude-version';
@@ -279,10 +280,44 @@ function prepareSettings(configDir: string = defaultClaudeDir()): { settings: Re
   return { settings, cleaned };
 }
 
+/**
+ * Write settings.json atomically, mirroring store.ts writeStateAtomically:
+ * payload -> sibling .tmp -> fsync -> rename. A plain writeFileSync can die
+ * mid-write (crash, power loss) and leave a truncated settings.json; Claude
+ * Code would then read - and rewrite - a half-written config, silently
+ * losing the user's hooks. fsync before the rename matters: renaming an
+ * unflushed temp file re-creates the same truncation window on crash.
+ */
+function writeSettingsAtomically(settingsPath: string, payload: string): void {
+  // The temp file sits next to the target so the rename stays on one
+  // filesystem (the atomicity guarantee).
+  const tmpFile = settingsPath + '.tmp';
+  const buf = Buffer.from(payload, 'utf-8');
+  const fd = fs.openSync(tmpFile, 'w');
+  try {
+    // fs.writeSync reports how many bytes it wrote and a single call is
+    // allowed to stop short; keep writing from the offset it stopped at.
+    // A descriptor that stops making progress aborts the write, so a
+    // partial payload never reaches the rename.
+    let offset = 0;
+    while (offset < buf.length) {
+      const written = fs.writeSync(fd, buf, offset);
+      if (written <= 0) {
+        throw new Error(`settings write stalled at ${offset}/${buf.length} bytes`);
+      }
+      offset += written;
+    }
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmpFile, settingsPath);
+}
+
 function writeSettings(settings: Record<string, unknown>, configDir: string = defaultClaudeDir()): void {
   const settingsPath = path.join(configDir, 'settings.json');
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  writeSettingsAtomically(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 }
 
 /**
@@ -616,6 +651,31 @@ export type McpServerConfig =
   | { url: string };
 
 /**
+ * The config dirs the app itself hands out as a CLI config root. `configDir`
+ * arrives verbatim from the mcp:* IPC args and the write target is derived
+ * from it, so an unvalidated value is an arbitrary-file-write sink: whatever
+ * `<dir>/.claude.json` it names is read back as the MCP config of the next
+ * CLI launched with that CLAUDE_CONFIG_DIR, which executes the servers in it.
+ * Legitimate values are a stored profile's dir (`CLAUDE_CONFIG_DIR`) and dirs
+ * inside a known project. Canonical compare, exactly like the file allowlist
+ * in removeMcpServer: the renderer spells the
+ * same dir with other casing, separators or a junction, and `path.resolve`
+ * normalizes none of those.
+ */
+function isManagedMcpConfigDir(configDir: string): boolean {
+  const target = canonicalPath(configDir);
+  const roots = [
+    ...(loadState().profiles ?? []).map((p) => p.configDir),
+    ...getKnownProjectPaths(),
+  ];
+  return roots.some((rootPath) => {
+    const root = canonicalPath(rootPath);
+    const rel = path.relative(root, target);
+    return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
+  });
+}
+
+/**
  * Add an MCP server to ~/.claude.json at user or project scope.
  */
 export function addMcpServer(
@@ -623,8 +683,18 @@ export function addMcpServer(
   config: McpServerConfig,
   scope: 'user' | 'project',
   projectPath?: string,
+  configDir?: string,
 ): void {
-  const filePath = path.join(homedir(), '.claude.json');
+  // A profiled CLI (CLAUDE_CONFIG_DIR) reads its user-scope MCP store under
+  // the profile dir; writing ~/.claude.json would land servers where that
+  // CLI never looks.
+  // Canonical allowlist, as in removeMcpServer: configDir is renderer-chosen.
+  if (configDir && !isManagedMcpConfigDir(configDir)) {
+    throw new Error(`Not a writable MCP config path: ${JSON.stringify(path.join(configDir, '.claude.json'))}`);
+  }
+  const filePath = configDir
+    ? path.join(configDir, '.claude.json')
+    : path.join(homedir(), '.claude.json');
   const json = readJsonSafe(filePath) ?? {};
 
   if (scope === 'project' && projectPath) {
@@ -653,7 +723,36 @@ export function removeMcpServer(
   filePath: string,
   scope: 'user' | 'project',
   projectPath?: string,
+  configDir?: string,
 ): void {
+  // filePath arrives via the renderer as an echo of the list results; it
+  // must name one of the known MCP config files, never an arbitrary
+  // renderer-chosen write target (this function writes the file back).
+  // Every source getClaudeConfig lists must be removable here, or deleting
+  // a listed server silently no-ops on the throw.
+  const allowed = [
+    path.resolve(path.join(homedir(), '.claude.json')),
+    path.resolve(path.join(homedir(), '.mcp.json')),
+    path.resolve(path.join(homedir(), '.claude', 'settings.json')),
+    ...(projectPath
+      ? [path.resolve(path.join(projectPath, '.mcp.json')), path.resolve(path.join(projectPath, '.claude', 'settings.json'))]
+      : []),
+    ...(configDir
+      ? [
+          path.resolve(path.join(configDir, '.claude.json')),
+          path.resolve(path.join(configDir, '.mcp.json')),
+          path.resolve(path.join(configDir, 'settings.json')),
+        ]
+      : []),
+  ];
+  // Compare canonical forms: the allowlist is built from homedir()/projectPath/
+  // configDir while the renderer echoes back whatever getClaudeConfig listed,
+  // and path.resolve normalizes neither drive-letter case nor junctions, so an
+  // exact string compare no-ops deletions on a listed server.
+  const target = canonicalPath(filePath);
+  if (!allowed.some((allowedPath) => canonicalPath(allowedPath) === target)) {
+    throw new Error(`Not a writable MCP config path: ${JSON.stringify(filePath)}`);
+  }
   const json = readJsonSafe(filePath);
   if (!json) return;
 
@@ -674,17 +773,24 @@ export function removeMcpServer(
   fs.writeFileSync(filePath, JSON.stringify(json, null, 2) + '\n');
 }
 
-export async function getClaudeConfig(projectPath: string): Promise<ClaudeConfig> {
+export async function getClaudeConfig(projectPath: string, configDir?: string): Promise<ClaudeConfig> {
   const home = homedir();
-  const claudeDir = path.join(home, '.claude');
+  // A profiled CLI (CLAUDE_CONFIG_DIR) keeps its whole user-scope tree under
+  // the profile dir — settings, agents, skills, commands, MCP store. Reading
+  // the default account's files shows/edits the wrong login's servers.
+  const claudeDir = configDir ?? path.join(home, '.claude');
 
   // MCP Servers from multiple sources (matching Claude CLI resolution order)
-  // 1. ~/.claude.json (user + local scope — primary location for `claude mcp add`)
-  const claudeJsonServers = readMcpFromClaudeJson(path.join(home, '.claude.json'), projectPath);
+  // 1. .claude.json in the user-scope tree (user + local scope — primary
+  //    location for `claude mcp add`)
+  const claudeJsonServers = readMcpFromClaudeJson(
+    configDir ? path.join(configDir, '.claude.json') : path.join(home, '.claude.json'),
+    projectPath,
+  );
   // 2. ~/.claude/settings.json and ~/.mcp.json (legacy/additional user scope)
   const userServers = readMcpServers(
     path.join(claudeDir, 'settings.json'),
-    path.join(home, '.mcp.json'),
+    configDir ? path.join(configDir, '.mcp.json') : path.join(home, '.mcp.json'),
     'user',
   );
   // 3. Project-level: .claude/settings.json and .mcp.json

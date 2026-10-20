@@ -59,6 +59,54 @@ function getConnected(id: string): McpConnection | undefined {
   return entry.conn;
 }
 
+/** URL parse that never throws; null = unparseable, which is always refused. */
+function parseUrl(value: string, base?: string): URL | null {
+  try {
+    return new URL(value, base);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * fetch wrapper pinning a transport to the host the user confirmed.
+ *
+ * The SDK builds its requests with plain fetch and the spec default
+ * `redirect: 'follow'`, and `mcpUrlPolicy` only ever sees the URL the user
+ * typed. A loopback-exempt endpoint (the no-confirm path) can answer
+ * `302 -> https://attacker.tld/`, and the whole MCP handshake plus every
+ * JSON-RPC payload built from user content then leaves the main process for a
+ * host no dialog ever named.
+ *
+ * Redirects are refused outright (`redirect: 'manual'`) and the final response
+ * origin is checked as well: an MCP endpoint is a single fixed URL, so a real
+ * server never needs to hop hosts, and refusing is strictly safer than
+ * re-running the confirm dialog for the hop.
+ */
+export function pinnedFetch(approvedHost: string): typeof fetch {
+  return async (input, init) => {
+    const response = await fetch(input, { ...init, redirect: 'manual' });
+    if (response.status >= 300 && response.status < 400) {
+      const base = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const location = response.headers.get('location');
+      // A malformed Location is refused, never followed: it is the host we
+      // cannot name, so it cannot be the approved one.
+      const target = location ? parseUrl(location, base)?.origin : null;
+      throw new Error(
+        `MCP server redirected to ${target ?? 'an unparseable Location header'}; `
+        + `only the confirmed host (${approvedHost}) is allowed.`,
+      );
+    }
+    const finalUrl = response.url ? parseUrl(response.url) : null;
+    if (finalUrl && finalUrl.host !== approvedHost) {
+      throw new Error(
+        `MCP server answered from ${finalUrl.host}; only the confirmed host (${approvedHost}) is allowed.`,
+      );
+    }
+    return response;
+  };
+}
+
 export async function connect(id: string, url: string): Promise<McpResult> {
   const previous = connections.get(id);
   const entry: McpEntry = {
@@ -73,9 +121,13 @@ export async function connect(id: string, url: string): Promise<McpResult> {
 
   let conn: McpConnection;
   try {
+    // One host is approved: the URL the policy (and, for remote hosts, the
+    // user's confirmation) was evaluated against.
+    const approvedHost = new URL(url).host;
+    const transportOptions = { fetch: pinnedFetch(approvedHost) };
     const transport = url.endsWith('/sse')
-      ? new SSEClientTransport(new URL(url))
-      : new StreamableHTTPClientTransport(new URL(url));
+      ? new SSEClientTransport(new URL(url), transportOptions)
+      : new StreamableHTTPClientTransport(new URL(url), transportOptions);
     const client = new Client({ name: 'vibeyard-mcp-inspector', version: '1.0.0' });
     conn = { client, transport, closed: false };
   } catch (err) {

@@ -75,6 +75,11 @@ describe('findConflictingLaunchFlags', () => {
       [['--continue'], '--continue'],
       [['-r'], '-r'],
       [['-c'], '-c'],
+      // Vibeyard pins --session-id itself (claude/pi fresh launches); a later
+      // user occurrence wins in argv, so the CLI writes a transcript the
+      // session watcher can never attribute.
+      [['--session-id', '019d3512-caf9-7b50-8d2b-ccccdcf8ff14'], '--session-id'],
+      [['--session-id=019d3512-caf9-7b50-8d2b-ccccdcf8ff14'], '--session-id'],
     ];
     for (const [tokens, flag] of cases) {
       const conflicts = findConflictingLaunchFlags(tokens);
@@ -98,8 +103,11 @@ describe('findConflictingLaunchFlags', () => {
 describe('findConflictingEnvKeys', () => {
   it('matches the unsupported storage selectors case-insensitively', () => {
     expect(UNSUPPORTED_STORAGE_ENV_KEYS).toContain('PI_CODING_AGENT_SESSION_DIR');
+    expect(UNSUPPORTED_STORAGE_ENV_KEYS).toContain('CODEX_HOME');
     expect(findConflictingEnvKeys({ PI_CODING_AGENT_SESSION_DIR: '/x', SAFE: '1' })).toEqual(['PI_CODING_AGENT_SESSION_DIR']);
     expect(findConflictingEnvKeys({ pi_coding_agent_session_dir: '/x' })).toEqual(['pi_coding_agent_session_dir']);
+    expect(findConflictingEnvKeys({ CODEX_HOME: '/work/codex' })).toEqual(['CODEX_HOME']);
+    expect(findConflictingEnvKeys({ codex_home: '/work/codex' })).toEqual(['codex_home']);
     expect(findConflictingEnvKeys({ SAFE: '1' })).toEqual([]);
   });
 });

@@ -23,6 +23,7 @@ import {
   LAST_UNNAMESPACED_VERSION,
   _resetForTesting,
 } from './claude-keychain';
+import { resolveBinary } from './providers/resolve-binary';
 
 const execFileSyncMock = vi.mocked(execFileSync);
 const loadStateMock = vi.mocked(loadState);
@@ -43,12 +44,24 @@ function keychainWith(present: Set<string>) {
   });
 }
 
+/** Drive execFileSync: every probe fails with `code` (missing binary, EACCES, timeout). */
+function keychainThrowsLike(code: string) {
+  execFileSyncMock.mockImplementation(() => {
+    throw Object.assign(new Error(`${code}: keychain probe failed`), { code });
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   _resetForTesting();
   mockPlatform.isMac = true;
+  mockPlatform.isWin = false;
+  mockPlatform.isLinux = false;
   loadStateMock.mockReturnValue({ profiles: [] } as any);
   getClaudeVersionMock.mockReturnValue(null);
+  // Pin the default binary path: `clearAllMocks` keeps mockImplementations, so the
+  // throwing resolveBinary from the unresolvable-binary test would leak forward.
+  vi.mocked(resolveBinary).mockImplementation(() => '/usr/bin/claude');
 });
 
 describe('keychainServiceForConfigDir', () => {
@@ -78,6 +91,23 @@ describe('profileKeychainIsolated', () => {
   it('returns false on macOS when the namespaced entry is absent', () => {
     keychainWith(new Set());
     expect(profileKeychainIsolated('/work')).toBe(false);
+  });
+
+  it('returns false when /usr/bin/security is missing (ENOENT)', () => {
+    keychainThrowsLike('ENOENT');
+    expect(profileKeychainIsolated('/work')).toBe(false);
+  });
+
+  it('returns false when the keychain probe is denied (EACCES)', () => {
+    keychainThrowsLike('EACCES');
+    expect(profileKeychainIsolated('/work')).toBe(false);
+  });
+
+  it('returns true on Windows through the platform seam, without a probe', () => {
+    mockPlatform.isMac = false;
+    mockPlatform.isWin = true;
+    expect(profileKeychainIsolated('/work')).toBe(true);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 });
 
@@ -138,5 +168,76 @@ describe('getKeychainIsolationStatus', () => {
     keychainWith(new Set([svc('/work')])); // entry exists, but profile is codex
     getClaudeVersionMock.mockReturnValue('2.1.0');
     expect(getKeychainIsolationStatus().status).toBe('unsupported');
+  });
+
+  it('classifies a denied keychain probe by version: old is blocked, new is allowed', () => {
+    keychainThrowsLike('EACCES');
+    getClaudeVersionMock.mockReturnValue(LAST_UNNAMESPACED_VERSION);
+    expect(getKeychainIsolationStatus()).toEqual({ status: 'unsupported', version: LAST_UNNAMESPACED_VERSION });
+
+    _resetForTesting();
+    getClaudeVersionMock.mockReturnValue('2.1.159');
+    expect(getKeychainIsolationStatus().status).toBe('unknown');
+  });
+
+  it('falls back to version detection when the profile store is unreadable', () => {
+    loadStateMock.mockImplementation(() => {
+      throw new Error('store.json is corrupt');
+    });
+    keychainWith(new Set());
+    getClaudeVersionMock.mockReturnValue(LAST_UNNAMESPACED_VERSION);
+    expect(getKeychainIsolationStatus().status).toBe('unsupported');
+  });
+
+  it('is unknown when the version probe throws', () => {
+    keychainWith(new Set());
+    getClaudeVersionMock.mockImplementation(() => {
+      throw new Error('claude --version timed out');
+    });
+    expect(getKeychainIsolationStatus()).toEqual({ status: 'unknown', version: null });
+  });
+
+  it('is unknown when the claude binary cannot be resolved', () => {
+    keychainWith(new Set());
+    vi.mocked(resolveBinary).mockImplementation(() => {
+      throw new Error('claude not found on PATH');
+    });
+    expect(getKeychainIsolationStatus()).toEqual({ status: 'unknown', version: null });
+  });
+
+  it('skips claude profiles with no config dir when probing for namespaced entries', () => {
+    loadStateMock.mockReturnValue({ profiles: [{ providerId: 'claude', configDir: '' }] } as any);
+    keychainWith(new Set([svc('')])); // the empty-dir entry exists; the probe must skip it
+    getClaudeVersionMock.mockReturnValue(LAST_UNNAMESPACED_VERSION);
+    expect(getKeychainIsolationStatus().status).toBe('unsupported');
+  });
+
+  it('caches a supported verdict without re-probing', () => {
+    loadStateMock.mockReturnValue({ profiles: [{ providerId: 'claude', configDir: '/work' }] } as any);
+    keychainWith(new Set([svc('/work')]));
+    expect(getKeychainIsolationStatus().status).toBe('supported');
+    const probes = execFileSyncMock.mock.calls.length;
+    keychainWith(new Set()); // the entry disappears — the memoized verdict must not flinch
+    expect(getKeychainIsolationStatus().status).toBe('supported');
+    expect(execFileSyncMock.mock.calls.length).toBe(probes);
+  });
+
+  it('compares versions numerically at the threshold, not lexicographically', () => {
+    keychainWith(new Set());
+    getClaudeVersionMock.mockReturnValue('2.1.20'); // one patch above LAST → allowed
+    expect(getKeychainIsolationStatus().status).toBe('unknown');
+
+    _resetForTesting();
+    // 2.1.2 is older than 2.1.19 numerically; a string compare ('2' > '1') would miss it.
+    getClaudeVersionMock.mockReturnValue('2.1.2');
+    expect(getKeychainIsolationStatus().status).toBe('unsupported');
+  });
+
+  it('is supported on Windows through the platform seam, with no subprocess probes', () => {
+    mockPlatform.isMac = false;
+    mockPlatform.isWin = true;
+    expect(getKeychainIsolationStatus()).toEqual({ status: 'supported', version: null });
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(getClaudeVersionMock).not.toHaveBeenCalled();
   });
 });

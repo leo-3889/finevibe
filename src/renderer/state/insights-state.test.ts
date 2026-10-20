@@ -101,6 +101,7 @@ describe('addInsightSnapshot()', () => {
     appState.addInsightSnapshot(project.id, {
       sessionId: 's1', timestamp: '', totalTokens: 0, contextWindowSize: 200000, usedPercentage: 0,
     });
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -158,6 +159,7 @@ describe('dismissInsight()', () => {
     const project = addProject();
     mockSave.mockClear();
     appState.dismissInsight(project.id, 'test');
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 

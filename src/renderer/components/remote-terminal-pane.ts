@@ -7,6 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { appState } from '../state.js';
 import { attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
+import { showTerminalContextMenu } from './terminal-context-menu.js';
 
 interface RemoteTerminalInstance {
   terminal: Terminal;
@@ -55,7 +56,18 @@ export function createRemoteTerminalPane(
   statusBar.appendChild(modeLabel);
   statusBar.appendChild(disconnectBtn);
   element.appendChild(statusBar);
-
+  // Copy / Select all / Paste on right-click, same as local panes. Read-only
+  // panes get a write function that drops everything: the menu's Paste must
+  // not reach a peer's PTY through a viewer.
+  element.addEventListener('contextmenu', (e: MouseEvent) => {
+    e.preventDefault();
+    showTerminalContextMenu(
+      e.clientX,
+      e.clientY,
+      terminal,
+      mode === 'readwrite' ? onInput : () => {},
+    );
+  });
   const terminal = new Terminal({
     theme: getTerminalTheme(appState.preferences.theme ?? 'dark'),
     fontSize: 14,
@@ -121,27 +133,10 @@ export function showRemotePane(sessionId: string, split: boolean): void {
   }
 }
 
-export function hideRemotePane(sessionId: string): void {
-  const instance = instances.get(sessionId);
-  if (!instance) return;
-  instance.element.classList.add('hidden');
-}
-
 export function hideAllRemotePanes(): void {
   for (const [, instance] of instances) {
     instance.element.classList.add('hidden');
     instance.element.classList.remove('swarm-dimmed', 'swarm-unread');
-  }
-}
-
-export function fitRemoteTerminal(sessionId: string): void {
-  const instance = instances.get(sessionId);
-  if (!instance || instance.element.classList.contains('hidden')) return;
-
-  try {
-    instance.fitAddon.fit();
-  } catch {
-    // Element not yet visible
   }
 }
 

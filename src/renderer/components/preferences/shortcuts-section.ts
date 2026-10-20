@@ -1,4 +1,4 @@
-import { shortcutManager, displayKeys, eventToAccelerator } from '../../shortcuts.js';
+import { shortcutManager, shortcutLabel, shortcutCategoryLabel, displayKeys, eventToAccelerator } from '../../shortcuts.js';
 import { t } from '../../i18n.js';
 import type { PreferencesContext, SectionController } from './section.js';
 
@@ -10,7 +10,7 @@ export function createShortcutsSection(ctx: PreferencesContext): SectionControll
       for (const [category, shortcuts] of grouped) {
         const header = document.createElement('div');
         header.className = 'shortcut-category-header';
-        header.textContent = category;
+        header.textContent = shortcutCategoryLabel(category);
         container.appendChild(header);
 
         for (const shortcut of shortcuts) {
@@ -19,7 +19,7 @@ export function createShortcutsSection(ctx: PreferencesContext): SectionControll
 
           const label = document.createElement('div');
           label.className = 'shortcut-row-label';
-          label.textContent = shortcut.label;
+          label.textContent = shortcutLabel(shortcut);
 
           const keyBtn = document.createElement('button');
           keyBtn.className = 'shortcut-key-btn';

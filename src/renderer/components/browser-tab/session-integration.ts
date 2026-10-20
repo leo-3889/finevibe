@@ -1,5 +1,5 @@
 import { appState, type SessionRecord } from '../../state.js';
-import { promptNewSession } from '../tab-bar.js';
+import { promptNewSession } from '../tab-bar/session-menu.js';
 import { injectPromptIntoRunningSession, setPendingPrompt } from '../terminal-pane.js';
 import type { BrowserTabInstance } from './types.js';
 import { buildPrompt, dismissInspect } from './inspect-mode.js';

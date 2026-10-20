@@ -14,18 +14,3 @@ export type ShareMessage =
   | { type: 'auth-challenge'; challenge: string }
   | { type: 'auth-response'; response: string }
   | { type: 'auth-result'; ok: boolean; reason?: string };
-
-// Host-side state for an active share.
-export interface ActiveShare {
-  sessionId: string;
-  mode: ShareMode;
-  connected: boolean;
-}
-
-// Guest-side state for a remote session.
-export interface RemoteSession {
-  sessionId: string;
-  mode: ShareMode;
-  hostSessionName: string;
-  connected: boolean;
-}

@@ -1,7 +1,11 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource } from '../shared/types';
-import { ZOOM_MIN, ZOOM_MAX } from '../shared/types';
-
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types';
+// Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
+// duplicated rather than imported because the main window runs with
+// sandbox: true, and a sandboxed preload's polyfilled require cannot load
+// local CommonJS files — only electron, events, timers and url.
+const ZOOM_MIN = 0.75;
+const ZOOM_MAX = 2.0;
 export type { CostData } from '../shared/types';
 
 export interface VibeyardApi {
@@ -16,15 +20,15 @@ export interface VibeyardApi {
       onExit(callback: (sessionId: string, exitCode: number, signal?: number, exitReason?: string, pid?: number) => void): () => void;
   };
   session: {
-    buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string): Promise<string>;
-    transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): Promise<boolean>;
-    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): boolean;
+    buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string, liveSessionId?: string): Promise<string>;
+    transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): Promise<boolean>;
+    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): boolean;
+    /** Save-dialog backup of one session. `zip`: meta.json + provider transcript + sidecars; `file`: the transcript verbatim. Returns the written path or null when canceled. */
+    exportArchive(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file'): Promise<string | null>;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
     cancelDeepSearch(): void;
     onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
-    /** @deprecated Use onCliSessionId instead */
-    onClaudeSessionId(callback: (sessionId: string, claudeSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
     resyncStatus(): void;
@@ -55,6 +59,7 @@ export interface VibeyardApi {
   store: {
     load(): Promise<unknown>;
     save(state: unknown): Promise<void>;
+    startupPrefs(): StartupPrefs;
   };
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
@@ -69,10 +74,6 @@ export interface VibeyardApi {
     onConfigChanged(callback: () => void): () => void;
     installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
     removeAgent(slug: string): Promise<void>;
-  };
-  /** @deprecated Use provider namespace instead */
-  claude: {
-    getConfig(projectPath: string): Promise<ProviderConfig>;
   };
   git: {
     getStatus(path: string): Promise<unknown>;
@@ -107,6 +108,11 @@ export interface VibeyardApi {
     onConfirmClose(callback: () => void): () => void;
     closeConfirmed(): void;
   };
+
+  agentmemory: {
+    status(): Promise<AgentmemoryStatus>;
+    start(): Promise<AgentmemoryStatus>;
+  };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
   };
@@ -126,8 +132,8 @@ export interface VibeyardApi {
     callTool(id: string, name: string, args: Record<string, unknown>): Promise<{ success: boolean; data?: unknown; error?: string }>;
     readResource(id: string, uri: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
     getPrompt(id: string, name: string, args: Record<string, string>): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string): Promise<{ success: boolean; error?: string }>;
-    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string): Promise<{ success: boolean; error?: string }>;
+    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<{ success: boolean; error?: string }>;
+    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<{ success: boolean; error?: string }>;
   };
   readiness: {
     analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
@@ -150,6 +156,8 @@ export interface VibeyardApi {
   };
   clipboard: {
     write(text: string, source?: ClipboardSource): Promise<void>;
+    readForPaste(): Promise<ClipboardPastePayload>;
+    saveImage(dataUrl: string): Promise<string | null>;
   };
   zoom: {
     set(factor: number): void;
@@ -195,12 +203,14 @@ const api: VibeyardApi = {
           callback(sessionId as string, exitCode as number, signal as number | undefined, exitReason as string | undefined, pid as number | undefined)),
   },
   session: {
-    buildResumeWithPrompt: (sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir) =>
-      ipcRenderer.invoke('session:buildResumeWithPrompt', sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir),
-    transcriptExists: (providerId, cliSessionId, projectPath, configDir) =>
-      ipcRenderer.invoke('session:transcriptExists', providerId, cliSessionId, projectPath, configDir),
-    transcriptExistsSync: (providerId, cliSessionId, projectPath, configDir) =>
-      ipcRenderer.sendSync('session:transcriptExistsSync', providerId, cliSessionId, projectPath, configDir),
+    buildResumeWithPrompt: (sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir, liveSessionId) =>
+      ipcRenderer.invoke('session:buildResumeWithPrompt', sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir, liveSessionId),
+    transcriptExists: (providerId, cliSessionId, projectPath, configDir, liveSessionId) =>
+      ipcRenderer.invoke('session:transcriptExists', providerId, cliSessionId, projectPath, configDir, liveSessionId),
+    transcriptExistsSync: (providerId, cliSessionId, projectPath, configDir, liveSessionId) =>
+      ipcRenderer.sendSync('session:transcriptExistsSync', providerId, cliSessionId, projectPath, configDir, liveSessionId),
+    exportArchive: (providerId, cliSessionId, projectPath, configDir, meta, format) =>
+      ipcRenderer.invoke('session:exportArchive', providerId, cliSessionId, projectPath, configDir, meta, format),
     cancelDeepSearch: () => ipcRenderer.send('session:cancelDeepSearch'),
     deepSearch: (query) =>
       ipcRenderer.invoke('session:deepSearch', query),
@@ -210,9 +220,6 @@ const api: VibeyardApi = {
     onCliSessionId: (callback) =>
       onChannel('session:cliSessionId', (sessionId, cliSessionId) =>
         callback(sessionId as string, cliSessionId as string)),
-    onClaudeSessionId: (callback) =>
-      onChannel('session:claudeSessionId', (sessionId, claudeSessionId) =>
-        callback(sessionId as string, claudeSessionId as string)),
     onCostData: (callback) =>
       onChannel('session:costData', (sessionId, costData) =>
         callback(sessionId as string, costData as CostData)),
@@ -258,12 +265,12 @@ const api: VibeyardApi = {
     installAgent: (slug, content) => ipcRenderer.invoke('provider:installAgent', slug, content),
     removeAgent: (slug) => ipcRenderer.invoke('provider:removeAgent', slug),
   },
-  claude: {
-    getConfig: (projectPath) => ipcRenderer.invoke('claude:getConfig', projectPath),
-  },
   store: {
     load: () => ipcRenderer.invoke('store:load'),
     save: (state) => ipcRenderer.invoke('store:save', state),
+    // Sync round-trip: the renderer needs theme/zoom before its first paint,
+    // which is earlier than any invoke promise can resolve.
+    startupPrefs: () => ipcRenderer.sendSync('store:startup-prefs'),
   },
   profiles: {
     provision: (profileId, customPath, providerId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId),
@@ -302,6 +309,10 @@ const api: VibeyardApi = {
     onConfirmClose: (cb: () => void) => onChannel('app:confirmClose', cb),
     closeConfirmed: () => { ipcRenderer.send('app:closeConfirmed'); },
   },
+  agentmemory: {
+    status: () => ipcRenderer.invoke('agentmemory:status'),
+    start: () => ipcRenderer.invoke('agentmemory:start'),
+  },
   browser: {
     saveScreenshot: (sessionId: string, dataUrl: string) =>
       ipcRenderer.invoke('browser:saveScreenshot', sessionId, dataUrl),
@@ -323,8 +334,8 @@ const api: VibeyardApi = {
     callTool: (id: string, name: string, args: Record<string, unknown>) => ipcRenderer.invoke('mcp:callTool', id, name, args),
     readResource: (id: string, uri: string) => ipcRenderer.invoke('mcp:readResource', id, uri),
     getPrompt: (id: string, name: string, args: Record<string, string>) => ipcRenderer.invoke('mcp:getPrompt', id, name, args),
-    addServer: (name: string, config: unknown, scope: 'user' | 'project', projectPath?: string) => ipcRenderer.invoke('mcp:addServer', name, config, scope, projectPath),
-    removeServer: (name: string, filePath: string, scope: 'user' | 'project', projectPath?: string) => ipcRenderer.invoke('mcp:removeServer', name, filePath, scope, projectPath),
+    addServer: (name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string) => ipcRenderer.invoke('mcp:addServer', name, config, scope, projectPath, configDir),
+    removeServer: (name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string) => ipcRenderer.invoke('mcp:removeServer', name, filePath, scope, projectPath, configDir),
   },
   readiness: {
     analyze: (projectPath: string, excludedProviders?: string[]) => ipcRenderer.invoke('readiness:analyze', projectPath, excludedProviders),
@@ -347,6 +358,8 @@ const api: VibeyardApi = {
   },
   clipboard: {
     write: (text: string, source?: ClipboardSource) => ipcRenderer.invoke('clipboard:write', text, source),
+    readForPaste: () => ipcRenderer.invoke('clipboard:readForPaste'),
+    saveImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:saveImage', dataUrl),
   },
   zoom: {
     set: (factor: number) => {

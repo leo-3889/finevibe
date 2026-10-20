@@ -1,22 +1,23 @@
 import { EventEmitter } from 'events';
 import { searchSessions } from './session-deep-search';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { CliProvider } from './providers/provider';
 import * as fs from 'fs';
+import { clipboard } from 'electron';
 import * as os from 'os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as path from 'path';
+import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 
 /**
  * Focused on the `pty:create` lifecycle: which provider hook fires for a
  * fresh vs a resumed spawn, and the ORDER of the teardown calls in the PTY
- * exit callback / spawn-failure catch. pty-manager now suppresses a replaced
- * process's callback before it reaches this handler.
  *
  * `calls` records lifecycle events in the order they happen, so the
  * assertions are about sequence rather than membership.
  */
 
-type ExitCallback = (exitCode: number, signal?: number, pid?: number) => void;
+type ExitCallback = (exitCode: number, signal?: number, pid?: number, spawnRejectedReason?: string) => void;
 
 const calls = vi.hoisted(() => [] as string[]);
 const handlers = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
@@ -73,7 +74,16 @@ vi.mock('electron', () => ({
   },
   dialog: { showMessageBox: () => Promise.resolve({ response: 0 }) },
   shell: { openExternal: () => Promise.resolve() },
-  clipboard: { writeText: vi.fn(), readText: () => '' },
+  clipboard: {
+    writeText: vi.fn(),
+    readText: vi.fn(() => ''),
+    // Default: a format that is not on the clipboard. Tests override per format.
+    readBuffer: vi.fn(() => { throw new Error('format not on clipboard'); }),
+    read: vi.fn(() => ''),
+    readHTML: vi.fn(() => ''),
+    readImage: vi.fn(() => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) })),
+    availableFormats: vi.fn(() => [] as string[]),
+  },
 }));
 
 vi.mock('./pty-manager', () => ({
@@ -123,7 +133,8 @@ vi.mock('./auto-updater', autoStub);
 vi.mock('./menu', autoStub);
 vi.mock('./readiness/analyzer', autoStub);
 vi.mock('./github-cli', autoStub);
-vi.mock('./fs-utils', () => ({
+vi.mock('./fs-utils', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./fs-utils')>(),
   expandUserPath: (p: string) => p,
   isBinaryBuffer: () => false,
   isMacPackagePath: () => false,
@@ -139,7 +150,10 @@ vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
 
 import { registerIpcHandlers } from './ipc-handlers';
+import { loadState } from './store';
 import { cleanupSessionStatus } from './hook-status';
+import { analyzeReadiness } from './readiness/analyzer';
+import { detectRepo } from './github-cli';
 
 function makeProvider(): CliProvider {
   return {
@@ -220,6 +234,126 @@ describe('project file read boundary', () => {
       knownPaths.push(root);
       const read = handlers.get('fs:readFile')!;
       expect(read({}, large)).toEqual({ ok: false, reason: 'error' });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('git:* root gate', () => {
+  it('blocks git handlers aimed at a cwd the renderer invented', async () => {
+    const gitStatus = await import('./git-status');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      const outside = path.join(root, 'worktree');
+      fs.mkdirSync(outside);
+
+      expect(() => handlers.get('git:getStatus')!({}, outside)).toThrow(/not within a known project/);
+      expect(() => handlers.get('git:getWorktrees')!({}, outside)).toThrow(/not within a known project/);
+      // The discard sink is the reason this gate exists at all. Its handler is
+      // async, so the gate surfaces as a rejection, not a synchronous throw.
+      await expect(handlers.get('git:discardFile')!({}, outside, 'x.txt')).rejects.toThrow(/not within a known project/);
+      expect(vi.mocked(gitStatus.getGitStatus)).not.toHaveBeenCalled();
+      expect(vi.mocked(gitStatus.getGitWorktrees)).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a known project directory', async () => {
+    const gitStatus = await import('./git-status');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      knownPaths.push(root);
+      handlers.get('git:getStatus')!({}, root);
+      expect(vi.mocked(gitStatus.getGitStatus)).toHaveBeenCalledWith(root);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a watched worktree git-capable after its project is closed', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      const project = path.join(root, 'project');
+      const worktree = path.join(project, '.wt', 'w1');
+      fs.mkdirSync(worktree, { recursive: true });
+      knownPaths.push(project);
+      handlers.get('git:watchProject')!({}, worktree);
+      knownPaths.length = 0;
+
+      expect(() => handlers.get('git:getStatus')!({}, worktree)).not.toThrow();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recognizes a watched root reached through a link', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      const project = path.join(root, 'project');
+      const worktree = path.join(project, '.wt', 'w1');
+      fs.mkdirSync(worktree, { recursive: true });
+      const alias = path.join(root, 'alias');
+      fs.symlinkSync(worktree, alias, process.platform === 'win32' ? 'junction' : 'dir');
+
+      knownPaths.push(project);
+      handlers.get('git:watchProject')!({}, worktree);
+      knownPaths.length = 0;
+
+      // Same directory, different spelling: the gate compares canonical paths,
+      // so the alias resolves to the registered root instead of counting as an
+      // unregistered cwd.
+      expect(() => handlers.get('git:getStatus')!({}, alias)).not.toThrow();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a git file path that escapes the root', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      knownPaths.push(root);
+      expect(() => handlers.get('git:getDiff')!({}, root, '../escape.txt', 'staged'))
+        .toThrow(/escapes the project/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('readiness/github git-executing handlers share the root gate', () => {
+  it('blocks a cwd the renderer invented before any git runs', async () => {
+    // Both handlers shell out to git in the named cwd (`git ls-files`,
+    // `git remote get-url`) - the same sink the 13 git:* handlers gate.
+    // The analyzer/detectRepo stubs are the autoStub proxies; importing them
+    // statically is what lets these assertions see the calls.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      const outside = path.join(root, 'invented');
+      fs.mkdirSync(outside);
+
+      expect(() => handlers.get('readiness:analyze')!({}, outside))
+        .toThrow(/not within a known project/);
+      expect(() => handlers.get('github:detectRepo')!({}, outside))
+        .toThrow(/not within a known project/);
+      expect(vi.mocked(analyzeReadiness)).not.toHaveBeenCalled();
+      expect(vi.mocked(detectRepo)).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs them for a known project, on the resolved path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      knownPaths.push(root);
+
+      await handlers.get('readiness:analyze')!({}, root, ['codex']);
+      await handlers.get('github:detectRepo')!({}, root);
+
+      expect(vi.mocked(analyzeReadiness)).toHaveBeenCalledWith(root, ['codex']);
+      expect(vi.mocked(detectRepo)).toHaveBeenCalledWith(root);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -360,6 +494,29 @@ describe('pty:exit crash reason', () => {
     expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, 'unhandled_rejection', undefined);
   });
 
+  it('sends the spawn-rejected sentinel verbatim when no PTY ever existed', async () => {
+    // A launch rejected before the PTY spawn writes its reason into the pane
+    // via pty:data; the renderer must see a sentinel, not a crash reason, or
+    // it destroys that pane and archives a crash for a session that never ran.
+    provider.readSessionExitReason = vi.fn(() => ({ reason: 'unhandled_rejection', kind: 'fatal' }));
+    mockGetSyncedPath.mockReturnValue('/sessions/dir-a/2026.jsonl');
+    await create('ui-1', 'cli-1', { isResume: true });
+    calls.length = 0;
+    exitCallback()(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
+    // No transcript can exist for a session that never spawned — the whole
+    // exit-reason read is skipped, so a stale marker cannot be blamed on it.
+    expect(provider.readSessionExitReason).not.toHaveBeenCalled();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+    expect(calls).toEqual(['unregister', 'exited']);
+  });
+
+  it('keeps reporting a real exit code 1 as the crash reason the renderer archives', async () => {
+    mockGetSyncedPath.mockReturnValue(null);
+    await create('ui-1', 'cli-1', { isResume: true });
+    exitCallback()(1);
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, 'exited with code 1', undefined);
+  });
+
   it('falls back to the exit code when no transcript path is resolved', async () => {
     provider.readSessionExitReason = vi.fn(() => ({ reason: 'dispose', kind: 'normal' }));
     mockGetSyncedPath.mockReturnValue(null);
@@ -467,4 +624,125 @@ it('cancels superseded IPC searches, palette cancellation and window destruction
   complete.forEach(resolve => resolve());
   await Promise.all([first, second, third]);
   expect(sender.listenerCount('destroyed')).toBe(0);
+});
+
+describe('store:startup-prefs', () => {
+  /** Call the sync channel the way `ipcRenderer.sendSync` does and read the reply. */
+  function reply(preferences: Record<string, unknown>): unknown {
+    // `projects` is populated so a payload that leaked the whole state fails.
+    vi.mocked(loadState).mockReturnValueOnce({ projects: [{ id: 'p' }], preferences } as never);
+    const event: { returnValue?: unknown } = {};
+    handlers.get('store:startup-prefs')!(event);
+    return event.returnValue;
+  }
+
+  it('serves the theme/zoom slice only, so startup never clones the full state', () => {
+    expect(reply({ theme: 'light', zoomFactor: 1.25 })).toEqual({ theme: 'light', zoomFactor: 1.25 });
+  });
+
+  it('reports never-saved preferences as null so the renderer keeps its defaults', () => {
+    expect(reply({})).toEqual({ theme: null, zoomFactor: null });
+  });
+});
+
+// The main-read paste route (context menu, Windows Ctrl+V): a copied file
+// reaches main as one of four clipboard formats, and each decoder has a
+// layout the OS fixes in stone.
+describe('clipboard:readForPaste file lists', () => {
+
+  // clearAllMocks keeps per-test mockImplementation; restore each test's
+  // clipboard to the mock's defaults so the next read starts on an empty clipboard.
+  afterEach(() => {
+    for (const fn of [clipboard.readBuffer, clipboard.readText, clipboard.readHTML, clipboard.read, clipboard.availableFormats]) {
+      vi.mocked(fn as (...args: never[]) => unknown).mockReset();
+    }
+  });
+  function formatsWith(...names: string[]) {
+    vi.mocked(clipboard.availableFormats).mockReturnValue(names);
+  }
+
+  function bufferFor(format: string, build: () => Buffer) {
+    vi.mocked(clipboard.readBuffer).mockImplementation((fmt: string) => {
+      if (fmt === format) return build();
+      throw new Error(`${fmt} not on clipboard`);
+    });
+  }
+
+  // DROPFILES header: pFiles @0, pt @4-11, fWide @12; names follow at pFiles.
+  function dropfiles(names: string, wide: boolean, headerSize = 20): Buffer {
+    const body = Buffer.from(names, wide ? 'utf16le' : 'latin1');
+    const buf = Buffer.alloc(headerSize + body.length);
+    buf.writeUInt32LE(headerSize, 0);
+    buf.writeUInt32LE(wide ? 1 : 0, 12);
+    body.copy(buf, headerSize);
+    return buf;
+  }
+
+  async function readPaste(): Promise<{ text: string; html: string; files: string[]; imagePath: string | null }> {
+    return await handlers.get('clipboard:readForPaste')!({}) as never;
+  }
+
+  it('reads Explorer copies from CF_HDROP with the wide flag at offset 12', async () => {
+    // fWide lives at offset 12; offset 16 is fNoCompact (0 for Explorer).
+    // Reading fNoCompact decoded the UTF-16LE names as latin1, and every path
+    // collapsed to single characters that the absolute-path filter dropped.
+    formatsWith('FileNameW', 'CF_HDROP', 'text/plain');
+    bufferFor('CF_HDROP', () => dropfiles('C:\\repo\\report.pdf\0C:\\repo\\data.csv\0\0', true));
+    // Explorer echoes the file name as clipboard text; files must still win.
+    vi.mocked(clipboard.readText).mockReturnValue('report.pdf');
+
+    const payload = await readPaste();
+    expect(payload.files).toEqual(['C:\\repo\\report.pdf', 'C:\\repo\\data.csv']);
+    expect(payload.hasContent).toBe(true);
+  });
+
+  it('reads pre-wide CF_HDROP senders through the single-byte decode', async () => {
+    formatsWith('CF_HDROP');
+    bufferFor('CF_HDROP', () => dropfiles('D:\\notes\\a.txt\0\0', false));
+
+    expect((await readPaste()).files).toEqual(['D:\\notes\\a.txt']);
+  });
+
+  it('reads browser copies from FileNameW', async () => {
+    formatsWith('FileNameW');
+    bufferFor('FileNameW', () => Buffer.from('C:\\tmp\\shot.png\0C:\\tmp\\clip.mp4\0\0', 'utf16le'));
+
+    expect((await readPaste()).files).toEqual(['C:\\tmp\\shot.png', 'C:\\tmp\\clip.mp4']);
+  });
+
+  it('reads Finder copies from the XML plist and decodes entities', async () => {
+    formatsWith('NSFilenamesPboardType');
+    bufferFor('NSFilenamesPboardType', () => Buffer.from(
+      '<array><string>/tmp/a &amp; b.txt</string><string>/tmp/caf&#xE9;.md</string></array>',
+      'utf8',
+    ));
+
+    expect((await readPaste()).files).toEqual(['/tmp/a & b.txt', '/tmp/café.md']);
+  });
+
+  it('reads file-manager copies on Linux from text/uri-list, skipping web links', async () => {
+    const target = '/tmp/report.pdf';
+    // A rootless file URL is not absolute on Windows, so build the URL from a
+    // path the platform considers absolute; the handler decodes it back.
+    const uri = pathToFileURL(target).href;
+    vi.mocked(clipboard.read).mockReturnValue(`${uri}\r\nhttps://example.com/x\r\n`);
+
+    expect((await readPaste()).files).toEqual([fileURLToPath(uri)]);
+  });
+
+  it('drops relative names and keeps only paths a CLI can read', async () => {
+    formatsWith('FileNameW');
+    bufferFor('FileNameW', () => Buffer.from('notes.txt\0C:\\repo\\ok.md\0\0', 'utf16le'));
+
+    expect((await readPaste()).files).toEqual(['C:\\repo\\ok.md']);
+  });
+
+  it('sends markup source when a copy carries no plain text', async () => {
+    formatsWith('text/html');
+    vi.mocked(clipboard.readText).mockReturnValue('');
+    vi.mocked(clipboard.readHTML).mockReturnValue('<b>notes</b>');
+
+    const payload = await readPaste();
+    expect(payload.html).toBe('<b>notes</b>');
+  });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { BrowserTabInstance } from './types.js';
 
 vi.mock('../../state.js', () => ({ appState: {} }));
-vi.mock('../tab-bar.js', () => ({ promptNewSession: vi.fn() }));
+vi.mock('../tab-bar/session-menu.js', () => ({ promptNewSession: vi.fn() }));
 vi.mock('../terminal-pane.js', () => ({ setPendingPrompt: vi.fn() }));
 vi.mock('./popover.js', () => ({ positionPopover: vi.fn() }));
 vi.mock('./viewport.js', () => ({

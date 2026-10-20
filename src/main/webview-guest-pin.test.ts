@@ -1,0 +1,162 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as path from 'path';
+import { isWin } from './platform';
+import { pinWebviewGuest, pinGuestPermissions, isBrowserGuestPreload } from './webview-guest-pin';
+// The pinning resolves the guest session through `session.fromPartition`, so
+// the electron module is mocked: the shipped stub has no session factory and
+// the real one needs the binary. The recorder lives inside `vi.hoisted`
+// because `vi.mock` factories are hoisted above module-scope `const`
+// declarations, and a factory that closes over a plain `const` sees it
+// uninitialized.
+const { handlers, fromPartition } = vi.hoisted(() => {
+  const handlers: Array<{
+    partition: string;
+    request?: (permission: string, callback: (granted: boolean) => void) => void;
+    check?: (permission: string) => boolean;
+  }> = [];
+  const fromPartition = vi.fn((partition: string) => {
+    const entry = { partition } as (typeof handlers)[number];
+    handlers.push(entry);
+    return {
+      setPermissionRequestHandler: (h: (wc: unknown, p: string, cb: (g: boolean) => void) => void) => {
+        entry.request = (_wc: unknown, p: string, cb: (g: boolean) => void) => h(_wc, p, cb);
+      },
+      setPermissionCheckHandler: (h: (wc: unknown, p: string) => boolean) => {
+        entry.check = (_wc: unknown, p: string) => h(_wc, p);
+      },
+    };
+  });
+  return { handlers, fromPartition };
+});
+
+vi.mock('electron', () => ({ session: { fromPartition } }));
+
+
+const SHIPPED = path.join('C:', 'app', 'preload', 'preload', 'browser-tab-preload.js');
+
+function attach(webPreferences: Record<string, unknown>): void {
+  pinWebviewGuest(webPreferences, SHIPPED);
+}
+
+function granted(partition: string, permission: string): boolean | undefined {
+  const entry = handlers.find(h => h.partition === partition);
+  if (!entry?.request) return undefined;
+  let result: boolean | undefined;
+  entry.request({}, permission, grantedValue => { result = grantedValue; });
+  return result;
+}
+
+beforeEach(() => {
+  handlers.length = 0;
+  fromPartition.mockClear();
+});
+
+describe('pinWebviewGuest', () => {
+  it('installs the guest allowlist on the partition the guest will use', () => {
+    // The regression this pins: the handler used to read
+    // `webPreferences.session`, a main-process Session object that never
+    // crosses the renderer -> main boundary for a webview guest. The
+    // allowlist silently never installed and Electron auto-approved every
+    // permission in the partition holding imported Chrome cookies.
+    attach({ partition: 'persist:vibeyard-browser' });
+    expect(fromPartition).toHaveBeenCalledWith('persist:vibeyard-browser');
+    expect(granted('persist:vibeyard-browser', 'media')).toBe(false);
+    expect(granted('persist:vibeyard-browser', 'geolocation')).toBe(false);
+    expect(granted('persist:vibeyard-browser', 'notifications')).toBe(false);
+    // The app's host allowlist must not leak into the guest: the guest page
+    // has no business reading the clipboard.
+    expect(granted('persist:vibeyard-browser', 'clipboard-read')).toBe(false);
+    expect(granted('persist:vibeyard-browser', 'fullscreen')).toBe(true);
+    expect(granted('persist:vibeyard-browser', 'clipboard-sanitized-write')).toBe(true);
+  });
+
+  it('applies the same allowlist to the synchronous check handler', () => {
+    attach({ partition: 'persist:vibeyard-browser-iso-7' });
+    const entry = handlers.find(h => h.partition === 'persist:vibeyard-browser-iso-7');
+    expect(entry?.check).toBeDefined();
+    expect(entry?.check?.({}, 'media')).toBe(false);
+    expect(entry?.check?.({}, 'fullscreen')).toBe(true);
+  });
+
+  it('covers the per-session isolated partitions, each resolved by its own name', () => {
+    attach({ partition: 'persist:vibeyard-browser-iso-1' });
+    attach({ partition: 'persist:vibeyard-browser-iso-2' });
+    expect(fromPartition).toHaveBeenCalledTimes(2);
+    expect(handlers.map(h => h.partition)).toEqual([
+      'persist:vibeyard-browser-iso-1',
+      'persist:vibeyard-browser-iso-2',
+    ]);
+  });
+
+  it('leaves the app session alone when the guest has no partition', () => {
+    // An empty partition puts the guest in the app session, which already
+    // carries the host allowlist. Overwriting it with the narrower guest set
+    // would break the app UI's own clipboard reads.
+    expect(pinGuestPermissions(undefined)).toBe(false);
+    expect(pinGuestPermissions('')).toBe(false);
+    expect(fromPartition).not.toHaveBeenCalled();
+    attach({});
+    expect(fromPartition).not.toHaveBeenCalled();
+  });
+
+  it('forces the privilege shape regardless of what the renderer asked for', () => {
+    const webPreferences = {
+      partition: 'persist:vibeyard-browser',
+      nodeIntegration: true,
+      contextIsolation: false,
+      sandbox: false,
+    };
+    attach(webPreferences);
+    expect(webPreferences.nodeIntegration).toBe(false);
+    expect(webPreferences.contextIsolation).toBe(true);
+    expect(webPreferences.sandbox).toBe(true);
+  });
+
+  it('keeps only the shipped browser-tab preload', () => {
+    const withShipped: Record<string, unknown> = { preload: SHIPPED, partition: 'p' };
+    attach(withShipped);
+    expect(withShipped.preload).toBe(SHIPPED);
+
+    // A matching attribute is kept VERBATIM: the pin strips only preloads it
+    // cannot vouch for, it never rewrites one it accepts.
+    const withFileUrl: Record<string, unknown> = { preload: `file://${SHIPPED}`, partition: 'p' };
+    attach(withFileUrl);
+    expect(withFileUrl.preload).toBe(`file://${SHIPPED}`);
+
+    for (const foreign of [
+      path.join('C:', 'app', 'preload', 'preload', 'evil-preload.js'),
+      path.join('C:', 'app', 'preload', 'preload', '..', '..', 'main', 'main.js'),
+      'https://example.invalid/preload.js',
+      '',
+    ]) {
+      const prefs: Record<string, unknown> = { preload: foreign, partition: 'p' };
+      attach(prefs);
+      expect(prefs.preload, foreign).toBeUndefined();
+    }
+
+    const noPreload: Record<string, unknown> = { partition: 'p' };
+    attach(noPreload);
+    expect(noPreload.preload).toBeUndefined();
+  });
+});
+
+describe('isBrowserGuestPreload', () => {
+  it('normalizes the shipped path across encodings', () => {
+    expect(isBrowserGuestPreload(SHIPPED, SHIPPED)).toBe(true);
+    expect(isBrowserGuestPreload(`  ${SHIPPED}  `, SHIPPED)).toBe(true);
+    expect(isBrowserGuestPreload(`file://${SHIPPED}`, SHIPPED)).toBe(true);
+    expect(isBrowserGuestPreload(encodeURI(SHIPPED), SHIPPED)).toBe(true);
+    // A non-ASCII path percent-encoded by the renderer still matches.
+    expect(isBrowserGuestPreload(`file://${encodeURI(path.join('C:', 'café', 'browser-tab-preload.js'))}`, path.join('C:', 'café', 'browser-tab-preload.js'))).toBe(true);
+  });
+
+  it('matches case-insensitively only on Windows', () => {
+    const upper = SHIPPED.toUpperCase();
+    expect(isBrowserGuestPreload(upper, SHIPPED)).toBe(isWin);
+  });
+
+  it('rejects a path that only shares a prefix with the shipped preload', () => {
+    expect(isBrowserGuestPreload(`${SHIPPED}.bak`, SHIPPED)).toBe(false);
+    expect(isBrowserGuestPreload(`${SHIPPED}x`, SHIPPED)).toBe(false);
+  });
+});

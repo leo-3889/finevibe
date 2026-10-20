@@ -11,16 +11,17 @@ const mockState = vi.hoisted(() => ({
     theme: 'dark' as 'dark' | 'light',
     defaultProvider: 'claude',
     sidebarViews: {
-      configSections: true,
       gitPanel: true,
       sessionHistory: true,
-      readinessSection: true,
       discussions: true,
+      fileTree: true,
+      activeSessions: true,
     },
     boardCardMetrics: true,
   },
   on: vi.fn(() => () => {}),
   setPreference: vi.fn(),
+  sidebarView: vi.fn((key: string) => (mockState.preferences.sidebarViews as Record<string, boolean>)[key] ?? true),
   setLocale: vi.fn(),
 }));
 
@@ -58,6 +59,8 @@ vi.mock('../shortcuts.js', () => ({
   },
   displayKeys: vi.fn(() => ''),
   eventToAccelerator: vi.fn(() => null),
+  shortcutLabel: vi.fn((def: { label: string }) => def.label),
+  shortcutCategoryLabel: vi.fn((category: string) => category),
 }));
 vi.mock('../provider-availability.js', () => ({
   loadProviderAvailability: vi.fn(async () => {}),

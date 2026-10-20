@@ -55,7 +55,7 @@ function ensureStatusDir(): void {
  */
 const UI_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
-function statusFilePath(uiSessionId: string, ext: string): string | null {
+export function statusFilePath(uiSessionId: string, ext: string): string | null {
   if (!UI_SESSION_ID_RE.test(uiSessionId)) {
     console.warn(
       `Refusing to write .${ext} for unsafe session id: ${JSON.stringify(uiSessionId)}`
@@ -249,8 +249,6 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
       const cliSessionId = fs.readFileSync(filePath, 'utf-8').trim();
       if (cliSessionId && !win.isDestroyed()) {
         win.webContents.send('session:cliSessionId', sessionId, cliSessionId);
-        // Backward compatibility
-        win.webContents.send('session:claudeSessionId', sessionId, cliSessionId);
       }
     } catch {
       // File may have been deleted between watch event and read
@@ -342,11 +340,13 @@ async function pollForChanges(win: BrowserWindow): Promise<void> {
         const prev = lastMtimes.get(filename);
         // `!==`, not `>`: `.name` is deleted and rewritten on /clear, and a
         // recreated file can carry a coarser, non-increasing timestamp.
+        // `prev === undefined` means the file appeared between polls (or the
+        // poll loop just started) — process it like any other change; a file
+        // created and last-written inside one interval would otherwise be
+        // recorded and never delivered. The 2s poll cadence is the debounce.
         if (prev !== mtime) {
           lastMtimes.set(filename, mtime);
-          if (prev !== undefined) {
-            handleFileChange(win, filename);
-          }
+          handleFileChange(win, filename);
         }
       } catch {
         // File may have been deleted between readdir and stat
@@ -380,12 +380,25 @@ function restartWatcher(win: BrowserWindow): void {
 
   fs.mkdirSync(STATUS_DIR, { recursive: true, mode: 0o700 });
 
-  watcher = fs.watch(STATUS_DIR, (_eventType, filename) => {
+  const w = fs.watch(STATUS_DIR, (_eventType, filename) => {
     if (!filename) {
       resyncAllSessions(win);
       return;
     }
     handleFileChange(win, filename);
+  });
+  watcher = w;
+  // Every other watcher in main attaches 'error'; without it an emitted
+  // FSWatcher error (EMFILE, unmounted volume) is an uncaught exception
+  // that takes down the process — and with it every live PTY.
+  w.on('error', () => {
+    try { w.close(); } catch { /* already closed */ }
+    // Only drop the slot when this watcher is still the incumbent.
+    if (watcher === w) watcher = null;
+    // The 2s poll keeps the pipeline alive; restart the watch for next time.
+    setTimeout(() => {
+      if (!watcher && !win.isDestroyed()) restartWatcher(win);
+    }, 5000);
   });
 
   startPolling(win);
@@ -416,6 +429,12 @@ export function startWatching(win: BrowserWindow): void {
 }
 
 export function cleanupSessionStatus(sessionId: string): void {
+  // sessionId arrives from the renderer (session:release); the same guard the
+  // writers use keeps `..`-shaped ids from unlinking outside STATUS_DIR.
+  if (!UI_SESSION_ID_RE.test(sessionId)) {
+    console.warn(`Refusing to clean up unsafe session id: ${JSON.stringify(sessionId)}`);
+    return;
+  }
   for (const ext of KNOWN_EXTENSIONS) {
     const filename = `${sessionId}${ext}`;
     lastMtimes.delete(filename);

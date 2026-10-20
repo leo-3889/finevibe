@@ -1,20 +1,23 @@
 import * as fs from 'fs';
 import * as readline from 'readline';
 import * as path from 'path';
+import * as zlib from 'zlib';
 import * as os from 'os';
 import type { CliProvider, TranscriptDescriptor } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
+import { removeEnvKey } from '../../shared/env-vars';
+import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { getCodexConfig } from '../codex-config';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks, SESSION_ID_VAR } from '../codex-hooks';
-import { startCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from '../codex-session-watcher';
+import { startCodexSessionWatcher, stopCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from '../codex-session-watcher';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
-import type { BrowserWindow } from 'electron';
+const CODEX_FILE_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/i;
 
-const CODEX_FILE_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+import type { BrowserWindow } from 'electron';
 
 const binaryCache = { path: null as string | null };
 
@@ -51,6 +54,12 @@ export class CodexProvider implements CliProvider {
     const env = { ...baseEnv };
     env[SESSION_ID_VAR] = sessionId;
     env.PATH = getFullPath();
+    // Hooks are installed at, and the rollout watcher scans, the hardcoded
+    // ~/.codex: an inherited CODEX_HOME moves the child's config.toml and
+    // rollouts out of reach, silently losing .sessionid, statusLine, titles,
+    // archive and resume. Session-level values are rejected pre-spawn by
+    // UNSUPPORTED_STORAGE_ENV_KEYS.
+    removeEnvKey(env, 'CODEX_HOME');
     return env;
   }
 
@@ -60,12 +69,15 @@ export class CodexProvider implements CliProvider {
       args.push('-c', `developer_instructions=${opts.systemPrompt}`);
     }
     if (opts.isResume && opts.cliSessionId) {
+      // `codex resume <id> [PROMPT]` takes a trailing prompt (openai/codex#26818):
+      // dropping it here silently loses a queued prompt on Restart Session.
       args.push('resume', opts.cliSessionId);
+      if (opts.initialPrompt) args.push(opts.initialPrompt);
     } else if (opts.initialPrompt) {
       args.push(opts.initialPrompt);
     }
     if (opts.extraArgs) {
-      args.push(...opts.extraArgs.split(/\s+/).filter(Boolean));
+      args.push(...tokenizeArgs(opts.extraArgs));
     }
     return args;
   }
@@ -79,6 +91,12 @@ export class CodexProvider implements CliProvider {
   cleanup(): void {
     stopConfigWatch();
     cleanupCodexHooks();
+    // The rollout watcher is a recursive fs.watch plus a 2s interval: without
+    // this it survives quit, and a scan armed within its 500ms arming window
+    // fires after cleanupAll() deleted STATUS_DIR and recreates
+    // os.tmpdir()/vibeyard with a .sessionid file (Pi/OMP do the same in their
+    // cleanup()).
+    stopCodexSessionWatcher();
   }
 
   startConfigWatcher(win: BrowserWindow, projectPath: string): void {
@@ -89,11 +107,15 @@ export class CodexProvider implements CliProvider {
     stopConfigWatch();
   }
 
-  // Codex has no hook to report the session id — discover it by tailing
-  // ~/.codex/history.jsonl (see codex-session-watcher.ts).
-  onSessionStarted(sessionId: string, _cwd: string, win: BrowserWindow): void {
+  // Codex hooks write .sessionid per session (exact). The rollout watcher
+  // correlates by cwd (per-cwd FIFO over the session_meta of new rollout
+  // files): a global spawn-order FIFO let external `codex` runs hijack the
+  // oldest pending tab, so it runs only as the fallback for installs
+  // without complete hooks.
+  onSessionStarted(sessionId: string, cwd: string, win: BrowserWindow): void {
+    if (validateCodexHooks().hooks === 'complete') return;
     startCodexSessionWatcher(win);
-    registerPendingCodexSession(sessionId);
+    registerPendingCodexSession(sessionId, cwd);
   }
 
   onSessionExited(sessionId: string): void {
@@ -132,7 +154,7 @@ export class CodexProvider implements CliProvider {
     try {
       const root = path.join(os.homedir(), '.codex', 'sessions');
       const suffix = `-${cliSessionId}.jsonl`;
-      // sessions are partitioned as YYYY/MM/DD/rollout-<ts>-<id>.jsonl.
+      // sessions are partitioned as YYYY/MM/DD/rollout-<ts>-<id>.jsonl[.zst].
       // Walk newest-first and return on first match.
       for (const year of descSortedReaddir(root)) {
         const yearDir = path.join(root, year);
@@ -141,7 +163,7 @@ export class CodexProvider implements CliProvider {
           for (const day of descSortedReaddir(monthDir)) {
             const dayDir = path.join(monthDir, day);
             for (const file of descSortedReaddir(dayDir)) {
-              if (file.endsWith(suffix)) return path.join(dayDir, file);
+              if (file.endsWith(suffix) || file.endsWith(`${suffix}.zst`)) return path.join(dayDir, file);
             }
           }
         }
@@ -151,7 +173,6 @@ export class CodexProvider implements CliProvider {
       return null;
     }
   }
-
   async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
     const root = path.join(os.homedir(), '.codex', 'sessions');
     const out: TranscriptDescriptor[] = [];
@@ -189,37 +210,73 @@ export class CodexProvider implements CliProvider {
       return { text: '', cwd: '' };
     }
     if (size > MAX_INDEX_FILE_BYTES) return { text: '', cwd: '' };
+    if (transcriptPath.endsWith('.zst')) return this.indexCompressedTranscript(transcriptPath);
 
-    let cwd = '';
-    const budget = new IndexTextBudget();
-
+    const { consume, budget, cwd } = this.createLineConsumer();
     const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES - 1 });
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
-      for await (const line of lines) {
-        if (!line.trim() || budget.full) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (!cwd && entry.type === 'session_meta' && entry.payload?.cwd) cwd = entry.payload.cwd;
-          if (entry.type !== 'response_item') continue;
-          const p = entry.payload;
-          if (!p || p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) continue;
-          let text = '';
-          for (const block of p.content) {
-            if (block && typeof block.text === 'string') text += block.text + '\n';
-          }
-          if (text) budget.push(text);
-        } catch {
-          // partial-write tolerance
-        }
-      }
+      for await (const line of lines) consume(line);
     } catch {
       // Best-effort: keep whatever was extracted before the stream failed.
     } finally {
       lines.close();
       input.destroy();
     }
-    return { text: budget.join(), cwd };
+    return { text: budget.join(), cwd: cwd() };
+  }
+
+  /**
+   * Recent Codex builds compress rollouts to `.jsonl.zst`. The index only
+   * needs the head, so decompress a bounded prefix; a truncated tail frame
+   * (Codex compresses incrementally) is tolerated the same way a partial
+   * write is in the plain path.
+   */
+  private async indexCompressedTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {
+    const { consume, budget, cwd } = this.createLineConsumer();
+    const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES * 8 - 1 });
+    const zstd = zlib.createZstdDecompress();
+    input.pipe(zstd);
+    input.on('error', () => { /* best-effort, same as the plain path */ });
+    zstd.on('error', () => { /* truncated tail frame: keep the decompressed head */ });
+    const lines = readline.createInterface({ input: zstd, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) consume(line);
+    } catch {
+      // Best-effort: keep whatever was extracted before decompression failed.
+    } finally {
+      lines.close();
+      zstd.destroy();
+      input.destroy();
+    }
+    return { text: budget.join(), cwd: cwd() };
+  }
+
+  private createLineConsumer(): { consume: (line: string) => void; budget: IndexTextBudget; cwd: () => string } {
+    const budget = new IndexTextBudget();
+    // Per-index cwd, never a provider field: session-deep-search indexes up to
+    // TRANSCRIPT_IO_CONCURRENCY (4) transcripts through this singleton at
+    // once, so a shared field made one call return (and persist) another
+    // transcript's cwd, which then resumes the session in the wrong repo.
+    let cwd = '';
+    const consume = (line: string): void => {
+      if (!line.trim() || budget.full) return;
+      try {
+        const entry = JSON.parse(line);
+        if (!cwd && entry.type === 'session_meta' && entry.payload?.cwd) cwd = entry.payload.cwd;
+        if (entry.type !== 'response_item') return;
+        const p = entry.payload;
+        if (!p || p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) return;
+        let text = '';
+        for (const block of p.content) {
+          if (block && typeof block.text === 'string') text += block.text + '\n';
+        }
+        if (text) budget.push(text);
+      } catch {
+        // partial-write tolerance
+      }
+    };
+    return { consume, budget, cwd: () => cwd };
   }
 }
 

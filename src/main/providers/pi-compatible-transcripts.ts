@@ -74,8 +74,17 @@ export const TAIL_READ_BYTES = 16 * 1024;
  * TAIL_READ_BYTES (a big tool output / message fills the whole window, so
  * no complete line is present to parse). Bounded so a pathological huge
  * transcript can't make the poller read unboundedly.
+ *
+ * The bound must cover a real oversized entry, not just exceed it: OMP
+ * search turns end with a final message that embeds the whole search dump,
+ * routinely past 1 MiB. When the last entry exceeds this window the tail
+ * yields no status, `syncEntry` writes nothing, and the tab status stays
+ * frozen on its last value (`working`) for the rest of the session — the
+ * size-keyed cache keeps serving the null. 4 MiB covers the observed dumps;
+ * the read is bounded and cached by file size, so it repeats (per 2s poll)
+ * only while a >TAIL_READ_BYTES entry is actively being appended.
  */
-export const MAX_STATUS_TAIL_BYTES = 1024 * 1024;
+export const MAX_STATUS_TAIL_BYTES = 4 * 1024 * 1024;
 
 /** Read the tail of a file (bounded, never the whole transcript). */
 export function readTranscriptTailSync(filePath: string, bytes = TAIL_READ_BYTES): string | null {
@@ -108,6 +117,9 @@ export function readTranscriptTailSync(filePath: string, bytes = TAIL_READ_BYTES
  *     `tool_execution_start` marker) → `working`
  *   - clean finish (assistant `stop`) → `completed`
  *   - failed turn (assistant `error`) → `waiting`
+ *   - cancelled turn (assistant `aborted`) → `waiting`, never `completed`:
+ *     the renderer moves linked Kanban tasks to Done on `completed`, and a
+ *     cancelled turn did not finish. Mirrors Claude's StopFailure→waiting.
  * A trailing `session_exit` maps to null: the session is removed on PTY exit,
  * so there is nothing to report. Non-event lines (title, model_change, …) are
  * skipped.
@@ -141,10 +153,12 @@ function statusFromEntry(entry: Record<string, any>): CliSessionStatus | null {
     const role = entry.message?.role;
     if (role === 'assistant') {
       const stop = entry.message?.stopReason;
-      // Mirrors the hook convention: a clean finish (stop) is `completed`, a
-      // failed turn (error) is `waiting` — same as Claude's Stop/StopFailure.
-      // Anything else (toolUse / mid-turn) is still `working`.
-      if (stop === 'error') return 'waiting';
+      // Mirrors the hook convention: a clean finish (stop) is `completed`; a
+      // failed turn (error) or a cancelled turn (aborted) is `waiting` — same
+      // as Claude's Stop/StopFailure. The cancelled turn must NOT be
+      // `completed`: the renderer moves linked Kanban tasks to Done on
+      // `completed`. Anything else (toolUse / mid-turn) is still `working`.
+      if (stop === 'error' || stop === 'aborted') return 'waiting';
       return stop === 'stop' ? 'completed' : 'working';
     }
     if (role === 'user' || role === 'toolResult') return 'working';
@@ -159,9 +173,28 @@ function statusFromEntry(entry: Record<string, any>): CliSessionStatus | null {
  * is expensive, so its result is cached with the file size at read time.
  * An unchanged file is served from the cache; a changed size re-reads and
  * refreshes it. The entry is dropped the moment the small window yields a
- * status again (the file moved past the big entry), which bounds memory.
+ * status again (the file moved past the big entry).
+ *
+ * That delete alone does not bound memory: a closed session whose final
+ * entry exceeded the small window never yields a status again, so its
+ * entry would live for the process lifetime. The cache is therefore an LRU
+ * capped at MAX_STATUS_TAIL_CACHE paths — get-hits and sets move a key to
+ * the newest position, and sets past capacity evict the oldest key (Map
+ * iteration order).
  */
+export const MAX_STATUS_TAIL_CACHE = 512;
 const statusTailCache = new Map<string, { size: number; status: CliSessionStatus | null }>();
+
+/** LRU touch: re-insert so `filePath` becomes the newest Map entry, evicting the oldest past capacity. */
+function putStatusTailCache(filePath: string, entry: { size: number; status: CliSessionStatus | null }): void {
+  statusTailCache.delete(filePath);
+  statusTailCache.set(filePath, entry);
+  while (statusTailCache.size > MAX_STATUS_TAIL_CACHE) {
+    const oldest = statusTailCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    statusTailCache.delete(oldest);
+  }
+}
 
 /**
  * Convenience: read a transcript's tail and derive its status in one call.
@@ -185,14 +218,22 @@ export function readTranscriptStatusSync(filePath: string): CliSessionStatus | n
     return null;
   }
   const cached = statusTailCache.get(filePath);
-  if (cached && cached.size === size) return cached.status;
+  if (cached && cached.size === size) {
+    putStatusTailCache(filePath, cached);
+    return cached.status;
+  }
   const fallback = transcriptStatusFromTail(readTranscriptTailSync(filePath, MAX_STATUS_TAIL_BYTES));
-  statusTailCache.set(filePath, { size, status: fallback });
+  putStatusTailCache(filePath, { size, status: fallback });
   return fallback;
 }
 
 export function _resetStatusTailCacheForTesting(): void {
   statusTailCache.clear();
+}
+
+/** Cache contents, oldest key first (Map insertion order). Test-only. */
+export function _statusTailCacheSnapshotForTesting(): Array<{ filePath: string; size: number; status: CliSessionStatus | null }> {
+  return [...statusTailCache.entries()].map(([filePath, entry]) => ({ filePath, ...entry }));
 }
 
 /**
@@ -212,14 +253,23 @@ export interface SessionExitReason {
 /**
  * Derive the exit reason from a transcript tail.
  *
- * The LAST parseable JSON line decides: it must be a `session_exit`
- * custom entry, otherwise the transcript ends with normal activity and
- * there is no reason to report. A mid-write tail line (the writer is
- * mid-flush) is ignored, scanning backwards for the last complete line.
+ * Scanning backwards from the end, the first `session_exit` custom entry
+ * reports the reason — but only across crash-flush appends. When the CLI
+ * dies it writes the marker and THEN flushes its pending tool calls after
+ * it (observed in live transcripts: an `isError` "Operation aborted"
+ * toolResult and a `tool_execution_start` entry following the marker), so
+ * the marker is not the last line. Any other entry type (user/assistant
+ * activity) means the transcript continued — a resume appending to the
+ * same file — and the old marker is history, not the current state, so
+ * nothing is reported. A mid-write tail line (the writer is mid-flush) is
+ * ignored, scanning backwards for the last complete line.
  */
 export function sessionExitReasonFromTail(tail: string | null): SessionExitReason | null {
   if (!tail) return null;
   const lines = tail.split(/\r?\n/).filter(Boolean);
+  // Bound the flush run so a pathological tail can't extend the scan.
+  const MAX_FLUSH_LINES = 32;
+  let flushSkipped = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
     let entry: unknown;
     try {
@@ -230,7 +280,13 @@ export function sessionExitReasonFromTail(tail: string | null): SessionExitReaso
       continue;
     }
     if (!entry || typeof entry !== 'object') return null;
-    const e = entry as { type?: unknown; customType?: unknown; timestamp?: unknown; data?: { reason?: unknown; kind?: unknown } };
+    const e = entry as {
+      type?: unknown;
+      customType?: unknown;
+      timestamp?: unknown;
+      message?: { role?: unknown };
+      data?: { reason?: unknown; kind?: unknown };
+    };
     if (e.type === 'custom' && e.customType === 'session_exit') {
       return {
         reason: String(e.data?.reason ?? 'unknown'),
@@ -238,8 +294,11 @@ export function sessionExitReasonFromTail(tail: string | null): SessionExitReaso
         ...(typeof e.timestamp === 'string' ? { timestamp: e.timestamp } : {}),
       };
     }
-    // The last parseable line is ordinary activity, not a crash marker.
-    return null;
+    const isFlushAppend =
+      (e.type === 'custom' && e.customType === 'tool_execution_start') ||
+      (e.type === 'message' && e.message?.role === 'toolResult');
+    if (!isFlushAppend) return null;
+    if (++flushSkipped > MAX_FLUSH_LINES) return null;
   }
   return null;
 }
@@ -269,6 +328,7 @@ export function readSessionExitReasonSync(filePath: string): SessionExitReason |
  * header and rewrites it in place when the title changes, so the header is
  * not always line 1. Parse the JSON entries of the first few lines.
  */
+// pi-lens-ignore: no-unsafe-dictionary-any
 function headEntries(window: string | null): Array<Record<string, any>> {
   if (!window) return [];
   const out: Array<Record<string, any>> = [];
@@ -374,7 +434,7 @@ const CASE_INSENSITIVE_PATHS = isWin || isMac;
  * case folded on Windows/macOS, where the same directory can legitimately
  * be spelled with different case (drive letter, Finder-vs-CLI path).
  */
-function sameCwd(a: string | undefined, b: string): boolean {
+export function sameCwd(a: string | undefined, b: string): boolean {
   if (typeof a !== 'string' || !a) return false;
   const strip = (p: string): string => {
     const trimmed = p.replace(/[\\/]+$/, '');

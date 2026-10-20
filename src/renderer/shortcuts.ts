@@ -1,12 +1,13 @@
 import { appState } from './state.js';
 import { isMac } from './platform.js';
+import { hasKey, t } from './i18n.js';
 
 export interface ShortcutDef {
   id: string;
   label: string;
   category: string;
   defaultKeys: string;
-  handler: (() => void) | null;
+  handler: (() => boolean) | null;
 }
 
 interface ShortcutDefault {
@@ -16,6 +17,12 @@ interface ShortcutDefault {
   defaultKeys: string;
 }
 
+/**
+ * English defaults, kept as stable ids + display fallbacks. `id` is the
+ * keybinding storage key on `preferences.keybindings` — never localize it.
+ * Labels/categories are translated at display time via `shortcutLabel`
+ * and `shortcutCategoryLabel`.
+ */
 export const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'new-session', label: 'New Session', category: 'Sessions', defaultKeys: 'CmdOrCtrl+T' },
   { id: 'new-session-alt', label: 'New Session (Alt)', category: 'Sessions', defaultKeys: 'CmdOrCtrl+Shift+N' },
@@ -52,6 +59,18 @@ export const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'browser-reload', label: 'Reload Page', category: 'Browser', defaultKeys: 'CmdOrCtrl+R' },
   { id: 'browser-hard-reload', label: 'Hard Reload (Bypass Cache)', category: 'Browser', defaultKeys: 'CmdOrCtrl+Shift+R' },
 ];
+
+/** Localized display label for a shortcut; falls back to its English default. */
+export function shortcutLabel(def: { id: string; label: string }): string {
+  const key = `shortcuts.${def.id}.label`;
+  return hasKey(key) ? t(key) : def.label;
+}
+
+/** Localized category header; falls back to the raw (English) category name. */
+export function shortcutCategoryLabel(category: string): string {
+  const key = `shortcuts.category.${category}`;
+  return hasKey(key) ? t(key) : category;
+}
 
 /** Convert accelerator string to platform-specific display string */
 export function displayKeys(accelerator: string): string {
@@ -163,6 +182,53 @@ export function eventToAccelerator(e: KeyboardEvent): string | null {
   return parts.join('+');
 }
 
+/**
+ * True while a real text entry owns the keyboard: renames, prompts,
+ * search fields, board cards. The xterm helper textarea is deliberately
+ * NOT a typing target — terminal panes forward keys to the PTY and app
+ * shortcuts (Ctrl+T, Ctrl+W, Ctrl+1-9) must keep working there.
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  if (el.closest?.('.xterm')) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+    || el.isContentEditable === true || el.contentEditable === 'true';
+}
+
+/**
+ * Every keyboard-driven overlay root the app can open. The first two are the
+ * shared modal.ts root and the modal-shell dialogs (hidden via the `hidden`
+ * class, so keep :not(.hidden) on them). The rest are full-screen overlays
+ * created outside modal-shell — share/join dialogs, the team picker, quick
+ * open, the session palette, and the browser-tab flow picker / send menu —
+ * which are invisible to `.modal-overlay` and were the gap left by 6af0c7a:
+ * Ctrl+W behind the team detail overlay killed the tab's PTY. Excluded on
+ * purpose: terminal-exit-overlay and browser-drag-overlay are non-interactive
+ * decorations, not keyboard owners.
+ */
+const OVERLAY_SELECTOR = [
+  '#modal-overlay:not(.hidden)',
+  '.modal-overlay:not(.hidden)',
+  '.share-overlay',
+  '.team-picker-overlay',
+  '.team-picker-detail-overlay',
+  '.quick-open-overlay',
+  '.session-palette-overlay',
+  '.flow-picker-overlay',
+  '.send-menu-overlay',
+].join(',');
+
+/** True while any modal overlay is visible (shared modal.ts overlay + modal-shell overlays). */
+function isModalOpen(): boolean {
+  for (const el of document.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR)) {
+    // Most overlays are removed from the DOM on close; the browser-tab flow
+    // picker and send menu are display-toggled, so honour inline hiding.
+    if (el.style.display !== 'none') return true;
+  }
+  return false;
+}
 export class ShortcutManager {
   private shortcuts: ShortcutDef[] = [];
 
@@ -171,7 +237,7 @@ export class ShortcutManager {
   }
 
   /** Register a handler for a shortcut id */
-  registerHandler(id: string, handler: () => void): void {
+  registerHandler(id: string, handler: () => boolean): void {
     const shortcut = this.shortcuts.find((s) => s.id === id);
     if (shortcut) {
       shortcut.handler = handler;
@@ -223,17 +289,42 @@ export class ShortcutManager {
     return id in overrides;
   }
 
+  /**
+   * View-level shortcuts stay live while a text field has focus: they are
+   * pure view toggles (zoom, panels, help) and cannot destroy data. The
+   * rest — close-session, tab navigation, quick-open, new-session — are
+   * suppressed while typing (renames, prompts, board cards): Ctrl+W mid
+   * rename used to close the session.
+   */
+  private static readonly FIELD_SAFE = new Set([
+    'zoom-in', 'zoom-out', 'zoom-reset',
+    'toggle-sidebar', 'toggle-inspector', 'toggle-split',
+    'debug-panel', 'git-panel', 'help',
+  ]);
+
   /** Match a keyboard event to a shortcut and execute its handler */
   matchEvent(e: KeyboardEvent): boolean {
     const overrides = appState.preferences.keybindings ?? {};
 
+    const inField = isTypingTarget(e.target);
+    const inModal = isModalOpen();
+
     for (const shortcut of this.shortcuts) {
       const keys = overrides[shortcut.id] ?? shortcut.defaultKeys;
-      if (matchesAccelerator(e, keys) && shortcut.handler) {
-        e.preventDefault();
-        shortcut.handler();
-        return true;
-      }
+      if (!matchesAccelerator(e, keys) || !shortcut.handler) continue;
+      // A modal swallows app navigation: its own inputs are focused and
+      // ESC/Enter are owned by the dialog. Only the always-safe view
+      // toggles and Help pass through.
+      if (inModal && shortcut.id !== 'zoom-in' && shortcut.id !== 'zoom-out'
+          && shortcut.id !== 'zoom-reset' && shortcut.id !== 'help') continue;
+      if (inField && !ShortcutManager.FIELD_SAFE.has(shortcut.id)) continue;
+      // The handler owns the verdict: it returns true only when it acted in
+      // the current context. Declined keys keep their default behavior, so
+      // Ctrl+L reaches the PTY in a CLI terminal (readline clear-screen) and
+      // Ctrl+R reaches browser-key passthrough outside a browser tab.
+      if (!shortcut.handler()) continue;
+      e.preventDefault();
+      return true;
     }
     return false;
   }

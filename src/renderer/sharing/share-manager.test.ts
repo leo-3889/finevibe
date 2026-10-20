@@ -295,6 +295,72 @@ describe('joinRemoteSession', () => {
   });
 });
 
+describe('joinRemoteSession failure handling', () => {
+  function makeFailingJoinHandle(message: string) {
+    const handle = {
+      getAnswer: vi.fn(async (): Promise<string> => {
+        throw new Error(message);
+      }),
+      sendInput: vi.fn(),
+      disconnect: vi.fn(),
+      onInit: vi.fn(),
+      onData: vi.fn(),
+      onResize: vi.fn(),
+      onDisconnected: vi.fn(),
+      onEnd: vi.fn(),
+      onAuthFailed: vi.fn(),
+      __fireInit: null as ((d: unknown) => void) | null,
+      __fireDisconnect: null as (() => void) | null,
+      __fireData: null as ((p: string) => void) | null,
+    };
+    return handle;
+  }
+
+  it('disconnects the peer connection when the join answer rejects', async () => {
+    // Bad passphrase / malformed SDP: getAnswer() rejects. Pre-fix the handle
+    // was registered only after getAnswer() resolved, so this path leaked the
+    // RTCPeerConnection joinShare() had created until a renderer reload.
+    const handle = makeFailingJoinHandle('decryption failed');
+    joinShareMock.mockImplementationOnce(() => {
+      lastJoinHandleRef.current = handle;
+      return { guestId: 'guest-1', handle };
+    });
+
+    await expect(joinRemoteSession('p1', 'offer', 'bad-key')).rejects.toThrow('decryption failed');
+
+    expect(handle.getAnswer).toHaveBeenCalledTimes(1);
+    expect(handle.disconnect).toHaveBeenCalledTimes(1);
+    expect(remoteTerm.createRemoteTerminalPane).not.toHaveBeenCalled();
+    expect(isRemoteSession('local-uuid')).toBe(false);
+  });
+
+  it('cleanupAllShares disconnects a join whose answer is still pending', async () => {
+    // Pre-fix the handle entered pendingJoinHandles only after getAnswer()
+    // resolved, so cleanup during a pending (or doomed) join disconnected
+    // nothing and the PC leaked.
+    const handle = makeFailingJoinHandle('never');
+    handle.getAnswer = vi.fn(() => new Promise<string>(() => {}));
+    joinShareMock.mockImplementationOnce(() => {
+      lastJoinHandleRef.current = handle;
+      return { guestId: 'guest-1', handle };
+    });
+
+    void joinRemoteSession('p1', 'offer', '1234'); // answer never settles
+    cleanupAllShares();
+
+    expect(handle.getAnswer).toHaveBeenCalledTimes(1);
+    expect(handle.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a successful join connected', async () => {
+    // Guard (old code behaved identically here — pins no regression on the
+    // happy path): the answer comes back and nothing disconnects.
+    const result = await joinRemoteSession('p1', 'offer', '1234');
+    expect(result.answer).toBe('fake-answer');
+    expect(lastJoinHandle().disconnect).not.toHaveBeenCalled();
+  });
+});
+
 describe('disconnectRemoteSession / isRemoteSession', () => {
   it('isRemoteSession returns false when unknown', () => {
     expect(isRemoteSession('nope')).toBe(false);

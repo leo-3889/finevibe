@@ -284,6 +284,40 @@ describe('renderSessionHistory', () => {
     expect(mockAppState.removeHistoryEntry).toHaveBeenCalledWith('p1', 'h1');
   });
 
+  it('omits Remove from history for the row of a running session', async () => {
+    vi.resetModules();
+    const doc = new FakeDocument();
+    const container = doc.createElement('div');
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('window', { innerWidth: 1000, innerHeight: 800 });
+
+    mockAppState.activeProject.sessionHistory = [
+      {
+        id: 'h-live',
+        name: 'Running session',
+        providerId: 'codex',
+        cliSessionId: 'cli-live',
+        createdAt: '2026-03-31T08:00:00.000Z',
+        state: 'active',
+        liveSessionId: 's1',
+        cost: null,
+      },
+    ];
+
+    const { renderSessionHistory } = await import('./session-history.js');
+    renderSessionHistory(mockAppState.activeProject as never, container as never);
+
+    const liveItem = container.querySelector('.history-item');
+    expect(liveItem).not.toBeNull();
+    liveItem!.dispatch('contextmenu', { preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 10 });
+
+    expect(doc.body.querySelector('.danger')).toBeNull();
+    const items = doc.body
+      .querySelectorAll('.tab-context-menu-item')
+      .map((el: FakeElement) => el.textContent);
+    expect(items).toContain('Export session (zip)…');
+  });
+
   it('isolates panel instances so closing one key keeps the other live', async () => {
     vi.resetModules();
     const doc = new FakeDocument();

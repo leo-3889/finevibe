@@ -1,10 +1,11 @@
 import { appState } from './state.js';
+import { isSpawnRejectedExitReason } from '../shared/constants.js';
 import { initSidebar, promptNewProject } from './components/sidebar.js';
-import { initTabBar } from './components/tab-bar.js';
+import { initTabBar } from './components/tab-bar/index.js';
 import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
 import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals, refreshProfileLabels } from './components/terminal-pane.js';
-import { setIdle, setHookStatus, notifyInterrupt } from './session-activity.js';
+import { setHookStatus, notifyInterrupt } from './session-activity.js';
 import { parseCost, setCostData, onChange as onCostChange } from './session-cost.js';
 import { applyCliSessionName } from './session-title.js';
 import { setContextData, onChange as onContextChange } from './session-context.js';
@@ -17,7 +18,6 @@ import { startPolling as startGitPolling } from './git-status.js';
 import { initDebugPanel, logDebugEvent } from './components/debug-panel.js';
 import { initGitPanel } from './components/git-panel.js';
 import { initActiveSessions } from './components/active-sessions-panel.js';
-import { disconnectInspector } from './components/mcp-inspector.js';
 import { initUpdateBanner } from './components/update-banner.js';
 import { initSessionHistory } from './components/session-history.js';
 import { captureInitialContext } from './session-insights.js';
@@ -48,16 +48,30 @@ function initI18n(): void {
   const initial: Locale = saved ?? resolveSystemLocale(navigator.language);
   setI18nLocale(initial);
   document.documentElement.lang = initial;
-  // Persist the resolved locale on first launch so subsequent runs reuse it.
-  if (!saved) {
-    appState.setPreference('locale', initial);
-  }
+  // Always persist the resolved locale: on first launch it seeds the choice,
+  // and on every launch the resulting `preferences-changed` emit re-renders
+  // components that already rendered during bootstrap — before load() and
+  // initI18n() ran — so they pick up the effective locale immediately.
+  appState.setPreference('locale', initial);
 }
 import { initBoard } from './components/board/board-view.js';
 import { initBoardSessionSync } from './board-session-sync.js';
 import { initTeamView } from './components/team/team-view.js';
 import { getZoomFactor } from './zoom.js';
 import { confirmAppClose } from './session-close.js';
+
+// Theme and zoom live in persisted preferences, but `appState.load()` is an
+// async IPC round-trip: waiting on it painted the default dark theme at 1.0
+// zoom for the first frames before the saved values landed. Read the small
+// theme/zoom slice over a synchronous channel so the very first paint already
+// matches the saved preferences. `loadState()` never throws (corrupt or missing
+// state falls back to defaults in main), so this cannot break bootstrap.
+function applyStartupPrefs(): void {
+  const prefs = window.vibeyard.store.startupPrefs();
+  document.documentElement.dataset.theme = prefs.theme ?? 'dark';
+  if (prefs.zoomFactor && prefs.zoomFactor !== 1.0) window.vibeyard.zoom.set(prefs.zoomFactor);
+}
+applyStartupPrefs();
 
 let isQuitting = false;
 window.vibeyard.app.onQuitting(() => {
@@ -199,6 +213,13 @@ async function main(): Promise<void> {
     if (isShellSessionId(sessionId)) {
       handleShellPtyExit(sessionId, exitCode);
     } else if (!isMcpSession(sessionId) && !isQuitting) {
+      // A rejected launch never produced a PTY: the pane already shows the
+      // actionable reason (pty:data wrote it just before this exit), so
+      // tearing the terminal down in this same turn hides the message and
+      // archives a crash badge + crash notification for a process that never
+      // ran. Keep the pane and the tab — the operator reads why, then closes
+      // it (closing archives without an exitReason, i.e. no crash badge).
+      if (isSpawnRejectedExitReason(exitReason)) return;
       // End any active P2P share for this session
       if (isSharing(sessionId)) {
         endShare(sessionId);
@@ -278,6 +299,13 @@ async function main(): Promise<void> {
   // Load persisted state
   await appState.load();
 
+// A trailing throttled persist (state.ts) may be armed at renderer unload;
+// write it out before the renderer dies. This is the guarantee for
+// renderer-only unloads (reload): on the app.quit() path this listener runs
+// AFTER main's before-quit flushState(), and the quit-path guarantee is
+// main writing the last state payload it received — not this IPC.
+window.addEventListener('beforeunload', () => appState.flushPersist());
+
   // Re-derive titles for sessions restored from a previous run (see
   // collectRestoredSelfTitlingSessions). Main mirrors each tab's title from
   // its transcript only when the conversation id is already known; an unknown
@@ -295,9 +323,9 @@ async function main(): Promise<void> {
     window.vibeyard.session.release(sessionId);
   });
 
-  // Initialize the UI locale before anything else renders strings.
-  // Persisted choice wins; otherwise fall back to the OS language and persist
-  // it so future launches start in the same locale.
+  // Apply the persisted locale (OS fallback on first launch). The always-on
+  // persist inside initI18n emits `preferences-changed`, re-rendering the
+  // components that already painted during bootstrap in the default locale.
   initI18n();
 
   // Apply theme from loaded preferences
@@ -306,8 +334,8 @@ async function main(): Promise<void> {
 
   // Re-apply theme (and re-theme terminals) whenever preferences change.
   // Also handles locale change: re-translate the open preferences modal in
-  // place. Out-of-modal strings (sidebar buttons, tab titles) stay English
-  // until a follow-up PR translates them.
+  // place; components that render on `preferences-changed` (sidebar, active
+  // sessions, board) and `onLocaleChange` subscribers re-translate themselves.
   let lastLocale = getLocale();
   let lastAutoTitle = appState.preferences.autoTitleEnabled;
   appState.on('preferences-changed', () => {

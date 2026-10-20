@@ -6,6 +6,7 @@ vi.mock('electron-updater', () => ({
     autoInstallOnAppQuit: false,
     checkForUpdates: vi.fn().mockResolvedValue({}),
     quitAndInstall: vi.fn(),
+    setFeedURL: vi.fn(),
     on: vi.fn(),
   },
 }));
@@ -81,6 +82,37 @@ describe('auto-updater', () => {
     const handler = vi.mocked(autoUpdater.on).mock.calls.find((c) => c[0] === 'error')![1] as (err: Error) => void;
     handler(new Error('update failed'));
     expect(mockSend).toHaveBeenCalledWith('update:error', { message: 'update failed' });
+  });
+
+  it('points the feed at VIBEYARD_RELEASE_REPO when set to owner/repo', () => {
+    process.env.VIBEYARD_RELEASE_REPO = 'leo-3889/vibeyard';
+    try {
+      initAutoUpdater();
+      expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
+        provider: 'github',
+        owner: 'leo-3889',
+        repo: 'vibeyard',
+        releaseType: 'release',
+      });
+    } finally {
+      delete process.env.VIBEYARD_RELEASE_REPO;
+    }
+  });
+
+  it('keeps the default (upstream) feed when VIBEYARD_RELEASE_REPO is unset', () => {
+    delete process.env.VIBEYARD_RELEASE_REPO;
+    initAutoUpdater();
+    expect(autoUpdater.setFeedURL).not.toHaveBeenCalled();
+  });
+
+  it('ignores a malformed VIBEYARD_RELEASE_REPO', () => {
+    process.env.VIBEYARD_RELEASE_REPO = 'not-a-slug';
+    try {
+      initAutoUpdater();
+      expect(autoUpdater.setFeedURL).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.VIBEYARD_RELEASE_REPO;
+    }
   });
 
   it('skips initialization in dev mode', async () => {

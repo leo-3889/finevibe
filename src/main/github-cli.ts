@@ -6,9 +6,24 @@ import type { GithubFetchResult, GithubItem, GithubRepo } from '../shared/types'
 import { GITHUB_MAX_PER_PAGE } from '../shared/constants';
 import { getFullPath } from './pty-manager';
 import { getGitRemoteUrl } from './git-status';
-import { isWin, pathSep, whichCmd } from './platform';
+import { isWin, whichCmd } from './platform';
 
-let cachedAvailable: boolean | null = null;
+/** An `isGhAvailable()` probe is trusted for this long, so installing `gh` needs at most a restart-free minute. */
+const GH_AVAILABILITY_TTL_MS = 60_000;
+
+interface GhAvailability {
+  available: boolean;
+  /** Timestamp of the probe; the cache expires after `GH_AVAILABILITY_TTL_MS`. */
+  at: number;
+  /**
+   * Absolute path of the install directory candidate that exists, or null when
+   * `gh` was only found through PATH — so `ghApi` invokes the same binary the
+   * probe validated instead of relying on PATH resolution.
+   */
+  resolvedPath: string | null;
+}
+
+let cachedAvailability: GhAvailability | null = null;
 
 function ghBinaryName(): string {
   return isWin ? 'gh.exe' : 'gh';
@@ -33,16 +48,18 @@ function ghCandidates(): string[] {
 }
 
 export function resetCacheForTesting(): void {
-  cachedAvailable = null;
+  cachedAvailability = null;
 }
 
 export async function isGhAvailable(): Promise<boolean> {
-  if (cachedAvailable !== null) return cachedAvailable;
+  if (cachedAvailability && Date.now() - cachedAvailability.at < GH_AVAILABILITY_TTL_MS) {
+    return cachedAvailability.available;
+  }
 
   for (const candidate of ghCandidates()) {
     try {
       if (fs.existsSync(candidate)) {
-        cachedAvailable = true;
+        cachedAvailability = { available: true, at: Date.now(), resolvedPath: candidate };
         return true;
       }
     } catch {}
@@ -57,16 +74,25 @@ export async function isGhAvailable(): Promise<boolean> {
         (err, stdout) => (err ? reject(err) : resolve(stdout.trim())),
       );
     });
-    cachedAvailable = !!which;
-    return cachedAvailable;
+    cachedAvailability = { available: which.length > 0, at: Date.now(), resolvedPath: null };
+    return cachedAvailability.available;
   } catch {
-    cachedAvailable = false;
+    cachedAvailability = { available: false, at: Date.now(), resolvedPath: null };
     return false;
   }
 }
 
 interface GhApiOptions {
   query?: Record<string, string | number>;
+}
+
+/**
+ * The executable `ghApi` invokes: the candidate path the availability probe
+ * validated, else the bare name resolved through `getFullPath()`. Callers reach
+ * it only after `isGhAvailable()` has populated the cache.
+ */
+function ghExecutable(): string {
+  return cachedAvailability?.resolvedPath ?? ghBinaryName();
 }
 
 async function ghApi<T = unknown>(apiPath: string, opts: GhApiOptions = {}): Promise<T> {
@@ -77,7 +103,7 @@ async function ghApi<T = unknown>(apiPath: string, opts: GhApiOptions = {}): Pro
 
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile(
-      ghBinaryName(),
+      ghExecutable(),
       ['api', fullPath, '-H', 'Accept: application/vnd.github+json'],
       {
         env: { ...process.env, PATH: getFullPath() },
@@ -96,7 +122,35 @@ async function ghApi<T = unknown>(apiPath: string, opts: GhApiOptions = {}): Pro
     );
   });
 
-  return JSON.parse(stdout) as T;
+  try {
+    return JSON.parse(stdout) as T;
+  } catch {
+    throw new Error(`gh api returned invalid JSON for ${apiPath}`);
+  }
+}
+
+/**
+ * `repo` arrives verbatim from the renderer and steers a `gh api` request made
+ * with the user's token: as the request path (`repos/<repo>/pulls`) and, for
+ * the search endpoint, inside the `q=repo:<repo>` qualifier.
+ *
+ * A `..` segment is resolved away before the request goes out, so
+ * `repos/../user` escapes the `repos/<owner>/<name>` scope and reads any
+ * endpoint the token can reach; a leading `-` is parsed by gh as a flag; a
+ * space or colon in the name escapes the `repo:` qualifier and injects search
+ * operators. GitHub's own grammar is one segment of alphanumerics with inner
+ * `.`/`_`/`-` (owners drop the dot), so require exactly two such segments and
+ * percent-encode them for the path — encoding also makes `%2e%2e` (which
+ * decodes to `..` server-side) inert while leaving a plain `owner/name`
+ * byte-identical. Returns null for anything else.
+ */
+function encodeRepoPath(repo: string): string | null {
+  const segments = repo.split('/');
+  if (segments.length !== 2) return null;
+  for (const segment of segments) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment)) return null;
+  }
+  return segments.map(encodeURIComponent).join('/');
 }
 
 export interface ListOptions {
@@ -105,10 +159,11 @@ export interface ListOptions {
 }
 
 export async function listPullRequests(repo: string, opts: ListOptions): Promise<GithubFetchResult> {
-  if (!repo || !repo.includes('/')) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
+  const encoded = repo ? encodeRepoPath(repo) : null;
+  if (!encoded) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
   if (!(await isGhAvailable())) return { ok: false, error: 'gh CLI not installed' };
   try {
-    const items = await ghApi<GithubItem[]>(`repos/${repo}/pulls`, {
+    const items = await ghApi<GithubItem[]>(`repos/${encoded}/pulls`, {
       query: { state: opts.state, per_page: Math.min(Math.max(opts.max, 1), GITHUB_MAX_PER_PAGE), sort: 'updated', direction: 'desc' },
     });
     return { ok: true, items: items.slice(0, opts.max) };
@@ -118,7 +173,9 @@ export async function listPullRequests(repo: string, opts: ListOptions): Promise
 }
 
 export async function listIssues(repo: string, opts: ListOptions): Promise<GithubFetchResult> {
-  if (!repo || !repo.includes('/')) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
+  // The validated name feeds a `repo:` qualifier, not a path, so the plain
+  // spelling goes into `q`; the check is what keeps it one qualifier.
+  if (!repo || !encodeRepoPath(repo)) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
   if (!(await isGhAvailable())) return { ok: false, error: 'gh CLI not installed' };
   try {
     // /issues endpoint returns PRs too — search API filters server-side via is:issue.

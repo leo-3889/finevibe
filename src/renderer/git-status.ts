@@ -169,10 +169,6 @@ export function getActiveGitPath(projectId: string): string {
   return project?.path ?? '';
 }
 
-export function getSessionWorktree(sessionId: string): string | null {
-  return sessionWorktreeMap.get(sessionId) ?? null;
-}
-
 export function setActiveWorktree(projectId: string, path: string | null): void {
   if (path) {
     manualOverride.set(projectId, path);

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('./tab-bar.js', () => ({ promptNewSession: vi.fn() }));
+vi.mock('./tab-bar/session-menu.js', () => ({ promptNewSession: vi.fn() }));
 vi.mock('./terminal-pane.js', () => ({ setPendingPrompt: vi.fn() }));
 vi.mock('./file-viewer.js', () => ({ getFileViewerInstance: vi.fn() }));
 vi.mock('./file-reader.js', () => ({ getFileReaderInstance: vi.fn() }));

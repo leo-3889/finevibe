@@ -40,11 +40,13 @@ import { writeCliSessionId } from './hook-status';
 import { createCompatibleSessionWatcher } from './pi-compatible-session-watcher';
 import type { CompatibleSessionWatcher } from './pi-compatible-session-watcher';
 
-const mockReaddirSync = vi.mocked(fs.readdirSync);
-const mockStatSync = vi.mocked(fs.statSync);
-const mockOpenSync = vi.mocked(fs.openSync);
-const mockReadSync = vi.mocked(fs.readSync);
-const mockCloseSync = vi.mocked(fs.closeSync);
+// The mock fs implements the subset the watcher uses; the real fs signatures
+// are wider (PathLike, ArrayBufferView). Type the handles against that subset.
+const mockReaddirSync = vi.mocked(fs.readdirSync as unknown as (p: string) => string[]);
+const mockStatSync = vi.mocked(fs.statSync as unknown as (p: string) => { mtimeMs: number });
+const mockOpenSync = vi.mocked(fs.openSync as unknown as (p: string) => number);
+const mockReadSync = vi.mocked(fs.readSync as unknown as (fd: number, target: Buffer) => number);
+const mockCloseSync = vi.mocked(fs.closeSync as unknown as (fd: number) => boolean);
 const mockWriteCliSessionId = vi.mocked(writeCliSessionId);
 const mockWatch = vi.mocked(fs.watch);
 
@@ -57,8 +59,12 @@ const dirState = new Map<string, { files: string[]; mtimeMs: number }>();
 const readdirCounts = new Map<string, number>();
 const openedFiles: string[] = [];
 
-function setDir(dir: string, files: string[], mtimeMs = 1_000): void {
-  dirState.set(dir, { files, mtimeMs });
+function setDir(dir: string, files: string[], mtimeMs?: number): void {
+  const existing = dirState.get(dir);
+  // A real directory's mtime moves when its entries change; a default
+  // setDir simulates that, while explicit mtimes stay pinned for the
+  // cache tests that need an unchanged listing.
+  dirState.set(dir, { files, mtimeMs: mtimeMs ?? (existing ? existing.mtimeMs + 1_000 : 1_000) });
 }
 
 function mockFlatDirs(): void {
@@ -133,6 +139,16 @@ beforeEach(() => {
   readdirCounts.clear();
   openedFiles.length = 0;
   electronMock.windows = [{ isDestroyed: () => false }];
+  // Call records must not leak between tests: watchEventFor() looks the
+  // callback up by dir and the "not called" assertions count every call.
+  mockReaddirSync.mockClear();
+  mockStatSync.mockClear();
+  mockOpenSync.mockClear();
+  mockReadSync.mockClear();
+  mockCloseSync.mockClear();
+  mockWatch.mockClear();
+  mockWriteCliSessionId.mockClear();
+  onAdopted.mockClear();
   mockFlatDirs();
 });
 

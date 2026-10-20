@@ -2,12 +2,13 @@ import { vi } from 'vitest';
 import * as path from 'path';
 import { isMac, isWin } from './platform';
 
-const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir } = vi.hoisted(() => ({
+const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockWrite: vi.fn(),
   mockResize: vi.fn(),
   mockKill: vi.fn(),
   mockExecFile: vi.fn(),
+  mockKeychainIsolation: vi.fn(() => ({ status: 'supported' as 'supported' | 'unsupported' | 'unknown', version: null as string | null })),
   mockNvmDefaultNodeBinDir: vi.fn(() => null as string | null),
 }));
 
@@ -40,10 +41,15 @@ vi.mock('./providers/nvm', () => ({
   findBinaryInNvm: vi.fn(() => null),
 }));
 
+vi.mock('./claude-keychain', () => ({
+  getKeychainIsolationStatus: mockKeychainIsolation,
+}));
+
 import * as fs from 'fs';
 import * as child_process from 'child_process';
 import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, LaunchSpecError } from './pty-manager';
-import { initProviders } from './providers/registry';
+import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
+import { getProvider, initProviders } from './providers/registry';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -67,6 +73,7 @@ function createMockPtyProcess() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockExistsSync.mockReturnValue(false);
+  mockKeychainIsolation.mockReturnValue({ status: 'supported', version: null });
   initProviders();
 });
 
@@ -273,7 +280,7 @@ describe('spawnPty', () => {
     }
   });
 
-  it('rejects unsupported extra args before spawning (actionable message, exit 1, no PTY)', () => {
+  it('rejects unsupported extra args before spawning (actionable message, spawn-rejected, no PTY)', () => {
     const onData = vi.fn();
     const onExit = vi.fn();
     spawnPty('s1', '/project', null, false, '--no-session', 'omp', undefined, undefined, '', onData, onExit);
@@ -281,7 +288,36 @@ describe('spawnPty', () => {
     expect(mockSpawn).not.toHaveBeenCalled();
     expect(onData).toHaveBeenCalledTimes(1);
     expect(onData.mock.calls[0][0]).toContain('--no-session');
-    expect(onExit).toHaveBeenCalledWith(1);
+    // The sentinel — not a bare exit code — is what tells the renderer the
+    // pane must survive so the "remove these options" message stays readable.
+    expect(onExit).toHaveBeenCalledWith(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
+  });
+
+  it('reports a genuine exit code 1 as a plain process exit (no spawn-rejected sentinel)', () => {
+    const proc = createMockPtyProcess();
+    (proc as unknown as { pid: number }).pid = 2028;
+    mockSpawn.mockReturnValue(proc);
+    const onExit = vi.fn();
+
+    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), onExit);
+    proc._emitExit(1, 0);
+
+    // Exactly three positional args: a 4th would tell the renderer to keep the
+    // pane, which is exactly wrong for a process that really died.
+    expect(onExit).toHaveBeenCalledWith(1, 0, 2028);
+  });
+
+  it('reports a Claude profile blocked by keychain isolation as spawn-rejected (no PTY)', () => {
+    mockKeychainIsolation.mockReturnValue({ status: 'unsupported', version: '2.1.19' });
+    const onData = vi.fn();
+    const onExit = vi.fn();
+
+    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', onData, onExit, '/profiles/work');
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData.mock.calls[0][0]).toContain('keychain login, mixing the accounts');
+    expect(onExit).toHaveBeenCalledWith(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
   });
 
   it('spawns with tokenized (quoted) extra args', () => {
@@ -533,6 +569,96 @@ describe('killPty', () => {
     mockWrite.mockClear();
     writePty('s1', 'input');
     expect(mockWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('stale kills (no spawn in flight)', () => {
+  it('does not kill a resumed PTY when the kill arrives after the old PTY exited', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(proc);
+    await spawnPty('resumed', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    proc._emitExit(1); // crash: the PTY is gone from the registry
+
+    // A late kill for the crashed session: nothing is spawning for this id,
+    // so the kill addresses a PTY that no longer exists. Remembering it
+    // used to tear down the next PTY resumed under the same id.
+    expect(killPty('resumed')).toBe(false);
+    expect(mockKill).not.toHaveBeenCalled();
+
+    const resumed = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(resumed);
+    await spawnPty('resumed', '/project', 'cli-1', true, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    expect(mockKill).not.toHaveBeenCalled();
+    mockWrite.mockClear();
+    writePty('resumed', 'input');
+    expect(mockWrite).toHaveBeenCalledWith('input');
+  });
+
+  it('ignores a kill for an id that was never spawned, so a later spawn survives', async () => {
+    expect(killPty('never-spawned')).toBe(false);
+
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(proc);
+    await spawnPty('never-spawned', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    expect(mockKill).not.toHaveBeenCalled();
+    mockWrite.mockClear();
+    writePty('never-spawned', 'input');
+    expect(mockWrite).toHaveBeenCalledWith('input');
+  });
+});
+
+describe('killPty arriving while spawnPty is still awaiting', () => {
+  it('kills the PTY the moment it registers instead of orphaning the CLI', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    // The renderer drops the session while spawnPty is awaiting the Copilot
+    // hook install — the kill lands inside the in-flight window, so it is
+    // remembered and the new PTY is torn down as soon as it registers.
+    const copilot = getProvider('copilot');
+    vi.spyOn(copilot, 'installHooks').mockImplementation(async () => {
+      expect(killPty('pending-kill')).toBe(false);
+    });
+    await spawnPty('pending-kill', '/project', null, false, '', 'copilot', undefined, undefined, '', vi.fn(), vi.fn());
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockKill).toHaveBeenCalledTimes(1);
+
+    // And deregistered: no live handle an orphaned CLI could keep writing to.
+    mockWrite.mockClear();
+    writePty('pending-kill', 'input');
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it('drops the pending kill when the attempt never spawns, so a retry survives', async () => {
+    // The kill lands inside the in-flight window, then pty.spawn fails:
+    // there is nothing to kill, and the flag must not leak to the retry.
+    const copilot = getProvider('copilot');
+    let killedOnce = false;
+    vi.spyOn(copilot, 'installHooks').mockImplementation(async () => {
+      if (!killedOnce) {
+        killedOnce = true;
+        expect(killPty('retry-after-failure')).toBe(false);
+      }
+    });
+    mockSpawn.mockImplementationOnce(() => {
+      throw new Error('spawn failed');
+    });
+
+    await expect(
+      spawnPty('retry-after-failure', '/project', null, false, '', 'copilot', undefined, undefined, '', vi.fn(), vi.fn()),
+    ).rejects.toThrow('spawn failed');
+
+    // The user fixes the problem and re-spawns the same session id: the kill
+    // that belonged to the failed attempt must not tear down the new CLI.
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValueOnce(proc);
+    await spawnPty('retry-after-failure', '/project', null, false, '', 'copilot', undefined, undefined, '', vi.fn(), vi.fn());
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockKill).not.toHaveBeenCalled();
+    mockWrite.mockClear();
+    writePty('retry-after-failure', 'input');
+    expect(mockWrite).toHaveBeenCalledWith('input');
   });
 });
 

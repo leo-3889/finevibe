@@ -2,7 +2,7 @@ import { appState, ArchivedSession, ProjectRecord } from '../state.js';
 import { loadProviderAvailability } from '../provider-availability.js';
 import { buildResumeWithProviderItems } from './resume-with-provider-menu.js';
 import { showConfirmDialog } from './modal.js';
-import { t } from '../i18n.js';
+import { getLocale, onLocaleChange, t } from '../i18n.js';
 import type { ProviderId } from '../../shared/types.js';
 
 const MAX_VISIBLE = 50;
@@ -11,6 +11,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   codex: 'Codex CLI',
   copilot: 'GitHub Copilot',
   gemini: 'Gemini CLI',
+  pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 interface ProjectFilterState {
@@ -31,6 +33,39 @@ function hideHistoryContextMenu(): void {
   }
 }
 
+function showHistoryToast(message: string): void {
+  const el = document.createElement('div');
+  el.className = 'history-toast';
+  el.textContent = message;
+  el.style.cssText =
+    'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;' +
+    'padding:8px 14px;border-radius:6px;background:var(--bg-secondary,#222);color:var(--fg-primary,#eee);' +
+    'border:1px solid var(--border-color,#444);font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.4);';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+/** Save this session's durable record: `zip` = meta.json + transcript + sidecars; `file` = the transcript verbatim. */
+async function backupSession(project: ProjectRecord, archived: ArchivedSession, format: 'zip' | 'file'): Promise<void> {
+  const providerId = (archived.providerId || 'claude') as ProviderId;
+  const profile = archived.profileId
+    ? appState.profiles.find((p) => p.id === archived.profileId && p.providerId === providerId)
+    : undefined;
+  try {
+    const outPath = await window.vibeyard.session.exportArchive(
+      providerId,
+      archived.cliSessionId,
+      project.path,
+      profile?.configDir,
+      archived,
+      format,
+    );
+    if (outPath) showHistoryToast(t('session.history.exportSaved', { path: outPath }));
+  } catch (err) {
+    showHistoryToast(t('session.history.exportFailed', { err: String((err as Error)?.message ?? err) }));
+  }
+}
+
 function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, archived: ArchivedSession): void {
   hideHistoryContextMenu();
 
@@ -39,10 +74,13 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  if (archived.cliSessionId && archived.transcriptAvailable !== false) {
+  // Active rows (live sessions recorded at creation) finalize on close; they
+  // carry no closed transcript guarantee, so no Resume affordances.
+  const isActive = archived.state === 'active';
+  if (!isActive && archived.cliSessionId && archived.transcriptAvailable !== false) {
     const resumeItem = document.createElement('div');
     resumeItem.className = 'tab-context-menu-item';
-    resumeItem.textContent = 'Resume';
+    resumeItem.textContent = t('session.history.resume');
     resumeItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideHistoryContextMenu();
@@ -51,14 +89,19 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
     menu.appendChild(resumeItem);
   }
 
-  const resumeWithItems = buildResumeWithProviderItems(
-    (archived.providerId || 'claude') as ProviderId,
-    (targetId) => {
-      hideHistoryContextMenu();
-      appState.resumeWithProvider(project.id, { archivedSessionId: archived.id }, targetId);
-    },
-  );
-  for (const el of resumeWithItems) menu.appendChild(el);
+  // Same gate as Resume above: an active row's transcript is being written by
+  // a live CLI; resuming it elsewhere spawns a second agent on the same
+  // conversation.
+  if (!isActive && archived.cliSessionId && archived.transcriptAvailable !== false) {
+    const resumeWithItems = buildResumeWithProviderItems(
+      (archived.providerId || 'claude') as ProviderId,
+      (targetId) => {
+        hideHistoryContextMenu();
+        appState.resumeWithProvider(project.id, { archivedSessionId: archived.id }, targetId);
+      },
+    );
+    for (const el of resumeWithItems) menu.appendChild(el);
+  }
 
   if (menu.firstChild) {
     const separator = document.createElement('div');
@@ -66,15 +109,47 @@ function showHistoryContextMenu(x: number, y: number, project: ProjectRecord, ar
     menu.appendChild(separator);
   }
 
-  const removeItem = document.createElement('div');
-  removeItem.className = 'tab-context-menu-item danger';
-  removeItem.textContent = 'Remove from history';
-  removeItem.addEventListener('click', (e) => {
+  // A running tab's row is the record its close finalizes. Removing it here
+  // makes the close archive a fresh entry under a new id (bookmark lost), so
+  // removal lives with the tab, not with the row - matching the sessions
+  // widget, and enforced in the state layer as well.
+  if (!isActive) {
+    const removeItem = document.createElement('div');
+    removeItem.className = 'tab-context-menu-item danger';
+    removeItem.textContent = t('session.history.removeFromHistory');
+    removeItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideHistoryContextMenu();
+      appState.removeHistoryEntry(project.id, archived.id);
+    });
+    menu.appendChild(removeItem);
+  }
+
+  const backupItem = document.createElement('div');
+  backupItem.className = 'tab-context-menu-item';
+  backupItem.textContent = t('session.history.exportZip');
+  backupItem.title = archived.cliSessionId
+    ? t('session.history.exportZipTooltip')
+    : t('session.history.exportZipNoIdTooltip');
+  backupItem.addEventListener('click', (e) => {
     e.stopPropagation();
     hideHistoryContextMenu();
-    appState.removeHistoryEntry(project.id, archived.id);
+    void backupSession(project, archived, 'zip');
   });
-  menu.appendChild(removeItem);
+  menu.appendChild(backupItem);
+
+  if (archived.cliSessionId) {
+    const fileItem = document.createElement('div');
+    fileItem.className = 'tab-context-menu-item';
+    fileItem.textContent = t('session.history.exportTranscript');
+    fileItem.title = t('session.history.exportTranscriptTooltip');
+    fileItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideHistoryContextMenu();
+      void backupSession(project, archived, 'file');
+    });
+    menu.appendChild(fileItem);
+  }
 
   document.body.appendChild(menu);
   historyContextMenu = menu;
@@ -99,6 +174,7 @@ export function initSessionHistory(): void {
   listenersAttached = true;
 
   appState.on('history-changed', rerenderAll);
+  onLocaleChange(rerenderAll);
   if (typeof document.addEventListener === 'function') {
     document.addEventListener('click', hideHistoryContextMenu);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideHistoryContextMenu(); });
@@ -135,7 +211,7 @@ export function renderSessionHistory(
   if (history.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'history-empty';
-    empty.textContent = 'No session history yet';
+    empty.textContent = t('session.history.empty');
     container.appendChild(empty);
     return;
   }
@@ -143,7 +219,7 @@ export function renderSessionHistory(
   const searchInput = document.createElement('input');
   searchInput.className = 'history-search';
   searchInput.type = 'text';
-  searchInput.placeholder = 'Filter history...';
+  searchInput.placeholder = t('session.history.filterPlaceholder');
   searchInput.value = filter.searchText;
   searchInput.addEventListener('input', () => {
     filter.searchText = searchInput.value;
@@ -154,7 +230,7 @@ export function renderSessionHistory(
   const bookmarkFilter = document.createElement('button');
   const applyFilterState = () => {
     bookmarkFilter.className = `history-bookmark-filter${filter.bookmarkOnly ? ' active' : ''}`;
-    bookmarkFilter.textContent = filter.bookmarkOnly ? '★ Bookmarked' : '☆ Bookmarked';
+    bookmarkFilter.textContent = `${filter.bookmarkOnly ? '★' : '☆'} ${t('session.history.bookmarked')}`;
   };
   applyFilterState();
   bookmarkFilter.addEventListener('click', () => {
@@ -165,13 +241,13 @@ export function renderSessionHistory(
 
   const clearBtn = document.createElement('button');
   clearBtn.className = 'history-clear-btn';
-  clearBtn.textContent = 'Clear History';
+  clearBtn.textContent = t('session.history.clearButton');
   clearBtn.addEventListener('click', () => {
     showConfirmDialog(
-      'Clear session history',
-      `Clear all non-bookmarked sessions for "${project.name}"? Bookmarked sessions will be kept. This cannot be undone.`,
+      t('session.history.clearTitle'),
+      t('session.history.clearMessage', { name: project.name }),
       {
-        confirmLabel: 'Clear',
+        confirmLabel: t('session.history.clearConfirm'),
         onConfirm: () => appState.clearSessionHistory(project.id),
       },
     );
@@ -232,7 +308,14 @@ function renderList(
     const item = document.createElement('div');
     item.className = 'history-item';
 
-    if (archived.cliSessionId && archived.transcriptAvailable !== false) {
+    if (archived.state === 'active' && archived.liveSessionId) {
+      // Running row: clicking switches to the live tab (a live session is
+      // never "resumed" — that would duplicate the CLI session).
+      item.style.cursor = 'pointer';
+      item.addEventListener('click', () => {
+        appState.setActiveSession(project.id, archived.liveSessionId!);
+      });
+    } else if (archived.cliSessionId && archived.transcriptAvailable !== false) {
       item.style.cursor = 'pointer';
       item.addEventListener('click', () => {
         void appState.resumeFromHistorySafe(project.id, archived.id);
@@ -251,8 +334,15 @@ function renderList(
     const name = document.createElement('div');
     name.className = 'history-item-name';
     name.textContent = archived.name;
+    if (archived.state === 'active') {
+      const dot = document.createElement('span');
+      dot.className = 'history-active-dot';
+      dot.title = t('session.history.runningTooltip');
+      dot.style.cssText = 'display:inline-block;width:7px;height:7px;border-radius:50%;background:#3fb950;margin-right:6px;vertical-align:middle;';
+      name.appendChild(dot);
+    }
     name.title = archived.cliSessionId
-      ? `${archived.name}\nSession ID: ${archived.cliSessionId}`
+      ? `${archived.name}\n${t('session.history.sessionId', { id: archived.cliSessionId })}`
       : archived.name;
     info.appendChild(name);
     if (archived.exitReason) {
@@ -271,7 +361,7 @@ function renderList(
     const details = document.createElement('div');
     details.className = 'history-item-details';
     const parts: string[] = [];
-    parts.push(formatDate(archived.closedAt));
+    parts.push(archived.state === 'active' ? t('session.history.running') : formatDate(archived.closedAt ?? archived.createdAt));
     if (archived.cost) {
       parts.push(`$${archived.cost.totalCostUsd.toFixed(2)}`);
     }
@@ -287,8 +377,8 @@ function renderList(
     if (archived.exitReason && archived.cliSessionId && archived.transcriptAvailable !== false) {
       const resumeBtn = document.createElement('button');
       resumeBtn.className = 'history-resume-btn';
-      resumeBtn.textContent = 'Resume';
-      resumeBtn.title = 'Resume crashed session';
+      resumeBtn.textContent = t('session.history.resume');
+      resumeBtn.title = t('session.history.resumeCrashedTooltip');
       resumeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         void appState.resumeFromHistorySafe(project.id, archived.id);
@@ -298,8 +388,8 @@ function renderList(
 
     const bookmarkBtn = document.createElement('button');
     bookmarkBtn.className = `history-bookmark-btn${archived.bookmarked ? ' bookmarked' : ''}`;
-    bookmarkBtn.innerHTML = archived.bookmarked ? '&#9733;' : '&#9734;';
-    bookmarkBtn.title = archived.bookmarked ? 'Remove bookmark' : 'Bookmark session';
+    bookmarkBtn.textContent = archived.bookmarked ? '★' : '☆';
+    bookmarkBtn.title = archived.bookmarked ? t('session.history.removeBookmarkTooltip') : t('session.history.bookmarkTooltip');
     bookmarkBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       appState.toggleBookmark(project.id, archived.id);
@@ -315,7 +405,7 @@ function renderList(
     const more = document.createElement('div');
     more.className = 'history-item-details';
     more.style.padding = '4px 12px';
-    more.textContent = `${filtered.length - MAX_VISIBLE} more items...`;
+    more.textContent = t('session.history.moreItems', { count: filtered.length - MAX_VISIBLE });
     listEl.appendChild(more);
   }
 }
@@ -328,10 +418,10 @@ function formatDate(iso: string): string {
 
   if (diffDays === 0) {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } else if (diffDays === 1) {
-    return 'Yesterday';
   } else if (diffDays < 7) {
-    return `${diffDays}d ago`;
+    // Intl renders -1 day as "Yesterday"/"昨天" (numeric: 'auto') and the
+    // rest as "N days ago"/"N天前" in the active UI locale.
+    return new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto' }).format(-diffDays, 'day');
   }
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }

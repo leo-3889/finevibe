@@ -28,6 +28,7 @@ out/
 # Agent / tooling scratch artifacts
 .superpowers/
 .remember/
+.ruff_cache/
 
 # Local electron-builder overrides
 electron-builder.local.json

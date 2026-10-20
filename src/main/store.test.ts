@@ -3,7 +3,10 @@ import { vi } from 'vitest';
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
-  writeFileSync: vi.fn(),
+  openSync: vi.fn(),
+  writeSync: vi.fn(),
+  fsyncSync: vi.fn(),
+  closeSync: vi.fn(),
   mkdirSync: vi.fn(),
   renameSync: vi.fn(),
 }));
@@ -13,12 +16,15 @@ vi.mock('os', () => ({
 }));
 
 import * as fs from 'fs';
-import { loadState, saveState, flushState, saveStateSync } from './store';
+import { loadState, saveState, flushState, saveStateSync, invalidateStateCache } from './store';
 import type { PersistedState } from './store';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
-const mockWriteFileSync = vi.mocked(fs.writeFileSync);
+const mockOpenSync = vi.mocked(fs.openSync);
+const mockWriteSync = vi.mocked(fs.writeSync);
+const mockFsyncSync = vi.mocked(fs.fsyncSync);
+const mockCloseSync = vi.mocked(fs.closeSync);
 const mockMkdirSync = vi.mocked(fs.mkdirSync);
 const mockRenameSync = vi.mocked(fs.renameSync);
 
@@ -26,12 +32,20 @@ const DEFAULT_STATE: PersistedState = {
   version: 1,
   projects: [],
   activeProjectId: null,
-  preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en' },
+  preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true },
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // fs.writeSync reports the byte count and production code loops on it, so the
+  // mock has to behave like a real descriptor, not return undefined.
+  mockWriteSync.mockImplementation(((
+    _fd: number,
+    buffer: Buffer,
+    position = 0,
+  ) => buffer.length - position) as unknown as typeof fs.writeSync);
   vi.useFakeTimers();
+  invalidateStateCache();
 });
 
 afterEach(() => {
@@ -72,13 +86,13 @@ describe('loadState', () => {
 describe('saveState', () => {
   it('debounces writes by 300ms', () => {
     saveState(DEFAULT_STATE);
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockWriteSync).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(299);
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockWriteSync).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1);
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(mockWriteSync).toHaveBeenCalledOnce();
     expect(String(mockRenameSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json.tmp');
     expect(String(mockRenameSync.mock.calls[0][1]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json');
   });
@@ -91,9 +105,9 @@ describe('saveState', () => {
     saveState(updated);
     vi.advanceTimersByTime(300);
 
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(mockWriteSync).toHaveBeenCalledOnce();
     expect(mockRenameSync).toHaveBeenCalledOnce();
-    const written = JSON.parse(String(mockWriteFileSync.mock.calls[0][1]));
+    const written = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
     expect(written.activeProjectId).toBe('p1');
   });
 
@@ -112,7 +126,62 @@ describe('saveState', () => {
 describe('saveStateSync', () => {
   it('writes immediately without debounce', () => {
     saveStateSync(DEFAULT_STATE);
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(mockWriteSync).toHaveBeenCalledOnce();
+  });
+
+  it('keeps writing after a short write instead of renaming a partial file', () => {
+    const longId = 'x'.repeat(200);
+    mockWriteSync.mockImplementation(((
+      _fd: number,
+      buffer: Buffer,
+      position = 0,
+    ) => Math.min(64, buffer.length - position)) as unknown as typeof fs.writeSync);
+
+    const state = { ...DEFAULT_STATE, activeProjectId: longId };
+    saveStateSync(state);
+
+    expect(mockWriteSync.mock.calls.length).toBeGreaterThan(3);
+    // Every call passes the whole payload with a rising offset and reports how
+    // many bytes it moved, so the pieces must tile the payload exactly.
+    const written = Buffer.concat(mockWriteSync.mock.calls.map(([ , buffer, position], i) => {
+      const start = (position as number) ?? 0;
+      return (buffer as Buffer).subarray(start, start + (mockWriteSync.mock.results[i].value as number));
+    }));
+    expect(written.toString('utf-8')).toBe(JSON.stringify(state, null, 2));
+    expect(mockFsyncSync).toHaveBeenCalledOnce();
+    expect(mockRenameSync).toHaveBeenCalledOnce();
+  });
+
+  it('refuses to fsync and rename when the descriptor stops making progress', () => {
+    mockWriteSync.mockReturnValue(0);
+
+    saveStateSync(DEFAULT_STATE);
+
+    expect(mockFsyncSync).not.toHaveBeenCalled();
+    expect(mockRenameSync).not.toHaveBeenCalled();
+    expect(mockCloseSync).toHaveBeenCalledOnce();
+  });
+
+  it('fsyncs and closes the temp file before renaming it into place', () => {
+    saveStateSync(DEFAULT_STATE);
+
+    expect(String(mockOpenSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json.tmp');
+    expect(mockFsyncSync).toHaveBeenCalledOnce();
+    expect(mockCloseSync).toHaveBeenCalledOnce();
+    // Neither may overtake the data flush: a rename that wins leaves a
+    // truncated state.json with the .tmp recovery copy already consumed.
+    expect(mockFsyncSync.mock.invocationCallOrder[0]).toBeLessThan(mockRenameSync.mock.invocationCallOrder[0]);
+    expect(mockCloseSync.mock.invocationCallOrder[0]).toBeLessThan(mockRenameSync.mock.invocationCallOrder[0]);
+  });
+
+  it('closes the descriptor and skips the rename when the write fails', () => {
+    mockWriteSync.mockImplementation(() => {
+      throw new Error('ENOSPC');
+    });
+    saveStateSync(DEFAULT_STATE);
+
+    expect(mockCloseSync).toHaveBeenCalledOnce();
+    expect(mockRenameSync).not.toHaveBeenCalled();
   });
 });
 
@@ -120,7 +189,7 @@ describe('flushState', () => {
   it('writes pending state immediately', () => {
     saveState(DEFAULT_STATE);
     flushState();
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(mockWriteSync).toHaveBeenCalledOnce();
   });
 });
 

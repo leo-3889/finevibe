@@ -9,6 +9,7 @@ interface FakeClient {
 const mockState = vi.hoisted(() => ({
   clients: [] as FakeClient[],
   connectImpl: (() => Promise.resolve()) as (transport: unknown) => Promise<void>,
+  transportOptions: [] as unknown[],
 }));
 
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
@@ -25,13 +26,17 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
 
 vi.mock('@modelcontextprotocol/sdk/client/sse.js', () => ({
   SSEClientTransport: class {
-    constructor(public url: URL) {}
+    constructor(public url: URL, public options?: unknown) {
+      mockState.transportOptions.push(options);
+    }
   },
 }));
 
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
   StreamableHTTPClientTransport: class {
-    constructor(public url: URL) {}
+    constructor(public url: URL, public options?: unknown) {
+      mockState.transportOptions.push(options);
+    }
   },
 }));
 
@@ -171,5 +176,74 @@ describe('mcp-client lifecycle', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('pinnedFetch (redirect pinning)', () => {
+  const fakeResponse = (init: { status?: number; headers?: Record<string, string>; url?: string }) =>
+    ({
+      status: init.status ?? 200,
+      headers: new Headers(init.headers ?? {}),
+      url: init.url ?? '',
+    }) as Response;
+
+  it('refuses a redirect to another host, naming the target', async () => {
+    // The loopback exemption in mcpUrlPolicy skips the confirm dialog, so a 302
+    // from a local endpoint is the path that reaches an unconfirmed host.
+    const fetchStub = vi.fn(async () =>
+      fakeResponse({ status: 302, headers: { location: 'https://collector.attacker.tld/mcp' } }));
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      await expect(mcp.pinnedFetch('localhost:9876')('http://localhost:9876/mcp'))
+        .rejects.toThrow(/collector\.attacker\.tld/);
+      // Refused at the request layer, never followed and inspected after.
+      expect(fetchStub.mock.calls[0][1]).toMatchObject({ redirect: 'manual' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('refuses a redirect with an unparseable Location header', async () => {
+    // A malformed Location must surface as a refusal, not as a URL parse error
+    // that hides which hop was rejected.
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      fakeResponse({ status: 302, headers: { location: 'http://%' } })));
+    try {
+      await expect(mcp.pinnedFetch('localhost:9876')('http://localhost:9876/mcp'))
+        .rejects.toThrow(/unparseable Location/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('refuses a response arriving from a host other than the confirmed one', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse({ url: 'https://other.example/mcp' })));
+    try {
+      await expect(mcp.pinnedFetch('localhost:9876')('http://localhost:9876/mcp'))
+        .rejects.toThrow(/other\.example/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('passes a same-host response through untouched', async () => {
+    const ok = fakeResponse({ status: 200, url: 'http://localhost:9876/mcp' });
+    vi.stubGlobal('fetch', vi.fn(async () => ok));
+    try {
+      await expect(mcp.pinnedFetch('localhost:9876')('http://localhost:9876/mcp')).resolves.toBe(ok);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('wires the pinned fetch into both transports', async () => {
+    // The SDK builds every request from the transport's own fetch option, so a
+    // transport constructed without it follows redirects to any host.
+    // Plain array state: the lifecycle tests above already pushed entries.
+    mockState.transportOptions.length = 0;
+    await mcp.connect('stream', 'http://localhost:9876/mcp');
+    await mcp.connect('sse', 'http://localhost:9876/sse');
+    expect(mockState.transportOptions.map(o => typeof (o as { fetch?: unknown })?.fetch))
+      .toEqual(['function', 'function']);
   });
 });

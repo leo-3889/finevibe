@@ -153,7 +153,18 @@ describe('setIdle', () => {
   });
 
   it('does nothing for unknown session', () => {
-    setIdle('unknown'); // should not throw
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    const cb = vi.fn();
+    onChange(cb);
+    setIdle('unknown'); // must not throw
+    // No entry is created for the unknown id: it keeps resolving to the
+    // default idle status.
+    expect(getStatus('unknown')).toBe('idle');
+    // Surviving state untouched: a stray setIdle must not sweep live rows.
+    expect(getStatus('s1')).toBe('working');
+    // No spurious change event for a session that does not exist.
+    expect(cb).not.toHaveBeenCalled();
   });
 });
 
@@ -172,7 +183,15 @@ describe('removeSession', () => {
   });
 
   it('does nothing for unknown session', () => {
-    removeSession('unknown'); // should not throw
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    const cb = vi.fn();
+    onChange(cb);
+    removeSession('unknown'); // must not throw
+    // Removal is scoped to the named id — a typo'd id must not drop the
+    // tracked session, and no change event may fire.
+    expect(getStatus('s1')).toBe('working');
+    expect(cb).not.toHaveBeenCalled();
   });
 });
 

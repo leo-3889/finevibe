@@ -38,6 +38,12 @@ describe('serializeForSave', () => {
     expect(s.pendingSystemPrompt).toBeUndefined();
   });
 
+  it('preserves cliSessionId through a serialize → hydrate round trip (resume depends on it)', () => {
+    const out = serializeForSave(baseState({ cliSessionId: 'cli-42' }));
+    hydrateLoadedState(out, {} as Preferences);
+    expect(out.projects[0].sessions[0].cliSessionId).toBe('cli-42');
+  });
+
   it('passes the top-level profiles array through unchanged', () => {
     const state = baseState({});
     state.profiles = [{ id: 'work', name: 'Work', providerId: 'claude', configDir: '/cfg/work', managed: true, createdAt: 0 }];
@@ -66,5 +72,44 @@ describe('hydrateLoadedState', () => {
 
     expect(state.preferences.defaultProfiles).toBeUndefined();
     expect((state.preferences as { defaultProfileId?: string }).defaultProfileId).toBeUndefined();
+  });
+
+  it('fills sidebarViews keys missing from an older save with defaults', () => {
+    const state = baseState({});
+    // Pre-discussions/activeSessions save: the object exists but lacks newer keys.
+    state.preferences = {
+      sidebarViews: { gitPanel: false, sessionHistory: true, discussions: false, fileTree: true },
+    } as unknown as PersistedState['preferences'];
+
+    hydrateLoadedState(state, {
+      sidebarViews: { gitPanel: true, sessionHistory: true, discussions: true, fileTree: true, activeSessions: true },
+    } as Preferences);
+
+    expect(state.preferences.sidebarViews).toEqual({
+      gitPanel: false,
+      sessionHistory: true,
+      discussions: false,
+      fileTree: true,
+      activeSessions: true,
+    });
+  });
+});
+
+describe('hydrateLoadedState active rows', () => {
+  const rows = () => [
+    { id: 'a1', name: 'live', providerId: 'claude' as const, cliSessionId: 'cli-1', createdAt: '0', state: 'active' as const, liveSessionId: 's1' },
+    { id: 'a2', name: 'orphan', providerId: 'claude' as const, cliSessionId: 'cli-2', createdAt: '0', state: 'active' as const, liveSessionId: 'gone' },
+  ];
+
+  it('finalizes rows whose tab did not survive, keeps live ones', () => {
+    const state = baseState({});
+    state.projects[0].sessionHistory = rows();
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    const [live, orphan] = state.projects[0].sessionHistory!;
+    expect(live.state).toBe('active');
+    expect(orphan.state).toBe('closed');
+    expect(orphan.closedAt).toBeTruthy();
   });
 });

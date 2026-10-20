@@ -271,11 +271,6 @@ export function destroySearchBar(sessionId: string): void {
   searchBars.delete(sessionId);
 }
 
-export function isSearchBarVisible(sessionId: string): boolean {
-  const entry = searchBars.get(sessionId);
-  return !!entry && !entry.bar.classList.contains('hidden');
-}
-
 export function formatSearchResultText(query: string, state: SearchResultState): string {
   if (!query) return '';
   if (state.totalCount === 0) return 'No results';

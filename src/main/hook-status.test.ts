@@ -69,7 +69,7 @@ beforeEach(() => {
   vi.mocked(fs.rmdirSync).mockImplementation(vi.fn() as any);
   vi.mocked(fs.watch).mockImplementation((_path: any, cb: any) => {
     watchCallback = cb;
-    return { close: mockClose } as any;
+    return { close: mockClose, on: vi.fn() } as any;
   });
 
   watchCallback = null;
@@ -85,7 +85,7 @@ beforeEach(() => {
 
   vi.mocked(fs.watch).mockImplementation((_path: any, cb: any) => {
     watchCallback = cb;
-    return { close: mockClose } as any;
+    return { close: mockClose, on: vi.fn() } as any;
   });
 });
 
@@ -330,7 +330,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       expect(fs.readFileSync).not.toHaveBeenCalled();
     });
 
-    it('.sessionid sends session:cliSessionId and session:claudeSessionId', () => {
+    it('.sessionid sends session:cliSessionId', () => {
       const win = createMockWin();
       startWatching(win);
       registerSession('abc123');
@@ -339,7 +339,6 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       watchCallback!('change', 'abc123.sessionid');
 
       expect(mockSend).toHaveBeenCalledWith('session:cliSessionId', 'abc123', 'claude-session-xyz');
-      expect(mockSend).toHaveBeenCalledWith('session:claudeSessionId', 'abc123', 'claude-session-xyz');
     });
 
     it('.cost parses JSON and sends session:costData', () => {
@@ -519,9 +518,8 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 's1', 'waiting', '');
       expect(mockSend).toHaveBeenCalledWith('session:cliSessionId', 's2', 'claude-sess-1');
-      expect(mockSend).toHaveBeenCalledWith('session:claudeSessionId', 's2', 'claude-sess-1');
       expect(mockSend).toHaveBeenCalledWith('session:costData', 's3', { cost: {} });
-      expect(mockSend).toHaveBeenCalledTimes(4);
+      expect(mockSend).toHaveBeenCalledTimes(3);
     });
 
     it('is a no-op on destroyed window', () => {
@@ -582,13 +580,13 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       const win = createMockWin();
       registerSession('s1');
 
-      // First poll seeds mtimes
       vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
       vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1000 } as any);
 
       startWatching(win);
 
-      // Advance to trigger first poll — seeds mtimes, no handleFileChange
+      // First poll processes the file, but readFileSync is not mocked to
+      // valid JSON yet, so the read fails and nothing reaches the window.
       await vi.advanceTimersByTimeAsync(2000);
       expect(mockSend).not.toHaveBeenCalled();
 
@@ -615,6 +613,28 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       // Same mtime — no change
       await vi.advanceTimersByTimeAsync(2000);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('processes a file that appears between polls', async () => {
+      const win = createMockWin();
+      registerSession('s1');
+
+      // Seed an empty directory, then a file lands between two polls. The
+      // discovering poll has prev === undefined for it: recording the mtime
+      // alone swallowed the event — the file is never re-read, so the
+      // status/cost/sessionid update was lost until the next change.
+      vi.mocked(fs.promises.readdir).mockResolvedValue([] as any);
+      startWatching(win);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(mockSend).not.toHaveBeenCalled();
+
+      vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
+      vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1500 } as any);
+      const costData = { cost: { total: 0.25 }, context_window: {} };
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
+
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
     });
 
     it('stops polling on cleanupAll', () => {

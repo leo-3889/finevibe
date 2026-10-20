@@ -78,10 +78,16 @@ describe('session-insights', () => {
     });
 
     it('skips capture when session has no project', () => {
+      const projectId = setupProject();
       // Session ID that doesn't belong to any project
       markFreshSession('orphan-session');
       captureInitialContext('orphan-session', makeContextWindow(20));
-      // Should not throw; no project to store on
+      // No project is invented for the orphan, and the one existing project
+      // receives no snapshot — the capture is dropped, not silently attached
+      // to a wrong owner.
+      expect(appState.projects).toHaveLength(1);
+      const project = appState.projects.find(p => p.id === projectId)!;
+      expect(project.insights).toBeUndefined();
     });
 
     it('caps snapshots at 50', () => {

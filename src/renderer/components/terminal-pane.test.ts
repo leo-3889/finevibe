@@ -177,7 +177,18 @@ class FakeElement {
     this.parentElement = null;
   }
 
-  addEventListener(): void {}
+  listeners = new Map<string, Array<(e: unknown) => void>>();
+
+  addEventListener(type: string, handler: (e: unknown) => void): void {
+    const handlers = this.listeners.get(type) ?? [];
+    handlers.push(handler);
+    this.listeners.set(type, handlers);
+  }
+
+  // Tests dispatch through the recorded handlers, as the DOM does.
+  dispatchEvent(type: string, event: unknown = {}): void {
+    for (const handler of this.listeners.get(type) ?? []) handler(event);
+  }
 
   matches(selector: string): boolean {
     return selector.split(',').some((part) => {
@@ -962,5 +973,84 @@ describe('status rail is primed from restored cost/context', () => {
     const instance = createTerminalPane('restored-codex', '/project', 'cli-4', true, '', 'codex');
 
     expect(q(instance.element, '.context-indicator').children.length).toBe(0);
+  });
+});
+
+describe('spawn failure surface (a0ee463)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('window', makeWindowStub());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  it('shows a Failed-to-start overlay with Retry when pty.create rejects', async () => {
+    const { createTerminalPane, spawnTerminal } = await import('./terminal-pane.js');
+    (window as any).vibeyard.pty.create = vi.fn().mockRejectedValue(new Error('ConPTY spawn failed'));
+
+    const instance = createTerminalPane('fail-1', '/project', null, false, '', 'claude');
+    // Callers fire spawnTerminal un-awaited; the rejection must not escape.
+    await expect(spawnTerminal('fail-1')).resolves.toBeUndefined();
+
+    // Pre-fix: the promise rejected (unhandled) and the tab stayed blank.
+    const overlay = instance.element.querySelector('.terminal-exit-overlay');
+    expect(overlay).not.toBeNull();
+    const box = overlay!.querySelector('.terminal-exit-message');
+    expect(box).not.toBeNull();
+    expect(box!.children[0].textContent).toBe('Failed to start session: ConPTY spawn failed');
+    const retry = box!.children[1];
+    expect(retry.tagName).toBe('button');
+    expect(retry.className).toBe('respawn-btn');
+    expect(retry.textContent).toBe('Retry');
+  });
+
+  it('marks the pane unspawned and relaunches the PTY when Retry is clicked', async () => {
+    const { createTerminalPane, spawnTerminal, getTerminalInstance } = await import('./terminal-pane.js');
+    const mockPtyCreate = vi.fn().mockRejectedValueOnce(new Error('missing binary'));
+    (window as any).vibeyard.pty.create = mockPtyCreate;
+    const activity = await import('../session-activity.js');
+
+    const instance = createTerminalPane('fail-2', '/project', null, false, '', 'claude');
+    await spawnTerminal('fail-2');
+
+    // The exact pair split-layout.ts consumes to respawn a dormant pane.
+    // Pre-fix: spawned stayed true (set before the awaited create), so every
+    // later spawnTerminal short-circuited and the pane never relaunched.
+    const pane = getTerminalInstance('fail-2')!;
+    expect(pane.spawned).toBe(false);
+    expect(pane.exited).toBe(false);
+    expect(activity.removeSession).toHaveBeenCalledWith('fail-2');
+
+    instance.element.querySelector('.respawn-btn')!.dispatchEvent('click');
+    await vi.runAllTimersAsync();
+
+    expect(mockPtyCreate).toHaveBeenCalledTimes(2);
+    // Fresh start, not a resume: the failed spawn never reached isResume=true.
+    expect(mockPtyCreate).toHaveBeenLastCalledWith('fail-2', '/project', null, false, '', 'claude', undefined, undefined, '', undefined);
+    expect(getTerminalInstance('fail-2')!.spawned).toBe(true);
+  });
+
+  it('retypes the pending prompt into the relaunched session after a failed spawn', async () => {
+    const { createTerminalPane, spawnTerminal, setPendingPrompt } = await import('./terminal-pane.js');
+    const mockPtyCreate = vi.fn().mockRejectedValueOnce(new Error('spawn denied'));
+    (window as any).vibeyard.pty.create = mockPtyCreate;
+
+    const instance = createTerminalPane('fail-3', '/project', null, false, '', 'claude');
+    await spawnTerminal('fail-3');
+
+    // A prompt queued after the failure (alert banner, board card, keypress
+    // that triggers the layout's respawn of the unspawned pane) reaches the
+    // fresh CLI as its startup argument. Pre-fix the pane stayed "spawned",
+    // so this second spawnTerminal was a no-op and the prompt never arrived.
+    setPendingPrompt('fail-3', 'fix the bug');
+    instance.element.querySelector('.respawn-btn')!.dispatchEvent('click');
+    await vi.runAllTimersAsync();
+
+    expect(mockPtyCreate).toHaveBeenLastCalledWith('fail-3', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined);
+    // Recovery clears the failure overlay.
+    expect(instance.element.querySelector('.terminal-exit-overlay')).toBeNull();
   });
 });

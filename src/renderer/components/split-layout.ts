@@ -86,7 +86,7 @@ import {
   attachTeamToContainer,
   getTeamInstance,
 } from './team/pane.js';
-import { quickNewSession } from './tab-bar.js';
+import { quickNewSession } from './tab-bar/session-menu.js';
 import { isCliSession } from '../session-utils.js';
 import { isInRelativeOrder } from './pane-order.js';
 import { shouldFocusPane, type PaneFocusMemo } from './pane-focus.js';

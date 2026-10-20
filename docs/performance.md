@@ -12,10 +12,11 @@ The file reader accepts text files up to 8 MiB. It displays a bounded page inste
 | Find within a file preview | Displayed page only | Matches outside the current page are not searched. Change pages to search another section. |
 | Untracked Git diff | 256 KiB and 5,000 split lines | An explanatory message instead of an oversized diff. Files containing NUL bytes receive a binary-file message. |
 | Global session search | Best 20 results; indexed text capped at 50 Ki characters per transcript, join separators included | Results search extracted user text, not every byte of a conversation. |
+| Pasted clipboard image | 25 MiB decoded; PNG, JPEG, GIF, WebP, BMP, TIFF | An oversized or unsupported image attaches nothing: the paste is silent. Saved images live in `os.tmpdir()/vibeyard-paste` and files older than a day are pruned. |
 
 `KiB` means 1,024 bytes. Character budgets use JavaScript string length (UTF-16 code units), not bytes or displayed symbols. These limits are code constants, not Preferences settings.
 
-Sources: [file read boundary](../src/main/ipc-handlers.ts), [preview paging](../src/renderer/file-preview.ts), [file reader](../src/renderer/components/file-reader.ts), [Git diffs](../src/main/git-status.ts), and [transcript index limits](../src/main/providers/transcript-utils.ts).
+Sources: [file read and clipboard paste boundaries](../src/main/ipc-handlers.ts), [preview paging](../src/renderer/file-preview.ts), [file reader](../src/renderer/components/file-reader.ts), [Git diffs](../src/main/git-status.ts), and [transcript index limits](../src/main/providers/transcript-utils.ts).
 
 ## Session search work and storage
 
@@ -51,12 +52,54 @@ Pi/OMP launches use an exclusive session directory for transcript ownership. Liv
 
 During polling, unchanged directory listings are reused. Directory mtime changes and watched rename events invalidate listings; the next scan also refreshes a listing after its 30-second cache lifetime. The two-second poll remains in place. Polling still visits cached filenames and checks directory metadata. Root history is released when no registration uses it.
 
-This removes duplicate per-session snapshots and reduces idle directory enumeration. The per-launch directory and known resume ID address the earlier cross-tab attribution paths in code. Registration scans still run on the main thread, and watcher allocation and runtime resource use have not been measured at scale. **PO-06 remains partially addressed.** See the [audit status](AUDIT_STATUS.md) for the next measurement and validation work.
+When a transcript's last meaningful entry does not fit the 16 Ki status window, a bounded 4 MiB fallback read parses it (a search dump larger than the old 1 MiB bound left tab status frozen on its last value, because the derived null suppressed writes); entries beyond the fallback yield no status and the status stays at the last value written. The derived status is cached with the file size and reused while the size is unchanged. That cache is an LRU capped at 512 paths (`MAX_STATUS_TAIL_CACHE`): reads and writes move a path to the newest position and writes past capacity evict the oldest, so a closed session whose oversized final entry never yields a status again cannot pin an entry for the process lifetime. `loadState()` likewise serves the parsed `state.json` from an in-memory cache, refreshed by every save path; anything that rewrites the state file behind `saveState()`/`saveStateSync()` must call `invalidateStateCache()` first.
 
-Source: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts).
+This removes duplicate per-session snapshots and reduces idle directory enumeration. The per-launch directory and known resume ID address the earlier cross-tab attribution paths in code. Registration scans still run on the main thread, and watcher allocation and runtime resource use have not been measured at scale: real main-thread delay, RSS and watcher-handle counts in the running app have never been measured — every bound in this document is a code constant verified by unit tests on Windows, not a measured runtime cost. **PO-06 remains partially addressed.** See the [audit status](AUDIT_STATUS.md) for the next measurement and validation work.
+
+Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), [fallback status reader](../src/main/providers/pi-compatible-transcripts.ts), and [state store](../src/main/store.ts).
+
+## Codex rollout attribution scan cost
+
+For hookless Codex tabs, `src/main/codex-session-watcher.ts` scans `~/.codex/sessions/YYYY/MM/DD/` for rollouts to attribute to pending tabs: `fs.watch` events are coalesced into at most one scan per 500 ms, and a 2 s poll fallback keeps scanning while any tab is pending. Three bounds keep a scan cheap:
+
+- Parsed `session_meta` is cached per path (`metaCache`, capped at 256 entries, oldest evicted first) and invalidated by `(mtimeMs, size)`, so a rollout is read — and a `.jsonl.zst` decompressed, at roughly 10× the compressed size — once per change, not once per scan. Before the cache, every scan re-read and re-decompressed every rollout in today's directory up to twice a second for the whole life of a pending tab.
+- A compressed rollout larger than `MAX_COMPRESSED_META_FILE_BYTES` (8 MiB, the compressed size) is skipped for meta entirely; the meta slice itself is bounded by `META_READ_BYTES` (64 KiB) on both the plain and decompressed paths.
+- The tree is zero-padded `YYYY/MM/DD` and the walk is newest-first, so year/month/day directories whose names sort below the oldest pending registration (minus the 60 s `MTIME_SKEW_MS` window) are pruned by name — no stat, no readdir. A day directory that survives name pruning and has an older mtime costs one stat. A scan is O(recent days) no matter how much Codex history exists on disk.
+
+Honest bound: these are structural removals of repeated I/O, verified by `src/main/codex-session-watcher.test.ts` (meta parsed once per change; day pruning by name). The measured cost in a running app — scan wall-time against years of history, decompression peaks, watcher handles — remains unmeasured, like the Pi/OMP numbers above.
+
+Sources: [Codex session watcher](../src/main/codex-session-watcher.ts).
+
+## Static footprint audit (2026-10-18): growth structures
+
+A full static audit of main + renderer verified every bound above against source and found the registry/watcher/pane layers correctly bounded: no main-side PTY output buffering, no per-spawn listener accumulation, no watcher or polling retention for closed sessions, streaming launcher download, one-shot child processes reaped synchronously, and singleton timers only (four 2-second pollers, each a no-op while its registry is empty). The remaining structures that grow without a code cap:
+
+| Structure | Location | Growth | Planned fix |
+| --- | --- | --- | --- |
+| `PersistedState.projects[].sessionHistory` | `src/shared/types.ts`, rows created for every session at spawn | soft cap 500, but bookmarked and `active` rows are exempt from pruning, so a crash orphaned `active` row and bookmarks accumulate without limit; the dominant term in every full-state save | retain-last-K bookmarks (~50) and expire stale `active` rows whose session no longer exists |
+| Renderer persist burst | `src/renderer/state.ts` `persist()` → `src/main/store.ts` `saveStateSync` | fixed `ffcd283`: each persist serializes the whole state and structured-clones it over IPC, and mutation bursts (kanban sync, session moves, title adoption) used to pay that per mutation | leading-edge 200 ms throttle coalesces a burst to one IPC, `beforeunload` flushes; the store's per-save transient (object graph + JSON string + Buffer, ~2–3× payload) remains, capped by the history fix |
+| Zip export sidecars | `src/main/session-export.ts` `readSidecars` | all sidecar files, `.events` included, buffered whole; the source `.events` file has no size cap on disk (64 KiB is the read budget, not the file size) | stream each sidecar with `createReadStream`, as the transcript already is |
+| xterm scrollback | all three `new Terminal({...})` sites | library default 1,000 lines/tab (~240 KB UTF-16 at 120 cols) — a bound by omission | set `scrollback` explicitly as a documented constant |
+| `hook-status` `lastMtimes` | `src/main/hook-status.ts` | rows for one-shot files (e.g. `.toolfailure`) linger after the file is unlinked, until session cleanup | delete the row when the file is unlinked; sweep names absent from `readdir` |
+| Push-only listener arrays | `sharing/share-manager.ts`, `session-inspector-state.ts` | no public unsubscribe; latent (today one module-scope caller each) | return unsubscribe closures, the pattern `state.ts` already uses |
+| File-tree directory cache | `src/renderer/components/file-tree.ts` `entryCache` | one entry list per directory expanded during the session, freed only on collapse/project removal | LRU cap (~2,000 directories) |
+| `ProjectRecord.githubLastSeen` | `src/shared/types.ts` | one entry per viewed PR/issue, forever | age-prune |
+| Per-launch session dirs | `src/main/launch-session-dir.ts` (`<userData>/pi-sessions`, `<userData>/omp-sessions`) | fixed: one directory per Pi/OMP start/resume, never removed — unbounded on disk, and `listLaunchSessionDirs()` cost one `stat` + one sidecar `readFile` per directory on EVERY global session search (~2,000 synchronous syscalls per search at 1,000 tabs) | 30-day retention window (`LAUNCH_SESSION_RETENTION_MS`), swept once per provider base per process at the first launch, capped at 2,000 directories per pass; the same age filter now gates the search listing |
+
+Sources: [state store](../src/main/store.ts), [session export](../src/main/session-export.ts), [hook status](../src/main/hook-status.ts), [terminal pane](../src/renderer/components/terminal-pane.ts), [file tree](../src/renderer/components/file-tree.ts).
+
+Per-launch retention policy: a directory is expired only when every timestamp it exposes is older than 30 days — the `.vibeyard.json` sidecar's `createdAt`, the newest `*.jsonl` mtime, and the directory's own mtime (the last-activity proxy for pre-sidecar dirs and launches that never wrote a transcript). A resumed tab rewrites a fresh transcript, so its old sidecar never gets it deleted; a directory whose age cannot be established is kept. The sweep runs inside `ensureLaunchSessionDir()`, which every Pi/OMP start/resume calls before spawning the CLI, uses `lstat` only (symlinked directories are skipped, never followed) and removes paths built by joining the provider base with a single `readdir` name, so it cannot escape its own base directory. Search visibility follows the same rule: a directory with no activity inside the window can only contain transcripts retention is about to delete, so it is filtered out before its sidecar is read.
+
+Covered by `src/main/launch-session-dir.test.ts`.
+
+## Measurement protocol for the live run
+
+The static audit defines what the numbers must confirm. Launch with `--js-flags="--expose-gc"`; sample `process.memoryUsage()` (main, via `--inspect`) and `Get-Process Vibeyard` working set (PowerShell, 60 s cadence, per-process rows) plus heap snapshots. Scenarios: **S1** 10 idle tabs → expect ≈ +0.2–0.4 MB/tab renderer, flat main; **S2** a ~100 MB output burst → renderer plateaus at scrollback capacity, main heap must not scale with the burst; **S3** 1 h idle with 10 live PTYs → growth < 5 MB/h (a linear rise implicates the 2 s pollers' per-file maps, `lastMtimes` first); **S4** open 50 sessions and close all → retained `Terminal`/`TranscriptSyncEntry`/reader counts return to baseline; **S5** state seeded with 5,000 history rows → time one persist, < 250 ms; **S6** export a session with a ≥50 MB `.events` sidecar → the main heap transient equals the buffered sidecar bytes (and collapses to chunk size once streaming lands). Record CSVs and snapshots under `bench/memory/<date>/`. Pass criteria: S3 < 5 MB/h, S4 within 10% of baseline, per-tab renderer cost within 2× the 240 KB estimate, S5 < 250 ms.
 
 ## Evidence and open measurement
 
 Automated tests cover repeated search beyond the memory-cache budget, shared indexing/cancellation, growing diff files, split UTF-8 event records, oversized events, navigation within a 200,000-line file, and directory-cache invalidation.
 
-Still needed: live Electron heap/RSS, main-thread delay, frame-time and watcher-handle measurements at increasing history/tab sizes; packaged preview/navigation checks; and sustained terminal-output profiling. Passing unit tests does not establish a speedup percentage or complete the broader Pi/OMP integration audit.
+The persist throttle (`ffcd283`) is covered by `src/renderer/state.test.ts`. Measurement note: mutations inside one 200 ms window coalesce to a single serialize + IPC (leading edge fires the first mutation immediately), so S5-style persist timing counts one persist per burst, not per mutation; a lone mutation never waits behind the window.
+
+Still needed: run the measurement protocol above (S1–S6) in a packaged app, plus packaged preview/navigation checks and sustained terminal-output profiling. Passing unit tests does not establish a speedup percentage or complete the broader Pi/OMP integration audit.

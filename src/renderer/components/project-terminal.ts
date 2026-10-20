@@ -6,7 +6,7 @@ import { appState } from '../state.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
-import { attachClipboardCopyHandler, attachCopyOnSelect, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
 import { esc } from '../dom-utils.js';
 
 interface ShellTerminalInstance {
@@ -63,6 +63,7 @@ function nextLabel(projectId: string): string {
 
 function createShell(projectId: string): ShellTerminalInstance {
   const element = document.createElement('div');
+  element.className = 'shell-terminal';
   element.style.width = '100%';
   element.style.height = '100%';
   element.style.position = 'relative';
@@ -84,7 +85,9 @@ function createShell(projectId: string): ShellTerminalInstance {
   const shellId = crypto.randomUUID();
   const sessionId = `shell-${projectId}-${shellId}`;
 
-  attachClipboardCopyHandler(terminal, undefined, (data) => window.vibeyard.pty.write(sessionId, data));
+  const writeToPty = (data: string) => window.vibeyard.pty.write(sessionId, data);
+  attachClipboardCopyHandler(terminal, undefined, writeToPty);
+  attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: ShellTerminalInstance = {
     id: shellId,
@@ -97,6 +100,11 @@ function createShell(projectId: string): ShellTerminalInstance {
     sessionId,
     spawned: false,
   };
+
+  // Dropping a file types its path into the shell, the same contract the session
+  // terminals use. A spawn is required: `spawned` goes false again when the shell
+  // exits, so a dead shell stops accepting drops with its overlay up.
+  attachFileDropHandler(terminal, element, writeToPty, () => instance.spawned);
 
   terminal.onData((data) => {
     window.vibeyard.pty.write(sessionId, data);

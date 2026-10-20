@@ -205,11 +205,20 @@ export interface ArchivedSession {
   providerId: ProviderId;
   cliSessionId: string | null;
   createdAt: string;
-  closedAt: string;
+  /** Absent while the session is still live (`state: 'active'`). */
+  closedAt?: string;
   bookmarked?: boolean;
   teamMemberId?: string;
   /** Preserved so a resumed session reuses the same profile config dir (CLAUDE_CONFIG_DIR). */
   profileId?: string;
+  /**
+   * 'active' while the owning Vibeyard session is live (history records the
+   * session from creation, not only at close); 'closed' (or absent, for
+   * entries written before the field existed) after finalization.
+   */
+  state?: 'active' | 'closed';
+  /** Live session id the active entry mirrors; finalization matches on it. */
+  liveSessionId?: string;
   cost: {
     totalCostUsd: number;
     totalInputTokens: number;
@@ -384,6 +393,16 @@ export interface GithubRepo {
   repo: string;
 }
 
+/** Which sidebar sections the user has enabled in the Appearance preferences. */
+export interface SidebarViews {
+  gitPanel: boolean;
+  sessionHistory: boolean;
+  discussions: boolean;
+  fileTree: boolean;
+  /** Show the global cross-project "Active Sessions" section in the sidebar. */
+  activeSessions: boolean;
+}
+
 export interface Preferences {
   soundOnSessionWaiting: boolean;
   notificationsDesktop: boolean;
@@ -407,16 +426,25 @@ export interface Preferences {
   keybindings?: Record<string, string>;
   theme?: 'dark' | 'light';
   readinessExcludedProviders?: ProviderId[];
-  sidebarViews?: {
-    gitPanel: boolean;
-    sessionHistory: boolean;
-    discussions: boolean;
-    fileTree: boolean;
-    /** Show the global cross-project "Active Sessions" section in the sidebar. */
-    activeSessions: boolean;
-  };
+  sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;
+  /** Model A: start the shared agentmemory engine when Vibeyard launches (start-if-absent; never killed on quit). */
+  agentmemoryAutoStart?: boolean;
   chromeImport?: ChromeImportSummary;
+}
+
+/** Result of probing the shared agentmemory daemon (see main/agentmemory-manager.ts). */
+export interface AgentmemoryStatus {
+  /** True when the daemon answers its health endpoint (reachable on any HTTP response). */
+  running: boolean;
+  /** agentmemory service version, e.g. "0.9.30" (top-level health field). */
+  serviceVersion?: string;
+  /** Pinned engine version(s) advertised by the daemon's workers, e.g. ["0.11.2"]. */
+  engineVersions?: string[];
+  /** Console (Viewer) URL to open, e.g. "http://localhost:3113". */
+  consoleUrl: string;
+  /** Short health detail / failure reason for the UI (e.g. "healthy", "spawn-failed"). */
+  detail?: string;
 }
 
 // --- Chrome Import ---
@@ -451,6 +479,16 @@ export interface ChromeImportResult {
   cookieCount: number;
   skippedV11: number;
   errors: string[];
+}
+
+/**
+ * Theme/zoom slice served synchronously on the `store:startup-prefs` channel
+ * so the renderer can apply them before its first paint; the full state load
+ * follows asynchronously.
+ */
+export interface StartupPrefs {
+  theme: 'dark' | 'light' | null;
+  zoomFactor: number | null;
 }
 
 export const BROWSER_DEFAULT_PARTITION = 'persist:vibeyard-browser';
@@ -732,3 +770,24 @@ export type TopFilesResult =
  * populates the X11 PRIMARY selection so middle-click paste works).
  */
 export type ClipboardSource = 'selection' | 'explicit';
+
+/**
+ * Every clipboard flavor the terminal can turn into input. Main owns the
+ * clipboard: it reads text, turns an image into `imagePath` (a file in the paste
+ * temp dir) and reads a file list as absolute paths, because every provider takes
+ * attachments as a path — a drop injects the same string. Precedence belongs to
+ * the renderer: text, files, image, markup, then a raw Ctrl+V forward for a
+ * flavor neither side translates; an empty clipboard sends nothing.
+ */
+export type ClipboardPastePayload = {
+  /** Plain text, the flavor a shell consumes verbatim. */
+  text: string;
+  /** Markup source, present only when a rich-text copy carries HTML and no text. */
+  html: string;
+  /** Absolute paths the clipboard carries a list of (browser/Finder/Explorer/Nautilus copies). */
+  files: string[];
+  /** Temp path for a clipboard image, which has no path of its own. */
+  imagePath: string | null;
+  /** False only for a truly empty clipboard; any other untranslated flavor forwards Ctrl+V. */
+  hasContent: boolean;
+};

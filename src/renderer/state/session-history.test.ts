@@ -126,29 +126,38 @@ describe('archiveSession via removeSession()', () => {
     expect(history[0].cost).toBeNull();
   });
 
-  it('does NOT archive empty sessions (no cliSessionId, no cost)', () => {
+  it('records a row at creation and closes it on removeSession (no cliSessionId, no cost)', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'Empty')!;
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(appState.getSessionHistory(project.id)[0].state).toBe('active');
     appState.removeSession(project.id, session.id);
-    expect(appState.getSessionHistory(project.id)).toHaveLength(0);
+    const row = appState.getSessionHistory(project.id)[0];
+    expect(row.state).toBe('closed');
+    expect(row.cliSessionId).toBeNull();
+    expect(row.transcriptAvailable).toBe(false);
+    expect(row.closedAt).toBeDefined();
   });
 
-  it('does NOT archive a session whose transcript does not exist on disk', () => {
-    // cliSessionId is assigned at spawn (SessionStart hook) before any prompt, so it
-    // alone must not make a session archivable — there is no transcript on disk yet.
+  it('closes the row with transcriptAvailable=false when no transcript exists on disk', () => {
+    // cliSessionId is assigned at spawn (SessionStart hook) before any prompt; the row
+    // still exists (created at spawn) but is not resumable — transcript gates resume, not presence.
     mockTranscriptExistsSync.mockReturnValue(false);
     const project = addProject();
     const session = appState.addSession(project.id, 'Spawned')!;
     appState.updateSessionCliId(project.id, session.id, 'cli-spawn-only');
     appState.removeSession(project.id, session.id);
-    expect(appState.getSessionHistory(project.id)).toHaveLength(0);
+    const history = appState.getSessionHistory(project.id);
+    expect(history).toHaveLength(1);
+    expect(history[0].cliSessionId).toBe('cli-spawn-only');
+    expect(history[0].transcriptAvailable).toBe(false);
   });
 
   it('does NOT consult the transcript check for a session with no cliSessionId', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'NoId')!;
     appState.removeSession(project.id, session.id);
-    expect(appState.getSessionHistory(project.id)).toHaveLength(0);
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
     expect(mockTranscriptExistsSync).not.toHaveBeenCalled();
   });
 
@@ -161,31 +170,39 @@ describe('archiveSession via removeSession()', () => {
     expect(appState.getSessionHistory(project.id)).toHaveLength(1);
   });
 
-  it('does NOT archive the cleared session when its transcript does not exist', () => {
+  it('archives the cleared incarnation and keeps the tab row live', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
     // Only the first incarnation has a transcript on disk.
     mockTranscriptExistsSync.mockImplementation((_p: string, cliId: string) => cliId === 'cli-first');
     appState.updateSessionCliId(project.id, session.id, 'cli-first');
-    // /clear: a new cliSessionId arrives — the first (real) incarnation is archived.
+    // /clear: a new cliSessionId arrives — the first (real) incarnation is archived closed.
     appState.updateSessionCliId(project.id, session.id, 'cli-second');
-    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
-    // Close the cleared session whose transcript never materialized — must not be archived.
+    const cleared = appState.getSessionHistory(project.id);
+    expect(cleared).toHaveLength(2);
+    expect(cleared.find((a) => a.cliSessionId === 'cli-first')!.state).toBe('closed');
+    const live = cleared.find((a) => a.cliSessionId === 'cli-second')!;
+    expect(live.state).toBe('active');
+    // Close the cleared session whose transcript never materialized: its row closes, not archived away.
     appState.removeSession(project.id, session.id);
-    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    const history = appState.getSessionHistory(project.id);
+    expect(history).toHaveLength(2);
+    expect(history.find((a) => a.cliSessionId === 'cli-second')!.state).toBe('closed');
+    expect(history.find((a) => a.cliSessionId === 'cli-second')!.transcriptAvailable).toBe(false);
   });
 
-  it('does NOT archive on cost data alone (no transcript on disk)', () => {
-    // Cost is not an archive signal: the Claude status line emits a zero-cost snapshot
-    // at spawn, so gating on cost would archive never-prompted sessions. Only the
-    // transcript file existence decides archiving.
+  it('keeps the row (with cost) when only cost data exists and no transcript on disk', () => {
+    // Cost no longer gates archiving (rows exist from creation); it decorates the closed row.
     mockCostData();
     mockTranscriptExistsSync.mockReturnValue(false);
     const project = addProject();
     const session = appState.addSession(project.id, 'CostOnly')!;
     appState.updateSessionCliId(project.id, session.id, 'cli-cost-no-transcript');
     appState.removeSession(project.id, session.id);
-    expect(appState.getSessionHistory(project.id)).toHaveLength(0);
+    const history = appState.getSessionHistory(project.id);
+    expect(history).toHaveLength(1);
+    expect(history[0].cost!.totalCostUsd).toBe(0.42);
+    expect(history[0].transcriptAvailable).toBe(false);
   });
 
   it('does NOT archive diff-viewer sessions', () => {
@@ -209,36 +226,40 @@ describe('archiveSession via removeSession()', () => {
     expect(appState.getSessionHistory(project.id)).toHaveLength(0);
   });
 
-  it('deduplicates by cliSessionId', () => {
+  it('keeps one row per session lifecycle sharing a cliSessionId', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
     activateSession(project.id, session.id, 'cli-abc');
     appState.removeSession(project.id, session.id);
     expect(appState.getSessionHistory(project.id)).toHaveLength(1);
 
-    // Resume and close again
+    // Resume and close again: the resumed tab is its own lifecycle with its own row.
     const resumed = appState.resumeFromHistory(project.id, appState.getSessionHistory(project.id)[0].id)!;
     appState.removeSession(project.id, resumed.id);
-    // Should still be 1 entry, not 2
-    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    const history = appState.getSessionHistory(project.id);
+    expect(history).toHaveLength(2);
+    expect(history.every((a) => a.cliSessionId === 'cli-abc' && a.state === 'closed')).toBe(true);
   });
 
-  it('updates cost on deduplicated re-close', () => {
+  it('records cost on the resumed lifecycle row', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
     activateSession(project.id, session.id, 'cli-abc');
     appState.removeSession(project.id, session.id);
     expect(appState.getSessionHistory(project.id)[0].cost).toBeNull();
 
-    // Resume with cost data
+    // Resume with cost data — the cost lands on the resumed row, not the original.
     const resumed = appState.resumeFromHistory(project.id, appState.getSessionHistory(project.id)[0].id)!;
     mockCostData();
     appState.removeSession(project.id, resumed.id);
-    expect(appState.getSessionHistory(project.id)[0].cost).not.toBeNull();
-    expect(appState.getSessionHistory(project.id)[0].cost!.totalCostUsd).toBe(0.42);
+    const history = appState.getSessionHistory(project.id);
+    expect(history).toHaveLength(2);
+    expect(history[0].cost).toBeNull();
+    expect(history[1].cost).not.toBeNull();
+    expect(history[1].cost!.totalCostUsd).toBe(0.42);
   });
 
-  it('updates name on deduplicated re-close', () => {
+  it('records the renamed name on the resumed lifecycle row', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'Original')!;
     activateSession(project.id, session.id, 'cli-abc');
@@ -247,7 +268,10 @@ describe('archiveSession via removeSession()', () => {
     const resumed = appState.resumeFromHistory(project.id, appState.getSessionHistory(project.id)[0].id)!;
     appState.renameSession(project.id, resumed.id, 'Renamed');
     appState.removeSession(project.id, resumed.id);
-    expect(appState.getSessionHistory(project.id)[0].name).toBe('Renamed');
+    const history = appState.getSessionHistory(project.id);
+    expect(history).toHaveLength(2);
+    expect(history[0].name).toBe('Original');
+    expect(history[1].name).toBe('Renamed');
   });
 
   it('caps history at 500 entries', () => {
@@ -364,8 +388,19 @@ describe('removeHistoryEntry()', () => {
   });
 
   it('no-op for nonexistent project', () => {
-    // Should not throw
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-re-noop');
+    appState.removeSession(project.id, session.id);
+    const cb = vi.fn();
+    appState.on('history-changed', cb);
+    mockSave.mockClear();
     appState.removeHistoryEntry('bad-project', 'bad-id');
+    // The real project's archived row survives; the bad-id call emits and
+    // persists nothing.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 
   it('no-op for nonexistent entry id', () => {
@@ -382,9 +417,10 @@ describe('removeHistoryEntry()', () => {
     const session = appState.addSession(project.id, 'S1')!;
     activateSession(project.id, session.id, 'cli-emit-hist');
     appState.removeSession(project.id, session.id);
+    const entry = appState.getSessionHistory(project.id)[0];
     const cb = vi.fn();
     appState.on('history-changed', cb);
-    appState.removeHistoryEntry(project.id, session.id);
+    appState.removeHistoryEntry(project.id, entry.id);
     expect(cb).toHaveBeenCalledWith(project.id);
   });
 
@@ -393,9 +429,30 @@ describe('removeHistoryEntry()', () => {
     const session = appState.addSession(project.id, 'S1')!;
     activateSession(project.id, session.id, 'cli-persist');
     appState.removeSession(project.id, session.id);
+    const entry = appState.getSessionHistory(project.id)[0];
     mockSave.mockClear();
-    appState.removeHistoryEntry(project.id, session.id);
+    appState.removeHistoryEntry(project.id, entry.id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
+  });
+
+  it('refuses the row of a running tab and allows it once closed', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-live-row');
+
+    const active = appState.getSessionHistory(project.id).find((h) => h.state === 'active');
+    expect(active?.liveSessionId).toBe(session.id);
+
+    appState.removeHistoryEntry(project.id, active!.id);
+    expect(appState.getSessionHistory(project.id).map((h) => h.id)).toContain(active!.id);
+
+    // Closing finalizes the row in place; only then is it removable history.
+    appState.removeSession(project.id, session.id);
+    expect(appState.getSessionHistory(project.id).find((h) => h.id === active!.id)?.state).toBe('closed');
+
+    appState.removeHistoryEntry(project.id, active!.id);
+    expect(appState.getSessionHistory(project.id).map((h) => h.id)).not.toContain(active!.id);
   });
 });
 
@@ -407,6 +464,18 @@ describe('clearSessionHistory()', () => {
     expect(appState.getSessionHistory(project.id)).toHaveLength(3);
     appState.clearSessionHistory(project.id);
     expect(appState.getSessionHistory(project.id)).toEqual([]);
+  });
+
+  it('keeps the row of a running session', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S-live')!;
+    expect(
+      appState.getSessionHistory(project.id).some((a) => a.state === 'active' && a.liveSessionId === session.id),
+    ).toBe(true);
+    appState.clearSessionHistory(project.id);
+    const history = appState.getSessionHistory(project.id);
+    expect(history).toHaveLength(1);
+    expect(history[0].state).toBe('active');
   });
 
   it('emits history-changed', () => {
@@ -427,12 +496,24 @@ describe('clearSessionHistory()', () => {
     appState.removeSession(project.id, session.id);
     mockSave.mockClear();
     appState.clearSessionHistory(project.id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
   it('no-op for nonexistent project', () => {
-    // Should not throw
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-clear-noop');
+    appState.removeSession(project.id, session.id);
+    const cb = vi.fn();
+    appState.on('history-changed', cb);
+    mockSave.mockClear();
     appState.clearSessionHistory('nonexistent');
+    // A missing project must not clear (or touch) the real project's rows,
+    // emit an event, or schedule a save.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 
   it('preserves bookmarked sessions when clearing', () => {
@@ -489,16 +570,43 @@ describe('toggleBookmark()', () => {
     const entry = appState.getSessionHistory(project.id)[0];
     mockSave.mockClear();
     appState.toggleBookmark(project.id, entry.id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
   it('no-op for nonexistent project', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-bm-badproj');
+    appState.removeSession(project.id, session.id);
+    const cb = vi.fn();
+    appState.on('history-changed', cb);
+    mockSave.mockClear();
     appState.toggleBookmark('bad-project', 'bad-id');
+    // The real project's entry survives untouched; nothing is emitted or
+    // persisted for a lookup that matched no project.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(appState.getSessionHistory(project.id)[0].bookmarked).toBeFalsy();
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 
   it('no-op for nonexistent entry', () => {
     const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    activateSession(project.id, session.id, 'cli-bm-noop');
+    appState.removeSession(project.id, session.id);
+    expect(appState.getSessionHistory(project.id)[0].bookmarked).toBeFalsy();
+    const cb = vi.fn();
+    appState.on('history-changed', cb);
+    mockSave.mockClear();
     appState.toggleBookmark(project.id, 'nonexistent');
+    // The real entry keeps its flag and count; the failed toggle emits and
+    // persists nothing.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    expect(appState.getSessionHistory(project.id)[0].bookmarked).toBeFalsy();
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 
   it('archived entries from same session via /clear get unique IDs', () => {
@@ -639,6 +747,7 @@ describe('resumeFromHistory()', () => {
 
     const archived = appState.getSessionHistory(project.id)[0];
     appState.resumeFromHistory(project.id, archived.id);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -689,7 +798,8 @@ describe('resumeFromHistorySafe()', () => {
     const resumed = await appState.resumeFromHistorySafe(project.id, archived.id);
     expect(resumed).toBeDefined();
     expect(resumed!.cliSessionId).toBe('cli-exists');
-    expect(appState.getSessionHistory(project.id)).toHaveLength(1);
+    // The resumed tab owns a new active row alongside the closed original.
+    expect(appState.getSessionHistory(project.id)).toHaveLength(2);
   });
 
   it('drops the stale entry and returns undefined when the transcript is missing', async () => {
@@ -735,7 +845,10 @@ describe('renameSession() history sync', () => {
 
     const resumed = appState.resumeFromHistory(project.id, appState.getSessionHistory(project.id)[0].id)!;
     appState.renameSession(project.id, resumed.id, 'Updated');
-    expect(appState.getSessionHistory(project.id)[0].name).toBe('Updated');
+    // A live tab renames its own (active) row; closed rows are immutable history.
+    const history = appState.getSessionHistory(project.id);
+    expect(history.find((a) => a.state === 'active')!.name).toBe('Updated');
+    expect(history[0].name).toBe('Original');
   });
 
   it('emits history-changed on rename', () => {
@@ -813,6 +926,7 @@ describe('openCliSession()', () => {
     const project = addProject();
     mockSave.mockClear();
     appState.openCliSession(project.id, 'cli-persist', 'S');
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 

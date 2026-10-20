@@ -258,11 +258,11 @@ describe('transcript path caching', () => {
     expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'working');
   });
 
-  it('passes cwd and configDir to getTranscriptPath', () => {
+  it('passes cwd, configDir and the launch session dir to getTranscriptPath', () => {
     provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: '/t.jsonl' });
-    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', '/profiles/work');
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', '/profiles/work', { sessionDir: '/launch/ui-1' });
     vi.advanceTimersByTime(2000);
-    expect(provider.getTranscriptPath).toHaveBeenCalledWith('cli-1', '/proj', '/profiles/work');
+    expect(provider.getTranscriptPath).toHaveBeenCalledWith('cli-1', '/proj', '/profiles/work', '/launch/ui-1');
   });
 
   it('does nothing when the transcript cannot be resolved', () => {
@@ -375,7 +375,7 @@ describe('/clear re-adoption (re-registering the same UI session)', () => {
     expect(watchRecs.length).toBe(2);
     expect(watchRecs[1].closed).toBe(false);
     // The entry re-resolved against the NEW cli id and mirrors the new title.
-    expect(next.getTranscriptPath).toHaveBeenCalledWith('cli-2', '/proj', undefined);
+    expect(next.getTranscriptPath).toHaveBeenCalledWith('cli-2', '/proj', undefined, undefined);
     expect(mockWriteName).toHaveBeenLastCalledWith('ui-1', 'New topic', 'cli-2');
   });
 
@@ -414,7 +414,7 @@ describe('/clear re-adoption (re-registering the same UI session)', () => {
     registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', '/profiles/b');
     expect(watchRecs[0].closed).toBe(true);
     vi.advanceTimersByTime(2000);
-    expect(provider.getTranscriptPath).toHaveBeenLastCalledWith('cli-1', '/proj', '/profiles/b');
+    expect(provider.getTranscriptPath).toHaveBeenLastCalledWith('cli-1', '/proj', '/profiles/b', undefined);
   });
 });
 

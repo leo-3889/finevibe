@@ -12,7 +12,8 @@ import {
 } from './types.js';
 import { instances, getPreloadPath } from './instance.js';
 import { createPlanModeRow } from '../../dom-utils.js';
-import { navigateTo } from './navigation.js';
+import { navigateTo, normalizeUrl } from './navigation.js';
+import { safeSend } from './prompt-utils.js';
 import { applyViewport, openViewportDropdown, closeViewportDropdown } from './viewport.js';
 import { toggleInspectMode, showElementInfo, dismissInspect } from './inspect-mode.js';
 import {
@@ -214,7 +215,14 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   // SAFETY: Electron's <webview> tag has no DOM lib typing; WebviewElement describes the members this file uses.
   const webview = document.createElement('webview') as unknown as WebviewElement;
   webview.className = 'browser-webview';
-  webview.setAttribute('allowpopups', '');
+  // SAFETY: no `allowpopups` — with it, a guest window.open()/target=_blank
+  // attaches as a nested webview in THIS tab's partition, inheriting the
+  // session cookie jar (possibly the imported Chrome one). Without it the
+  // popup has no attach target and Electron denies it. The old renderer-side
+  // `new-window` intercept was dead code: Electron removed that event
+  // (deprecated v30, gone by v32), so popups cannot be routed to
+  // app:openExternal from the renderer on v41. Main's will-attach-webview
+  // pinning (main.ts) is the backstop for any attach that does happen.
   webview.setAttribute('webpreferences', 'backgroundThrottling=false');
   const partition = isIsolated
     ? `persist:vibeyard-browser-iso-${sessionId}`
@@ -496,7 +504,9 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   // Preload must be set before src to ensure the inspect script is injected
   getPreloadPath().then((p) => {
     webview.setAttribute('preload', `file://${p}`);
-    if (url) webview.src = url;
+    // Session-restored / toggle-supplied URLs bypass navigateTo; normalize so
+    // javascript:/view-source: can't reach the guest src directly.
+    if (url) { const n = normalizeUrl(url); if (n) webview.src = n; }
   });
 
   backBtn.addEventListener('click', () => webview.goBack());
@@ -560,7 +570,7 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     const parent = el.parentElement;
     const wasSplit = el.classList.contains('split');
     destroyBrowserTabPane(sessionId);
-    createBrowserTabPane(sessionId, currentUrl || undefined);
+    createBrowserTabPane(sessionId, (currentUrl && normalizeUrl(currentUrl)) || undefined);
     if (parent) attachBrowserTabToContainer(sessionId, parent);
     showBrowserTabPane(sessionId, wasSplit);
   });
@@ -651,6 +661,15 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     appState.updateSessionBrowserTabUrl(sessionId, e.url);
     if (instance.flowMode) recordNavigationStep(e.url);
   }) as EventListener);
+  // A full navigation discards the guest document, its mode flags and its
+  // listeners; the pane's buttons stay active while the page silently leaves
+  // the mode (recording stops, inspect clicks dead). Re-enter every active
+  // mode once the new document has finished loading.
+  webview.addEventListener('did-stop-loading', (() => {
+    if (instance.inspectMode) safeSend(webview, 'enter-inspect-mode');
+    if (instance.flowMode) safeSend(webview, 'enter-flow-mode');
+    if (instance.drawMode) safeSend(webview, 'enter-draw-mode');
+  }) as EventListener);
 
   webview.addEventListener('ipc-message', ((e: CustomEvent & { channel: string; args: unknown[] }) => {
     if (e.channel === 'element-selected') {
@@ -696,15 +715,15 @@ export function destroyBrowserTabPane(sessionId: string): void {
   instances.delete(sessionId);
 
   document.removeEventListener('mousedown', instance.viewportOutsideClickHandler);
-  try { dismissSendMenu(instance); } catch {}
+  try { dismissSendMenu(instance); } catch { /* menu already torn down */ }
 
   // <webview> calls throw if it isn't attached + dom-ready yet. Guard each
   // one individually so a failure can't skip instance.element.remove() below.
-  try { if (instance.inspectMode) instance.webview.send('exit-inspect-mode'); } catch {}
-  try { if (instance.flowMode) instance.webview.send('exit-flow-mode'); } catch {}
-  try { if (instance.drawMode) instance.webview.send('exit-draw-mode'); } catch {}
-  try { instance.webview.stop(); } catch {}
-  try { instance.webview.src = 'about:blank'; } catch {}
+  try { if (instance.inspectMode) instance.webview.send('exit-inspect-mode'); } catch { /* guest not attached */ }
+  try { if (instance.flowMode) instance.webview.send('exit-flow-mode'); } catch { /* guest not attached */ }
+  try { if (instance.drawMode) instance.webview.send('exit-draw-mode'); } catch { /* guest not attached */ }
+  try { instance.webview.stop(); } catch { /* guest not attached */ }
+  try { instance.webview.src = 'about:blank'; } catch { /* guest not attached */ }
 
   instance.element.remove();
 }

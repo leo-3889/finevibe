@@ -61,6 +61,15 @@ scope. The generator strips only the leading keyword, so a message like
 `feat : thing - description` would appear in the changelog with the `:` and scope
 still attached.
 
+## Releases and Packaging
+
+Releases are cut by the `Release` workflow (`workflow_dispatch` on
+`.github/workflows/release.yml`); it bumps the version, generates
+`CHANGELOG.md`, tags, and publishes installers for macOS, Linux (deb +
+AppImage) and Windows. See [docs/packaging.md](docs/packaging.md) for the
+artifact matrix, deb build requirements (Linux-only), and how to build an
+ad-hoc Ubuntu package without releasing.
+
 ## Pull Request Workflow
 
 **Before you start:** for anything beyond a small bugfix, typo, or doc change, please open an issue (or comment on an existing one) first to confirm the change is wanted and agree on the approach. This saves you from building something we can't merge.

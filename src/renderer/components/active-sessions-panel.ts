@@ -69,8 +69,7 @@ export function renderActiveSessions(): void {
 
   // Only meaningful across multiple projects — with a single project the rows
   // just duplicate that project's own tab bar, so the section stays hidden.
-  const enabled =
-    (appState.preferences.sidebarViews?.activeSessions ?? true) && appState.projects.length > 1;
+  const enabled = appState.sidebarView('activeSessions') && appState.projects.length > 1;
   const rows = enabled ? selectActiveSessions(appState.projects, getStatus) : [];
 
   if (rows.length === 0) {

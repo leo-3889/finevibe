@@ -1,6 +1,7 @@
 import { stripAnsi } from '../ansi';
 import { appState } from '../state.js';
 import { fitAllVisible } from './terminal-pane.js';
+import { onLocaleChange, t } from '../i18n.js';
 
 interface DebugEvent {
   timestamp: number;
@@ -157,7 +158,7 @@ function createPanel(): HTMLElement {
 
   const title = document.createElement('span');
   title.className = 'debug-title';
-  title.textContent = 'Event Debug';
+  title.textContent = t('debugPanel.title');
   header.appendChild(title);
 
   const controls = document.createElement('div');
@@ -168,12 +169,12 @@ function createPanel(): HTMLElement {
   select.className = 'debug-filter';
   const allOpt = document.createElement('option');
   allOpt.value = '';
-  allOpt.textContent = 'All Events';
+  allOpt.textContent = t('debugPanel.allEvents');
   select.appendChild(allOpt);
-  for (const t of Object.keys(TYPE_COLORS)) {
+  for (const type of Object.keys(TYPE_COLORS)) {
     const opt = document.createElement('option');
-    opt.value = t;
-    opt.textContent = t;
+    opt.value = type;
+    opt.textContent = type;
     select.appendChild(opt);
   }
   select.addEventListener('change', () => {
@@ -189,7 +190,7 @@ function createPanel(): HTMLElement {
   const sessionInput = document.createElement('input');
   sessionInput.type = 'text';
   sessionInput.className = 'debug-filter debug-session-input';
-  sessionInput.placeholder = 'Filter by session ID';
+  sessionInput.placeholder = t('debugPanel.filterBySession');
   sessionInput.addEventListener('input', () => {
     filterSessionId = resolveSessionFilter(sessionInput.value.trim());
     renderAllEvents();
@@ -199,7 +200,7 @@ function createPanel(): HTMLElement {
   const clearInputBtn = document.createElement('button');
   clearInputBtn.className = 'debug-btn debug-session-clear';
   clearInputBtn.innerHTML = '&times;';
-  clearInputBtn.title = 'Clear session filter';
+  clearInputBtn.title = t('debugPanel.clearSessionFilter');
   clearInputBtn.addEventListener('click', () => {
     sessionInput.value = '';
     filterSessionId = '';
@@ -211,17 +212,20 @@ function createPanel(): HTMLElement {
   // Auto-scroll toggle
   const scrollBtn = document.createElement('button');
   scrollBtn.className = 'debug-btn';
-  scrollBtn.textContent = 'Auto-scroll: ON';
+  const renderScrollBtn = () => {
+    scrollBtn.textContent = t(autoScroll ? 'debugPanel.autoScrollOn' : 'debugPanel.autoScrollOff');
+  };
+  renderScrollBtn();
   scrollBtn.addEventListener('click', () => {
     autoScroll = !autoScroll;
-    scrollBtn.textContent = `Auto-scroll: ${autoScroll ? 'ON' : 'OFF'}`;
+    renderScrollBtn();
   });
   controls.appendChild(scrollBtn);
 
   // Clear button
   const clearBtn = document.createElement('button');
   clearBtn.className = 'debug-btn';
-  clearBtn.textContent = 'Clear';
+  clearBtn.textContent = t('debugPanel.clear');
   clearBtn.addEventListener('click', () => {
     events.length = 0;
     if (logEl) logEl.innerHTML = '';
@@ -268,10 +272,11 @@ export function setDebugVisible(show: boolean): void {
         const filters: string[] = [];
         if (filterType) filters.push(filterType);
         if (filterSessionId && filterSessionId !== NO_MATCH) filters.push(getSessionName(filterSessionId));
-        countBar!.textContent = `${filtered.length} events${filters.length ? ` (filtered: ${filters.join(', ')})` : ''}`;
+        countBar!.textContent =
+          t('debugPanel.eventCount', { count: filtered.length }) +
+          (filters.length ? t('debugPanel.filteredSuffix', { filters: filters.join(', ') }) : '');
       };
       updateCount();
-      countInterval = setInterval(updateCount, 500);
     }
   } else {
     panel.classList.add('hidden');
@@ -295,5 +300,16 @@ export function initDebugPanel(): void {
       e.preventDefault();
       toggleDebugPanel();
     }
+  });
+
+  // The panel chrome is built once; rebuild it so visible strings adopt
+  // a locale switch (the count interval survives — it reads `countBar`).
+  onLocaleChange(() => {
+    if (!panel) return;
+    panel.remove();
+    panel = null;
+    logEl = null;
+    countBar = null;
+    if (visible) setDebugVisible(true);
   });
 }

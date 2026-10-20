@@ -8,8 +8,7 @@ let uuidCounter = 0;
 vi.stubGlobal('crypto', {
   randomUUID: () => `uuid-${++uuidCounter}`,
 });
-
-import { archiveSession, buildResumedSession, buildResumedSessionFromCliId } from './session-archive';
+import { archiveSession, archiveSessionOnCreate, buildResumedSession, buildResumedSessionFromCliId, findCreateEntry, syncCreateEntryCliId } from './session-archive';
 import type { ProjectRecord, SessionRecord } from '../../shared/types';
 
 beforeEach(() => {
@@ -152,5 +151,76 @@ describe('exitReason', () => {
     archiveSession(project, makeSession({ cliSessionId: 'cli-crash' }));
     expect(project.sessionHistory).toHaveLength(1);
     expect(project.sessionHistory![0].exitReason).toBe('unhandled_rejection');
+  });
+});
+
+describe('history-on-create', () => {
+  it('records one active row per spawn', () => {
+    const project = makeProject();
+    const session = makeSession({ cliSessionId: null });
+    archiveSessionOnCreate(project, session);
+    expect(project.sessionHistory).toHaveLength(1);
+    expect(project.sessionHistory![0]).toMatchObject({ liveSessionId: 's1', state: 'active', cliSessionId: null });
+    expect(project.sessionHistory![0].closedAt).toBeUndefined();
+    archiveSessionOnCreate(project, session);
+    expect(project.sessionHistory).toHaveLength(1);
+    expect(findCreateEntry(project, 's1')?.id).toBe(project.sessionHistory![0].id);
+  });
+
+  it('mirrors the discovered cliSessionId onto the active row', () => {
+    const project = makeProject();
+    archiveSessionOnCreate(project, makeSession({ cliSessionId: null }));
+    expect(syncCreateEntryCliId(project, 's1', 'cli-9')).toBe(true);
+    expect(project.sessionHistory![0].cliSessionId).toBe('cli-9');
+    expect(syncCreateEntryCliId(project, 'ghost', 'x')).toBe(false);
+  });
+
+  it('finalizes the create row in place at close', () => {
+    const project = makeProject();
+    archiveSessionOnCreate(project, makeSession({ cliSessionId: null }));
+    syncCreateEntryCliId(project, 's1', 'cli-9');
+    archiveSession(project, makeSession({ cliSessionId: 'cli-9' }), { finalize: true });
+    expect(project.sessionHistory).toHaveLength(1);
+    expect(project.sessionHistory![0]).toMatchObject({ state: 'closed', cliSessionId: 'cli-9' });
+    expect(project.sessionHistory![0].closedAt).toBeTruthy();
+    expect(findCreateEntry(project, 's1')).toBeUndefined();
+  });
+
+  it('a /clear segment archive never touches the live row', () => {
+    const project = makeProject();
+    archiveSessionOnCreate(project, makeSession({ cliSessionId: null }));
+    syncCreateEntryCliId(project, 's1', 'cli-old');
+    // updateSessionCliId archives the OLD conversation on the same tab (no finalize).
+    archiveSession(project, makeSession({ cliSessionId: 'cli-old' }));
+    expect(project.sessionHistory).toHaveLength(2);
+    expect(project.sessionHistory![0].state).toBe('active');
+    expect(project.sessionHistory![0].cliSessionId).toBe('cli-old');
+    expect(project.sessionHistory![1].cliSessionId).toBe('cli-old');
+  });
+
+  it('the cap never prunes a running row', () => {
+    const project = makeProject();
+    const history = Array.from({ length: 499 }, (_, i) => ({
+      id: `c${i}`,
+      name: 'closed',
+      providerId: 'claude' as const,
+      cliSessionId: `c${i}`,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      closedAt: '2026-01-01T00:00:00.000Z',
+    }));
+    history.push({
+      id: 'act',
+      name: 'live',
+      providerId: 'claude' as const,
+      cliSessionId: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      state: 'active' as const,
+      // A different tab's row — finalize must not consume it.
+      liveSessionId: 'other-tab',
+    });
+    project.sessionHistory = history;
+    archiveSession(project, makeSession({ cliSessionId: 'cli-1' }), { finalize: true });
+    expect(project.sessionHistory!.length).toBeLessThanOrEqual(500);
+    expect(project.sessionHistory!.some((a) => a.state === 'active')).toBe(true);
   });
 });

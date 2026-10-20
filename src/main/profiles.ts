@@ -6,8 +6,16 @@ import { isWin } from './platform';
 /** Root directory holding all auto-managed profile config dirs. */
 export const PROFILES_ROOT = path.join(os.homedir(), '.vibeyard', 'profiles');
 
+/** App-generated profile ids are slug/uuid shaped; anything else is a
+ * renderer-supplied value that must not steer writes outside the managed
+ * root (`../../.claude` would provision a config dir the CLI reads). */
+const PROFILE_ID_RE = /^[A-Za-z0-9._-]+$/;
+
 /** Default managed config dir for a profile id. */
 export function managedProfileDir(profileId: string): string {
+  if (!PROFILE_ID_RE.test(profileId) || profileId === '..' || profileId === '.') {
+    throw new Error(`Invalid profile id: ${JSON.stringify(profileId)}`);
+  }
   return path.join(PROFILES_ROOT, profileId);
 }
 

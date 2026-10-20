@@ -117,13 +117,6 @@ export function hideTeamView(): void {
   if (teamEl) teamEl.style.display = 'none';
 }
 
-export function destroyTeamView(): void {
-  if (teamEl) {
-    teamEl.remove();
-    teamEl = null;
-  }
-}
-
 function activeTeamContainer(): HTMLElement | null {
   const project = appState.activeProject;
   if (!project) return null;

@@ -3,6 +3,8 @@ import { pushModal } from './modal-manager.js';
 
 let cleanupFn: (() => void) | null = null;
 let onAddedFn: (() => void) | null = null;
+/** Profile config dir of the project the modal was opened from; user-scope adds land there. */
+let addConfigDir: string | undefined;
 
 function getOverlay(): HTMLElement {
   let overlay = document.getElementById('mcp-add-overlay');
@@ -50,7 +52,8 @@ function rebuildTypeFields(overlay: HTMLElement): void {
   container.innerHTML = renderTypeFields(type);
 }
 
-export function showMcpAddModal(onAdded: () => void): void {
+export function showMcpAddModal(onAdded: () => void, configDir?: string): void {
+  addConfigDir = configDir;
   cleanupFn?.();
   cleanupFn = null;
 
@@ -158,8 +161,7 @@ async function submit(overlay: HTMLElement): Promise<void> {
     showError(overlay, 'No active project for project scope');
     return;
   }
-
-  const result = await window.vibeyard.mcp.addServer(name, config, scope, projectPath);
+  const result = await window.vibeyard.mcp.addServer(name, config, scope, projectPath, addConfigDir);
   if (!result.success) {
     showError(overlay, result.error || 'Failed to add server');
     return;

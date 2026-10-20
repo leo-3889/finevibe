@@ -13,6 +13,7 @@ import { piAgentDir, piSessionsRoot } from './pi-transcripts';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession, stopPiSessionWatcher } from '../pi-session-watcher';
+import { writeCliSessionId } from '../hook-status';
 import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMeta, listLaunchSessionDirs, profileIdForConfigDir } from '../launch-session-dir';
 
 const binaryCache = { path: null as string | null };
@@ -172,6 +173,16 @@ export class PiProvider implements CliProvider {
     const knownCliId = randomUUID();
     launchStates.set(sessionId, { sessionDir, knownCliId, resumeTarget: null });
     writeLaunchSessionMeta(sessionDir, { providerId: 'pi', cwd, configDir, createdAt: new Date().toISOString() });
+    // The id is known now, so publish it immediately: the history panel shows
+    // the CLI session id on the live row from spawn, not after the watcher's
+    // first transcript adoption. Best-effort: a STATUS_DIR write failure
+    // must not kill the spawn path — the watcher republishes the same id on
+    // adoption (pi-compatible-session-watcher adopt() retries on failure).
+    try {
+      writeCliSessionId(sessionId, knownCliId);
+    } catch (err) {
+      console.warn(`pi: early session-id publish failed for ${sessionId}:`, err);
+    }
     startPiSessionWatcher();
     registerPendingPiSession(sessionId, cwd, configDir, { sessionDir, knownCliId });
   }

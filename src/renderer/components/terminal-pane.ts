@@ -12,8 +12,7 @@ import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
-import { attachClipboardCopyHandler, attachCopyOnSelect, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
-import { FILE_PATH_DRAG_TYPE, NATIVE_FILES_DRAG_TYPE } from '../drag-types.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
 
 interface TerminalInstance {
@@ -129,6 +128,7 @@ export function createTerminalPane(
       return false;
     }
   }, writeToPty);
+  attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: TerminalInstance = {
     terminal,
@@ -198,29 +198,7 @@ export function createTerminalPane(
     }
   });
 
-  element.addEventListener('dragover', (e: DragEvent) => {
-    if (!e.dataTransfer) return;
-    const types = e.dataTransfer.types;
-    if (!types.includes(FILE_PATH_DRAG_TYPE) && !types.includes(NATIVE_FILES_DRAG_TYPE)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-    element.classList.add('drag-over');
-  });
-  element.addEventListener('dragleave', (e: DragEvent) => {
-    const next = e.relatedTarget as Node | null;
-    if (!next || !element.contains(next)) {
-      element.classList.remove('drag-over');
-    }
-  });
-  element.addEventListener('drop', (e: DragEvent) => {
-    element.classList.remove('drag-over');
-    const paths = collectDroppedPaths(e.dataTransfer);
-    if (paths.length === 0) return;
-    e.preventDefault();
-    if (injectTextIntoRunningSession(sessionId, paths.join(' ') + ' ')) {
-      terminal.focus();
-    }
-  });
+  attachFileDropHandler(terminal, element, writeToPty, () => instance.spawned && !instance.exited);
 
   xtermWrap.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -232,10 +210,6 @@ export function createTerminalPane(
 
 export function getTerminalInstance(sessionId: string): TerminalInstance | undefined {
   return instances.get(sessionId);
-}
-
-export function getAllInstances(): Map<string, TerminalInstance> {
-  return instances;
 }
 
 export function applyThemeToAllTerminals(theme: 'dark' | 'light'): void {
@@ -257,18 +231,6 @@ export function setPendingSystemPrompt(sessionId: string, prompt: string): void 
   if (instance) {
     instance.pendingSystemPrompt = prompt;
   }
-}
-
-function collectDroppedPaths(dt: DataTransfer | null): string[] {
-  if (!dt) return [];
-  const internal = dt.getData(FILE_PATH_DRAG_TYPE);
-  if (internal) return [internal];
-  const paths: string[] = [];
-  for (const file of dt.files) {
-    const path = window.vibeyard.fs.getDroppedFilePath(file);
-    if (path) paths.push(path);
-  }
-  return paths;
 }
 
 export function injectTextIntoRunningSession(sessionId: string, text: string): boolean {
@@ -317,7 +279,30 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     systemPrompt = instance.pendingSystemPrompt;
     instance.pendingSystemPrompt = null;
   }
-  await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
+  try {
+    await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
+  } catch (err) {
+    // pty:create rejected (missing binary, ConPTY failure, provider spawn
+    // error). Callers fire spawnTerminal un-awaited, so a throw here becomes
+    // an unhandled rejection and the tab sits blank with no explanation.
+    instance.spawned = false;
+    removeSession(sessionId);
+    const failOverlay = document.createElement('div');
+    failOverlay.className = 'terminal-exit-overlay';
+    const box = document.createElement('div');
+    box.className = 'terminal-exit-message';
+    const line = document.createElement('div');
+    line.textContent = `Failed to start session: ${err instanceof Error ? err.message : String(err)}`;
+    const retry = document.createElement('button');
+    retry.className = 'respawn-btn';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => void spawnTerminal(sessionId));
+    box.appendChild(line);
+    box.appendChild(retry);
+    failOverlay.appendChild(box);
+    instance.element.appendChild(failOverlay);
+    return;
+  }
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
 
   // Callers fire this un-awaited and fit the pane immediately after, so that fit
@@ -367,12 +352,6 @@ export function showPane(sessionId: string, split: boolean): void {
   } else {
     instance.element.classList.remove('split');
   }
-}
-
-export function hidePane(sessionId: string): void {
-  const instance = instances.get(sessionId);
-  if (!instance) return;
-  instance.element.classList.add('hidden');
 }
 
 export function hideAllPanes(): void {

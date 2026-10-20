@@ -1,38 +1,41 @@
-import { ipcMain, BrowserWindow, app, dialog, shell, clipboard } from 'electron';
+import { ipcMain, BrowserWindow, app, dialog, shell, clipboard, session } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomBytes } from 'node:crypto';
 import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from './pty-manager';
 import { addMcpServer, removeMcpServer } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
+import { fileURLToPath } from 'node:url';
 import { loadState, saveState, getKnownProjectPaths, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
 import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
-import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
+import { startGitWatcher, notifyGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
+import { probeAgentmemory, ensureAgentmemoryRunning } from './agentmemory-manager';
 import { createAppMenu } from './menu';
 import { getProvider, getProviderMeta, getAllProviderMetas, getAllProviders } from './providers/registry';
+import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
 import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
-import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile } from '../shared/types';
+import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
-import { expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES } from './fs-utils';
+import { canonicalPath, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
-import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource } from '../shared/types';
+import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
 import { shouldWarnStatusLine } from './settings-guard';
 import { buildVibeyardignoreMatcher } from './vibeyardignore';
 import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
-import { launchSessionDir } from './launch-session-dir';
 import { getKeychainIsolationStatus } from './claude-keychain';
 
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
@@ -46,16 +49,41 @@ function isWithinKnownProject(resolvedPath: string): boolean {
   return paths.some(p => isWithin(canonicalPath(p), target));
 }
 
-/** Resolve existing links, including a link in an existing parent directory. */
-function canonicalPath(filePath: string): string {
-  const resolved = path.resolve(filePath);
-  try {
-    return fs.realpathSync(resolved);
-  } catch {
-    const parent = path.dirname(resolved);
-    if (parent === resolved) return resolved;
-    return path.join(canonicalPath(parent), path.basename(resolved));
+/**
+ * git:* handlers run real git (and `rm -r` on untracked discard) in an
+ * IPC-supplied cwd. Bound every git root to a known project directory or a
+ * root the git panel actively watches — worktrees live outside the project
+ * dir by design — so a compromised renderer cannot aim git (or the
+ * recursive-delete sink) at arbitrary cwds.
+ */
+const gitWatchedRoots = new Set<string>();
+const MAX_GIT_WATCHED_ROOTS = 200;
+
+function requireGitRoot(channel: string, projectPath: string): string {
+  if (typeof projectPath !== 'string') throw new Error('Invalid project path');
+  const resolved = path.resolve(projectPath);
+  // Register and compare in canonical form. The renderer spells the same
+  // directory differently (drive-letter case, separators, `..`, junctions) and
+  // isWithinKnownProject canonicalizes on its side, so a raw-string set let one
+  // spelling bypass a gate the other spelling passed - and counted as a second
+  // root, evicting a real watched worktree.
+  const canonical = canonicalPath(resolved);
+  if (!isWithinKnownProject(canonical) && !gitWatchedRoots.has(canonical)) {
+    console.warn(`${channel} blocked: ${resolved} is not a known project or watched worktree`);
+    throw new Error('Path is not within a known project');
   }
+  return resolved;
+}
+
+/** filePath arrives from the renderer; keep the joined target inside the root. */
+function requireGitFilePath(channel: string, root: string, filePath: string): string {
+  if (typeof filePath !== 'string') throw new Error('Invalid file path');
+  const joined = path.resolve(root, filePath);
+  if (!isWithin(canonicalPath(root), canonicalPath(joined))) {
+    console.warn(`${channel} blocked: ${filePath} escapes ${root}`);
+    throw new Error('File path escapes the project');
+  }
+  return filePath;
 }
 
 function isWithin(root: string, target: string): boolean {
@@ -202,9 +230,7 @@ export function registerIpcHandlers(): void {
       // sessionDir (Pi/OMP) is the launch's exclusive transcript dir:
       // path resolution checks it first, so a post-`/clear` transcript is
       // found where the CLI wrote it, not only in the legacy trees.
-      const sessionDir = providerId === 'pi' || providerId === 'omp'
-        ? launchSessionDir(providerId, sessionId)
-        : undefined;
+      const sessionDir = resolveLaunchSessionDir(providerId, sessionId);
       registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir });
       // ...and let the provider re-attach to its own on-disk state,
       // seeding the sessions watcher as an ADOPTED entry (known id +
@@ -231,7 +257,23 @@ export function registerIpcHandlers(): void {
             win.webContents.send('pty:data', sessionId, data);
           }
         },
-        (exitCode, signal, pid) => {
+        (exitCode, signal, pid, spawnRejectedReason) => {
+          if (spawnRejectedReason) {
+            // The launch was rejected before a PTY existed, so this is not a
+            // process exit: the pane already carries the actionable reason
+            // (written via pty:data), and no transcript can exist yet, so the
+            // exit-reason read below is skipped. The reason travels verbatim
+            // as the spawn-rejected sentinel and the renderer keeps the pane
+            // open instead of archiving/notifying a crash.
+            unregisterTranscriptSync(sessionId);
+            cleanupSessionStatus(sessionId);
+            provider.onSessionExited?.(sessionId);
+            const rejectedWin = BrowserWindow.getAllWindows()[0];
+            if (rejectedWin && !rejectedWin.isDestroyed()) {
+              rejectedWin.webContents.send('pty:exit', sessionId, exitCode, signal, spawnRejectedReason, pid);
+            }
+            return;
+          }
           // pty-manager suppresses the replaced process's callback before it
           // reaches this handler, regardless of which PTY exits first.
           // The session is about to be destroyed — read the CLI's own crash
@@ -240,7 +282,7 @@ export function registerIpcHandlers(): void {
           let transcriptPath = getSyncedTranscriptPath(sessionId);
           if (!transcriptPath && cliSessionId) {
             try {
-              transcriptPath = provider.getTranscriptPath?.(cliSessionId, cwd, configDir, providerId === 'omp' || providerId === 'pi' ? launchSessionDir(providerId, sessionId) : undefined) ?? null;
+              transcriptPath = provider.getTranscriptPath?.(cliSessionId, cwd, configDir, resolveLaunchSessionDir(providerId, sessionId)) ?? null;
             } catch {
               transcriptPath = null;
             }
@@ -394,6 +436,14 @@ export function registerIpcHandlers(): void {
     saveState(state);
   });
 
+  // Synchronous startup channel: the renderer applies theme/zoom before its
+  // first paint, before the async store:load resolves. Served from the
+  // in-memory state cache, so no file read happens on this path.
+  ipcMain.on('store:startup-prefs', (event) => {
+    const prefs = loadState().preferences;
+    event.returnValue = { theme: prefs.theme ?? null, zoomFactor: prefs.zoomFactor ?? null };
+  });
+
   // Provision (create) a profile's config dir. Returns the resolved absolute
   // path and whether it is the auto-managed location.
   ipcMain.handle('profiles:provision', (_event, profileId: string, customPath?: string, providerId?: ProviderId) => {
@@ -420,6 +470,152 @@ export function registerIpcHandlers(): void {
     if (source === 'selection' && isLinux) clipboard.writeText(text, 'selection');
   });
 
+  // Every provider takes attachments as a path — a file dropped on a terminal is
+  // injected as its path text. A clipboard payload with no path the CLI can read
+  // (a screenshot, a copied picture, a browser image) has no path, so main
+  // materialises one in the paste temp dir and the renderer injects that. Two
+  // entry points: main reads the clipboard itself for the keystrokes the renderer
+  // intercepts (Windows Ctrl+V, the context menu), and the renderer hands bytes
+  // over for a native paste event, whose file objects main cannot see.
+  const PASTE_DIR = path.join(os.tmpdir(), 'vibeyard-paste');
+  const PASTE_MAX_BYTES = 25 * 1024 * 1024;
+  const PASTE_IMAGE_EXT_BY_MIME: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/bmp': '.bmp',
+    'image/tiff': '.tiff',
+  };
+  let pasteFilesPruned = false;
+
+  async function writePastedFile(buffer: Buffer, ext: string): Promise<string | null> {
+    if (buffer.length === 0 || buffer.length > PASTE_MAX_BYTES) return null;
+    try {
+      await fs.promises.mkdir(PASTE_DIR, { recursive: true });
+      if (!pasteFilesPruned) {
+        pasteFilesPruned = true;
+        void pruneStaleImages(PASTE_DIR);
+      }
+      // The name is generated here; the renderer never supplies a path, so a paste
+      // cannot write outside the paste directory.
+      const filePath = path.join(
+        PASTE_DIR,
+        `paste-${Date.now()}-${randomBytes(4).toString('hex')}${ext}`,
+      );
+      await fs.promises.writeFile(filePath, buffer);
+      return filePath;
+    } catch (err) {
+      console.warn('Failed to store pasted clipboard file', err);
+      return null;
+    }
+  }
+
+  // A file list on the clipboard: a browser copy (FileNameW), a macOS Finder copy
+  // (NSFilenamesPboardType) or a Linux file-manager copy (text/uri-list). A file
+  // copied in Explorer or Finder reaches a native paste event as a File object
+  // whose real path the renderer resolves, and that route covers Windows/macOS;
+  // these formats cover the reads main performs on its own — the context menu, and
+  // Linux file managers, whose copies expose a URI list Chromium does not hand to
+  // a paste event as files.
+  function decodeXmlText(value: string): string {
+    return value
+      .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+      .replace(/&#(\d+);/g, (_match, dec: string) => String.fromCodePoint(Number(dec)))
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&');
+  }
+
+  function clipboardFilePaths(): string[] {
+    const paths: string[] = [];
+    try {
+      // FileNameW: UTF-16LE names, NUL-separated, double-NUL terminated.
+      for (const name of clipboard.readBuffer('FileNameW').toString('utf16le').split('\0')) {
+        if (name) paths.push(name);
+      }
+    } catch (err) {
+      console.warn('Failed to read clipboard file list', err);
+    }
+    if (paths.length === 0) {
+      try {
+        // CF_HDROP is a DROPFILES header followed by the name list. The header
+        // is pFiles (name-list offset) @0, pt @4-11, fWide @12 — Explorer sets
+        // fWide, so the names are UTF-16LE. Older senders use the OEM codepage,
+        // where a single-byte decode keeps ASCII paths intact.
+        const hdrop = clipboard.readBuffer('CF_HDROP');
+        if (hdrop.length >= 16) {
+          const offset = hdrop.readUInt32LE(0);
+          const wide = hdrop.readUInt32LE(12) !== 0;
+          const body = hdrop.subarray(Math.min(offset, hdrop.length));
+          const names = wide ? body.toString('utf16le') : body.toString('latin1');
+          for (const name of names.split('\0')) {
+            if (name) paths.push(name);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to read clipboard file drop list', err);
+      }
+    }
+    if (paths.length === 0) {
+      try {
+        // An old-style XML property list: <array><string>/path</string>…
+        const plist = clipboard.readBuffer('NSFilenamesPboardType').toString('utf8');
+        for (const match of plist.matchAll(/<string>([\s\S]*?)<\/string>/g)) {
+          paths.push(decodeXmlText(match[1]));
+        }
+      } catch (err) {
+        console.warn('Failed to read clipboard file URIs', err);
+      }
+    }
+    if (paths.length === 0) {
+      for (const line of clipboard.read('text/uri-list').split(/\r?\n/)) {
+        const uri = line.trim();
+        if (!uri.startsWith('file://')) continue;
+        try {
+          paths.push(fileURLToPath(uri));
+        } catch {
+          // A malformed URI is not a file the CLI can read.
+        }
+      }
+    }
+    return paths.filter((filePath) => path.isAbsolute(filePath));
+  }
+
+  ipcMain.handle('clipboard:readForPaste', async (): Promise<ClipboardPastePayload> => {
+    const formats = clipboard.availableFormats();
+    const text = clipboard.readText();
+    const files = clipboardFilePaths();
+    let imagePath: string | null = null;
+    if (files.length === 0 && formats.some((format) => format.toLowerCase().startsWith('image/'))) {
+      try {
+        // Electron normalises every image flavor (BMP, TIFF, DIB) to PNG, which
+        // every provider accepts as an attachment path.
+        const image = clipboard.readImage();
+        if (!image.isEmpty()) imagePath = await writePastedFile(image.toPNG(), '.png');
+      } catch (err) {
+        console.warn('Failed to read clipboard image', err);
+      }
+    }
+    // Rich-text copies (Word, OneNote, a browser selection) carry HTML next to
+    // plain text; with no text at all, the markup source is the only readable
+    // content, and a CLI reads markup happily.
+    const html = text.trim() === '' ? clipboard.readHTML().trim() : '';
+    return { text, html, files, imagePath, hasContent: formats.length > 0 || files.length > 0 };
+  });
+
+  ipcMain.handle('clipboard:saveImage', async (_event, dataUrl: string): Promise<string | null> => {
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(typeof dataUrl === 'string' ? dataUrl : '');
+    if (!match) return null;
+    const ext = PASTE_IMAGE_EXT_BY_MIME[match[1].toLowerCase()];
+    if (!ext) return null;
+    // The base64 length bounds the decoded size before the decode itself.
+    if (match[2].length > Math.ceil((PASTE_MAX_BYTES * 4) / 3)) return null;
+    return writePastedFile(Buffer.from(match[2], 'base64'), ext);
+  });
+
   ipcMain.handle(
     'provider:getConfig',
     async (_event, providerId: ProviderId, projectPath: string, configDir?: string) => {
@@ -430,12 +626,6 @@ export function registerIpcHandlers(): void {
       return provider.getConfig(projectPath, configDir);
     }
   );
-
-  // Backward compatibility alias
-  ipcMain.handle('claude:getConfig', async (_event, projectPath: string) => {
-    const provider = getProvider('claude');
-    return provider.getConfig(projectPath);
-  });
 
   ipcMain.on('config:watchProject', (_event, providerId: ProviderId, projectPath: string) => {
     const win = BrowserWindow.getAllWindows()[0];
@@ -459,13 +649,18 @@ export function registerIpcHandlers(): void {
     projectPath: string,
     sessionName: string,
     configDir?: string,
+    liveSessionId?: string,
   ) => {
     const sourceProvider = getProvider(sourceProviderId);
     const fromProviderLabel = sourceProvider.meta.displayName;
     let transcriptPath: string | null = null;
     if (sourceCliSessionId && sourceProvider.getTranscriptPath) {
       try {
-        transcriptPath = sourceProvider.getTranscriptPath(sourceCliSessionId, projectPath, configDir);
+        // Pi/OMP transcripts live only in the exclusive per-launch dir —
+        // resolve it like transcriptExists does, or the handoff finds no
+        // transcript for a session whose tab is (or was) live.
+        const sessionDir = resolveLaunchSessionDir(sourceProviderId, liveSessionId);
+        transcriptPath = sourceProvider.getTranscriptPath(sourceCliSessionId, projectPath, configDir, sessionDir);
       } catch (err) {
         console.warn('getTranscriptPath failed:', err);
       }
@@ -481,6 +676,7 @@ export function registerIpcHandlers(): void {
     cliSessionId: string | null,
     projectPath: string,
     configDir?: string,
+    liveSessionId?: string,
   ): boolean => {
     if (!cliSessionId) return true;
     try {
@@ -488,18 +684,26 @@ export function registerIpcHandlers(): void {
       if (!provider.getTranscriptPath) return true;
       // getTranscriptPath returns null when the transcript is absent (every provider
       // verifies existence on disk), so a non-null path means the transcript exists.
-      return provider.getTranscriptPath(cliSessionId, projectPath, configDir) !== null;
+      // Pi/OMP transcripts live only in the exclusive per-launch dir — invisible
+      // to the tree scan, so resolve that dir for live/finalizing tabs.
+      const sessionDir = resolveLaunchSessionDir(providerId, liveSessionId);
+      return provider.getTranscriptPath(cliSessionId, projectPath, configDir, sessionDir) !== null;
     } catch (err) {
       console.warn('transcriptExists check failed:', err);
       return true;
     }
   };
-  ipcMain.handle('session:transcriptExists', (_event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string) =>
-    transcriptExists(providerId, cliSessionId, projectPath, configDir));
+  ipcMain.handle('session:transcriptExists', (_event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string) =>
+    transcriptExists(providerId, cliSessionId, projectPath, configDir, liveSessionId));
   // Synchronous variant: the renderer gates session archiving on this at close time,
   // where the surrounding remove/persist/emit logic must stay synchronous.
-  ipcMain.on('session:transcriptExistsSync', (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string) => {
-    event.returnValue = transcriptExists(providerId, cliSessionId, projectPath, configDir);
+  ipcMain.on('session:transcriptExistsSync', (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string) => {
+    event.returnValue = transcriptExists(providerId, cliSessionId, projectPath, configDir, liveSessionId);
+  });
+  ipcMain.handle('session:exportArchive', async (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file') => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    if (!win) throw new Error('no window');
+    return exportSessionArchive(win, { providerId, cliSessionId, projectPath, configDir, meta, format });
   });
 
   const searches = new WeakMap<Electron.WebContents, AbortController>();
@@ -589,9 +793,7 @@ export function registerIpcHandlers(): void {
         // Pi/OMP: the restored tab's launch dir is derivable from its UI
         // session id, so a post-`/clear` transcript written to it before
         // the restart is resolvable without any persisted mapping.
-        const sessionDir = s.providerId === 'pi' || s.providerId === 'omp'
-          ? launchSessionDir(s.providerId, s.sessionId)
-          : undefined;
+        const sessionDir = resolveLaunchSessionDir(s.providerId, s.sessionId);
         if (registerTranscriptSync(s.sessionId, s.providerId, s.cliSessionId, s.cwd, s.configDir, { titleOnly: true, sessionDir })) {
           registerSession(s.sessionId);
         }
@@ -607,6 +809,19 @@ export function registerIpcHandlers(): void {
   ipcMain.on('session:release', (_event, sessionId: string) => {
     unregisterTranscriptSync(sessionId);
     cleanupSessionStatus(sessionId);
+    // Isolated browser partitions (pane.ts: persist:vibeyard-browser-iso-<id>)
+    // live in userData/Partitions until quit: an isolated login's cookies and
+    // localStorage must go when the session goes. Guarded by directory
+    // existence so releasing a non-browser session never materialises a
+    // partition via fromPartition().
+    if (typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
+      const partDir = path.join(app.getPath('userData'), 'Partitions', `vibeyard-browser-iso-${sessionId}`);
+      if (fs.existsSync(partDir)) {
+        session.fromPartition(`persist:vibeyard-browser-iso-${sessionId}`)
+          .clearStorageData()
+          .catch((err) => console.warn('clearStorageData failed:', err));
+      }
+    }
   });
 
   ipcMain.on('app:focus', () => {
@@ -633,7 +848,9 @@ export function registerIpcHandlers(): void {
   const SCREENSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
   let screenshotsPruned = false;
 
-  async function pruneOldScreenshots(dir: string): Promise<void> {
+  // Shared by both temp-image directories: browser screenshots and pasted
+  // clipboard images are throwaway attachments, older than a day is dead.
+  async function pruneStaleImages(dir: string): Promise<void> {
     try {
       const entries = await fs.promises.readdir(dir);
       const now = Date.now();
@@ -647,12 +864,12 @@ export function registerIpcHandlers(): void {
             await fs.promises.unlink(full);
           }
         } catch (err) {
-          console.warn('Failed to prune screenshot', full, err);
+          console.warn('Failed to prune temp image', full, err);
         }
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.warn('Failed to read screenshots dir for pruning', err);
+        console.warn('Failed to read temp image dir for pruning', err);
       }
     }
   }
@@ -671,7 +888,7 @@ export function registerIpcHandlers(): void {
     await fs.promises.mkdir(dir, { recursive: true });
     if (!screenshotsPruned) {
       screenshotsPruned = true;
-      void pruneOldScreenshots(dir);
+      void pruneStaleImages(dir);
     }
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
     const filePath = path.join(dir, `draw-${safeId}-${Date.now()}.png`);
@@ -743,51 +960,75 @@ export function registerIpcHandlers(): void {
     return shell.openExternal(url);
   });
 
-  ipcMain.handle('git:getStatus', (_event, projectPath: string) => getGitStatus(projectPath));
+  ipcMain.handle('git:getStatus', (_event, projectPath: string) => getGitStatus(requireGitRoot('git:getStatus', projectPath)));
 
-  ipcMain.handle('git:getRemoteUrl', (_event, projectPath: string) => getGitRemoteUrl(projectPath));
+  ipcMain.handle('git:getRemoteUrl', (_event, projectPath: string) => getGitRemoteUrl(requireGitRoot('git:getRemoteUrl', projectPath)));
 
-  ipcMain.handle('git:getFiles', (_event, projectPath: string) => getGitFiles(projectPath));
+  ipcMain.handle('git:getFiles', (_event, projectPath: string) => getGitFiles(requireGitRoot('git:getFiles', projectPath)));
 
-  ipcMain.handle('git:getDiff', (_event, projectPath: string, filePath: string, area: string) => getGitDiff(projectPath, filePath, area));
+  ipcMain.handle('git:getDiff', (_event, projectPath: string, filePath: string, area: string) => {
+    const root = requireGitRoot('git:getDiff', projectPath);
+    return getGitDiff(root, requireGitFilePath('git:getDiff', root, filePath), area);
+  });
 
-  ipcMain.handle('git:getWorktrees', (_event, projectPath: string) => getGitWorktrees(projectPath));
+  ipcMain.handle('git:getWorktrees', (_event, projectPath: string) => getGitWorktrees(requireGitRoot('git:getWorktrees', projectPath)));
 
   ipcMain.handle('git:stageFile', async (_event, projectPath: string, filePath: string) => {
-    await gitStageFile(projectPath, filePath);
+    const root = requireGitRoot('git:stageFile', projectPath);
+    await gitStageFile(root, requireGitFilePath('git:stageFile', root, filePath));
     notifyGitChanged();
   });
 
   ipcMain.handle('git:unstageFile', async (_event, projectPath: string, filePath: string) => {
-    await gitUnstageFile(projectPath, filePath);
+    const root = requireGitRoot('git:unstageFile', projectPath);
+    await gitUnstageFile(root, requireGitFilePath('git:unstageFile', root, filePath));
     notifyGitChanged();
   });
 
   ipcMain.handle('git:discardFile', async (_event, projectPath: string, filePath: string, area: string) => {
-    await gitDiscardFile(projectPath, filePath, area as GitFileEntry['area']);
+    const root = requireGitRoot('git:discardFile', projectPath);
+    await gitDiscardFile(root, requireGitFilePath('git:discardFile', root, filePath), area as GitFileEntry['area']);
     notifyGitChanged();
   });
 
   ipcMain.on('git:watchProject', (_event, projectPath: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
-    startGitWatcher(win, projectPath);
+    const resolved = path.resolve(projectPath);
+    // Watch is read-only, and watched roots become git-capable roots, so
+    // bound them to the fs gate (projects + CLI config dirs, nothing else).
+    if (!isAllowedReadPath(resolved)) {
+      console.warn(`git:watchProject blocked: ${resolved}`);
+      return;
+    }
+    // Canonical form is the set key, and re-registering a watched root must
+    // not evict the oldest entry.
+    const canonical = canonicalPath(resolved);
+    if (!gitWatchedRoots.has(canonical)) {
+      if (gitWatchedRoots.size >= MAX_GIT_WATCHED_ROOTS) {
+        const oldest = gitWatchedRoots.values().next().value;
+        if (oldest !== undefined) gitWatchedRoots.delete(oldest);
+      }
+      gitWatchedRoots.add(canonical);
+    }
+    startGitWatcher(win, resolved);
   });
 
-  ipcMain.handle('git:listBranches', (_event, projectPath: string) => listGitBranches(projectPath));
+  ipcMain.handle('git:listBranches', (_event, projectPath: string) => listGitBranches(requireGitRoot('git:listBranches', projectPath)));
 
   ipcMain.handle('git:checkoutBranch', async (_event, projectPath: string, branch: string) => {
-    await checkoutGitBranch(projectPath, branch);
+    await checkoutGitBranch(requireGitRoot('git:checkoutBranch', projectPath), branch);
     notifyGitChanged();
   });
 
   ipcMain.handle('git:createBranch', async (_event, projectPath: string, branch: string) => {
-    await createGitBranch(projectPath, branch);
+    await createGitBranch(requireGitRoot('git:createBranch', projectPath), branch);
     notifyGitChanged();
   });
 
   ipcMain.handle('git:openInEditor', (_event, projectPath: string, filePath: string) => {
-    const fullPath = path.join(projectPath, filePath);
+    const root = requireGitRoot('git:openInEditor', projectPath);
+    const fullPath = path.join(root, requireGitFilePath('git:openInEditor', root, filePath));
     return shell.openPath(fullPath);
   });
 
@@ -1021,10 +1262,17 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) => analyzeReadiness(projectPath, excludedProviders));
+  // Both run git in the renderer-named cwd (`git ls-files` for the readiness
+  // scan, `git remote get-url` for the repo detect), so both take the same
+  // root gate as the 13 git:* handlers: a known project or a watched worktree.
+  ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) =>
+    analyzeReadiness(requireGitRoot('readiness:analyze', projectPath), excludedProviders)
+  );
 
   ipcMain.handle('github:isAvailable', () => isGhAvailable());
-  ipcMain.handle('github:detectRepo', (_event, projectPath: string) => detectRepo(projectPath));
+  ipcMain.handle('github:detectRepo', (_event, projectPath: string) =>
+    detectRepo(requireGitRoot('github:detectRepo', projectPath))
+  );
   ipcMain.handle('github:listPRs', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
     listPullRequests(repo, { state, max })
   );
@@ -1035,25 +1283,25 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('update:checkNow', () => checkForUpdates());
   ipcMain.handle('update:install', () => quitAndInstall());
 
+  ipcMain.handle('agentmemory:status', () => probeAgentmemory());
+  ipcMain.handle('agentmemory:start', () => ensureAgentmemoryRunning());
+
   ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude') => {
     try {
       const provider = getProvider(providerId);
       provider.reinstallSettings();
       return { success: true };
     } catch (err) {
-      console.error('settings:reinstall failed:', err);
-      return { success: false };
+      return { success: false, error: String(err) };
     }
   });
-
   ipcMain.handle('settings:validate', (_event, providerId: ProviderId = 'claude'): SettingsValidationResult => {
-    const provider = getProvider(providerId);
-    return provider.validateSettings();
+    return getProvider(providerId).validateSettings();
   });
 
-  ipcMain.handle('mcp:addServer', (_event, name: string, config: McpServerConfig, scope: 'user' | 'project', projectPath?: string) => {
+  ipcMain.handle('mcp:addServer', (_event, name: string, config: McpServerConfig, scope: 'user' | 'project', projectPath?: string, configDir?: string) => {
     try {
-      addMcpServer(name, config, scope, projectPath);
+      addMcpServer(name, config, scope, projectPath, configDir);
       return { success: true };
     } catch (err) {
       console.error('mcp:addServer failed:', err);
@@ -1061,13 +1309,13 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('mcp:removeServer', (_event, name: string, filePath: string, scope: 'user' | 'project', projectPath?: string) => {
+  ipcMain.handle('mcp:removeServer', (_event, name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string) => {
     try {
-      removeMcpServer(name, filePath, scope, projectPath);
+      removeMcpServer(name, filePath, scope, projectPath, configDir);
       return { success: true };
     } catch (err) {
       console.error('mcp:removeServer failed:', err);
-      return { success: false, error: String(err) };
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 

@@ -1,6 +1,6 @@
 import type { Terminal } from '@xterm/xterm';
 import { isMac } from '../platform.js';
-import { copySelection, wrapBracketedPaste } from './terminal-utils.js';
+import { copySelection, pasteIntoTerminal } from './terminal-utils.js';
 import { t } from '../i18n.js';
 
 let activeMenu: HTMLElement | null = null;
@@ -60,10 +60,9 @@ export function showTerminalContextMenu(
     e.stopPropagation();
     hideTerminalContextMenu();
     terminal.focus();
-    navigator.clipboard.readText().then((text) => {
-      if (!text) return;
-      writeToPty(wrapBracketedPaste(terminal, text));
-    }).catch(() => {});
+    // The click is not a keystroke, so no paste event exists: read the clipboard
+    // through main, which also turns a clipboard image into an attachment path.
+    void pasteIntoTerminal(terminal, writeToPty).catch(() => {});
   });
   menu.appendChild(pasteItem);
 

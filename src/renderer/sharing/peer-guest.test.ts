@@ -262,6 +262,35 @@ describe('joinShare', () => {
       expect(onDisc).toHaveBeenCalledTimes(1);
     });
 
+    it('ICE failed closes both the peer connection and the data channel', () => {
+      // Regression: peer-loss teardown used to only delete the map entry,
+      // leaving the RTCPeerConnection sending ICE checks to the departed host.
+      joinShare('offer-code', '0123456789abcdef0123456789abcdef');
+      const dc = attachChannel();
+      (lastPc as unknown as { iceConnectionState: RTCIceConnectionState }).iceConnectionState = 'failed';
+      lastPc!.oniceconnectionstatechange?.();
+      expect(dc.close).toHaveBeenCalledTimes(1);
+      expect(lastPc!.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('ICE disconnected closes both the peer connection and the data channel', () => {
+      joinShare('offer-code', '0123456789abcdef0123456789abcdef');
+      const dc = attachChannel();
+      (lastPc as unknown as { iceConnectionState: RTCIceConnectionState }).iceConnectionState = 'disconnected';
+      lastPc!.oniceconnectionstatechange?.();
+      expect(dc.close).toHaveBeenCalledTimes(1);
+      expect(lastPc!.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('host-side data-channel close closes the peer connection', () => {
+      // dc.onclose is the other peer-loss path: closing only the channel
+      // leaks the PC, which keeps gathering/connecting with no channel left.
+      joinShare('offer-code', '0123456789abcdef0123456789abcdef');
+      const dc = attachChannel();
+      dc.onclose?.();
+      expect(lastPc!.close).toHaveBeenCalledTimes(1);
+    });
+
     it('manual disconnect() closes the connection', () => {
       const { handle } = joinShare('offer-code', '0123456789abcdef0123456789abcdef');
       attachChannel();

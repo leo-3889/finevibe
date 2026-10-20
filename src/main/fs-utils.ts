@@ -9,6 +9,24 @@ export function expandUserPath(filePath: string): string {
   return filePath;
 }
 
+/**
+ * Resolve existing links, including a link in an existing parent directory.
+ * Path *comparisons* must use this: the same directory can be spelled with a
+ * different drive-letter case, separator style, `..` segment, junction or
+ * link, and on Windows realpathSync also returns the real casing. Non-existent
+ * paths fall back to their resolved form with canonicalized parents.
+ */
+export function canonicalPath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    const parent = path.dirname(resolved);
+    if (parent === resolved) return resolved;
+    return path.join(canonicalPath(parent), path.basename(resolved));
+  }
+}
+
 export function readFileSafe(filePath: string): string | null {
   try {
     return fs.readFileSync(filePath, 'utf-8');
@@ -58,19 +76,6 @@ export function isBinaryBuffer(buf: Buffer): boolean {
     if (buf[i] === 0) return true;
   }
   return false;
-}
-
-/** Sync wrapper that opens a file, sniffs the head, and closes. Returns true on binary or I/O failure. */
-export function isLikelyBinaryFile(absPath: string): boolean {
-  let fd: number;
-  try { fd = fs.openSync(absPath, 'r'); } catch { return true; }
-  try {
-    const head = Buffer.alloc(BINARY_SNIFF_BYTES);
-    const bytesRead = fs.readSync(fd, head, 0, BINARY_SNIFF_BYTES, 0);
-    return isBinaryBuffer(head.subarray(0, bytesRead));
-  } finally {
-    fs.closeSync(fd);
-  }
 }
 
 /**

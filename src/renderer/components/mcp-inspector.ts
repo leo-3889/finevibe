@@ -387,12 +387,6 @@ export function showInspectorPane(sessionId: string, split: boolean): void {
   }
 }
 
-export function hideInspectorPane(sessionId: string): void {
-  const instance = instances.get(sessionId);
-  if (!instance) return;
-  instance.element.classList.add('hidden');
-}
-
 export function hideAllInspectorPanes(): void {
   for (const instance of instances.values()) {
     instance.element.classList.add('hidden');

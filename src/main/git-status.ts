@@ -221,11 +221,33 @@ export async function listGitBranches(cwd: string): Promise<GitBranch[]> {
   return branches;
 }
 
+/**
+ * `branch` arrives from the renderer (`git:checkoutBranch`, `git:createBranch`)
+ * and becomes a `git checkout` argv entry. A leading `-` is parsed as a
+ * checkout flag, not a rev — `-f` force-discards the working tree — so reject
+ * it before exec, then let git validate the ref itself. `--branch` is the
+ * variant that accepts a single-segment name like `main`; it rejects the rest
+ * of the shapes that break checkout (`..`, `~`, `^`, `:`, `@{`, control
+ * chars, trailing `.`/`/`, `.lock`). execFile argv, no shell.
+ */
+async function requireValidBranch(cwd: string, branch: string): Promise<void> {
+  if (typeof branch !== 'string' || branch === '' || branch.startsWith('-')) {
+    throw new Error(`Invalid branch name: ${JSON.stringify(branch)}`);
+  }
+  try {
+    await execGit(cwd, ['check-ref-format', '--branch', branch]);
+  } catch {
+    throw new Error(`Invalid branch name: ${JSON.stringify(branch)}`);
+  }
+}
+
 export async function checkoutGitBranch(cwd: string, branch: string): Promise<void> {
+  await requireValidBranch(cwd, branch);
   await execGit(cwd, ['checkout', branch]);
 }
 
 export async function createGitBranch(cwd: string, branch: string): Promise<void> {
+  await requireValidBranch(cwd, branch);
   await execGit(cwd, ['checkout', '-b', branch]);
 }
 

@@ -1,5 +1,5 @@
-export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource } from '../shared/types.js';
-import type { CostData, ProviderConfig, GitWorktree, McpResult, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo } from '../shared/types.js';
+export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, AgentmemoryStatus } from '../shared/types.js';
+import type { CostData, ProviderConfig, GitWorktree, McpResult, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types.js';
 
 export interface VibeyardApi {
   pty: {
@@ -13,14 +13,15 @@ export interface VibeyardApi {
     onExit(callback: (sessionId: string, exitCode: number, signal?: number, exitReason?: string, pid?: number) => void): () => void;
   };
   session: {
-    transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): Promise<boolean>;
-    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string): boolean;
-    buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string): Promise<string>;
+    transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): Promise<boolean>;
+    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): boolean;
+    /** Save-dialog backup of one session. `zip`: meta.json + transcript + sidecars; `file`: the transcript verbatim. Resolves to the written path, or null when canceled. */
+    exportArchive(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file'): Promise<string | null>;
+    buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string, liveSessionId?: string): Promise<string>;
     onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
     cancelDeepSearch(): void;
-    onClaudeSessionId(callback: (sessionId: string, claudeSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
     onInspectorEvents(callback: (sessionId: string, events: InspectorEvent[]) => void): () => void;
@@ -51,6 +52,7 @@ export interface VibeyardApi {
   store: {
     load(): Promise<unknown>;
     save(state: unknown): Promise<void>;
+    startupPrefs(): StartupPrefs;
   };
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
@@ -65,10 +67,6 @@ export interface VibeyardApi {
     onConfigChanged(callback: () => void): () => void;
     installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
     removeAgent(slug: string): Promise<void>;
-  };
-  /** @deprecated Use provider namespace */
-  claude: {
-    getConfig(projectPath: string): Promise<ProviderConfig>;
   };
   git: {
     getStatus(path: string): Promise<unknown>;
@@ -125,8 +123,8 @@ export interface VibeyardApi {
     // Preload exposes these (see the mcp block in preload.ts); the renderer's
     // copy of the interface had drifted and omitted them, so the widget's
     // calls type-errored.
-    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string): Promise<McpResult>;
-    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string): Promise<McpResult>;
+    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<McpResult>;
+    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<McpResult>;
   };
   readiness: {
     analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
@@ -149,6 +147,12 @@ export interface VibeyardApi {
   };
   clipboard: {
     write(text: string, source?: ClipboardSource): Promise<void>;
+    readForPaste(): Promise<ClipboardPastePayload>;
+    saveImage(dataUrl: string): Promise<string | null>;
+  };
+  agentmemory: {
+    status(): Promise<AgentmemoryStatus>;
+    start(): Promise<AgentmemoryStatus>;
   };
   menu: {
     onNewProject(callback: () => void): () => void;

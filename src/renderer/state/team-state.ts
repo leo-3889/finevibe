@@ -6,10 +6,6 @@ import { isCliSession } from '../session-utils.js';
 import { resolveProfile } from './specialized-sessions.js';
 import { buildCliSession } from './session-factory.js';
 
-export function getTeamData(team: TeamData | undefined, ensure: () => TeamData): TeamData {
-  return team ?? ensure();
-}
-
 export function buildNewMember(
   input: Omit<TeamMember, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
 ): TeamMember {

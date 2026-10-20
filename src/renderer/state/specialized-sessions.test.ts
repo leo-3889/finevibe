@@ -34,7 +34,7 @@ vi.mock('../provider-availability.js', () => ({
 
 import { appState, _resetForTesting } from '../state';
 import { resolveProfile, resolveProjectFilePath } from './specialized-sessions.js';
-import type { Profile, ProjectRecord } from '../../shared/types.js';
+import type { BoardData, BoardTask, Profile, ProjectRecord } from '../../shared/types.js';
 import { getCost } from '../session-cost.js';
 const mockGetCost = vi.mocked(getCost);
 
@@ -64,6 +64,7 @@ describe('project coding defaults', () => {
     expect(appState.addPlanSession(project.id, 'Plan')).toMatchObject({ providerId: 'omp', profileId: 'omp-work' });
     expect(old.providerId).toBe('claude');
     expect(appState.addSession(project.id, 'Override', undefined, 'pi')?.providerId).toBe('pi');
+    appState.flushPersist();
     const saved = mockSave.mock.calls.at(-1)![0];
     mockLoad.mockResolvedValue(saved);
     await appState.load();
@@ -79,27 +80,6 @@ describe('project coding defaults', () => {
     expect(appState.addSession(project.id, 'Global')?.providerId).toBe('pi');
   });
 });
-
-function addProjectWithSessions(count: number) {
-  const project = addProject();
-  const sessions = [];
-  for (let i = 0; i < count; i++) {
-    sessions.push(appState.addSession(project.id, `Session ${i + 1}`)!);
-  }
-  return { project, sessions };
-}
-
-function mockCostData() {
-  mockGetCost.mockReturnValue({
-    totalCostUsd: 0.42,
-    totalInputTokens: 1000,
-    totalOutputTokens: 500,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    totalDurationMs: 5000,
-    totalApiDurationMs: 3000,
-  });
-}
 
 describe('addDiffViewerSession()', () => {
   it('creates a diff-viewer session', () => {
@@ -317,8 +297,9 @@ describe('removeProfile reference cleanup', () => {
     appState.setProviderDefaultProfile('claude', profile.id);
     const session = appState.addSession(project.id, 'S', undefined, 'claude', profile.id)!;
     project.sessionHistory = [{ id: 'a', name: 'old', providerId: 'claude', cliSessionId: 'c', createdAt: '0', closedAt: '0', profileId: profile.id, cost: null }];
-    project.board = project.board ?? ({ tasks: [], columns: [] } as any);
-    const task = { id: 't1', title: 'T', prompt: 'p', columnId: 'col-1', order: 0, profileId: profile.id, createdAt: 0, updatedAt: 0 } as any;
+    const board: BoardData = project.board ?? { tasks: [], columns: [] };
+    project.board = board;
+    const task: BoardTask = { id: 't1', title: 'T', prompt: 'p', columnId: 'col-1', order: 0, profileId: profile.id, createdAt: 0, updatedAt: 0 };
     project.board.tasks.push(task);
 
     appState.removeProfile(profile.id);
