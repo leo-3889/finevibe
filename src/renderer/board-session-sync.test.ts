@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Mock } from 'vitest';
 
 vi.stubGlobal('window', {
   vibeyard: {
@@ -24,6 +25,12 @@ vi.mock('./session-context.js', () => ({
 vi.mock('./provider-availability.js', () => ({
   getProviderCapabilities: vi.fn(),
 }));
+
+// Wrap updateTask in a spy: the P3-7 test counts task-row writes through it.
+vi.mock('./board-state.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./board-state')>();
+  return { ...actual, updateTask: vi.fn(actual.updateTask) };
+});
 
 import { appState, _resetForTesting } from './state';
 import { addTask, updateTask, getBoard, getColumnByBehavior, getTaskBySessionId } from './board-state';
@@ -131,6 +138,23 @@ describe('board-session-sync', () => {
     expect(getBoard(first.id)!.tasks[0].columnId).toBe('col-done');
     appState.removeSession(first.id, session.id);
     expect(getBoard(first.id)!.tasks[0].sessionId).toBeUndefined();
+  });
+
+  it('writes zero task rows on two payload-less session-changed with an unchanged list', () => {
+    const project = appState.activeProject!;
+    const session = appState.addSession(project.id, 'S')!;
+    const task = addTask({ title: 'T', prompt: 'p' })!;
+    updateTask(task.id, { sessionId: session.id });
+
+    // First payload-less session-changed (updateSessionCliId emits one) persists the CLI id.
+    appState.updateSessionCliId(project.id, session.id, 'cli-1');
+    expect(getBoard()!.tasks.find(t => t.id === task.id)!.cliSessionId).toBe('cli-1');
+
+    // Second payload-less session-changed (activation path) with an unchanged
+    // session list must write no task rows (P3-7: full scan cost per activation).
+    (updateTask as Mock).mockClear();
+    appState.setActiveSession(project.id, session.id);
+    expect(updateTask).not.toHaveBeenCalled();
   });
 });
 

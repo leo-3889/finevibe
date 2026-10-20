@@ -446,7 +446,10 @@ class AppState {
     }
     this.persist();
     for (const session of sessions) {
-      this.emit('session-removed', { projectId: id, sessionId: session.id });
+      // `deferRender`: consumers that tear down a pane per session (split-layout)
+      // skip their per-event layout render — the `project-changed` emit below
+      // renders once for the whole batch, so removing N sessions costs 1 render, not N+1.
+      this.emit('session-removed', { projectId: id, sessionId: session.id, deferRender: true });
     }
     this.emit('project-removed', id);
     this.emit('project-changed');

@@ -345,8 +345,8 @@ describe('removeProject()', () => {
     appState.on('session-removed', sessionRemovedCb);
     appState.removeProject(p.id);
     expect(sessionRemovedCb).toHaveBeenCalledTimes(2);
-    expect(sessionRemovedCb).toHaveBeenCalledWith({ projectId: p.id, sessionId: s1.id });
-    expect(sessionRemovedCb).toHaveBeenCalledWith({ projectId: p.id, sessionId: s2.id });
+    expect(sessionRemovedCb).toHaveBeenCalledWith({ projectId: p.id, sessionId: s1.id, deferRender: true });
+    expect(sessionRemovedCb).toHaveBeenCalledWith({ projectId: p.id, sessionId: s2.id, deferRender: true });
   });
 });
 

@@ -242,7 +242,7 @@ function onSessionAdded(data: unknown): void {
 }
 
 function onSessionRemoved(data: unknown): void {
-  const { sessionId } = data as { projectId: string; sessionId: string };
+  const { sessionId, deferRender } = data as { projectId: string; sessionId: string; deferRender?: boolean };
   if (getFileReaderInstance(sessionId)) {
     destroyFileReaderPane(sessionId);
   } else if (getFileViewerInstance(sessionId)) {
@@ -263,7 +263,9 @@ function onSessionRemoved(data: unknown): void {
   } else {
     destroyTerminal(sessionId);
   }
-  renderLayout();
+  // Project removal (state.removeProject) emits `deferRender` per session; the layout
+  // renders once for the batch on the following `project-changed`.
+  if (!deferRender) renderLayout();
 }
 
 export function renderLayout(): void {
