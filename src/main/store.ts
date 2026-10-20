@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { PersistedState } from '../shared/types';
+import type { PersistedState, Preferences } from '../shared/types';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
 
@@ -9,24 +9,38 @@ const STATE_DIR = path.join(os.homedir(), '.vibeyard');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/** Leading-edge throttle window; see saveState. */
+const SAVE_THROTTLE_MS = 300;
+let lastSaveAt = 0;
 
 // loadState() re-read and re-parsed state.json on every call; state changes
 // flow through saveState/saveStateSync, so the parsed result is cached there
 // and reused here (fs:* guards and the synchronous startup-prefs channel run
 // loadState on hot paths). Tests manipulate fs mocks directly and must call
 // invalidateStateCache() between cases.
-let stateCache: PersistedState | null = null;
+let stateCache: LoadedState | null = null;
 
 export function invalidateStateCache(): void {
   stateCache = null;
 }
 
-function defaultState(): PersistedState {
+/** The single documented default for a state file that omits `preferences`
+ * (P2-84): a `version: 1` file without the field parses verbatim, and
+ * `loadState` fills this in exactly once so every consumer reads a present
+ * object. Keep in sync with the renderer's `defaultPreferences`. */
+export const DEFAULT_PREFERENCES: Preferences = { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true };
+
+/** State returned by {@link loadState}: `preferences` is guaranteed present
+ * by the loader's single normalization step, so main-side consumers never
+ * need to guard it. */
+export type LoadedState = PersistedState & { preferences: Preferences };
+
+function defaultState(): LoadedState {
   return {
     version: 1,
     projects: [],
     activeProjectId: null,
-    preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true },
+    preferences: { ...DEFAULT_PREFERENCES },
   };
 }
 
@@ -38,10 +52,10 @@ function defaultState(): PersistedState {
 // both parse, the newer mtime wins; the consumed .tmp is always unlinked,
 // because a stale copy left behind is what a later corrupt state.json would
 // resurrect.
-export function loadState(): PersistedState {
+export function loadState(): LoadedState {
   if (stateCache) return stateCache;
   const valid: { main?: PersistedState; tmp?: PersistedState } = {};
-  for (const file of [STATE_FILE, STATE_FILE + '.tmp']) {
+  for (const file of [STATE_FILE, `${STATE_FILE}.tmp`]) {
     try {
       if (!fs.existsSync(file)) continue;
       const raw = fs.readFileSync(file, 'utf-8');
@@ -55,20 +69,23 @@ export function loadState(): PersistedState {
   }
   let picked: PersistedState | undefined = valid.main;
   if (valid.tmp) {
-    const tmpNewer = valid.main ? stateFileIsNewer(STATE_FILE + '.tmp', STATE_FILE) : true;
+    const tmpNewer = valid.main ? stateFileIsNewer(`${STATE_FILE}.tmp`, STATE_FILE) : true;
     if (tmpNewer) {
       picked = valid.tmp;
       console.warn('Recovered state from temp file');
     }
     try {
-      fs.unlinkSync(STATE_FILE + '.tmp');
+      fs.unlinkSync(`${STATE_FILE}.tmp`);
     } catch {
       // Vanished (or the file system refuses) — the next save truncates it.
     }
   }
   if (picked) {
-    stateCache = picked;
-    return picked;
+    // Single documented default (P2-84): normalize once here, never at call
+    // sites. Spread (not a cast) so the type system checks the result.
+    const normalized: LoadedState = { ...picked, preferences: picked.preferences ?? { ...DEFAULT_PREFERENCES } };
+    stateCache = normalized;
+    return normalized;
   }
   console.warn('No valid state file found, using defaults');
   stateCache = defaultState();
@@ -86,16 +103,30 @@ function stateFileIsNewer(candidate: string, reference: string): boolean {
 }
 
 export function saveState(state: PersistedState): void {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-  }
   lastState = state;
-  stateCache = state;
+  // P2-84: the cache is LoadedState; a writer's raw state normalizes to
+  // the loader's single documented default on the way in.
+  stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
   knownProjectPaths = state.projects.map(p => p.path);
-  saveTimer = setTimeout(() => {
+  // Leading-edge throttle (same shape as the renderer's persist in
+  // state.ts, ffcd283): the first save of a burst writes through
+  // IMMEDIATELY, so a crash loses at most the mutations after the last
+  // disk write. The old pure trailing debounce re-armed a 300ms timer on
+  // every call — a steady stream of saves starved the write entirely and
+  // kept the whole window exposed to a crash.
+  const elapsed = Date.now() - lastSaveAt;
+  if (elapsed >= SAVE_THROTTLE_MS && saveTimer === null) {
+    lastSaveAt = Date.now();
     writeStateAtomically(state);
+    return;
+  }
+  if (saveTimer !== null) return; // trailing write already armed
+  saveTimer = setTimeout(() => {
     saveTimer = null;
-  }, 300);
+    lastSaveAt = Date.now();
+    // Coalesce: write the LATEST state, not the one that armed the timer.
+    if (lastState) writeStateAtomically(lastState);
+  }, SAVE_THROTTLE_MS - elapsed);
 }
 
 let lastState: PersistedState | null = null;
@@ -129,8 +160,11 @@ export function flushState(): void {
 }
 
 export function saveStateSync(state: PersistedState): void {
-  stateCache = state;
+  stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
   knownProjectPaths = state.projects.map(p => p.path);
+  // A synchronous write is a disk write: it opens the throttle window for
+  // the leading-edge check in saveState.
+  lastSaveAt = Date.now();
   writeStateAtomically(state);
 }
 
@@ -156,7 +190,7 @@ function writeStateAtomically(state: PersistedState): void {
     if (!fs.existsSync(STATE_DIR)) {
       fs.mkdirSync(STATE_DIR, { recursive: true });
     }
-    const tmpFile = STATE_FILE + '.tmp';
+    const tmpFile = `${STATE_FILE}.tmp`;
     // fsync before rename: a crash between rename and data flush used to
     // leave a truncated state.json whose .tmp recovery copy was already
     // consumed by the rename — whole-state loss to defaults.

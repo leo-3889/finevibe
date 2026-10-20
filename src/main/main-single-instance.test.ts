@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { stopGitWatcher } from './git-watcher';
+import { stopConfigWatcher } from './config-watcher';
 import type { MockedFunction } from 'vitest';
 
 // Smoke test for the single-instance gate in main.ts. main.ts has no
@@ -14,6 +16,7 @@ interface MockWindow {
   isDestroyed: () => boolean;
   isMinimized: () => boolean;
   restore: () => void;
+  handlers: Record<string, (arg?: unknown) => void>;
   focus: () => void;
 }
 
@@ -54,7 +57,8 @@ vi.mock('electron', () => {
       },
     };
     loadFile = vi.fn();
-    on = vi.fn();
+    handlers: Record<string, (arg?: unknown) => void> = {};
+    on = vi.fn((event: string, cb: (arg?: unknown) => void) => { this.handlers[event] = cb; });
     constructor() {
       windows.push(this);
     }
@@ -81,7 +85,17 @@ vi.mock('./ipc-handlers', () => ({ registerIpcHandlers: vi.fn(), resetHookWatche
 vi.mock('./pty-manager', () => ({ killAllPtys: vi.fn() }));
 vi.mock('./store', () => ({
   flushState: vi.fn(),
-  loadState: vi.fn(() => ({ preferences: {} })),
+  // P1-6: `agentmemoryAutoStart: false` is load-bearing. main.ts:231 gates
+  // the fire-and-forget `void ensureAgentmemoryRunning().then(s =>
+  // console.log('[agentmemory] ...'))` on this pref; with a bare
+  // `{ preferences: {} }` the log fires once per import, and the user
+  // console log from the file's LAST import can still be in flight on the
+  // worker RPC when the file tears down — "Closing rpc while
+  // onUserConsoleLog was pending" → EnvironmentTeardownError, exit 1, all
+  // tests green (the audit's ~1/5 `npm test` flake). Skipping the call
+  // removes the only module-side console write in this suite without
+  // touching the chain's microtask timing (see importPrimaryInstance).
+  loadState: vi.fn(() => ({ preferences: { agentmemoryAutoStart: false } })),
 }));
 vi.mock('./menu', () => ({ createAppMenu: vi.fn() }));
 vi.mock('./hook-status', () => ({ restartAndResync: vi.fn() }));
@@ -92,6 +106,13 @@ vi.mock('./providers/registry', () => ({
 vi.mock('./auto-updater', () => ({ initAutoUpdater: vi.fn() }));
 vi.mock('./git-watcher', () => ({ stopGitWatcher: vi.fn() }));
 vi.mock('./file-watcher', () => ({ stopAllFileWatchers: vi.fn() }));
+vi.mock('./config-watcher', () => ({ stopConfigWatcher: vi.fn() }));
+// The real module spawns/probes a daemon and logs when its promise lands;
+// a landing after environment teardown races the vitest worker RPC
+// ("Closing rpc while onUserConsoleLog was pending").
+vi.mock('./agentmemory-manager', () => ({
+  ensureAgentmemoryRunning: vi.fn(() => Promise.resolve({ running: false })),
+}));
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 vi.mock('./platform', () => ({ isMac: false, isWin: false }));
@@ -108,6 +129,12 @@ async function importPrimaryInstance(): Promise<void> {
   // The window is created inside app.whenReady().then(...) — flush the
   // mocked chain before touching the recorded window.
   await vi.waitFor(() => expect(windows.length).toBeGreaterThan(0));
+  // No extra await here: this suite's hoisted mock state (windows,
+  // appHandlers) is reset in beforeEach, and an added macrotask/microtask
+  // turn lets the previous import's whenReady continuations land across
+  // that reset (deterministically red when stressed 25x). The P1-6 console
+  // race is fixed at the source — the store mock above keeps main.ts from
+  // emitting any user console log.
 }
 
 beforeEach(() => {
@@ -129,6 +156,13 @@ describe('single-instance gate', () => {
     expect(app.quit).toHaveBeenCalledTimes(1);
     // The loser must not start serving relaunches.
     expect(appHandlers['second-instance']).toBeUndefined();
+
+    // P1-1: the loser must boot NOTHING. The full UI stack (window, IPC,
+    // browser/webview surface, lifecycle handlers) used to run from
+    // app.whenReady() in the loser before quit() could take effect.
+    await vi.waitFor(() => expect(windows.length).toBe(0));
+    expect(appHandlers['before-quit']).toBeUndefined();
+    expect(appHandlers['window-all-closed']).toBeUndefined();
   });
 
   it('registers a second-instance handler that restores and focuses the window', async () => {
@@ -160,5 +194,20 @@ describe('single-instance gate', () => {
     windows[0].destroyed = true;
     expect(() => appHandlers['second-instance']()).not.toThrow();
     expect(windows[0].focus).not.toHaveBeenCalled();
+  });
+
+  // P2-52: after a macOS close-and-reopen the git/config watchers kept
+  // their handle on the DESTROYED window (startGitWatcher/startConfigWatcher
+  // early-return with an unchanged project and never re-point currentWin),
+  // so git:changed/config:changed were dropped for the life of the app and
+  // the old watch handles leaked. Releasing them on 'closed' makes the
+  // reopened window's next start* call re-point them.
+  it('releases the git and config watchers when the window closes', async () => {
+    await importPrimaryInstance();
+
+    windows[0].handlers['closed']!();
+
+    expect(vi.mocked(stopGitWatcher)).toHaveBeenCalled();
+    expect(vi.mocked(stopConfigWatcher)).toHaveBeenCalled();
   });
 });

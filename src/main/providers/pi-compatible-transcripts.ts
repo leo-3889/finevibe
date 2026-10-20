@@ -124,11 +124,25 @@ export function readTranscriptTailSync(filePath: string, bytes = TAIL_READ_BYTES
  * so there is nothing to report. Non-event lines (title, model_change, …) are
  * skipped.
  */
+/**
+ * One parsed JSONL line of a Pi/OMP transcript. Fields depend on `type`;
+ * only the fields this module reads are named — everything else stays
+ * `unknown` so a consumer cannot index blindly and get a usable `any`.
+ */
+interface TranscriptEntry {
+  type?: string;
+  customType?: string;
+  id?: string;
+  title?: string;
+  message?: { role?: string; stopReason?: string };
+  [key: string]: unknown;
+}
+
 export function transcriptStatusFromTail(tail: string | null): CliSessionStatus | null {
   if (!tail) return null;
   const lines = tail.split(/\r?\n/).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
-    let entry: Record<string, any>;
+    let entry: TranscriptEntry;
     try {
       entry = JSON.parse(lines[i]);
     } catch {
@@ -136,6 +150,9 @@ export function transcriptStatusFromTail(tail: string | null): CliSessionStatus 
       // scanning backwards for the last complete line.
       continue;
     }
+    // A bare `null` (or any JSON scalar) parses fine and is not an entry:
+    // reading `.type` off it throws a TypeError out of the status poller.
+    if (!entry || typeof entry !== 'object') continue;
     if (entry.type === 'custom' && entry.customType === 'session_exit') return null;
     const status = statusFromEntry(entry);
     if (status) return status;
@@ -143,7 +160,7 @@ export function transcriptStatusFromTail(tail: string | null): CliSessionStatus 
   return null;
 }
 
-function statusFromEntry(entry: Record<string, any>): CliSessionStatus | null {
+function statusFromEntry(entry: TranscriptEntry): CliSessionStatus | null {
   if (entry.type === 'custom') {
     if (entry.customType === 'session_exit') return null; // session is removed on PTY exit; nothing to report
     if (entry.customType === 'tool_execution_start') return 'working';
@@ -328,10 +345,9 @@ export function readSessionExitReasonSync(filePath: string): SessionExitReason |
  * header and rewrites it in place when the title changes, so the header is
  * not always line 1. Parse the JSON entries of the first few lines.
  */
-// pi-lens-ignore: no-unsafe-dictionary-any
-function headEntries(window: string | null): Array<Record<string, any>> {
+function headEntries(window: string | null): TranscriptEntry[] {
   if (!window) return [];
-  const out: Array<Record<string, any>> = [];
+  const out: TranscriptEntry[] = [];
   const lines = window.split('\n');
   for (let i = 0; i < lines.length && out.length < 4; i++) {
     const line = lines[i];
@@ -619,6 +635,9 @@ export async function indexCompatibleTranscript(transcriptPath: string): Promise
       } catch {
         continue;
       }
+      // A bare `null`/scalar parses fine and is not an entry: `.type` on it
+      // throws a TypeError out of the search indexer.
+      if (!entry || typeof entry !== 'object') continue;
       if (entry.type === 'session' && typeof entry.cwd === 'string') {
         cwd = entry.cwd;
         continue;

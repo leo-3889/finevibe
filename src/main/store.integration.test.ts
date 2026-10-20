@@ -90,24 +90,48 @@ describe('state persistence on disk', () => {
     expect(store.loadState().activeProjectId).toBe('only-copy');
   });
 
-  it('flushes a debounced save on quit and disarms its timer', () => {
+  // P1-2: the old trailing debounce kept the WHOLE 300ms window exposed to
+  // a crash — a mutation burst wrote nothing until the timer fired. The
+  // leading-edge throttle writes the first mutation through at once and
+  // coalesces the rest into one trailing write of the latest state.
+  it('writes the leading edge immediately and lands a final write after a burst', () => {
     vi.useFakeTimers();
     try {
-      const file = path.join(testHome.path, '.vibeyard', 'state.json');
-      const state = store.loadState();
-      state.activeProjectId = 'debounced-quit';
-      store.saveState(state);
-
-      // The 300ms debounce: the mutation is not on disk yet.
+      vi.advanceTimersByTime(1_000); // clear any throttle window left by earlier sync saves
+      store.saveState({ ...store.loadState(), activeProjectId: 'v1-leading' });
+      // Leading edge: the burst's first mutation is already on disk.
       store.invalidateStateCache();
-      expect(store.loadState().activeProjectId).not.toBe('debounced-quit');
+      expect(store.loadState().activeProjectId).toBe('v1-leading');
+
+      store.saveState({ ...store.loadState(), activeProjectId: 'v2' });
+      store.saveState({ ...store.loadState(), activeProjectId: 'v3-final' });
+      // Inside the throttle window: only the armed trailing write is pending.
+      store.invalidateStateCache();
+      expect(store.loadState().activeProjectId).toBe('v1-leading');
+
+      // The coalesced trailing write lands with the LATEST state.
+      vi.advanceTimersByTime(300);
+      store.invalidateStateCache();
+      expect(store.loadState().activeProjectId).toBe('v3-final');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('flushes the armed trailing save on quit and disarms its timer', () => {
+    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    vi.useFakeTimers();
+    try {
+      vi.advanceTimersByTime(1_000);
+      store.saveState({ ...store.loadState(), activeProjectId: 'quit-leading' }); // leading write
+      store.saveState({ ...store.loadState(), activeProjectId: 'quit-pending' }); // trailing armed
 
       // `before-quit` -> flushState(): written without waiting for the timer.
       store.flushState();
       store.invalidateStateCache();
-      expect(store.loadState().activeProjectId).toBe('debounced-quit');
+      expect(store.loadState().activeProjectId).toBe('quit-pending');
 
-      // The flush disarmed the debounce, so nothing writes after teardown.
+      // The flush disarmed the trailing timer, so nothing writes after teardown.
       const mtime = fs.statSync(file).mtimeMs;
       vi.advanceTimersByTime(1000);
       expect(fs.statSync(file).mtimeMs).toBe(mtime);

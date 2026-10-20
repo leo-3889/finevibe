@@ -16,7 +16,7 @@ vi.mock('os', () => ({
 }));
 
 import * as fs from 'fs';
-import { loadState, saveState, flushState, saveStateSync, invalidateStateCache } from './store';
+import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, DEFAULT_PREFERENCES } from './store';
 import type { PersistedState } from './store';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -35,6 +35,10 @@ const DEFAULT_STATE: PersistedState = {
   preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true },
 };
 
+// Monotonic fake epoch: vi.useFakeTimers() re-bases Date.now to the (barely
+// advanced) real clock, so a fixed advance from real time is not enough —
+// each case must start 10 s past the PREVIOUS case's fake clock.
+let fakeClockBase = Date.now();
 beforeEach(() => {
   vi.clearAllMocks();
   // fs.writeSync reports the byte count and production code loops on it, so the
@@ -45,6 +49,11 @@ beforeEach(() => {
     position = 0,
   ) => buffer.length - position) as unknown as typeof fs.writeSync);
   vi.useFakeTimers();
+  // Each case starts 10 s past the previous case's fake clock, so the
+  // first saveState of every case takes the leading edge regardless of
+  // when the previous case last touched lastSaveAt.
+  fakeClockBase += 10_000;
+  vi.setSystemTime(fakeClockBase);
   invalidateStateCache();
 });
 
@@ -63,7 +72,7 @@ describe('loadState', () => {
       version: 1,
       projects: [{ id: 'p1', name: 'Test', path: '/test', sessions: [], activeSessionId: null, layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' } }],
       activeProjectId: 'p1',
-      preferences: { soundOnSessionWaiting: true },
+      preferences: { ...DEFAULT_PREFERENCES, soundOnSessionWaiting: true },
     };
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify(state));
@@ -81,34 +90,71 @@ describe('loadState', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ version: 99 }));
     expect(loadState()).toEqual(DEFAULT_STATE);
   });
+
+  it('fills the documented default preferences once for a file without them (P2-84)', () => {
+    // A `version: 1` file predates the field; every main-side consumer
+    // reads `state.preferences.X` unguarded (LoadedState guarantees it), so
+    // the loader must normalize — a missing object is a TypeError per read.
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, projects: [], activeProjectId: null }));
+    const loaded = loadState();
+    expect(loaded.preferences).toEqual(DEFAULT_PREFERENCES);
+    // Cached reads carry the same normalized object (single fill, not per call).
+    expect(loadState()).toBe(loaded);
+  });
+
+  it('normalizes the cache on saveStateSync for a writer without preferences (P2-84)', () => {
+    // The renderer's persisted payload is PersistedState (preferences optional);
+    // after a sync save, loadState reads from the cache, so the write path must
+    // normalize too — otherwise the guarantee exists only on the read path.
+    const raw = { version: 1, projects: [], activeProjectId: 'p1' } as unknown as PersistedState;
+    saveStateSync(raw);
+    expect(loadState().preferences).toEqual(DEFAULT_PREFERENCES);
+    expect(loadState().activeProjectId).toBe('p1');
+  });
 });
 
 describe('saveState', () => {
-  it('debounces writes by 300ms', () => {
+  it('writes the leading edge immediately, not 300ms later', () => {
     saveState(DEFAULT_STATE);
-    expect(mockWriteSync).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(299);
-    expect(mockWriteSync).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(1);
+    // P1-2: with the old trailing debounce nothing reached disk until the
+    // timer fired, so a crash inside the window lost the state. The
+    // leading edge writes through at once.
     expect(mockWriteSync).toHaveBeenCalledOnce();
     expect(String(mockRenameSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json.tmp');
     expect(String(mockRenameSync.mock.calls[0][1]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json');
+
+    // The first write opens the throttle window; bursts inside it coalesce
+    // into ONE trailing write of the LATEST state.
+    saveState({ ...DEFAULT_STATE, activeProjectId: 'p2' });
+    saveState({ ...DEFAULT_STATE, activeProjectId: 'p3' });
+    expect(mockWriteSync).toHaveBeenCalledOnce();
+
+    vi.advanceTimersByTime(300);
+    expect(mockWriteSync).toHaveBeenCalledTimes(2);
+    const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(written.activeProjectId).toBe('p3');
+    expect(mockRenameSync).toHaveBeenCalledTimes(2);
   });
 
-  it('resets timer on rapid calls', () => {
-    saveState(DEFAULT_STATE);
+  it('takes the leading edge again once the throttle window has passed', () => {
+    saveState(DEFAULT_STATE); // leading
     vi.advanceTimersByTime(200);
 
     const updated = { ...DEFAULT_STATE, activeProjectId: 'p1' };
-    saveState(updated);
+    saveState(updated); // inside the window: trailing armed
     vi.advanceTimersByTime(300);
 
-    expect(mockWriteSync).toHaveBeenCalledOnce();
-    expect(mockRenameSync).toHaveBeenCalledOnce();
-    const written = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
+    expect(mockWriteSync).toHaveBeenCalledTimes(2);
+    const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
     expect(written.activeProjectId).toBe('p1');
+
+    vi.advanceTimersByTime(1_000);
+    const later = { ...DEFAULT_STATE, activeProjectId: 'p2' };
+    saveState(later); // window passed: leading again
+    expect(mockWriteSync).toHaveBeenCalledTimes(3);
+    const written2 = JSON.parse(String(mockWriteSync.mock.calls[2][1]));
+    expect(written2.activeProjectId).toBe('p2');
   });
 
   it('creates directory if needed', () => {
@@ -145,7 +191,7 @@ describe('saveStateSync', () => {
     // many bytes it moved, so the pieces must tile the payload exactly.
     const written = Buffer.concat(mockWriteSync.mock.calls.map(([ , buffer, position], i) => {
       const start = (position as number) ?? 0;
-      return (buffer as Buffer).subarray(start, start + (mockWriteSync.mock.results[i].value as number));
+      return (buffer as unknown as Buffer).subarray(start, start + (mockWriteSync.mock.results[i].value as number));
     }));
     expect(written.toString('utf-8')).toBe(JSON.stringify(state, null, 2));
     expect(mockFsyncSync).toHaveBeenCalledOnce();
@@ -186,10 +232,14 @@ describe('saveStateSync', () => {
 });
 
 describe('flushState', () => {
-  it('writes pending state immediately', () => {
-    saveState(DEFAULT_STATE);
+  it('writes pending state immediately and disarms the trailing timer', () => {
+    saveState(DEFAULT_STATE); // leading write
+    saveState({ ...DEFAULT_STATE, activeProjectId: 'pending' }); // trailing armed
     flushState();
-    expect(mockWriteSync).toHaveBeenCalledOnce();
+    const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(written.activeProjectId).toBe('pending');
+    vi.advanceTimersByTime(1_000);
+    expect(mockWriteSync).toHaveBeenCalledTimes(2); // flush disarmed the timer
   });
 });
 

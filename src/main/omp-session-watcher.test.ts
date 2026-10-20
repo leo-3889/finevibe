@@ -7,7 +7,7 @@ vi.mock('fs', () => ({
   closeSync: vi.fn(),
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
-  watch: vi.fn(),
+  watch: vi.fn(() => ({ close: vi.fn(), on: vi.fn() })),
 }));
 
 vi.mock('os', () => ({
@@ -122,7 +122,10 @@ function header(piId: string, cwd: string): string {
 
 function startWatcher(): fs.FSWatcher & { close: () => void } {
   // Fake native watcher — the fs.watch mock hands it to the implementation.
-  const mockWatcher = { close: vi.fn() } as unknown as fs.FSWatcher & { close: () => void };
+  // `on` is required: production attaches an 'error' listener inside the
+  // same try that registers the watcher, so a fake without `on` throws
+  // there and the watcher never lands in the dir-watchers registry.
+  const mockWatcher = { close: vi.fn(), on: vi.fn() } as unknown as fs.FSWatcher & { close: () => void };
   mockWatch.mockReturnValue(mockWatcher);
   startOmpSessionWatcher();
   return mockWatcher;

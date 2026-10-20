@@ -277,7 +277,7 @@ export function startCodexSessionWatcher(_win: BrowserWindow): void {
 
   try {
     fs.mkdirSync(SESSIONS_ROOT, { recursive: true });
-    watcher = fs.watch(SESSIONS_ROOT, { recursive: true }, () => {
+    const w = fs.watch(SESSIONS_ROOT, { recursive: true }, () => {
       // Codex appends in bursts; coalesce watch events into one scan.
       if (scanTimer !== null) return;
       scanTimer = setTimeout(() => {
@@ -285,6 +285,20 @@ export function startCodexSessionWatcher(_win: BrowserWindow): void {
         scanRollouts();
       }, 500);
     });
+    // An FSWatcher error (EMFILE, the watched dir removed) emits 'error'
+    // on the watcher; with no listener that is an uncaught exception in
+    // main — it takes down the process and every live PTY with it. Log
+    // once per watcher, release it, and keep the polling fallback alive.
+    let errorLogged = false;
+    w.on('error', () => {
+      if (!errorLogged) {
+        errorLogged = true;
+        console.warn('[codex-watcher] sessions dir watch failed; relying on polling');
+      }
+      try { w.close(); } catch { /* already closed */ }
+      if (watcher === w) watcher = null;
+    });
+    watcher = w;
   } catch {
     // Directory watch unavailable; fall through to polling only.
   }

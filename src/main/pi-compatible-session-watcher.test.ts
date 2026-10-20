@@ -1,5 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-
+import { EventEmitter } from 'events';
 vi.mock('fs', () => ({
   readdirSync: vi.fn(),
   statSync: vi.fn(),
@@ -497,5 +497,47 @@ describe('directory listing cache', () => {
     vi.advanceTimersByTime(4_000);
 
     expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+  });
+});
+
+// P1-11: fs.watch with no 'error' listener. The fake watcher is a REAL
+// EventEmitter and the module wires its handler onto this exact object, so
+// emitting 'error' reproduces real Node semantics: with no listener, emit
+// throws out of emit() — the uncaught main-process exception.
+describe('dir watcher error resilience (P1-11)', () => {
+  it('survives an FSWatcher error: logs once, closes and releases the dir watcher', () => {
+    const created = new Map<string, EventEmitter & { close: ReturnType<typeof vi.fn> }>();
+    const impl = (dir: string) => {
+      const w = new EventEmitter() as EventEmitter & { close: ReturnType<typeof vi.fn> };
+      w.close = vi.fn();
+      created.set(dir, w);
+      return w as unknown as fs.FSWatcher;
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      watcher = createCompatibleSessionWatcher({ onAdopted });
+      watcher.start();
+      setDir(DIR_A, []);
+      mockWatch.mockImplementation(impl as unknown as typeof fs.watch);
+      watcher.registerPending('ui-a', '/proj', undefined, { sessionDir: DIR_A });
+      const w = created.get(DIR_A);
+      expect(w).toBeDefined();
+
+      expect(() => w!.emit('error', new Error('EMFILE: too many open files'))).not.toThrow();
+      expect(() => w!.emit('error', new Error('EMFILE again'))).not.toThrow();
+
+      expect(warn).toHaveBeenCalledTimes(1); // logged once per watcher
+      expect(w!.close).toHaveBeenCalled(); // watcher released
+      expect(w!.listenerCount('error')).toBe(1);
+
+      // Released slot: unregister + re-register re-watches with a fresh watcher.
+      watcher.unregister('ui-a');
+      watcher.registerPending('ui-a', '/proj', undefined, { sessionDir: DIR_A });
+      expect(created.get(DIR_A)).not.toBe(w);
+    } finally {
+      warn.mockRestore();
+      mockWatch.mockReset();
+      mockWatch.mockReturnValue({ close: vi.fn() } as unknown as fs.FSWatcher);
+    }
   });
 });

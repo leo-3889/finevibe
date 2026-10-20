@@ -129,6 +129,14 @@ describe('transcriptStatusFromTail', () => {
     expect(transcriptStatusFromTail(tail)).toBe('working');
   });
 
+  it('skips a bare null / scalar line and keeps scanning backwards', () => {
+    // JSON.parse('null') succeeds and yields null, so an unguarded `.type`
+    // read threw a TypeError out of the status poller on every poll of a
+    // transcript containing such a line.
+    expect(transcriptStatusFromTail(['null', assistant('stop')].join('\n'))).toBe('completed');
+    expect(transcriptStatusFromTail(['42', '"a string"', 'true'].join('\n'))).toBeNull();
+  });
+
   it('returns null for a null or non-JSON tail', () => {
     expect(transcriptStatusFromTail(null)).toBeNull();
     expect(transcriptStatusFromTail('not json at all')).toBeNull();

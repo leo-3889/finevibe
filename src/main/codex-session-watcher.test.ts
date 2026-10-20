@@ -1,4 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import type { BrowserWindow } from 'electron';
@@ -24,6 +25,7 @@ vi.mock('fs', () => ({
     const base = path.basename(p);
     if (parent && parent.entries.has(base)) {
       const v = parent.entries.get(base);
+      if (v === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
       if (v === 'dir') {
         const d = dirs.get(p)!;
         return { mtimeMs: d.mtimeMs, size: 0, isDirectory: () => true };
@@ -361,5 +363,45 @@ describe('startCodexSessionWatcher()', () => {
     expect(mockWatch).toHaveBeenCalledWith(SESSIONS_ROOT, { recursive: true }, expect.any(Function));
     startCodexSessionWatcher(fakeWin);
     expect(mockWatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// P1-11: fs.watch with no 'error' listener. A real FSWatcher emits 'error'
+// (EMFILE, watched dir removed), and an EventEmitter with no 'error'
+// listener THROWS from emit() — that is the uncaught main-process
+// exception that takes down every live PTY. The fake watcher returned by
+// the fs.watch mock is a REAL EventEmitter and the module wires its
+// handler onto this exact object, so the emit has real Node semantics.
+describe('watcher error resilience (P1-11)', () => {
+  it('survives an FSWatcher error: logs once, releases the watcher, keeps polling', () => {
+    const created: (EventEmitter & { close: ReturnType<typeof vi.fn> })[] = [];
+    mockWatch.mockImplementation(() => {
+      const w = new EventEmitter() as EventEmitter & { close: ReturnType<typeof vi.fn> };
+      w.close = vi.fn();
+      created.push(w);
+      return w as unknown as fs.FSWatcher;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      startCodexSessionWatcher(fakeWin);
+      const w = created[0];
+      expect(w).toBeDefined();
+
+      // Pre-fix: no 'error' listener is attached, so the first emit throws.
+      expect(() => w.emit('error', new Error('EMFILE: too many open files'))).not.toThrow();
+      expect(() => w.emit('error', new Error('EMFILE again'))).not.toThrow();
+
+      expect(warn).toHaveBeenCalledTimes(1); // logged once per watcher
+      expect(w.close).toHaveBeenCalled(); // watcher released
+      expect(w.listenerCount('error')).toBe(1);
+
+      // The released slot is re-watchable: stop + start creates a fresh watcher.
+      stopCodexSessionWatcher();
+      startCodexSessionWatcher(fakeWin);
+      expect(created.length).toBe(2);
+    } finally {
+      warn.mockRestore();
+      mockWatch.mockReset(); // restores the vi.fn(() => ({ close: vi.fn() })) factory
+    }
   });
 });

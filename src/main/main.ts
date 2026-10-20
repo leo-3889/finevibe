@@ -10,6 +10,7 @@ import { initProviders, getAllProviders } from './providers/registry';
 import { initAutoUpdater } from './auto-updater';
 import { ensureAgentmemoryRunning } from './agentmemory-manager';
 import { stopGitWatcher } from './git-watcher';
+import { stopConfigWatcher } from './config-watcher';
 import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
@@ -20,27 +21,11 @@ import { isHttpUrl } from '../shared/url';
 
 let mainWindow: BrowserWindow | null = null;
 
-// Single-instance gate. A second launch must not start a second main
-// process: two mains would race for the same state.json, the same PTY
-// sessions and the same STATUS_DIR status files. The loser quits
-// immediately; the winner focuses its existing window when a relaunch
-// happens, so launching again behaves like "focus Vibeyard". The gate
-// sits at module scope — requestSingleInstanceLock() must run
-// synchronously at startup, before app.whenReady resolves. (Gate is
-// smoke-tested in main-single-instance.test.ts via mocked electron.)
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    const win = mainWindow && !mainWindow.isDestroyed()
-      ? mainWindow
-      : BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
-  });
-}
+// The UI boots ONLY for the single-instance lock winner:
+// startMainProcess() (below createWindow) owns the second-instance,
+// whenReady, before-quit and window-all-closed registrations, and the
+// requestSingleInstanceLock gate at the END of this module calls it for
+// the winner alone. The loser quits without constructing anything.
 
 function requestConfirmClose(): void {
   const win = BrowserWindow.getAllWindows()[0];
@@ -165,114 +150,150 @@ function createWindow(): void {
     killAllPtys();
     resetHookWatcher();
     stopAllFileWatchers();
+    // macOS close-and-reopen: the git/config watchers hold the window that
+    // started them (currentWin), and a re-issued start for the SAME project
+    // early-returns without re-pointing it — the reopened window would
+    // never receive git:changed/config:changed again and the old watch
+    // handles would leak for the app's life. Releasing them on 'closed'
+    // makes the first start after the reopen re-point to the new window.
+    stopGitWatcher();
+    stopConfigWatcher();
     mainWindow = null;
   });
 }
 
-app.whenReady().then(async () => {
-  initProviders();
-
-  const providers = getAllProviders();
-  const missing = providers.filter(p => !p.validatePrerequisites());
-  for (const p of missing) {
-    console.warn(`Provider "${p.meta.displayName}" not available`);
-  }
-  if (missing.length === providers.length) {
-    const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
-    dialog.showErrorBox(
-      'Vibeyard — No CLI Provider Found',
-      `Vibeyard needs at least one supported CLI provider installed to run.\n\n` +
-        `Install one of the following, then restart Vibeyard:\n\n${bullets}`,
-    );
-    app.quit();
-    return;
-  }
-
-  registerIpcHandlers();
-  const state = loadState();
-  createAppMenu(state.preferences?.debugMode ?? false);
-  createWindow();
-
-  // Warn if Python is missing on Windows (hooks depend on it)
-  const pythonWarning = checkPythonAvailable();
-  if (pythonWarning) {
-    console.warn(pythonWarning);
-    const owner = mainWindow;
-    if (owner) {
-      dialog.showMessageBox(owner, {
-        type: 'warning',
-        title: 'Vibeyard — Python Not Found',
-        message: pythonWarning,
-      });
+function startMainProcess(): void {
+  // Winner-only: a relaunch while the app runs focuses the existing
+  // window, so launching again behaves like "focus Vibeyard".
+  app.on('second-instance', () => {
+    const win = mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow
+      : BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
     }
-  }
+  });
 
-  // Install hooks and status scripts for available providers (after window creation so dialogs can attach)
-  for (const provider of getAllProviders()) {
-    if (provider.validatePrerequisites()) {
-      await provider.installHooks(mainWindow);
-      provider.installStatusScripts();
+  app.whenReady().then(async () => {
+    initProviders();
+
+    const providers = getAllProviders();
+    const missing = providers.filter(p => !p.validatePrerequisites());
+    for (const p of missing) {
+      console.warn(`Provider "${p.meta.displayName}" not available`);
     }
-  }
+    if (missing.length === providers.length) {
+      const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
+      dialog.showErrorBox(
+        'Vibeyard — No CLI Provider Found',
+        `Vibeyard needs at least one supported CLI provider installed to run.\n\n` +
+          `Install one of the following, then restart Vibeyard:\n\n${bullets}`,
+      );
+      app.quit();
+      return;
+    }
 
-  initAutoUpdater();
+    registerIpcHandlers();
+    const state = loadState();
+    createAppMenu(state.preferences?.debugMode ?? false);
+    createWindow();
 
-  // Model A: opportunistically ensure the shared agentmemory engine is running
-  // before any agent session spawns, so its first MCP connect hits a live
-  // daemon. Fire-and-forget: a cold boot (engine self-install) must never block
-  // startup. The daemon is shared by all agent CLIs, so it is intentionally NOT
-  // stopped on quit (see before-quit) — that would sever memory outside Vibeyard.
-  if (loadState().preferences.agentmemoryAutoStart !== false) {
-    void ensureAgentmemoryRunning().then(
-      (s) => console.log(`[agentmemory] ${s.running ? `running${s.serviceVersion ? ` v${s.serviceVersion}` : ''}` : 'not running'}`),
-      (err: unknown) => console.warn('[agentmemory] ensure failed:', (err as Error).message),
-    );
-  }
+    // Warn if Python is missing on Windows (hooks depend on it)
+    const pythonWarning = checkPythonAvailable();
+    if (pythonWarning) {
+      console.warn(pythonWarning);
+      const owner = mainWindow;
+      if (owner) {
+        dialog.showMessageBox(owner, {
+          type: 'warning',
+          title: 'Vibeyard — Python Not Found',
+          message: pythonWarning,
+        });
+      }
+    }
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    } else {
+    // Install hooks and status scripts for available providers (after window creation so dialogs can attach)
+    for (const provider of getAllProviders()) {
+      if (provider.validatePrerequisites()) {
+        await provider.installHooks(mainWindow);
+        provider.installStatusScripts();
+      }
+    }
+
+    initAutoUpdater();
+
+    // Model A: opportunistically ensure the shared agentmemory engine is running
+    // before any agent session spawns, so its first MCP connect hits a live
+    // daemon. Fire-and-forget: a cold boot (engine self-install) must never block
+    // startup. The daemon is shared by all agent CLIs, so it is intentionally NOT
+    // stopped on quit (see before-quit) — that would sever memory outside Vibeyard.
+    if (loadState().preferences.agentmemoryAutoStart !== false) {
+      void ensureAgentmemoryRunning().then(
+        (s) => console.log(`[agentmemory] ${s.running ? `running${s.serviceVersion ? ` v${s.serviceVersion}` : ''}` : 'not running'}`),
+        (err: unknown) => console.warn('[agentmemory] ensure failed:', (err as Error).message),
+      );
+    }
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      } else {
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win && !win.isDestroyed()) {
+          restartAndResync(win);
+        }
+      }
+    });
+
+    powerMonitor.on('resume', () => {
       const win = BrowserWindow.getAllWindows()[0];
       if (win && !win.isDestroyed()) {
         restartAndResync(win);
       }
-    }
+    });
   });
 
-  powerMonitor.on('resume', () => {
+  app.on('before-quit', (event) => {
+    if (!isCloseConfirmed()) {
+      event.preventDefault();
+      requestConfirmClose();
+      return;
+    }
+    flushState();
     const win = BrowserWindow.getAllWindows()[0];
     if (win && !win.isDestroyed()) {
-      restartAndResync(win);
+      win.webContents.send('app:quitting');
+    }
+    killAllPtys();
+    stopGitWatcher();
+    stopAllFileWatchers();
+    // Close any open MCP inspector connections (the pane-close path disconnects
+    // its own session; this catches connections left open at quit).
+    void disconnectAll();
+    // Cleanup all providers
+    for (const provider of getAllProviders()) {
+      provider.cleanup();
     }
   });
-});
 
-app.on('before-quit', (event) => {
-  if (!isCloseConfirmed()) {
-    event.preventDefault();
-    requestConfirmClose();
-    return;
-  }
-  flushState();
-  const win = BrowserWindow.getAllWindows()[0];
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('app:quitting');
-  }
-  killAllPtys();
-  stopGitWatcher();
-  stopAllFileWatchers();
-  // Close any open MCP inspector connections (the pane-close path disconnects
-  // its own session; this catches connections left open at quit).
-  void disconnectAll();
-  // Cleanup all providers
-  for (const provider of getAllProviders()) {
-    provider.cleanup();
-  }
-});
+  app.on('window-all-closed', () => {
+    if (!isMac) {
+      app.quit();
+    }
+  });
+}
 
-app.on('window-all-closed', () => {
-  if (!isMac) {
-    app.quit();
-  }
-});
+// Single-instance gate. A second launch must not start a second main
+// process: two mains would race for the same state.json, the same PTY
+// sessions and the same STATUS_DIR status files. The gate is the last
+// statement of the module body and requestSingleInstanceLock() runs
+// synchronously, so the loser quits immediately WITHOUT reaching
+// startMainProcess(): no window, no IPC, no browser/webview stack, no
+// lifecycle handlers. The winner runs the full boot. (Gate is smoke-tested
+// in main-single-instance.test.ts via mocked electron.)
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  startMainProcess();
+}

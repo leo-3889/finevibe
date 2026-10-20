@@ -294,7 +294,7 @@ describe('searchSessions()', () => {
       meta: { id: 'claude', displayName: 'c', binaryName: 'c', capabilities: {} as any, defaultContextWindowSize: 0 },
       discoverTranscripts: async () => [{ cliSessionId: 'a', transcriptPath: '/a' }],
       indexTranscript: indexSpy,
-    } as CliProvider;
+    } as unknown as CliProvider;
     providersForTest.push(provider);
     mockStat.mockResolvedValue(makeStat(42));
 
@@ -309,7 +309,7 @@ describe('searchSessions()', () => {
       meta: { id: 'claude', displayName: 'c', binaryName: 'c', capabilities: {} as any, defaultContextWindowSize: 0 },
       discoverTranscripts: async () => [{ cliSessionId: 'a', transcriptPath: '/a' }],
       indexTranscript: indexSpy,
-    } as CliProvider;
+    } as unknown as CliProvider;
     providersForTest.push(provider);
     mockStat
       .mockResolvedValueOnce(makeStat(100))
