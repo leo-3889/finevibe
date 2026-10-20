@@ -11,8 +11,8 @@ import { pinWebviewGuest, pinGuestPermissions, isBrowserGuestPreload } from './w
 const { handlers, fromPartition } = vi.hoisted(() => {
   const handlers: Array<{
     partition: string;
-    request?: (permission: string, callback: (granted: boolean) => void) => void;
-    check?: (permission: string) => boolean;
+    request?: (webContents: unknown, permission: string, callback: (granted: boolean) => void) => void;
+    check?: (webContents: unknown, permission: string) => boolean;
   }> = [];
   const fromPartition = vi.fn((partition: string) => {
     const entry = { partition } as (typeof handlers)[number];
