@@ -28,7 +28,40 @@ vi.mock('fs', () => ({
   watch: vi.fn(),
 }));
 
-import { isVibeyardStatusLine, shouldWarnStatusLine } from './settings-guard';
+// guardedInstall exercises the full consent flow: stub the installers, the
+// persisted state and the Claude settings reader (the reader returns a
+// foreign statusLine, forcing the consent path); settings-guard's own logic
+// stays real. vi.hoisted so the lazy factories can close over these.
+const { FOREIGN_STATUSLINE, installHooksOnly, installStatusLine: mockInstallStatusLine } = vi.hoisted(() => ({
+  FOREIGN_STATUSLINE: '/usr/bin/foreign-statusline.sh',
+  installHooksOnly: vi.fn(),
+  installStatusLine: vi.fn(),
+}));
+
+vi.mock('./claude-cli', () => ({
+  HOOK_MARKER: '# vibeyard-hook',
+  installHooksOnly,
+  installStatusLine: mockInstallStatusLine,
+  getSupportedHookEvents: () =>
+    new Set([
+      'SessionStart', 'UserPromptSubmit', 'PostToolUse',
+      'PostToolUseFailure', 'Stop', 'StopFailure', 'PermissionRequest',
+    ]),
+}));
+
+vi.mock('./store', () => ({
+  loadState: vi.fn(() => ({ preferences: {} })),
+  saveState: vi.fn(),
+}));
+
+vi.mock('./fs-utils', () => ({
+  readJsonSafe: vi.fn(() => ({ statusLine: { command: FOREIGN_STATUSLINE } })),
+}));
+
+import { EventEmitter } from 'node:events';
+import { isVibeyardStatusLine, shouldWarnStatusLine, guardedInstall } from './settings-guard';
+import { installStatusLine } from './claude-cli';
+import { saveState } from './store';
 
 describe('isVibeyardStatusLine', () => {
   it('returns true for current statusline path', () => {
@@ -104,5 +137,69 @@ describe('shouldWarnStatusLine', () => {
 
   it('warns when user granted but another tool overwrote it', () => {
     expect(shouldWarnStatusLine('foreign', 'granted', null, FOREIGN)).toBe(true);
+  });
+});
+// P2-32: the renderer-readiness gate in guardedInstall must settle when the
+// window dies. The consent dialog below pairs its IPC listener with a
+// 'closed' listener; the gate needs the same counterpart so a quit-while-
+// loading is an explicit dismissal — declined, no install — never a hang
+// and never an approval.
+describe('guardedInstall window lifecycle', () => {
+  function loadingWin() {
+    const win: any = new EventEmitter();
+    const webContents: any = new EventEmitter();
+    webContents.isLoading = () => true;
+    webContents.send = vi.fn();
+    win.webContents = webContents;
+    return win;
+  }
+
+  async function settleInTime(promise: Promise<void>): Promise<string> {
+    return Promise.race([
+      promise.then(() => 'settled'),
+      new Promise<string>((r) => setTimeout(() => r('hung'), 250)),
+    ]);
+  }
+
+  it('settles, declines and detaches listeners when the window closes mid-load', async () => {
+    const win = loadingWin();
+    const done = guardedInstall(win);
+    win.emit('closed');
+    // Real emitter close event; before the counterpart existed this stayed
+    // pending forever.
+    expect(await settleInTime(done)).toBe('settled');
+    // A dismissal is not consent: no install, no dialog, no recorded decision.
+    expect(installStatusLine).not.toHaveBeenCalled();
+    expect(win.webContents.send).not.toHaveBeenCalled();
+    expect(saveState).not.toHaveBeenCalled();
+    expect(win.webContents.listenerCount('did-finish-load')).toBe(0);
+  });
+
+  it('settles when the webContents is destroyed mid-load', async () => {
+    const win = loadingWin();
+    const done = guardedInstall(win);
+    win.webContents.emit('destroyed');
+    expect(await settleInTime(done)).toBe('settled');
+    expect(installStatusLine).not.toHaveBeenCalled();
+  });
+
+  it('treats closing the consent dialog as declined: no install, declined saved', async () => {
+    const win = loadingWin();
+    win.webContents.isLoading = () => false;
+    const done = guardedInstall(win);
+    expect(win.webContents.send).toHaveBeenCalledWith(
+      'settings:showConflictDialog',
+      { foreignCommand: FOREIGN_STATUSLINE },
+    );
+    win.emit('closed');
+    await done;
+    // 'keep' on close maps to declined and skips installStatusLine.
+    expect(installStatusLine).not.toHaveBeenCalled();
+    expect(saveState).toHaveBeenCalledTimes(1);
+    expect(saveState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferences: { statusLineConsent: 'declined', statusLineConsentCommand: FOREIGN_STATUSLINE },
+      }),
+    );
   });
 });

@@ -516,7 +516,12 @@ export interface PersistedState {
   version: 1;
   projects: ProjectRecord[];
   activeProjectId: string | null;
-  preferences: Preferences;
+  /** Optional at the persistence boundary: a `version: 1` file predating
+   * this field (peer share, hand-edit, downgrade) parses verbatim, so every
+   * loader normalizes it once (`store.ts` on the main side,
+   * `hydrateLoadedState` on the renderer side) and consumers read the
+   * normalized object, never this optional field. */
+  preferences?: Preferences;
   sidebarWidth?: number;
   sidebarCollapsed?: boolean;
   lastSeenVersion?: string;

@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),
@@ -59,8 +59,10 @@ import { addMcpServer, getClaudeConfig, installHooks, installHooksOnly, installS
 import { installEventScript } from './hook-commands';
 import { getClaudeVersion } from './providers/claude-version';
 
-const mockReadFileSync = vi.mocked(fs.readFileSync);
-const mockReaddirSync = vi.mocked(fs.readdirSync);
+// fs.readFileSync/readdirSync are overloaded; vi.mocked binds one overload
+// (the buffer-flavored one), so pin the call shape these tests mock.
+const mockReadFileSync = vi.mocked(fs.readFileSync) as unknown as Mock<(p: fs.PathLike, options?: unknown) => string>;
+const mockReaddirSync = vi.mocked(fs.readdirSync) as unknown as Mock<(dirPath: fs.PathLike) => fs.Dirent<string>[]>;
 const mockWriteFileSync = vi.mocked(fs.writeFileSync);
 const mockMkdirSync = vi.mocked(fs.mkdirSync);
 const mockOpenSync = vi.mocked(fs.openSync);

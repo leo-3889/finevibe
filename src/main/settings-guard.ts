@@ -148,9 +148,32 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
   // No prior decision for this foreign command — ask the user via in-app modal
   if (!win) return;
 
-  // Wait for renderer to be ready before sending IPC
+  // Wait for renderer to be ready before sending IPC. The consent dialog
+  // below pairs its IPC listener with a 'closed' listener; this gate needs
+  // the same counterpart (P2-32): without it, quitting while the window is
+  // still loading leaves the promise pending forever, guardedInstall never
+  // reaches installStatusLine(), and the did-finish-load listener stays
+  // attached. A window that dies mid-load is an explicit dismissal, not
+  // consent — return without recording a decision, so no install happens
+  // and the next launch re-prompts.
   if (win.webContents.isLoading()) {
-    await new Promise<void>(resolve => win.webContents.once('did-finish-load', resolve));
+    const settled = await new Promise<'ready' | 'dismissed'>((resolve) => {
+      const onReady = () => {
+        win.removeListener('closed', onDismissed);
+        win.webContents.removeListener('destroyed', onDismissed);
+        resolve('ready');
+      };
+      const onDismissed = () => {
+        win.webContents.removeListener('did-finish-load', onReady);
+        win.removeListener('closed', onDismissed);
+        win.webContents.removeListener('destroyed', onDismissed);
+        resolve('dismissed');
+      };
+      win.webContents.once('did-finish-load', onReady);
+      win.once('closed', onDismissed);
+      win.webContents.once('destroyed', onDismissed);
+    });
+    if (settled === 'dismissed') return;
   }
 
   const foreignCmd = validation.foreignStatusLineCommand ?? '(unknown)';

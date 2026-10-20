@@ -180,6 +180,16 @@ if sid and tn and err and not d.get('is_interrupt'):
 }
 
 /**
+ * Quote one word for POSIX `sh`: single quotes, embedded `'` escaped as
+ * '\'' — the same convention as quoteShellPath
+ * (renderer/components/terminal-utils.ts). This module's header records why
+ * nothing may be interpolated unquoted into `sh -c '...'`: any apostrophe
+ * in the value terminates the outer quoted string.
+ */
+function shQuote(word: string): string {
+  return `'${word.replace(/'/g, `'\\''`)}'`;
+}
+/**
  * Generate a hook command that writes event:status to the .status file.
  */
 export function statusCmd(
@@ -209,7 +219,24 @@ export function statusCmd(
   // records the truncate's mtime, sees the empty/partial content rejected, and
   // never re-reads the completed value — the transition is dropped forever.
   // `mv` within one directory is atomic and stamps the final mtime.
-  return `sh -c 'mkdir -p ${STATUS_DIR} && echo ${event}:${status} > ${STATUS_DIR}/$${sessionIdVar}.status.tmp && mv ${STATUS_DIR}/$${sessionIdVar}.status.tmp ${STATUS_DIR}/$${sessionIdVar}.status ${hookMarker}'`;
+  //
+  // Every interpolated path is quoted (P2-78): STATUS_DIR lives under
+  // os.tmpdir(), so a user-set TMPDIR with a space word-split the command
+  // and one with an apostrophe terminated the outer `sh -c '...'` quoting —
+  // mkdir -p failed, the redirect wrote a stray file, and every event:status
+  // hook died silently. The session var stays in double quotes OUTSIDE the
+  // path quotes (adjacent quoted segments concatenate) so the CLI still
+  // expands it at hook runtime and a spaced id cannot split the filename.
+  // The whole inner command is then quoted for the outer sh, escaping the
+  // inner quotes one layer deeper. The written payload is unchanged:
+  // `<event>:<status>` (HOOKS.md). hookMarker stays bare — it is a trailing
+  // `#` comment, not an argument.
+  const dir = shQuote(`${STATUS_DIR}/`);
+  const inner =
+    `mkdir -p ${shQuote(STATUS_DIR)} && echo ${shQuote(`${event}:${status}`)} > ` +
+    `${dir}"$${sessionIdVar}.status.tmp" && mv ${dir}"$${sessionIdVar}.status.tmp" ` +
+    `${dir}"$${sessionIdVar}.status" ${hookMarker}`;
+  return `sh -c ${shQuote(inner)}`;
 }
 
 /**

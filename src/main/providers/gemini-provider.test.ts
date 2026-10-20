@@ -166,52 +166,52 @@ describe('buildEnv', () => {
 
 describe('buildArgs', () => {
   it('returns ["-r", id] when isResume=true with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
     expect(args).toEqual(['-r', 'sid-1']);
   });
 
   it('returns [] when isResume=false with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('returns [] when cliSessionId is null', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model gemini-2.5-flash  --sandbox' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model gemini-2.5-flash  --sandbox' });
     expect(args).toEqual(['--model', 'gemini-2.5-flash', '--sandbox']);
   });
 
   it('combines resume args and extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gemini-2.5-flash' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gemini-2.5-flash' });
     expect(args).toEqual(['-r', 'sid-1', '--model', 'gemini-2.5-flash']);
   });
 
   it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
     expect(args).toEqual(['--model', 'my model']);
   });
 
   it('preserves empty quoted extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
     expect(args).toEqual(['--flag', '']);
   });
 
   it('appends -i flag when initialPrompt is provided', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'Fix the hooks config' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'Fix the hooks config' });
     expect(args).toEqual(['-i', 'Fix the hooks config']);
   });
 
   it('does not append -i flag when initialPrompt is absent', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('does not emit a system-prompt flag (Gemini CLI has none; team chat is gated off this provider)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).not.toContain('--system-prompt');
     expect(args).not.toContain('You are the CMO.');
   });

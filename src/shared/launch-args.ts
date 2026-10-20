@@ -133,7 +133,10 @@ export function findConflictingLaunchFlags(args: string[]): LaunchFlagConflict[]
       const eq = name.indexOf('=');
       if (eq !== -1) name = name.slice(0, eq);
     }
-    const reason = CONFLICTING_FLAG_REASONS[name];
+    // hasOwn, not a bare index: `constructor`/`__proto__`/`toString` as
+    // positional args would resolve off the prototype chain and block the
+    // spawn with a function body as the "reason".
+    const reason = Object.hasOwn(CONFLICTING_FLAG_REASONS, name) ? CONFLICTING_FLAG_REASONS[name] : undefined;
     if (reason) conflicts.push({ flag: name, raw: arg, reason });
   }
   return conflicts;

@@ -53,6 +53,15 @@ describe('profile-owned environment', () => {
       dropped: ['VIBEYARD_SESSION_ID', 'claude_ide_session_id'],
     });
   });
+
+  it('drops COPILOT_HOME so a session cannot relocate the Copilot data tree', () => {
+    // The transcript readers only scan the pinned home; a session that
+    // overrides COPILOT_HOME writes transcripts where the app never looks.
+    expect(partitionUserEnv({ COPILOT_HOME: '/other', copilot_home: '/x', SAFE: 'yes' })).toEqual({
+      allowed: { SAFE: 'yes' },
+      dropped: ['COPILOT_HOME', 'copilot_home'],
+    });
+  });
 });
 
 describe('findInvalidEnvLines', () => {

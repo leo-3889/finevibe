@@ -41,6 +41,7 @@ function meta(over: Partial<ArchivedSession> = {}): ArchivedSession {
     cliSessionId: 'cli-1',
     createdAt: '2026-01-01T00:00:00.000Z',
     closedAt: '2026-01-01T01:00:00.000Z',
+    cost: null,
     ...over,
   };
 }

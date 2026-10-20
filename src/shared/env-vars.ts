@@ -54,14 +54,17 @@ export function findInvalidEnvLines(text: string): string[] {
  * the user.
  *
  * `CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR` and `PI_CONFIG_DIR` relocate a
- * CLI's entire config tree, `PI_PROFILE` and `OMP_PROFILE` select a native
- * profile (the Pi/OMP resolvers honor them over any relocated dir), and
- * `CLAUDE_IDE_SESSION_ID` and `VIBEYARD_SESSION_ID` key the per-session
- * status files that the hooks and the statusLine write (Claude uses the
- * former, Codex/Copilot/Gemini the latter). Allowing a session's own
- * `envVars` to override any of these would silently point that session at a
- * different login's config, or make it write status under another session's
- * key — defeating the pinned profile with no visible signal.
+ * CLI's entire config tree, `COPILOT_HOME` relocates Copilot's data tree
+ * (config and the `session-state` transcripts), `PI_PROFILE` and
+ * `OMP_PROFILE` select a native profile (the Pi/OMP resolvers honor them
+ * over any relocated dir), and `CLAUDE_IDE_SESSION_ID` and
+ * `VIBEYARD_SESSION_ID` key the per-session status files that the hooks and
+ * the statusLine write (Claude uses the former, Codex/Copilot/Gemini the
+ * latter). Allowing a session's own `envVars` to override any of these
+ * would silently point that session at a different login's config, make it
+ * write transcripts under a root the transcript readers never scan, or make
+ * it write status under another session's key — defeating the pinned
+ * profile with no visible signal.
  *
  * `PATH` is deliberately NOT listed: overriding it is a supported use case
  * ("user vars win").
@@ -74,6 +77,7 @@ export const PROVIDER_OWNED_ENV_KEYS: readonly string[] = [
   'OMP_PROFILE',
   'CLAUDE_IDE_SESSION_ID',
   'VIBEYARD_SESSION_ID',
+  'COPILOT_HOME',
 ];
 
 /** Windows environment names are case-insensitive even when object keys are not. */

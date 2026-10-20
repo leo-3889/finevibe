@@ -94,6 +94,17 @@ describe('findConflictingLaunchFlags', () => {
     expect(findConflictingLaunchFlags(['--model', 'no-session-9000'])).toEqual([]);
   });
 
+  it('does not resolve prototype-chain names off the reason map', () => {
+    // A positional arg named like an Object.prototype member used to index
+    // through the prototype chain and return the function as the "reason" —
+    // blocking the spawn with `function Object() { [native code] }` as the
+    // actionable error. Lookup is hasOwn-guarded.
+    expect(findConflictingLaunchFlags(['constructor'])).toEqual([]);
+    expect(findConflictingLaunchFlags(['__proto__'])).toEqual([]);
+    expect(findConflictingLaunchFlags(['toString'])).toEqual([]);
+    expect(findConflictingLaunchFlags(['toString=1'])).toEqual([]);
+  });
+
   it('reports every conflicting token, not just the first', () => {
     const conflicts = findConflictingLaunchFlags(['--no-session', '--profile', 'work']);
     expect(conflicts.map((c) => c.flag).sort()).toEqual(['--no-session', '--profile']);

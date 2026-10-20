@@ -17,7 +17,7 @@ const mockConnect = vi.hoisted(() => vi.fn(async (id: string, url: string) => {
   registry.set(id, { generation, state: 'connected', transportUrl: url, closed: false });
   return { success: true };
 }));
-const mockShowMessageBox = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ response: 1 })));
+const mockShowMessageBox = vi.hoisted(() => vi.fn(async (_win: unknown, _options: Electron.MessageBoxOptions) => ({ response: 1 })));
 const mockGetFocusedWindow = vi.hoisted(() => vi.fn(() => null as unknown));
 
 vi.mock('electron', () => ({
@@ -31,7 +31,7 @@ vi.mock('electron', () => ({
     // Electron's 1-arg overload shifts args; normalize for assertions.
     showMessageBox: (...args: unknown[]) => {
       const twoArg = args.length > 1;
-      return mockShowMessageBox(twoArg ? args[0] : undefined, twoArg ? args[1] : args[0]);
+      return mockShowMessageBox(twoArg ? args[0] : undefined, (twoArg ? args[1] : args[0]) as Electron.MessageBoxOptions);
     },
   },
 }));

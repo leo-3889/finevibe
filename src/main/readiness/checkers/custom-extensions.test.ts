@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import * as fs from 'fs';
 import { customExtensionsProducer } from './custom-extensions';
 
@@ -7,6 +7,9 @@ import { makeAnalysisContext } from '../test-utils';
 vi.mock('fs');
 
 const mockFs = vi.mocked(fs);
+// fs.readdirSync is overloaded; vi.mocked binds the buffer-flavored overload,
+// so pin the string-Dirent call shape these tests mock.
+const mockReaddirSync = vi.mocked(fs.readdirSync) as unknown as Mock<(p: fs.PathLike) => fs.Dirent<string>[]>;
 const ctx = makeAnalysisContext();
 
 beforeEach(() => {
@@ -15,7 +18,7 @@ beforeEach(() => {
 
 describe('customExtensionsProducer', () => {
   it('returns all fail when no directories exist', () => {
-    mockFs.readdirSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
     mockFs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
     const tagged = customExtensionsProducer.produce('/test/project', ctx);
@@ -26,7 +29,7 @@ describe('customExtensionsProducer', () => {
   });
 
   it('detects custom commands', () => {
-    mockFs.readdirSync.mockImplementation((p: fs.PathLike) => {
+    mockReaddirSync.mockImplementation((p: fs.PathLike) => {
       const dirPath = String(p);
       if (dirPath.endsWith('commands')) return ['review.md', 'deploy.md'] as unknown as fs.Dirent[];
       throw new Error('ENOENT');
@@ -47,7 +50,7 @@ describe('customExtensionsProducer', () => {
       }
       throw new Error('ENOENT');
     });
-    mockFs.readdirSync.mockImplementation((p: fs.PathLike) => {
+    mockReaddirSync.mockImplementation((p: fs.PathLike) => {
       const dirPath = String(p);
       if (dirPath.endsWith('skills')) return ['my-skill'] as unknown as fs.Dirent[];
       throw new Error('ENOENT');
@@ -59,7 +62,7 @@ describe('customExtensionsProducer', () => {
   });
 
   it('detects custom agents', () => {
-    mockFs.readdirSync.mockImplementation((p: fs.PathLike) => {
+    mockReaddirSync.mockImplementation((p: fs.PathLike) => {
       const dirPath = String(p);
       if (dirPath.endsWith('agents')) return ['reviewer.md'] as unknown as fs.Dirent[];
       throw new Error('ENOENT');
@@ -72,7 +75,7 @@ describe('customExtensionsProducer', () => {
   });
 
   it('provides fix prompts for failing checks', () => {
-    mockFs.readdirSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
     mockFs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
     const tagged = customExtensionsProducer.produce('/test/project', ctx);
@@ -89,7 +92,7 @@ describe('customExtensionsProducer', () => {
       }
       throw new Error('ENOENT');
     });
-    mockFs.readdirSync.mockImplementation((p: fs.PathLike) => {
+    mockReaddirSync.mockImplementation((p: fs.PathLike) => {
       const dirPath = String(p);
       if (dirPath.endsWith('commands')) return ['cmd.md'] as unknown as fs.Dirent[];
       if (dirPath.endsWith('skills')) return ['my-skill'] as unknown as fs.Dirent[];

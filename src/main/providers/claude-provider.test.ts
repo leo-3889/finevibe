@@ -166,63 +166,64 @@ describe('buildEnv', () => {
 
 describe('buildArgs', () => {
   it('returns ["-r", id] when isResume=true with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
     expect(args).toEqual(['-r', 'sid-1']);
   });
 
   it('returns ["--session-id", id] when isResume=false with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
     expect(args).toEqual(['--session-id', 'sid-1']);
   });
 
   it('returns [] when cliSessionId is null', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--verbose  --debug' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--verbose  --debug' });
     expect(args).toEqual(['--verbose', '--debug']);
   });
 
   it('combines session args and extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--verbose' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--verbose' });
     expect(args).toEqual(['-r', 'sid-1', '--verbose']);
   });
 
   it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
     expect(args).toEqual(['--model', 'my model']);
   });
 
   it('preserves empty quoted extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
     expect(args).toEqual(['--flag', '']);
   });
 
   it('passes initialPrompt as positional arg', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
     expect(args).toEqual(['fix the linter']);
   });
 
   it('passes initialPrompt after session-id args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
     expect(args).toEqual(['--session-id', 'sid-1', 'fix the linter']);
   });
 
   it('passes systemPrompt as --append-system-prompt argv pair', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).toEqual(['--append-system-prompt', 'You are the CMO.']);
   });
 
   it('preserves multi-line systemPrompt as a single argv element', () => {
     const prompt = 'You are the CMO.\n\nFocus on:\n- growth\n- retention';
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: prompt });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: prompt });
     expect(args).toEqual(['--append-system-prompt', prompt]);
   });
 
   it('puts systemPrompt before initialPrompt and extra args', () => {
     const args = provider.buildArgs({
+      sessionId: 'sess-1',
       cliSessionId: 'sid-1',
       isResume: false,
       extraArgs: '--verbose',

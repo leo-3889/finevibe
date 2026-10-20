@@ -175,52 +175,52 @@ describe('buildEnv', () => {
 
 describe('buildArgs', () => {
   it('returns ["--resume=<id>"] when isResume=true with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
     expect(args).toEqual(['--resume=sid-1']);
   });
 
   it('returns [] when isResume=false with cliSessionId (no continue-in-place)', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('returns [] when cliSessionId is null', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('passes initialPrompt as -i arg when not resuming', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the bug' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the bug' });
     expect(args).toEqual(['-i', 'fix the bug']);
   });
 
   it('passes the queued prompt on the resume branch too (terminal-pane hands it over for every startup-arg provider)', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'fix the bug' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'fix the bug' });
     expect(args).toEqual(['--resume=sid-1', '-i', 'fix the bug']);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model gpt-5.2  --autopilot' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model gpt-5.2  --autopilot' });
     expect(args).toEqual(['--model', 'gpt-5.2', '--autopilot']);
   });
 
   it('combines resume args and extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gpt-5.2' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gpt-5.2' });
     expect(args).toEqual(['--resume=sid-1', '--model', 'gpt-5.2']);
   });
 
   it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
     expect(args).toEqual(['--model', 'my model']);
   });
 
   it('preserves empty quoted extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
     expect(args).toEqual(['--flag', '']);
   });
 
   it('does not emit a system-prompt flag (Copilot CLI has none; team chat is gated off this provider)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).not.toContain('--system-prompt');
     expect(args).not.toContain('You are the CMO.');
   });
@@ -277,7 +277,7 @@ describe('agent install/remove', () => {
 
 describe('other methods', () => {
   it('getConfig delegates to copilot config reader', async () => {
-    const config = { mcpServers: [{ name: 'a', url: 'b', status: 'configured', scope: 'user', filePath: '/x' }], agents: [], skills: [], commands: [] };
+    const config = { mcpServers: [{ name: 'a', url: 'b', status: 'configured', scope: 'user' as const, filePath: '/x' }], agents: [], skills: [], commands: [] };
     mockGetCopilotConfig.mockResolvedValueOnce(config);
     await expect(provider.getConfig('/some/path')).resolves.toEqual(config);
     expect(mockGetCopilotConfig).toHaveBeenCalledWith('/some/path');
@@ -311,7 +311,7 @@ describe('getTranscriptPath', () => {
 
     expect(provider.getTranscriptPath('../../.ssh', '/proj')).toBeNull();
     expect(provider.getTranscriptPath('.hidden', '/proj')).toBeNull();
-    expect(provider.getTranscriptPath(uuid + '/events', '/proj')).toBeNull();
+    expect(provider.getTranscriptPath(`${uuid}/events`, '/proj')).toBeNull();
     expect(mockExistsSync).not.toHaveBeenCalled();
   });
 });

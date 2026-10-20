@@ -126,7 +126,7 @@ describe('CodexProvider .jsonl.zst transcripts', () => {
   });
 
   it('getTranscriptPath resolves the compressed file', () => {
-    const readdirSync = vi.mocked(fs.readdirSync);
+    const readdirSync = vi.mocked<(p: string) => string[]>(fs.readdirSync);
     readdirSync
       .mockReturnValueOnce(['2026'])
       .mockReturnValueOnce(['10'])
@@ -165,8 +165,8 @@ describe('CodexProvider .jsonl.zst transcripts', () => {
         { type: 'input_text', text: 'tail frame is cut off' },
       ] } },
     ]);
-    const c1 = zlib.zstdCompressSync(Buffer.from(head + '\n', 'utf-8'));
-    const c2 = zlib.zstdCompressSync(Buffer.from(tail + '\n', 'utf-8'));
+    const c1 = zlib.zstdCompressSync(Buffer.from(`${head}\n`, 'utf-8'));
+    const c2 = zlib.zstdCompressSync(Buffer.from(`${tail}\n`, 'utf-8'));
     const truncated = Buffer.concat([c1, c2.subarray(0, Math.max(1, c2.length >> 1))]);
     vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: truncated.length } as fs.Stats);
     vi.mocked(fs.createReadStream).mockReturnValueOnce(Readable.from([truncated]) as fs.ReadStream);

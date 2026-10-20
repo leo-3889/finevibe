@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import { clipboard } from 'electron';
 import * as os from 'os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { ClipboardPastePayload } from '../shared/types';
 import * as path from 'path';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 
@@ -31,7 +32,7 @@ const mockSpawnPty = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise
 const mockRegisterSync = vi.hoisted(() => vi.fn());
 const mockUnregisterSync = vi.hoisted(() => vi.fn(() => { calls.push('unregister'); }));
 const mockGetProvider = vi.hoisted(() => vi.fn());
-const mockGetSyncedPath = vi.hoisted(() => vi.fn(() => null));
+const mockGetSyncedPath = vi.hoisted(() => vi.fn((): string | null => null));
 const mockRegisterSession = vi.hoisted(() => vi.fn());
 
 // Modules the handler-under-test imports but this suite never exercises: a
@@ -678,7 +679,7 @@ describe('clipboard:readForPaste file lists', () => {
     return buf;
   }
 
-  async function readPaste(): Promise<{ text: string; html: string; files: string[]; imagePath: string | null }> {
+  async function readPaste(): Promise<ClipboardPastePayload> {
     return await handlers.get('clipboard:readForPaste')!({}) as never;
   }
 

@@ -190,7 +190,7 @@ describe('pinnedFetch (redirect pinning)', () => {
   it('refuses a redirect to another host, naming the target', async () => {
     // The loopback exemption in mcpUrlPolicy skips the confirm dialog, so a 302
     // from a local endpoint is the path that reaches an unconfirmed host.
-    const fetchStub = vi.fn(async () =>
+    const fetchStub = vi.fn(async (_url: string | URL, _init?: RequestInit) =>
       fakeResponse({ status: 302, headers: { location: 'https://collector.attacker.tld/mcp' } }));
     vi.stubGlobal('fetch', fetchStub);
     try {

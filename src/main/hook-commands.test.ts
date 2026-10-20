@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { stopStatusCmd, installHookScripts, STOP_STALE_MS } from './hook-commands';
+import { STATUS_DIR } from './hook-status';
 import { pythonBin, isWin } from './platform';
 
 // `fs` is mocked module-wide above; the executed-script suite below needs the
@@ -78,10 +79,14 @@ describe('statusCmd interpreter pinning', () => {
       const { statusCmd } = await import('./hook-commands');
       const cmd = statusCmd('Stop', 'completed', 'SID', HOOK_MARKER);
       // No python on this branch — it must not mention an interpreter at all.
+      // P2-78: every interpolated path is single-quoted inside, and the whole
+      // inner command is single-quoted for the outer sh — each inner quote
+      // arrives escaped as '\''.
       expect(cmd.startsWith(`sh -c 'mkdir -p `)).toBe(true);
-      expect(cmd).toContain('&& echo Stop:completed > ');
-      // `$SID` — the CLI expands the session-var name at hook runtime.
-      expect(cmd).toContain('$SID.status');
+      expect(cmd).toContain(`&& echo '\\''Stop:completed'\\'' > `);
+      // `$SID` — the CLI expands the session-var name at hook runtime, inside
+      // double quotes so a spaced session id cannot split the filename.
+      expect(cmd).toContain(`'"$SID.status`);
       expect(cmd.trimEnd().endsWith(`${HOOK_MARKER}'`)).toBe(true);
       expect(cmd).not.toContain('python');
     } finally {
@@ -91,6 +96,16 @@ describe('statusCmd interpreter pinning', () => {
   });
 });
 
+/**
+ * Unwrap the outer `sh -c '<escaped>'` layer the generator emits, restoring
+ * the inner command the hook's sh runs (each inner `'` escaped as '\'').
+ */
+function shBody(cmd: string): string {
+  const prefix = `sh -c '`;
+  expect(cmd.startsWith(prefix), cmd).toBe(true);
+  expect(cmd.endsWith(`'`), cmd).toBe(true);
+  return cmd.slice(prefix.length, -1).replace(/'\\''/g, `'`);
+}
 describe('statusCmd POSIX atomic write', () => {
   // hook-status.ts re-reads a .status file only when its mtime CHANGES and
   // validates the content against a 4-value allowlist. `echo > file` truncates
@@ -115,30 +130,28 @@ describe('statusCmd POSIX atomic write', () => {
   }
 
   it('redirects into a .status.tmp name, never the watched file', async () => {
-    const cmd = await posixStatusCmd('UserPromptSubmit', 'working');
-    const redirects = cmd.match(/>\s*[^&']+/g) ?? [];
+    const body = shBody(await posixStatusCmd('UserPromptSubmit', 'working'));
+    const redirects = body.match(/>\s*[^&]+/g) ?? [];
     expect(redirects.length).toBe(1);
-    expect(redirects[0].trim().endsWith('$SID.status.tmp')).toBe(true);
+    expect(redirects[0]!.trim().endsWith(`'"$SID.status.tmp"`)).toBe(true);
   });
 
   it('renames the temp file into place inside the same directory', async () => {
-    const cmd = await posixStatusCmd('UserPromptSubmit', 'working');
-    expect(cmd).toContain('&& mv ');
-    const mv = cmd.match(/mv (\S+) (\S+)/);
-    expect(mv, `no mv in: ${cmd}`).not.toBeNull();
-    expect(mv![1].endsWith('$SID.status.tmp')).toBe(true);
-    expect(mv![2].endsWith('$SID.status')).toBe(true);
+    const body = shBody(await posixStatusCmd('UserPromptSubmit', 'working'));
+    expect(body).toContain('&& mv ');
+    const mv = body.match(/mv (\S+) (\S+)/);
+    expect(mv, `no mv in: ${body}`).not.toBeNull();
+    expect(mv![1].endsWith(`'"$SID.status.tmp"`)).toBe(true);
+    expect(mv![2].endsWith(`'"$SID.status"`)).toBe(true);
     // Same directory: a cross-directory mv is not atomic.
-    expect(mv![1].replace(/\.tmp$/, '')).toBe(mv![2]);
+    expect(mv![1].replace(/\.tmp(")$/, '$1')).toBe(mv![2]);
   });
 
   it.runIf(!isWin)('leaves exactly one watched file with the allowlisted value', async () => {
-    const cmd = await posixStatusCmd('Stop', 'completed');
-    const body = cmd.slice(`sh -c '`.length, -1);
+    const body = shBody(await posixStatusCmd('Stop', 'completed'));
     const sid = `vibeyard-atomic-${process.pid}`;
-    // Paths straight out of the generated command, so the test follows the
-    // generator's own STATUS_DIR rather than duplicating it.
-    const target = cmd.match(/mv \S+ (\S+)/)![1].replace('$SID', sid);
+    // The watched file lives under the generator's own STATUS_DIR.
+    const target = path.join(STATUS_DIR, `${sid}.status`);
     const tmpName = `${target}.tmp`;
     realFs.rmSync(target, { force: true });
     realFs.rmSync(tmpName, { force: true });
@@ -155,6 +168,85 @@ describe('statusCmd POSIX atomic write', () => {
     } finally {
       realFs.rmSync(target, { force: true });
       realFs.rmSync(tmpName, { force: true });
+    }
+  });
+});
+describe('statusCmd POSIX quoting (P2-78)', () => {
+  // STATUS_DIR is path.join(os.tmpdir(), 'vibeyard'), so a user-set TMPDIR
+  // with a space word-split the unquoted interpolations and one with an
+  // apostrophe broke the outer `sh -c '...'` quoting — mkdir -p failed, the
+  // redirect wrote a stray file, every event:status hook died silently.
+  // Fake os.tmpdir() BEFORE the module graph computes STATUS_DIR, then run
+  // the real generator on it.
+  async function posixStatusCmdWithTmpdir(tmpdir: string): Promise<{ cmd: string; dir: string }> {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./platform')>();
+      return { ...actual, isWin: false };
+    });
+    vi.doMock('os', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:os')>();
+      return { ...actual, tmpdir: () => tmpdir };
+    });
+    try {
+      const { statusCmd } = await import('./hook-commands');
+      return { cmd: statusCmd('Stop', 'completed', 'SID', HOOK_MARKER), dir: path.join(tmpdir, 'vibeyard') };
+    } finally {
+      vi.doUnmock('./platform');
+      vi.doUnmock('os');
+      vi.resetModules();
+    }
+  }
+
+  // Golden string: single quotes with '\'' escaping — the same convention as
+  // quoteShellPath (renderer/components/terminal-utils.ts). The session var
+  // and its suffix ride in a double-quoted segment outside the path quotes
+  // (adjacent quoted segments concatenate); the whole inner command is then
+  // single-quoted for the outer sh -c, escaping the inner quotes one layer
+  // deeper.
+  function expectedQuotedCmd(dir: string): string {
+    const q = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`;
+    const inner =
+      `mkdir -p ${q(dir)} && echo ${q('Stop:completed')} > ` +
+      `${q(`${dir}/`)}"$SID.status.tmp" && mv ${q(`${dir}/`)}"$SID.status.tmp" ` +
+      `${q(`${dir}/`)}"$SID.status" ${HOOK_MARKER}`;
+    return `sh -c ${q(inner)}`;
+  }
+
+  it('emits the exact quoted command for a tmpdir containing a space', async () => {
+    const base = path.join(os.tmpdir(), 'we ird base');
+    const { cmd, dir } = await posixStatusCmdWithTmpdir(base);
+    expect(cmd).toBe(expectedQuotedCmd(dir));
+    // Eyeball anchor: the spaced dir survives as ONE quoted word.
+    expect(shBody(cmd)).toContain(`mkdir -p '${dir}'`);
+  });
+
+  it('emits the exact quoted command for a tmpdir containing a space and an apostrophe', async () => {
+    const base = path.join(os.tmpdir(), `we ird's base`);
+    const { cmd, dir } = await posixStatusCmdWithTmpdir(base);
+    expect(cmd).toBe(expectedQuotedCmd(dir));
+    // The apostrophe inside the path is escaped '\'' at the inner layer.
+    expect(shBody(cmd)).toContain(`mkdir -p '${dir.replace(/'/g, `'\\''`)}'`);
+  });
+
+  it.runIf(!isWin)('executes the full generated command in a real sh with a hostile tmpdir', async () => {
+    // Stages a real directory named like a hostile TMPDIR and runs the
+    // complete generated string (outer wrapper included) the way the CLI's
+    // shell does; the unquoted command died on this line with a syntax error.
+    const base = realFs.mkdtempSync(path.join(os.tmpdir(), `vibeyard-we ird's-`));
+    const { cmd, dir } = await posixStatusCmdWithTmpdir(base);
+    const sid = `vibeyard-quote-${process.pid}`;
+    const target = path.join(dir, `${sid}.status`);
+    try {
+      const res = spawnSync('sh', ['-c', cmd], {
+        env: { ...process.env, SID: sid },
+        encoding: 'utf8',
+      });
+      expect(res.status, res.stderr).toBe(0);
+      expect(realFs.readFileSync(target, 'utf8').trim()).toBe('Stop:completed');
+      expect(realFs.existsSync(`${target}.tmp`)).toBe(false);
+    } finally {
+      realFs.rmSync(base, { recursive: true, force: true });
     }
   });
 });
