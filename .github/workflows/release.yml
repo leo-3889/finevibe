@@ -43,7 +43,23 @@ jobs:
         run: npm test
 
       - name: Bump version
-        run: npm version ${{ inputs.version }} --no-git-tag-version
+        # P2-4: the dispatch input reaches the shell only through the env
+        # context — it is never interpolated into the script text. The pattern
+        # check rejects anything that is not a bump keyword or an explicit
+        # semver, so no metacharacter from the input can reach `npm version`.
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          case "$VERSION_INPUT" in
+            patch|minor|major) ;;
+            *)
+              if ! [[ "$VERSION_INPUT" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                echo "Invalid version input: $VERSION_INPUT (expected patch/minor/major or X.Y.Z)" >&2
+                exit 1
+              fi
+              ;;
+          esac
+          npm version "$VERSION_INPUT" --no-git-tag-version
 
       - name: Extract version
         id: version
@@ -131,6 +147,13 @@ jobs:
   build:
     needs: [prepare]
     runs-on: macos-latest
+    # Job-level so `if: env.APPLE_ID` can gate the notarization checks.
+    env:
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
       - uses: actions/checkout@v4
@@ -148,25 +171,36 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Download release notes
-        uses: actions/download-artifact@v4
+      - name: Build
+        # P1-8: `--publish never` — builds must not race the shared tag;
+        # the single `publish` job below uploads every artifact.
+        # electron-builder still writes latest-mac.yml into dist/, so the
+        # auto-updater feed survives the publish job's aggregate upload.
+        run: npm run build && npx electron-builder --publish never --arm64 --x64
+
+      - name: Verify code signatures
+        # P1-9: strict deep verification of both built bundles; a broken or
+        # tampered signature fails the release here, not on a user's Mac.
+        run: |
+          for app in dist/mac-arm64/Vibeyard.app dist/mac/Vibeyard.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+
+      - name: Verify notarization and Gatekeeper acceptance
+        if: env.APPLE_ID != ''
+        run: |
+          xcrun stapler validate dist/*.dmg
+          for dmg in dist/*.dmg; do spctl -a -vv -t install "$dmg"; done
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: release-notes
-
-      - name: Build and publish
-        run: npm run build && npx electron-builder --publish always --arm64 --x64
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-      - name: Update release notes
-        run: gh release edit "${{ needs.prepare.outputs.tag }}" --notes-file RELEASE_NOTES.md
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: release-macos
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.yml
+            dist/*.blockmap
 
   build-linux:
     needs: [prepare]
@@ -188,15 +222,31 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Download release notes
-        uses: actions/download-artifact@v4
-        with:
-          name: release-notes
+      - name: Build
+        # P1-8: `--publish never` — builds must not race the shared tag;
+        # the single `publish` job below uploads every artifact.
+        run: npm run build && npx electron-builder --linux --publish never --x64
 
-      - name: Build and publish
-        run: npm run build && npx electron-builder --linux --publish always --x64
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify package integrity
+        # P1-9: dpkg parses the deb's control metadata and full contents list
+        # (a corrupt/truncated archive fails here). The AppImage gets an ELF
+        # magic check; its runtime signature is NOT verified (needs a FUSE
+        # loop-mount the runner cannot do). Byte-exact integrity for both is
+        # the SHA256SUMS.txt the publish job ships with the release.
+        run: |
+          dpkg-deb --info dist/*.deb > /dev/null
+          dpkg-deb --contents dist/*.deb > /dev/null
+          head -c 4 dist/*.AppImage | grep -q "$(printf '\177ELF')"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.yml
+            dist/*.blockmap
 
   build-windows:
     needs: [prepare]
@@ -220,15 +270,84 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Build
+        # P1-8: `--publish never` — builds must not race the shared tag;
+        # the single `publish` job below uploads every artifact.
+        run: npm run build && npx electron-builder --win --publish never --x64
+
+      # P1-9 (documented gap): CI configures no Authenticode certificate, so
+      # the Windows exe/zip ship unsigned and `signtool verify` has nothing to
+      # validate here. Integrity assurance for this platform is the
+      # SHA256SUMS.txt the publish job generates and ships with the release.
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.yml
+            dist/*.blockmap
+
+  # P1-8: ONE job owns the GitHub release. The three matrix builds used to
+  # each run `--publish always` against the same tag, racing release creation
+  # and clobbering each other's `latest*.yml` (last writer silently won).
+  # The builds now run `--publish never` and hand their dist outputs over as
+  # artifacts; this job aggregates them, ships SHA256SUMS.txt next to the
+  # binaries (P1-9), and creates the release exactly once.
+  publish:
+    needs: [prepare, build, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Download release notes
         uses: actions/download-artifact@v4
         with:
           name: release-notes
+          path: notes
 
-      - name: Build and publish
-        run: npm run build && npx electron-builder --win --publish always --x64
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-macos
+          path: artifacts
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-linux
+          path: artifacts
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: artifacts
+
+      - name: Generate checksums
+        # P1-9: SHA256SUMS.txt is published with the release; consumers run
+        # `sha256sum -c SHA256SUMS.txt` in the download directory. The check
+        # here proves the generated file is internally consistent.
+        run: |
+          cd artifacts
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          mapfile -d '' -t ASSETS \
+            < <(find artifacts -maxdepth 1 -type f -print0)
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file notes/RELEASE_NOTES.md \
+            --verify-assets \
+            "${ASSETS[@]}"
 
   publish-npm:
     needs: [prepare, build, build-linux, build-windows]

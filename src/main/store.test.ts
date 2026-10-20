@@ -4,6 +4,7 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
   openSync: vi.fn(),
+  fchmodSync: vi.fn(),
   writeSync: vi.fn(),
   fsyncSync: vi.fn(),
   closeSync: vi.fn(),
@@ -218,6 +219,20 @@ describe('saveStateSync', () => {
     // truncated state.json with the .tmp recovery copy already consumed.
     expect(mockFsyncSync.mock.invocationCallOrder[0]).toBeLessThan(mockRenameSync.mock.invocationCallOrder[0]);
     expect(mockCloseSync.mock.invocationCallOrder[0]).toBeLessThan(mockRenameSync.mock.invocationCallOrder[0]);
+  });
+
+  // P2-101: state.json can carry secrets (`project.defaultEnv`). The writer
+  // opens the temp file 0600 (mode at create) and fchmods it (covers a .tmp
+  // left by an older 0644 build); the rename carries the mode to state.json.
+  it('opens the temp file 0600 and chmods it for secrets at rest', () => {
+    saveStateSync(DEFAULT_STATE);
+
+    expect(mockOpenSync.mock.calls[0][1]).toBe('w');
+    expect(mockOpenSync.mock.calls[0][2]).toBe(0o600);
+    expect(vi.mocked(fs.fchmodSync)).toHaveBeenCalledWith(
+      mockOpenSync.mock.results[0].value,
+      0o600,
+    );
   });
 
   it('closes the descriptor and skips the rename when the write fails', () => {

@@ -86,14 +86,29 @@ export function ensureProjectDefaults(state: PersistedState): void {
 }
 
 /**
- * Strip transient fields that should never be persisted (in-flight prompts).
+ * Strip fields that must never reach disk:
+ * - transient in-flight prompts;
+ * - per-session `envVars` (P2-101): the New-session box takes raw
+ *   `KEY=VALUE` lines such as `ANTHROPIC_API_KEY=...`, and a verbatim
+ *   copy in state.json is readable by any local user (the atomic writer
+ *   is now 0600, but backups/syncs still fan the file out), by any peer
+ *   on a read-write share, and by the git history of any dotfile repo
+ *   the user symlinks it into.
+ * `project.defaultEnv` is deliberately NOT stripped: the opt-in
+ * "keep env" UX persists the value there on purpose so every later
+ * session of that project inherits it (session-menu.ts, state.ts
+ * addSession). Secrets at rest therefore shrink to the explicit,
+ * project-scoped choice the user made.
+ * A restarted session resumes without its typed env vars; that is the
+ * accepted cost — the live in-memory record keeps them for the session's
+ * lifetime (spawn, split-layout resume wiring reads the live object).
  */
 export function serializeForSave(state: PersistedState): PersistedState {
   return {
     ...state,
     projects: state.projects.map((p: ProjectRecord) => ({
       ...p,
-      sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, ...rest }: SessionRecord) => rest as SessionRecord),
+      sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, envVars, ...rest }: SessionRecord) => rest as SessionRecord),
     })),
   };
 }

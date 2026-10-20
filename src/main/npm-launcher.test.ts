@@ -235,7 +235,7 @@ describe('launcher digest verification', () => {
       httpsGet: servingRelease([{ name: asset, digest: `sha256:${contentHex}` }]),
     });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
-    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe(true);
+    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('ok');
   });
 
   it('fails when the digest does not match', async () => {
@@ -243,28 +243,30 @@ describe('launcher digest verification', () => {
       httpsGet: servingRelease([{ name: asset, digest: `sha256:${'f'.repeat(64)}` }]),
     });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
-    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe(false);
+    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('mismatch');
     expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('Checksum mismatch'));
   });
 
-  it('proceeds with a warning when the asset has no published digest', async () => {
+  // P2-2: a missing digest is 'unavailable', NOT a silent pass. download()
+  // turns every non-'ok' into refuse-and-redownload.
+  it('reports unavailable when the asset has no published digest', async () => {
     const { exports, fakeFs, consoleLog } = loadLauncher({
       httpsGet: servingRelease([{ name: asset }]),
     });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
-    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBeNull();
-    expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('skipping checksum verification'));
+    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('unavailable');
+    expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('cannot be verified'));
   });
 
-  it('proceeds with a warning when the asset is missing from the release', async () => {
+  it('reports unavailable when the asset is missing from the release', async () => {
     const { exports, consoleLog } = loadLauncher({
       httpsGet: servingRelease([{ name: 'Other-asset.zip', digest: `sha256:${contentHex}` }]),
     });
-    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBeNull();
+    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('unavailable');
     expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('not found in release metadata'));
   });
 
-  it('proceeds with a warning when the API returns an error status', async () => {
+  it('reports unavailable when the API returns an error status', async () => {
     const { exports, consoleLog } = loadLauncher({
       httpsGet: vi.fn((_url: string, _opts: unknown, cb: (res: FakeResponse) => void) => {
         const res = fakeResponse({ statusCode: 403 });
@@ -273,11 +275,11 @@ describe('launcher digest verification', () => {
         return { on: vi.fn() };
       }),
     });
-    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBeNull();
+    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('unavailable');
     expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('Could not fetch release metadata'));
   });
 
-  it('proceeds with a warning when the API request errors', async () => {
+  it('reports unavailable when the API request errors', async () => {
     const { exports, consoleLog } = loadLauncher({
       httpsGet: vi.fn((_url: string, _opts: unknown, _cb: unknown) => ({
         on: (event: string, handler: (err: Error) => void) => {
@@ -285,7 +287,7 @@ describe('launcher digest verification', () => {
         },
       })),
     });
-    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBeNull();
+    await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('unavailable');
     expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('ETIMEDOUT'));
   });
 });
@@ -319,20 +321,56 @@ describe('launcher download', () => {
     expect(fakeFs.rmSync).toHaveBeenCalledTimes(1);
   });
 
-  it('deletes the temp file and fails when the digest mismatches', async () => {
-    const { exports, fakeFs } = loadLauncher({ httpsGet: servingDownloadAndApi(`sha256:${'0'.repeat(64)}`) });
+  it('redownloads once, then refuses when the digest mismatches', async () => {
+    const { exports, fakeFs, httpsGet } = loadLauncher({
+      httpsGet: servingDownloadAndApi(`sha256:${'0'.repeat(64)}`),
+    });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
     const message = await rejectsWith(exports.download(asset));
-    expect(message).toMatch(/checksum verification/i);
+    expect(message).toMatch(/Refusing to install unverified bytes/i);
+    expect(message).toMatch(/Checksum mismatch/i);
     expect(fakeFs.rmSync).toHaveBeenLastCalledWith(tmpFile, { force: true });
-    expect(fakeFs.rmSync).toHaveBeenCalledTimes(2);
+    // 2 attempts × (pre-download cleanup + post-failure delete)
+    expect(fakeFs.rmSync).toHaveBeenCalledTimes(4);
+    const downloads = httpsGet.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => !url.includes('api.github.com'));
+    expect(downloads).toHaveLength(2);
   });
 
-  it('still installs when no digest is published', async () => {
-    const { exports, fakeFs, consoleLog } = loadLauncher({ httpsGet: servingDownloadAndApi(undefined) });
+  // P2-2 regression: an unpublished digest used to fail OPEN — the launcher
+  // logged "skipping checksum verification" and installed the bytes.
+  it('refuses to install when no digest is published', async () => {
+    const { exports, fakeFs, consoleLog, httpsGet } = loadLauncher({
+      httpsGet: servingDownloadAndApi(undefined),
+    });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
+    const message = await rejectsWith(exports.download(asset));
+    expect(message).toMatch(/Refusing to install unverified bytes/i);
+    expect(message).toMatch(/No verifiable sha256 digest/i);
+    expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('cannot be verified'));
+    expect(fakeFs.rmSync).toHaveBeenLastCalledWith(tmpFile, { force: true });
+    const downloads = httpsGet.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => !url.includes('api.github.com'));
+    expect(downloads).toHaveLength(2);
+  });
+
+  it('installs when the redownload verifies (transient corruption/API)', async () => {
+    const good = Buffer.from('vibeyard-appimage-payload-good');
+    const goodHex = crypto.createHash('sha256').update(good).digest('hex');
+    const { exports, fakeFs, httpsGet } = loadLauncher({
+      httpsGet: servingDownloadAndApi(`sha256:${goodHex}`),
+    });
+    // Attempt 1 hashes corrupt bytes → mismatch → redownload; attempt 2 the
+    // verified bytes install.
+    let reads = 0;
+    fakeFs.createReadStream.mockImplementation(() => readingFile(reads++ === 0 ? content : good)());
     await expect(exports.download(asset)).resolves.toBe(tmpFile);
-    expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('skipping checksum verification'));
+    const downloads = httpsGet.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => !url.includes('api.github.com'));
+    expect(downloads).toHaveLength(2);
   });
 });
 

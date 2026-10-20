@@ -103,8 +103,11 @@ function sha256File(file) {
   });
 }
 
-// Returns true (digest matched), false (mismatch), or null (no digest
-// available — GitHub API failure or asset without a published digest).
+// Returns 'ok' (digest published and matched), 'mismatch' (published and
+// differs), or 'unavailable' (nothing to verify against: asset absent from
+// the release metadata, no digest published, or the API request failed).
+// P2-2: 'unavailable' is NOT a pass — see download()'s refuse-and-redownload
+// loop; unverified bytes are never extracted.
 async function verifyAssetDigest(tmpFile, assetName) {
   let digest;
   try {
@@ -112,88 +115,109 @@ async function verifyAssetDigest(tmpFile, assetName) {
     const assets = Array.isArray(release.assets) ? release.assets : [];
     const asset = assets.find((a) => a && a.name === assetName);
     if (!asset) {
-      console.log(`Asset ${assetName} not found in release metadata; skipping checksum verification.`);
-      return null;
+      console.log(`Asset ${assetName} not found in release metadata; checksum cannot be verified.`);
+      return 'unavailable';
     }
     if (typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(asset.digest)) {
-      console.log(`No sha256 digest published for ${assetName}; skipping checksum verification.`);
-      return null;
+      console.log(`No sha256 digest published for ${assetName}; checksum cannot be verified.`);
+      return 'unavailable';
     }
     digest = asset.digest.slice('sha256:'.length).toLowerCase();
   } catch (err) {
-    // Rate limits or API outages must not brick installs.
-    console.log(`Could not fetch release metadata (${err.message}); skipping checksum verification.`);
-    return null;
+    console.log(`Could not fetch release metadata (${err.message}); checksum cannot be verified.`);
+    return 'unavailable';
   }
   const actual = await sha256File(tmpFile);
   if (actual !== digest) {
     console.error(`Checksum mismatch for ${assetName}: expected ${digest}, got ${actual}.`);
-    return false;
+    return 'mismatch';
   }
   console.log('Checksum verified.');
-  return true;
+  return 'ok';
 }
 
+const DOWNLOAD_ATTEMPTS = 2;
+
+// P2-2: a download is installable only when the published sha256 digest
+// confirms it. Mismatched bytes are corrupt or hostile; a missing digest
+// (asset absent, none published, API outage) means we CANNOT prove the
+// bytes are the real app. Both cases: delete, redownload, re-verify; after
+// DOWNLOAD_ATTEMPTS attempts refuse the install — never extract unverified
+// bytes, and never silently continue.
 async function download(assetName) {
   const url = `${RELEASES_URL}/download/v${version}/${assetName}`;
   const tmpFile = path.join(APP_DIR, `${assetName}.tmp`);
 
   fs.mkdirSync(APP_DIR, { recursive: true });
-  fs.rmSync(tmpFile, { force: true });
 
-  console.log(`Downloading Vibeyard v${version} for ${process.platform}-${process.arch}...`);
-
-  const res = await followRedirects(url);
-
-  if (res.statusCode === 404) {
-    throw new Error(`Release v${version} not found. Download manually from: ${RELEASES_URL}`);
-  }
-  if (res.statusCode !== 200) {
-    throw new Error(`Download failed with status ${res.statusCode}`);
-  }
-
-  const totalBytes = parseInt(res.headers['content-length'], 10) || 0;
-  const totalMB = totalBytes ? (totalBytes / 1048576).toFixed(1) : null;
-
-  const zipPath = await new Promise((resolve, reject) => {
-    let receivedBytes = 0;
-    const file = fs.createWriteStream(tmpFile);
-
-    file.on('error', (err) => {
-      res.destroy();
-      fs.rmSync(tmpFile, { force: true });
-      reject(err);
-    });
-
-    res.on('data', (chunk) => {
-      receivedBytes += chunk.length;
-      if (totalBytes) {
-        const pct = Math.round((receivedBytes / totalBytes) * 100);
-        const receivedMB = (receivedBytes / 1048576).toFixed(1);
-        process.stdout.write(`\r  ${pct}% (${receivedMB}/${totalMB} MB)`);
-      }
-    });
-
-    res.on('error', (err) => {
-      file.destroy();
-      fs.rmSync(tmpFile, { force: true });
-      reject(err);
-    });
-
-    res.pipe(file);
-
-    file.on('finish', () => {
-      console.log('\n');
-      resolve(tmpFile);
-    });
-  });
-
-  const verified = await verifyAssetDigest(zipPath, assetName);
-  if (verified === false) {
+  for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
     fs.rmSync(tmpFile, { force: true });
-    throw new Error(`Downloaded ${assetName} failed checksum verification. Download manually from: ${RELEASES_URL}`);
+
+    console.log(`Downloading Vibeyard v${version} for ${process.platform}-${process.arch}...`);
+
+    const res = await followRedirects(url);
+
+    if (res.statusCode === 404) {
+      throw new Error(`Release v${version} not found. Download manually from: ${RELEASES_URL}`);
+    }
+    if (res.statusCode !== 200) {
+      throw new Error(`Download failed with status ${res.statusCode}`);
+    }
+
+    const totalBytes = parseInt(res.headers['content-length'], 10) || 0;
+    const totalMB = totalBytes ? (totalBytes / 1048576).toFixed(1) : null;
+
+    const zipPath = await new Promise((resolve, reject) => {
+      let receivedBytes = 0;
+      const file = fs.createWriteStream(tmpFile);
+
+      file.on('error', (err) => {
+        res.destroy();
+        fs.rmSync(tmpFile, { force: true });
+        reject(err);
+      });
+
+      res.on('data', (chunk) => {
+        receivedBytes += chunk.length;
+        if (totalBytes) {
+          const pct = Math.round((receivedBytes / totalBytes) * 100);
+          const receivedMB = (receivedBytes / 1048576).toFixed(1);
+          process.stdout.write(`\r  ${pct}% (${receivedMB}/${totalMB} MB)`);
+        }
+      });
+
+      res.on('error', (err) => {
+        file.destroy();
+        fs.rmSync(tmpFile, { force: true });
+        reject(err);
+      });
+
+      res.pipe(file);
+
+      file.on('finish', () => {
+        console.log('\n');
+        resolve(tmpFile);
+      });
+    });
+
+    const verified = await verifyAssetDigest(zipPath, assetName);
+    if (verified === 'ok') {
+      return zipPath;
+    }
+    fs.rmSync(tmpFile, { force: true });
+
+    const reason = verified === 'mismatch'
+      ? `Checksum mismatch for ${assetName}`
+      : `No verifiable sha256 digest for ${assetName}`;
+    if (attempt < DOWNLOAD_ATTEMPTS) {
+      console.log(`${reason}; redownloading (attempt ${attempt + 1}/${DOWNLOAD_ATTEMPTS}).`);
+      continue;
+    }
+    throw new Error(
+      `${reason} after ${DOWNLOAD_ATTEMPTS} attempts. ` +
+      `Refusing to install unverified bytes. Download manually from: ${RELEASES_URL}`,
+    );
   }
-  return zipPath;
 }
 
 function extract(zipPath) {

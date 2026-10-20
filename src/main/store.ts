@@ -195,7 +195,17 @@ function writeStateAtomically(state: PersistedState): void {
     // leave a truncated state.json whose .tmp recovery copy was already
     // consumed by the rename — whole-state loss to defaults.
     const payload = Buffer.from(JSON.stringify(state, null, 2), 'utf-8');
-    const fd = fs.openSync(tmpFile, 'w');
+    // P2-101: state.json can carry secrets (`project.defaultEnv`). The
+    // default file mode is 0644 — world-readable on multi-user hosts, and
+    // any backup/dotfile sync picks it up. Open the temp file 0600; the
+    // rename below hands that mode to state.json itself. On Windows the
+    // mode argument is a no-op (NTFS uses ACLs; every mode bit ≥0200 maps
+    // to "not read-only"), so this only ever tightens, never breaks.
+    const fd = fs.openSync(tmpFile, 'w', 0o600);
+    // The open mode applies only on CREATE; a .tmp left by an older build
+    // keeps its 0644, so force the mode on the descriptor. fchmodSync is
+    // likewise a no-op for ACL purposes on Windows.
+    fs.fchmodSync(fd, 0o600);
     try {
       writeFully(fd, payload);
       fs.fsyncSync(fd);

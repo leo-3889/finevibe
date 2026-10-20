@@ -38,6 +38,22 @@ describe('serializeForSave', () => {
     expect(s.pendingSystemPrompt).toBeUndefined();
   });
 
+  it('strips per-session envVars — typed secrets must not reach disk (P2-101)', () => {
+    const out = serializeForSave(
+      baseState({ envVars: 'ANTHROPIC_API_KEY=sk-ant-secret\nFOO=bar' }),
+    );
+    const s = out.projects[0].sessions[0];
+    expect('envVars' in s).toBe(false);
+  });
+
+  it('keeps project.defaultEnv — the keep-env UX is an explicit opt-in (P2-101)', () => {
+    const state = baseState({ envVars: 'ANTHROPIC_API_KEY=sk-ant-secret' });
+    state.projects[0].defaultEnv = 'FOO=bar';
+    const out = serializeForSave(state);
+    expect(out.projects[0].defaultEnv).toBe('FOO=bar');
+    expect('envVars' in out.projects[0].sessions[0]).toBe(false);
+  });
+
   it('preserves cliSessionId through a serialize → hydrate round trip (resume depends on it)', () => {
     const out = serializeForSave(baseState({ cliSessionId: 'cli-42' }));
     hydrateLoadedState(out, {} as Preferences);

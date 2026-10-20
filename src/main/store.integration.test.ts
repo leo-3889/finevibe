@@ -139,4 +139,27 @@ describe('state persistence on disk', () => {
       vi.useRealTimers();
     }
   });
+
+  // P2-101: state.json can hold secrets (`project.defaultEnv`). The atomic
+  // writer opens the temp file 0600 (fs.openSync mode + fchmod for a .tmp
+  // left behind by an older build), and the rename carries that mode onto
+  // state.json, so no other local user, backup, or dotfile sync can read it.
+  it('writes state.json owner-read/write-only on POSIX', () => {
+    // Windows NTFS ignores the mode argument (ACL semantics); skip there.
+    if (process.platform === 'win32') return;
+    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    store.saveStateSync({ ...store.loadState(), activeProjectId: 'mode-check' });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('upgrades a 0644 state.json written by an older build', () => {
+    if (process.platform === 'win32') return;
+    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    fs.writeFileSync(file, '{corrupt');
+    fs.chmodSync(file, 0o644);
+    store.saveStateSync({ ...store.loadState(), activeProjectId: 'mode-upgrade' });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    store.invalidateStateCache();
+    expect(store.loadState().activeProjectId).toBe('mode-upgrade');
+  });
 });
