@@ -42,13 +42,25 @@ vi.mock('../settings-guard', () => ({
   reinstallSettings: vi.fn(),
 }));
 
+// P2-116: install/remove target the agents tree the spawned CLI reads;
+vi.mock('./agent-files', async () => {
+  const path = await import('path');
+  return {
+    writeAgentFile: vi.fn(async (dir: string, slug: string, _content: string) => ({
+      filePath: path.join(dir, `${slug}.md`),
+    })),
+    deleteAgentFile: vi.fn(async () => undefined),
+  };
+});
+
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { ClaudeProvider, _resetCachedPath } from './claude-provider';
 import { isManagedMcpConfigDir } from '../claude-cli';
+import { validateSettings as guardValidateSettings, reinstallSettings as guardReinstallSettings } from '../settings-guard';
+import { writeAgentFile, deleteAgentFile } from './agent-files';
 import { installStatusLineScript } from '../hook-status';
 import { invalidateBinaryCache } from './resolve-binary';
-import { validateSettings as guardValidateSettings, reinstallSettings as guardReinstallSettings } from '../settings-guard';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -374,5 +386,39 @@ describe('validateSettings / reinstallSettings configDir threading', () => {
     provider.reinstallSettings();
     expect(guardReinstallSettings).toHaveBeenCalledWith(undefined);
     expect(installStatusLineScript).toHaveBeenCalledTimes(1);
+  });
+});
+
+// P2-116: a profile-pinned CLI runs with CLAUDE_CONFIG_DIR=<profileDir> and
+// reads agents from <profileDir>/agents — install/remove must target that
+// tree, mirroring the MCP configDir threading in claude-cli.ts.
+describe('agent install/remove configDir threading (P2-116)', () => {
+  it('agentsDir defaults to ~/.claude/agents', () => {
+    expect(provider.agentsDir()).toBe(path.join('/mock/home', '.claude', 'agents'));
+  });
+
+  it('agentsDir with a configDir targets the profile tree the CLI reads', () => {
+    expect(provider.agentsDir('/profiles/work')).toBe(path.join('/profiles/work', 'agents'));
+  });
+
+  it('installAgent with a configDir writes into profileDir/agents', async () => {
+    const result = await provider.installAgent('auditor', 'body', '/profiles/work');
+    expect(writeAgentFile).toHaveBeenCalledWith(path.join('/profiles/work', 'agents'), 'auditor', 'body');
+    expect(result.filePath).toBe(path.join('/profiles/work', 'agents', 'auditor.md'));
+  });
+
+  it('installAgent without a configDir keeps the default tree', async () => {
+    await provider.installAgent('auditor', 'body');
+    expect(writeAgentFile).toHaveBeenCalledWith(path.join('/mock/home', '.claude', 'agents'), 'auditor', 'body');
+  });
+
+  it('removeAgent with a configDir deletes from profileDir/agents', async () => {
+    await provider.removeAgent('auditor', '/profiles/work');
+    expect(deleteAgentFile).toHaveBeenCalledWith(path.join('/profiles/work', 'agents'), 'auditor');
+  });
+
+  it('removeAgent without a configDir keeps the default tree', async () => {
+    await provider.removeAgent('auditor');
+    expect(deleteAgentFile).toHaveBeenCalledWith(path.join('/mock/home', '.claude', 'agents'), 'auditor');
   });
 });

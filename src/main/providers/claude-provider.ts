@@ -243,16 +243,22 @@ export class ClaudeProvider implements CliProvider {
     return { text: budget.join(), cwd };
   }
 
-  agentsDir(): string {
-    return path.join(os.homedir(), '.claude', 'agents');
+  /**
+   * P2-116: a profile-pinned launch runs with CLAUDE_CONFIG_DIR=<profileDir>
+   * and reads its agents from `<profileDir>/agents` — writing
+   * ~/.claude/agents would report success into a tree that CLI never reads.
+   * Mirrors addMcpServer's configDir threading (claude-cli.ts).
+   */
+  agentsDir(configDir?: string): string {
+    return path.join(configDir ?? path.join(os.homedir(), '.claude'), 'agents');
   }
 
-  async installAgent(slug: string, content: string): Promise<{ filePath: string }> {
-    return writeAgentFile(this.agentsDir(), slug, content);
+  async installAgent(slug: string, content: string, configDir?: string): Promise<{ filePath: string }> {
+    return writeAgentFile(this.agentsDir(configDir), slug, content);
   }
 
-  async removeAgent(slug: string): Promise<void> {
-    return deleteAgentFile(this.agentsDir(), slug);
+  async removeAgent(slug: string, configDir?: string): Promise<void> {
+    return deleteAgentFile(this.agentsDir(configDir), slug);
   }
 
   parseCostFromOutput(rawText: string): { totalCostUsd: number } | null {

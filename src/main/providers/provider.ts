@@ -116,10 +116,15 @@ export interface CliProvider {
   readSessionExitReason?(transcriptPath: string): SessionExitReason | null;
   /** Cancel pending session-id discovery — PTY exited, or the spawn failed. */
   onSessionExited?(sessionId: string): void;
-  /** Absolute path to the user-global agents directory (e.g. ~/.claude/agents). */
-  agentsDir?(): string;
+  /**
+   * Absolute path to the user-global agents directory (e.g. ~/.claude/agents).
+   * `configDir` pins the CLI config root whose agents dir the spawned CLI
+   * reads (CLAUDE_CONFIG_DIR for a profile-pinned Claude launch); omit it
+   * for the provider's default root (P2-116).
+   */
+  agentsDir?(configDir?: string): string;
   /** Write `<slug>.md` into the agents dir with the given markdown content. */
-  installAgent?(slug: string, content: string): Promise<{ filePath: string }>;
+  installAgent?(slug: string, content: string, configDir?: string): Promise<{ filePath: string }>;
   /** Remove `<slug>.md` from the agents dir. Best-effort: missing file is not an error. */
-  removeAgent?(slug: string): Promise<void>;
+  removeAgent?(slug: string, configDir?: string): Promise<void>;
 }

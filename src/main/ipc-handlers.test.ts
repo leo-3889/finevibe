@@ -158,6 +158,7 @@ import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './setting
 import { cleanupSessionStatus } from './hook-status';
 import { analyzeReadiness } from './readiness/analyzer';
 import { detectRepo } from './github-cli';
+import { getAllProviders } from './providers/registry';
 
 function makeProvider(): CliProvider {
   return {
@@ -1033,5 +1034,160 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
     vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
     handlers.get('settings:declineStatusLine')!({}, '/home/attacker/.claude', '/x');
     expect(recordDirConsent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('team-agent install/remove scope (P2-116 / P2-117)', () => {
+  // Install stamps this frontmatter marker; remove gates every unlink on it.
+  const markerLine = (slug: string) => `# installed-by: vibeyard ${slug}`;
+  const stamped = (slug: string) => `---\n${markerLine(slug)}\nname: ${slug}\n---\nbody\n`;
+
+  /** Fake team-capable provider writing under a real temp agents dir. */
+  function agentProvider(id: string, dir: string) {
+    return {
+      meta: { id },
+      validatePrerequisites: () => true,
+      agentsDir: () => dir,
+      installAgent: vi.fn(async (slug: string, content: string, configDir?: string) => ({
+        filePath: path.join(configDir ?? dir, `${slug}.md`),
+      })),
+      removeAgent: vi.fn(async (slug: string, configDir?: string) => {
+        fs.rmSync(path.join(configDir ? path.join(configDir, 'agents') : dir, `${slug}.md`), { force: true });
+      }),
+    };
+  }
+
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-agents-'));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('install stamps the vibeyard marker and threads a managed configDir to claude only', async () => {
+    const claude = agentProvider('claude', path.join(root, 'claude-agents'));
+    const gemini = agentProvider('gemini', path.join(root, 'gemini-agents'));
+    vi.mocked(getAllProviders).mockReturnValue([claude, gemini] as never);
+    const results = await handlers.get('provider:installAgent')!(
+      {}, 'auditor', '---\nname: auditor\n---\nbody\n', '/profiles/work'
+    ) as Array<{ providerId: string; ok: boolean }>;
+    expect(results.every((r) => r.ok)).toBe(true);
+    const [slug, stampedContent, claudeDir] = claude.installAgent.mock.calls[0];
+    expect(slug).toBe('auditor');
+    expect(claudeDir).toBe('/profiles/work');
+    expect(stampedContent.startsWith(`---\n${markerLine('auditor')}\n`)).toBe(true);
+    // Other providers have no profiled agents tree; they keep the default dir.
+    expect(gemini.installAgent.mock.calls[0][2]).toBeUndefined();
+    expect(gemini.installAgent.mock.calls[0][1]).toContain(markerLine('auditor'));
+  });
+
+  it('install rejects a configDir outside the managed allowlist before any write', async () => {
+    const claude = agentProvider('claude', path.join(root, 'claude-agents'));
+    vi.mocked(getAllProviders).mockReturnValue([claude] as never);
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    await expect(
+      handlers.get('provider:installAgent')!({}, 'auditor', 'x', '/home/attacker/.claude')
+    ).rejects.toThrow(/managed/);
+    expect(claude.installAgent).not.toHaveBeenCalled();
+  });
+
+  it('remove of a never-installed name does NOT unlink a pre-existing user file', async () => {
+    const dir = path.join(root, 'gemini-agents');
+    fs.mkdirSync(dir);
+    const userFile = path.join(dir, 'security-auditor.md');
+    fs.writeFileSync(userFile, '---\nname: security-auditor\n---\nuser-authored, never installed by Vibeyard\n');
+    const gemini = agentProvider('gemini', dir);
+    vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'security-auditor') as Array<{ status: string }>;
+    expect(fs.existsSync(userFile)).toBe(true);
+    expect(gemini.removeAgent).not.toHaveBeenCalled();
+    expect(results).toEqual([
+      { providerId: 'gemini', filePath: userFile, status: 'skipped' },
+    ]);
+  });
+
+  it('uninstall of an installed agent removes exactly it, leaving neighbors', async () => {
+    const dir = path.join(root, 'gemini-agents');
+    fs.mkdirSync(dir);
+    const target = path.join(dir, 'auditor.md');
+    const neighbor = path.join(dir, 'designer.md');
+    fs.writeFileSync(target, stamped('auditor'));
+    fs.writeFileSync(neighbor, stamped('designer'));
+    const gemini = agentProvider('gemini', dir);
+    vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'auditor') as Array<{ status: string }>;
+    expect(results).toEqual([
+      { providerId: 'gemini', filePath: target, status: 'removed' },
+    ]);
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.existsSync(neighbor)).toBe(true);
+  });
+
+  it('remove probes the .agent.md naming and skips unmarked same-slug files', async () => {
+    const dir = path.join(root, 'copilot-agents');
+    fs.mkdirSync(dir);
+    const installed = path.join(dir, 'cmo.agent.md');
+    const userNote = path.join(dir, 'cmo.md');
+    fs.writeFileSync(installed, stamped('cmo'));
+    fs.writeFileSync(userNote, 'user note, no marker\n');
+    const copilot = agentProvider('copilot', dir);
+    copilot.removeAgent = vi.fn(async (slug: string) => {
+      fs.rmSync(path.join(dir, `${slug}.agent.md`), { force: true });
+    });
+    vi.mocked(getAllProviders).mockReturnValue([copilot] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'cmo') as Array<{ filePath: string; status: string }>;
+    expect(results).toEqual([
+      { providerId: 'copilot', filePath: userNote, status: 'skipped' },
+      { providerId: 'copilot', filePath: installed, status: 'removed' },
+    ]);
+    expect(fs.existsSync(installed)).toBe(false);
+    expect(fs.existsSync(userNote)).toBe(true);
+  });
+
+  it('remove scans claude profile agents dirs, not just the default tree', async () => {
+    const profDir = path.join(root, 'profile');
+    const defDir = path.join(root, 'claude-agents');
+    fs.mkdirSync(path.join(profDir, 'agents'), { recursive: true });
+    fs.mkdirSync(defDir);
+    const inProfile = path.join(profDir, 'agents', 'lead.md');
+    const inDefault = path.join(defDir, 'lead.md');
+    fs.writeFileSync(inProfile, stamped('lead'));
+    fs.writeFileSync(inDefault, stamped('lead'));
+    vi.mocked(loadState).mockImplementationOnce(() => ({
+      projects: [], preferences: {}, profiles: [{ id: 'p1', providerId: 'claude', configDir: profDir }],
+    } as never));
+    const claude = agentProvider('claude', defDir);
+    vi.mocked(getAllProviders).mockReturnValue([claude] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'lead') as Array<{ status: string }>;
+    expect(results.map((r) => r.status)).toEqual(['removed', 'removed']);
+    expect(fs.existsSync(inProfile)).toBe(false);
+    expect(fs.existsSync(inDefault)).toBe(false);
+    expect(claude.removeAgent).toHaveBeenCalledWith('lead', profDir);
+    expect(claude.removeAgent).toHaveBeenCalledWith('lead', undefined);
+  });
+
+  it('remove surfaces a provider unlink failure per file instead of swallowing it', async () => {
+    const dir = path.join(root, 'gemini-agents');
+    fs.mkdirSync(dir);
+    const target = path.join(dir, 'auditor.md');
+    fs.writeFileSync(target, stamped('auditor'));
+    const gemini = agentProvider('gemini', dir);
+    gemini.removeAgent = vi.fn(async () => { throw new Error('EPERM: operation not permitted'); });
+    vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'auditor') as Array<{ status: string; error?: string }>;
+    expect(results).toEqual([
+      { providerId: 'gemini', filePath: target, status: 'failed', error: 'EPERM: operation not permitted' },
+    ]);
+    expect(fs.existsSync(target)).toBe(true);
+  });
+
+  it('install/remove reject an unsafe slug before touching the filesystem', async () => {
+    const gemini = agentProvider('gemini', path.join(root, 'gemini-agents'));
+    vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
+    await expect(handlers.get('provider:removeAgent')!({}, '../evil')).rejects.toThrow(/Unsafe agent slug/);
+    await expect(handlers.get('provider:installAgent')!({}, '..\\evil', 'x')).rejects.toThrow(/Unsafe agent slug/);
+    expect(gemini.removeAgent).not.toHaveBeenCalled();
+    expect(gemini.installAgent).not.toHaveBeenCalled();
   });
 });

@@ -22,13 +22,14 @@ import { probeAgentmemory, ensureAgentmemoryRunning } from './agentmemory-manage
 import { createAppMenu } from './menu';
 import { getProvider, getProviderMeta, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
+import type { CliProvider } from './providers/provider';
 import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
-import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
+import type { ProviderId, Profile, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
@@ -274,6 +275,126 @@ function safeOn(channel: string, fn: IpcOnHandler, syncFallback?: () => unknown)
       if (syncFallback) event.returnValue = syncFallback();
     }
   };
+}
+
+// ---- Team agents (P2-116 / P2-117) ---------------------------------------
+//
+// A team member is installed as an agent file into every team-capable
+// provider. Two scopes this region owns:
+//  - Install targets the tree the spawned CLI reads: a profile-pinned
+//    Claude runs with CLAUDE_CONFIG_DIR=<profileDir> and reads agents from
+//    `<profileDir>/agents`, so the (renderer-chosen, allowlist-gated)
+//    config dir is threaded to the claude provider — mirroring the MCP
+//    threading in claude-cli.ts.
+//  - Remove only unlinks files Vibeyard wrote: installs stamp a marker
+//    comment into the YAML frontmatter, an unmarked same-slug file is
+//    user-authored and reported skipped, and per-file results surface
+//    provider failures instead of swallowing them.
+
+/** Slugs become file names; reject path syntax before any fs touch. */
+const AGENT_SLUG_RE = /^[A-Za-z0-9._-]+$/;
+
+/** Agent file naming across providers: `<slug>.md`, `<slug>.agent.md` (Copilot). */
+const AGENT_FILE_EXTS = ['.md', '.agent.md'];
+
+function assertAgentSlug(slug: string): void {
+  if (typeof slug !== 'string' || !AGENT_SLUG_RE.test(slug)) {
+    throw new Error(`Unsafe agent slug: ${JSON.stringify(slug)}`);
+  }
+}
+
+function agentMarkerLine(slug: string): string {
+  return `# installed-by: vibeyard ${slug}`;
+}
+
+/** Idempotently stamp the ownership marker into the file's frontmatter. */
+function stampAgentMarker(slug: string, content: string): string {
+  const marker = agentMarkerLine(slug);
+  if (content.includes(marker)) return content;
+  const fence = /^---[ \t]*\r?\n/.exec(content);
+  if (fence) return `${fence[0]}${marker}\n${content.slice(fence[0].length)}`;
+  return `---\n${marker}\n---\n${content}`;
+}
+
+/** True when the leading frontmatter block carries the Vibeyard marker. */
+function hasAgentMarker(content: string): boolean {
+  const fm = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(\r?\n|$)/.exec(content);
+  return fm !== null && /^#[ \t]*installed-by:[ \t]*vibeyard\b/m.test(fm[1]);
+}
+
+/**
+ * Dirs removal scans for `slug`: the provider's default agents dir plus, for
+ * claude, every managed profile's `<configDir>/agents` (the trees a
+ * profile-pinned CLI reads, P2-116). `configDir` is handed back so the
+ * provider's own removeAgent unlinks from that tree.
+ */
+function agentRemovalDirs(p: CliProvider): Array<{ dir: string; configDir?: string }> {
+  const dirs: Array<{ dir: string; configDir?: string }> = [{ dir: p.agentsDir!() }];
+  if (p.meta.id === 'claude') {
+    let profiles: Profile[] = [];
+    try {
+      profiles = loadState().profiles ?? [];
+    } catch {
+      profiles = []; // store unreadable: scan the default tree only
+    }
+    for (const pr of profiles) {
+      if (pr.providerId === 'claude' && pr.configDir) {
+        dirs.push({ dir: path.join(pr.configDir, 'agents'), configDir: pr.configDir });
+      }
+    }
+  }
+  const seen = new Set<string>();
+  return dirs.filter((d) => {
+    const canonical = canonicalPath(d.dir);
+    if (seen.has(canonical)) return false;
+    seen.add(canonical);
+    return true;
+  });
+}
+
+/** Per-file outcome of a team-agent removal, surfaced to the renderer. */
+type AgentRemoveResult = {
+  providerId: string;
+  filePath: string;
+  status: 'removed' | 'skipped' | 'failed';
+  error?: string;
+};
+
+/**
+ * Scan one provider's agent trees for `slug` and unlink exactly the files
+ * carrying the Vibeyard marker (P2-117). Unmarked same-slug files are
+ * user-authored and reported skipped; provider unlink failures are reported
+ * per file instead of swallowed.
+ */
+async function removeAgentFromProvider(p: CliProvider, slug: string): Promise<AgentRemoveResult[]> {
+  const results: AgentRemoveResult[] = [];
+  for (const { dir, configDir } of agentRemovalDirs(p)) {
+    for (const ext of AGENT_FILE_EXTS) {
+      const filePath = path.join(dir, `${slug}${ext}`);
+      let content: string;
+      try {
+        content = await fs.promises.readFile(filePath, 'utf8');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          results.push({ providerId: p.meta.id, filePath, status: 'failed', error: String((err as Error)?.message ?? err) });
+        }
+        continue;
+      }
+      if (!hasAgentMarker(content)) {
+        // User-authored (or foreign-managed): Vibeyard never wrote this
+        // file, so a slug collision never unlinks it.
+        results.push({ providerId: p.meta.id, filePath, status: 'skipped' });
+        continue;
+      }
+      try {
+        await p.removeAgent!(slug, configDir);
+        results.push({ providerId: p.meta.id, filePath, status: 'removed' });
+      } catch (err) {
+        results.push({ providerId: p.meta.id, filePath, status: 'failed', error: String((err as Error)?.message ?? err) });
+      }
+    }
+  }
+  return results;
 }
 
 export function registerIpcHandlers(): void {
@@ -853,11 +974,21 @@ export function registerIpcHandlers(): void {
     return provider.validatePrerequisites();
   });
 
-  ipcMain.handle('provider:installAgent', async (_event, slug: string, content: string) => {
+  ipcMain.handle('provider:installAgent', async (_event, slug: string, content: string, configDir?: string) => {
+    assertAgentSlug(slug);
+    // configDir is renderer-chosen: the same canonical allowlist as the MCP
+    // channel — only store-managed profile (or project) config dirs.
+    const pinnedDir = typeof configDir === 'string' && configDir !== '' ? configDir : undefined;
+    if (pinnedDir && !isManagedMcpConfigDir(pinnedDir)) {
+      throw new Error(`Not a managed profile config dir: ${JSON.stringify(pinnedDir)}`);
+    }
+    const stamped = stampAgentMarker(slug, content);
     const targets = getAllProviders().filter((p) => p.installAgent && p.validatePrerequisites());
     return Promise.all(targets.map(async (p) => {
       try {
-        const r = await p.installAgent!(slug, content);
+        // A profile config dir is a Claude CLAUDE_CONFIG_DIR tree; other
+        // providers have no profiled agents tree and keep their default.
+        const r = await p.installAgent!(slug, stamped, p.meta.id === 'claude' ? pinnedDir : undefined);
         return { providerId: p.meta.id, ok: true, filePath: r.filePath };
       } catch (err) {
         return { providerId: p.meta.id, ok: false, error: String((err as Error)?.message ?? err) };
@@ -866,8 +997,10 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('provider:removeAgent', async (_event, slug: string) => {
-    const targets = getAllProviders().filter((p) => p.removeAgent);
-    await Promise.all(targets.map((p) => p.removeAgent!(slug).catch(() => undefined)));
+    assertAgentSlug(slug);
+    const targets = getAllProviders().filter((p) => p.removeAgent && p.agentsDir);
+    const perProvider = await Promise.all(targets.map((p) => removeAgentFromProvider(p, slug)));
+    return perProvider.flat();
   });
 
   ipcMain.handle('fs:browseDirectory', async () => {
