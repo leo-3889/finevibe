@@ -36,7 +36,11 @@ vi.mock('./hook-commands', () => ({
   installHookScripts: vi.fn(),
   installEventScript: vi.fn(),
   statusCmd: vi.fn((e: string, s: string, _v: string, marker: string) => `echo ${e}:${s} > .status ${marker}`),
-  stopStatusCmd: vi.fn((_v: string, marker: string) => `stop_status_writer .subagents > .status ${marker}`),
+  // P2-73: the stub renders its arguments verbatim and contains none of the
+  // real generator's output tokens (`stop_status_writer`, `.subagents`,
+  // `.status`) — assertions below can only pass when claude-cli.ts feeds the
+  // real session-var/marker arguments through to stopStatusCmd.
+  stopStatusCmd: vi.fn((v: string, marker: string) => `stop-writer ${v} ${marker}`),
   captureSessionIdCmd: vi.fn((_v: string, marker: string) => `capture-sessionid .sessionid ${marker}`),
   captureToolFailureCmd: vi.fn((_v: string, marker: string) => `capture-toolfailure .toolfailure ${marker}`),
   wrapPythonHookCmd: vi.fn((_name: string, _code: string, marker: string) => `capture-event .events ${marker}`),
@@ -56,8 +60,10 @@ vi.mock('./store', () => ({
 import * as fs from 'fs';
 import * as path from 'path';
 import { addMcpServer, getClaudeConfig, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
-import { installEventScript } from './hook-commands';
+import { installEventScript, stopStatusCmd } from './hook-commands';
 import { getClaudeVersion } from './providers/claude-version';
+
+const mockStopStatusCmd = vi.mocked(stopStatusCmd);
 
 // fs.readFileSync/readdirSync are overloaded; vi.mocked binds one overload
 // (the buffer-flavored one), so pin the call shape these tests mock.
@@ -591,7 +597,13 @@ describe('installHooks', () => {
     for (const event of coreEvents) {
       const matchers = written.hooks[event];
       const allHooks = matchers.flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks);
-      expect(allHooks.some((h: { command: string }) => h.command.includes('.status'))).toBe(true);
+      // Stop's status writer is stop_status_writer.py — its command line
+      // carries no `.status` literal (the writer resolves the file itself),
+      // so key its hook on the writer stub token. P2-73: the old stub echoed
+      // `.status` verbatim, making this check stub-supplied for Stop.
+      expect(allHooks.some((h: { command: string }) =>
+        event === 'Stop' ? h.command.includes('stop-writer') : h.command.includes('.status')
+      )).toBe(true);
       expect(allHooks.some((h: { command: string }) => h.command.includes('.events'))).toBe(true);
     }
 
@@ -623,7 +635,13 @@ describe('installHooks', () => {
     const stopCommands = written.hooks.Stop
       .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks)
       .map((h: { command: string }) => h.command);
-    expect(stopCommands.some((c: string) => c.includes('stop_status_writer'))).toBe(true);
+    // Command must carry the arguments the generator supplied — a dropped
+    // in-flight-subagent session var (the counter file the writer reads is
+    // keyed by it) fails here, not silently.
+    expect(stopCommands.some((c: string) =>
+      c.includes('stop-writer CLAUDE_IDE_SESSION_ID # vibeyard-hook')
+    )).toBe(true);
+    expect(mockStopStatusCmd).toHaveBeenCalledWith('CLAUDE_IDE_SESSION_ID', '# vibeyard-hook');
     expect(stopCommands.some((c: string) => c.includes('echo Stop:completed'))).toBe(false);
     // Still exactly the status writer + the inspector event capture hook.
     const vibeyardHookCount = stopCommands.filter((c: string) => c.includes('# vibeyard-hook')).length;
@@ -642,7 +660,7 @@ describe('installHooks', () => {
       .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks)
       .map((h: { command: string }) => h.command);
     expect(stopCommands.some((c: string) => c.includes('echo Stop:completed'))).toBe(true);
-    expect(stopCommands.some((c: string) => c.includes('stop_status_writer'))).toBe(false);
+    expect(mockStopStatusCmd).not.toHaveBeenCalled();
   });
 
   it('injects the in-flight subagent counter only into the relevant event scripts', () => {

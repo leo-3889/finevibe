@@ -1,6 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetForTesting, getLocale, onLocaleChange, setLocale, t } from './i18n.js';
 
+// P2-112: the `t()` fallback branch (active locale miss → English lookup) was
+// unreachable while en/zh are at key parity — the branch fires only for keys
+// missing from the active locale. The zh-CN resource is therefore mocked as a
+// clone of the real file with `board.title` (en: 'Board', zh: '看板') deleted,
+// making it a genuine en-only key for this suite. The locale-parity test below
+// reads the REAL files via vi.importActual, so the mock cannot mask drift.
+vi.mock('./locales/zh-CN.json', async (importOriginal) => {
+  const actual = await importOriginal<{ default: { board: { title: string }; sidebar: { removeConfirm: Record<string, string> } } }>();
+  const zh = structuredClone(actual.default);
+  delete zh.board.title;
+  delete zh.sidebar.removeConfirm.withDataMessage;
+  return { ...actual, default: zh };
+});
+
 describe('i18n', () => {
   beforeEach(() => {
     _resetForTesting();
@@ -48,14 +62,26 @@ describe('i18n', () => {
     });
 
     it('falls back to English when the active locale is missing the key', () => {
-      // Force a fake locale state and then ask for a known key — we'll just
-      // exercise the public setLocale path. To simulate a missing key in the
-      // active locale, request a key that only exists in English. We don't
-      // have such a key, so we verify the negative path by checking the warn
-      // hook (next test).
+      // Drives the real fallback branch: `board.title` exists in en.json and
+      // is deleted from the zh-CN mock above, so a zh-CN lookup must resolve
+      // through the English resource — not return the raw key, not warn.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       setLocale('zh-CN');
-      // Known existing key in both:
-      expect(t('preferences.title')).toBe('偏好设置');
+      expect(t('board.title')).toBe('Board');
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('interpolates vars into the English fallback template', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      setLocale('zh-CN');
+      // `sidebar.removeConfirm.withDataMessage` is deleted from the zh mock
+      // and its English template carries {name}/{parts} — the fallback branch
+      // must interpolate the vars into the ENGLISH string, not just return it.
+      expect(t('sidebar.removeConfirm.withDataMessage', { name: 'demo', parts: 'x and y' }))
+        .toBe('Remove project "demo"? This will delete x and y from Vibeyard. No files on disk will be affected.');
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
     });
   });
 
@@ -101,5 +127,30 @@ describe('i18n', () => {
       expect(listener).toHaveBeenCalledTimes(1);
       expect(getLocale()).toBe('zh-CN');
     });
+  });
+});
+
+// P2-112: en.json and zh-CN.json are statically bundled and consumed
+// key-for-key; a leaf present in one and absent in the other ships silently
+// as raw keys (en) or un-interpolated fallback (zh). The audit measured
+// 539/539 with a zero gap — this test is the guard that keeps it that way.
+function leafKeys(obj: unknown, prefix = ''): string[] {
+  return Object.entries(obj as Record<string, unknown>).flatMap(([key, value]) =>
+    value !== null && typeof value === 'object'
+      ? leafKeys(value, `${prefix}${key}.`)
+      : [`${prefix}${key}`],
+  );
+}
+
+describe('locale parity (locales/*.json)', () => {
+  it('en.json and zh-CN.json expose identical leaf-key sets', async () => {
+    // importActual bypasses the zh-CN mock above — parity is checked against
+    // the shipped files, not the test fixture.
+    const en = (await vi.importActual<{ default: unknown }>('./locales/en.json')).default;
+    const zh = (await vi.importActual<{ default: unknown }>('./locales/zh-CN.json')).default;
+    const enKeys = new Set(leafKeys(en));
+    const zhKeys = new Set(leafKeys(zh));
+    expect([...enKeys].filter((k) => !zhKeys.has(k))).toEqual([]);
+    expect([...zhKeys].filter((k) => !enKeys.has(k))).toEqual([]);
   });
 });

@@ -6,6 +6,7 @@ const mockSave = vi.fn();
 vi.stubGlobal('window', {
   vibeyard: {
     store: { load: mockLoad, save: mockSave },
+    session: { transcriptExistsSync: vi.fn().mockReturnValue(true) },
   },
 });
 
@@ -29,7 +30,7 @@ vi.mock('./provider-availability.js', () => ({
   getTeamChatProviderMetas: vi.fn(() => []),
 }));
 
-import { appState, _resetForTesting, MAX_PROJECT_NAME_LENGTH } from './state';
+import { appState, _resetForTesting, MAX_PROJECT_NAME_LENGTH, MAX_SESSION_NAME_LENGTH } from './state';
 import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
 
@@ -805,5 +806,144 @@ describe('persist throttle', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// --- Session mutators on `state.ts` ---
+// (Formerly `state/session-mutations.test.ts`, renamed into this file: the
+// mutators under test are `state.ts` methods, and FEATURES.md maps coverage
+// to modules by test-file name — `state.test.ts` is where the mapping finds
+// `state.ts` coverage.)
+
+describe('setActiveSession()', () => {
+  it('updates activeSessionId and persists', () => {
+    const { project, sessions } = addProjectWithSessions(2);
+    mockSave.mockClear();
+    appState.setActiveSession(project.id, sessions[0].id);
+    expect(appState.activeProject!.activeSessionId).toBe(sessions[0].id);
+    appState.flushPersist();
+    expect(mockSave).toHaveBeenCalled();
+  });
+});
+
+describe('updateSessionCost()', () => {
+  const sampleCost = {
+    totalCostUsd: 2.5,
+    totalInputTokens: 1000,
+    totalOutputTokens: 400,
+    cacheReadTokens: 50,
+    cacheCreationTokens: 25,
+    totalDurationMs: 3000,
+    totalApiDurationMs: 2000,
+  };
+
+  it('persists cost data on the session record', () => {
+    vi.useFakeTimers();
+    try {
+      const project = addProject();
+      const session = appState.addSession(project.id, 'S1')!;
+      mockSave.mockClear();
+      appState.updateSessionCost(session.id, sampleCost);
+      const updated = appState.activeProject!.sessions.find(s => s.id === session.id)!;
+      expect(updated.cost).toEqual(sampleCost);
+      vi.advanceTimersByTime(1000);
+      expect(mockSave).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('no-op for nonexistent session', () => {
+    addProject();
+    mockSave.mockClear();
+    appState.updateSessionCost('nonexistent', sampleCost);
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it('updates cost across projects', () => {
+    const p1 = addProject('P1', '/p1');
+    const p2 = addProject('P2', '/p2');
+    const s1 = appState.addSession(p1.id, 'S1')!;
+    appState.addSession(p2.id, 'S2');
+    appState.updateSessionCost(s1.id, sampleCost);
+    const found = appState.projects.find(p => p.id === p1.id)!.sessions.find(s => s.id === s1.id)!;
+    expect(found.cost).toEqual(sampleCost);
+  });
+});
+
+describe('updateSessionContext()', () => {
+  const sampleContext = { totalTokens: 5000, contextWindowSize: 200000, usedPercentage: 2.5 };
+
+  it('persists context data on the session record', () => {
+    vi.useFakeTimers();
+    try {
+      const project = addProject();
+      const session = appState.addSession(project.id, 'S1')!;
+      mockSave.mockClear();
+      appState.updateSessionContext(session.id, sampleContext);
+      const updated = appState.activeProject!.sessions.find(s => s.id === session.id)!;
+      expect(updated.contextWindow).toEqual(sampleContext);
+      vi.advanceTimersByTime(1000);
+      expect(mockSave).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('no-op for nonexistent session', () => {
+    addProject();
+    mockSave.mockClear();
+    appState.updateSessionContext('nonexistent', sampleContext);
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+});
+
+describe('renameSession()', () => {
+  it('updates session name and persists', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'Old')!;
+    mockSave.mockClear();
+    appState.renameSession(project.id, session.id, 'New');
+    expect(appState.activeSession!.name).toBe('New');
+    appState.flushPersist();
+    expect(mockSave).toHaveBeenCalled();
+  });
+
+  it('sets userRenamed when passed true', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'Old')!;
+    appState.renameSession(project.id, session.id, 'Manual', true);
+    expect(appState.activeSession!.userRenamed).toBe(true);
+  });
+
+  it('does not set userRenamed when param omitted', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'Old')!;
+    appState.renameSession(project.id, session.id, 'Auto');
+    expect(appState.activeSession!.userRenamed).toBeUndefined();
+  });
+
+  it('truncates name exceeding MAX_SESSION_NAME_LENGTH', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'Old')!;
+    const longName = 'A'.repeat(MAX_SESSION_NAME_LENGTH + 40);
+    appState.renameSession(project.id, session.id, longName);
+    expect(appState.activeSession!.name).toBe('A'.repeat(MAX_SESSION_NAME_LENGTH));
+  });
+
+  it('refuses to rename a kanban session', () => {
+    const project = addProject('My Project');
+    const kanban = appState.openKanbanTab(project.id)!;
+    appState.renameSession(project.id, kanban.id, 'Custom', true);
+    expect(kanban.name).toBe('My Project - Kanban');
+    expect(kanban.userRenamed).toBeUndefined();
+  });
+
+  it('refuses to rename a project-tab session', () => {
+    const project = addProject('My Project');
+    const overview = appState.openProjectTab(project.id)!;
+    appState.renameSession(project.id, overview.id, 'Custom', true);
+    expect(overview.name).toBe('My Project - Overview');
+    expect(overview.userRenamed).toBeUndefined();
   });
 });
