@@ -24,7 +24,8 @@
     "askAiFocusStay": "the background — keep my tab",
     "planModeHeading": "Plan mode by default for quick AI sessions",
     "defaultProjectsFolder": "Default projects folder",
-    "defaultProjectsFolderPlaceholder": "Folder new projects are created in"
+    "defaultProjectsFolderPlaceholder": "Folder new projects are created in",
+    "defaultProjectsFolderClear": "Clear"
   },
   "appearance": {
     "theme": "Theme",

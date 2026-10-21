@@ -21,6 +21,34 @@
   flex-shrink: 0;
 }
 
+/* Preference rows whose value is read-only text (e.g. Default projects
+   folder): label + chosen value stacked on the left, picker buttons on the
+   right. The value rides the same mono treatment as `.profile-row-path`. */
+.preferences-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.preferences-row-info label {
+  cursor: default;
+}
+
+.preferences-row-value {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preferences-row-value.unset {
+  font-family: inherit;
+  font-style: italic;
+}
+
 /* Preferences layout */
 #modal.modal-wide,
 .modal-box.modal-wide {

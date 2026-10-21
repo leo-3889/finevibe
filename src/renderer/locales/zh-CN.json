@@ -24,7 +24,8 @@
     "askAiFocusStay": "后台 — 保留当前标签页",
     "planModeHeading": "快捷 AI 会话默认计划模式",
     "defaultProjectsFolder": "默认项目文件夹",
-    "defaultProjectsFolderPlaceholder": "新建项目所在的文件夹"
+    "defaultProjectsFolderPlaceholder": "新建项目所在的文件夹",
+    "defaultProjectsFolderClear": "清除"
   },
   "appearance": {
     "theme": "主题",

@@ -42,7 +42,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
   let autoTitleCheckbox: HTMLInputElement | null = null;
   let confirmCloseCheckbox: HTMLInputElement | null = null;
   let copyOnSelectCheckbox: HTMLInputElement | null = null;
-  let projectsFolderInput: HTMLInputElement | null = null;
+  let projectsFolderValue: string | null = null;
   let askAiFocusSelect: CustomSelectInstance | null = null;
 
   return {
@@ -180,34 +180,51 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       container.appendChild(copyOnSelect.row);
 
       // Default projects folder: the root Add-project pre-fills as
-      // `<folder>/<name>` and where a git-URL checkout lands. Text + browse
-      // (the same fs.browseDirectory picker the modal uses); persists on
-      // Confirm like the toggles above. Empty = unset (free-path behavior).
+      // `<folder>/<name>` and where a git-URL checkout lands. The chosen
+      // folder reads as plain text under the label (no editable field); the
+      // picker (the same fs.browseDirectory the modal uses) and Clear sit on
+      // the right. Persists on Confirm like the toggles above.
+      // Empty = unset (free-path behavior).
       const folderRow = document.createElement('div');
       folderRow.className = 'modal-toggle-field';
+      const folderInfo = document.createElement('div');
+      folderInfo.className = 'preferences-row-info';
       const folderLabel = document.createElement('label');
-      folderLabel.htmlFor = 'pref-default-projects-folder';
       folderLabel.textContent = t('general.defaultProjectsFolder');
-      const folderBox = document.createElement('div');
-      folderBox.className = 'modal-field-row';
-      if (projectsFolderInput) projectsFolderInput.remove();
-      projectsFolderInput = document.createElement('input');
-      projectsFolderInput.type = 'text';
-      projectsFolderInput.id = 'pref-default-projects-folder';
-      projectsFolderInput.placeholder = t('general.defaultProjectsFolderPlaceholder');
-      projectsFolderInput.value = appState.preferences.defaultProjectsFolder ?? '';
+      const folderValue = document.createElement('div');
+      folderValue.className = 'preferences-row-value';
+      folderInfo.appendChild(folderLabel);
+      folderInfo.appendChild(folderValue);
       const folderBrowse = document.createElement('button');
       folderBrowse.type = 'button';
       folderBrowse.className = 'modal-field-btn';
       folderBrowse.textContent = t('sidebar.newProject.browseButton');
+      const folderClear = document.createElement('button');
+      folderClear.type = 'button';
+      folderClear.className = 'modal-field-btn';
+      folderClear.textContent = t('general.defaultProjectsFolderClear');
       folderBrowse.addEventListener('click', async () => {
         const dir = await window.finevibe.fs.browseDirectory();
-        if (dir && projectsFolderInput) projectsFolderInput.value = dir;
+        if (dir) {
+          projectsFolderValue = dir;
+          renderFolderValue();
+        }
       });
-      folderBox.appendChild(projectsFolderInput);
-      folderBox.appendChild(folderBrowse);
-      folderRow.appendChild(folderLabel);
-      folderRow.appendChild(folderBox);
+      folderClear.addEventListener('click', () => {
+        projectsFolderValue = '';
+        renderFolderValue();
+      });
+      function renderFolderValue(): void {
+        const value = projectsFolderValue ?? '';
+        folderValue.textContent = value || t('general.defaultProjectsFolderPlaceholder');
+        folderValue.className = value ? 'preferences-row-value' : 'preferences-row-value unset';
+        folderClear.style.display = value ? '' : 'none';
+      }
+      projectsFolderValue = appState.preferences.defaultProjectsFolder ?? '';
+      renderFolderValue();
+      folderRow.appendChild(folderInfo);
+      folderRow.appendChild(folderBrowse);
+      folderRow.appendChild(folderClear);
       container.appendChild(folderRow);
 
       // Ask AI focus: an enum, so a custom-select (the repo bans native <select>).
@@ -240,7 +257,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       if (copyOnSelectCheckbox) appState.setPreference('copyOnSelect', copyOnSelectCheckbox.checked);
       if (providerSelect) appState.setPreference('defaultProvider', providerSelect.getValue() as ProviderId);
       if (askAiFocusSelect) appState.setPreference('askAiFocus', askAiFocusSelect.getValue() as 'switch' | 'stay');
-      if (projectsFolderInput) appState.setPreference('defaultProjectsFolder', projectsFolderInput.value.trim());
+      if (projectsFolderValue !== null) appState.setPreference('defaultProjectsFolder', projectsFolderValue.trim());
     },
 
     destroy() {
@@ -250,6 +267,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       languageSelect = null;
       if (askAiFocusSelect) askAiFocusSelect.destroy();
       askAiFocusSelect = null;
+      projectsFolderValue = null;
     },
   };
 }
