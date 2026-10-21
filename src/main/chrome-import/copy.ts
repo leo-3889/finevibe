@@ -48,9 +48,58 @@ function copyOne(src: string, dest: string): boolean {
   }
 }
 
+/** Sole producer of the import temp-dir prefix: the sweep below matches it. */
+export const IMPORT_TEMP_PREFIX = 'vibeyard-chrome-import-';
+
+/** Mirrors SCREENSHOT_MAX_AGE_MS (ipc-handlers vibeyard-screenshots prune). */
+export const IMPORT_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * P2-47: quit/crash mid-import used to leave the cookie snapshot in the OS
+ * temp dir for the machine's life — `cleanup()` only runs if the import
+ * reaches its finally block. Sweeps stale `vibeyard-chrome-import-*` dirs,
+ * mirroring the vibeyard-screenshots prune: age bound on mtime, swallow per
+ * entry (a locked dir stays for the next boot), directories only.
+ *
+ * Returns the number of dirs removed. `maxAgeMs: 0` sweeps every match
+ * regardless of age — the after-import call site, where the snapshot of the
+ * import that just ended is dead the moment the handler returns.
+ * `tmpDir` is a test seam; production sweeps os.tmpdir().
+ */
+export function sweepImportTempDirs(
+  opts: { maxAgeMs?: number; tmpDir?: string } = {},
+): number {
+  const maxAgeMs = opts.maxAgeMs ?? IMPORT_TEMP_MAX_AGE_MS;
+  const base = opts.tmpDir ?? os.tmpdir();
+  let names: string[];
+  try {
+    names = fs.readdirSync(base);
+  } catch {
+    return 0;
+  }
+  const now = Date.now();
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith(IMPORT_TEMP_PREFIX)) continue;
+    const full = path.join(base, name);
+    try {
+      const st = fs.statSync(full);
+      if (!st.isDirectory()) continue;
+      // The bound is the in-flight-import guarantee: a fresh dir (a live
+      // import on this machine) is NEVER deleted by the age sweep.
+      if (maxAgeMs > 0 && now - st.mtimeMs <= maxAgeMs) continue;
+      fs.rmSync(full, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // Unreadable entry, vanished dir, Windows file lock: leave it, sweep on.
+    }
+  }
+  return removed;
+}
+
 export function snapshotProfile(profileDir: string): Snapshot {
   const uniq = crypto.randomBytes(8).toString('hex');
-  const dir = path.join(os.tmpdir(), `vibeyard-chrome-import-${uniq}`);
+  const dir = path.join(os.tmpdir(), `${IMPORT_TEMP_PREFIX}${uniq}`);
   fs.mkdirSync(dir, { recursive: true });
 
   let cookiesPath: string | null = null;

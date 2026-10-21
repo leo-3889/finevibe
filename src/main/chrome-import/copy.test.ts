@@ -14,7 +14,7 @@ vi.mock('fs', async (importOriginal) => {
     writeFileSync: vi.fn(actual.writeFileSync),
   };
 });
-import { snapshotProfile } from './copy';
+import { snapshotProfile, sweepImportTempDirs, IMPORT_TEMP_PREFIX, IMPORT_TEMP_MAX_AGE_MS } from './copy';
 
 let profileDir: string;
 
@@ -84,5 +84,111 @@ describe('snapshotProfile', () => {
     const snap = snapshotProfile(profileDir);
     snap.cleanup();
     expect(fs.existsSync(snap.dir)).toBe(false);
+  });
+});
+
+// P2-47: quit/crash mid-import used to leave the cookie snapshot under
+// vibeyard-chrome-import-* in the OS temp dir for the machine's life. The
+// sweep mirrors the vibeyard-screenshots prune (ipc-handlers): 24h age
+// bound, swallow-per-entry, directories only.
+describe('sweepImportTempDirs', () => {
+  let tmp: string;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  function makeImportDir(name: string, ageMs: number): string {
+    const dir = path.join(tmp, name);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'Cookies'), 'fixture');
+    const old = new Date(Date.now() - ageMs);
+    fs.utimesSync(dir, old, old);
+    return dir;
+  }
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-sweep-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('removes stale import dirs (older than the bound) and returns the count', () => {
+    const stale = makeImportDir(`${IMPORT_TEMP_PREFIX}stale1`, 2 * DAY_MS);
+    expect(sweepImportTempDirs({ tmpDir: tmp })).toBe(1);
+    expect(fs.existsSync(stale)).toBe(false);
+  });
+
+  it('never removes a fresh dir (an in-flight import is not garbage)', () => {
+    const fresh = makeImportDir(`${IMPORT_TEMP_PREFIX}fresh`, 0);
+    expect(sweepImportTempDirs({ tmpDir: tmp })).toBe(0);
+    expect(fs.existsSync(fresh)).toBe(true);
+  });
+
+  it('maxAgeMs: 0 removes even fresh dirs (the after-import call site: the dir THIS import made)', () => {
+    const fresh = makeImportDir(`${IMPORT_TEMP_PREFIX}justmade`, 0);
+    expect(sweepImportTempDirs({ tmpDir: tmp, maxAgeMs: 0 })).toBe(1);
+    expect(fs.existsSync(fresh)).toBe(false);
+  });
+
+  it('leaves non-matching prefixes and matching files untouched', () => {
+    const near = makeImportDir('vibeyard-chrome-importX-nope', 2 * DAY_MS);
+    const other = makeImportDir('chrome-import-abc', 2 * DAY_MS);
+    const screenshots = makeImportDir('vibeyard-screenshots', 2 * DAY_MS);
+    const stray = path.join(tmp, `${IMPORT_TEMP_PREFIX}stray-file`);
+    fs.writeFileSync(stray, 'fixture');
+    expect(sweepImportTempDirs({ tmpDir: tmp })).toBe(0);
+    expect(fs.existsSync(near)).toBe(true);
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.existsSync(screenshots)).toBe(true);
+    expect(fs.existsSync(stray)).toBe(true);
+  });
+
+  it('counts only the stale dirs in a mixed sweep', () => {
+    makeImportDir(`${IMPORT_TEMP_PREFIX}s1`, 2 * DAY_MS);
+    makeImportDir(`${IMPORT_TEMP_PREFIX}s2`, IMPORT_TEMP_MAX_AGE_MS + 60_000);
+    const fresh = makeImportDir(`${IMPORT_TEMP_PREFIX}young`, DAY_MS - 60_000);
+    expect(sweepImportTempDirs({ tmpDir: tmp })).toBe(2);
+    expect(fs.existsSync(fresh)).toBe(true);
+  });
+
+  it('swallows an unreadable entry, keeps sweeping, never throws', () => {
+    const stale = makeImportDir(`${IMPORT_TEMP_PREFIX}stale`, 2 * DAY_MS);
+    const link = path.join(tmp, `${IMPORT_TEMP_PREFIX}dangling`);
+    let madeLink = true;
+    try {
+      // statSync on a dangling link throws ENOENT — the per-entry swallow.
+      fs.symlinkSync(
+        path.join(tmp, 'no-such-target'),
+        link,
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+    } catch {
+      madeLink = false; // Windows without dev-mode: junction creation denied
+    }
+    expect(() => sweepImportTempDirs({ tmpDir: tmp })).not.toThrow();
+    expect(fs.existsSync(stale)).toBe(false);
+    // lstat, not existsSync: existsSync follows the dangling link and sees
+    // the missing target, not the surviving entry.
+    if (madeLink) expect(() => fs.lstatSync(link)).not.toThrow();
+  });
+
+  it('returns 0 on a missing tmp dir', () => {
+    expect(sweepImportTempDirs({ tmpDir: path.join(tmp, 'nope') })).toBe(0);
+  });
+
+  // Producer/sweeper seam pin: snapshotProfile is the sole producer of the
+  // prefix, and its real temp dir (real os.tmpdir(), no seam) is exactly
+  // what the boot sweep removes once stale.
+  it('sweeps a production snapshot once it is stale', () => {
+    const snap = snapshotProfile(profileDir);
+    try {
+      expect(path.basename(snap.dir).startsWith(IMPORT_TEMP_PREFIX)).toBe(true);
+      const old = new Date(Date.now() - 2 * DAY_MS);
+      fs.utimesSync(snap.dir, old, old);
+      expect(sweepImportTempDirs()).toBeGreaterThanOrEqual(1);
+      expect(fs.existsSync(snap.dir)).toBe(false);
+    } finally {
+      snap.cleanup();
+    }
   });
 });

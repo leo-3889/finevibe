@@ -32,6 +32,7 @@ import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './githu
 import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
+import { sweepImportTempDirs } from './chrome-import/copy';
 import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { buildVibeyardignoreMatcher } from './vibeyardignore';
@@ -1031,7 +1032,17 @@ export function registerIpcHandlers(): void {
         // sender may have gone away
       }
     };
-    const result = await runChromeImport(options, send);
+    // P2-47 pin (after-import call site; the boot sweep lives in main.ts).
+    // runImport's own cleanup is best-effort — a Windows file lock can
+    // leave the cookie snapshot behind. Once this handler settles, success
+    // OR throw, the snapshot of THIS import is dead at any age, so sweep
+    // with no age bound.
+    let result: Awaited<ReturnType<typeof runChromeImport>>;
+    try {
+      result = await runChromeImport(options, send);
+    } finally {
+      sweepImportTempDirs({ maxAgeMs: 0 });
+    }
     if (result.ok || result.cookieCount > 0) {
       try {
         const state = loadState();

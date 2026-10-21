@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
+import { sweepImportTempDirs } from './chrome-import/copy';
 import { killAllPtys } from './pty-manager';
 import { flushState, loadState } from './store';
 import { createAppMenu } from './menu';
@@ -181,6 +182,14 @@ function startMainProcess(): void {
   });
 
   app.whenReady().then(async () => {
+    // P2-47 pin (boot call site; the after-import sweep lives in
+    // ipc-handlers.ts chromeImport:run): quit/crash mid-import used to
+    // leave the Chrome cookie snapshot in the OS temp dir for the
+    // machine's life. Sweep stale vibeyard-chrome-import-* dirs at boot,
+    // mirroring the vibeyard-screenshots prune's 24h bound — an in-flight
+    // fresh dir is never touched. Never throws; tmpdir-sized, negligible
+    // on the boot path.
+    sweepImportTempDirs();
     initProviders();
 
     const providers = getAllProviders();

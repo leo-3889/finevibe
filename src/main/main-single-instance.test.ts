@@ -40,6 +40,10 @@ const { appHandlers, app, windows, fakeProvider } = vi.hoisted(() => {
   return { appHandlers, app, windows, fakeProvider };
 });
 
+// P2-47: the winner's whenReady chain sweeps stale vibeyard-chrome-import-*
+// temp leftovers (boot call site in main.ts). Spied, never real.
+const sweepImportSpy = vi.hoisted(() => vi.fn());
+
 vi.mock('electron', () => {
   class BrowserWindow implements MockWindow {
     destroyed = false;
@@ -122,6 +126,7 @@ vi.mock('./agentmemory-manager', () => ({
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 vi.mock('./platform', () => ({ isMac: false, isWin: false }));
+vi.mock('./chrome-import/copy', () => ({ sweepImportTempDirs: sweepImportSpy }));
 vi.mock('./close-state', () => ({
   isCloseConfirmed: vi.fn(() => true),
   setCloseConfirmed: vi.fn(),
@@ -150,6 +155,7 @@ beforeEach(() => {
   vi.mocked(app.requestSingleInstanceLock).mockReturnValue(true);
   vi.mocked(app.quit).mockClear();
   vi.mocked(app.on).mockClear();
+  vi.mocked(sweepImportSpy).mockClear();
 });
 
 describe('single-instance gate', () => {
@@ -169,6 +175,9 @@ describe('single-instance gate', () => {
     await vi.waitFor(() => expect(windows.length).toBe(0));
     expect(appHandlers['before-quit']).toBeUndefined();
     expect(appHandlers['window-all-closed']).toBeUndefined();
+    // P2-47: the boot sweep rides the winner's whenReady chain — the loser
+    // must not sweep (it must boot NOTHING, including temp cleanup).
+    expect(sweepImportSpy).not.toHaveBeenCalled();
   });
 
   it('registers a second-instance handler that restores and focuses the window', async () => {
@@ -176,6 +185,8 @@ describe('single-instance gate', () => {
 
     expect(app.quit).not.toHaveBeenCalled();
     expect(appHandlers['second-instance']).toBeTypeOf('function');
+    // P2-47 pin (boot call site): exactly one sweep, in the boot chain.
+    expect(sweepImportSpy).toHaveBeenCalledTimes(1);
 
     const win = windows[0];
     appHandlers['second-instance']();
