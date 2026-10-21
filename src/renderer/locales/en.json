@@ -104,6 +104,8 @@
     },
     "shareIndicatorTooltip": "Sharing",
     "closeTooltip": "Close session",
+    "scrollLeftTooltip": "Scroll tabs left",
+    "scrollRightTooltip": "Scroll tabs right",
     "newSession": {
       "defaultName": "Session {num}"
     },

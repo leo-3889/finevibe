@@ -104,6 +104,8 @@
     },
     "shareIndicatorTooltip": "分享中",
     "closeTooltip": "关闭会话",
+    "scrollLeftTooltip": "向左滚动标签页",
+    "scrollRightTooltip": "向右滚动标签页",
     "newSession": {
       "defaultName": "会话 {num}"
     },
