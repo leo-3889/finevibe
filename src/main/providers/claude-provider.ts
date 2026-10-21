@@ -10,7 +10,7 @@ import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { installStatusLineScript, cleanupAll as cleanupHookStatus } from '../hook-status';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
-import { getClaudeConfig } from '../claude-cli';
+import { getClaudeConfig, isManagedMcpConfigDir } from '../claude-cli';
 import { guardedInstall, validateSettings, reinstallSettings } from '../settings-guard';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE, collectProfileRoots, TranscriptDiscoveryScan, readdirForDiscovery } from './transcript-utils';
@@ -165,6 +165,13 @@ export class ClaudeProvider implements CliProvider {
     // are named `<uuid>.jsonl`; anything else is not an id. Same shape as
     // hook-status' UI_SESSION_ID_RE: [A-Za-z0-9._-], no leading dot, capped.
     if (!TRANSCRIPT_ID_RE.test(cliSessionId)) return null;
+    // P2-113: `root` below is a renderer-supplied configDir, and this
+    // existsSync answer travels back verbatim (transcriptExists /
+    // exportArchive / resume), so a foreign dir is an existence oracle over
+    // its whole tree. Reads take the same canonical allowlist mcp:addServer
+    // enforces on its write target; undefined = the default ~/.claude tree,
+    // which the app owns. Decline as the provider's no-match shape.
+    if (configDir && !isManagedMcpConfigDir(configDir)) return null;
     // Claude encodes the project path by replacing any non-alphanumeric char with '-'
     const slug = projectPath.replace(/[^a-zA-Z0-9]/g, '-');
     const root = configDir ?? path.join(os.homedir(), '.claude');

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -9,8 +9,16 @@ import {
   readTranscriptStatusSync,
   sessionExitReasonFromTail,
   readSessionExitReasonSync,
+  findTranscriptPathSync,
   TAIL_READ_BYTES,
 } from './pi-compatible-transcripts';
+import { isManagedMcpConfigDir } from '../claude-cli';
+
+// findTranscriptPathSync gates a renderer-supplied configDir through the
+// managed-config-dir allowlist (P2-113); the scan-root tests exercise it.
+vi.mock('../claude-cli', () => ({
+  isManagedMcpConfigDir: vi.fn(() => true),
+}));
 
 const header = (id: string, cwd: string, title?: string) =>
   JSON.stringify({
@@ -24,6 +32,23 @@ const header = (id: string, cwd: string, title?: string) =>
 
 const titleEntry = (title: string) =>
   JSON.stringify({ type: 'title', v: 1, title, source: 'auto', updatedAt: 't' });
+
+describe('findTranscriptPathSync configDir gate (P2-113)', () => {
+  it('returns null for a foreign configDir before touching the tree', () => {
+    // The scan reads + head-parses every candidate under <configDir>/sessions
+    // and reports the answer to the renderer (transcriptExists / export /
+    // resume) - an ungated configDir is a filesystem-wide existence oracle.
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    expect(findTranscriptPathSync(() => '/definitely/not/a/root', 'cli-1', '/proj', '/home/attacker/.pi')).toBeNull();
+    expect(isManagedMcpConfigDir).toHaveBeenCalledWith('/home/attacker/.pi');
+  });
+
+  it('scans normally for the default (undefined) config dir', () => {
+    vi.mocked(isManagedMcpConfigDir).mockClear();
+    expect(findTranscriptPathSync(() => path.join(os.tmpdir(), 'vibeyard-compat-missing-root'), 'cli-1', '/proj')).toBeNull();
+    expect(isManagedMcpConfigDir).not.toHaveBeenCalled();
+  });
+});
 
 describe('sessionHeaderFromWindow', () => {
   it('finds the header on line 1 (Pi layout, no title line)', () => {

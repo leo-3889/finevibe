@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { isMac, isWin } from '../platform';
+import { canonicalPath, canonicalRoot } from '../fs-utils';
 
 /** Returns the Chrome user-data directory for the current OS, or null if absent. */
 export function chromeUserDataDir(): string | null {
@@ -22,9 +23,14 @@ export function chromeUserDataDir(): string | null {
 export function chromeProfileDir(userDataDir: string, profileId: string): string {
   // profileId is renderer-supplied import options: it must stay inside the
   // Chrome user-data dir (Chrome's own ids are 'Default' / 'Profile N').
+  // P2-3: the old gate was a string prefix on the resolved path, so a
+  // symlinked profile dir INSIDE the user-data dir passed it while the
+  // import copied cookies from the link's canonical target - any cookie DB
+  // on the machine. Compare canonical paths (fs-utils realpath chain),
+  // keeping the root-identity allowance ('.' names the user-data dir).
   const dir = path.resolve(userDataDir, profileId);
-  const root = path.resolve(userDataDir);
-  if (dir !== root && !dir.startsWith(root + path.sep)) {
+  const rel = path.relative(canonicalRoot(userDataDir), canonicalPath(dir));
+  if (rel !== '' && (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))) {
     throw new Error(`Invalid Chrome profile id: ${JSON.stringify(profileId)}`);
   }
   return dir;

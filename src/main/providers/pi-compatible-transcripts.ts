@@ -4,6 +4,7 @@ import * as readline from 'readline';
 import type { TranscriptDescriptor } from './provider';
 import type { CliSessionStatus } from '../../shared/types';
 import { isWin, isMac } from '../platform';
+import { isManagedMcpConfigDir } from '../claude-cli';
 import {
   MAX_INDEX_BYTES,
   MAX_INDEX_FILE_BYTES,
@@ -484,6 +485,13 @@ export function findTranscriptPathSync(
   projectPath: string,
   configDir?: string
 ): string | null {
+  // P2-113: configDir is renderer-supplied (transcriptExists / exportArchive
+  // / resume), and this scan READS + head-parses every candidate under
+  // sessionsRootOf(configDir), reporting the answers back to the renderer -
+  // an ungated configDir is a filesystem-wide existence/content oracle.
+  // Managed roots only, the canonical allowlist mcp:addServer enforces on
+  // its write target; undefined = the provider's default tree, app-owned.
+  if (configDir && !isManagedMcpConfigDir(configDir)) return null;
   try {
     const sessionsRoot = sessionsRootOf(configDir);
     if (!fs.existsSync(sessionsRoot)) return null;

@@ -29,12 +29,18 @@ vi.mock('./pi-compatible-transcripts', () => ({
   readTranscriptStatusSync: vi.fn(),
   readSessionExitReasonSync: vi.fn(),
 }));
+vi.mock('../claude-cli', () => ({
+  // The transcript read-path gate (P2-113) consults the managed-config-dir
+  // allowlist; the rejection test overrides it.
+  isManagedMcpConfigDir: vi.fn(() => true),
+}));
 
 import * as path from 'path';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession } from '../omp-session-watcher';
 import { readTranscriptTitleSync } from './omp-transcripts';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
+import { isManagedMcpConfigDir } from '../claude-cli';
 import { OmpProvider, _resetCachedPath } from './omp-provider';
 
 const mockResolveBinary = vi.mocked(resolveBinary);
@@ -292,6 +298,17 @@ describe('getTranscriptPath', () => {
 
     expect(provider.getTranscriptPath!('cli-9', '/proj', '/profiles/work')).toBe('/sessions/dir-a/2026.jsonl');
     expect(findTranscriptPathSync).toHaveBeenCalledWith(expect.any(Function), 'cli-9', '/proj', '/profiles/work');
+  });
+
+  it('refuses a foreign configDir before scanning its tree (P2-113 read gate)', () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    expect(provider.getTranscriptPath!('cli-9', '/proj', '/home/attacker/.omp')).toBeNull();
+    expect(findTranscriptPathSync).not.toHaveBeenCalled();
+  });
+
+  it('scans the legacy trees for a managed configDir (gate passes)', () => {
+    vi.mocked(findTranscriptPathSync).mockReturnValue('/sessions/dir-a/2026.jsonl');
+    expect(provider.getTranscriptPath!('cli-9', '/proj', '/mock/home/.vibeyard/profiles/work')).toBe('/sessions/dir-a/2026.jsonl');
   });
 });
 

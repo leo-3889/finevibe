@@ -14,6 +14,7 @@ import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSess
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession, stopPiSessionWatcher } from '../pi-session-watcher';
 import { writeCliSessionId } from '../hook-status';
+import { isManagedMcpConfigDir } from '../claude-cli';
 import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMeta, listLaunchSessionDirs, profileIdForConfigDir } from '../launch-session-dir';
 
 const binaryCache = { path: null as string | null };
@@ -215,6 +216,11 @@ export class PiProvider implements CliProvider {
       const inDir = findTranscriptPathInFlatDir(sessionDir, cliSessionId, projectPath);
       if (inDir) return inDir;
     }
+    // P2-113: the legacy-tree scan reads a renderer-supplied configDir
+    // (transcriptExists / exportArchive / resume answer from it), so only
+    // managed roots may be scanned; undefined = the default agent dir.
+    // The sessionDir branch above is main-derived (launch-session-dir.ts).
+    if (configDir && !isManagedMcpConfigDir(configDir)) return null;
     return findTranscriptPathSync(piSessionsRoot, cliSessionId, projectPath, configDir);
   }
 

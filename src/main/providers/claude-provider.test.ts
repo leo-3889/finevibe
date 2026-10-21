@@ -28,11 +28,15 @@ vi.mock('../hook-status', () => ({
 vi.mock('../claude-cli', () => ({
   installHooks: vi.fn(),
   getClaudeConfig: vi.fn(),
+  // The transcript read-path gate (P2-113) consults the managed-config-dir
+  // allowlist; tests that exercise the rejection override it per-test.
+  isManagedMcpConfigDir: vi.fn(() => true),
 }));
 
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { ClaudeProvider, _resetCachedPath } from './claude-provider';
+import { isManagedMcpConfigDir } from '../claude-cli';
 import { invalidateBinaryCache } from './resolve-binary';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -266,6 +270,24 @@ describe('getTranscriptPath', () => {
     mockExistsSync.mockReturnValue(true);
     const out = provider.getTranscriptPath('abc-123', '/tmp/proj', '/mock/home/.vibeyard/profiles/work');
     expect(out).toBe(path.join('/mock/home/.vibeyard/profiles/work', 'projects', '-tmp-proj', 'abc-123.jsonl'));
+  });
+
+  it('refuses a configDir outside the managed roots (P2-113 read gate)', () => {
+    // The channel echoes an existsSync answer back to the renderer, so a
+    // foreign configDir must never be probed at all - the same allowlist
+    // mcp:addServer enforces on its WRITE target, now on the read side.
+    mockExistsSync.mockReturnValue(true);
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    expect(provider.getTranscriptPath('abc-123', '/tmp/proj', '/home/attacker/.claude')).toBeNull();
+    expect(isManagedMcpConfigDir).toHaveBeenCalledWith('/home/attacker/.claude');
+    expect(mockExistsSync).not.toHaveBeenCalled();
+  });
+
+  it('accepts a managed profile configDir (gate passes)', () => {
+    mockExistsSync.mockReturnValue(true);
+    expect(provider.getTranscriptPath('abc-123', '/tmp/proj', '/mock/home/.vibeyard/profiles/work')).toBe(
+      path.join('/mock/home/.vibeyard/profiles/work', 'projects', '-tmp-proj', 'abc-123.jsonl'),
+    );
   });
 
   it('refuses a session id that is a path, not a file name', () => {

@@ -651,7 +651,11 @@ export type McpServerConfig =
   | { url: string };
 
 /**
- * The config dirs the app itself hands out as a CLI config root. `configDir`
+ * The config dirs the app itself hands out as a CLI config root. Shared gate:
+ * `mcp:addServer` enforces it on its WRITE target, and the transcript READ
+ * paths (claude-provider.getTranscriptPath, the pi/omp session-tree scans)
+ * enforce it on renderer-supplied configDir too (P2-113).
+ * `configDir`
  * arrives verbatim from the mcp:* IPC args and the write target is derived
  * from it, so an unvalidated value is an arbitrary-file-write sink: whatever
  * `<dir>/.claude.json` it names is read back as the MCP config of the next
@@ -662,7 +666,7 @@ export type McpServerConfig =
  * same dir with other casing, separators or a junction, and `path.resolve`
  * normalizes none of those.
  */
-function isManagedMcpConfigDir(configDir: string): boolean {
+export function isManagedMcpConfigDir(configDir: string): boolean {
   const target = canonicalPath(configDir);
   const roots = [
     ...(loadState().profiles ?? []).map((p) => p.configDir),
