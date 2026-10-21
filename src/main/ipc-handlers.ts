@@ -20,7 +20,7 @@ import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
 import { probeAgentmemory, ensureAgentmemoryRunning } from './agentmemory-manager';
 import { createAppMenu } from './menu';
-import { getProvider, getProviderMeta, getAllProviderMetas, getAllProviders } from './providers/registry';
+import { getProvider, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
 import type { CliProvider } from './providers/provider';
 import { buildHandoffPrompt } from './providers/resume-handoff';
@@ -879,10 +879,6 @@ export function registerIpcHandlers(): void {
     const provider = getProvider(providerId);
     provider.startConfigWatcher?.(win, projectPath);
   }));
-
-  ipcMain.handle('provider:getMeta', (_event, providerId: ProviderId) => {
-    return getProviderMeta(providerId);
-  });
 
   ipcMain.handle('provider:listProviders', () => {
     return getAllProviderMetas();

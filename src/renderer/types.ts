@@ -60,7 +60,6 @@ export interface VibeyardApi {
   };
   provider: {
     getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
-    getMeta(providerId: ProviderId): Promise<CliProviderMeta>;
     listProviders(): Promise<CliProviderMeta[]>;
     checkBinary(providerId?: ProviderId): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;

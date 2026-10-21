@@ -106,7 +106,6 @@ vi.mock('./session-transcript-sync', () => ({
 
 vi.mock('./providers/registry', () => ({
   getProvider: mockGetProvider,
-  getProviderMeta: vi.fn(),
   getAllProviderMetas: vi.fn(),
   getAllProviders: vi.fn(),
 }));

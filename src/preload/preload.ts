@@ -67,7 +67,6 @@ export interface VibeyardApi {
   };
   provider: {
     getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
-    getMeta(providerId: ProviderId): Promise<CliProviderMeta>;
     listProviders(): Promise<CliProviderMeta[]>;
     checkBinary(providerId?: ProviderId): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
@@ -259,7 +258,6 @@ const api: VibeyardApi = {
   },
   provider: {
     getConfig: (providerId, projectPath, configDir?) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath, configDir),
-    getMeta: (providerId) => ipcRenderer.invoke('provider:getMeta', providerId),
     listProviders: () => ipcRenderer.invoke('provider:listProviders'),
     checkBinary: (providerId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude'),
     watchProject: (providerId, projectPath) => ipcRenderer.send('config:watchProject', providerId, projectPath),
