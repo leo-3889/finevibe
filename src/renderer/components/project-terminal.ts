@@ -19,6 +19,7 @@ interface ShellTerminalInstance {
   projectId: string;
   sessionId: string;
   spawned: boolean;
+  lastSize: string;
 }
 
 const shells = new Map<string, ShellTerminalInstance[]>();
@@ -99,6 +100,7 @@ function createShell(projectId: string): ShellTerminalInstance {
     projectId,
     sessionId,
     spawned: false,
+    lastSize: '',
   };
 
   // Dropping a file types its path into the shell, the same contract the session
@@ -123,6 +125,9 @@ async function spawnShell(instance: ShellTerminalInstance, projectPath: string):
 
   try {
     await window.vibeyard.pty.createShell(instance.sessionId, projectPath);
+    // A fresh PTY starts at the spawn default; force the next fit to
+    // re-send the pane's current geometry.
+    instance.lastSize = '';
   } catch (err) {
     // `activateShellInstance` fires this un-awaited. A rejected `createShell`
     // (missing shell binary, ConPTY failure) used to surface as an unhandled
@@ -332,7 +337,16 @@ function fitActiveShell(): void {
   try {
     instance.fitAddon.fit();
     const { cols, rows } = instance.terminal;
-    window.vibeyard.pty.resize(instance.sessionId, cols, rows);
+    // Mirrors fitTerminal()'s memo: renderLayout() ends in a fitAllVisible(),
+    // and a redundant resize makes the CLI redraw underneath an in-progress
+    // selection — only a changed geometry goes over the wire.
+    const size = `${cols}x${rows}`;
+    if (size === instance.lastSize) return;
+    instance.lastSize = size;
+    // pty.resize is typed void, but the bridge hands back the
+    // ipcRenderer.invoke promise; a rejected resize would otherwise surface
+    // as an unhandled rejection.
+    Promise.resolve(window.vibeyard.pty.resize(instance.sessionId, cols, rows)).catch(() => {});
   } catch {
     // not visible yet
   }

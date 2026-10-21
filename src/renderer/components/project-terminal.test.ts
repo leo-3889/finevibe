@@ -236,3 +236,81 @@ describe('applyThemeToAllShells()', () => {
     expect((instance.terminal as unknown as FakeTerminal).options.theme).toBe(lightTerminalTheme);
   });
 });
+
+describe('project-terminal fit resize (P3-10)', () => {
+  let stateHandlers: Record<string, (() => void)[]>;
+  let mockPtyResize: ReturnType<typeof vi.fn>;
+  let unhandled: unknown[];
+  const onUnhandled = (err: unknown) => { unhandled.push(err); };
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    stateHandlers = {};
+    mockStateOn.mockImplementation((event: string, cb: () => void) => {
+      if (!stateHandlers[event]) stateHandlers[event] = [];
+      stateHandlers[event].push(cb);
+    });
+    mockPtyResize = vi.fn();
+
+    vi.stubGlobal('document', makeFakeDocument());
+    vi.stubGlobal('window', {
+      vibeyard: {
+        pty: {
+          write: mockPtyWrite,
+          kill: vi.fn(),
+          resize: mockPtyResize,
+          createShell: vi.fn().mockResolvedValue(undefined),
+        },
+        clipboard: { write: mockVibeyardClipboardWrite },
+      },
+    });
+    vi.stubGlobal('navigator', { clipboard: { writeText: mockClipboardWrite } });
+    vi.stubGlobal('ResizeObserver', class { observe(): void {} });
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => cb());
+  });
+
+  it('sends one resize per geometry change and swallows rejected resizes', async () => {
+    const { appState } = await import('../state.js');
+    const m = await import('./project-terminal.js');
+    const project = { id: 'proj1', path: '/project', terminalPanelOpen: true, terminalPanelHeight: 200, sessions: [] };
+    (appState as any).activeProject = project;
+    (appState as any).projects = [project];
+    unhandled = [];
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      m.initProjectTerminal();
+      const show = () => stateHandlers['state-loaded']?.forEach((cb) => cb());
+      const sent = () => mockPtyResize.mock.calls.map((c) => `${c[1]}x${c[2]}`);
+      show();
+      const sessionId = m.getActiveShellSessionId()!;
+      const instance = m.getShellTerminalInstance(sessionId)!;
+      const base = sent().length;
+      expect(base).toBeGreaterThan(0);
+
+      // Two more show cycles at an UNCHANGED geometry: the memo keeps the
+      // wire quiet — every fit past the first is a byte-identical 120x30.
+      show();
+      show();
+      expect(sent()).toHaveLength(base);
+
+      (instance.terminal as unknown as FakeTerminal).rows = 24;
+      show();
+      expect(sent()).toHaveLength(base + 1);
+      expect(sent()[base]).toBe('120x24');
+
+      // A PTY that died between fit and IPC used to reject into the void:
+      // the promise is now attached and swallowed.
+      mockPtyResize.mockImplementation(() => Promise.reject(new Error('pty is gone')));
+      (instance.terminal as unknown as FakeTerminal).rows = 20;
+      show();
+      expect(sent()).toHaveLength(base + 2);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+});

@@ -1,6 +1,8 @@
-// Shared context-menu infrastructure for the tab bar. There is a single
-// open context menu at a time (tab menu, branch menu, or "More" menu); this
-// module owns that state and the dismiss/position helpers.
+// Shared context-menu infrastructure. There is a single open context menu
+// app-wide — the tab bar's tab/branch/"More" menus and the sidebar's project
+// menu all live here; this module owns that state and the dismiss/position
+// helpers, so `hideTabContextMenu` is the one "close any open menu" entry
+// point and no two menus can coexist.
 
 let activeContextMenu: HTMLElement | null = null;
 

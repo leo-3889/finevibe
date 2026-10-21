@@ -112,4 +112,18 @@ describe('tab strip scroll state', () => {
     expect(render('p1', null, 50).autoScroll).toBe(false);
     expect(render('p1', 's1', 50, 300).autoScroll).toBe(true);
   });
+
+  it('banks a hand-scroll made during an open rename (bank precedes the early return)', () => {
+    // render() early-returns while a rename input is open, and tab-list.ts
+    // runs bankScroll ahead of that return — the sequence below is that
+    // order of ops; skip the first bankScroll and the plan goes stale.
+    render('p1', 's1', 0, 0);
+    // The user drags the strip to 120; a chatty render fires while the
+    // rename is open: bank, early-return, no plan/commit.
+    bankScroll(120);
+    // The next project's render banks whatever offset the strip carries;
+    // the early-return render released the strip, so this bank is a no-op.
+    bankScroll(120);
+    expect(planScroll('p1', 's1').scrollLeft).toBe(120);
+  });
 });

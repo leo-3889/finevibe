@@ -339,11 +339,13 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
 }
 
 export function render(): void {
-  if (tabListEl.querySelector('.tab-name input')) return;
   // Read before the wipe below clamps it to 0 — this is the only moment a
   // hand-scroll is observable, including the one left behind on the way out
-  // of a project.
+  // of a project. It runs ahead of the rename early-return, per bankScroll's
+  // contract in tab-scroll.ts: a scroll made during an open rename is banked
+  // by the render that early-returns, not silently dropped.
   bankScroll(tabListEl.scrollLeft);
+  if (tabListEl.querySelector('.tab-name input')) return;
   tabListEl.innerHTML = '';
   const project = appState.activeProject;
   if (!project) return;
@@ -399,8 +401,13 @@ export function render(): void {
       }
     });
 
-    // Double-click to rename
-    tab.addEventListener('dblclick', () => startRename(tab, project, session));
+    // Double-click to rename. Same `.tab-close` guard as the click handler
+    // above: × has its own close listener, and a double-click on it must not
+    // also open the rename input.
+    tab.addEventListener('dblclick', (e) => {
+      if ((e.target as HTMLElement).classList.contains('tab-close')) return;
+      startRename(tab, project, session);
+    });
 
     // Right-click context menu
     tab.addEventListener('contextmenu', (e) => {
@@ -492,6 +499,12 @@ export function updateTabStatus(sessionId: string, status: SessionStatus): void 
   const tab = tabListEl.querySelector(`.tab-item[data-session-id="${sessionId}"]`) as HTMLElement | null;
   if (tab) {
     const session = appState.activeProject?.sessions.find(s => s.id === sessionId);
-    tab.title = buildTooltip(status, session?.cliSessionId ?? undefined);
+    // Special tabs (file/diff/browser/remote/…) carry the rich path/URL
+    // tooltip render() gave them via tabTitle; a bare status word would bury
+    // it. Same reason the dot write above is guarded — render() omits the
+    // .tab-status span for those tabs.
+    if (!session || isCliSession(session)) {
+      tab.title = buildTooltip(status, session?.cliSessionId ?? undefined);
+    }
   }
 }

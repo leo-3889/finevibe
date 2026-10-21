@@ -36,20 +36,26 @@ export function createAboutSection(): SectionController {
         updateBtn.disabled = true;
         updateStatus.textContent = t('about.updateChecking');
         window.vibeyard.update.checkNow().then(() => {
-          // If no update event fires within a few seconds, show "up to date"
+          // Every terminal branch unregisters the whole listener pair — a
+          // pair left behind makes the next `update:available` event run
+          // stale callbacks from this, already-finished check.
           const timeout = setTimeout(() => {
             updateStatus.textContent = t('about.upToDate');
             updateBtn.disabled = false;
+            unsub();
+            unsubErr();
           }, 5000);
           const unsub = window.vibeyard.update.onAvailable((info) => {
             clearTimeout(timeout);
             updateStatus.textContent = t('about.updateAvailable', { version: info.version });
             unsub();
+            unsubErr();
           });
           const unsubErr = window.vibeyard.update.onError(() => {
             clearTimeout(timeout);
             updateStatus.textContent = t('about.updateFailed');
             updateBtn.disabled = false;
+            unsub();
             unsubErr();
           });
         }).catch(() => {

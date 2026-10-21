@@ -21,6 +21,7 @@ import { gitChangeCount, onChange as onGitStatusChange } from '../git-status.js'
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW, ICON_SESSIONS, ICON_FILES, ICON_GIT } from '../icons.js';
 import { getLocale, onLocaleChange, t } from '../i18n.js';
 import { promptProjectSettings } from './project-settings.js';
+import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './tab-bar/menu.js';
 
 type ProjectPanel = 'history' | 'files' | 'git' | null;
 const projectPanelOpen = new Map<string, ProjectPanel>();
@@ -29,7 +30,6 @@ const projectPanelOpen = new Map<string, ProjectPanel>();
 let lastActiveProjectId: string | null = null;
 
 const projectListEl = document.getElementById('project-list')!;
-let activeProjectContextMenu: HTMLElement | null = null;
 let renamingProjectId: string | null = null;
 const btnAddProject = document.getElementById('btn-add-project')!;
 const btnPreferences = document.getElementById('btn-preferences')!;
@@ -144,8 +144,8 @@ export function initSidebar(): void {
   // visibility/label on the active card.
   appState.on('profiles-changed', render);
 
-  document.addEventListener('click', hideProjectContextMenu);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideProjectContextMenu(); });
+  document.addEventListener('click', hideTabContextMenu);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTabContextMenu(); });
 
   render();
 }
@@ -158,7 +158,7 @@ interface RenderOpts {
 
 function render(): void {
   if (renamingProjectId) return;
-  hideProjectContextMenu();
+  hideTabContextMenu();
 
   const activeId = appState.activeProjectId;
   if (lastActiveProjectId && lastActiveProjectId !== activeId) {
@@ -734,7 +734,7 @@ function startProjectRename(project: ProjectRecord): void {
 }
 
 function showProjectContextMenu(x: number, y: number, project: ProjectRecord): void {
-  hideProjectContextMenu();
+  hideTabContextMenu();
 
   const menu = document.createElement('div');
   menu.className = 'tab-context-menu';
@@ -746,7 +746,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   renameItem.textContent = t('contextMenu.project.rename');
   renameItem.addEventListener('click', (e) => {
     e.stopPropagation();
-    hideProjectContextMenu();
+    hideTabContextMenu();
     startProjectRename(project);
   });
 
@@ -758,7 +758,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   if (hasSessions) {
     closeAllItem.addEventListener('click', (e) => {
       e.stopPropagation();
-      hideProjectContextMenu();
+      hideTabContextMenu();
       appState.removeAllSessions(project.id);
     });
   }
@@ -768,7 +768,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   openInFolderItem.textContent = t('contextMenu.project.openInFileManager', { fileManager: FILE_MANAGER });
   openInFolderItem.addEventListener('click', (e) => {
     e.stopPropagation();
-    hideProjectContextMenu();
+    hideTabContextMenu();
     void window.vibeyard.fs.showInFolder(project.path)
       .then((result) => {
         if (!result.ok) console.warn(`Failed to open ${project.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
@@ -781,7 +781,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   copyPathItem.textContent = t('contextMenu.project.copyPath');
   copyPathItem.addEventListener('click', (e) => {
     e.stopPropagation();
-    hideProjectContextMenu();
+    hideTabContextMenu();
     navigator.clipboard.writeText(project.path).catch((err) => console.warn('clipboard write failed', err));
   });
 
@@ -794,7 +794,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   settingsItem.textContent = t('contextMenu.project.settings');
   settingsItem.addEventListener('click', (e) => {
     e.stopPropagation();
-    hideProjectContextMenu();
+    hideTabContextMenu();
     promptProjectSettings(project);
   });
 
@@ -803,7 +803,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   removeItem.textContent = t('contextMenu.project.removeProject');
   removeItem.addEventListener('click', (e) => {
     e.stopPropagation();
-    hideProjectContextMenu();
+    hideTabContextMenu();
     confirmRemoveProject(project);
   });
 
@@ -815,18 +815,8 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   menu.appendChild(separator);
   menu.appendChild(removeItem);
   document.body.appendChild(menu);
-  activeProjectContextMenu = menu;
-
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
-  if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
-}
-
-function hideProjectContextMenu(): void {
-  if (activeProjectContextMenu) {
-    activeProjectContextMenu.remove();
-    activeProjectContextMenu = null;
-  }
+  setActiveContextMenu(menu);
+  positionMenu(menu);
 }
 
 let lastDiscussionsCount = -1;

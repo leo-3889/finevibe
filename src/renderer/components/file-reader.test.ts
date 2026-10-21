@@ -173,3 +173,30 @@ it('re-reads on a file change after the first read threw', async () => {
     expect(readFile).toHaveBeenCalledTimes(2);
   } finally { destroyFileReaderPane('flaky-read'); }
 });
+
+it('reloads per fs change per pane — there is no coalescer (P3-11)', async () => {
+  // Pins the behavior the surviving code implements: ensureFileChangedListener
+  // reloads each matching pane on each change it processes. The former
+  // pendingReloads/reloadTimer block promising "one reload per session after
+  // the main-process 150 ms coalescing window" was dead code and is gone;
+  // nothing batches, and this test fails the day prose and code diverge.
+  const readFile = vi.fn().mockResolvedValue({ ok: true, content: 'v1' });
+  Object.assign(window.vibeyard.fs, { readFile });
+  createFileReaderPane('burst', '/repo/burst.txt');
+  const instance = getFileReaderInstance('burst')!;
+  document.body.appendChild(instance.element);
+  const fireFsChange = fsChangeHandlers[fsChangeHandlers.length - 1]!;
+  try {
+    showFileReaderPane('burst', false);
+    await vi.waitFor(() => expect(instance.loaded).toBe(true));
+    expect(readFile).toHaveBeenCalledTimes(1);
+
+    readFile.mockResolvedValue({ ok: true, content: 'v2' });
+    fireFsChange([{ path: '/repo/burst.txt' }]);
+    await vi.waitFor(() => expect(readFile).toHaveBeenCalledTimes(2));
+    fireFsChange([{ path: '/repo/burst.txt' }]);
+    await vi.waitFor(() => expect(readFile).toHaveBeenCalledTimes(3));
+  } finally {
+    destroyFileReaderPane('burst');
+  }
+});
