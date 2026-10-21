@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="build/icon.png" alt="Vibeyard" width="128" />
+</p>
+
 # Vibeyard — the `leo-3889/vibeyard` fork
 
 > **Fork notice.** This repository — `leo-3889/vibeyard`, the fork — is a
@@ -59,11 +63,11 @@ handling, `cmd.exe` argument limits, credential-store behaviour, installer shape
 - **`pi` and `omp` must be on `PATH`** or the provider stays hidden — upstream
   behaviour, not a fork quirk.
 - **Updates come only from the fork's release feed.** The npm launcher and the
-  packaged auto-updater use `VIBEYARD_RELEASE_REPO=owner/repo` and nothing
+  packaged auto-updater use `FINEVIBE_RELEASE_REPO=owner/repo` and nothing
   else: unset/malformed, the launcher refuses to download and the
   auto-updater disables itself with a warning — a fork build never checks the
   upstream release feed (the fork publishes the same asset names, e.g.
-  `Vibeyard-<version>-win-<arch>.zip`).
+  `FineVibe-<version>-win-<arch>.zip`).
 
 ## Sync
 
@@ -91,10 +95,10 @@ npm test      # vitest
 ### Ubuntu package
 
 Installable `.deb` builds: run the **Ubuntu package** workflow from the Actions
-tab and download the `vibeyard-deb-x64` artifact, then on the Ubuntu machine:
+tab and download the `finevibe-deb-x64` artifact, then on the Ubuntu machine:
 
 ```bash
-sudo apt install ./Vibeyard-<version>-linux-amd64.deb
+sudo apt install ./FineVibe-<version>-linux-amd64.deb
 ```
 
 Tagged releases ship the same `.deb` (plus an AppImage) as release assets.
