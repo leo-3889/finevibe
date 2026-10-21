@@ -213,6 +213,35 @@
   border-color: var(--border);
 }
 
+/* Strip scroll arrows — a leading-edge group inside #tab-bar, so the
+   #tab-actions .icon-btn treatment does not reach it. The 52px of group width
+   is the ARROW_RESERVE_PX the tabsOverflow hysteresis measures against. */
+#tab-scroll-arrows {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  flex-shrink: 0;
+}
+
+/* Repo convention: .hidden needs a per-selector rule, there is no global utility. */
+#tab-scroll-arrows.hidden {
+  display: none;
+}
+
+.tab-scroll-arrow {
+  width: 24px;
+  padding: 0;
+  line-height: 1;
+  font-size: 15px;
+}
+
+.tab-scroll-arrow:disabled {
+  opacity: 0.35;
+  background: none;
+  border-color: transparent;
+  cursor: default;
+}
+
 /* Toolbar icon buttons — soft rounded-square with a borderless highlight on
    hover/focus (the reference look). Scoped to #tab-actions so the sidebar and
    github-row .icon-btn users keep their own treatment. */

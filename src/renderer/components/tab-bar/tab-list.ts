@@ -22,6 +22,7 @@ import {
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './menu.js';
 import { tabListEl } from './dom.js';
 import { scrollDelta, bankScroll, planScroll, commitScroll } from './tab-scroll.js';
+import { syncTabArrows } from './tab-arrows.js';
 import { t } from '../../i18n.js';
 
 function buildTooltip(status: SessionStatus, cliSessionId?: string): string {
@@ -348,7 +349,11 @@ export function render(): void {
   if (tabListEl.querySelector('.tab-name input')) return;
   tabListEl.innerHTML = '';
   const project = appState.activeProject;
-  if (!project) return;
+  if (!project) {
+    // Empty strip: the arrows have nothing to scroll.
+    syncTabArrows();
+    return;
+  }
 
   let activeTab: HTMLElement | null = null;
   for (const session of project.sessions) {
@@ -487,6 +492,11 @@ export function render(): void {
     tabListEl.scrollLeft += scrollDelta(tab.left - view.left, tab.right - view.right);
   }
   commitScroll(project.id, project.activeSessionId, tabListEl.scrollLeft, plan.autoScroll);
+  // Every content change — add, close, reorder, project switch — ends here,
+  // so this is the one hook the arrows need for "did the strip just grow?".
+  // The rename early-return above is deliberately unhooked: the strip's
+  // content is untouched there.
+  syncTabArrows();
 }
 
 // Surgically update a single tab's status dot + tooltip without a full re-render.

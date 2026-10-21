@@ -49,6 +49,41 @@ export function scrollDelta(leftGap: number, rightGap: number): number {
   return 0;
 }
 
+/** Width the arrow group takes from the strip when visible. tabs.css sizes the
+ *  two buttons to match, so the hysteresis below and the layout agree. */
+export const ARROW_RESERVE_PX = 52;
+
+/**
+ * Whether the strip's tabs need scroll arrows. The rule carries the hysteresis
+ * that keeps the group from oscillating: showing it takes ARROW_RESERVE_PX
+ * away from #tab-list, so a strip whose content fits only when the arrows are
+ * gone would hide them again the instant they appear. Show is eager — 1px of
+ * slack absorbs sub-pixel layout. Hide needs the reserve free, which "measured
+ * with the arrows on screen" (a clientWidth that already gave it up) is exactly.
+ */
+export function tabsOverflow(scrollWidth: number, clientWidth: number, arrowsVisible: boolean): boolean {
+  return arrowsVisible ? scrollWidth > clientWidth : scrollWidth > clientWidth + 1;
+}
+
+/** Which arrows can scroll from the current offset. The 1px slack on the right
+ *  absorbs the same sub-pixel layout scrollDelta's tests exercise. */
+export function arrowsEnabled(
+  scrollLeft: number,
+  scrollWidth: number,
+  clientWidth: number,
+): { canLeft: boolean; canRight: boolean } {
+  return {
+    canLeft: scrollLeft > 0,
+    canRight: scrollLeft < scrollWidth - clientWidth - 1,
+  };
+}
+
+/** One arrow click's scroll distance: a generous bite of the visible strip,
+ *  floored so a squeezed window still moves usefully. */
+export function scrollStep(clientWidth: number): number {
+  return Math.max(120, Math.round(clientWidth * 0.6));
+}
+
 /**
  * Whether a render may pull the active tab into view. render() fires on chatty
  * events (unread, share, status, layout), so a new active tab is the only thing
