@@ -33,8 +33,9 @@ vi.mock('../provider-availability.js', () => ({
 }));
 
 import { appState, _resetForTesting } from '../state';
-import { resolveProfile, resolveProjectFilePath } from './specialized-sessions.js';
-import type { BoardData, BoardTask, Profile, ProjectRecord } from '../../shared/types.js';
+import { resolveProfile, resolveProjectFilePath, isPlanModeSupported } from './specialized-sessions.js';
+import { getProviderCapabilities } from '../provider-availability.js';
+import type { BoardData, BoardTask, CliProviderCapabilities, Profile, ProjectRecord, ProviderId } from '../../shared/types.js';
 import { getCost } from '../session-cost.js';
 const mockGetCost = vi.mocked(getCost);
 
@@ -320,3 +321,32 @@ describe('removeProfile reference cleanup', () => {
   });
 });
 
+
+describe('isPlanModeSupported()', () => {
+  // Mirrors the verified planModeArg matrix (docs/provider-contracts.md):
+  // claude/copilot/gemini/omp carry a startup flag; codex is
+  // verification-pending (flag unset); pi is a permanent non-goal.
+  const capsMatrix = {
+    claude: { planModeArg: '--permission-mode plan' },
+    copilot: { planModeArg: '--mode plan' },
+    gemini: { planModeArg: '--approval-mode=plan' },
+    omp: { planModeArg: '--plan-yolo' },
+    codex: {},
+    pi: {},
+  } as unknown as Record<string, CliProviderCapabilities>;
+
+  it('is true exactly for providers with a planModeArg', () => {
+    vi.mocked(getProviderCapabilities).mockImplementation((id) => capsMatrix[id] ?? null);
+    expect(isPlanModeSupported('claude')).toBe(true);
+    expect(isPlanModeSupported('copilot')).toBe(true);
+    expect(isPlanModeSupported('gemini')).toBe(true);
+    expect(isPlanModeSupported('omp')).toBe(true);
+    expect(isPlanModeSupported('codex')).toBe(false);
+    expect(isPlanModeSupported('pi')).toBe(false);
+  });
+
+  it('is false for an unknown provider (no cached capabilities)', () => {
+    vi.mocked(getProviderCapabilities).mockReturnValue(null);
+    expect(isPlanModeSupported('nonexistent' as ProviderId)).toBe(false);
+  });
+});

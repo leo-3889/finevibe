@@ -71,6 +71,8 @@ describe('meta', () => {
     expect(caps.shiftEnterNewline).toBe(false);
     expect(caps.pendingPromptTrigger).toBe('startup-arg');
     expect(caps.systemPromptInjection).toBe(true);
+    // Permanent non-goal: the Pi author explicitly rejects a built-in plan mode
+    // (pi-mono blog + README) — the UI shows a disabled checkbox with a tooltip.
     expect(caps.planModeArg).toBeUndefined();
   });
 

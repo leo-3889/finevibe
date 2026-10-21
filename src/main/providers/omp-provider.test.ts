@@ -63,7 +63,7 @@ describe('meta', () => {
     expect(provider.meta.binaryName).toBe('omp');
   });
 
-  it('declares resume + system-prompt injection, no hooks/cost/context', () => {
+  it('declares resume + system-prompt injection + plan mode, no hooks/cost/context', () => {
     const caps = provider.meta.capabilities;
     expect(caps.sessionResume).toBe(true);
     expect(caps.costTracking).toBe(false);
@@ -73,7 +73,7 @@ describe('meta', () => {
     expect(caps.shiftEnterNewline).toBe(false);
     expect(caps.pendingPromptTrigger).toBe('startup-arg');
     expect(caps.systemPromptInjection).toBe(true);
-    expect(caps.planModeArg).toBeUndefined();
+    expect(caps.planModeArg).toBe('--plan-yolo');
   });
 
   it('has defaultContextWindowSize of 200,000', () => {

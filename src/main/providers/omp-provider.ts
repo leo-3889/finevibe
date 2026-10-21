@@ -46,6 +46,19 @@ export class OmpProvider implements CliProvider {
       configReading: false,
       shiftEnterNewline: false,
       pendingPromptTrigger: 'startup-arg',
+      // Verified live on omp/18.12.3 (2026-10-21): `omp --help` advertises
+      // `--plan-yolo` as "Force read-only plan mode at start", and a real spawn
+      // enforced it — a write-tool attempt was refused ("Plan mode is active…
+      // the write tool is restricted to local:// planning artifacts") with no file
+      // created. omp exits on unknown flags, so the flag's acceptance is proof it
+      // exists. Caveats: --plan-yolo auto-approves the plan on the model's first
+      // resolve call, then hands off to `--plan-yolo-into` (default the `@smol`
+      // role), which must have auth at startup — the spawn fails at startup
+      // otherwise ("No API key for …"). `--plan <model>` is the plan-role model
+      // selector, NOT plan mode; `--config` takes an overlay FILE path (no inline
+      // key=value); `plan.defaultOnStartup` is the verified config key behind the
+      // config-dir fallback route (omp config get → false).
+      planModeArg: '--plan-yolo',
       systemPromptInjection: true,
       profiles: true,
       selfTitles: true,

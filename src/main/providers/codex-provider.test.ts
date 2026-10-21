@@ -101,6 +101,10 @@ describe('meta', () => {
     expect(caps.shiftEnterNewline).toBe(false);
     expect(caps.pendingPromptTrigger).toBe('startup-arg');
     expect(caps.systemPromptInjection).toBe(true);
+    // planModeArg stays UNSET — VERIFICATION-PENDING: no verified TUI startup
+    // flag exists (see provider capabilities comment); the live probe requires an
+    // installed codex CLI, absent on the 2026-10-21 probe machine.
+    expect(caps.planModeArg).toBeUndefined();
   });
 
   it('has defaultContextWindowSize of 200,000', () => {

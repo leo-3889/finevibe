@@ -1,5 +1,6 @@
 import type { CliProviderCapabilities, Preferences, Profile, ProjectRecord, ProviderId, SessionRecord } from '../../shared/types.js';
 import { isAbsolutePath } from '../../shared/platform.js';
+import { getProviderCapabilities } from '../provider-availability.js';
 
 /** Resolve the provider id for a plan session: override → active session's → default → claude. */
 export function resolvePlanProvider(
@@ -20,6 +21,16 @@ export function buildPlanSessionArgs(
   const planArg = planMode ? (caps?.planModeArg ?? '') : '';
   const base = project.defaultArgs ?? '';
   return [base, planArg].filter(Boolean).join(' ').trim() || undefined;
+}
+
+/**
+ * Single source of truth for plan-mode support: a provider supports plan mode
+ * exactly when it declares a verified `planModeArg` startup flag (see the
+ * plan-mode matrix in docs/provider-contracts.md). Surfaces gate their
+ * "Plan mode" checkbox on this so a tick can never be silently dropped.
+ */
+export function isPlanModeSupported(providerId: ProviderId): boolean {
+  return !!getProviderCapabilities(providerId)?.planModeArg;
 }
 
 /** Resolve the providerId used when creating a plain CLI session. */

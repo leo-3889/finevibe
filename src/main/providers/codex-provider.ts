@@ -3,7 +3,7 @@ import * as readline from 'readline';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import * as os from 'os';
-import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './provider';
+import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
@@ -56,6 +56,16 @@ export class CodexProvider implements CliProvider {
       configReading: true,
       shiftEnterNewline: false,
       pendingPromptTrigger: 'startup-arg',
+      // planModeArg intentionally UNSET — VERIFICATION-PENDING. Codex plan mode is
+      // GA (rust-v0.94.0 collaboration mode; TUI /plan, Shift+Tab), but
+      // `--collaboration-mode` is `codex exec`-only (headless JSON, incompatible
+      // with Vibeyard's PTY terminal), there is no TUI startup parameter
+      // (openai/codex#13377 — the startup config field is removed on main), and
+      // the required probe (`codex --help` on an installed binary) could not run
+      // on 2026-10-21: the CLI is not installed here. Never ship a planModeArg
+      // from docs alone — an unknown flag makes codex exit at startup, bricking
+      // every spawn. Probe outcomes + the `/plan` startup-input fallback are in
+      // docs/provider-contracts.md and todos/ask-ai-plan-mode-provider-support-plan.md.
       systemPromptInjection: true,
       profiles: false,
       selfTitles: false,
