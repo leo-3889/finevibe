@@ -50,17 +50,19 @@ vi.mock('@xterm/addon-webgl', () => ({
   },
 }));
 
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, copySelection, copyText, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath, _resetClipboardCopyStateForTesting } from './terminal-utils.js';
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
-const mockVibeyardClipboardWrite = vi.fn().mockResolvedValue(undefined);
+// P3: clipboard writes are fire-and-forget `ipcRenderer.send` — void, no
+// promise round trip (the invoke twin paid a structured-clone reply per copy).
+const mockVibeyardClipboardWrite = vi.fn();
 const mockReadForPaste = vi.fn();
 const mockSaveImage = vi.fn();
 const mockGetDroppedFilePath = vi.fn();
 
 // What main reports for a clipboard read; every case overrides what it varies on.
 function pastePayload(
-  overrides: Partial<{ text: string; html: string; files: string[]; imagePath: string | null; hasContent: boolean }> = {}
+  overrides: Partial<{ text: string; html: string; files: string[]; imagePath: string | null; hasContent: boolean; textTruncated?: boolean }> = {}
 ) {
   return { text: '', html: '', files: [], imagePath: null, hasContent: false, ...overrides };
 }
@@ -328,105 +330,42 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+V returns false and pastes clipboard text to PTY', async () => {
-    const terminal = new FakeTerminal();
-    const writeToPty = vi.fn();
-    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'pasted text', hasContent: true }));
-    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
-
-    const result = terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
-
-    expect(result).toBe(false);
-    await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('pasted text'));
-  });
-
-  it('Ctrl+V injects a clipboard image as an attachment path', async () => {
-    const terminal = new FakeTerminal();
-    const writeToPty = vi.fn();
-    mockReadForPaste.mockResolvedValue(pastePayload({
-      imagePath: 'C:\\Users\\me\\AppData\\Local\\Temp\\vibeyard-paste\\paste-1.png',
-      hasContent: true,
-    }));
-    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
-
-    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
-
-    await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith(
-      '"C:\\Users\\me\\AppData\\Local\\Temp\\vibeyard-paste\\paste-1.png" ',
-    ));
-  });
-
-  // A flavor neither side translates (a file copied in Explorer, a TIFF the
-  // clipboard API hides) must reach the CLI: in a plain terminal it gets Ctrl+V
-  // and reads the OS clipboard itself.
-  it('Ctrl+V forwards the literal control char for an untranslated flavor', async () => {
-    const terminal = new FakeTerminal();
-    const writeToPty = vi.fn();
-    mockReadForPaste.mockResolvedValue(pastePayload({ hasContent: true }));
-    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
-
-    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
-
-    await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('\x16'));
-  });
-
-  it('Ctrl+V calls preventDefault to suppress native paste event', () => {
-    const terminal = new FakeTerminal();
-    const writeToPty = vi.fn();
-    const preventDefault = vi.fn();
-    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'text', hasContent: true }));
-    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
-
-    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault });
-
-    expect(preventDefault).toHaveBeenCalled();
-  });
-
-  it('Ctrl+V wraps text in bracketed paste escapes when mode is enabled', async () => {
-    const terminal = new FakeTerminal();
-    terminal.modes.bracketedPasteMode = true;
-    const writeToPty = vi.fn();
-    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'pasted', hasContent: true }));
-    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
-
-    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
-
-    await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('\x1b[200~pasted\x1b[201~'));
-  });
-
-  it('Ctrl+V does not paste empty clipboard', async () => {
-    const terminal = new FakeTerminal();
-    const writeToPty = vi.fn();
-    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
-
-    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
-
-    // A literal Ctrl+V in a shell means quoted-insert, so silence is the point.
-    await vi.waitFor(() => expect(mockReadForPaste).toHaveBeenCalled());
-    expect(writeToPty).not.toHaveBeenCalled();
-  });
-
-  it('Ctrl+V without writeToPty falls through to default', () => {
+  // P1: Windows stops intercepting Ctrl+V. Returning false keeps xterm from
+  // writing the literal DC1 to the PTY; NOT calling preventDefault lets
+  // Chromium fire the native paste event, which attachImagePasteHandler and
+  // xterm's own paste pipeline serve — the path macOS/Linux already used.
+  // The keystroke itself touches neither the PTY nor the clipboard.
+  it('Ctrl+V returns false and does not preventDefault (native paste fires)', () => {
     const terminal = new FakeTerminal();
     attachClipboardCopyHandler(terminal as any);
 
-    const result = terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown' });
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault });
 
-    expect(result).toBe(true);
+    expect(result).toBe(false);
+    expect(preventDefault).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+V does not call writeToPty on keyup', async () => {
+  it('Ctrl+V issues zero clipboard IPCs and writes no bytes at the keystroke', () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();
-    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'text', hasContent: true }));
-    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty as any);
 
-    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keyup', preventDefault: vi.fn() });
+    terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown', preventDefault: vi.fn() });
 
-    await Promise.resolve();
     expect(writeToPty).not.toHaveBeenCalled();
+    expect(mockReadForPaste).not.toHaveBeenCalled();
   });
 
+  it('Ctrl+V on keyup is suppressed the same way', () => {
+    const terminal = new FakeTerminal();
+    attachClipboardCopyHandler(terminal as any);
+
+    const result = terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keyup', preventDefault: vi.fn() });
+
+    expect(result).toBe(false);
+    expect(mockReadForPaste).not.toHaveBeenCalled();
+  });
   it('Ctrl+Shift+C still works for copy', () => {
     const terminal = new FakeTerminal();
     attachClipboardCopyHandler(terminal as any);
@@ -552,6 +491,53 @@ describe('attachCopyOnSelect', () => {
   });
 });
 
+
+// P3: copy pays one fire-and-forget write per completed selection, zero when
+// the (text, source) pair is unchanged, and nothing past the 256 Ki budget
+// for a selection-driven copy. The pair comparison is what keeps the Linux
+// PRIMARY contract: an explicit copy of the same string must not suppress
+// the later selection-driven write, or middle-click paste loses the
+// selection (docs/ui-conventions.md).
+describe('copyText / copySelection (P3)', () => {
+  beforeEach(() => {
+    _resetClipboardCopyStateForTesting();
+  });
+
+  it('writes once per selection and zero when the selection text is unchanged', () => {
+    const terminal = new FakeTerminal();
+    terminal.setSelection('first');
+    copySelection(terminal, 'selection');
+    copySelection(terminal, 'selection');
+    expect(mockVibeyardClipboardWrite).toHaveBeenCalledTimes(1);
+
+    terminal.setSelection('second');
+    copySelection(terminal, 'selection');
+    expect(mockVibeyardClipboardWrite).toHaveBeenCalledTimes(2);
+    expect(mockVibeyardClipboardWrite).toHaveBeenLastCalledWith('second', 'selection');
+  });
+
+  it('an explicit copy of the same text does not suppress a later selection write (PRIMARY contract)', () => {
+    copyText('same', 'explicit');
+    copyText('same', 'selection');
+    expect(mockVibeyardClipboardWrite).toHaveBeenCalledTimes(2);
+    expect(mockVibeyardClipboardWrite).toHaveBeenNthCalledWith(1, 'same', 'explicit');
+    expect(mockVibeyardClipboardWrite).toHaveBeenNthCalledWith(2, 'same', 'selection');
+  });
+
+  it('defers a selection-driven copy past the 256 Ki budget; explicit copies always write', () => {
+    const huge = 'x'.repeat(256 * 1024 + 1);
+    copyText(huge, 'selection');
+    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+
+    copyText(huge, 'explicit');
+    expect(mockVibeyardClipboardWrite).toHaveBeenCalledWith(huge, 'explicit');
+  });
+
+  it('a selection copy just inside the budget writes', () => {
+    copyText('y'.repeat(256 * 1024), 'selection');
+    expect(mockVibeyardClipboardWrite).toHaveBeenCalledTimes(1);
+  });
+});
 describe('loadWebglWithFallback', () => {
   beforeEach(() => {
     webglState.shouldThrow = false;
@@ -823,6 +809,21 @@ describe('pasteIntoTerminal (main clipboard read)', () => {
   });
 });
 
+  // P4: the 8 Mi character cap is a real content cut, so the pane says so —
+  // the way every other paste-path refusal is surfaced.
+  it('surfaces a truncation notice for a capped clipboard text (P4)', async () => {
+    const pane = mountPaneForBanner();
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'x'.repeat(16), hasContent: true, textTruncated: true }));
+
+    const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+    expect(outcome).toBe('text');
+    expect(writeToPty).toHaveBeenCalledWith('x'.repeat(16));
+    expect(pane.querySelector('.insight-alert-message')?.textContent).toContain('8 Mi');
+  });
+
 
 describe('attachImagePasteHandler', () => {
   it('claims a paste carrying files before xterm consumes the keystroke', () => {
@@ -864,6 +865,56 @@ describe('attachImagePasteHandler', () => {
 
     expect(preventDefault).toHaveBeenCalled();
     return vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('<em>hi</em>'));
+  });
+});
+
+// P1: one paste path on all three platforms. The Windows Ctrl+V keystroke
+// now lands here through Chromium's native paste event, exactly like macOS
+// ⌘V and Linux Ctrl+Shift+V: text is xterm's, files are the event's, and
+// main's clipboard read runs only for the shapes the event provably cannot
+// serve (Windows CF_HDROP-only, macOS NSFilenames-only, Linux file-manager
+// copies; docs/ui-conventions.md paste contract).
+describe('attachImagePasteHandler (P1 one native paste path per platform)', () => {
+  function mountPastePane() {
+    const terminal = new FakeTerminal();
+    const element = new FakeElement();
+    const writeToPty = vi.fn();
+    attachImagePasteHandler(terminal as any, element as any, writeToPty);
+    return { element, writeToPty };
+  }
+
+  it('a plain-text paste issues zero clipboard IPCs and stays un-prevented for xterm', () => {
+    const { element, writeToPty } = mountPastePane();
+    const preventDefault = vi.fn();
+
+    element.fire('paste', { clipboardData: fakeDataTransfer([], 'hello'), preventDefault });
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(mockReadForPaste).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the main read when the event carries no usable payload (file-manager copies)', async () => {
+    const { element, writeToPty } = mountPastePane();
+    // A Nautilus copy: Chromium forwards no File objects, and the plain text
+    // is the name echo. Main's `text/uri-list` read is the documented route.
+    mockReadForPaste.mockResolvedValue(pastePayload({ text: 'report.pdf', files: ['/tmp/report.pdf'], hasContent: true }));
+
+    element.fire('paste', { clipboardData: fakeDataTransfer(), preventDefault: vi.fn() });
+
+    await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('/tmp/report.pdf '));
+    expect(mockReadForPaste).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards Ctrl+V when the event proves content main cannot read (Wayland portals)', async () => {
+    const { element, writeToPty } = mountPastePane();
+    // Portal permissions can empty the readable format set: the empty main
+    // read must degrade to the CLI's own paste, never to a silent no-op.
+    mockReadForPaste.mockResolvedValue(pastePayload());
+
+    element.fire('paste', { clipboardData: fakeDataTransfer(), preventDefault: vi.fn() });
+
+    await vi.waitFor(() => expect(writeToPty).toHaveBeenCalledWith('\x16'));
   });
 });
 

@@ -156,7 +156,9 @@ export interface VibeyardApi {
     declineConflict(configDir?: string, foreignCommand?: string | null): void;
   };
   clipboard: {
-    write(text: string, source?: ClipboardSource): Promise<void>;
+    // P3: fire-and-forget — copies never need a reply; the invoke twin paid
+    // a promise round trip (and cloned the reply) per selection.
+    write(text: string, source?: ClipboardSource): void;
     readForPaste(): Promise<ClipboardPastePayload>;
     saveImage(dataUrl: string): Promise<string | null>;
   };
@@ -360,7 +362,7 @@ const api: VibeyardApi = {
     declineConflict: (configDir, foreignCommand) => ipcRenderer.send('settings:declineStatusLine', configDir, foreignCommand),
   },
   clipboard: {
-    write: (text: string, source?: ClipboardSource) => ipcRenderer.invoke('clipboard:write', text, source),
+    write: (text: string, source?: ClipboardSource) => ipcRenderer.send('clipboard:write', text, source),
     readForPaste: () => ipcRenderer.invoke('clipboard:readForPaste'),
     saveImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:saveImage', dataUrl),
   },
@@ -384,3 +386,14 @@ const api: VibeyardApi = {
 };
 
 contextBridge.exposeInMainWorld('vibeyard', api);
+
+// P0 clipboard-timing env forwarding. The renderer is a sandboxed Browser
+// World with no process.env, so `clipboardTimingOn()` in
+// renderer/components/terminal-utils.ts reads this global; the preload is a
+// sandboxed context whose polyfilled `process` does expose `env`. This makes
+// `FINEVIBE_CLIPBOARD_TIMING=1 electron .` light the [paste-timing] /
+// [copy-timing] probes end to end.
+contextBridge.exposeInMainWorld(
+  '__FINEVIBE_CLIPBOARD_TIMING__',
+  process.env.FINEVIBE_CLIPBOARD_TIMING === '1'
+);

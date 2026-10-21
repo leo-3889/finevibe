@@ -15,4 +15,5 @@ Terminal attachments are paths, and every paste route injects the same content w
 
 See [performance and resource limits](performance.md) for the current user-facing limits. Preview search is page-local; navigation resets search decorations. Bounded rendered Markdown may end inside a block at a page boundary.
 
+The text of a paste arrives through the native paste event on every platform (clipboard plan P1): Windows `Ctrl+V` reaches Chromium's paste handler and xterm writes the text itself, so a plain-text paste performs no clipboard IPC at all; main's `clipboard:readForPaste` serves only what the event cannot carry — file-only copies, the context-menu Paste, markup-only copies, and images. Pasted text beyond 8 Mi characters is cut at the bound and the pane banner names the limit (P4, `textTruncated`) — a capped copy is never silently lossy.
 Sources: [terminal input handlers](../src/renderer/components/terminal-utils.ts) and [clipboard paste IPC](../src/main/ipc-handlers.ts).

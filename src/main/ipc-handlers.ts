@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, app, dialog, shell, clipboard, session } from 'electron';
+import { ipcMain, BrowserWindow, app, dialog, shell, clipboard, session, utilityProcess } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -471,12 +471,9 @@ export function registerIpcHandlers(): void {
         initialPrompt,
         systemPrompt,
         envVars,
-        (data) => {
-          if (!win.isDestroyed()) {
-            win.webContents.send('pty:data', sessionId, data);
-          }
-        },
+        ptyDataSink(() => win, sessionId),
         (exitCode, signal, pid, spawnRejectedReason) => {
+          flushPtyData(sessionId);
           if (spawnRejectedReason) {
             // The launch was rejected before a PTY existed, so this is not a
             // process exit: the pane already carries the actionable reason
@@ -594,13 +591,9 @@ export function registerIpcHandlers(): void {
     spawnShellPty(
       sessionId,
       cwd,
-      (data) => {
-        const w = BrowserWindow.getAllWindows()[0];
-        if (w && !w.isDestroyed()) {
-          w.webContents.send('pty:data', sessionId, data);
-        }
-      },
+      ptyDataSink(() => BrowserWindow.getAllWindows()[0], sessionId),
       (exitCode, signal) => {
+        flushPtyData(sessionId);
         const w = BrowserWindow.getAllWindows()[0];
         if (w && !w.isDestroyed()) {
           w.webContents.send('pty:exit', sessionId, exitCode, signal);
@@ -608,6 +601,60 @@ export function registerIpcHandlers(): void {
       }
     );
   });
+
+  // ---- P5 (R4): pty:data coalescing ---------------------------------------
+  //
+  // One `webContents.send` per node-pty chunk turned a paste echo into an
+  // IPC storm: the P0 probe measured a 1 MB ConPTY paste returning as
+  // 1,383 chunks (median 396 B; docs/performance.md), and every send pays
+  // a structured clone in main plus a write/cost-scan/share-forward in
+  // the renderer. Per session, chunks now share one message inside a
+  // 4 ms window capped at 64 KiB; a chunk that alone fills the budget
+  // ships immediately — the window degrades to a no-op for bulk output,
+  // it never adds latency. `pty:exit` flushes the session buffer first
+  // (below), so the renderer never tears a pane down before its last data.
+  const PTY_COALESCE_WINDOW_MS = 4;
+  const PTY_COALESCE_MAX_BYTES = 64 * 1024;
+  const ptyOutboxes = new Map<string, {
+    parts: string[];
+    bytes: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    flush(): void;
+  }>();
+
+  function ptyDataSink(getWindow: () => BrowserWindow | undefined, sessionId: string): (data: string) => void {
+    const outbox = {
+      parts: [] as string[],
+      bytes: 0,
+      timer: null as ReturnType<typeof setTimeout> | null,
+      flush() {
+        if (outbox.timer !== null) { clearTimeout(outbox.timer); outbox.timer = null; }
+        if (outbox.parts.length === 0) return;
+        const data = outbox.parts.join('');
+        outbox.parts.length = 0;
+        outbox.bytes = 0;
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('pty:data', sessionId, data);
+      },
+    };
+    ptyOutboxes.set(sessionId, outbox);
+    return (data: string) => {
+      outbox.parts.push(data);
+      outbox.bytes += data.length;
+      if (outbox.bytes >= PTY_COALESCE_MAX_BYTES) {
+        outbox.flush();
+        return;
+      }
+      if (outbox.timer === null) outbox.timer = setTimeout(() => outbox.flush(), PTY_COALESCE_WINDOW_MS);
+    };
+  }
+
+  function flushPtyData(sessionId: string): void {
+    const outbox = ptyOutboxes.get(sessionId);
+    if (!outbox) return;
+    ptyOutboxes.delete(sessionId);
+    outbox.flush();
+  }
 
   ipcMain.on('pty:write', safeOn('pty:write', (_event, sessionId: string, data: string) => {
     writePty(sessionId, data);
@@ -718,7 +765,13 @@ export function registerIpcHandlers(): void {
   // accumulator object is handed over synchronously around their calls.
   let pasteSubTimings: Record<string, number> | null = null;
 
-  ipcMain.handle('clipboard:write', (_event, text: string, source?: ClipboardSource) => {
+  // P3: `ipcMain.on`, not `ipcMain.handle` — a copy pays no promise round
+  // trip and the selection string is cloned once, one-way. The safeOn
+  // wrapper is the P2-108 on-body contract: a clipboard throw (owner
+  // contention) must not kill main. The Linux PRIMARY split is unchanged:
+  // a selection-driven copy populates PRIMARY for middle-click paste, an
+  // explicit copy never clobbers it.
+  ipcMain.on('clipboard:write', safeOn('clipboard:write', (_event, text: string, source?: ClipboardSource) => {
     const t0 = CLIPBOARD_TIMING ? performance.now() : 0;
     clipboard.writeText(text);
     const tMain = CLIPBOARD_TIMING ? performance.now() : 0;
@@ -731,8 +784,7 @@ export function registerIpcHandlers(): void {
       console.log(`[copy-timing] clipboard:write total=${fmtMs(t1 - t0)}ms`
         + (source === 'selection' && isLinux ? ` selectionWrite=${fmtMs(t1 - tMain)}ms` : ''));
     }
-  });
-
+  }));
   // Every provider takes attachments as a path — a file dropped on a terminal is
   // injected as its path text. A clipboard payload with no path the CLI can read
   // (a screenshot, a copied picture, a browser image) has no path, so main
@@ -742,6 +794,10 @@ export function registerIpcHandlers(): void {
   // over for a native paste event, whose file objects main cannot see.
   const PASTE_DIR = path.join(os.tmpdir(), 'vibeyard-paste');
   const PASTE_MAX_BYTES = 25 * 1024 * 1024;
+  // P4: the pasted TEXT bound (plan: ~8 MiB), counted in UTF-16 characters —
+  // the unit the structured clone and the `pty:write` round trip cost on.
+  // Before the cap, a 10 MB log copy crossed IPC twice unbounded.
+  const PASTE_TEXT_MAX_CHARS = 8 * 1024 * 1024;
   const PASTE_IMAGE_EXT_BY_MIME: Record<string, string> = {
     'image/png': '.png',
     'image/jpeg': '.jpg',
@@ -776,13 +832,98 @@ export function registerIpcHandlers(): void {
     }
   }
 
-  // A file list on the clipboard: a browser copy (FileNameW), a macOS Finder copy
-  // (NSFilenamesPboardType) or a Linux file-manager copy (text/uri-list). A file
-  // copied in Explorer or Finder reaches a native paste event as a File object
-  // whose real path the renderer resolves, and that route covers Windows/macOS;
-  // these formats cover the reads main performs on its own — the context menu, and
-  // Linux file managers, whose copies expose a URI list Chromium does not hand to
-  // a paste event as files.
+  // P4: the PNG encode moves to a utilityProcess (P0: `toPNG` = 192/307 ms
+  // p50 at 1080p/1440p — the dominant main-thread freeze of a screenshot
+  // paste, on the thread that pumps every PTY chunk; docs/performance.md).
+  // The entry is the compiled sibling `png-encode-worker.js` — Node
+  // built-ins only, nothing to bundle. Every failure (fork, encode, exit,
+  // timeout) rejects and the caller degrades to the synchronous main-thread
+  // `toPNG()`: slow, never fatal (plan P4 acceptance: degrade, never crash).
+  interface PngEncodeReply { id: number; ok: boolean; png?: ArrayBuffer; error?: string }
+  interface PngWorkerChild {
+    postMessage(message: unknown, transfer?: ArrayBuffer[]): void;
+    on(event: 'message', cb: (event: { data: PngEncodeReply }) => void): void;
+    on(event: 'exit', cb: (code: number) => void): void;
+    kill(): void;
+  }
+  const PNG_ENCODE_TIMEOUT_MS = 15_000;
+  let pngWorker: PngWorkerChild | null = null;
+  let pngWorkerSeq = 0;
+  const pngWorkerPending = new Map<number, { resolve: (b: Buffer) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+  function getPngWorker(): PngWorkerChild | null {
+    if (pngWorker) return pngWorker;
+    try {
+      // SAFETY: the child protocol is this file's own; the structural cast
+      // keeps the electron UtilityProcess type out of the test-mock surface
+      // (the suite's electron stub answers `fork` with a plain object).
+      const proc = utilityProcess.fork(path.join(__dirname, 'png-encode-worker.js'), [], {
+        serviceName: 'vibeyard-png-encode',
+      }) as unknown as PngWorkerChild | null;
+      if (!proc) return null;
+      proc.on('message', (event) => {
+        const reply = event?.data;
+        if (!reply || typeof reply.id !== 'number') return;
+        const pending = pngWorkerPending.get(reply.id);
+        if (!pending) return;
+        pngWorkerPending.delete(reply.id);
+        clearTimeout(pending.timer);
+        if (reply.ok && reply.png) pending.resolve(Buffer.from(reply.png));
+        else pending.reject(new Error(reply.error ?? 'PNG encode failed'));
+      });
+      proc.on('exit', () => {
+        if (pngWorker === proc) pngWorker = null;
+        for (const pending of pngWorkerPending.values()) {
+          clearTimeout(pending.timer);
+          pending.reject(new Error('PNG encode worker exited'));
+        }
+        pngWorkerPending.clear();
+      });
+      pngWorker = proc;
+      return proc;
+    } catch {
+      return null;
+    }
+  }
+
+  function encodePngViaWorker(rgba: Buffer, width: number, height: number): Promise<Buffer> {
+    const proc = getPngWorker();
+    if (!proc) return Promise.reject(new Error('no PNG encode worker'));
+    const id = ++pngWorkerSeq;
+    return new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!pngWorkerPending.delete(id)) return;
+        try { proc.kill(); } catch { /* already gone */ }
+        if (pngWorker === proc) pngWorker = null;
+        reject(new Error('PNG encode timed out'));
+      }, PNG_ENCODE_TIMEOUT_MS);
+      pngWorkerPending.set(id, { resolve, reject, timer });
+      // Node pool-allocates Buffers: copy into a dedicated ArrayBuffer so
+      // the transfer leaves nothing aliased behind on the main thread.
+      const ab = rgba.buffer.slice(rgba.byteOffset, rgba.byteOffset + rgba.byteLength) as ArrayBuffer;
+      try {
+        proc.postMessage({ id, rgba: ab, width, height }, [ab]);
+      } catch (err) {
+        pngWorkerPending.delete(id);
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+  // P2 (todos/clipboard-paste-latency-plan.md): probe a file-list format
+  // only on the platform that defines it AND when `availableFormats()`
+  // (already fetched by the caller for free) lists it on this clipboard.
+  // A plain-text paste then costs two acquisitions — formats + text — down
+  // from six, with zero thrown probes and zero warns; the throw-and-warn
+  // probes this replaces read formats that are simply not on a text
+  // clipboard. Which format is live per OS is P0-measured
+  // (docs/performance.md): Windows FileNameW (Electron's
+  // readBuffer('CF_HDROP') answers 0 bytes — Chromium maps the drop list
+  // onto text/uri-list — so the CF_HDROP branch stays as the gated
+  // pre-wide-senders fallback), macOS NSFilenamesPboardType, Linux
+  // text/uri-list (X11 file managers; portal permission can empty the
+  // readable set on Wayland — an empty list keeps `hasContent` false and
+  // the renderer answers with the CLI's own Ctrl+V paste).
   function decodeXmlText(value: string): string {
     return value
       .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
@@ -794,20 +935,25 @@ export function registerIpcHandlers(): void {
       .replace(/&amp;/g, '&');
   }
 
-  function clipboardFilePaths(): string[] {
+  const hasFormat = (formats: string[], name: string) =>
+    formats.some((format) => format.toLowerCase() === name);
+
+  function clipboardFilePaths(formats: string[]): string[] {
     const paths: string[] = [];
     const sub = pasteSubTimings;
-    try {
-      const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
-      // FileNameW: UTF-16LE names, NUL-separated, double-NUL terminated.
-      for (const name of clipboard.readBuffer('FileNameW').toString('utf16le').split('\0')) {
-        if (name) paths.push(name);
+    if (isWin && hasFormat(formats, 'filenamew')) {
+      try {
+        const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
+        // FileNameW: UTF-16LE names, NUL-separated, double-NUL terminated.
+        for (const name of clipboard.readBuffer('FileNameW').toString('utf16le').split('\0')) {
+          if (name) paths.push(name);
+        }
+        if (sub) sub.fileNameW = performance.now() - tRead;
+      } catch (err) {
+        console.warn('Failed to read clipboard file list', err);
       }
-      if (sub) sub.fileNameW = performance.now() - tRead;
-    } catch (err) {
-      console.warn('Failed to read clipboard file list', err);
     }
-    if (paths.length === 0) {
+    if (isWin && paths.length === 0 && hasFormat(formats, 'cf_hdrop')) {
       try {
         // CF_HDROP is a DROPFILES header followed by the name list. The header
         // is pFiles (name-list offset) @0, pt @4-11, fWide @12 — Explorer sets
@@ -829,7 +975,7 @@ export function registerIpcHandlers(): void {
         console.warn('Failed to read clipboard file drop list', err);
       }
     }
-    if (paths.length === 0) {
+    if (isMac && paths.length === 0 && hasFormat(formats, 'nsfilenamespboardtype')) {
       try {
         // An old-style XML property list: <array><string>/path</string>…
         const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
@@ -842,7 +988,7 @@ export function registerIpcHandlers(): void {
         console.warn('Failed to read clipboard file URIs', err);
       }
     }
-    if (paths.length === 0) {
+    if (isLinux && paths.length === 0 && hasFormat(formats, 'text/uri-list')) {
       const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
       for (const line of clipboard.read('text/uri-list').split(/\r?\n/)) {
         const uri = line.trim();
@@ -862,16 +1008,51 @@ export function registerIpcHandlers(): void {
     const t0 = CLIPBOARD_TIMING ? performance.now() : 0;
     const formats = clipboard.availableFormats();
     const tFormats = CLIPBOARD_TIMING ? performance.now() : 0;
-    const text = clipboard.readText();
+    // P4: bound the pasted text; the cut is flagged so the renderer shows
+    // the user a truncation notice — never a silent content loss.
+    const rawText = clipboard.readText();
+    const textTruncated = rawText.length > PASTE_TEXT_MAX_CHARS;
+    const text = textTruncated ? rawText.slice(0, PASTE_TEXT_MAX_CHARS) : rawText;
     const tText = CLIPBOARD_TIMING ? performance.now() : 0;
     const sub: Record<string, number> | null = CLIPBOARD_TIMING ? {} : null;
     pasteSubTimings = sub;
-    const files = clipboardFilePaths();
+    const files = clipboardFilePaths(formats);
     pasteSubTimings = null;
     let imagePath: string | null = null;
     let readImageMs = -1;
-    let toPngMs = -1;
-    if (files.length === 0 && formats.some((format) => format.toLowerCase().startsWith('image/'))) {
+    let encodeMs = -1;
+    let encodeVia: 'png-flavor' | 'worker' | 'main' | null = null;
+    // P4 per-OS image flavor table (plan P4; P0 recorded what arrives per
+    // OS in docs/performance.md): Windows carries the registered `PNG`
+    // flavor (Snipping Tool / Win+Shift+S) next to CF_DIB, macOS NSPasteboard
+    // lists `png` beside TIFF, X11 publishes the `image/png` mime, and
+    // Wayland portals often expose no image flavor at all. When the
+    // clipboard already carries encoded PNG, reading it is a memcpy — no
+    // decode, no encode, main idle below the 50 ms target. Only a
+    // raw-image-only clipboard (CF_DIB, TIFF, bitmap) pays Electron's
+    // main-only `readImage()` decode, and even then the PNG encode runs in
+    // the utility worker. A clipboard with no image flavor skips every
+    // image read — the documented Wayland degrade: files, text, markup and
+    // the Ctrl+V passthrough carry the paste, and the paste event's own
+    // `File` objects (screenshot blobs) cover the image case there.
+    const pngFlavor = formats.find((format) => format.toLowerCase() === 'png')
+      ?? formats.find((format) => format.toLowerCase() === 'image/png');
+    if (files.length === 0 && pngFlavor) {
+      try {
+        const tFlavor = CLIPBOARD_TIMING ? performance.now() : 0;
+        const png = clipboard.readBuffer(pngFlavor);
+        if (CLIPBOARD_TIMING) encodeMs = performance.now() - tFlavor;
+        if (png.length > 0) {
+          encodeVia = 'png-flavor';
+          pasteSubTimings = sub;
+          imagePath = await writePastedFile(png, '.png');
+          pasteSubTimings = null;
+        }
+      } catch (err) {
+        console.warn('Failed to read clipboard PNG flavor', err);
+      }
+    }
+    if (imagePath === null && encodeVia === null && files.length === 0 && formats.some((format) => format.toLowerCase().startsWith('image/'))) {
       try {
         // Electron normalises every image flavor (BMP, TIFF, DIB) to PNG, which
         // every provider accepts as an attachment path.
@@ -879,9 +1060,19 @@ export function registerIpcHandlers(): void {
         const image = clipboard.readImage();
         if (CLIPBOARD_TIMING) readImageMs = performance.now() - tImage;
         if (!image.isEmpty()) {
-          const tPng = CLIPBOARD_TIMING ? performance.now() : 0;
-          const png = image.toPNG();
-          if (CLIPBOARD_TIMING) toPngMs = performance.now() - tPng;
+          const size = image.getSize();
+          let png: Buffer;
+          const tEncode = CLIPBOARD_TIMING ? performance.now() : 0;
+          try {
+            png = await encodePngViaWorker(image.toBitmap(), size.width, size.height);
+            encodeVia = 'worker';
+          } catch {
+            // Degrade, never crash: the pre-P4 main-thread encode when the
+            // worker cannot start, dies, times out, or fails to encode.
+            png = image.toPNG();
+            encodeVia = 'main';
+          }
+          if (CLIPBOARD_TIMING) encodeMs = performance.now() - tEncode;
           pasteSubTimings = sub;
           imagePath = await writePastedFile(png, '.png');
           pasteSubTimings = null;
@@ -909,12 +1100,12 @@ export function registerIpcHandlers(): void {
         }
       }
       if (readImageMs >= 0) parts.push(`readImage=${fmtMs(readImageMs)}ms`);
-      if (toPngMs >= 0) parts.push(`toPNG=${fmtMs(toPngMs)}ms`);
+      if (encodeMs >= 0) parts.push(`encode(${encodeVia})=${fmtMs(encodeMs)}ms`);
       if (sub && 'writeFile' in sub) parts.push(`writeFile=${fmtMs(sub.writeFile)}ms`);
       if (text.trim() === '') parts.push(`html=${fmtMs(performance.now() - tHtml)}ms`);
       console.log(parts.join(' '));
     }
-    return { text, html, files, imagePath, hasContent: formats.length > 0 || files.length > 0 };
+    return { text, html, files, imagePath, hasContent: formats.length > 0 || files.length > 0, ...(textTruncated ? { textTruncated: true } : {}) };
   });
 
   ipcMain.handle('clipboard:saveImage', async (_event, dataUrl: string): Promise<string | null> => {

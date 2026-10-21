@@ -75,6 +75,17 @@ function quotePathsForPty(paths: string[]): { text: string; refused: string[] } 
 // The drop/paste twin of the spawn path's rejection (P1-20): a path cmd.exe
 // cannot carry is refused, not injected. Surfaced the way live panes surface
 // every other refusal — the pane alert banner.
+// P4: the 8 Mi character text bound is a real content cut — the pane says
+// so, the way it surfaces every other paste-path refusal (8 Mi = the plan's
+// ~8 MiB, counted in UTF-16 characters).
+function showTextTruncationNotice(): void {
+  showAlertBanner({
+    className: 'insight-alert-info',
+    icon: '\u26A0',
+    message:
+      'Clipboard text is larger than the 8 Mi paste limit: only the first 8 Mi characters were sent.',
+  });
+}
 function showQuoteRejection(paths: string[]): void {
   showAlertBanner({
     className: 'insight-alert-info',
@@ -149,10 +160,12 @@ export type PasteOutcome = 'files' | 'text' | 'passthrough' | 'empty';
  *   own clipboard handling — in a plain terminal it would receive the keystroke;
  *   an empty clipboard sends nothing.
  *
- * `data` is a native paste event's DataTransfer. There, text is left to xterm,
- * which writes the clipboard string itself: only files need intervention. Without
- * `data` the renderer intercepted the keystroke (Windows Ctrl+V, the context menu)
- * and main's clipboard read is the only source.
+ * `data` is a native paste event's DataTransfer — the paste route on all
+ * three platforms since P1 (Windows Ctrl+V included). There, text is left to
+ * xterm, which writes the clipboard string itself: only files need
+ * intervention, and an event that carries nothing usable falls through to
+ * main's read — the per-platform fallback for file lists Chromium does not
+ * forward. Without `data` the read is the only source (context-menu Paste).
  */
 export async function pasteIntoTerminal(
   terminal: Terminal,
@@ -179,13 +192,21 @@ export async function pasteIntoTerminal(
     // pipeline, and its source is the content a CLI can read.
     if (data.getData('text/plain').trim() !== '') return 'text';
     const html = data.getData('text/html').trim();
-    if (html === '') return 'empty';
-    writeToPty(wrapBracketedPaste(terminal, html));
-    if (t0) console.log(`[paste-timing] renderer paste-event html +${(performance.now() - t0).toFixed(1)} ms`);
-    return 'text';
+    if (html !== '') {
+      writeToPty(wrapBracketedPaste(terminal, html));
+      if (t0) console.log(`[paste-timing] renderer paste-event html +${(performance.now() - t0).toFixed(1)} ms`);
+      return 'text';
+    }
+    // P1 fallback (docs/ui-conventions.md): the event carries no text, no
+    // markup, and no file whose path resolves — exactly the shape of a copy
+    // the paste event provably cannot serve: a Windows CF_HDROP-only copy, a
+    // macOS NSFilenamesPboardType-only Finder copy, a Linux file-manager
+    // copy whose `text/uri-list` Chromium does not hand over as `File`s.
+    // Main's read below is the documented fallback for these, per platform.
   }
 
   const payload = await window.vibeyard.clipboard.readForPaste();
+  if (payload.textTruncated) showTextTruncationNotice();
   if (t0) console.log(`[paste-timing] renderer readForPaste +${(performance.now() - t0).toFixed(1)} ms (since paste request)`);
   // Wrapped so every main-read send stamps itself; the off path keeps the
   // original writeToPty reference.
@@ -230,16 +251,27 @@ export async function pasteIntoTerminal(
     counts();
     return 'passthrough';
   }
+  // A native paste event fired, so Chromium saw pasteable content; an empty
+  // main-side read means flavors the app cannot enumerate — Wayland portal
+  // permissions empty the readable set. The contract's answer is the CLI's
+  // own paste, never a silent no-op.
+  if (data) {
+    send(CTRL_V);
+    counts();
+    return 'passthrough';
+  }
   counts();
   return 'empty';
 }
 
 /**
  * Call after the terminal's element exists. Attachments pasted with ⌘V / Ctrl+V /
- * Ctrl+Shift+V: xterm's own paste listener lives on the textarea, moves text only,
- * and consumes the keystroke, so a pasted screenshot, a copied file and a
- * markup-only copy all reach nothing. Capture phase on the pane element sees the
- * event first; a plain-text paste is left to xterm, which writes it itself.
+ * Ctrl+Shift+V — on Windows the Ctrl+V keystroke reaches this event too since
+ * P1, so one handler serves all three platforms: xterm's own paste listener
+ * lives on the textarea, moves text only, and consumes the keystroke, so a
+ * pasted screenshot, a copied file and a markup-only copy all reach nothing.
+ * Capture phase on the pane element sees the event first; a plain-text paste
+ * is left to xterm, which writes it itself.
  */
 export function attachImagePasteHandler(
   terminal: Terminal,
@@ -297,24 +329,44 @@ export function attachFileDropHandler(
 // Every terminal copy goes through the main process rather than
 // navigator.clipboard, so exactly one plain-text flavor reaches the OS clipboard
 // (#160). `source` is the caller's intent, not a mechanism: the main process
-// decides what a selection-driven copy means per platform.
+// decides what a selection-driven copy means per platform (Linux PRIMARY).
+//
+// P3: the write is fire-and-forget (`ipcRenderer.send` — no promise round
+// trip cloning the whole selection string), a (text, source) pair that is
+// byte-identical to the last one written is skipped, and a selection-driven
+// copy past the ~256 Ki budget is deferred: a select-all of the scrollback
+// must not serialize a multi-MB string on the renderer thread behind the
+// user's next keystroke. The pair — not the text alone — is what the
+// unchanged-skip compares: on Linux an explicit copy never sets PRIMARY, so
+// a later selection-driven copy of the same string MUST still reach main,
+// or middle-click paste loses the selection. Explicit copies are always
+// sent: an invoked copy (Ctrl+C / Ctrl+Shift+C / menu) is never dropped.
+const SELECTION_COPY_BUDGET_CHARS = 256 * 1024;
+let lastCopied: { text: string; source: ClipboardSource } | null = null;
+
+/** @internal Test-only: reset the unchanged-skip state (module singleton). */
+export function _resetClipboardCopyStateForTesting(): void {
+  lastCopied = null;
+}
+
 export function copyText(text: string, source: ClipboardSource = 'explicit'): void {
   if (!text) return;
   const t0 = clipboardTimingOn() ? performance.now() : 0;
-  const write = window.vibeyard.clipboard.write(text, source);
-  if (!t0) {
-    write.catch((err) => console.warn('clipboard write failed', err));
+  if (source === 'selection' && text.length > SELECTION_COPY_BUDGET_CHARS) {
+    if (t0) console.log(`[copy-timing] renderer clipboard write deferred past ${SELECTION_COPY_BUDGET_CHARS}-char budget (source=selection) counts clipboardWrite=0`);
     return;
   }
-  const log = (verb: string) =>
-    console.log(`[copy-timing] renderer clipboard write ${verb} +${(performance.now() - t0).toFixed(1)} ms (source=${source}) counts clipboardWrite=1`);
-  write.then(
-    () => log('resolved'),
-    (err) => {
-      log('rejected');
-      console.warn('clipboard write failed', err);
-    }
-  );
+  if (lastCopied !== null && lastCopied.text === text && lastCopied.source === source) {
+    if (t0) console.log(`[copy-timing] renderer clipboard write skipped unchanged (source=${source}) counts clipboardWrite=0`);
+    return;
+  }
+  lastCopied = { text, source };
+  try {
+    window.vibeyard.clipboard.write(text, source);
+    if (t0) console.log(`[copy-timing] renderer clipboard write sent +${(performance.now() - t0).toFixed(1)} ms (source=${source}) counts clipboardWrite=1`);
+  } catch (err) {
+    console.warn('clipboard write failed', err);
+  }
 }
 
 export function copySelection(terminal: Terminal, source?: ClipboardSource): void {
@@ -354,7 +406,9 @@ export function collapseArmedTextareaOnContextMenu(terminal: Terminal): void {
  * - Cmd/Ctrl+F: bubbles up to document (prevents xterm from consuming it)
  * - Ctrl+Shift+C: copies selected text to clipboard
  * - Windows Ctrl+C: copies if selection exists, otherwise passes through as SIGINT
- * - Windows Ctrl+V: pastes clipboard content to PTY, attachments included (requires writeToPty)
+ * - Windows Ctrl+V: returns false WITHOUT preventDefault (P1) so Chromium's
+ *   native paste event fires — xterm must not write the literal DC1, the
+ *   paste event (attachImagePasteHandler + xterm's own paste) serves it.
  * - App accelerators: runs the shortcut dispatcher so a consumed key never
  *   reaches the PTY, while a handler that declines in the current context
  *   (Ctrl+L in a CLI terminal, Ctrl+R outside a browser tab) leaves the key
@@ -362,14 +416,10 @@ export function collapseArmedTextareaOnContextMenu(terminal: Terminal): void {
  *
  * Pass an optional `extend` handler for terminal-specific key behavior.
  * Return false to suppress the key, undefined to fall through to default.
- *
- * Pass `writeToPty` to enable Ctrl+V paste on Windows — it receives the payload
- * (clipboard text, an attachment path, a literal Ctrl+V) and forwards it to the PTY.
  */
 export function attachClipboardCopyHandler(
   terminal: Terminal,
-  extend?: ExtraKeyHandler,
-  writeToPty?: (data: string) => void
+  extend?: ExtraKeyHandler
 ): void {
   terminal.attachCustomKeyEventHandler((e) => {
     // Cmd/Ctrl+F: bubble to document for search
@@ -390,16 +440,13 @@ export function attachClipboardCopyHandler(
       return false;
     }
 
-    // Windows: Ctrl+V → paste the clipboard, attachments included
-    if (isWin && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key === 'v' && writeToPty) {
-      if (e.type === 'keydown') {
-        // preventDefault below suppresses Chromium's native paste, so no
-        // DataTransfer ever exists: main's clipboard read is the only source.
-        void pasteIntoTerminal(terminal, writeToPty).catch(() => {});
-      }
-      e.preventDefault(); // prevent native paste event from firing
-      return false; // suppress \x16
-    }
+    // Windows: Ctrl+V → the native paste event (P1). Returning false keeps
+    // xterm from writing the literal DC1 to the PTY; NOT calling
+    // preventDefault lets Chromium fire the paste event, so
+    // attachImagePasteHandler and xterm's paste pipeline serve the keystroke
+    // — the path macOS/Linux already used. Main's clipboard read survives as
+    // pasteIntoTerminal's fallback (CF_HDROP-only copies, the context menu).
+    if (isWin && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key === 'v') return false;
 
     // App accelerators: run the dispatcher here (keydown only) so its
     // verdict decides xterm. A handler that acted consumed the key — the PTY

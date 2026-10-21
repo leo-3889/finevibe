@@ -125,15 +125,40 @@ function collectRestoredSelfTitlingSessions(): RestoredSyncSession[] {
 
 async function main(): Promise<void> {
   // Wire PTY data/exit events from main process
+  // P5 (R4): the 'Interrupted' scan ran on every PTY chunk. notifyInterrupt
+  // is idempotent (it only acts while the session is `working`), so a
+  // leading-edge hit plus one trailing hit per 200 ms window per session
+  // delivers the same signal at a fraction of the scans.
+  const interruptWindows = new Map<string, { last: number; timer: ReturnType<typeof setTimeout> | null }>();
+  function scanInterrupted(sessionId: string, data: string): void {
+    if (!data.includes('Interrupted')) return;
+    let window = interruptWindows.get(sessionId);
+    if (!window) {
+      window = { last: Number.NEGATIVE_INFINITY, timer: null };
+      interruptWindows.set(sessionId, window);
+    }
+    const now = Date.now();
+    if (now - window.last >= 200) {
+      window.last = now;
+      notifyInterrupt(sessionId);
+      return;
+    }
+    if (window.timer === null) {
+      const w = window;
+      w.timer = setTimeout(() => {
+        w.timer = null;
+        w.last = Date.now();
+        notifyInterrupt(sessionId);
+      }, 200 - (now - w.last));
+    }
+  }
   window.vibeyard.pty.onData((sessionId, data) => {
     if (isShellSessionId(sessionId)) {
       handleShellPtyData(sessionId, data);
     } else if (!isMcpSession(sessionId)) {
       handlePtyData(sessionId, data);
       parseCost(sessionId, data);
-      if (data.includes('Interrupted')) {
-        notifyInterrupt(sessionId);
-      }
+      scanInterrupted(sessionId, data);
       // Forward to P2P share if active
       if (isSharing(sessionId)) {
         forwardPtyData(sessionId, data);

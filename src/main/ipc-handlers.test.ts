@@ -3,7 +3,7 @@ import { searchSessions } from './session-deep-search';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { CliProvider } from './providers/provider';
 import * as fs from 'fs';
-import { clipboard, dialog } from 'electron';
+import { clipboard, dialog, utilityProcess } from 'electron';
 import * as os from 'os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ClipboardPastePayload } from '../shared/types';
@@ -86,6 +86,10 @@ vi.mock('electron', () => ({
     readImage: vi.fn(() => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) })),
     availableFormats: vi.fn(() => [] as string[]),
   },
+  // P4: the off-main PNG encoder forks a utilityProcess; the default stub
+  // refuses the fork, so handlers take the documented main-thread
+  // fallback. Worker-success tests override `fork` per test.
+  utilityProcess: { fork: vi.fn(() => null as never) },
 }));
 
 vi.mock('./pty-manager', () => ({
@@ -141,7 +145,18 @@ vi.mock('./fs-utils', async (importOriginal) => ({
   isMacPackagePath: () => false,
   BINARY_SNIFF_BYTES: 8000,
 }));
-vi.mock('./platform', autoStub);
+const platformState = vi.hoisted(() => ({ os: 'win32' as 'win32' | 'darwin' | 'linux' }));
+// P2: the clipboard probes branch on the platform, so tests must be able to
+// pick one — the autoStub alone made every isWin/isMac/isLinux a truthy
+// mock function. The getters re-evaluate per access (vitest's ESM interop
+// reads the namespace property at each use), so one assignment flips the OS.
+// Default 'win32': the P0-measured live file format (FileNameW) is Windows'.
+vi.mock('./platform', async () => ({
+  ...(autoStub() as object),
+  get isWin() { return platformState.os === 'win32'; },
+  get isMac() { return platformState.os === 'darwin'; },
+  get isLinux() { return platformState.os === 'linux'; },
+}));
 vi.mock('./chrome-import/importer', autoStub);
 vi.mock('./settings-guard', autoStub);
 vi.mock('./vibeyardignore', autoStub);
@@ -683,6 +698,85 @@ describe('session:release', () => {
   });
 });
 
+// P5 (R4): one `webContents.send('pty:data')` per node-pty chunk meant a
+// paste echo arrived as a storm of IPCs — the P0 probe measured a 1 MB
+// paste returning through ConPTY as 1,383 chunks (median 396 B;
+// docs/performance.md). Main now coalesces per session: ≤ 4 ms window,
+// ≤ 64 KiB per message, immediate ship when one chunk fills the budget
+// (the window degrades to a no-op, never an added delay), and a flush
+// before `pty:exit` so the renderer never sees exit-before-data.
+describe('pty:data coalescing (P5)', () => {
+  /** The data callback spawnPty was handed (positional arg 9). */
+  function dataCallback(): (data: string) => void {
+    return mockSpawnPty.mock.calls[0][9] as (data: string) => void;
+  }
+
+  function dataSends(): string[] {
+    return (fakeWin.webContents.send.mock.calls as unknown as Array<[string, string, string]>)
+      .filter((c) => c[0] === 'pty:data')
+      .map((c) => c[2]);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('joins chunks of one window into a single pty:data message', async () => {
+    await create('ui-1', null);
+    const push = dataCallback();
+
+    push('hello ');
+    push('world');
+    expect(fakeWin.webContents.send).not.toHaveBeenCalledWith('pty:data', 'ui-1', 'hello world');
+
+    vi.advanceTimersByTime(4);
+
+    expect(dataSends()).toEqual(['hello world']);
+  });
+
+  it('ships a chunk that fills the 64 KiB budget immediately — no window delay', async () => {
+    await create('ui-1', null);
+    const push = dataCallback();
+
+    push('x'.repeat(64 * 1024));
+
+    expect(dataSends()).toEqual(['x'.repeat(64 * 1024)]);
+    vi.advanceTimersByTime(10);
+    expect(dataSends()).toHaveLength(1);
+  });
+
+  it('flushes buffered data BEFORE the pty:exit message', async () => {
+    await create('ui-1', 'cli-1', { isResume: true });
+    fakeWin.webContents.send.mockClear();
+    const push = dataCallback();
+
+    push('last words');
+    exitCallback()(0);
+
+    const channels = (fakeWin.webContents.send.mock.calls as unknown as Array<[string]>).map((c) => c[0]);
+    expect(channels).toEqual(['pty:data', 'pty:exit']);
+    expect(dataSends()).toEqual(['last words']);
+  });
+
+  it('keeps sessions independent', async () => {
+    await create('ui-1', null);
+    await create('ui-2', null);
+    const push1 = mockSpawnPty.mock.calls[0][9] as (d: string) => void;
+    const push2 = mockSpawnPty.mock.calls[1][9] as (d: string) => void;
+
+    push1('a');
+    push2('b');
+    vi.advanceTimersByTime(4);
+
+    const sends = fakeWin.webContents.send.mock.calls as unknown as Array<[string, string, string]>;
+    expect(sends.filter((c) => c[0] === 'pty:data').map((c) => [c[1], c[2]]))
+      .toEqual([['ui-1', 'a'], ['ui-2', 'b']]);
+  });
+});
+
 describe('pty exit teardown ordering', () => {
   it('unregisters the sync on a real exit', async () => {
     await create('ui-1', 'cli-1', { isResume: true });
@@ -863,6 +957,7 @@ describe('clipboard:readForPaste file lists', () => {
   // clearAllMocks keeps per-test mockImplementation; restore each test's
   // clipboard to the mock's defaults so the next read starts on an empty clipboard.
   afterEach(() => {
+    platformState.os = 'win32';
     for (const fn of [clipboard.readBuffer, clipboard.readText, clipboard.readHTML, clipboard.read, clipboard.availableFormats]) {
       vi.mocked(fn as (...args: never[]) => unknown).mockReset();
     }
@@ -921,6 +1016,7 @@ describe('clipboard:readForPaste file lists', () => {
   });
 
   it('reads Finder copies from the XML plist and decodes entities', async () => {
+    platformState.os = 'darwin';
     formatsWith('NSFilenamesPboardType');
     bufferFor('NSFilenamesPboardType', () => Buffer.from(
       '<array><string>/tmp/a &amp; b.txt</string><string>/tmp/caf&#xE9;.md</string></array>',
@@ -931,6 +1027,8 @@ describe('clipboard:readForPaste file lists', () => {
   });
 
   it('reads file-manager copies on Linux from text/uri-list, skipping web links', async () => {
+    platformState.os = 'linux';
+    formatsWith('text/uri-list', 'text/plain');
     const target = '/tmp/report.pdf';
     // A rootless file URL is not absolute on Windows, so build the URL from a
     // path the platform considers absolute; the handler decodes it back.
@@ -954,6 +1052,296 @@ describe('clipboard:readForPaste file lists', () => {
 
     const payload = await readPaste();
     expect(payload.html).toBe('<b>notes</b>');
+  });
+});
+// P2: one clipboard acquisition per `readForPaste`, probed per platform. A
+// plain-text copy used to pay six OpenClipboard cycles (formats, text, plus
+// four file-list probes that are meaningless on text, three of them throwing
+// and logging). The live formats per OS are from the P0 baseline
+// (docs/performance.md): Windows FileNameW (Electron's readBuffer('CF_HDROP')
+// answers 0 bytes — Chromium maps the drop list onto text/uri-list), macOS
+// NSFilenamesPboardType, Linux text/uri-list (X11; portal-gated on Wayland).
+describe('clipboard:readForPaste acquisition gating (P2)', () => {
+  afterEach(() => {
+    platformState.os = 'win32';
+    for (const fn of [clipboard.readBuffer, clipboard.readText, clipboard.readHTML, clipboard.read, clipboard.availableFormats]) {
+      vi.mocked(fn as (...args: never[]) => unknown).mockReset();
+    }
+  });
+
+  function formatsWith(...names: string[]) {
+    vi.mocked(clipboard.availableFormats).mockReturnValue(names);
+  }
+
+  function bufferFor(format: string, build: () => Buffer) {
+    vi.mocked(clipboard.readBuffer).mockImplementation((fmt: string) => {
+      if (fmt === format) return build();
+      throw new Error(`${fmt} not on clipboard`);
+    });
+  }
+
+  async function readPaste(): Promise<ClipboardPastePayload> {
+    return await handlers.get('clipboard:readForPaste')!({}) as never;
+  }
+
+  async function expectPlainTextCost(os: 'win32' | 'darwin' | 'linux'): Promise<void> {
+    platformState.os = os;
+    formatsWith('text/plain', 'text/html', 'UTF8 String');
+    vi.mocked(clipboard.readText).mockReturnValue('hello');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const payload = await readPaste();
+      expect(payload.text).toBe('hello');
+      expect(payload.hasContent).toBe(true);
+      // Two acquisitions: availableFormats + readText. No file probes, no
+      // HTML read (text is non-empty), no image read, no thrown probe.
+      expect(clipboard.availableFormats).toHaveBeenCalledTimes(1);
+      expect(clipboard.readText).toHaveBeenCalledTimes(1);
+      expect(clipboard.readBuffer).not.toHaveBeenCalled();
+      expect(clipboard.read).not.toHaveBeenCalled();
+      expect(clipboard.readHTML).not.toHaveBeenCalled();
+      expect(clipboard.readImage).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it('Windows plain-text paste costs 2 clipboard opens (formats, text)', async () => {
+    await expectPlainTextCost('win32');
+  });
+
+  it('macOS plain-text paste costs 2 clipboard opens (formats, text)', async () => {
+    await expectPlainTextCost('darwin');
+  });
+
+  it('Linux plain-text paste costs 2 clipboard opens (formats, text)', async () => {
+    await expectPlainTextCost('linux');
+  });
+
+  it('Linux file-list paste costs 3 opens through text/uri-list only', async () => {
+    platformState.os = 'linux';
+    formatsWith('text/uri-list', 'text/plain');
+    const uri = pathToFileURL('/tmp/report.pdf').href;
+    vi.mocked(clipboard.read).mockReturnValue(`${uri}\n`);
+
+    expect((await readPaste()).files).toEqual([fileURLToPath(uri)]);
+    // formats, text, uri-list — and nothing else.
+    expect(clipboard.read).toHaveBeenCalledTimes(1);
+    expect(clipboard.readBuffer).not.toHaveBeenCalled();
+  });
+
+  it('Windows file-list paste reads the live FileNameW branch, never the POSIX formats', async () => {
+    platformState.os = 'win32';
+    formatsWith('FileNameW', 'text/plain');
+    bufferFor('FileNameW', () => Buffer.from('C:\\tmp\\x.png\0\0', 'utf16le'));
+
+    expect((await readPaste()).files).toEqual(['C:\\tmp\\x.png']);
+    expect(clipboard.readBuffer).toHaveBeenCalledTimes(1);
+    expect(clipboard.readBuffer).toHaveBeenCalledWith('FileNameW');
+    expect(clipboard.read).not.toHaveBeenCalled();
+  });
+
+  it('macOS file-list paste reads NSFilenamesPboardType only', async () => {
+    platformState.os = 'darwin';
+    formatsWith('NSFilenamesPboardType', 'text/plain');
+    bufferFor('NSFilenamesPboardType', () => Buffer.from('<array><string>/tmp/a.md</string></array>', 'utf8'));
+
+    expect((await readPaste()).files).toEqual(['/tmp/a.md']);
+    expect(clipboard.readBuffer).toHaveBeenCalledTimes(1);
+    expect(clipboard.readBuffer).toHaveBeenCalledWith('NSFilenamesPboardType');
+    expect(clipboard.read).not.toHaveBeenCalled();
+  });
+
+  it('an empty format list probes nothing and keeps the passthrough shape (Wayland portals)', async () => {
+    platformState.os = 'linux';
+    // availableFormats() defaults to []: portal permission denial empties
+    // the readable set. hasContent stays false so the renderer answers with
+    // the CLI's own paste, not a silent no-op.
+    const payload = await readPaste();
+
+    expect(payload.hasContent).toBe(false);
+    expect(clipboard.readBuffer).not.toHaveBeenCalled();
+    expect(clipboard.read).not.toHaveBeenCalled();
+  });
+});
+
+// P3: `clipboard:write` moved from `ipcMain.handle` to `ipcMain.on` —
+// fire-and-forget, no promise round trip per copy. The Linux PRIMARY split
+// survives: a selection-driven copy writes CLIPBOARD + PRIMARY, an explicit
+// copy never touches PRIMARY (docs/ui-conventions.md, shared/types.ts
+// ClipboardSource). As an `on` body it must also swallow throws (P2-108).
+describe('clipboard:write (P3 fire-and-forget)', () => {
+  afterEach(() => {
+    platformState.os = 'win32';
+  });
+
+  it('is registered on the send channel (ipcMain.on)', () => {
+    expect(handlers.has('clipboard:write')).toBe(true);
+  });
+
+  it('a selection copy on Linux writes CLIPBOARD and PRIMARY', () => {
+    platformState.os = 'linux';
+    handlers.get('clipboard:write')!({}, 'selected text', 'selection');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(2);
+    expect(clipboard.writeText).toHaveBeenNthCalledWith(1, 'selected text');
+    expect(clipboard.writeText).toHaveBeenNthCalledWith(2, 'selected text', 'selection');
+  });
+
+  it('an explicit copy never touches PRIMARY, on any platform', () => {
+    platformState.os = 'linux';
+    handlers.get('clipboard:write')!({}, 'copied', 'explicit');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    expect(clipboard.writeText).toHaveBeenCalledWith('copied');
+
+    vi.mocked(clipboard.writeText).mockClear();
+    handlers.get('clipboard:write')!({}, 'copied');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    expect(clipboard.writeText).toHaveBeenCalledWith('copied');
+  });
+
+  it('a selection copy on Windows/macOS writes CLIPBOARD only', () => {
+    platformState.os = 'win32';
+    handlers.get('clipboard:write')!({}, 'sel', 'selection');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    vi.mocked(clipboard.writeText).mockClear();
+    platformState.os = 'darwin';
+    handlers.get('clipboard:write')!({}, 'sel', 'selection');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it('swallows a clipboard throw instead of killing main (P2-108 on-body contract)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(clipboard.writeText).mockImplementation(() => {
+        throw new Error('clipboard busy');
+      });
+      expect(() => handlers.get('clipboard:write')!({}, 'text', 'selection')).not.toThrow();
+      expect(warn).toHaveBeenCalledWith('clipboard:write failed:', expect.any(Error));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+
+// P4: bound and offload the image paste (plan P4). P0 measured the
+// screenshot freeze as readImage + toPNG = 96 %+ of `readForPaste`
+// (261/421 ms p50 at 1080p/1440p, max 741 ms; docs/performance.md). Three
+// changes: (1) text is bounded at 8 Mi characters with a user-visible flag;
+// (2) a clipboard that already carries encoded PNG (Windows' registered
+// `PNG` flavor from Snipping Tool, macOS `png`, X11 `image/png`) is read as
+// bytes — no decode, no encode, main idle; (3) a raw-image-only clipboard
+// (CF_DIB/TIFF) decodes on main (Electron's clipboard API is main-only)
+// and encodes in a utilityProcess — with a documented degrade to the
+// main-thread encode when the worker cannot start, never a crash.
+describe('clipboard:readForPaste bounds + off-main encode (P4)', () => {
+  afterEach(() => {
+    platformState.os = 'win32';
+    for (const fn of [clipboard.readBuffer, clipboard.readText, clipboard.readHTML, clipboard.read, clipboard.availableFormats, clipboard.readImage]) {
+      vi.mocked(fn as (...args: never[]) => unknown).mockReset();
+    }
+    vi.mocked(utilityProcess.fork).mockReset().mockReturnValue(null as never);
+  });
+
+  function formatsWith(...names: string[]) {
+    vi.mocked(clipboard.availableFormats).mockReturnValue(names);
+  }
+
+  async function readPaste(): Promise<ClipboardPastePayload> {
+    return await handlers.get('clipboard:readForPaste')!({}) as never;
+  }
+
+  it('bounds pasted text at 8 Mi characters and flags the truncation', async () => {
+    formatsWith('text/plain');
+    vi.mocked(clipboard.readText).mockReturnValue('a'.repeat(8 * 1024 * 1024 + 7));
+
+    const payload = await readPaste();
+
+    expect(payload.text).toHaveLength(8 * 1024 * 1024);
+    expect(payload.textTruncated).toBe(true);
+  });
+
+  it('leaves text inside the bound untouched and unflagged', async () => {
+    formatsWith('text/plain');
+    vi.mocked(clipboard.readText).mockReturnValue('notes');
+
+    const payload = await readPaste();
+
+    expect(payload.text).toBe('notes');
+    expect(payload.textTruncated).toBeUndefined();
+  });
+
+  it('reads a PNG clipboard flavor as bytes — no decode, no encode (per-OS flavor table)', async () => {
+    platformState.os = 'win32';
+    formatsWith('PNG', 'bitmap', 'text/plain');
+    vi.mocked(clipboard.readBuffer).mockImplementation((fmt: string) => {
+      if (fmt === 'PNG') return Buffer.from('PNGBYTES');
+      throw new Error(`${fmt} not on clipboard`);
+    });
+
+    const payload = await readPaste();
+
+    expect(clipboard.readImage).not.toHaveBeenCalled();
+    expect(payload.imagePath).toMatch(/[\\/]vibeyard-paste[\\/].*\.png$/);
+    expect(fs.readFileSync(payload.imagePath!)).toEqual(Buffer.from('PNGBYTES'));
+  });
+
+  it('encodes a raw-image flavor off the main thread through the utility worker', async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const listeners = new Map<string, (e: unknown) => void>();
+    const proc = {
+      on: (ev: string, cb: (e: unknown) => void) => { listeners.set(ev, cb); },
+      postMessage: (msg: { id: number }) => {
+        queueMicrotask(() => listeners.get('message')?.({
+          data: { id: msg.id, ok: true, png: pngBytes.buffer.slice(pngBytes.byteOffset, pngBytes.byteOffset + pngBytes.byteLength) },
+        }));
+      },
+      kill: vi.fn(),
+    };
+    vi.mocked(utilityProcess.fork).mockReturnValue(proc as never);
+    formatsWith('image/bmp', 'bitmap');
+    const toPNG = vi.fn(() => Buffer.from('MAIN-PNG'));
+    vi.mocked(clipboard.readImage).mockReturnValue({
+      isEmpty: () => false,
+      getSize: () => ({ width: 1, height: 1 }),
+      toBitmap: () => Buffer.from([1, 2, 3, 255]),
+      toPNG,
+    } as never);
+
+    const payload = await readPaste();
+
+    expect(fs.readFileSync(payload.imagePath!)).toEqual(pngBytes);
+    // The encode left the main thread: the synchronous encoder never ran.
+    expect(toPNG).not.toHaveBeenCalled();
+    expect(utilityProcess.fork).toHaveBeenCalledTimes(1);
+  });
+
+  it('degrades to the main-thread encode when the worker cannot start — never a crash', async () => {
+    vi.mocked(utilityProcess.fork).mockReturnValue(null as never);
+    formatsWith('image/tiff');
+    vi.mocked(clipboard.readImage).mockReturnValue({
+      isEmpty: () => false,
+      getSize: () => ({ width: 1, height: 1 }),
+      toBitmap: () => Buffer.from([1, 2, 3, 255]),
+      toPNG: () => Buffer.from('MAIN-PNG'),
+    } as never);
+
+    const payload = await readPaste();
+
+    expect(fs.readFileSync(payload.imagePath!)).toEqual(Buffer.from('MAIN-PNG'));
+  });
+
+  it('a clipboard with no image flavor (Wayland) skips every image read', async () => {
+    platformState.os = 'linux';
+    formatsWith('text/plain');
+    vi.mocked(clipboard.readText).mockReturnValue('');
+
+    const payload = await readPaste();
+
+    expect(clipboard.readImage).not.toHaveBeenCalled();
+    expect(utilityProcess.fork).not.toHaveBeenCalled();
+    expect(payload.imagePath).toBeNull();
   });
 });
 
