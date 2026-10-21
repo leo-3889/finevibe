@@ -36,6 +36,7 @@ interface FakeMember {
 let activeProjectVal: Record<string, unknown> | null = null;
 let teamMembersVal: FakeMember[] = [];
 let profilesVal: Array<{ id: string; name: string; providerId: string }> = [];
+let prefsVal: Record<string, unknown> = {};
 
 const addSession = vi.fn((): FakeSession => ({ id: 's-plain', name: 'plain' }));
 const startTeamChat = vi.fn((): FakeSession => ({ id: 's-team', name: 'CMO - Session 1' }));
@@ -48,7 +49,7 @@ vi.mock('../../state.js', () => ({
     get activeProject() { return activeProjectVal; },
     get team() { return { members: teamMembersVal }; },
     get profiles() { return profilesVal; },
-    preferences: {},
+    get preferences() { return prefsVal; },
     addSession,
     startTeamChat,
     getTeamMemberById,
@@ -56,8 +57,9 @@ vi.mock('../../state.js', () => ({
 }));
 
 const providerMetas = [
-  { id: 'claude', displayName: 'Claude', capabilities: { profiles: true, systemPromptInjection: true } },
+  { id: 'claude', displayName: 'Claude', capabilities: { profiles: true, systemPromptInjection: true, planModeArg: '--permission-mode plan' } },
   { id: 'gemini', displayName: 'Gemini', capabilities: { profiles: false, systemPromptInjection: false } },
+  { id: 'pi', displayName: 'Pi', capabilities: { profiles: false, systemPromptInjection: false } },
 ];
 let teamCapableVal = new Set(['claude']);
 
@@ -168,6 +170,7 @@ beforeEach(async () => {
   teamCapableVal = new Set(['claude']);
   teamMembersVal = [];
   profilesVal = [];
+  prefsVal = {};
   activeProjectVal = makeProject();
   addSession.mockReturnValue({ id: 's-plain', name: 'plain' });
   startTeamChat.mockReturnValue({ id: 's-team', name: 'CMO - Session 1' });
@@ -185,6 +188,7 @@ describe('New Session modal persona/prompt rows', () => {
       'session-prompt',
       'session-args',
       'keep-args',
+      'plan-mode',
       'session-env',
       'keep-env',
     ]);
@@ -339,5 +343,69 @@ describe('New Session modal persona/prompt rows', () => {
 
     persona.onSelectChange!('');
     expect(providerWrapper.title).toBe('');
+  });
+});
+
+describe('New Session modal plan-mode row', () => {
+  const planInput = () => document.getElementById('modal-plan-mode') as HTMLInputElement | null;
+  const planWrapper = () => planInput()?.closest('.modal-field') as HTMLElement | null;
+
+  it('inserts plan-mode after keep-args, ticked from the per-provider config (absent = true)', async () => {
+    await promptNewSession();
+    expect(fieldIds()).toEqual([
+      'provider', 'session-name', 'session-args', 'keep-args', 'plan-mode', 'session-env', 'keep-env',
+    ]);
+    expect(field('plan-mode')!.type).toBe('checkbox');
+    expect(planInput()!.checked).toBe(true);
+    expect(planInput()!.disabled).toBe(false);
+    expect(planWrapper()!.title).toBe('');
+  });
+
+  it('starts unticked when planModeDefaults disables the opening provider', async () => {
+    prefsVal.planModeDefaults = { claude: false };
+    await promptNewSession();
+    expect(planInput()!.checked).toBe(false);
+    expect(planInput()!.disabled).toBe(false);
+  });
+
+  it('greys the row (disabled, unticked, tooltip) for a provider without a plan flag and restores on switch', async () => {
+    await promptNewSession();
+
+    field('provider')!.onSelectChange!('pi');
+    expect(planInput()!.disabled).toBe(true);
+    expect(planInput()!.checked).toBe(false);
+    expect(planWrapper()!.title).toBe('Provider does not support plan mode');
+    expect(planWrapper()!.classList.contains('disabled')).toBe(true);
+
+    field('provider')!.onSelectChange!('claude');
+    expect(planInput()!.disabled).toBe(false);
+    expect(planInput()!.checked).toBe(true);
+    expect(planWrapper()!.title).toBe('');
+    expect(planWrapper()!.classList.contains('disabled')).toBe(false);
+  });
+
+  it('appends the plan flag to the spawn args and keeps it out of persisted defaultArgs', async () => {
+    await promptNewSession();
+    await confirmWith({
+      'session-name': 'Planned',
+      'session-args': '--model sonnet',
+      'keep-args': 'true',
+      'plan-mode': 'true',
+    });
+    expect(addSession).toHaveBeenCalledWith('p1', 'Planned', '--model sonnet --permission-mode plan', 'claude', undefined, undefined, undefined);
+    expect(activeProjectVal!.defaultArgs).toBe('--model sonnet');
+  });
+
+  it('forwards env vars alongside the plan flag (modal never routes through addPlanSession)', async () => {
+    await promptNewSession();
+    await confirmWith({ 'session-name': 'Planned', 'plan-mode': 'true', 'session-env': 'A=1' });
+    expect(addSession).toHaveBeenCalledWith('p1', 'Planned', '--permission-mode plan', 'claude', undefined, 'A=1', undefined);
+    expect(activeProjectVal!.defaultEnv).toBeUndefined();
+  });
+
+  it('drops the flag for an unsupported provider even when the value bag says true', async () => {
+    await promptNewSession();
+    await confirmWith({ 'session-name': 'Plain', provider: 'pi', 'plan-mode': 'true' });
+    expect(addSession).toHaveBeenCalledWith('p1', 'Plain', undefined, 'pi', undefined, undefined, undefined);
   });
 });

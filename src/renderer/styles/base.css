@@ -61,6 +61,14 @@
   --pane-focus: var(--accent);
   --pane-unfocus: var(--border);
 
+  /* tab-group palette — index 0..5 maps to --tab-group-1..6 in tabs.css */
+  --tab-group-1: #8588f2;
+  --tab-group-2: #43b581;
+  --tab-group-3: #f0a35e;
+  --tab-group-4: #e26d8f;
+  --tab-group-5: #56a8e6;
+  --tab-group-6: #c084fc;
+
   /* type system — a real UI sans + the mono the app already half-uses */
   --font-ui: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
@@ -100,6 +108,13 @@
   --tab-inactive: #101116;
   --pane-focus: var(--accent);
   --pane-unfocus: var(--border);
+
+  --tab-group-1: #8588f2;
+  --tab-group-2: #43b581;
+  --tab-group-3: #f0a35e;
+  --tab-group-4: #e26d8f;
+  --tab-group-5: #56a8e6;
+  --tab-group-6: #c084fc;
 }
 
 /* Light theme — same hues, inverted lightness. */
@@ -130,6 +145,13 @@
   --tab-inactive: #f0f1f6;
   --pane-focus: var(--accent);
   --pane-unfocus: var(--border);
+
+  --tab-group-1: #5a5ee6;
+  --tab-group-2: #2e9e6b;
+  --tab-group-3: #d97f2e;
+  --tab-group-4: #cf4d75;
+  --tab-group-5: #2f7fc4;
+  --tab-group-6: #9154e0;
 }
 
 * {

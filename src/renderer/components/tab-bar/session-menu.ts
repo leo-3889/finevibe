@@ -11,6 +11,7 @@ import { t } from '../../i18n.js';
 import { defaultSessionName, nextNumberFor, nextSessionNumber, MCP_INSPECTOR_NAME_KEY } from '../../state/session-naming.js';
 import { setPendingPrompt } from '../terminal-pane.js';
 import { resolvePinnedTeamProfile, type TeamChatOpts } from '../../state/team-state.js';
+import { isPlanModeSupported, resolvePlanModePreference } from '../../state/specialized-sessions.js';
 
 export function quickNewSession(): void {
   const project = appState.activeProject;
@@ -133,9 +134,29 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     ], selected);
   }
 
+  // The Plan mode row follows the provider's plan-mode capability (mirrors
+  // the board modal's gate): visible-but-disabled + tooltip for tools
+  // without a verified plan flag, unchecked so a tick is never silently
+  // dropped; enabled rows re-tick from the per-provider config.
+  function setPlanModeFieldProvider(providerId: ProviderId): void {
+    const input = document.getElementById('modal-plan-mode') as HTMLInputElement | null;
+    const wrapper = input?.closest('.modal-field') as HTMLElement | null;
+    if (!input || !wrapper) return;
+    const supported = isPlanModeSupported(providerId);
+    input.disabled = !supported;
+    input.checked = resolvePlanModePreference(appState.preferences, providerId);
+    wrapper.classList.toggle('disabled', !supported);
+    wrapper.title = supported ? '' : t('tab.newSessionModal.planModeUnsupportedTooltip');
+  }
+
   const sessionNamePlaceholder = t('tab.newSessionModal.namePlaceholder', { num: sessionNum });
   const teamMembers = appState.team.members;
 
+  // The provider the dialog opens with (project default → global default →
+  // first installed → claude). Computed up front because the plan-mode row
+  // seeds its initial gate + tick from it before the provider select exists.
+  const preferred = project.defaultProvider ?? appState.preferences.defaultProvider ?? 'claude';
+  const effectiveProvider = (availabilityMap.get(preferred) ? preferred : providers.find(p => availabilityMap.get(p.id))?.id) ?? 'claude';
   const fields: FieldDef[] = [
     { label: t('tab.newSessionModal.nameLabel'), id: 'session-name', placeholder: sessionNamePlaceholder, defaultValue: sessionNamePlaceholder },
   ];
@@ -178,6 +199,12 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       type: 'checkbox',
       defaultValue: project.defaultArgs ? 'true' : undefined,
     },
+    {
+      label: t('tab.newSessionModal.planModeLabel'),
+      id: 'plan-mode',
+      type: 'checkbox',
+      defaultValue: resolvePlanModePreference(appState.preferences, effectiveProvider as ProviderId) ? 'true' : undefined,
+    },
     { label: t('tab.newSessionModal.envLabel'), id: 'session-env', type: 'textarea', placeholder: t('tab.newSessionModal.envPlaceholder'), defaultValue: project.defaultEnv ?? '' },
     {
       label: t('tab.newSessionModal.keepEnvLabel'),
@@ -187,8 +214,6 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     },
   );
 
-  const preferred = project.defaultProvider ?? appState.preferences.defaultProvider ?? 'claude';
-  const effectiveProvider = (availabilityMap.get(preferred) ? preferred : providers.find(p => availabilityMap.get(p.id))?.id) ?? 'claude';
   if (providers.length > 1) {
     fields.unshift({
       label: t('tab.newSessionModal.providerLabel'),
@@ -198,6 +223,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       onSelectChange: (value) => {
         setProfileFieldProvider(value as ProviderId);
         setPersonaFieldProvider(value as ProviderId);
+        setPlanModeFieldProvider(value as ProviderId);
       },
       options: providers.map(p => {
         const available = availabilityMap.get(p.id);
@@ -243,6 +269,14 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     const keepArgs = values['keep-args'] === 'true';
     const keepEnv = values['keep-env'] === 'true';
     const providerId = (values['provider'] || 'claude') as ProviderId;
+    // Plan mode: the tick is authoritative only for providers with a
+    // verified plan flag (the row is disabled for the rest). The flag rides
+    // on THIS session's spawn args — `keepArgs` below persists the raw args
+    // field, so ticking Plan mode never pins the flag into future sessions.
+    const planModeArg = values['plan-mode'] === 'true' && isPlanModeSupported(providerId)
+      ? getProviderCapabilities(providerId)?.planModeArg
+      : undefined;
+    const spawnArgs = [args, planModeArg].filter(Boolean).join(' ') || undefined;
     const prompt = values['session-prompt']?.trim();
 
     // Persona path: `startTeamChat` resolves the team-chat backend, builds
@@ -282,7 +316,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     // Profiles only apply to profile-capable providers; ignore the field
     // for the rest.
     const profileId = getProviderCapabilities(providerId)?.profiles === true ? (values['profile'] || undefined) : undefined;
-    const session = appState.addSession(project.id, name, args, providerId, profileId, envVars, opts);
+    const session = appState.addSession(project.id, name, spawnArgs, providerId, profileId, envVars, opts);
     if (session) {
       // Plain path: the custom prompt (when the team rows are offered) is
       // the user's first message, converted to the PTY initialPrompt at
@@ -296,6 +330,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
   // keeping the project/global default when it belongs to that tool.
   setProfileFieldProvider(effectiveProvider as ProviderId, initialProfileValue);
   setPersonaFieldProvider(effectiveProvider as ProviderId);
+  setPlanModeFieldProvider(effectiveProvider as ProviderId);
 }
 
 function addMcpInspector(): void {

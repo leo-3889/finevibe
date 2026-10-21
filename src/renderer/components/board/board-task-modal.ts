@@ -3,9 +3,9 @@ import { addTask, updateTask, getBoard, addTag, getTagColor } from '../../board-
 import { showModal, closeModal, setModalError, registerModalCleanup, type FieldDef } from '../modal.js';
 import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
 import { createPlanModeRow } from '../../dom-utils.js';
+import { isPlanModeSupported, resolvePlanModePreference } from '../../state/specialized-sessions.js';
 import {
   getAvailableProviderMetas,
-  getProviderCapabilities,
   loadProviderAvailability,
 } from '../../provider-availability.js';
 import { appState } from '../../state.js';
@@ -86,7 +86,11 @@ export function showTaskModal(
   // stick (it would reappear as the default profile on reopen).
   let currentProfileId: string = task?.profileId ?? '';
   let currentAssigneeId: string = task?.assigneeId ?? '';
-  const initialPlanMode = task?.planMode ?? (mode === 'create');
+  // Pre-existing tasks with `planMode === undefined` keep today's falsy
+  // semantics (board-card's run gate); new tasks seed from the per-provider
+  // config, so the Kanban create modal follows the same default as quick
+  // sends while staying a per-card override.
+  const initialPlanMode = task?.planMode ?? (mode === 'create' && resolvePlanModePreference(appState.preferences, currentProviderId));
   const { row: planModeRow, checkbox: planModeCheckbox } =
     createPlanModeRow(t('board.taskModal.planModeLabel'), initialPlanMode);
 
@@ -256,8 +260,7 @@ export function showTaskModal(
     getAvailableProviderMetas().map(p => ({ value: p.id, label: p.displayName }));
 
   function refreshPlanModeAvailability(): void {
-    const caps = getProviderCapabilities(currentProviderId);
-    const supported = !!caps?.planModeArg;
+    const supported = isPlanModeSupported(currentProviderId);
     planModeCheckbox.disabled = !supported;
     if (!supported) planModeCheckbox.checked = false;
     planModeRow.title = supported ? '' : t('board.taskModal.planModeUnsupportedTooltip');

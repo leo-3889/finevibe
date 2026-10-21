@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { BrowserTabInstance } from './types.js';
 
-vi.mock('../../state.js', () => ({ appState: {} }));
+const mockState = vi.hoisted(() => ({
+  activeProject: { id: 'proj-1', sessions: [] },
+  preferences: {},
+  addPlanSession: vi.fn(() => ({ id: 's-draw' })),
+}));
+vi.mock('../../state.js', () => ({ appState: mockState }));
 vi.mock('../tab-bar/session-menu.js', () => ({ promptNewSession: vi.fn() }));
 vi.mock('../terminal-pane.js', () => ({ setPendingPrompt: vi.fn() }));
 vi.mock('./popover.js', () => ({ positionPopover: vi.fn() }));
@@ -10,9 +15,15 @@ vi.mock('./viewport.js', () => ({
     include ? ' [viewport: 1024×768 – Desktop]' : '',
 }));
 
+const resolvePlanModePreference = vi.fn<(prefs: unknown, id: string) => boolean>(() => true);
+vi.mock('../../state/specialized-sessions.js', () => ({
+  resolvePlanProvider: () => 'claude',
+  resolvePlanModePreference,
+}));
+
 function makeStubInstance(overrides: Partial<Record<string, unknown>> = {}): BrowserTabInstance {
   return {
-    drawInstructionInput: { value: 'Fix the button' } as HTMLTextAreaElement,
+    drawInstructionInput: { value: 'Fix the button', dispatchEvent: () => {}, focus: () => {} } as HTMLTextAreaElement,
     urlInput: { value: 'https://example.com' } as HTMLInputElement,
     drawAttachDimsCheckbox: { checked: false } as HTMLInputElement,
     ...overrides,
@@ -55,6 +66,26 @@ describe('buildDrawPrompt', () => {
     const instance = makeStubInstance({ drawAttachDimsCheckbox: { checked: true } as HTMLInputElement });
     const result = buildDrawPrompt(instance, '/tmp/shot.png');
     expect(result).toContain('[viewport: 1024×768 – Desktop]');
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('sendDrawToNewSession', () => {
+  it('passes the config-derived plan-mode value (not a checkbox) to addPlanSession', async () => {
+    vi.stubGlobal('navigator', { platform: 'MacIntel' });
+    vi.stubGlobal('window', { vibeyard: { browser: { saveScreenshot: async () => '/tmp/shot.png' } } });
+    resolvePlanModePreference.mockReturnValueOnce(false);
+    const { sendDrawToNewSession } = await import('./draw-mode.js');
+    const instance = makeStubInstance({
+      sessionId: 's1',
+      webview: { capturePage: async () => ({ toDataURL: () => 'data:image/png;base64,x' }) },
+      drawErrorEl: { style: {}, textContent: '' },
+    });
+
+    await sendDrawToNewSession(instance);
+
+    expect(resolvePlanModePreference).toHaveBeenCalledWith(mockState.preferences, 'claude');
+    expect(mockState.addPlanSession).toHaveBeenCalledWith('proj-1', 'Draw: Fix the button', false, undefined, undefined, { activate: true });
     vi.unstubAllGlobals();
   });
 });

@@ -300,6 +300,16 @@ export interface TagDefinition {
   color: string;
 }
 
+/** Named cluster of adjacent session tabs in the tab strip. */
+export interface TabGroupRecord {
+  id: string;
+  name: string;
+  /** Member session ids, kept in project.sessions order. */
+  sessionIds: string[];
+  /** Index into the tab-group color palette. */
+  colorIndex: number;
+}
+
 export interface BoardData {
   columns: BoardColumn[];
   tasks: BoardTask[];
@@ -332,6 +342,8 @@ export interface ProjectRecord {
   readinessHistory?: ReadinessSnapshot[];
   overviewLayout?: OverviewLayout;
   githubLastSeen?: Record<string, string>;
+  /** Hover-to-group tab clusters; absent on projects that never grouped anything (no migration needed). */
+  tabGroups?: TabGroupRecord[];
 }
 
 // --- Overview Widgets ---
@@ -418,6 +430,16 @@ export interface Preferences {
   locale?: Locale;
   /** Per-provider global fallback profile, applied when neither the session nor the project specifies one. */
   defaultProfiles?: Partial<Record<ProviderId, string>>;
+  /**
+   * Per-provider default for "Plan mode" on the checkbox-less quick-send
+   * paths (Ask AI / Inspect / Draw / Flow "Send to AI", Kanban create) and
+   * the New Session modal's initial tick. Absent = `true` for plan-capable
+   * providers (the pre-setting behavior — no upgrade surprise); providers
+   * without a verified `planModeArg` are always off regardless
+   * (`isPlanModeSupported` short-circuits, `buildPlanSessionArgs` drops the
+   * flag). Per-provider rows: Preferences → General (`pref-plan-mode-<id>`).
+   */
+  planModeDefaults?: Partial<Record<ProviderId, boolean>>;
   statusLineConsent?: 'granted' | 'declined' | null;
   // The foreign statusLine command the user was asked about when they made
   // the consent decision. Used to detect new conflicts (different command)
@@ -800,4 +822,6 @@ export type ClipboardPastePayload = {
   imagePath: string | null;
   /** False only for a truly empty clipboard; any other untranslated flavor forwards Ctrl+V. */
   hasContent: boolean;
+  /** P4: true when main cut the text at the 8 Mi paste bound — a visible truncation the renderer must surface. */
+  textTruncated?: boolean;
 };

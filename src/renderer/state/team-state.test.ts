@@ -95,6 +95,21 @@ describe('startTeamChat()', () => {
     expect(session?.pendingSystemPrompt).toBe('You are the CMO.');
   });
 
+  it('forwards modal opts (name/args/env) through startTeamChat', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([metaFor('claude')]);
+    const project = addProject();
+    project.defaultArgs = '--from-project';
+    const session = appState.startTeamChat(project.id, makeMember(), 'claude', {
+      name: 'Sprint review',
+      args: '--model sonnet',
+      envVars: 'K=V',
+    });
+    expect(session?.name).toBe('Sprint review');
+    expect(session?.args).toBe('--model sonnet');
+    expect(session?.envVars).toBe('K=V');
+    expect(session?.pendingSystemPrompt).toBe('You are the CMO.');
+  });
+
   it('falls through Copilot default-provider to Claude', () => {
     mockGetTeamChatProviderMetas.mockReturnValue([metaFor('claude'), metaFor('codex')]);
     appState.setPreference('defaultProvider', 'copilot');

@@ -21,7 +21,8 @@
     "copyOnSelect": "选中即复制",
     "askAiFocus": "Ask AI 在何处打开新会话",
     "askAiFocusSwitch": "新标签页（并切换焦点）",
-    "askAiFocusStay": "后台 — 保留当前标签页"
+    "askAiFocusStay": "后台 — 保留当前标签页",
+    "planModeHeading": "快捷 AI 会话默认计划模式"
   },
   "appearance": {
     "theme": "主题",
@@ -109,6 +110,11 @@
     "newSession": {
       "defaultName": "会话 {num}"
     },
+    "group": {
+      "defaultName": "分组 {num}",
+      "tooltip": "{name} · {count} 个标签",
+      "renameTooltip": "重命名分组"
+    },
     "moreMenu": {
       "swarmLayoutActive": "群组布局 ✓",
       "swarmLayout": "群组布局",
@@ -121,6 +127,8 @@
       "argumentsLabel": "参数",
       "argumentsPlaceholder": "例如 --model sonnet",
       "keepArgsLabel": "为后续会话保留参数",
+      "planModeLabel": "计划模式",
+      "planModeUnsupportedTooltip": "该提供方不支持计划模式",
       "envLabel": "环境变量",
       "envPlaceholder": "KEY=VALUE（每行一个）",
       "keepEnvLabel": "为后续会话保留环境变量",
@@ -168,7 +176,9 @@
       "copyCliSessionId": "复制 CLI 会话 ID",
       "copyInternalId": "复制内部 ID",
       "closeInspector": "关闭检查器",
-      "inspect": "检查"
+      "inspect": "检查",
+      "renameGroup": "重命名分组",
+      "ungroup": "取消分组"
     },
     "board": {
       "deleteTag": "删除标签"

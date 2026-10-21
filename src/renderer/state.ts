@@ -39,6 +39,7 @@ import {
   applyMemberPatch,
   buildNewMember,
   buildTeamChatSession,
+  type TeamChatOpts,
   fireAndForgetRemoveAgent,
   reconcileAgent as reconcileAgentPure,
   removeMember,
@@ -70,6 +71,12 @@ import {
   sessionIdAtIndex,
   toggleSwarmMode,
 } from './state/layout-state.js';
+import {
+  groupTabsInProject,
+  pruneSessionFromTabGroups,
+  renameTabGroupInProject,
+  ungroupInProject,
+} from './state/tab-group-state.js';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession } from '../shared/types.js';
 
@@ -802,6 +809,7 @@ class AppState {
     projectId: string,
     member: TeamMember,
     overrideProviderId?: ProviderId,
+    opts?: TeamChatOpts,
   ): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
@@ -817,7 +825,7 @@ class AppState {
     );
     if (!backend) return undefined;
 
-    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId);
+    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId, opts);
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);
     return session;
@@ -910,6 +918,10 @@ class AppState {
     }
     // Also remove from split/swarm panes
     project.layout.splitPanes = project.layout.splitPanes.filter((id) => id !== sessionId);
+    // Group membership is persisted state, so it is pruned inline beside the
+    // splitPanes filter — removeSession is the single funnel for every close
+    // path (batch closes loop through it); a group below 2 members dissolves.
+    pruneSessionFromTabGroups(project, sessionId);
     this.persist();
     this.emit('session-removed', { projectId, sessionId });
     this.emit('session-changed');
@@ -1354,6 +1366,31 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
     if (!reorderSessionInProject(project, sessionId, toIndex)) return;
+    this.persist();
+    this.emit('session-changed');
+  }
+
+  /** Center-zone tab drop: group the dragged tab (or its whole group) with the target. */
+  groupSessions(projectId: string, draggedSessionId: string, targetSessionId: string): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (!groupTabsInProject(project, draggedSessionId, targetSessionId)) return;
+    this.persist();
+    this.emit('session-changed');
+  }
+
+  renameTabGroup(projectId: string, groupId: string, name: string): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (!renameTabGroupInProject(project, groupId, name.slice(0, MAX_SESSION_NAME_LENGTH))) return;
+    this.persist();
+    this.emit('session-changed');
+  }
+
+  ungroupTabGroup(projectId: string, groupId: string): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (!ungroupInProject(project, groupId)) return;
     this.persist();
     this.emit('session-changed');
   }

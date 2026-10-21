@@ -7,6 +7,7 @@ import { getViewportContext } from './viewport.js';
 import { isWin } from '../../platform.js';
 import { sanitizeArgPrompt, safeSend } from './prompt-utils.js';
 import { shouldActivateAskAiSession } from '../../ask-ai-focus.js';
+import { resolvePlanModePreference, resolvePlanProvider } from '../../state/specialized-sessions.js';
 
 export function toggleDrawMode(instance: BrowserTabInstance): void {
   instance.drawMode = !instance.drawMode;
@@ -95,7 +96,8 @@ export async function sendDrawToNewSession(instance: BrowserTabInstance): Promis
   }
 
   const prompt = buildDrawPrompt(instance, imagePath);
-  const newSession = appState.addPlanSession(project.id, `Draw: ${instruction.slice(0, 30)}`, instance.drawPlanModeCheckbox.checked, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
+  const planMode = resolvePlanModePreference(appState.preferences, resolvePlanProvider(project, appState.preferences, undefined));
+  const newSession = appState.addPlanSession(project.id, `Draw: ${instruction.slice(0, 30)}`, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
   if (newSession) {
     setPendingPrompt(newSession.id, prompt);
   }

@@ -1,5 +1,6 @@
 import { appState, MAX_SESSION_NAME_LENGTH, type ProjectRecord, type SessionRecord } from '../../state.js';
-import type { ProviderId } from '../../../shared/types.js';
+import type { ProviderId, TabGroupRecord } from '../../../shared/types.js';
+import { findGroupForSession, isGroupableTab, TAB_GROUP_DWELL_MS } from '../../state/tab-group-state.js';
 import { getStatus, STATUS_GLYPH, type SessionStatus } from '../../session-activity.js';
 import { isUnread } from '../../session-unread.js';
 import { hasUnreadInProject as hasGithubUnread } from '../../github-unread.js';
@@ -24,6 +25,56 @@ import { tabListEl } from './dom.js';
 import { scrollDelta, bankScroll, planScroll, commitScroll } from './tab-scroll.js';
 import { syncTabArrows } from './tab-arrows.js';
 import { t } from '../../i18n.js';
+
+// Center-zone group-drop affordance state (clear+set dwell idiom from
+// hover-card.ts): the timer lights the drop target, the drop commits.
+let groupDwellTimer: ReturnType<typeof setTimeout> | null = null;
+let draggingSessionId: string | null = null;
+
+function clearGroupDwell(): void {
+  if (groupDwellTimer !== null) {
+    clearTimeout(groupDwellTimer);
+    groupDwellTimer = null;
+  }
+}
+
+// Tab rename and group rename both make the strip mid-edit.
+function renameInputOpen(): boolean {
+  return !!tabListEl.querySelector('.tab-name input, .tab-group-name input');
+}
+
+type DropZone = 'left' | 'center' | 'right';
+
+// Outer thirds keep the reorder zones; the center third is the group zone.
+function dropZoneOf(clientX: number, rect: DOMRect): DropZone {
+  const third = rect.width / 3;
+  if (clientX < rect.left + third) return 'left';
+  if (clientX > rect.right - third) return 'right';
+  return 'center';
+}
+
+// The center zone lights up only for a real group drop: both tabs groupable,
+// a live drag of a different tab, and no open rename (plan §6).
+function canDropToGroup(project: ProjectRecord, target: SessionRecord): boolean {
+  if (!draggingSessionId || draggingSessionId === target.id) return false;
+  if (renameInputOpen()) return false;
+  const dragged = project.sessions.find((s) => s.id === draggingSessionId);
+  return !!dragged && isGroupableTab(dragged) && isGroupableTab(target);
+}
+
+function highlightGroupDrop(project: ProjectRecord, tab: HTMLElement, target: SessionRecord): void {
+  tab.classList.add('drag-over-group');
+  const group = findGroupForSession(project, target.id);
+  if (!group) return;
+  for (const id of group.sessionIds) {
+    if (id === target.id) continue;
+    tabListEl.querySelector(`.tab-item[data-session-id="${id}"]`)?.classList.add('drag-over-group');
+  }
+}
+
+function sweepGroupHighlights(): void {
+  tabListEl.querySelectorAll('.drag-over-group').forEach((el) => el.classList.remove('drag-over-group'));
+}
 
 function buildTooltip(status: SessionStatus, cliSessionId?: string): string {
   const statusLine = t('tab.tooltip.statusPrefix', { status });
@@ -114,6 +165,111 @@ function startRename(tab: HTMLElement, project: ProjectRecord, session: SessionR
   });
 
   input.addEventListener('blur', commit);
+}
+
+function createGroupEl(project: ProjectRecord, group: TabGroupRecord): HTMLElement {
+  const groupEl = document.createElement('div');
+  groupEl.className = `tab-group tab-group-color-${group.colorIndex}`;
+  groupEl.dataset.groupId = group.id;
+  const label = document.createElement('div');
+  label.className = 'tab-group-label';
+  label.dataset.groupId = group.id;
+  label.title = t('tab.group.tooltip', { name: group.name, count: group.sessionIds.length });
+  // The label deliberately contains no .tab-name: that selector is the
+  // rename-focus guard at split-layout.ts. The name and tooltip are esc()'d,
+  // the same contract as the tab innerHTML in render().
+  // pi-lens-ignore: xss-innerhtml
+  label.innerHTML = `
+    <span class="tab-group-dot" title="${esc(t('tab.group.renameTooltip'))}"></span>
+    <span class="tab-group-name">${esc(group.name)}</span>
+    <span class="tab-group-count">${group.sessionIds.length}</span>
+  `;
+  label.addEventListener('dblclick', () => startGroupRename(label, project, group));
+  label.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showGroupContextMenu(e.clientX, e.clientY, project, group, label);
+  });
+  groupEl.appendChild(label);
+  return groupEl;
+}
+
+// Mirrors startRename: Enter commits, Escape reverts, blur commits, an empty
+// input keeps the old name. Membership edits never rename the group, so a
+// manual rename survives by construction.
+function startGroupRename(labelEl: HTMLElement, project: ProjectRecord, group: TabGroupRecord): void {
+  const nameSpan = labelEl.querySelector('.tab-group-name') as HTMLElement | null;
+  if (!nameSpan || nameSpan.querySelector('input')) return;
+
+  const input = document.createElement('input');
+  input.maxLength = MAX_SESSION_NAME_LENGTH;
+  input.value = group.name;
+  nameSpan.textContent = '';
+  nameSpan.appendChild(input);
+  input.select();
+
+  let committed = false;
+  const commit = () => {
+    if (committed) return;
+    committed = true;
+    const newName = input.value.trim();
+    input.remove();
+    if (newName && newName !== group.name) {
+      appState.renameTabGroup(project.id, group.id, newName);
+    } else {
+      render();
+    }
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      committed = true;
+      input.remove();
+      render();
+    }
+  });
+
+  input.addEventListener('blur', commit);
+}
+
+function showGroupContextMenu(x: number, y: number, project: ProjectRecord, group: TabGroupRecord, labelEl: HTMLElement): void {
+  hideTabContextMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'tab-context-menu';
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  const renameGroupItem = document.createElement('div');
+  renameGroupItem.className = 'tab-context-menu-item';
+  renameGroupItem.textContent = t('contextMenu.tab.renameGroup');
+  renameGroupItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideTabContextMenu();
+    startGroupRename(labelEl, project, group);
+  });
+
+  const separator = document.createElement('div');
+  separator.className = 'tab-context-menu-separator';
+
+  const ungroupItem = document.createElement('div');
+  ungroupItem.className = 'tab-context-menu-item';
+  ungroupItem.textContent = t('contextMenu.tab.ungroup');
+  ungroupItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideTabContextMenu();
+    appState.ungroupTabGroup(project.id, group.id);
+  });
+
+  menu.appendChild(renameGroupItem);
+  menu.appendChild(separator);
+  menu.appendChild(ungroupItem);
+  document.body.appendChild(menu);
+  setActiveContextMenu(menu);
+  positionMenu(menu);
 }
 
 function showTabContextMenu(x: number, y: number, project: ProjectRecord, session: SessionRecord, tab: HTMLElement): void {
@@ -251,6 +407,36 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   menu.appendChild(moveLeftItem);
   menu.appendChild(moveRightItem);
 
+  const tabGroup = findGroupForSession(project, session.id);
+  if (tabGroup) {
+    // Rename group / Ungroup from any member tab, behind a separator.
+    const groupSeparator = document.createElement('div');
+    groupSeparator.className = 'tab-context-menu-separator';
+
+    const renameGroupItem = document.createElement('div');
+    renameGroupItem.className = 'tab-context-menu-item';
+    renameGroupItem.textContent = t('contextMenu.tab.renameGroup');
+    renameGroupItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideTabContextMenu();
+      const labelEl = tab.closest('.tab-group')?.querySelector('.tab-group-label') as HTMLElement | null;
+      if (labelEl) startGroupRename(labelEl, project, tabGroup);
+    });
+
+    const ungroupItem = document.createElement('div');
+    ungroupItem.className = 'tab-context-menu-item';
+    ungroupItem.textContent = t('contextMenu.tab.ungroup');
+    ungroupItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideTabContextMenu();
+      appState.ungroupTabGroup(project.id, tabGroup.id);
+    });
+
+    menu.appendChild(groupSeparator);
+    menu.appendChild(renameGroupItem);
+    menu.appendChild(ungroupItem);
+  }
+
   if (appState.preferences.debugMode) {
     const sessionSeparator = document.createElement('div');
     sessionSeparator.className = 'tab-context-menu-separator';
@@ -346,7 +532,7 @@ export function render(): void {
   // contract in tab-scroll.ts: a scroll made during an open rename is banked
   // by the render that early-returns, not silently dropped.
   bankScroll(tabListEl.scrollLeft);
-  if (tabListEl.querySelector('.tab-name input')) return;
+  if (renameInputOpen()) return;
   tabListEl.innerHTML = '';
   const project = appState.activeProject;
   if (!project) {
@@ -356,7 +542,12 @@ export function render(): void {
   }
 
   let activeTab: HTMLElement | null = null;
+  // A maximal run of sessions sharing one group id renders inside a single
+  // .tab-group wrapper; strip order follows project.sessions (invariant 9).
+  let currentGroupEl: HTMLElement | null = null;
+  let currentGroupId: string | null = null;
   for (const session of project.sessions) {
+    const sessionGroup = findGroupForSession(project, session.id);
     const tab = document.createElement('div');
     const isActive = session.id === project.activeSessionId;
     const isMcp = session.type === 'mcp-inspector';
@@ -371,7 +562,7 @@ export function render(): void {
     const isSpecial = isMcp || isDiff || isFileReader || isRemoteTab || isBrowserTab || isProjectTab || isKanban || isTeam;
     const sharing = isSharing(session.id);
     const displayName = tabDisplayName(project, session);
-    tab.className = 'tab-item' + (isActive ? ' active' : '') + (unread ? ' unread' : '') + (sharing ? ' tab-sharing' : '') + (isRemoteTab ? ' tab-remote' : '');
+    tab.className = 'tab-item' + (isActive ? ' active' : '') + (unread ? ' unread' : '') + (sharing ? ' tab-sharing' : '') + (isRemoteTab ? ' tab-remote' : '') + (sessionGroup ? ' in-group' : '');
     tab.dataset.sessionId = session.id;
     tab.dataset.tabName = displayName;
     tab.dataset.cliSessionId = session.cliSessionId ?? '';
@@ -428,37 +619,59 @@ export function render(): void {
     tab.addEventListener('dragstart', (e) => {
       e.dataTransfer!.effectAllowed = 'move';
       e.dataTransfer!.setData('text/plain', session.id);
+      draggingSessionId = session.id;
       tab.classList.add('dragging');
     });
 
     tab.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.dataTransfer!.dropEffect = 'move';
-      // Determine left/right half
       const rect = tab.getBoundingClientRect();
-      const midX = rect.left + rect.width / 2;
+      const zone = dropZoneOf(e.clientX, rect);
       tab.classList.remove('drag-over-left', 'drag-over-right');
-      if (e.clientX < midX) {
+      if (zone === 'center' && canDropToGroup(project, session)) {
+        // Dwell is feedback only — render() wipes the strip, so grouping
+        // commits on drop, never on timer fire.
+        if (groupDwellTimer === null && !tab.classList.contains('drag-over-group')) {
+          groupDwellTimer = setTimeout(() => {
+            groupDwellTimer = null;
+            highlightGroupDrop(project, tab, session);
+          }, TAB_GROUP_DWELL_MS);
+        }
+        return;
+      }
+      clearGroupDwell();
+      tab.classList.remove('drag-over-group');
+      if (zone === 'left') {
         tab.classList.add('drag-over-left');
-      } else {
+      } else if (zone === 'right') {
         tab.classList.add('drag-over-right');
       }
     });
 
     tab.addEventListener('dragleave', () => {
-      tab.classList.remove('drag-over-left', 'drag-over-right');
+      tab.classList.remove('drag-over-left', 'drag-over-right', 'drag-over-group');
+      clearGroupDwell();
     });
 
     tab.addEventListener('drop', (e) => {
       e.preventDefault();
+      clearGroupDwell();
       tab.classList.remove('drag-over-left', 'drag-over-right');
+      sweepGroupHighlights();
       const draggedId = e.dataTransfer!.getData('text/plain');
       if (!draggedId || draggedId === session.id) return;
 
       const rect = tab.getBoundingClientRect();
-      const midX = rect.left + rect.width / 2;
+      if (dropZoneOf(e.clientX, rect) === 'center') {
+        if (canDropToGroup(project, session)) {
+          appState.groupSessions(project.id, draggedId, session.id);
+        }
+        return;
+      }
+
       let targetIndex = project.sessions.findIndex(s => s.id === session.id);
-      if (e.clientX >= midX) targetIndex++;
+      if (e.clientX >= rect.left + rect.width / 2) targetIndex++;
 
       // Adjust for the fact that removing the dragged item shifts indices
       const fromIndex = project.sessions.findIndex(s => s.id === draggedId);
@@ -469,14 +682,25 @@ export function render(): void {
 
     tab.addEventListener('dragend', () => {
       tab.classList.remove('dragging');
+      draggingSessionId = null;
+      clearGroupDwell();
       // Clean up all drag indicators
-      tabListEl.querySelectorAll('.drag-over-left, .drag-over-right').forEach(el => {
-        el.classList.remove('drag-over-left', 'drag-over-right');
+      tabListEl.querySelectorAll('.drag-over-left, .drag-over-right, .drag-over-group').forEach(el => {
+        el.classList.remove('drag-over-left', 'drag-over-right', 'drag-over-group');
       });
     });
 
     if (isActive) activeTab = tab;
-    tabListEl.appendChild(tab);
+    const groupId = sessionGroup?.id ?? null;
+    if (groupId !== currentGroupId) {
+      currentGroupId = groupId;
+      // A non-contiguous re-entry opens a second wrapper; normalizeTabGroups
+      // makes that state transient, the render stays tolerant.
+      currentGroupEl = sessionGroup ? createGroupEl(project, sessionGroup) : null;
+      // The wrapper is a strip child; tabs of the run nest inside it.
+      if (currentGroupEl) tabListEl.appendChild(currentGroupEl);
+    }
+    (currentGroupEl ?? tabListEl).appendChild(tab);
   }
 
   const plan = planScroll(project.id, project.activeSessionId);

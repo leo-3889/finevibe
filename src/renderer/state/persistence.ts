@@ -2,6 +2,7 @@ import type { BoardColumn, BoardData, PersistedState, Preferences, ProjectRecord
 import { restoreCost } from '../session-cost.js';
 import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
+import { normalizeTabGroups } from './tab-group-state.js';
 
 export function createDefaultBoard(): BoardData {
   const columns: BoardColumn[] = [
@@ -73,6 +74,10 @@ export function ensureProjectDefaults(state: PersistedState): void {
   for (const project of state.projects) {
     if (!project.board) project.board = createDefaultBoard();
     for (const task of project.board.tasks) task.sessionId = undefined;
+
+    // Hydrate sanitising for tab groups: dead ids, cross-group duplicates and
+    // broken contiguity from a hand-edited state.json never reach the strip.
+    normalizeTabGroups(project);
 
     const legacyMode = (project.layout as { mode: string }).mode;
     if (legacyMode === 'board') {

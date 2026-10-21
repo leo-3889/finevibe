@@ -33,6 +33,21 @@ export function isPlanModeSupported(providerId: ProviderId): boolean {
   return !!getProviderCapabilities(providerId)?.planModeArg;
 }
 
+/**
+ * The effective plan-mode checkbox value for a provider: plan-capable
+ * providers follow the per-provider preference (absent = `true`, i.e. the
+ * pre-setting behavior — no upgrade surprise); providers without a verified
+ * `planModeArg` are always off (`buildPlanSessionArgs` drops the flag for
+ * them anyway). Single source of truth for the New Session modal, the
+ * Preferences rows, the Kanban task modal, and every quick send.
+ */
+export function resolvePlanModePreference(
+  prefs: Pick<Preferences, 'planModeDefaults'>,
+  providerId: ProviderId,
+): boolean {
+  return isPlanModeSupported(providerId) && (prefs.planModeDefaults?.[providerId] ?? true);
+}
+
 /** Resolve the providerId used when creating a plain CLI session. */
 export function resolveCliProvider(prefs: Preferences, override: ProviderId | undefined, project?: ProjectRecord): ProviderId {
   return override ?? project?.defaultProvider ?? prefs.defaultProvider ?? 'claude';

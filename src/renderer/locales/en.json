@@ -21,7 +21,8 @@
     "copyOnSelect": "Copy on select",
     "askAiFocus": "Ask AI opens the new session in",
     "askAiFocusSwitch": "a new focused tab",
-    "askAiFocusStay": "the background — keep my tab"
+    "askAiFocusStay": "the background — keep my tab",
+    "planModeHeading": "Plan mode by default for quick AI sessions"
   },
   "appearance": {
     "theme": "Theme",
@@ -109,6 +110,11 @@
     "newSession": {
       "defaultName": "Session {num}"
     },
+    "group": {
+      "defaultName": "Group {num}",
+      "tooltip": "{name} · {count} tabs",
+      "renameTooltip": "Rename group"
+    },
     "moreMenu": {
       "swarmLayoutActive": "Swarm Layout ✓",
       "swarmLayout": "Swarm Layout",
@@ -121,6 +127,8 @@
       "argumentsLabel": "Arguments",
       "argumentsPlaceholder": "e.g. --model sonnet",
       "keepArgsLabel": "Keep args for future sessions",
+      "planModeLabel": "Plan mode",
+      "planModeUnsupportedTooltip": "Provider does not support plan mode",
       "envLabel": "Environment Variables",
       "envPlaceholder": "KEY=VALUE (one per line)",
       "keepEnvLabel": "Keep env vars for future sessions",
@@ -168,7 +176,9 @@
       "copyCliSessionId": "Copy CLI Session ID",
       "copyInternalId": "Copy Internal ID",
       "closeInspector": "Close Inspector",
-      "inspect": "Inspect"
+      "inspect": "Inspect",
+      "renameGroup": "Rename Group",
+      "ungroup": "Ungroup"
     },
     "board": {
       "deleteTag": "Delete Tag"

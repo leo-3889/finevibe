@@ -145,8 +145,9 @@ let lastFocusedPane: PaneFocusMemo | null = null;
 
 /** Move DOM focus into a pane, if this render is one that has any business doing so. */
 function focusPane(project: ProjectRecord, sessionId: string): void {
-  // Don't steal focus from an active tab rename input
-  if (document.querySelector('#tab-list .tab-name input')) return;
+  // Don't steal focus from an active tab- or group-rename input; the group
+  // label deliberately has no .tab-name, so it needs its own clause.
+  if (document.querySelector('#tab-list .tab-name input, #tab-list .tab-group-name input')) return;
 
   const activeEl = document.activeElement;
   const target: PaneFocusMemo = { projectId: project.id, sessionId };

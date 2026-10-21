@@ -6,6 +6,8 @@ import { allTranslations, t } from '../i18n.js';
 export const DEFAULT_NAME_KEY = 'tab.newSession.defaultName';
 /** i18n key for the auto-generated MCP inspector tab name. */
 export const MCP_INSPECTOR_NAME_KEY = 'tab.newMcpInspector.defaultName';
+/** i18n key for the auto-generated tab-group name (`Group {num}` / `分组 {num}`). */
+export const GROUP_NAME_KEY = 'tab.group.defaultName';
 
 /** `Session {num}` → `/^Session (\d+)$/`, or null if the template has no `{num}`. */
 function toPattern(template: string): RegExp | null {
@@ -64,4 +66,22 @@ export function nextSessionNumber(project: ProjectRecord): number {
 /** The full default name for a new session, e.g. `Session 4`. */
 export function defaultSessionName(project: ProjectRecord): string {
   return t(DEFAULT_NAME_KEY, { num: nextSessionNumber(project) });
+}
+
+/**
+ * Next free group number; counts existing group names, like `nextNumberFor`
+ * counts session names — dissolving a group frees its number only once no
+ * group carries it anymore.
+ */
+export function nextGroupNumber(project: ProjectRecord): number {
+  let max = 0;
+  for (const group of project.tabGroups ?? []) {
+    max = Math.max(max, parseNumberedName(GROUP_NAME_KEY, group.name) ?? 0);
+  }
+  return max + 1;
+}
+
+/** The full auto name for a new tab group, e.g. `Group 4`. */
+export function defaultGroupName(project: ProjectRecord): string {
+  return t(GROUP_NAME_KEY, { num: nextGroupNumber(project) });
 }

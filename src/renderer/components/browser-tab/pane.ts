@@ -12,7 +12,6 @@ import {
   type WebviewElement,
 } from './types.js';
 import { instances, getPreloadPath } from './instance.js';
-import { createPlanModeRow } from '../../dom-utils.js';
 import { navigateTo, normalizeUrl } from './navigation.js';
 import { safeSend } from './prompt-utils.js';
 import { applyViewport, openViewportDropdown, closeViewportDropdown } from './viewport.js';
@@ -283,9 +282,6 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   inspectAttachDimsRow.appendChild(inspectAttachDimsText);
   inspectPanel.appendChild(inspectAttachDimsRow);
 
-  const { row: inspectPlanModeRow, checkbox: inspectPlanModeCheckbox } = createPlanModeRow();
-  inspectPanel.appendChild(inspectPlanModeRow);
-
   inspectPanel.appendChild(submitGroup);
   el.appendChild(inspectPanel);
 
@@ -345,9 +341,6 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   drawAttachDimsRow.appendChild(drawAttachDimsText);
   drawPanel.appendChild(drawAttachDimsRow);
 
-  const { row: drawPlanModeRow, checkbox: drawPlanModeCheckbox } = createPlanModeRow();
-  drawPanel.appendChild(drawPlanModeRow);
-
   const drawErrorEl = document.createElement('div');
   drawErrorEl.className = 'inspect-error-text';
   drawPanel.appendChild(drawErrorEl);
@@ -405,10 +398,6 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   flowInputRow.appendChild(flowInstructionInput);
   flowInputRow.appendChild(flowSubmitGroup);
 
-  const { row: flowPlanModeRow, checkbox: flowPlanModeCheckbox } = createPlanModeRow();
-  flowPlanModeRow.style.display = 'none';
-
-  flowPanel.appendChild(flowPlanModeRow);
   flowPanel.appendChild(flowInputRow);
   el.appendChild(flowPanel);
 
@@ -464,7 +453,6 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     inspectPanel,
     instructionInput,
     inspectAttachDimsCheckbox,
-    inspectPlanModeCheckbox,
     elementInfoEl,
     inspectMode: false,
     selectedElement: null,
@@ -476,8 +464,6 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     flowStepsList,
     flowInputRow,
     flowInstructionInput,
-    flowPlanModeRow,
-    flowPlanModeCheckbox,
     flowMode: false,
     flowSteps: [],
     flowPickerOverlay,
@@ -487,7 +473,6 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     drawPanel,
     drawInstructionInput,
     drawAttachDimsCheckbox,
-    drawPlanModeCheckbox,
     drawErrorEl,
     drawMode: false,
     sendMenuOverlay,

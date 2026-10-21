@@ -33,7 +33,7 @@ vi.mock('../provider-availability.js', () => ({
 }));
 
 import { appState, _resetForTesting } from '../state';
-import { resolveProfile, resolveProjectFilePath, isPlanModeSupported } from './specialized-sessions.js';
+import { resolveProfile, resolveProjectFilePath, isPlanModeSupported, resolvePlanModePreference } from './specialized-sessions.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import type { BoardData, BoardTask, CliProviderCapabilities, Profile, ProjectRecord, ProviderId } from '../../shared/types.js';
 import { getCost } from '../session-cost.js';
@@ -348,5 +348,27 @@ describe('isPlanModeSupported()', () => {
   it('is false for an unknown provider (no cached capabilities)', () => {
     vi.mocked(getProviderCapabilities).mockReturnValue(null);
     expect(isPlanModeSupported('nonexistent' as ProviderId)).toBe(false);
+  });
+});
+
+describe('resolvePlanModePreference()', () => {
+  const capsMatrix = {
+    claude: { planModeArg: '--permission-mode plan' },
+    pi: {},
+  } as unknown as Record<string, CliProviderCapabilities>;
+
+  it('defaults to true for a supported provider with no stored preference', () => {
+    vi.mocked(getProviderCapabilities).mockImplementation((id) => capsMatrix[id] ?? null);
+    expect(resolvePlanModePreference({}, 'claude')).toBe(true);
+  });
+
+  it('is false for an unsupported provider even when the preference is true', () => {
+    vi.mocked(getProviderCapabilities).mockImplementation((id) => capsMatrix[id] ?? null);
+    expect(resolvePlanModePreference({ planModeDefaults: { pi: true } }, 'pi')).toBe(false);
+  });
+
+  it('honors an explicit false for a supported provider', () => {
+    vi.mocked(getProviderCapabilities).mockImplementation((id) => capsMatrix[id] ?? null);
+    expect(resolvePlanModePreference({ planModeDefaults: { claude: false } }, 'claude')).toBe(false);
   });
 });

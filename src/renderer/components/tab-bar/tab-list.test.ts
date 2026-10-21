@@ -8,6 +8,9 @@ document.body.innerHTML = '<div id="tab-list"></div><div id="git-status"></div>'
 const setActiveSession = vi.fn();
 const reorderSession = vi.fn();
 const renameSession = vi.fn();
+const groupSessions = vi.fn();
+const renameTabGroup = vi.fn();
+const ungroupTabGroup = vi.fn();
 let activeProject: Record<string, unknown> | null = null;
 
 vi.mock('../../state.js', () => ({
@@ -17,6 +20,9 @@ vi.mock('../../state.js', () => ({
     setActiveSession,
     reorderSession,
     renameSession,
+    groupSessions,
+    renameTabGroup,
+    ungroupTabGroup,
     preferences: {},
   },
 }));
@@ -46,6 +52,7 @@ vi.mock('../resume-with-provider-menu.js', () => ({ buildResumeWithProviderItems
 const { render, updateTabStatus } = await import('./tab-list.js');
 const { setActiveContextMenu, getActiveContextMenu } = await import('./menu.js');
 const { _resetForTesting } = await import('./tab-scroll.js');
+const { t } = await import('../../i18n.js');
 
 const tabListEl = document.getElementById('tab-list')!;
 // jsdom has no layout: `scrollLeft` is hard-wired to 0 there, so the strip
@@ -60,8 +67,24 @@ Object.defineProperty(tabListEl, 'scrollLeft', {
 function cliSession(id: string, name: string) {
   return { id, name, cliSessionId: `cli-${id}`, providerId: 'claude' };
 }
-function project(id: string, sessions: ReturnType<typeof cliSession>[], activeSessionId: string | null = sessions[0]?.id ?? null) {
-  return { id, name: `Project ${id}`, path: `/repo/${id}`, sessions, activeSessionId };
+function project(id: string, sessions: ReturnType<typeof cliSession>[], activeSessionId: string | null = sessions[0]?.id ?? null, tabGroups?: { id: string; name: string; sessionIds: string[]; colorIndex: number }[]) {
+  return { id, name: `Project ${id}`, path: `/repo/${id}`, sessions, activeSessionId, tabGroups };
+}
+function tabGroup(id: string, name: string, sessionIds: string[], colorIndex = 0) {
+  return { id, name, sessionIds, colorIndex };
+}
+function stubRect(el: HTMLElement, left: number, width: number) {
+  el.getBoundingClientRect = () => ({
+    left, right: left + width, width, top: 0, bottom: 36, height: 36, x: left, y: 0, toJSON: () => ({}),
+  }) as DOMRect;
+}
+function fakeDataTransfer(id: string) {
+  return { getData: (type: string) => (type === 'text/plain' ? id : ''), setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+}
+function fireDrag(el: HTMLElement, type: string, clientX = 0, dataTransfer = fakeDataTransfer('s1')) {
+  const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX });
+  Object.defineProperty(e, 'dataTransfer', { value: dataTransfer });
+  el.dispatchEvent(e);
 }
 
 beforeEach(() => {
@@ -144,5 +167,157 @@ describe('shared context-menu singleton (P2-107, tab side)', () => {
     const menus = document.querySelectorAll('.tab-context-menu');
     expect(menus).toHaveLength(1);
     expect(getActiveContextMenu()).toBe(menus[0]);
+  });
+});
+
+describe('tab groups', () => {
+  function groupedProject() {
+    const sessions = [cliSession('s1', 'a'), cliSession('s2', 'b'), cliSession('s3', 'c')];
+    activeProject = project('p1', sessions, 's1', [tabGroup('g1', 'Group 1', ['s1', 's2'])]);
+    render();
+  }
+
+  it('renders one wrapper per run with label, count, and tabs that keep [data-session-id]', () => {
+    groupedProject();
+    const wrappers = tabListEl.querySelectorAll('.tab-group');
+    expect(wrappers).toHaveLength(1);
+    const wrapper = wrappers[0] as HTMLElement;
+    expect(wrapper.className).toContain('tab-group-color-0');
+    expect(wrapper.dataset.groupId).toBe('g1');
+    expect(wrapper.querySelector('.tab-group-name')!.textContent).toBe('Group 1');
+    expect(wrapper.querySelector('.tab-group-count')!.textContent).toBe('2');
+    expect(wrapper.querySelectorAll('.tab-item[data-session-id]')).toHaveLength(2);
+    expect(wrapper.querySelector('.tab-item')!.classList.contains('in-group')).toBe(true);
+    // The label must not carry .tab-name (split-layout's rename-focus guard).
+    expect(wrapper.querySelector('.tab-group-label .tab-name')).toBeNull();
+    // The ungrouped tab stays a direct child of the strip.
+    expect(tabListEl.querySelectorAll(':scope > .tab-item[data-session-id="s3"]')).toHaveLength(1);
+  });
+
+  it('label contextmenu yields Rename group + Ungroup; tab menu only for grouped tabs', () => {
+    groupedProject();
+    const openItems = (el: Element) => {
+      el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+      const items = [...getActiveContextMenu()!.querySelectorAll('.tab-context-menu-item')].map((i) => i.textContent);
+      getActiveContextMenu()!.remove();
+      setActiveContextMenu(null);
+      return items;
+    };
+
+    const labelItems = openItems(tabListEl.querySelector('.tab-group-label')!);
+    expect(labelItems).toEqual([t('contextMenu.tab.renameGroup'), t('contextMenu.tab.ungroup')]);
+
+    const groupedItems = openItems(tabListEl.querySelector('.tab-item[data-session-id="s1"]')!);
+    expect(groupedItems).toContain(t('contextMenu.tab.renameGroup'));
+    expect(groupedItems).toContain(t('contextMenu.tab.ungroup'));
+
+    const plainItems = openItems(tabListEl.querySelector('.tab-item[data-session-id="s3"]')!);
+    expect(plainItems).not.toContain(t('contextMenu.tab.renameGroup'));
+    expect(plainItems).not.toContain(t('contextMenu.tab.ungroup'));
+  });
+
+  it('group rename: Enter commits, Escape reverts, a live rename survives re-render', () => {
+    groupedProject();
+    const label = tabListEl.querySelector('.tab-group-label') as HTMLElement;
+
+    label.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    const input = label.querySelector('.tab-group-name input') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(input.maxLength).toBe(100);
+
+    // render() during a group rename early-returns: the input survives.
+    render();
+    expect(label.querySelector('.tab-group-name input')).not.toBeNull();
+
+    input.value = 'Frontend';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(renameTabGroup).toHaveBeenCalledWith('p1', 'g1', 'Frontend');
+
+    label.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    const input2 = label.querySelector('.tab-group-name input') as HTMLInputElement;
+    input2.value = 'Nope';
+    input2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(renameTabGroup).toHaveBeenCalledTimes(1);
+    // render() rebuilt the strip: read the fresh label, not the detached one.
+    const freshLabel = tabListEl.querySelector('.tab-group-label')!;
+    expect(freshLabel.querySelector('.tab-group-name')!.textContent).toBe('Group 1');
+  });
+
+  it('Ungroup from a member tab dissolves the wrapper', () => {
+    groupedProject();
+    tabListEl.querySelector('.tab-item[data-session-id="s1"]')!
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    const ungroupItem = [...getActiveContextMenu()!.querySelectorAll('.tab-context-menu-item')]
+      .find((i) => i.textContent === t('contextMenu.tab.ungroup')) as HTMLElement;
+    ungroupItem.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(ungroupTabGroup).toHaveBeenCalledWith('p1', 'g1');
+
+    (activeProject as { tabGroups?: unknown }).tabGroups = undefined;
+    render();
+    expect(tabListEl.querySelector('.tab-group')).toBeNull();
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(3);
+  });
+
+  it('center-zone drop groups; edge drop reorders', () => {
+    activeProject = project('p1', [cliSession('s1', 'a'), cliSession('s2', 'b')]);
+    render();
+    const source = tabListEl.querySelector('.tab-item[data-session-id="s1"]') as HTMLElement;
+    const target = tabListEl.querySelector('.tab-item[data-session-id="s2"]') as HTMLElement;
+    stubRect(target, 0, 90);
+    fireDrag(source, 'dragstart', 0, fakeDataTransfer('s1'));
+
+    fireDrag(target, 'drop', 45, fakeDataTransfer('s1'));
+    expect(groupSessions).toHaveBeenCalledWith('p1', 's1', 's2');
+    expect(reorderSession).not.toHaveBeenCalled();
+
+    fireDrag(target, 'drop', 2, fakeDataTransfer('s1'));
+    expect(reorderSession).toHaveBeenCalledWith('p1', 's1', 0);
+  });
+
+  it('center dwell highlights the target and its group; dragend sweeps', () => {
+    vi.useFakeTimers();
+    try {
+      groupedProject();
+      const source = tabListEl.querySelector('.tab-item[data-session-id="s3"]') as HTMLElement;
+      const target = tabListEl.querySelector('.tab-item[data-session-id="s2"]') as HTMLElement;
+      stubRect(target, 0, 90);
+      fireDrag(source, 'dragstart', 0, fakeDataTransfer('s3'));
+      fireDrag(target, 'dragover', 45, fakeDataTransfer('s3'));
+      expect(target.classList.contains('drag-over-group')).toBe(false);
+
+      vi.advanceTimersByTime(500);
+      expect(target.classList.contains('drag-over-group')).toBe(true);
+      expect(tabListEl.querySelector('.tab-item[data-session-id="s1"]')!.classList.contains('drag-over-group')).toBe(true);
+
+      fireDrag(target, 'dragend', 45, fakeDataTransfer('s3'));
+      expect(tabListEl.querySelectorAll('.drag-over-group')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a non-groupable target never lights the center zone', () => {
+    const kanban = { id: 'kb', name: 'kanban', type: 'kanban' };
+    activeProject = project('p1', [cliSession('s1', 'a'), kanban as never]);
+    render();
+    const target = tabListEl.querySelector('.tab-item[data-session-id="kb"]') as HTMLElement;
+    stubRect(target, 0, 90);
+    fireDrag(tabListEl.querySelector('.tab-item[data-session-id="s1"]') as HTMLElement, 'dragstart', 0, fakeDataTransfer('s1'));
+    fireDrag(target, 'dragover', 45, fakeDataTransfer('s1'));
+    vi.useFakeTimers();
+    vi.advanceTimersByTime(500);
+    vi.useRealTimers();
+    expect(target.classList.contains('drag-over-group')).toBe(false);
+
+    fireDrag(target, 'drop', 45, fakeDataTransfer('s1'));
+    expect(groupSessions).not.toHaveBeenCalled();
+    expect(reorderSession).not.toHaveBeenCalled();
+  });
+
+  it('updateTabStatus still patches a grouped tab dot', () => {
+    groupedProject();
+    updateTabStatus('s2', 'working');
+    const dot = tabListEl.querySelector('.tab-group .tab-item[data-session-id="s2"] .tab-status') as HTMLElement;
+    expect(dot.className).toContain('working');
   });
 });

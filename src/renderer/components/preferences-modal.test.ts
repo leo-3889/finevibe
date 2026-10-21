@@ -65,9 +65,17 @@ vi.mock('../shortcuts.js', () => ({
 vi.mock('../provider-availability.js', () => ({
   loadProviderAvailability: vi.fn(async () => {}),
   getProviderAvailabilitySnapshot: vi.fn(() => ({
-    providers: [{ id: 'claude', displayName: 'Claude Code' }],
-    availability: new Map([['claude', true]]),
+    providers: [
+      { id: 'claude', displayName: 'Claude Code' },
+      { id: 'pi', displayName: 'Pi' },
+    ],
+    availability: new Map([['claude', true], ['pi', true]]),
   })),
+}));
+vi.mock('../state/specialized-sessions.js', () => ({
+  isPlanModeSupported: (id: string) => id === 'claude',
+  resolvePlanModePreference: (prefs: { planModeDefaults?: Record<string, boolean> }, id: string) =>
+    id === 'claude' && (prefs.planModeDefaults?.[id] ?? true),
 }));
 vi.mock('./setup-checks.js', () => ({
   hasProviderIssue: vi.fn(() => false),
@@ -326,5 +334,54 @@ describe('showPreferencesModal theme preference', () => {
 
     const overlay = getElement('preferences-overlay');
     expect(findInTree(overlay, (node) => node.className === 'help-container')).not.toBeNull();
+  });
+});
+
+describe('General section plan-mode defaults', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    selectState.reset();
+    docBody = makeElement('body');
+
+    vi.stubGlobal('document', {
+      documentElement: { dataset: {} as Record<string, string> },
+      body: docBody,
+      getElementById(id: string) { return findById(docBody, id); },
+      createElement(tagName: string) { return makeElement(tagName); },
+      createTextNode(text: string) { return { textContent: text }; },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+
+    vi.stubGlobal('window', {
+      vibeyard: {
+        provider: {
+          listProviders: vi.fn(async () => []),
+          checkBinary: vi.fn(async () => true),
+        },
+        menu: { rebuild: vi.fn() },
+        app: { getVersion: vi.fn(async () => '0.0.0'), openExternal: vi.fn() },
+      },
+    });
+  });
+
+  it('renders one row per provider, disables the unsupported one, and persists toggles immediately', async () => {
+    const { showPreferencesModal } = await import('./preferences-modal.js');
+
+    showPreferencesModal();
+    selectPreferencesSection('general');
+
+    const claude = getElement('pref-plan-mode-claude');
+    const pi = getElement('pref-plan-mode-pi');
+    expect(claude.type).toBe('checkbox');
+    expect(claude.checked).toBe(true);
+    expect(claude.disabled).toBe(false);
+    expect(pi.disabled).toBe(true);
+    expect(pi.closest('.modal-toggle-field').title).toBe('Provider does not support plan mode');
+
+    claude.checked = false;
+    claude.dispatchEvent({ type: 'change' });
+    expect(mockState.setPreference).toHaveBeenCalledWith('planModeDefaults', { claude: false });
   });
 });

@@ -5,6 +5,7 @@ import type { BrowserTabInstance } from './types.js';
 import { buildPrompt, dismissInspect } from './inspect-mode.js';
 import { buildFlowPrompt, dismissFlow } from './flow-recording.js';
 import { shouldActivateAskAiSession } from '../../ask-ai-focus.js';
+import { resolvePlanModePreference, resolvePlanProvider } from '../../state/specialized-sessions.js';
 import {
   buildDrawPrompt,
   captureScreenshotPath,
@@ -34,7 +35,8 @@ export function sendFlowToNewSession(instance: BrowserTabInstance): void {
   const project = appState.activeProject;
   if (!project) return;
 
-  const newSession = appState.addPlanSession(project.id, `Flow: ${instruction.slice(0, 30)}`, instance.flowPlanModeCheckbox.checked, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
+  const planMode = resolvePlanModePreference(appState.preferences, resolvePlanProvider(project, appState.preferences, undefined));
+  const newSession = appState.addPlanSession(project.id, `Flow: ${instruction.slice(0, 30)}`, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
   if (newSession) {
     setPendingPrompt(newSession.id, prompt);
   }
@@ -62,7 +64,8 @@ export function sendToNewSession(instance: BrowserTabInstance): void {
   if (!project) return;
 
   const sessionName = `${info.tagName}: ${instance.instructionInput.value.trim().slice(0, 30)}`;
-  const newSession = appState.addPlanSession(project.id, sessionName, instance.inspectPlanModeCheckbox.checked, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
+  const planMode = resolvePlanModePreference(appState.preferences, resolvePlanProvider(project, appState.preferences, undefined));
+  const newSession = appState.addPlanSession(project.id, sessionName, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
   if (newSession) {
     setPendingPrompt(newSession.id, prompt);
   }
