@@ -61,6 +61,21 @@ function unwatchSubtree(projectId: string, folderPath: string, clearExpanded = f
   }
 }
 
+/**
+ * Drop the cached listings and in-flight reads for `folderPath` and everything
+ * beneath it, without touching watchers. Called before every user-initiated
+ * render (folder expand, panel re-render) so the listing is re-read from disk
+ * instead of served stale after a missed fs event.
+ */
+function refreshFolderCache(folderPath: string): void {
+  for (const p of [...entryCache.keys(), ...inflight.keys()]) {
+    if (isPathUnder(p, folderPath)) {
+      entryCache.delete(p);
+      inflight.delete(p);
+    }
+  }
+}
+
 // Coalesce filesystem-change bursts: collect the affected directories and
 // reconcile each once per animation frame, so an agent writing 50 files in a
 // watched folder triggers a single batched DOM pass rather than 50.
@@ -188,11 +203,16 @@ async function loadEntries(folderPath: string): Promise<DirEntry[]> {
 
   const promise = window.vibeyard.fs.listDir(folderPath).then((entries) => {
     const sorted = sortEntries(entries);
-    entryCache.set(folderPath, sorted);
-    inflight.delete(folderPath);
+    // Only cache if this promise is still the registered inflight: if the
+    // entry was evicted while the read was in flight (collapse, expand-time
+    // refresh), the result is stale and must not repopulate the cache.
+    if (inflight.get(folderPath) === promise) {
+      entryCache.set(folderPath, sorted);
+      inflight.delete(folderPath);
+    }
     return sorted;
   }).catch(() => {
-    inflight.delete(folderPath);
+    if (inflight.get(folderPath) === promise) inflight.delete(folderPath);
     return [] as DirEntry[];
   });
   inflight.set(folderPath, promise);
@@ -259,6 +279,7 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
       const nowExpanded = toggleFolder(projectId, entry.path);
       row.querySelector('.file-tree-chevron')!.classList.toggle('expanded', nowExpanded);
       if (nowExpanded) {
+        refreshFolderCache(entry.path);
         renderChildren(projectId, entry.path, depth + 1, subContainer);
       } else {
         unwatchSubtree(projectId, entry.path);
@@ -516,7 +537,10 @@ export function renderFileTree(project: ProjectRecord, container: HTMLElement): 
   ensureChangeSubscription();
   activeTrees.set(project.id, { project, container });
   projectPaths.set(project.id, project.path);
-  activeTrees.set(project.id, { project, container });
   container.innerHTML = '';
+  // The root has no collapse gesture, so every panel re-render (reopen,
+  // project switch, preferences-changed) re-reads it from disk — the only
+  // recovery path for a missed watcher event at the project root.
+  refreshFolderCache(project.path);
   renderChildren(project.id, project.path, 0, container);
 }
