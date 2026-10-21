@@ -12,7 +12,7 @@ export function applyZoom(factor: number): void {
   const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, factor));
   if (clamped === getZoomFactor()) return;
   appState.setPreference('zoomFactor', clamped);
-  window.vibeyard.zoom.set(clamped);
+  window.finevibe.zoom.set(clamped);
   requestAnimationFrame(() => fitAllVisible());
 }
 

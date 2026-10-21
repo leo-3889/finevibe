@@ -96,7 +96,7 @@ function handleMarkdownClick(wrapper: HTMLElement, baseDir: string | undefined, 
       scrollToHeading(wrapper, target.slug);
       break;
     case 'external':
-      window.vibeyard.app
+      window.finevibe.app
         .openExternal(target.url)
         .catch((err: unknown) => console.warn(`[markdown-link] could not open ${target.url}`, err));
       break;
@@ -201,7 +201,7 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
     const fullPath = resolveFilePath(instance);
     if (await closeSessionIfFileMissing(sessionId, fullPath)) return;
     if (instance.kind === 'image') {
-      const result = await window.vibeyard.fs.readImage(fullPath);
+      const result = await window.finevibe.fs.readImage(fullPath);
       if (!result) {
         showFileReaderMessage(body, 'Failed to load file');
         return;
@@ -211,7 +211,7 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
       instance.loaded = true;
       return;
     }
-    const result = await window.vibeyard.fs.readFile(fullPath);
+    const result = await window.finevibe.fs.readFile(fullPath);
     if (!result.ok) {
       showFileReaderMessage(
         body,
@@ -263,7 +263,7 @@ function hideTokenBadge(instance: FileReaderInstance): void {
 
 function ensureFileChangedListener(): void {
   if (unwatchFileChanged) return;
-  unwatchFileChanged = window.vibeyard.fs.onFsChange((changes) => {
+  unwatchFileChanged = window.finevibe.fs.onFsChange((changes) => {
     for (const change of changes) {
       for (const [sessionId, instance] of instances) {
         if (instance.resolvedPath && samePath(instance.resolvedPath, change.path) && instance.loaded) {
@@ -380,7 +380,7 @@ export function destroyFileReaderPane(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
   if (instance.resolvedPath) {
-    window.vibeyard.fs.unwatchDir(dirname(instance.resolvedPath));
+    window.finevibe.fs.unwatchDir(dirname(instance.resolvedPath));
   }
   destroySearchBar(sessionId);
   destroyGoToLineBar(sessionId);
@@ -401,7 +401,7 @@ export function showFileReaderPane(sessionId: string, isSplit: boolean): void {
     const fullPath = resolveFilePath(instance);
     instance.resolvedPath = fullPath;
     ensureFileChangedListener();
-    window.vibeyard.fs.watchDir(dirname(fullPath));
+    window.finevibe.fs.watchDir(dirname(fullPath));
   }
 
   loadFile(instance, sessionId);

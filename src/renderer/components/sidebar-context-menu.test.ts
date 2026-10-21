@@ -86,7 +86,7 @@ vi.mock('./project-settings.js', () => ({ promptProjectSettings: vi.fn() }));
 const { initSidebar } = await import('./sidebar.js');
 const { getActiveContextMenu, setActiveContextMenu } = await import('./tab-bar/menu.js');
 
-(window as unknown as { vibeyard: unknown }).vibeyard = {
+(window as unknown as { finevibe: unknown }).finevibe = {
   app: { openExternal: vi.fn() },
   fs: { showInFolder: vi.fn(async () => ({ ok: true })) },
 };

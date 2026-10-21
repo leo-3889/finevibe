@@ -25,12 +25,12 @@ import { runImport } from './importer';
 const mockExec = vi.mocked(execFileSync);
 
 function listSnapshots(): string[] {
-  return fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('vibeyard-chrome-import-'));
+  return fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('finevibe-chrome-import-'));
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  fixture.profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-import-profile-'));
+  fixture.profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-import-profile-'));
   const db = new Database(path.join(fixture.profileDir, 'Cookies'));
   db.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)");
   db.prepare("INSERT INTO meta VALUES('version', '24')").run();

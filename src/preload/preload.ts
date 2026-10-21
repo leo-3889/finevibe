@@ -8,7 +8,7 @@ const ZOOM_MIN = 0.75;
 const ZOOM_MAX = 2.0;
 export type { CostData } from '../shared/types';
 
-export interface VibeyardApi {
+export interface FineVibeApi {
   pty: {
     create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
@@ -186,7 +186,7 @@ function onChannel(channel: string, callback: (...args: unknown[]) => void): () 
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
-const api: VibeyardApi = {
+const api: FineVibeApi = {
   pty: {
     create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir) =>
       ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt, systemPrompt, envVars || '', configDir),
@@ -387,7 +387,7 @@ const api: VibeyardApi = {
   },
 };
 
-contextBridge.exposeInMainWorld('vibeyard', api);
+contextBridge.exposeInMainWorld('finevibe', api);
 
 // P0 clipboard-timing env forwarding. The renderer is a sandboxed Browser
 // World with no process.env, so `clipboardTimingOn()` in

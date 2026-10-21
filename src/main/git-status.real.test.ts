@@ -108,10 +108,10 @@ describe('gitDiscardFile (real repository)', () => {
   let repoDir: string;
 
   beforeEach(async () => {
-    repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vibeyard-discard-'));
+    repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'finevibe-discard-'));
     await git(repoDir, ['init']);
-    await git(repoDir, ['config', 'user.email', 'test@vibeyard.dev']);
-    await git(repoDir, ['config', 'user.name', 'Vibeyard Test']);
+    await git(repoDir, ['config', 'user.email', 'test@finevibe.dev']);
+    await git(repoDir, ['config', 'user.name', 'FineVibe Test']);
     await fs.promises.mkdir(path.join(repoDir, 'src'));
     await fs.promises.writeFile(path.join(repoDir, 'src', 'index.ts'), 'export const a = 1;\n');
     await fs.promises.writeFile(path.join(repoDir, '.gitignore'), 'ignored.txt\n');
@@ -167,7 +167,7 @@ describe('gitDiscardFile (real repository)', () => {
   });
 
   it('refuses any discard in a non-repo directory (the ~/.claude chain)', async () => {
-    const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vibeyard-norepo-'));
+    const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'finevibe-norepo-'));
     try {
       await fs.promises.writeFile(path.join(outside, 'settings.json'), '{}');
       await expect(gitDiscardFile(outside, '', 'untracked')).rejects.toThrow();

@@ -109,7 +109,7 @@ function collectDroppedPaths(dt: DataTransfer | null): string[] {
   if (internal) return [internal];
   const paths: string[] = [];
   for (const file of dt.files) {
-    const path = window.vibeyard.fs.getDroppedFilePath(file);
+    const path = window.finevibe.fs.getDroppedFilePath(file);
     if (path) paths.push(path);
   }
   return paths;
@@ -133,13 +133,13 @@ function readAsDataUrl(file: File): Promise<string> {
 async function pathsForPastedFiles(files: File[]): Promise<string[]> {
   const paths: string[] = [];
   for (const file of files) {
-    const realPath = window.vibeyard.fs.getDroppedFilePath(file);
+    const realPath = window.finevibe.fs.getDroppedFilePath(file);
     if (realPath) {
       paths.push(realPath);
       continue;
     }
     if (!file.type.startsWith('image/')) continue;
-    const saved = await window.vibeyard.clipboard.saveImage(await readAsDataUrl(file));
+    const saved = await window.finevibe.clipboard.saveImage(await readAsDataUrl(file));
     if (saved) paths.push(saved);
   }
   return paths;
@@ -205,7 +205,7 @@ export async function pasteIntoTerminal(
     // Main's read below is the documented fallback for these, per platform.
   }
 
-  const payload = await window.vibeyard.clipboard.readForPaste();
+  const payload = await window.finevibe.clipboard.readForPaste();
   if (payload.textTruncated) showTextTruncationNotice();
   if (t0) console.log(`[paste-timing] renderer readForPaste +${(performance.now() - t0).toFixed(1)} ms (since paste request)`);
   // Wrapped so every main-read send stamps itself; the off path keeps the
@@ -362,7 +362,7 @@ export function copyText(text: string, source: ClipboardSource = 'explicit'): vo
   }
   lastCopied = { text, source };
   try {
-    window.vibeyard.clipboard.write(text, source);
+    window.finevibe.clipboard.write(text, source);
     if (t0) console.log(`[copy-timing] renderer clipboard write sent +${(performance.now() - t0).toFixed(1)} ms (source=${source}) counts clipboardWrite=1`);
   } catch (err) {
     console.warn('clipboard write failed', err);

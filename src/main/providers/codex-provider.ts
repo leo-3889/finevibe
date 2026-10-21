@@ -59,7 +59,7 @@ export class CodexProvider implements CliProvider {
       // planModeArg intentionally UNSET — VERIFICATION-PENDING. Codex plan mode is
       // GA (rust-v0.94.0 collaboration mode; TUI /plan, Shift+Tab), but
       // `--collaboration-mode` is `codex exec`-only (headless JSON, incompatible
-      // with Vibeyard's PTY terminal), there is no TUI startup parameter
+      // with FineVibe's PTY terminal), there is no TUI startup parameter
       // (openai/codex#13377 — the startup config field is removed on main), and
       // the required probe (`codex --help` on an installed binary) could not run
       // on 2026-10-21: the CLI is not installed here. Never ship a planModeArg
@@ -127,7 +127,7 @@ export class CodexProvider implements CliProvider {
     // The rollout watcher is a recursive fs.watch plus a 2s interval: without
     // this it survives quit, and a scan armed within its 500ms arming window
     // fires after cleanupAll() deleted STATUS_DIR and recreates
-    // os.tmpdir()/vibeyard with a .sessionid file (Pi/OMP do the same in their
+    // os.tmpdir()/finevibe with a .sessionid file (Pi/OMP do the same in their
     // cleanup()).
     stopCodexSessionWatcher();
     invalidateHookValidationCache();

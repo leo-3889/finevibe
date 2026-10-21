@@ -176,13 +176,13 @@ jobs:
         # the single `publish` job below uploads every artifact.
         # electron-builder still writes latest-mac.yml into dist/, so the
         # auto-updater feed survives the publish job's aggregate upload.
-        run: npm run build && npx electron-builder --publish never --arm64 --x64
+        run: npm run build && npm run icons && npx electron-builder --publish never --arm64 --x64
 
       - name: Verify code signatures
         # P1-9: strict deep verification of both built bundles; a broken or
         # tampered signature fails the release here, not on a user's Mac.
         run: |
-          for app in dist/mac-arm64/Vibeyard.app dist/mac/Vibeyard.app; do
+          for app in dist/mac-arm64/FineVibe.app dist/mac/FineVibe.app; do
             codesign --verify --deep --strict --verbose=2 "$app"
           done
 
@@ -225,7 +225,7 @@ jobs:
       - name: Build
         # P1-8: `--publish never` — builds must not race the shared tag;
         # the single `publish` job below uploads every artifact.
-        run: npm run build && npx electron-builder --linux --publish never --x64
+        run: npm run build && npm run icons && npx electron-builder --linux --publish never --x64
 
       - name: Verify package integrity
         # P1-9: dpkg parses the deb's control metadata and full contents list
@@ -273,7 +273,7 @@ jobs:
       - name: Build
         # P1-8: `--publish never` — builds must not race the shared tag;
         # the single `publish` job below uploads every artifact.
-        run: npm run build && npx electron-builder --win --publish never --x64
+        run: npm run build && npm run icons && npx electron-builder --win --publish never --x64
 
       # P1-9 (documented gap): CI configures no Authenticode certificate, so
       # the Windows exe/zip ship unsigned and `signtool verify` has nothing to
@@ -354,7 +354,7 @@ jobs:
     runs-on: ubuntu-latest
     # P2-6: npm provenance mints a signed attestation from the runner's
     # OIDC identity — the registry publishes who built the tarball, so
-    # consumers can verify `vibeyard@x.y.z` came from this repo's release
+    # consumers can verify `finevibe@x.y.z` came from this repo's release
     # workflow. id-token: write is what lets npm request that token.
     permissions:
       contents: read
@@ -374,10 +374,10 @@ jobs:
 
       - name: Strip app dependencies from the launcher manifest
         # P2-14: the published npm package is the thin launcher — a
-        # downloader for the packaged app (see bin/vibeyard.js). It ships
+        # downloader for the packaged app (see bin/finevibe.js). It ships
         # bin/, README.md and LICENSE only ("files"), and needs NONE of the
         # app's runtime dependencies: publishing them made every
-        # `npm i -g vibeyard` resolve 16 app packages, compiling native
+        # `npm i -g finevibe` resolve 16 app packages, compiling native
         # modules (better-sqlite3, node-pty) on the user's machine for a
         # binary it never links. The repo keeps "dependencies" for
         # electron-builder; only the manifest handed to npm is stripped.

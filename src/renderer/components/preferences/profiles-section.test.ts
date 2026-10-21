@@ -181,7 +181,7 @@ describe('createProfilesSection', () => {
       body: makeElement('body'),
     });
     vi.stubGlobal('window', {
-      vibeyard: { profiles: { keychainStatus: mockKeychainStatus } },
+      finevibe: { profiles: { keychainStatus: mockKeychainStatus } },
     });
   });
 

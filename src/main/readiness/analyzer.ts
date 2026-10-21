@@ -1,6 +1,6 @@
 import type { ReadinessResult, ProviderId } from '../../shared/types';
 import type { ReadinessCheckProducer, TaggedCheck, TopCategory, AnalysisContext } from './types';
-import { buildVibeyardignoreMatcher } from '../vibeyardignore';
+import { buildFineVibeIgnoreMatcher } from '../finevibeignore';
 import { getAvailableProviderIds } from '../providers/registry';
 import { computeCategoryScore, getTrackedFiles } from './utils';
 import { aiInstructionsProducer } from './checkers/ai-instructions';
@@ -39,7 +39,7 @@ export async function analyzeReadiness(projectPath: string, excludedProviders?: 
 
   const ctx: AnalysisContext = {
     trackedFiles: getTrackedFiles(projectPath),
-    isIgnored: buildVibeyardignoreMatcher(projectPath),
+    isIgnored: buildFineVibeIgnoreMatcher(projectPath),
   };
 
   const allTagged: TaggedCheck[] = activeProducers.flatMap(p => {

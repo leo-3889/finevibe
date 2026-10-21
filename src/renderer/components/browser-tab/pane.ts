@@ -197,7 +197,7 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
 
   const ntpLogo = document.createElement('div');
   ntpLogo.className = 'browser-ntp-logo';
-  ntpLogo.textContent = 'Vibeyard';
+  ntpLogo.textContent = 'FineVibe';
   newTabPage.appendChild(ntpLogo);
 
   const ntpSubtitle = document.createElement('div');
@@ -231,7 +231,7 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
   // pinning (main.ts) is the backstop for any attach that does happen.
   webview.setAttribute('webpreferences', 'backgroundThrottling=false');
   const partition = isIsolated
-    ? `persist:vibeyard-browser-iso-${sessionId}`
+    ? `persist:finevibe-browser-iso-${sessionId}`
     : BROWSER_DEFAULT_PARTITION;
   webview.setAttribute('partition', partition);
   viewportContainer.appendChild(webview);
@@ -729,12 +729,12 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
     };
     appState.setSessionBrowserIsolated(sessionId, newIsolated);
     // P2-100: BOTH toggle directions route through this session's isolated
-    // jar (`persist:vibeyard-browser-iso-${sessionId}`), so EVERY toggle
+    // jar (`persist:finevibe-browser-iso-${sessionId}`), so EVERY toggle
     // clears it: entering isolation starts from a clean jar, and leaving
     // isolation takes the isolated cookies/localStorage with it. The shared
     // default partition is deliberately NOT touched — it backs every other
     // browser tab and the imported Chrome cookie jar.
-    window.vibeyard.browser.clearIsolatedStorage(sessionId);
+    window.finevibe.browser.clearIsolatedStorage(sessionId);
     destroyBrowserTabPane(sessionId);
     createBrowserTabPane(sessionId, (currentUrl && normalizeUrl(currentUrl)) || undefined);
     const fresh = instances.get(sessionId);

@@ -64,7 +64,7 @@ export function initSidebar(): void {
   applyDiscussionsVisibility();
   sidebarDiscussionsEl.addEventListener('click', () => {
     markDiscussionsSeen();
-    window.vibeyard.app.openExternal(DISCUSSIONS_URL);
+    window.finevibe.app.openExternal(DISCUSSIONS_URL);
   });
   initDiscussionsBadge();
   onDiscussionsChange(renderDiscussions);
@@ -499,7 +499,7 @@ export function promptNewProject(): void {
       defaultValue: initialFolder || undefined,
       buttonLabel: t('sidebar.newProject.browseButton'),
       onButtonClick: async (input) => {
-        const dir = await window.vibeyard.fs.browseDirectory();
+        const dir = await window.finevibe.fs.browseDirectory();
         if (!dir) return;
         input.value = dir;
         pathManuallyEdited = true;
@@ -528,8 +528,8 @@ export function promptNewProject(): void {
     const checkout = detectGitCheckoutUrl(rawPath);
     if (!checkout) {
       if (!name) return;
-      const projectPath = await window.vibeyard.fs.expandPath(rawPath);
-      const isDir = await window.vibeyard.fs.isDirectory(projectPath);
+      const projectPath = await window.finevibe.fs.expandPath(rawPath);
+      const isDir = await window.finevibe.fs.isDirectory(projectPath);
       if (!isDir) {
         setModalError('project-path', t('sidebar.newProject.directoryNotExist'));
         return;
@@ -545,11 +545,11 @@ export function promptNewProject(): void {
     const projectName = name || checkout.repoName;
     let parent = currentFolder();
     if (!parent) {
-      const picked = await window.vibeyard.fs.browseDirectory();
+      const picked = await window.finevibe.fs.browseDirectory();
       if (!picked) return;
       parent = picked;
     }
-    const targetPath = await window.vibeyard.fs.expandPath(
+    const targetPath = await window.finevibe.fs.expandPath(
       parent.replace(/[\\/]+$/, '') + '/' + checkout.repoName
     );
 
@@ -560,7 +560,7 @@ export function promptNewProject(): void {
       confirmBtn.textContent = t('sidebar.newProject.cloning');
       confirmBtn.disabled = true;
     }
-    const res = await window.vibeyard.fs.cloneRepo(checkout.url, targetPath);
+    const res = await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
     cloning = false;
     if (confirmBtn) {
       confirmBtn.disabled = false;
@@ -662,7 +662,7 @@ export function promptNewProject(): void {
       const dirPart = value.substring(0, lastSlash + 1);
       const namePart = value.substring(lastSlash + 1).toLowerCase();
 
-      const dirs = await window.vibeyard.fs.listDirs(dirPart, namePart || undefined);
+      const dirs = await window.finevibe.fs.listDirs(dirPart, namePart || undefined);
       showSuggestions(dirs, dirPart);
     });
 
@@ -850,7 +850,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   openInFolderItem.addEventListener('click', (e) => {
     e.stopPropagation();
     hideTabContextMenu();
-    void window.vibeyard.fs.showInFolder(project.path)
+    void window.finevibe.fs.showInFolder(project.path)
       .then((result) => {
         if (!result.ok) console.warn(`Failed to open ${project.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
       })

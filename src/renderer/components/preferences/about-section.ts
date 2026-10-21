@@ -3,8 +3,8 @@ import { t } from '../../i18n.js';
 import type { SectionController } from './section.js';
 import { toggleRow } from './shared.js';
 
-const GITHUB_URL = 'https://github.com/elirantutia/vibeyard';
-const ISSUES_URL = 'https://github.com/elirantutia/vibeyard/issues';
+const GITHUB_URL = 'https://github.com/leo-3889/vibeyard';
+const ISSUES_URL = 'https://github.com/leo-3889/vibeyard/issues';
 
 export function createAboutSection(): SectionController {
   let debugModeCheckbox: HTMLInputElement | null = null;
@@ -35,7 +35,7 @@ export function createAboutSection(): SectionController {
       updateBtn.addEventListener('click', () => {
         updateBtn.disabled = true;
         updateStatus.textContent = t('about.updateChecking');
-        window.vibeyard.update.checkNow().then(() => {
+        window.finevibe.update.checkNow().then(() => {
           // Every terminal branch unregisters the whole listener pair — a
           // pair left behind makes the next `update:available` event run
           // stale callbacks from this, already-finished check.
@@ -45,13 +45,13 @@ export function createAboutSection(): SectionController {
             unsub();
             unsubErr();
           }, 5000);
-          const unsub = window.vibeyard.update.onAvailable((info) => {
+          const unsub = window.finevibe.update.onAvailable((info) => {
             clearTimeout(timeout);
             updateStatus.textContent = t('about.updateAvailable', { version: info.version });
             unsub();
             unsubErr();
           });
-          const unsubErr = window.vibeyard.update.onError(() => {
+          const unsubErr = window.finevibe.update.onError(() => {
             clearTimeout(timeout);
             updateStatus.textContent = t('about.updateFailed');
             updateBtn.disabled = false;
@@ -74,13 +74,13 @@ export function createAboutSection(): SectionController {
       ghLink.className = 'about-link';
       ghLink.textContent = t('about.githubLink');
       ghLink.href = '#';
-      ghLink.addEventListener('click', (e) => { e.preventDefault(); window.vibeyard.app.openExternal(GITHUB_URL); });
+      ghLink.addEventListener('click', (e) => { e.preventDefault(); window.finevibe.app.openExternal(GITHUB_URL); });
 
       const bugLink = document.createElement('a');
       bugLink.className = 'about-link';
       bugLink.textContent = t('about.bugLink');
       bugLink.href = '#';
-      bugLink.addEventListener('click', (e) => { e.preventDefault(); window.vibeyard.app.openExternal(ISSUES_URL); });
+      bugLink.addEventListener('click', (e) => { e.preventDefault(); window.finevibe.app.openExternal(ISSUES_URL); });
 
       linksDiv.appendChild(ghLink);
       linksDiv.appendChild(bugLink);
@@ -91,7 +91,7 @@ export function createAboutSection(): SectionController {
       contributeLink.className = 'about-link';
       contributeLink.href = '#';
       contributeLink.textContent = t('about.contributeLink');
-      contributeLink.addEventListener('click', (e) => { e.preventDefault(); window.vibeyard.app.openExternal(GITHUB_URL); });
+      contributeLink.addEventListener('click', (e) => { e.preventDefault(); window.finevibe.app.openExternal(GITHUB_URL); });
       communityDiv.append(
         t('about.communityPrefix'),
         contributeLink,
@@ -110,7 +110,7 @@ export function createAboutSection(): SectionController {
       aboutDiv.appendChild(debugRow);
       container.appendChild(aboutDiv);
 
-      window.vibeyard.app.getVersion().then((ver) => {
+      window.finevibe.app.getVersion().then((ver) => {
         versionLine.textContent = t('about.versionLoaded', { ver });
       });
     },
@@ -118,7 +118,7 @@ export function createAboutSection(): SectionController {
     save() {
       if (debugModeCheckbox && debugModeCheckbox.checked !== appState.preferences.debugMode) {
         appState.setPreference('debugMode', debugModeCheckbox.checked);
-        window.vibeyard.menu.rebuild(debugModeCheckbox.checked);
+        window.finevibe.menu.rebuild(debugModeCheckbox.checked);
       }
     },
   };

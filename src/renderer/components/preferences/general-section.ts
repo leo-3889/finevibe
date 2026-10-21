@@ -201,7 +201,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       folderBrowse.className = 'modal-field-btn';
       folderBrowse.textContent = t('sidebar.newProject.browseButton');
       folderBrowse.addEventListener('click', async () => {
-        const dir = await window.vibeyard.fs.browseDirectory();
+        const dir = await window.finevibe.fs.browseDirectory();
         if (dir && projectsFolderInput) projectsFolderInput.value = dir;
       });
       folderBox.appendChild(projectsFolderInput);

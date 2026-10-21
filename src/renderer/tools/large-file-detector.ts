@@ -41,10 +41,15 @@ function isExcludedPath(relative: string): boolean {
 type IgnoreMatchers = { basename: picomatch.Matcher; fullPath: picomatch.Matcher };
 const ignoreMatcherCache = new Map<string, IgnoreMatchers | null>();
 
-async function loadVibeyardignore(projectPath: string): Promise<IgnoreMatchers | null> {
+/** Read `.finevibeignore`, falling back to the legacy `.vibeyardignore` (pre-rename projects keep working). */
+async function loadFineVibeignore(projectPath: string): Promise<IgnoreMatchers | null> {
   try {
-    const result = await window.vibeyard.fs.readFile(projectPath + '/.vibeyardignore');
-    if (!result.ok) return null;
+    let result = await window.finevibe.fs.readFile(projectPath + '/.finevibeignore');
+    if (!result.ok) {
+      // legacy: the pre-rename ignore file name, kept as a documented fallback
+      result = await window.finevibe.fs.readFile(projectPath + '/.vibeyardignore');
+      if (!result.ok) return null;
+    }
     const patterns: string[] = [];
     for (const raw of result.content.split('\n')) {
       const line = raw.trim();
@@ -60,9 +65,9 @@ async function loadVibeyardignore(projectPath: string): Promise<IgnoreMatchers |
   }
 }
 
-async function matchesVibeyardignore(projectPath: string, relative: string): Promise<boolean> {
+async function matchesFineVibeignore(projectPath: string, relative: string): Promise<boolean> {
   if (!ignoreMatcherCache.has(projectPath)) {
-    ignoreMatcherCache.set(projectPath, await loadVibeyardignore(projectPath));
+    ignoreMatcherCache.set(projectPath, await loadFineVibeignore(projectPath));
   }
   const matchers = ignoreMatcherCache.get(projectPath);
   if (!matchers) return false;
@@ -109,7 +114,7 @@ export async function handleToolFailure(sessionId: string, data: ToolFailureData
   const insightId = `large-file-read:${filePath}`;
   if (appState.isInsightDismissed(project.id, insightId)) return;
 
-  if (await matchesVibeyardignore(project.path, relative)) return;
+  if (await matchesFineVibeignore(project.path, relative)) return;
 
   alerted.add(filePath);
 
@@ -117,7 +122,7 @@ export async function handleToolFailure(sessionId: string, data: ToolFailureData
 }
 
 export function initLargeFileDetector(): void {
-  window.vibeyard.session.onToolFailure((sessionId, data) => {
+  window.finevibe.session.onToolFailure((sessionId, data) => {
     handleToolFailure(sessionId, data).catch(() => {});
   });
 

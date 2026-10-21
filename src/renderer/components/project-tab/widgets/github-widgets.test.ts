@@ -26,7 +26,7 @@ describe('GitHub widget refresh ordering', () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
     Object.assign(window, {
-      vibeyard: { github: { isAvailable: async () => true, listPRs } },
+      finevibe: { github: { isAvailable: async () => true, listPRs } },
     });
     const host = {
       projectId: 'p1', widgetId: 'w1', widgetType: 'github-prs',

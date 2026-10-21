@@ -240,11 +240,11 @@ class FakeDocument {
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
 // Terminal copies go through the main process, not navigator.clipboard (#160).
-const mockVibeyardClipboardWrite = vi.fn().mockResolvedValue(undefined);
+const mockFineVibeClipboardWrite = vi.fn().mockResolvedValue(undefined);
 
 function makeWindowStub() {
   return {
-    vibeyard: {
+    finevibe: {
       pty: {
         write: mockPtyWrite,
         kill: mockPtyKill,
@@ -252,7 +252,7 @@ function makeWindowStub() {
         create: vi.fn(),
       },
       git: { getRemoteUrl: vi.fn(async () => null) },
-      clipboard: { write: mockVibeyardClipboardWrite },
+      clipboard: { write: mockFineVibeClipboardWrite },
       app: { openExternal: vi.fn() },
     },
   };
@@ -271,7 +271,7 @@ describe('terminal pending prompt injection', () => {
 
   it('passes pending prompt as initialPrompt to pty.create for claude', async () => {
     const { createTerminalPane, setPendingPrompt, spawnTerminal } = await import('./terminal-pane.js');
-    const mockPtyCreate = (window as any).vibeyard.pty.create;
+    const mockPtyCreate = (window as any).finevibe.pty.create;
 
     createTerminalPane('claude-1', '/project', null, false, '', 'claude');
     setPendingPrompt('claude-1', 'fix the bug');
@@ -283,7 +283,7 @@ describe('terminal pending prompt injection', () => {
 
   it('passes pending prompt as initialPrompt to pty.create for codex', async () => {
     const { createTerminalPane, setPendingPrompt, spawnTerminal } = await import('./terminal-pane.js');
-    const mockPtyCreate = (window as any).vibeyard.pty.create;
+    const mockPtyCreate = (window as any).finevibe.pty.create;
 
     createTerminalPane('codex-1', '/project', null, false, '', 'codex');
     setPendingPrompt('codex-1', 'fix the bug');
@@ -295,7 +295,7 @@ describe('terminal pending prompt injection', () => {
 
   it('does not pass initialPrompt when no pending prompt is set', async () => {
     const { createTerminalPane, spawnTerminal } = await import('./terminal-pane.js');
-    const mockPtyCreate = (window as any).vibeyard.pty.create;
+    const mockPtyCreate = (window as any).finevibe.pty.create;
 
     createTerminalPane('claude-2', '/project', null, false, '', 'claude');
     await spawnTerminal('claude-2');
@@ -466,7 +466,7 @@ describe('pane attach, focus and fit are idempotent', () => {
 
   it('resizes the PTY only when the geometry actually changed', async () => {
     const { createTerminalPane, fitTerminal, showPane, getTerminalInstance } = await import('./terminal-pane.js');
-    const mockResize = (window as any).vibeyard.pty.resize;
+    const mockResize = (window as any).finevibe.pty.resize;
 
     createTerminalPane('fit-1', '/project', null, false, '', 'claude');
     showPane('fit-1', false); // fitTerminal skips a hidden pane
@@ -490,9 +490,9 @@ describe('pane attach, focus and fit are idempotent', () => {
     // Without a re-fit the memo would make that drop permanent and the CLI would
     // wrap at the 120x30 spawn default forever.
     const { createTerminalPane, fitTerminal, showPane, spawnTerminal, getTerminalInstance } = await import('./terminal-pane.js');
-    const mockResize = (window as any).vibeyard.pty.resize;
+    const mockResize = (window as any).finevibe.pty.resize;
     let releaseCreate: () => void;
-    (window as any).vibeyard.pty.create = vi.fn(
+    (window as any).finevibe.pty.create = vi.fn(
       () => new Promise<void>((resolve) => { releaseCreate = resolve; }),
     );
 
@@ -596,7 +596,7 @@ describe('terminal Ctrl+Shift+C clipboard copy', () => {
     term.setSelection('hello world');
     term.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledWith('hello world', 'explicit');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('hello world', 'explicit');
   });
 
   it('does not copy on keyup', async () => {
@@ -607,7 +607,7 @@ describe('terminal Ctrl+Shift+C clipboard copy', () => {
     term.setSelection('hello world');
     term.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keyup' });
 
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('does not copy when nothing is selected', async () => {
@@ -618,7 +618,7 @@ describe('terminal Ctrl+Shift+C clipboard copy', () => {
     term.setSelection('');
     term.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('returns false to prevent default on Ctrl+Shift+C', async () => {
@@ -989,7 +989,7 @@ describe('spawn failure surface (a0ee463)', () => {
 
   it('shows a Failed-to-start overlay with Retry when pty.create rejects', async () => {
     const { createTerminalPane, spawnTerminal } = await import('./terminal-pane.js');
-    (window as any).vibeyard.pty.create = vi.fn().mockRejectedValue(new Error('ConPTY spawn failed'));
+    (window as any).finevibe.pty.create = vi.fn().mockRejectedValue(new Error('ConPTY spawn failed'));
 
     const instance = createTerminalPane('fail-1', '/project', null, false, '', 'claude');
     // Callers fire spawnTerminal un-awaited; the rejection must not escape.
@@ -1010,7 +1010,7 @@ describe('spawn failure surface (a0ee463)', () => {
   it('marks the pane unspawned and relaunches the PTY when Retry is clicked', async () => {
     const { createTerminalPane, spawnTerminal, getTerminalInstance } = await import('./terminal-pane.js');
     const mockPtyCreate = vi.fn().mockRejectedValueOnce(new Error('missing binary'));
-    (window as any).vibeyard.pty.create = mockPtyCreate;
+    (window as any).finevibe.pty.create = mockPtyCreate;
     const activity = await import('../session-activity.js');
 
     const instance = createTerminalPane('fail-2', '/project', null, false, '', 'claude');
@@ -1036,7 +1036,7 @@ describe('spawn failure surface (a0ee463)', () => {
   it('retypes the pending prompt into the relaunched session after a failed spawn', async () => {
     const { createTerminalPane, spawnTerminal, setPendingPrompt } = await import('./terminal-pane.js');
     const mockPtyCreate = vi.fn().mockRejectedValueOnce(new Error('spawn denied'));
-    (window as any).vibeyard.pty.create = mockPtyCreate;
+    (window as any).finevibe.pty.create = mockPtyCreate;
 
     const instance = createTerminalPane('fail-3', '/project', null, false, '', 'claude');
     await spawnTerminal('fail-3');

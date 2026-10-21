@@ -6,7 +6,7 @@ const mockTranscriptExists = vi.fn();
 const mockTranscriptExistsSync = vi.fn();
 
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: mockLoad, save: mockSave },
     session: { transcriptExists: mockTranscriptExists, transcriptExistsSync: mockTranscriptExistsSync },
   },

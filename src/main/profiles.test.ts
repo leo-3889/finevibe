@@ -13,7 +13,7 @@ describe('provisionProfileDir isolation', () => {
   it('rejects two profiles of the same provider sharing a config directory', () => {
     // P2-39 gates custom profile dirs into the home tree (the CLI config
     // dirs users pick live under the user's tree); the fixture follows.
-    const root = fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-profiles-test-'));
+    const root = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-profiles-test-'));
     dirs.push(root);
     const configDir = path.join(root, 'shared');
     provisionProfileDir('first', configDir, 'claude');
@@ -27,8 +27,8 @@ describe('provisionProfileDir isolation', () => {
 });
 
 const OUTSIDE_HOME = process.platform === 'win32'
-  ? 'C:\\Windows\\vibeyard-evil'
-  : '/vibeyard-outside-home-evil';
+  ? 'C:\\Windows\\finevibe-evil'
+  : '/finevibe-outside-home-evil';
 
 describe('provisionProfileDir containment (P2-39)', () => {
   it('rejects a custom path outside the home tree before creating anything', () => {
@@ -44,7 +44,7 @@ describe('provisionProfileDir containment (P2-39)', () => {
   });
 
   it('accepts a custom path inside the home tree', () => {
-    const root = fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-profiles-test-'));
+    const root = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-profiles-test-'));
     dirs.push(root);
     const configDir = path.join(root, 'cfg');
     expect(provisionProfileDir('ok', configDir, 'claude')).toBe(configDir);

@@ -28,13 +28,13 @@ export function quitAndInstall(): void {
 
 // P1-7 (audit plan §1(iv), FORK identity): a packaged fork build must NEVER
 // self-update from the upstream repo. The release feed is exactly the fork
-// repo named by VIBEYARD_RELEASE_REPO (the same override the npm launcher
+// repo named by FINEVIBE_RELEASE_REPO (the same override the npm launcher
 // honours); unset or malformed disables auto-update with a warning instead
 // of silently falling back to upstream releases.
 const RELEASE_REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
 function resolveReleaseRepo(): string | null {
-  const value = process.env.VIBEYARD_RELEASE_REPO?.trim();
+  const value = process.env.FINEVIBE_RELEASE_REPO?.trim();
   if (!value) return null;
   return RELEASE_REPO_PATTERN.test(value) ? value : null;
 }
@@ -45,7 +45,7 @@ function resolveReleaseRepo(): string | null {
   const releaseRepo = resolveReleaseRepo();
   if (!releaseRepo) {
     console.warn(
-      `[auto-updater] VIBEYARD_RELEASE_REPO=${process.env.VIBEYARD_RELEASE_REPO ?? '<unset>'} ` +
+      `[auto-updater] FINEVIBE_RELEASE_REPO=${process.env.FINEVIBE_RELEASE_REPO ?? '<unset>'} ` +
       'is not a valid "owner/repo" — auto-update disabled (a fork build never ' +
       'self-updates from the upstream release feed).',
     );

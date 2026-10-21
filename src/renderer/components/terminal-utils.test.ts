@@ -55,7 +55,7 @@ import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
 // P3: clipboard writes are fire-and-forget `ipcRenderer.send` — void, no
 // promise round trip (the invoke twin paid a structured-clone reply per copy).
-const mockVibeyardClipboardWrite = vi.fn();
+const mockFineVibeClipboardWrite = vi.fn();
 const mockReadForPaste = vi.fn();
 const mockSaveImage = vi.fn();
 const mockGetDroppedFilePath = vi.fn();
@@ -169,9 +169,9 @@ beforeEach(() => {
   mockMatchEvent.mockReturnValue(false);
   mockPreferences.copyOnSelect = false;
   vi.stubGlobal('window', {
-    vibeyard: {
+    finevibe: {
       clipboard: {
-        write: mockVibeyardClipboardWrite,
+        write: mockFineVibeClipboardWrite,
         readForPaste: mockReadForPaste,
         saveImage: mockSaveImage,
       },
@@ -194,7 +194,7 @@ describe('attachClipboardCopyHandler (macOS)', () => {
     terminal.setSelection('hello');
     terminal.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledWith('hello', 'explicit');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('hello', 'explicit');
     // #160: no copy path may touch navigator.clipboard — the main process
     // writes a single plain-text flavor, Chromium's copy also writes rich ones.
     expect(mockClipboardWrite).not.toHaveBeenCalled();
@@ -207,7 +207,7 @@ describe('attachClipboardCopyHandler (macOS)', () => {
     terminal.setSelection('hello');
     terminal.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keyup' });
 
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('does not copy when nothing is selected', () => {
@@ -217,7 +217,7 @@ describe('attachClipboardCopyHandler (macOS)', () => {
     terminal.setSelection('');
     terminal.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('returns false on Ctrl+Shift+C to prevent default', () => {
@@ -274,7 +274,7 @@ describe('attachClipboardCopyHandler (macOS)', () => {
     const result = terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keydown' });
 
     expect(result).toBe(true);
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('does not intercept Ctrl+V (lets xterm send control char)', () => {
@@ -304,7 +304,7 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     const result = terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keydown' });
 
     expect(result).toBe(false);
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledWith('selected text', 'explicit');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('selected text', 'explicit');
     expect(mockClipboardWrite).not.toHaveBeenCalled();
   });
 
@@ -316,7 +316,7 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     const result = terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keydown' });
 
     expect(result).toBe(true);
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('Ctrl+C does not copy on keyup', () => {
@@ -327,7 +327,7 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     const result = terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keyup' });
 
     expect(result).toBe(false);
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   // P1: Windows stops intercepting Ctrl+V. Returning false keeps xterm from
@@ -374,7 +374,7 @@ describe('attachClipboardCopyHandler (Windows)', () => {
     const result = terminal.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
     expect(result).toBe(false);
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledWith('shift-copy', 'explicit');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('shift-copy', 'explicit');
     expect(mockClipboardWrite).not.toHaveBeenCalled();
   });
 });
@@ -464,7 +464,7 @@ describe('attachCopyOnSelect', () => {
     terminal.setSelection('hello');
     terminal.fireSelectionChange();
 
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('writes selection to clipboard when copyOnSelect is on and selection is non-empty', () => {
@@ -475,7 +475,7 @@ describe('attachCopyOnSelect', () => {
     terminal.setSelection('selected');
     terminal.fireSelectionChange();
 
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledWith('selected', 'selection');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('selected', 'selection');
     expect(mockClipboardWrite).not.toHaveBeenCalled();
   });
 
@@ -487,7 +487,7 @@ describe('attachCopyOnSelect', () => {
     terminal.setSelection('');
     terminal.fireSelectionChange();
 
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 });
 
@@ -508,34 +508,34 @@ describe('copyText / copySelection (P3)', () => {
     terminal.setSelection('first');
     copySelection(terminal, 'selection');
     copySelection(terminal, 'selection');
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledTimes(1);
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledTimes(1);
 
     terminal.setSelection('second');
     copySelection(terminal, 'selection');
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledTimes(2);
-    expect(mockVibeyardClipboardWrite).toHaveBeenLastCalledWith('second', 'selection');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledTimes(2);
+    expect(mockFineVibeClipboardWrite).toHaveBeenLastCalledWith('second', 'selection');
   });
 
   it('an explicit copy of the same text does not suppress a later selection write (PRIMARY contract)', () => {
     copyText('same', 'explicit');
     copyText('same', 'selection');
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledTimes(2);
-    expect(mockVibeyardClipboardWrite).toHaveBeenNthCalledWith(1, 'same', 'explicit');
-    expect(mockVibeyardClipboardWrite).toHaveBeenNthCalledWith(2, 'same', 'selection');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledTimes(2);
+    expect(mockFineVibeClipboardWrite).toHaveBeenNthCalledWith(1, 'same', 'explicit');
+    expect(mockFineVibeClipboardWrite).toHaveBeenNthCalledWith(2, 'same', 'selection');
   });
 
   it('defers a selection-driven copy past the 256 Ki budget; explicit copies always write', () => {
     const huge = 'x'.repeat(256 * 1024 + 1);
     copyText(huge, 'selection');
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
 
     copyText(huge, 'explicit');
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledWith(huge, 'explicit');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith(huge, 'explicit');
   });
 
   it('a selection copy just inside the budget writes', () => {
     copyText('y'.repeat(256 * 1024), 'selection');
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledTimes(1);
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledTimes(1);
   });
 });
 describe('loadWebglWithFallback', () => {
@@ -612,13 +612,13 @@ describe('pasteIntoTerminal (native paste event)', () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();
     const shot = new File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' });
-    mockSaveImage.mockResolvedValue('/tmp/vibeyard-paste/paste-42.png');
+    mockSaveImage.mockResolvedValue('/tmp/finevibe-paste/paste-42.png');
 
     const outcome = await pasteIntoTerminal(terminal as any, writeToPty, fakeDataTransfer([shot]));
 
     expect(outcome).toBe('files');
     expect(mockSaveImage).toHaveBeenCalledWith(expect.stringMatching(/^data:image\/png;base64,/));
-    expect(writeToPty).toHaveBeenCalledWith('/tmp/vibeyard-paste/paste-42.png ');
+    expect(writeToPty).toHaveBeenCalledWith('/tmp/finevibe-paste/paste-42.png ');
   });
 
   it('injects the real path of a copied file without re-saving its bytes', async () => {
@@ -761,12 +761,12 @@ describe('pasteIntoTerminal (main clipboard read)', () => {
   it('appends a materialised image to the file list it injects', async () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();
-    mockReadForPaste.mockResolvedValue(pastePayload({ files: ['/tmp/note.md'], imagePath: '/tmp/vibeyard-paste/paste-9.png' }));
+    mockReadForPaste.mockResolvedValue(pastePayload({ files: ['/tmp/note.md'], imagePath: '/tmp/finevibe-paste/paste-9.png' }));
 
     const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
 
     expect(outcome).toBe('files');
-    expect(writeToPty).toHaveBeenCalledWith('/tmp/note.md /tmp/vibeyard-paste/paste-9.png ');
+    expect(writeToPty).toHaveBeenCalledWith('/tmp/note.md /tmp/finevibe-paste/paste-9.png ');
   });
 
   it('forwards a literal Ctrl+V for a flavor neither side translates', async () => {

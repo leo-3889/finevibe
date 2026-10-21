@@ -75,7 +75,7 @@ describe('findConflictingLaunchFlags', () => {
       [['--continue'], '--continue'],
       [['-r'], '-r'],
       [['-c'], '-c'],
-      // Vibeyard pins --session-id itself (claude/pi fresh launches); a later
+      // FineVibe pins --session-id itself (claude/pi fresh launches); a later
       // user occurrence wins in argv, so the CLI writes a transcript the
       // session watcher can never attribute.
       [['--session-id', '019d3512-caf9-7b50-8d2b-ccccdcf8ff14'], '--session-id'],

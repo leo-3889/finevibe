@@ -27,7 +27,7 @@ export { BrowserWindow };
 
 export const app = {
   getPath: () => '/mock/app-path',
-  getName: () => 'vibeyard',
+  getName: () => 'FineVibe',
   getVersion: () => '0.0.0-test',
   on: noop,
   whenReady: () => Promise.resolve(),

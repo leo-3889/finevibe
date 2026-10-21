@@ -73,9 +73,12 @@ beforeEach(() => {
 
 describe('keychainServiceForConfigDir', () => {
   it('derives the service name from the first 8 hex chars of sha256(configDir)', () => {
-    // Real value observed from a live Claude Code 2.1.159 keychain entry.
-    const dir = '/Users/eliran.tutia/.vibeyard/profiles/23ad900c-a3f7-4daf-926b-0dc50337360a';
-    expect(keychainServiceForConfigDir(dir)).toBe('Claude Code-credentials-5f8e9245');
+    // Derivation contract: first 8 hex chars of sha256(configDir). The live
+    // observation behind this fixture was recorded pre-rename on
+    // `/Users/eliran.tutia/.vibeyard/profiles/23ad900c-...` (digest `5f8e9245`);
+    // the value below is the digest of the renamed profile dir.
+    const dir = '/Users/eliran.tutia/.finevibe/profiles/23ad900c-a3f7-4daf-926b-0dc50337360a';
+    expect(keychainServiceForConfigDir(dir)).toBe('Claude Code-credentials-9a6109aa');
   });
 
   it('hashes the path verbatim (a trailing slash changes the result)', () => {

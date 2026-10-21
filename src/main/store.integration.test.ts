@@ -12,7 +12,7 @@ vi.mock('os', async (importOriginal) => ({
 let store: typeof import('./store');
 
 beforeAll(async () => {
-  testHome.path = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-store-test-'));
+  testHome.path = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-store-test-'));
   store = await import('./store');
 });
 
@@ -25,14 +25,14 @@ describe('state persistence on disk', () => {
     const state = store.loadState();
     state.activeProjectId = 'saved-project';
     store.saveStateSync(state);
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     expect(fs.existsSync(file)).toBe(true);
     expect(fs.existsSync(file + '.tmp')).toBe(false);
     expect(store.loadState().activeProjectId).toBe('saved-project');
   });
 
   it('recovers a valid temp state when the main file is corrupt', () => {
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     const state = store.loadState();
     state.activeProjectId = 'recovered-project';
     fs.writeFileSync(file, '{corrupt');
@@ -47,7 +47,7 @@ describe('state persistence on disk', () => {
   // snapshot, and the first save then opens .tmp with 'w' and destroys the
   // newest copy. Recovery must take the newer mtime and consume the .tmp.
   it('recovers the newer temp snapshot when both files are valid', () => {
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     const older = { ...store.loadState(), activeProjectId: 'older-commit' };
     store.saveStateSync(older);
     const newer = { ...store.loadState(), activeProjectId: 'newest-crash' };
@@ -64,7 +64,7 @@ describe('state persistence on disk', () => {
   });
 
   it('keeps state.json and discards a stale temp copy', () => {
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     store.saveStateSync({ ...store.loadState(), activeProjectId: 'current-commit' });
     fs.writeFileSync(file + '.tmp', JSON.stringify({ ...store.loadState(), activeProjectId: 'abandoned-write' }));
     const t = Date.now();
@@ -79,7 +79,7 @@ describe('state persistence on disk', () => {
   });
 
   it('does not lose the temp snapshot to the next save after recovery', () => {
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     fs.writeFileSync(file, '{corrupt');
     fs.writeFileSync(file + '.tmp', JSON.stringify({ ...store.loadState(), activeProjectId: 'only-copy' }));
     store.invalidateStateCache();
@@ -119,7 +119,7 @@ describe('state persistence on disk', () => {
   });
 
   it('flushes the armed trailing save on quit and disarms its timer', () => {
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     vi.useFakeTimers();
     try {
       vi.advanceTimersByTime(1_000);
@@ -147,14 +147,14 @@ describe('state persistence on disk', () => {
   it('writes state.json owner-read/write-only on POSIX', () => {
     // Windows NTFS ignores the mode argument (ACL semantics); skip there.
     if (process.platform === 'win32') return;
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     store.saveStateSync({ ...store.loadState(), activeProjectId: 'mode-check' });
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it('upgrades a 0644 state.json written by an older build', () => {
     if (process.platform === 'win32') return;
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     fs.writeFileSync(file, '{corrupt');
     fs.chmodSync(file, 0o644);
     store.saveStateSync({ ...store.loadState(), activeProjectId: 'mode-upgrade' });
@@ -176,7 +176,7 @@ describe('main-owned gate root set (P1-12)', () => {
 
   it('refuses a peer-written gate root at load and keeps real projects', () => {
     const realDir = fs.mkdtempSync(path.join(testHome.path, 'proj-'));
-    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const file = path.join(testHome.path, '.finevibe', 'state.json');
     const poison = process.platform === 'win32' ? 'C:\\' : '/';
     fs.writeFileSync(file, JSON.stringify({
       version: 1,

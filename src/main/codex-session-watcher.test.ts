@@ -70,7 +70,7 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false }] },
 }));
 vi.mock('./hook-status', () => ({
-  STATUS_DIR: path.join(path.sep + 'tmp', 'vibeyard'),
+  STATUS_DIR: path.join(path.sep + 'tmp', 'finevibe'),
   writeCliSessionId: vi.fn(),
 }));
 

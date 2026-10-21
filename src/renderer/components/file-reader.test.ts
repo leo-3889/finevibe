@@ -35,7 +35,7 @@ beforeEach(() => {
   document.body.innerHTML = '';
   // jsdom does not implement scrollIntoView.
   Element.prototype.scrollIntoView = vi.fn();
-  (globalThis as unknown as { window: { vibeyard: unknown } }).window.vibeyard = {
+  (globalThis as unknown as { window: { finevibe: unknown } }).window.finevibe = {
     app: { openExternal },
     fs: { exists, isDirectory, onFsChange, watchDir: vi.fn(), unwatchDir: vi.fn() },
   };
@@ -125,7 +125,7 @@ describe('renderMarkdownContent link handling', () => {
 
 it('keeps a large file DOM bounded while navigating to a distant line', async () => {
   const content = Array.from({length: 200000}, (_, i) => 'line ' + (i + 1)).join('\n');
-  Object.assign(window.vibeyard.fs, {
+  Object.assign(window.finevibe.fs, {
     readFile: vi.fn(async () => ({ok: true, content})),
     watchDir: vi.fn(), unwatchDir: vi.fn(),
   });
@@ -155,7 +155,7 @@ it('re-reads on a file change after the first read threw', async () => {
   const readFile = vi.fn()
     .mockRejectedValueOnce(new Error('EMFILE: too many open files'))
     .mockResolvedValue({ ok: true, content: 'recovered after the change' });
-  Object.assign(window.vibeyard.fs, { readFile });
+  Object.assign(window.finevibe.fs, { readFile });
   createFileReaderPane('flaky-read', '/repo/flaky.txt');
   const instance = getFileReaderInstance('flaky-read')!;
   document.body.appendChild(instance.element);
@@ -181,7 +181,7 @@ it('reloads per fs change per pane — there is no coalescer (P3-11)', async () 
   // the main-process 150 ms coalescing window" was dead code and is gone;
   // nothing batches, and this test fails the day prose and code diverge.
   const readFile = vi.fn().mockResolvedValue({ ok: true, content: 'v1' });
-  Object.assign(window.vibeyard.fs, { readFile });
+  Object.assign(window.finevibe.fs, { readFile });
   createFileReaderPane('burst', '/repo/burst.txt');
   const instance = getFileReaderInstance('burst')!;
   document.body.appendChild(instance.element);

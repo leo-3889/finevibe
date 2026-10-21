@@ -21,7 +21,7 @@ const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
 // a usable python should skip these, not fail them.
 const pythonAvailable = spawnSync(pythonBin, ['-c', 'pass']).status === 0;
 
-const HOOK_MARKER = '# vibeyard-hook';
+const HOOK_MARKER = '# finevibe-hook';
 
 describe('statusCmd interpreter pinning', () => {
   // Regression: the Windows branch used to emit bare `python`, the Store
@@ -61,7 +61,7 @@ describe('statusCmd interpreter pinning', () => {
       expect(m![2]).toBe('UserPromptSubmit');
       expect(m![3]).toBe('working');
       expect(m![4]).toBe('SID');
-      expect(m![5]).toContain('vibeyard');
+      expect(m![5]).toContain('finevibe');
       expect(m![6]).toBe(HOOK_MARKER);
     } finally {
       vi.doUnmock('./platform');
@@ -149,7 +149,7 @@ describe('statusCmd POSIX atomic write', () => {
 
   it.runIf(!isWin)('leaves exactly one watched file with the allowlisted value', async () => {
     const body = shBody(await posixStatusCmd('Stop', 'completed'));
-    const sid = `vibeyard-atomic-${process.pid}`;
+    const sid = `finevibe-atomic-${process.pid}`;
     // The watched file lives under the generator's own STATUS_DIR.
     const target = path.join(STATUS_DIR, `${sid}.status`);
     const tmpName = `${target}.tmp`;
@@ -172,7 +172,7 @@ describe('statusCmd POSIX atomic write', () => {
   });
 });
 describe('statusCmd POSIX quoting (P2-78)', () => {
-  // STATUS_DIR is path.join(os.tmpdir(), 'vibeyard'), so a user-set TMPDIR
+  // STATUS_DIR is path.join(os.tmpdir(), 'finevibe'), so a user-set TMPDIR
   // with a space word-split the unquoted interpolations and one with an
   // apostrophe broke the outer `sh -c '...'` quoting — mkdir -p failed, the
   // redirect wrote a stray file, every event:status hook died silently.
@@ -190,7 +190,7 @@ describe('statusCmd POSIX quoting (P2-78)', () => {
     });
     try {
       const { statusCmd } = await import('./hook-commands');
-      return { cmd: statusCmd('Stop', 'completed', 'SID', HOOK_MARKER), dir: path.join(tmpdir, 'vibeyard') };
+      return { cmd: statusCmd('Stop', 'completed', 'SID', HOOK_MARKER), dir: path.join(tmpdir, 'finevibe') };
     } finally {
       vi.doUnmock('./platform');
       vi.doUnmock('os');
@@ -233,9 +233,9 @@ describe('statusCmd POSIX quoting (P2-78)', () => {
     // Stages a real directory named like a hostile TMPDIR and runs the
     // complete generated string (outer wrapper included) the way the CLI's
     // shell does; the unquoted command died on this line with a syntax error.
-    const base = realFs.mkdtempSync(path.join(os.tmpdir(), `vibeyard-we ird's-`));
+    const base = realFs.mkdtempSync(path.join(os.tmpdir(), `finevibe-we ird's-`));
     const { cmd, dir } = await posixStatusCmdWithTmpdir(base);
-    const sid = `vibeyard-quote-${process.pid}`;
+    const sid = `finevibe-quote-${process.pid}`;
     const target = path.join(dir, `${sid}.status`);
     try {
       const res = spawnSync('sh', ['-c', cmd], {
@@ -274,7 +274,7 @@ describe('stopStatusCmd', () => {
 
     expect(cmd).toContain('stop_status_writer.py');
     expect(cmd).toContain('CLAUDE_IDE_SESSION_ID');
-    expect(cmd).toContain('vibeyard'); // STATUS_DIR path segment
+    expect(cmd).toContain('finevibe'); // STATUS_DIR path segment
     expect(cmd).toContain(String(STOP_STALE_MS));
     // Marker is passed as the last quoted argv so isIdeHook recognizes it.
     expect(cmd.trimEnd().endsWith(`"${HOOK_MARKER}"`)).toBe(true);
@@ -310,7 +310,7 @@ describe('stopStatusCmd', () => {
     expect(m![1].endsWith('/stop_status_writer.py')).toBe(true);
     expect(m![2]).toBe('CLAUDE_IDE_SESSION_ID');
     expect(m![3]).toBe(m![3].replace(/\\/g, '/')); // status dir normalized
-    expect(m![3]).toContain('vibeyard');
+    expect(m![3]).toContain('finevibe');
     expect(m![4]).toBe(String(STOP_STALE_MS));
     expect(m![5]).toBe(HOOK_MARKER);
   });
@@ -347,7 +347,7 @@ describe('installHookScripts', () => {
 // a typo'd one. Run the real script the way Claude Code does: payload on stdin,
 // assert the .status file it leaves behind.
 describe.runIf(pythonAvailable)('stop_status_writer.py behaviour', () => {
-  const SID = 'vibeyard-test-session';
+  const SID = 'finevibe-test-session';
   let dir: string;
   let script: string;
 
@@ -355,7 +355,7 @@ describe.runIf(pythonAvailable)('stop_status_writer.py behaviour', () => {
   // for a skipped suite, but not its hooks — so building the temp dir inline
   // would leak one directory per run on a CI image without python.
   beforeAll(() => {
-    dir = realFs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-stop-'));
+    dir = realFs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-stop-'));
     script = path.join(dir, 'stop_status_writer.py');
     realFs.writeFileSync(script, installedScript('stop_status_writer.py'));
   });

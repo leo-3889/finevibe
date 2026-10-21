@@ -44,8 +44,8 @@ async function writeFixture(): Promise<string> {
 }
 
 beforeEach(async () => {
-  location.home = await fs.mkdtemp(path.join(os.tmpdir(), 'vibeyard-pipeline-home-'));
-  location.userData = await fs.mkdtemp(path.join(os.tmpdir(), 'vibeyard-pipeline-data-'));
+  location.home = await fs.mkdtemp(path.join(os.tmpdir(), 'finevibe-pipeline-home-'));
+  location.userData = await fs.mkdtemp(path.join(os.tmpdir(), 'finevibe-pipeline-data-'));
   providersForTest.length = 0;
   providersForTest.push(new GeminiProvider());
   _resetForTesting();

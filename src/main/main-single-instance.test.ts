@@ -40,7 +40,7 @@ const { appHandlers, app, windows, fakeProvider } = vi.hoisted(() => {
   return { appHandlers, app, windows, fakeProvider };
 });
 
-// P2-47: the winner's whenReady chain sweeps stale vibeyard-chrome-import-*
+// P2-47: the winner's whenReady chain sweeps stale finevibe-chrome-import-*
 // temp leftovers (boot call site in main.ts). Spied, never real.
 const sweepImportSpy = vi.hoisted(() => vi.fn());
 

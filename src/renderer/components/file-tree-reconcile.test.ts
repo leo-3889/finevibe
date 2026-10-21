@@ -12,7 +12,7 @@ vi.mock('../file-url.js', () => ({ pathToFileURL: (p: string) => `file://${p}` }
 import { renderFileTree, _resetForTesting, DirEntry, isExpanded, FILE_MANAGER } from './file-tree.js';
 import { showContextMenu, MenuOption } from './board/board-context-menu.js';
 
-// --- Fake filesystem backing window.vibeyard.fs ---
+// --- Fake filesystem backing window.finevibe.fs ---
 let dirContents: Map<string, DirEntry[]>;
 let fsChangeCb: ((changes: FsChange[]) => void) | null = null;
 const watchedDirs = new Set<string>();
@@ -27,7 +27,7 @@ beforeEach(() => {
   fsChangeCb = null;
   watchedDirs.clear();
   (globalThis as any).window = globalThis;
-  (globalThis as any).vibeyard = {
+  (globalThis as any).finevibe = {
     fs: {
       listDir: vi.fn((dir: string) => Promise.resolve(dirContents.get(dir) ?? [])),
       showInFolder: vi.fn(() => Promise.resolve({ ok: true })),
@@ -202,7 +202,7 @@ describe('file tree reconciliation', () => {
     renderFileTree({ id: 'p1', path: '/proj' } as any, container);
     await settle();
     const srcRow = container.querySelector('[data-entry-path="/proj/src"]') as HTMLElement;
-    const listDir = vi.mocked(window.vibeyard.fs.listDir);
+    const listDir = vi.mocked(window.finevibe.fs.listDir);
     const callsFor = (dir: string) => listDir.mock.calls.filter((c) => c[0] === dir).length;
 
     srcRow.dispatchEvent(new Event('click')); // expand
@@ -229,7 +229,7 @@ describe('file tree reconciliation', () => {
     await settle();
 
     // The first expand's /proj/src read stays in flight; later reads hit disk.
-    const listDir = vi.mocked(window.vibeyard.fs.listDir);
+    const listDir = vi.mocked(window.finevibe.fs.listDir);
     const baseImpl = listDir.getMockImplementation()!;
     const callsFor = (dir: string) => listDir.mock.calls.filter((c) => c[0] === dir).length;
     let resolveStale: (entries: DirEntry[]) => void = () => {};
@@ -268,7 +268,7 @@ describe('show in file manager menu option', () => {
     expect(options.map((o) => o.label)).toEqual([`Open in ${FILE_MANAGER}`, 'Copy Path', 'Delete']);
 
     options[0].action();
-    expect((globalThis as any).vibeyard.fs.showInFolder).toHaveBeenCalledWith('/proj/src');
+    expect((globalThis as any).finevibe.fs.showInFolder).toHaveBeenCalledWith('/proj/src');
   });
 
   it('reveals a file in the file manager', async () => {
@@ -283,7 +283,7 @@ describe('show in file manager menu option', () => {
     ]);
 
     options[1].action();
-    expect((globalThis as any).vibeyard.fs.showInFolder).toHaveBeenCalledWith('/proj/a.ts');
+    expect((globalThis as any).finevibe.fs.showInFolder).toHaveBeenCalledWith('/proj/a.ts');
   });
 
   it('copies the absolute path of a folder to the clipboard', async () => {

@@ -1,4 +1,4 @@
-// Lightweight i18n module for Vibeyard's renderer UI.
+// Lightweight i18n module for FineVibe's renderer UI.
 //
 // Resources are statically imported (no runtime network). v1 supports
 // English + Simplified Chinese; the architecture leaves room for

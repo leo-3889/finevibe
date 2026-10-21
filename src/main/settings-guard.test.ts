@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as path from 'path';
 import { isWin } from './platform';
 
-const SCRIPT_DIR = path.join('/home/test', '.vibeyard', 'run');
+const SCRIPT_DIR = path.join('/home/test', '.finevibe', 'run');
 const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'statusline.sh');
 
 vi.mock('os', () => ({
@@ -39,7 +39,7 @@ const { FOREIGN_STATUSLINE, installHooksOnly, installStatusLine: mockInstallStat
 }));
 
 vi.mock('./claude-cli', () => ({
-  HOOK_MARKER: '# vibeyard-hook',
+  HOOK_MARKER: '# finevibe-hook',
   installHooksOnly,
   installStatusLine: mockInstallStatusLine,
   getSupportedHookEvents: () =>
@@ -60,49 +60,49 @@ vi.mock('./fs-utils', () => ({
 
 import { EventEmitter } from 'node:events';
 import {
-  isVibeyardStatusLine, shouldWarnStatusLine, guardedInstall,
+  isFineVibeStatusLine, shouldWarnStatusLine, guardedInstall,
   guardedProfileInstall, reinstallSettings, consentDirKey,
 } from './settings-guard';
 import { installStatusLine } from './claude-cli';
 import { saveState, loadState } from './store';
 import { readJsonSafe } from './fs-utils';
 
-describe('isVibeyardStatusLine', () => {
+describe('isFineVibeStatusLine', () => {
   it('returns true for current statusline path', () => {
-    expect(isVibeyardStatusLine({ command: STATUSLINE_SCRIPT })).toBe(true);
+    expect(isFineVibeStatusLine({ command: STATUSLINE_SCRIPT })).toBe(true);
   });
 
   it('returns true for legacy tmp-dir statusline path (unix)', () => {
-    expect(isVibeyardStatusLine({
-      command: '/var/folders/_k/hyr0867141z9_6ghbmwh65g80000gn/T/vibeyard/statusline.sh',
+    expect(isFineVibeStatusLine({
+      command: '/var/folders/_k/hyr0867141z9_6ghbmwh65g80000gn/T/finevibe/statusline.sh',
     })).toBe(true);
   });
 
-  it('returns true for legacy /tmp/vibeyard path', () => {
-    expect(isVibeyardStatusLine({ command: '/tmp/vibeyard/statusline.sh' })).toBe(true);
+  it('returns true for legacy /tmp/finevibe path', () => {
+    expect(isFineVibeStatusLine({ command: '/tmp/finevibe/statusline.sh' })).toBe(true);
   });
 
   it('returns true for legacy windows tmp-dir statusline path', () => {
-    expect(isVibeyardStatusLine({
-      command: 'C:\\Users\\test\\AppData\\Local\\Temp\\vibeyard\\statusline.cmd',
+    expect(isFineVibeStatusLine({
+      command: 'C:\\Users\\test\\AppData\\Local\\Temp\\finevibe\\statusline.cmd',
     })).toBe(true);
   });
 
   it('returns false for foreign statusline', () => {
-    expect(isVibeyardStatusLine({ command: '/usr/local/bin/some-other-tool.sh' })).toBe(false);
+    expect(isFineVibeStatusLine({ command: '/usr/local/bin/some-other-tool.sh' })).toBe(false);
   });
 
   it('returns false for null/undefined', () => {
-    expect(isVibeyardStatusLine(null)).toBe(false);
-    expect(isVibeyardStatusLine(undefined)).toBe(false);
+    expect(isFineVibeStatusLine(null)).toBe(false);
+    expect(isFineVibeStatusLine(undefined)).toBe(false);
   });
 
   it('returns false for non-object', () => {
-    expect(isVibeyardStatusLine('string')).toBe(false);
+    expect(isFineVibeStatusLine('string')).toBe(false);
   });
 
   it('returns false for object without command', () => {
-    expect(isVibeyardStatusLine({ url: 'http://example.com' })).toBe(false);
+    expect(isFineVibeStatusLine({ url: 'http://example.com' })).toBe(false);
   });
 });
 
@@ -110,10 +110,10 @@ describe('shouldWarnStatusLine', () => {
   const FOREIGN = '/usr/local/bin/other-tool.sh';
   const DIFFERENT_FOREIGN = '/opt/another/tool.sh';
 
-  it('never warns when statusLine is Vibeyard', () => {
-    expect(shouldWarnStatusLine('vibeyard', null, null, null)).toBe(false);
-    expect(shouldWarnStatusLine('vibeyard', 'granted', FOREIGN, null)).toBe(false);
-    expect(shouldWarnStatusLine('vibeyard', 'declined', FOREIGN, null)).toBe(false);
+  it('never warns when statusLine is FineVibe', () => {
+    expect(shouldWarnStatusLine('finevibe', null, null, null)).toBe(false);
+    expect(shouldWarnStatusLine('finevibe', 'granted', FOREIGN, null)).toBe(false);
+    expect(shouldWarnStatusLine('finevibe', 'declined', FOREIGN, null)).toBe(false);
   });
 
   it('suppresses warning when user declined the same foreign command', () => {

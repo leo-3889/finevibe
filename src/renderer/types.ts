@@ -1,7 +1,7 @@
 export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, AgentmemoryStatus } from '../shared/types.js';
 import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types.js';
 
-export interface VibeyardApi {
+export interface FinevibeApi {
   pty: {
     create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;

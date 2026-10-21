@@ -1,5 +1,5 @@
 {
-  "name": "vibeyard",
+  "name": "finevibe",
   "version": "0.3.9-dev",
   "description": "A terminal-centric IDE for AI-powered CLI tools, built on Electron",
   "author": {
@@ -9,14 +9,14 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/elirantutia/vibeyard.git"
+    "url": "https://github.com/leo-3889/vibeyard.git"
   },
-  "homepage": "https://github.com/elirantutia/vibeyard",
+  "homepage": "https://github.com/leo-3889/vibeyard",
   "bugs": {
-    "url": "https://github.com/elirantutia/vibeyard/issues"
+    "url": "https://github.com/leo-3889/vibeyard/issues"
   },
   "bin": {
-    "vibeyard": "bin/vibeyard.js"
+    "finevibe": "bin/finevibe.js"
   },
   "keywords": [
     "electron",
@@ -40,19 +40,20 @@
     "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json && npm run build:renderer && npm run copy-assets",
     "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=iife --target=es2022 --sourcemap --loader:.ts=ts",
     "copy-assets": "node scripts/copy-assets.js",
+    "icons": "node scripts/build-icons.mjs",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron .",
     "postinstall": "node -e \"try{require('electron-builder/package.json');require('child_process').execSync('electron-builder install-app-deps',{stdio:'inherit'})}catch{}\"",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
+    "pack": "npm run build && npm run icons && electron-builder --dir",
+    "dist": "npm run build && npm run icons && electron-builder",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.main-tests.json"
   },
   "build": {
-    "appId": "com.vibeyard.app",
-    "productName": "Vibeyard",
+    "appId": "com.finevibe.app",
+    "productName": "FineVibe",
     "icon": "build/icon.png",
     "files": [
       "dist/main/**/*",
@@ -75,12 +76,12 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Vibeyard needs microphone access so CLI tools running in the terminal (e.g. Claude Code's /voice) can capture audio."
+        "NSMicrophoneUsageDescription": "FineVibe needs microphone access so CLI tools running in the terminal (e.g. Claude Code's /voice) can capture audio."
       },
       "notarize": true
     },
     "linux": {
-      "artifactName": "Vibeyard-${version}-linux-${arch}.${ext}",
+      "artifactName": "FineVibe-${version}-linux-${arch}.${ext}",
       "target": [
         "AppImage",
         "deb"
@@ -89,25 +90,25 @@
       "icon": "build/icon.png"
     },
     "win": {
-      "artifactName": "Vibeyard-${version}-win-${arch}.${ext}",
+      "artifactName": "FineVibe-${version}-win-${arch}.${ext}",
       "target": [
         "nsis",
         "portable",
         "zip"
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.ico"
     },
     "nsis": {
-      "artifactName": "Vibeyard-Setup-${version}.${ext}",
+      "artifactName": "FineVibe-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
     "portable": {
-      "artifactName": "Vibeyard-${version}.${ext}"
+      "artifactName": "FineVibe-${version}.${ext}"
     },
     "publish": {
       "provider": "github",
-      "owner": "elirantutia",
+      "owner": "leo-3889",
       "repo": "vibeyard",
       "releaseType": "release"
     }
@@ -121,6 +122,7 @@
     "electron-builder": "^26.8.1",
     "esbuild": "^0.27.4",
     "jsdom": "^29.1.1",
+    "png2icons": "^2.0.1",
     "typescript": "^5.7.0",
     "vitest": "^4.1.0"
   },

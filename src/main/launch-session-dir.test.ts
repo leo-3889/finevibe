@@ -95,9 +95,9 @@ describe('pruneLaunchSessionDirs()', () => {
     expect(fs.existsSync(fresh)).toBe(true);
   });
 
-  it('prunes a pre-sidecar dir (no .vibeyard.json) from its dir mtime alone', () => {
+  it('prunes a pre-sidecar dir (no .finevibe.json) from its dir mtime alone', () => {
     const legacy = makeDir('legacy', { transcripts: [OLD], dirMtime: OLD });
-    expect(fs.existsSync(path.join(legacy, '.vibeyard.json'))).toBe(false);
+    expect(fs.existsSync(path.join(legacy, '.finevibe.json'))).toBe(false);
     expect(pruneLaunchSessionDirs(base, Date.now())).toBe(1);
     expect(fs.existsSync(legacy)).toBe(false);
   });
@@ -105,13 +105,13 @@ describe('pruneLaunchSessionDirs()', () => {
   it('keeps an empty dir whose age it cannot establish', () => {
     // Corrupt sidecar, no transcripts: the dir mtime is the only signal.
     const corrupt = fs.mkdtempSync(path.join(base, 'corrupt-'));
-    fs.writeFileSync(path.join(corrupt, '.vibeyard.json'), '{corrupt');
+    fs.writeFileSync(path.join(corrupt, '.finevibe.json'), '{corrupt');
     fs.utimesSync(corrupt, new Date(OLD), new Date(OLD));
     expect(pruneLaunchSessionDirs(base, Date.now())).toBe(1);
     expect(fs.existsSync(corrupt)).toBe(false);
 
     const fresh = fs.mkdtempSync(path.join(base, 'fresh-'));
-    fs.writeFileSync(path.join(fresh, '.vibeyard.json'), 'not json');
+    fs.writeFileSync(path.join(fresh, '.finevibe.json'), 'not json');
     fs.utimesSync(fresh, new Date(RECENT), new Date(RECENT));
     expect(pruneLaunchSessionDirs(base, Date.now())).toBe(0);
     expect(fs.existsSync(fresh)).toBe(true);

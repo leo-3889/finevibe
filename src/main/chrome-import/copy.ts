@@ -49,16 +49,16 @@ function copyOne(src: string, dest: string): boolean {
 }
 
 /** Sole producer of the import temp-dir prefix: the sweep below matches it. */
-export const IMPORT_TEMP_PREFIX = 'vibeyard-chrome-import-';
+export const IMPORT_TEMP_PREFIX = 'finevibe-chrome-import-';
 
-/** Mirrors SCREENSHOT_MAX_AGE_MS (ipc-handlers vibeyard-screenshots prune). */
+/** Mirrors SCREENSHOT_MAX_AGE_MS (ipc-handlers finevibe-screenshots prune). */
 export const IMPORT_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * P2-47: quit/crash mid-import used to leave the cookie snapshot in the OS
  * temp dir for the machine's life — `cleanup()` only runs if the import
- * reaches its finally block. Sweeps stale `vibeyard-chrome-import-*` dirs,
- * mirroring the vibeyard-screenshots prune: age bound on mtime, swallow per
+ * reaches its finally block. Sweeps stale `finevibe-chrome-import-*` dirs,
+ * mirroring the finevibe-screenshots prune: age bound on mtime, swallow per
  * entry (a locked dir stays for the next boot), directories only.
  *
  * Returns the number of dirs removed. `maxAgeMs: 0` sweeps every match

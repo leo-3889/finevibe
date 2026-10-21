@@ -6,14 +6,14 @@ import type { AgentmemoryStatus } from '../shared/types';
 /**
  * agentmemory is a shared singleton daemon (the iii engine + REST/MCP endpoints
  * on 3111/3112/3113/49134), consumed by every agent CLI, not just sessions
- * launched from Vibeyard. Vibeyard's role is Model-A: opportunistically
+ * launched from FineVibe. FineVibe's role is Model-A: opportunistically
  * ENSURE it is running — start-if-absent, never own its shutdown. Killing it on
- * quit would sever memory for agents run outside Vibeyard.
+ * quit would sever memory for agents run outside FineVibe.
  *
  * The health endpoint (3113 Viewer) is the canonical liveness signal; 3111 is
  * MCP/StreamableHTTP-only (no REST health route). Version pinning is
  * agentmemory's own responsibility (it self-selects its pinned engine on start);
- * Vibeyard must NOT hardcode a required engine version.
+ * FineVibe must NOT hardcode a required engine version.
  */
 
 const PROBE_URL = 'http://127.0.0.1:3113/health';

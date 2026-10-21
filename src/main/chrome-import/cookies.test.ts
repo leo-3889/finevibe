@@ -26,7 +26,7 @@ beforeEach(() => {
   mockExec.mockImplementation(() => {
     throw new Error('access denied');
   });
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-cookies-test-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-cookies-test-'));
 });
 
 afterEach(() => {

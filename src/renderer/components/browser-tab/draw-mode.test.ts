@@ -73,7 +73,7 @@ describe('buildDrawPrompt', () => {
 describe('sendDrawToNewSession', () => {
   it('passes the config-derived plan-mode value (not a checkbox) to addPlanSession', async () => {
     vi.stubGlobal('navigator', { platform: 'MacIntel' });
-    vi.stubGlobal('window', { vibeyard: { browser: { saveScreenshot: async () => '/tmp/shot.png' } } });
+    vi.stubGlobal('window', { finevibe: { browser: { saveScreenshot: async () => '/tmp/shot.png' } } });
     resolvePlanModePreference.mockReturnValueOnce(false);
     const { sendDrawToNewSession } = await import('./draw-mode.js');
     const instance = makeStubInstance({

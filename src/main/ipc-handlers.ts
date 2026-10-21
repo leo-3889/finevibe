@@ -37,7 +37,7 @@ import { listProfiles as listChromeProfiles, runImport as runChromeImport, clear
 import { sweepImportTempDirs } from './chrome-import/copy';
 import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
-import { buildVibeyardignoreMatcher } from './vibeyardignore';
+import { buildFineVibeIgnoreMatcher } from './finevibeignore';
 import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
 import { getKeychainIsolationStatus } from './claude-keychain';
@@ -290,7 +290,7 @@ function safeOn(channel: string, fn: IpcOnHandler, syncFallback?: () => unknown)
 //    `<profileDir>/agents`, so the (renderer-chosen, allowlist-gated)
 //    config dir is threaded to the claude provider — mirroring the MCP
 //    threading in claude-cli.ts.
-//  - Remove only unlinks files Vibeyard wrote: installs stamp a marker
+//  - Remove only unlinks files FineVibe wrote: installs stamp a marker
 //    comment into the YAML frontmatter, an unmarked same-slug file is
 //    user-authored and reported skipped, and per-file results surface
 //    provider failures instead of swallowing them.
@@ -308,7 +308,7 @@ function assertAgentSlug(slug: string): void {
 }
 
 function agentMarkerLine(slug: string): string {
-  return `# installed-by: vibeyard ${slug}`;
+  return `# installed-by: finevibe ${slug}`;
 }
 
 /** Idempotently stamp the ownership marker into the file's frontmatter. */
@@ -320,10 +320,10 @@ function stampAgentMarker(slug: string, content: string): string {
   return `---\n${marker}\n---\n${content}`;
 }
 
-/** True when the leading frontmatter block carries the Vibeyard marker. */
+/** True when the leading frontmatter block carries the FineVibe marker. */
 function hasAgentMarker(content: string): boolean {
   const fm = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(\r?\n|$)/.exec(content);
-  return fm !== null && /^#[ \t]*installed-by:[ \t]*vibeyard\b/m.test(fm[1]);
+  return fm !== null && /^#[ \t]*installed-by:[ \t]*finevibe\b/m.test(fm[1]);
 }
 
 /**
@@ -366,7 +366,7 @@ type AgentRemoveResult = {
 
 /**
  * Scan one provider's agent trees for `slug` and unlink exactly the files
- * carrying the Vibeyard marker (P2-117). Unmarked same-slug files are
+ * carrying the FineVibe marker (P2-117). Unmarked same-slug files are
  * user-authored and reported skipped; provider unlink failures are reported
  * per file instead of swallowed.
  */
@@ -385,7 +385,7 @@ async function removeAgentFromProvider(p: CliProvider, slug: string): Promise<Ag
         continue;
       }
       if (!hasAgentMarker(content)) {
-        // User-authored (or foreign-managed): Vibeyard never wrote this
+        // User-authored (or foreign-managed): FineVibe never wrote this
         // file, so a slug collision never unlinks it.
         results.push({ providerId: p.meta.id, filePath, status: 'skipped' });
         continue;
@@ -567,7 +567,7 @@ export function registerIpcHandlers(): void {
       if (statusLineIssue || hooksIssue) {
         win.webContents.send('settings:warning', {
           sessionId,
-          statusLine: statusLineIssue ? validation.statusLine : 'vibeyard',
+          statusLine: statusLineIssue ? validation.statusLine : 'finevibe',
           hooks: validation.hooks,
           // P2-127: the banner was computed from THIS dir (the profiled
           // session's tree) — carry it so the Fix Settings CTA repairs it,
@@ -840,7 +840,7 @@ export function registerIpcHandlers(): void {
   // entry points: main reads the clipboard itself for the keystrokes the renderer
   // intercepts (Windows Ctrl+V, the context menu), and the renderer hands bytes
   // over for a native paste event, whose file objects main cannot see.
-  const PASTE_DIR = path.join(os.tmpdir(), 'vibeyard-paste');
+  const PASTE_DIR = path.join(os.tmpdir(), 'finevibe-paste');
   const PASTE_MAX_BYTES = 25 * 1024 * 1024;
   // P4: the pasted TEXT bound (plan: ~8 MiB), counted in UTF-16 characters —
   // the unit the structured clone and the `pty:write` round trip cost on.
@@ -906,7 +906,7 @@ export function registerIpcHandlers(): void {
       // keeps the electron UtilityProcess type out of the test-mock surface
       // (the suite's electron stub answers `fork` with a plain object).
       const proc = utilityProcess.fork(path.join(__dirname, 'png-encode-worker.js'), [], {
-        serviceName: 'vibeyard-png-encode',
+        serviceName: 'finevibe-png-encode',
       }) as unknown as PngWorkerChild | null;
       if (!proc) return null;
       proc.on('message', (event) => {
@@ -1333,7 +1333,7 @@ export function registerIpcHandlers(): void {
   // Re-derive titles for sessions restored from a previous run. A Pi/OMP tab
   // only ever learns the CLI's own title while a live PTY drives
   // `registerTranscriptSync`; after a restart nothing re-reads the transcript,
-  // so a tab whose title was generated/changed while Vibeyard was closed stays
+  // so a tab whose title was generated/changed while FineVibe was closed stays
   // frozen on its default name. The renderer sends every restored self-titling
   // session; main mirrors each KNOWN-id session's title from its exact
   // transcript. A session whose `cliSessionId` was never persisted stays
@@ -1379,15 +1379,15 @@ export function registerIpcHandlers(): void {
   ipcMain.on('session:release', safeOn('session:release', (_event, sessionId: string) => {
     unregisterTranscriptSync(sessionId);
     cleanupSessionStatus(sessionId);
-    // Isolated browser partitions (pane.ts: persist:vibeyard-browser-iso-<id>)
+    // Isolated browser partitions (pane.ts: persist:finevibe-browser-iso-<id>)
     // live in userData/Partitions until quit: an isolated login's cookies and
     // localStorage must go when the session goes. Guarded by directory
     // existence so releasing a non-browser session never materialises a
     // partition via fromPartition().
     if (typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
-      const partDir = path.join(app.getPath('userData'), 'Partitions', `vibeyard-browser-iso-${sessionId}`);
+      const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
       if (fs.existsSync(partDir)) {
-        session.fromPartition(`persist:vibeyard-browser-iso-${sessionId}`)
+        session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
           .clearStorageData()
           .catch((err) => console.warn('clearStorageData failed:', err));
       }
@@ -1454,7 +1454,7 @@ export function registerIpcHandlers(): void {
       throw new Error('Screenshot data exceeds size limit');
     }
     const buffer = Buffer.from(b64, 'base64');
-    const dir = path.join(os.tmpdir(), 'vibeyard-screenshots');
+    const dir = path.join(os.tmpdir(), 'finevibe-screenshots');
     await fs.promises.mkdir(dir, { recursive: true });
     if (!screenshotsPruned) {
       screenshotsPruned = true;
@@ -1657,7 +1657,7 @@ export function registerIpcHandlers(): void {
         return { ok: false };
       }
       const clampedLimit = Math.max(1, Math.min(100, Math.floor(limit) || 10));
-      const isIgnored = buildVibeyardignoreMatcher(resolvedCwd);
+      const isIgnored = buildFineVibeIgnoreMatcher(resolvedCwd);
       const relFiles = (await enumerateProjectFiles(resolvedCwd)).filter((rel) => !isIgnored(rel));
 
       const results: TopFile[] = [];

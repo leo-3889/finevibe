@@ -4,7 +4,7 @@ import * as os from 'os';
 import { isWin } from './platform';
 
 /** Root directory holding all auto-managed profile config dirs. */
-export const PROFILES_ROOT = path.join(os.homedir(), '.vibeyard', 'profiles');
+export const PROFILES_ROOT = path.join(os.homedir(), '.finevibe', 'profiles');
 
 /** App-generated profile ids are slug/uuid shaped; anything else is a
  * renderer-supplied value that must not steer writes outside the managed
@@ -36,8 +36,8 @@ function foldsCase(dir: string): boolean {
     if (parent === anchor) return true;
     anchor = parent;
   }
-  const probe = path.join(anchor, `VibeyardCaseProbe-${process.pid}`);
-  const flipped = path.join(anchor, `vibeyardCASEprobe-${process.pid}`);
+  const probe = path.join(anchor, `FineVibeCaseProbe-${process.pid}`);
+  const flipped = path.join(anchor, `finevibeCASEprobe-${process.pid}`);
   try {
     fs.writeFileSync(probe, '');
     return fs.existsSync(flipped);

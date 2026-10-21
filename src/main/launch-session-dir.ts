@@ -16,7 +16,7 @@ import { loadState } from './store';
  * The directory is derived from the UI session id (deterministic), so it
  * survives a restart without any persisted mapping: a resumed tab recomputes
  * the same directory and finds its own transcripts there. A sidecar
- * (`.vibeyard.json`) records the launch's profile/cwd so global session
+ * (`.finevibe.json`) records the launch's profile/cwd so global session
  * search can surface these transcripts with the right profile.
  *
  * Legacy transcripts (default agent dir, profile trees, external CLI runs)
@@ -200,7 +200,7 @@ export interface LaunchSessionMeta {
   createdAt: string;
 }
 
-const META_FILENAME = '.vibeyard.json';
+const META_FILENAME = '.finevibe.json';
 
 /** Record the launch's identity next to its transcripts (best-effort). */
 export function writeLaunchSessionMeta(sessionDir: string, meta: LaunchSessionMeta): void {

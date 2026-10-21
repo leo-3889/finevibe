@@ -2,7 +2,7 @@
  * Platform-aware hook command generators.
  *
  * Hook commands always invoke pre-installed Python scripts in SCRIPT_DIR
- * (`~/.vibeyard/run`, see hook-status.ts) rather than inlining Python source
+ * (`~/.finevibe/run`, see hook-status.ts) rather than inlining Python source
  * into `sh -c '...'`. Inlining was fragile
  * because Python string literals containing single quotes (e.g. `r'${DIR}'`)
  * terminated the outer shell single-quoted string, producing broken hooks

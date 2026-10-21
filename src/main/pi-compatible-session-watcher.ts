@@ -19,7 +19,7 @@ import { readSessionHeaderSync } from './providers/pi-compatible-transcripts';
  *
  * Two attribution modes per registration:
  *  - knownCliId: the CLI id is known before the first write (Pi fresh
- *    launches pass a Vibeyard-generated id via `--session-id`; every
+ *    launches pass a FineVibe-generated id via `--session-id`; every
  *    resume knows its id). The watcher adopts the file carrying exactly
  *    that id.
  *  - unknown id (OMP fresh launches): the first transcript to appear in

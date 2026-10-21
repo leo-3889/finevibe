@@ -22,7 +22,7 @@ vi.mock('electron', () => ({
 
 const { STATUS_DIR: MOCK_STATUS_DIR } = vi.hoisted(() => {
   const path = require('path');
-  return { STATUS_DIR: path.join('/tmp', 'vibeyard') };
+  return { STATUS_DIR: path.join('/tmp', 'finevibe') };
 });
 
 const mockRegisterTranscriptSync = vi.hoisted(() => vi.fn());
@@ -426,7 +426,7 @@ describe('session ID assignment', () => {
     startWatcher();
 
     mockDirs({ [DIR_UI1]: [] });
-    // Pi fresh launches pass a Vibeyard-generated id via --session-id.
+    // Pi fresh launches pass a FineVibe-generated id via --session-id.
     registerPendingPiSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1, knownCliId: 'pi-first' });
     mockDirs({ [DIR_UI1]: ['other.jsonl', 'right.jsonl'] });
     mockFilesByHeader({

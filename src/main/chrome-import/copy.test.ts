@@ -19,7 +19,7 @@ import { snapshotProfile, sweepImportTempDirs, IMPORT_TEMP_PREFIX, IMPORT_TEMP_M
 let profileDir: string;
 
 beforeEach(() => {
-  profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-copy-test-'));
+  profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-copy-test-'));
   for (const fname of ['Cookies', 'Cookies-journal', 'Login Data', 'Login Data-journal', 'History']) {
     fs.writeFileSync(path.join(profileDir, fname), 'fixture');
   }
@@ -88,8 +88,8 @@ describe('snapshotProfile', () => {
 });
 
 // P2-47: quit/crash mid-import used to leave the cookie snapshot under
-// vibeyard-chrome-import-* in the OS temp dir for the machine's life. The
-// sweep mirrors the vibeyard-screenshots prune (ipc-handlers): 24h age
+// finevibe-chrome-import-* in the OS temp dir for the machine's life. The
+// sweep mirrors the finevibe-screenshots prune (ipc-handlers): 24h age
 // bound, swallow-per-entry, directories only.
 describe('sweepImportTempDirs', () => {
   let tmp: string;
@@ -105,7 +105,7 @@ describe('sweepImportTempDirs', () => {
   }
 
   beforeEach(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-sweep-test-'));
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-sweep-test-'));
   });
 
   afterEach(() => {
@@ -131,9 +131,9 @@ describe('sweepImportTempDirs', () => {
   });
 
   it('leaves non-matching prefixes and matching files untouched', () => {
-    const near = makeImportDir('vibeyard-chrome-importX-nope', 2 * DAY_MS);
+    const near = makeImportDir('finevibe-chrome-importX-nope', 2 * DAY_MS);
     const other = makeImportDir('chrome-import-abc', 2 * DAY_MS);
-    const screenshots = makeImportDir('vibeyard-screenshots', 2 * DAY_MS);
+    const screenshots = makeImportDir('finevibe-screenshots', 2 * DAY_MS);
     const stray = path.join(tmp, `${IMPORT_TEMP_PREFIX}stray-file`);
     fs.writeFileSync(stray, 'fixture');
     expect(sweepImportTempDirs({ tmpDir: tmp })).toBe(0);

@@ -8,9 +8,9 @@ import type { AgentmemoryStatus } from '../../../shared/types.js';
 const CONSOLE_URL = 'http://localhost:3113';
 
 /**
- * agentmemory section (Model A). A toggle controls whether Vibeyard starts the
+ * agentmemory section (Model A). A toggle controls whether FineVibe starts the
  * shared engine at launch; the status line reflects a live probe and offers a
- * manual "start engine" action and an "open console" link. Vibeyard never stops
+ * manual "start engine" action and an "open console" link. FineVibe never stops
  * the engine — it is shared by every agent CLI.
  */
 export function createAgentmemorySection(ctx: PreferencesContext): SectionController {
@@ -41,7 +41,7 @@ export function createAgentmemorySection(ctx: PreferencesContext): SectionContro
     if (!ctx.isActiveSection('agentmemory')) return;
     renderStatus(null);
     try {
-      const status = await window.vibeyard.agentmemory.status();
+      const status = await window.finevibe.agentmemory.status();
       if (ctx.isActiveSection('agentmemory')) renderStatus(status);
     } catch {
       if (ctx.isActiveSection('agentmemory')) renderStatus({ running: false, consoleUrl: CONSOLE_URL });
@@ -73,7 +73,7 @@ export function createAgentmemorySection(ctx: PreferencesContext): SectionContro
         if (!btn) return;
         btn.disabled = true;
         btn.textContent = t('agentmemory.starting');
-        void window.vibeyard.agentmemory.start().then(
+        void window.finevibe.agentmemory.start().then(
           () => refresh(),
           () => {
             if (startBtn) {
@@ -90,7 +90,7 @@ export function createAgentmemorySection(ctx: PreferencesContext): SectionContro
       consoleLink.textContent = t('agentmemory.openConsole');
       consoleLink.addEventListener('click', (e) => {
         e.preventDefault();
-        void window.vibeyard.app.openExternal(CONSOLE_URL);
+        void window.finevibe.app.openExternal(CONSOLE_URL);
       });
 
       statusRow.append(statusEl, startBtn, consoleLink);

@@ -6,14 +6,14 @@ import * as path from 'path';
 import * as vm from 'vm';
 import { PassThrough, Writable } from 'stream';
 
-const launcherSource = fs.readFileSync(path.join(process.cwd(), 'bin', 'vibeyard.js'), 'utf8');
+const launcherSource = fs.readFileSync(path.join(process.cwd(), 'bin', 'finevibe.js'), 'utf8');
 const launcherVersion = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
 ).version as string;
 
 // P1-7 (fork identity): releases come only from the fork repo named by
-// VIBEYARD_RELEASE_REPO — there is no built-in default.
-const forkEnv = { VIBEYARD_RELEASE_REPO: 'leo-3889/vibeyard' };
+// FINEVIBE_RELEASE_REPO — there is no built-in default.
+const forkEnv = { FINEVIBE_RELEASE_REPO: 'leo-3889/vibeyard' };
 
 type FakeResponse = PassThrough & { statusCode: number; headers: Record<string, string> };
 
@@ -72,7 +72,7 @@ function loadLauncher(options: LoadOptions = {}) {
       return {};
     },
     process: {
-      platform: 'linux', arch: 'x64', argv: ['node', 'vibeyard'],
+      platform: 'linux', arch: 'x64', argv: ['node', 'finevibe'],
       env: options.env ?? {}, exit: vi.fn(), stdout: { write: vi.fn() },
     },
     console: { log: consoleLog, error: consoleError },
@@ -115,7 +115,7 @@ async function until(ready: () => boolean, diagnose: () => string = () => 'no ob
 
 describe('Linux npm launcher', () => {
   it('starts an installed AppImage and passes app arguments', async () => {
-    const source = fs.readFileSync(path.join(process.cwd(), 'bin', 'vibeyard.js'), 'utf8');
+    const source = fs.readFileSync(path.join(process.cwd(), 'bin', 'finevibe.js'), 'utf8');
     const version = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version as string;
     const spawn = vi.fn(() => ({ unref: vi.fn() }));
     const fakeFs = {
@@ -123,7 +123,7 @@ describe('Linux npm launcher', () => {
       existsSync: vi.fn(() => true),
     };
     const fakeProcess = {
-      platform: 'linux', arch: 'x64', argv: ['node', 'vibeyard', '--example'],
+      platform: 'linux', arch: 'x64', argv: ['node', 'finevibe', '--example'],
       env: {}, exit: vi.fn(), stdout: { write: vi.fn() },
     };
     const context = {
@@ -140,7 +140,7 @@ describe('Linux npm launcher', () => {
     };
     await vm.runInNewContext(source, context);
     expect(spawn).toHaveBeenCalledWith(
-      path.join('/home/test', '.vibeyard', 'app', 'Vibeyard.AppImage'),
+      path.join('/home/test', '.finevibe', 'app', 'FineVibe.AppImage'),
       ['--example'],
       { detached: true, stdio: 'ignore' },
     );
@@ -153,20 +153,20 @@ describe('launcher release repo', () => {
   // "defaults to the upstream repo" behavior is the bug — a fork launcher
   // must never download from the upstream feed. Unset/malformed = no feed,
   // and a fresh install then refuses to download.
-  it('has no release feed when VIBEYARD_RELEASE_REPO is unset', () => {
+  it('has no release feed when FINEVIBE_RELEASE_REPO is unset', () => {
     const { exports } = loadLauncher();
     expect(exports.REPO).toBeNull();
     expect(exports.RELEASES_URL).toBeNull();
     expect(exports.RELEASE_API_URL).toBeNull();
   });
 
-  it('has no release feed for a malformed VIBEYARD_RELEASE_REPO', () => {
-    const { exports } = loadLauncher({ env: { VIBEYARD_RELEASE_REPO: 'not-a-slug' } });
+  it('has no release feed for a malformed FINEVIBE_RELEASE_REPO', () => {
+    const { exports } = loadLauncher({ env: { FINEVIBE_RELEASE_REPO: 'not-a-slug' } });
     expect(exports.REPO).toBeNull();
     expect(exports.RELEASES_URL).toBeNull();
   });
 
-  it('VIBEYARD_RELEASE_REPO points downloads and the API at the fork repo', () => {
+  it('FINEVIBE_RELEASE_REPO points downloads and the API at the fork repo', () => {
     const { exports } = loadLauncher({ env: forkEnv });
     expect(exports.REPO).toBe('leo-3889/vibeyard');
     expect(exports.RELEASES_URL).toBe('https://github.com/leo-3889/vibeyard/releases');
@@ -183,7 +183,7 @@ describe('launcher release repo', () => {
       () => 'launcher neither reported an error nor launched',
     );
     const message = consoleError.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(message).toMatch(/VIBEYARD_RELEASE_REPO/);
+    expect(message).toMatch(/FINEVIBE_RELEASE_REPO/);
     expect(httpsGet).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
   });
@@ -234,7 +234,7 @@ describe('launcher followRedirects', () => {
 });
 
 describe('launcher getJson', () => {
-  it('sends the GitHub API Accept header and the vibeyard user agent', async () => {
+  it('sends the GitHub API Accept header and the finevibe user agent', async () => {
     const httpsGet = vi.fn((_url: string, _opts: unknown, cb: (res: FakeResponse) => void) => {
       const res = fakeResponse();
       cb(res);
@@ -245,14 +245,14 @@ describe('launcher getJson', () => {
     const body = await exports.getJson(exports.RELEASE_API_URL);
     expect(body).toEqual({ assets: [] });
     expect(httpsGet.mock.calls[0][1]).toMatchObject({
-      headers: { 'User-Agent': 'vibeyard-cli', Accept: 'application/vnd.github+json' },
+      headers: { 'User-Agent': 'finevibe-cli', Accept: 'application/vnd.github+json' },
     });
   });
 });
 
 describe('launcher digest verification', () => {
-  const asset = `Vibeyard-${launcherVersion}-linux-x64.AppImage`;
-  const content = Buffer.from('vibeyard-appimage-payload');
+  const asset = `FineVibe-${launcherVersion}-linux-x64.AppImage`;
+  const content = Buffer.from('finevibe-appimage-payload');
   const contentHex = crypto.createHash('sha256').update(content).digest('hex');
 
   it('passes when the published sha256 digest matches', async () => {
@@ -324,9 +324,9 @@ describe('launcher digest verification', () => {
 });
 
 describe('launcher download', () => {
-  const asset = `Vibeyard-${launcherVersion}-linux-x64.AppImage`;
-  const tmpFile = path.join('/home/test', '.vibeyard', 'app', `${asset}.tmp`);
-  const content = Buffer.from('vibeyard-appimage-payload');
+  const asset = `FineVibe-${launcherVersion}-linux-x64.AppImage`;
+  const tmpFile = path.join('/home/test', '.finevibe', 'app', `${asset}.tmp`);
+  const content = Buffer.from('finevibe-appimage-payload');
   const contentHex = crypto.createHash('sha256').update(content).digest('hex');
 
   function servingDownloadAndApi(digest: string | undefined) {
@@ -390,7 +390,7 @@ describe('launcher download', () => {
   });
 
   it('installs when the redownload verifies (transient corruption/API)', async () => {
-    const good = Buffer.from('vibeyard-appimage-payload-good');
+    const good = Buffer.from('finevibe-appimage-payload-good');
     const goodHex = crypto.createHash('sha256').update(good).digest('hex');
     const { exports, fakeFs, httpsGet } = loadLauncher({
       env: forkEnv,
@@ -411,10 +411,10 @@ describe('launcher download', () => {
 describe('launcher linux asset name', () => {
   // electron-builder publishes the linux artifact as `-linux-amd64`; a launcher
   // asking for `-linux-x64` gets a 404 and every fresh install fails.
-  const amd64Asset = `Vibeyard-${launcherVersion}-linux-amd64.AppImage`;
-  const appDir = path.join('/home/test', '.vibeyard', 'app');
-  const appPath = path.join(appDir, 'Vibeyard.AppImage');
-  const content = Buffer.from('vibeyard-appimage-payload');
+  const amd64Asset = `FineVibe-${launcherVersion}-linux-amd64.AppImage`;
+  const appDir = path.join('/home/test', '.finevibe', 'app');
+  const appPath = path.join(appDir, 'FineVibe.AppImage');
+  const content = Buffer.from('finevibe-appimage-payload');
   const contentHex = crypto.createHash('sha256').update(content).digest('hex');
 
   function servingAmd64Only() {
@@ -471,9 +471,9 @@ describe('launcher linux asset name', () => {
 
 describe('published launcher manifest', () => {
   // P2-14 (audit plan §6): the npm package is the thin launcher — a
-  // downloader for the packaged app (bin/vibeyard.js never links any of
+  // downloader for the packaged app (bin/finevibe.js never links any of
   // the app's runtime deps). The PUBLISHED manifest must carry zero app
-  // dependencies: shipping them made `npm i -g vibeyard` resolve 16 app
+  // dependencies: shipping them made `npm i -g finevibe` resolve 16 app
   // packages and compile native modules (better-sqlite3, node-pty) on the
   // user's machine. P2-6: the publish step must run with --provenance,
   // which needs the runner's OIDC id-token. These tests pin the
@@ -490,7 +490,7 @@ describe('published launcher manifest', () => {
   it('ships only bin/ plus docs in the tarball', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
     expect(pkg.files).toEqual(['bin/', 'README.md', 'LICENSE']);
-    expect(pkg.bin).toEqual({ vibeyard: 'bin/vibeyard.js' });
+    expect(pkg.bin).toEqual({ finevibe: 'bin/finevibe.js' });
   });
 
   it('strips app dependencies from the manifest handed to npm', () => {

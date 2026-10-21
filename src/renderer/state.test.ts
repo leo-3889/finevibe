@@ -4,7 +4,7 @@ const mockLoad = vi.fn();
 const mockSave = vi.fn();
 
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: mockLoad, save: mockSave },
     session: { transcriptExistsSync: vi.fn().mockReturnValue(true) },
   },
@@ -733,7 +733,7 @@ describe('updateSessionCliId()', () => {
   // of those by re-appending the terminal pane — blurring the in-pane find bar and
   // collapsing an in-progress selection.
   beforeEach(() => {
-    (window as any).vibeyard.session = { transcriptExistsSync: vi.fn(() => false) };
+    (window as any).finevibe.session = { transcriptExistsSync: vi.fn(() => false) };
   });
 
   it('emits and persists the first time an id arrives', () => {

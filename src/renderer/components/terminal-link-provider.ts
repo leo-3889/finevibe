@@ -29,7 +29,7 @@ export class GithubLinkProvider implements ILinkProvider {
         range,
         text: match[0],
         activate: () => {
-          window.vibeyard.app.openExternal(`${this.repoUrl}/issues/${issueNumber}`);
+          window.finevibe.app.openExternal(`${this.repoUrl}/issues/${issueNumber}`);
         },
       });
     }

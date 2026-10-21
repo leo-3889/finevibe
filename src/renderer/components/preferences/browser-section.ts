@@ -32,7 +32,7 @@ export function createBrowserSection(ctx: PreferencesContext): SectionController
       clearCookiesBtn.textContent = t('browser.clearButton');
       clearCookiesBtn.addEventListener('click', async () => {
         if (!confirm(t('browser.clearConfirm'))) return;
-        await window.vibeyard.chromeImport.clearCookies();
+        await window.finevibe.chromeImport.clearCookies();
         refreshSummary();
       });
       actionsRow.appendChild(clearCookiesBtn);
@@ -43,7 +43,7 @@ export function createBrowserSection(ctx: PreferencesContext): SectionController
       container.appendChild(footnote);
 
       function refreshSummary() {
-        window.vibeyard.chromeImport.summary().then((s) => {
+        window.finevibe.chromeImport.summary().then((s) => {
           if (!ctx.isActiveSection('browser')) return;
           if (s.lastImportedAt === 0 && s.cookieCount === 0) {
             summary.textContent = t('browser.summaryEmpty');

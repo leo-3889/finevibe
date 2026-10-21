@@ -208,7 +208,7 @@ const INSPECTOR_FIELD_MAX_CHARS = 2000;
 /** Per-hook timeout (seconds) requested for SessionEnd. See its use site. */
 const SESSION_END_TIMEOUT_SEC = 5;
 
-export const HOOK_MARKER = '# vibeyard-hook';
+export const HOOK_MARKER = '# finevibe-hook';
 
 /** The default Claude config dir (~/.claude). Profiles override this via CLAUDE_CONFIG_DIR. */
 export function defaultClaudeDir(): string {
@@ -263,7 +263,7 @@ function prepareSettings(configDir: string = defaultClaudeDir()): { settings: Re
 
   const existingHooks: HooksConfig = (settings.hooks ?? {}) as HooksConfig;
 
-  // Remove any previously-installed vibeyard hooks from all event types
+  // Remove any previously-installed finevibe hooks from all event types
   const cleaned: HooksConfig = {};
   for (const [event, matchers] of Object.entries(existingHooks)) {
     const filteredMatchers = matchers

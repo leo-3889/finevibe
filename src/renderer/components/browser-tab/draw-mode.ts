@@ -60,7 +60,7 @@ export function showDrawError(instance: BrowserTabInstance, message: string): vo
 export async function captureScreenshotPath(instance: BrowserTabInstance): Promise<string | null> {
   try {
     const image = await instance.webview.capturePage();
-    return await window.vibeyard.browser.saveScreenshot(instance.sessionId, image.toDataURL());
+    return await window.finevibe.browser.saveScreenshot(instance.sessionId, image.toDataURL());
   } catch (err) {
     console.error('Failed to capture browser screenshot', err);
     return null;

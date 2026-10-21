@@ -80,7 +80,7 @@ if (typeof globalThis.document === 'undefined') {
   vi.spyOn(document, 'hasFocus').mockImplementation(() => mockHasFocus);
 }
 const focusSpy = vi.fn();
-(globalThis as any).window = { vibeyard: { app: { focus: focusSpy } } };
+(globalThis as any).window = { finevibe: { app: { focus: focusSpy } } };
 
 describe('notification-desktop', () => {
   beforeEach(() => {
@@ -271,13 +271,13 @@ describe('notification-desktop', () => {
     expect(notificationInstances).toHaveLength(0);
   });
 
-  it('should fall back to "Vibeyard" / "Session" for an unknown session', () => {
+  it('should fall back to "FineVibe" / "Session" for an unknown session', () => {
     initSession('unknown-session');
     setHookStatus('unknown-session', 'working');
     setHookStatus('unknown-session', 'waiting');
 
     expect(notificationInstances).toHaveLength(1);
-    expect(notificationInstances[0].title).toBe('Vibeyard');
+    expect(notificationInstances[0].title).toBe('FineVibe');
     expect(notificationInstances[0].options.body).toBe('Session is waiting for input');
   });
 });

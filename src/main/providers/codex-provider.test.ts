@@ -41,9 +41,9 @@ vi.mock('../codex-session-watcher', () => ({
 
 vi.mock('../codex-hooks', () => ({
   installCodexHooks: vi.fn(),
-  validateCodexHooks: vi.fn(() => ({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} })),
+  validateCodexHooks: vi.fn(() => ({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} })),
   cleanupCodexHooks: vi.fn(),
-  SESSION_ID_VAR: 'VIBEYARD_SESSION_ID',
+  SESSION_ID_VAR: 'FINEVIBE_SESSION_ID',
 }));
 
 import * as fs from 'fs';
@@ -80,7 +80,7 @@ beforeEach(() => {
   _resetCachedPath();
   _resetHookValidationCache();
   invalidateBinaryCache();
-  mockValidateCodexHooks.mockReturnValue({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
+  mockValidateCodexHooks.mockReturnValue({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   provider = new CodexProvider();
 });
 
@@ -191,9 +191,9 @@ describe('buildEnv', () => {
     expect(env.PATH).toBe(isWin ? '/usr/local/bin;/usr/bin' : '/usr/local/bin:/usr/bin');
   });
 
-  it('sets VIBEYARD_SESSION_ID to the session ID', () => {
+  it('sets FINEVIBE_SESSION_ID to the session ID', () => {
     const env = provider.buildEnv('sess-123', {});
-    expect(env.VIBEYARD_SESSION_ID).toBe('sess-123');
+    expect(env.FINEVIBE_SESSION_ID).toBe('sess-123');
   });
 
   it('strips an inherited CODEX_HOME and preserves other env vars', () => {
@@ -320,7 +320,7 @@ describe('hooks integration', () => {
   it('validateSettings delegates to validateCodexHooks', () => {
     const result = provider.validateSettings();
     expect(mockValidateCodexHooks).toHaveBeenCalled();
-    expect(result).toEqual({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
+    expect(result).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   });
 
   it('cleanup stops the config watcher, the hooks and the rollout session watcher', () => {
@@ -330,7 +330,7 @@ describe('hooks integration', () => {
     // The rollout watcher is a recursive fs.watch plus a 2s interval with no
     // other production caller: without this it survives quit, and a scan
     // armed inside its 500ms arming window fires after cleanupAll() deleted
-    // STATUS_DIR and recreates os.tmpdir()/vibeyard with a .sessionid file.
+    // STATUS_DIR and recreates os.tmpdir()/finevibe with a .sessionid file.
     expect(mockStopCodexSessionWatcher).toHaveBeenCalled();
   });
 
@@ -354,7 +354,7 @@ describe('onSessionStarted hooks validation cache', () => {
   });
 
   it('reuses the cached missing-hooks verdict for the watcher fallback', () => {
-    mockValidateCodexHooks.mockReturnValue({ statusLine: 'vibeyard', hooks: 'missing', hookDetails: {} });
+    mockValidateCodexHooks.mockReturnValue({ statusLine: 'finevibe', hooks: 'missing', hookDetails: {} });
     provider.onSessionStarted('s1', '/p1', win);
     provider.onSessionStarted('s2', '/p2', win);
     expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);

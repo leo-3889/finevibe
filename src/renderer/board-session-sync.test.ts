@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: vi.fn(), save: vi.fn() },
     session: { transcriptExistsSync: vi.fn(() => false) },
   },

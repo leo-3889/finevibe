@@ -208,7 +208,7 @@ describe('no-op lifecycle methods', () => {
   });
 
   it('validateSettings reports complete (Pi has no hooks or status line)', () => {
-    expect(provider.validateSettings()).toEqual({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
+    expect(provider.validateSettings()).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   });
 
   it('getShiftEnterSequence returns null', () => {

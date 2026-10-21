@@ -1,6 +1,7 @@
 import { appState } from './state.js';
 
-const DISCUSSIONS_BASE = 'https://github.com/elirantutia/vibeyard/discussions';
+// legacy: the GitHub repo slug stays `vibeyard` — the repository is NOT renamed with the product.
+const DISCUSSIONS_BASE = 'https://github.com/leo-3889/vibeyard/discussions';
 const SORT_QUERY = '?discussions_q=sort:date_created';
 export const DISCUSSIONS_URL = DISCUSSIONS_BASE + SORT_QUERY;
 const FEED_URL = DISCUSSIONS_BASE + '.atom' + SORT_QUERY;

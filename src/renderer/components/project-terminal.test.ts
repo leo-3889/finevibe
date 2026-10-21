@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
 // Terminal copies go through the main process, not navigator.clipboard (#160).
-const mockVibeyardClipboardWrite = vi.fn().mockResolvedValue(undefined);
+const mockFineVibeClipboardWrite = vi.fn().mockResolvedValue(undefined);
 const mockPtyWrite = vi.fn();
 
 class FakeTerminal {
@@ -104,9 +104,9 @@ describe('project-terminal Ctrl+Shift+C clipboard copy', () => {
 
     vi.stubGlobal('document', makeFakeDocument());
     vi.stubGlobal('window', {
-      vibeyard: {
+      finevibe: {
         pty: { write: mockPtyWrite, kill: vi.fn(), resize: vi.fn(), createShell: vi.fn() },
-        clipboard: { write: mockVibeyardClipboardWrite },
+        clipboard: { write: mockFineVibeClipboardWrite },
       },
     });
     vi.stubGlobal('navigator', { clipboard: { writeText: mockClipboardWrite } });
@@ -138,7 +138,7 @@ describe('project-terminal Ctrl+Shift+C clipboard copy', () => {
     term.setSelection('copied text');
     term.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
-    expect(mockVibeyardClipboardWrite).toHaveBeenCalledWith('copied text', 'explicit');
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('copied text', 'explicit');
   });
 
   it('does not copy on keyup', async () => {
@@ -148,7 +148,7 @@ describe('project-terminal Ctrl+Shift+C clipboard copy', () => {
     term.setSelection('some text');
     term.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keyup' });
 
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('does not copy when nothing is selected', async () => {
@@ -158,7 +158,7 @@ describe('project-terminal Ctrl+Shift+C clipboard copy', () => {
     term.setSelection('');
     term.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
-    expect(mockVibeyardClipboardWrite).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
   });
 
   it('returns false to prevent default on Ctrl+Shift+C', async () => {
@@ -186,7 +186,7 @@ describe('applyThemeToAllShells()', () => {
 
     vi.stubGlobal('document', makeFakeDocument());
     vi.stubGlobal('window', {
-      vibeyard: {
+      finevibe: {
         pty: { write: mockPtyWrite, kill: vi.fn(), resize: vi.fn(), createShell: vi.fn() },
       },
     });
@@ -256,14 +256,14 @@ describe('project-terminal fit resize (P3-10)', () => {
 
     vi.stubGlobal('document', makeFakeDocument());
     vi.stubGlobal('window', {
-      vibeyard: {
+      finevibe: {
         pty: {
           write: mockPtyWrite,
           kill: vi.fn(),
           resize: mockPtyResize,
           createShell: vi.fn().mockResolvedValue(undefined),
         },
-        clipboard: { write: mockVibeyardClipboardWrite },
+        clipboard: { write: mockFineVibeClipboardWrite },
       },
     });
     vi.stubGlobal('navigator', { clipboard: { writeText: mockClipboardWrite } });

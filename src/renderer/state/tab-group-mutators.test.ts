@@ -6,7 +6,7 @@ const mockSave = vi.fn();
 // Same harness as layout-state.test.ts; transcriptExistsSync is what
 // removeSession's archive path (isArchivable) calls for CLI sessions.
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: mockLoad, save: mockSave },
     session: { transcriptExistsSync: () => false },
   },

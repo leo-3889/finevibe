@@ -6,11 +6,11 @@ import { BrowserWindow } from 'electron';
 import { isWin, pythonBin } from './platform';
 import type { CliSessionStatus } from '../shared/types';
 
-export const STATUS_DIR = path.join(os.tmpdir(), 'vibeyard');
-export const SCRIPT_DIR = path.join(os.homedir(), '.vibeyard', 'run');
+export const STATUS_DIR = path.join(os.tmpdir(), 'finevibe');
+export const SCRIPT_DIR = path.join(os.homedir(), '.finevibe', 'run');
 const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'statusline.sh');
 
-// Status files any provider may write into STATUS_DIR, keyed by Vibeyard's
+// Status files any provider may write into STATUS_DIR, keyed by FineVibe's
 // session id. This array drives cleanup, polling and resync generically.
 //
 // `.name` is a provider-facing channel, not Claude-private: write

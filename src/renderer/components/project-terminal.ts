@@ -86,7 +86,7 @@ function createShell(projectId: string): ShellTerminalInstance {
   const shellId = crypto.randomUUID();
   const sessionId = `shell-${projectId}-${shellId}`;
 
-  const writeToPty = (data: string) => window.vibeyard.pty.write(sessionId, data);
+  const writeToPty = (data: string) => window.finevibe.pty.write(sessionId, data);
   attachClipboardCopyHandler(terminal, undefined);
   attachImagePasteHandler(terminal, element, writeToPty);
 
@@ -109,7 +109,7 @@ function createShell(projectId: string): ShellTerminalInstance {
   attachFileDropHandler(terminal, element, writeToPty, () => instance.spawned);
 
   terminal.onData((data) => {
-    window.vibeyard.pty.write(sessionId, data);
+    window.finevibe.pty.write(sessionId, data);
   });
 
   getShellsFor(projectId).push(instance);
@@ -124,7 +124,7 @@ async function spawnShell(instance: ShellTerminalInstance, projectPath: string):
   if (overlay) overlay.remove();
 
   try {
-    await window.vibeyard.pty.createShell(instance.sessionId, projectPath);
+    await window.finevibe.pty.createShell(instance.sessionId, projectPath);
     // A fresh PTY starts at the spawn default; force the next fit to
     // re-send the pane's current geometry.
     instance.lastSize = '';
@@ -273,7 +273,7 @@ function closeShell(projectId: string, shellId: string): void {
   const instance = list[idx];
 
   destroySearchBar(instance.sessionId);
-  window.vibeyard.pty.kill(instance.sessionId);
+  window.finevibe.pty.kill(instance.sessionId);
   instance.terminal.dispose();
   instance.element.remove();
   list.splice(idx, 1);
@@ -346,7 +346,7 @@ function fitActiveShell(): void {
     // pty.resize is typed void, but the bridge hands back the
     // ipcRenderer.invoke promise; a rejected resize would otherwise surface
     // as an unhandled rejection.
-    Promise.resolve(window.vibeyard.pty.resize(instance.sessionId, cols, rows)).catch(() => {});
+    Promise.resolve(window.finevibe.pty.resize(instance.sessionId, cols, rows)).catch(() => {});
   } catch {
     // not visible yet
   }
@@ -393,7 +393,7 @@ function destroyAllShells(projectId: string): void {
   if (!list) return;
   for (const instance of list) {
     destroySearchBar(instance.sessionId);
-    window.vibeyard.pty.kill(instance.sessionId);
+    window.finevibe.pty.kill(instance.sessionId);
     instance.terminal.dispose();
     instance.element.remove();
   }

@@ -153,7 +153,7 @@ export const createUsageStatsWidget: WidgetFactory = () => {
 
     let stats: StatsCache | null = null;
     try {
-      stats = await window.vibeyard.stats.getCache();
+      stats = await window.finevibe.stats.getCache();
     } catch {
       stats = null;
     }

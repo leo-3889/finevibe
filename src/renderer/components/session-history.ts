@@ -52,7 +52,7 @@ async function backupSession(project: ProjectRecord, archived: ArchivedSession, 
     ? appState.profiles.find((p) => p.id === archived.profileId && p.providerId === providerId)
     : undefined;
   try {
-    const outPath = await window.vibeyard.session.exportArchive(
+    const outPath = await window.finevibe.session.exportArchive(
       providerId,
       archived.cliSessionId,
       project.path,

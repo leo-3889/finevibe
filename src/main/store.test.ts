@@ -131,8 +131,8 @@ describe('saveState', () => {
     // timer fired, so a crash inside the window lost the state. The
     // leading edge writes through at once.
     expect(mockWriteSync).toHaveBeenCalledOnce();
-    expect(String(mockRenameSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json.tmp');
-    expect(String(mockRenameSync.mock.calls[0][1]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json');
+    expect(String(mockRenameSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.finevibe/state.json.tmp');
+    expect(String(mockRenameSync.mock.calls[0][1]).replaceAll('\\', '/')).toContain('/mock/home/.finevibe/state.json');
 
     // The first write opens the throttle window; bursts inside it coalesce
     // into ONE trailing write of the LATEST state.
@@ -173,7 +173,7 @@ describe('saveState', () => {
     vi.advanceTimersByTime(300);
 
     expect(mockMkdirSync).toHaveBeenCalledWith(
-      expect.stringContaining('.vibeyard'),
+      expect.stringContaining('.finevibe'),
       { recursive: true },
     );
   });
@@ -221,7 +221,7 @@ describe('saveStateSync', () => {
   it('fsyncs and closes the temp file before renaming it into place', () => {
     saveStateSync(DEFAULT_STATE);
 
-    expect(String(mockOpenSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json.tmp');
+    expect(String(mockOpenSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.finevibe/state.json.tmp');
     expect(mockFsyncSync).toHaveBeenCalledOnce();
     expect(mockCloseSync).toHaveBeenCalledOnce();
     // Neither may overtake the data flush: a rename that wins leaves a

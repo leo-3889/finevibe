@@ -35,7 +35,7 @@ function watchFolder(projectId: string, folderPath: string): void {
   const set = getWatchedSet(projectId);
   if (set.has(folderPath)) return;
   set.add(folderPath);
-  window.vibeyard.fs.watchDir(folderPath);
+  window.finevibe.fs.watchDir(folderPath);
 }
 
 /**
@@ -49,7 +49,7 @@ function unwatchSubtree(projectId: string, folderPath: string, clearExpanded = f
     for (const p of [...set]) {
       if (!isPathUnder(p, folderPath)) continue;
       set.delete(p);
-      window.vibeyard.fs.unwatchDir(p);
+      window.finevibe.fs.unwatchDir(p);
     }
   }
   for (const p of [...entryCache.keys()]) {
@@ -113,7 +113,7 @@ function flushPendingDirs(): void {
 
 function ensureChangeSubscription(): void {
   if (unsubFileChanged) return;
-  unsubFileChanged = window.vibeyard.fs.onFsChange((changes) => {
+  unsubFileChanged = window.finevibe.fs.onFsChange((changes) => {
     if (changes.length === 0) return;
     // flushPendingDirs filters to dirs actually rendered in a tree; collecting
     // every changed dir here (dirs from open reader/viewer panes included) is
@@ -174,7 +174,7 @@ export function clearProjectState(projectId: string): void {
 export function closeFileTree(projectId: string): void {
   const watched = watchedByProject.get(projectId);
   if (watched) {
-    for (const p of watched) window.vibeyard.fs.unwatchDir(p);
+    for (const p of watched) window.finevibe.fs.unwatchDir(p);
     watched.clear();
   }
   activeTrees.delete(projectId);
@@ -201,7 +201,7 @@ async function loadEntries(folderPath: string): Promise<DirEntry[]> {
   const pending = inflight.get(folderPath);
   if (pending) return pending;
 
-  const promise = window.vibeyard.fs.listDir(folderPath).then((entries) => {
+  const promise = window.finevibe.fs.listDir(folderPath).then((entries) => {
     const sorted = sortEntries(entries);
     // Only cache if this promise is still the registered inflight: if the
     // entry was evicted while the read was in flight (collapse, expand-time
@@ -422,8 +422,8 @@ async function reconcileChildren(
 
 async function showFileProperties(entry: DirEntry): Promise<void> {
   const [statResult, readResult] = await Promise.all([
-    window.vibeyard.fs.stat(entry.path),
-    window.vibeyard.fs.readFile(entry.path),
+    window.finevibe.fs.stat(entry.path),
+    window.finevibe.fs.readFile(entry.path),
   ]);
 
   const rows: Array<{ label: string; value: string; mono?: boolean }> = [];
@@ -489,7 +489,7 @@ function showInFolderMenuOption(entry: DirEntry): MenuOption {
   return {
     label: `${entry.isDirectory ? 'Open' : 'Reveal'} in ${FILE_MANAGER}`,
     action: async () => {
-      const result = await window.vibeyard.fs.showInFolder(entry.path);
+      const result = await window.finevibe.fs.showInFolder(entry.path);
       if (!result.ok) {
         console.warn(`Failed to show ${entry.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
       }
@@ -524,7 +524,7 @@ function confirmAndTrash(entry: DirEntry): void {
     `Delete ${kind}`,
     message,
     async () => {
-      const result = await window.vibeyard.fs.trashItem(entry.path);
+      const result = await window.finevibe.fs.trashItem(entry.path);
       if (!result.ok) {
         console.warn(`Failed to trash ${entry.path}: ${result.error ?? 'unknown error'}`);
       }

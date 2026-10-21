@@ -6,7 +6,7 @@ let preloadPathPromise: Promise<string> | null = null;
 
 export function getPreloadPath(): Promise<string> {
   if (!preloadPathPromise) {
-    preloadPathPromise = window.vibeyard.app.getBrowserPreloadPath();
+    preloadPathPromise = window.finevibe.app.getBrowserPreloadPath();
   }
   return preloadPathPromise;
 }

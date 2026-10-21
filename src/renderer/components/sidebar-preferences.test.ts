@@ -35,16 +35,16 @@ vi.mock('../discussions-badge.js', () => ({
 
 const IDS = ['project-list', 'btn-add-project', 'btn-preferences', 'sidebar', 'sidebar-resize-handle', 'sidebar-discussions', 'btn-toggle-sidebar', 'sidebar-active-sessions'];
 
-interface VibeyardStub {
+interface FineVibeStub {
   app: { openExternal: Mock };
   store: { load: Mock; save: Mock };
 }
 
-function testWindow(): { vibeyard: VibeyardStub } {
-  // Preload injects the full VibeyardApi; these tests replace it with vi.fn
+function testWindow(): { finevibe: FineVibeStub } {
+  // Preload injects the full FinevibeApi; these tests replace it with vi.fn
   // stubs implementing only the members they touch — the real shape is
   // unrepresentable for a stub, hence the unchecked cast.
-  return window as unknown as { vibeyard: VibeyardStub };
+  return window as unknown as { finevibe: FineVibeStub };
 }
 
 function persistedState(discussionsVisible: boolean) {
@@ -62,7 +62,7 @@ function stubDom() {
     el.id = id;
     document.body.appendChild(el);
   }
-  testWindow().vibeyard = {
+  testWindow().finevibe = {
     app: { openExternal: vi.fn() },
     store: { load: vi.fn(), save: vi.fn(async () => {}) },
   };
@@ -77,7 +77,7 @@ describe('discussions visibility across load', () => {
   });
 
   it('hides the discussions link after state-loaded when the preference is off', async () => {
-    testWindow().vibeyard!.store.load.mockResolvedValue(persistedState(false));
+    testWindow().finevibe!.store.load.mockResolvedValue(persistedState(false));
     const { initSidebar } = await import('./sidebar.js');
     const { appState } = await import('../state.js');
 
@@ -92,7 +92,7 @@ describe('discussions visibility across load', () => {
   });
 
   it('keeps the discussions link visible when the preference is on', async () => {
-    testWindow().vibeyard!.store.load.mockResolvedValue(persistedState(true));
+    testWindow().finevibe!.store.load.mockResolvedValue(persistedState(true));
     const { initSidebar } = await import('./sidebar.js');
     const { appState } = await import('../state.js');
 
@@ -111,19 +111,19 @@ describe('discussions locale re-translation', () => {
   });
 
   it('re-translates the discussions card when the locale is applied after bootstrap', async () => {
-    testWindow().vibeyard!.store.load.mockResolvedValue(persistedState(true));
+    testWindow().finevibe!.store.load.mockResolvedValue(persistedState(true));
     const { setLocale } = await import('../i18n.js');
     const { initSidebar } = await import('./sidebar.js');
 
     initSidebar();
     const el = document.getElementById('sidebar-discussions')!;
     // Bootstrap renders with the i18n default locale.
-    expect(el.innerHTML).toContain('Vibeyard Discussions');
+    expect(el.innerHTML).toContain('FineVibe Discussions');
 
     // initI18n() applies the persisted locale after components have rendered;
     // the card must re-translate even though the badge count never changed.
     setLocale('zh-CN');
     expect(el.innerHTML).toContain('讨论');
-    expect(el.innerHTML).not.toContain('Vibeyard Discussions');
+    expect(el.innerHTML).not.toContain('FineVibe Discussions');
   });
 });

@@ -29,7 +29,7 @@ beforeEach(() => {
   availableHandlers.length = 0;
   errorHandlers.length = 0;
   checkNow.mockResolvedValue(undefined);
-  (window as unknown as { vibeyard: unknown }).vibeyard = {
+  (window as unknown as { finevibe: unknown }).finevibe = {
     app: { getVersion: () => Promise.resolve('1.0.0'), openExternal: vi.fn() },
     update: {
       checkNow,

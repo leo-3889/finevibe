@@ -38,7 +38,7 @@ describe('i18n', () => {
         name: 'demo',
         parts: 'x and y',
       });
-      expect(out).toBe('Remove project "demo"? This will delete x and y from Vibeyard. No files on disk will be affected.');
+      expect(out).toBe('Remove project "demo"? This will delete x and y from FineVibe. No files on disk will be affected.');
     });
 
     it('leaves placeholders intact when the variable is missing', () => {
@@ -79,7 +79,7 @@ describe('i18n', () => {
       // and its English template carries {name}/{parts} — the fallback branch
       // must interpolate the vars into the ENGLISH string, not just return it.
       expect(t('sidebar.removeConfirm.withDataMessage', { name: 'demo', parts: 'x and y' }))
-        .toBe('Remove project "demo"? This will delete x and y from Vibeyard. No files on disk will be affected.');
+        .toBe('Remove project "demo"? This will delete x and y from FineVibe. No files on disk will be affected.');
       expect(warn).not.toHaveBeenCalled();
       warn.mockRestore();
     });

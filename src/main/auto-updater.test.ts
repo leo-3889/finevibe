@@ -26,14 +26,14 @@ import { initAutoUpdater, checkForUpdates, quitAndInstall } from './auto-updater
 describe('auto-updater', () => {
   beforeEach(() => {
     // P1-7 fork identity: the feed is the fork repo named by
-    // VIBEYARD_RELEASE_REPO, so the happy-path tests run with a valid one.
-    process.env.VIBEYARD_RELEASE_REPO = 'leo-3889/vibeyard';
+    // FINEVIBE_RELEASE_REPO, so the happy-path tests run with a valid one.
+    process.env.FINEVIBE_RELEASE_REPO = 'leo-3889/vibeyard';
     vi.clearAllMocks();
     vi.useFakeTimers();
   });
 
   afterEach(() => {
-    delete process.env.VIBEYARD_RELEASE_REPO;
+    delete process.env.FINEVIBE_RELEASE_REPO;
     vi.useRealTimers();
   });
 
@@ -92,8 +92,8 @@ describe('auto-updater', () => {
     expect(mockSend).toHaveBeenCalledWith('update:error', { message: 'update failed' });
   });
 
-  it('points the feed at VIBEYARD_RELEASE_REPO when set to owner/repo', () => {
-    process.env.VIBEYARD_RELEASE_REPO = 'leo-3889/vibeyard';
+  it('points the feed at FINEVIBE_RELEASE_REPO when set to owner/repo', () => {
+    process.env.FINEVIBE_RELEASE_REPO = 'leo-3889/vibeyard';
     try {
       initAutoUpdater();
       expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
@@ -103,17 +103,17 @@ describe('auto-updater', () => {
         releaseType: 'release',
       });
     } finally {
-      delete process.env.VIBEYARD_RELEASE_REPO;
+      delete process.env.FINEVIBE_RELEASE_REPO;
     }
   });
 
   // P2-77 retarget. These two previously pinned the upstream feed as the
-  // intended behavior of an unset/malformed VIBEYARD_RELEASE_REPO. P1-7
+  // intended behavior of an unset/malformed FINEVIBE_RELEASE_REPO. P1-7
   // (audit plan §1(iv), FORK identity): a packaged fork build must NEVER
   // self-update from the upstream repo. No valid fork feed = auto-update
   // disabled with a warning, not a silent fallback to upstream releases.
-  it('disables auto-update when VIBEYARD_RELEASE_REPO is unset', () => {
-    delete process.env.VIBEYARD_RELEASE_REPO;
+  it('disables auto-update when FINEVIBE_RELEASE_REPO is unset', () => {
+    delete process.env.FINEVIBE_RELEASE_REPO;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       initAutoUpdater();
@@ -121,14 +121,14 @@ describe('auto-updater', () => {
       expect(autoUpdater.on).not.toHaveBeenCalled();
       vi.advanceTimersByTime(10_000);
       expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('VIBEYARD_RELEASE_REPO'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('FINEVIBE_RELEASE_REPO'));
     } finally {
       warn.mockRestore();
     }
   });
 
-  it('disables auto-update for a malformed VIBEYARD_RELEASE_REPO', () => {
-    process.env.VIBEYARD_RELEASE_REPO = 'not-a-slug';
+  it('disables auto-update for a malformed FINEVIBE_RELEASE_REPO', () => {
+    process.env.FINEVIBE_RELEASE_REPO = 'not-a-slug';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       initAutoUpdater();

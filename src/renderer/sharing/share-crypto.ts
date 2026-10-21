@@ -11,7 +11,7 @@ export class DecryptionError extends Error {
 const PBKDF2_ITERATIONS = 100_000;
 const SALT_LENGTH = 16;
 const IV_LENGTH = 12;
-const CHALLENGE_SALT = new TextEncoder().encode('vibeyard-challenge-v1');
+const CHALLENGE_SALT = new TextEncoder().encode('finevibe-challenge-v1');
 // A random 128-bit key makes captured connection codes resistant to offline guessing.
 export function generateShareKey(): string {
   return bytesToHex(crypto.getRandomValues(new Uint8Array(16)));

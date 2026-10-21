@@ -4,7 +4,7 @@ const mockLoad = vi.fn();
 const mockSave = vi.fn();
 
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: mockLoad, save: mockSave },
   },
 });

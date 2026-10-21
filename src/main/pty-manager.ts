@@ -272,7 +272,7 @@ export interface LaunchSpec {
   storageMode: SessionStorageMode;
 }
 
-/** Thrown when a launch request uses options Vibeyard cannot track. */
+/** Thrown when a launch request uses options FineVibe cannot track. */
 export class LaunchSpecError extends Error {
   constructor(message: string) {
     super(message);
@@ -308,7 +308,7 @@ export function resolveLaunchSpec(params: {
   const userEnv = parseEnvVars(envVars);
   for (const key of findConflictingEnvKeys(userEnv)) {
     issues.push(
-      `Environment variable ${key} is not supported: Vibeyard tracks sessions in the profile's default storage, ` +
+      `Environment variable ${key} is not supported: FineVibe tracks sessions in the profile's default storage, ` +
         'and a custom session dir would hide them from history, search and resume. Remove it from the session environment and start again.',
     );
   }
@@ -328,7 +328,7 @@ export function resolveLaunchSpec(params: {
   Object.assign(env, userAllowed);
 
   // Conflict detection runs on the user's extra args only — never on the
-  // flags Vibeyard itself adds (e.g. its own --session/--resume).
+  // flags FineVibe itself adds (e.g. its own --session/--resume).
   for (const conflict of findConflictingLaunchFlags(tokenizeArgs(extraArgs))) {
     issues.push(`${conflict.raw}: ${conflict.reason}`);
   }
@@ -420,7 +420,7 @@ export async function spawnPty(
     }
 
     // Profile support: a Claude session bound to a profile uses an isolated
-    // config dir, so Vibeyard's hooks + statusLine (boot-installed into ~/.claude)
+    // config dir, so FineVibe's hooks + statusLine (boot-installed into ~/.claude)
     // must also be installed there or cost/activity tracking silently breaks.
     // The install goes through settings-guard's consent gate (P1-14): hooks
     // are additive and always installed, the statusLine is installed only for

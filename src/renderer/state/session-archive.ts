@@ -152,7 +152,7 @@ export function buildResumedSession(archived: ArchivedSession): SessionRecord {
   };
 }
 
-/** Build a fresh SessionRecord from a bare cliSessionId (no Vibeyard history entry required). */
+/** Build a fresh SessionRecord from a bare cliSessionId (no FineVibe history entry required). */
 export function buildResumedSessionFromCliId(cliSessionId: string, name: string, providerId: ProviderId = 'claude', profileId?: string): SessionRecord {
   return {
     id: crypto.randomUUID(),

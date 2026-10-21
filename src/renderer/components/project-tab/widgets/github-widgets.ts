@@ -78,7 +78,7 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     if (resolvedRepo && lastConfigRepo === undefined) return resolvedRepo;
     const project = appState.projects.find(p => p.id === projectId);
     if (!project) return null;
-    const detected = await window.vibeyard.github.detectRepo(project.path);
+    const detected = await window.finevibe.github.detectRepo(project.path);
     if (detected) resolvedRepo = `${detected.owner}/${detected.repo}`;
     lastConfigRepo = undefined;
     return resolvedRepo;
@@ -117,7 +117,7 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     link.addEventListener('click', (e) => {
       e.preventDefault();
       markRead(projectId, repo, item);
-      void window.vibeyard.app.openExternal(item.html_url);
+      void window.finevibe.app.openExternal(item.html_url);
       render();
     });
     title.appendChild(link);
@@ -214,7 +214,7 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
       return;
     }
 
-    if (!(await window.vibeyard.github.isAvailable())) {
+    if (!(await window.finevibe.github.isAvailable())) {
       if (destroyed || generation !== refreshGeneration) return;
       lastError = 'gh CLI not installed. Install from cli.github.com and run `gh auth login`.';
       loading = false;
@@ -225,8 +225,8 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     if (destroyed || generation !== refreshGeneration) return;
     const cfg = getConfig();
     const result = kind === 'prs'
-      ? await window.vibeyard.github.listPRs(repo, cfg.state, cfg.max)
-      : await window.vibeyard.github.listIssues(repo, cfg.state, cfg.max);
+      ? await window.finevibe.github.listPRs(repo, cfg.state, cfg.max)
+      : await window.finevibe.github.listIssues(repo, cfg.state, cfg.max);
     if (destroyed || generation !== refreshGeneration) return;
 
     if (!result.ok) {

@@ -42,7 +42,7 @@ const mockInstallEventScript = vi.mocked(installEventScript);
 const n = (p: string) => p.replace(/\\/g, '/');
 
 const PROJECT = '/mock/project';
-const HOOK_FILE = path.join(PROJECT, '.github', 'hooks', 'vibeyard-copilot-hooks.json');
+const HOOK_FILE = path.join(PROJECT, '.github', 'hooks', 'finevibe-copilot-hooks.json');
 
 function mockFiles(rawFiles: Record<string, string>): void {
   const files: Record<string, string> = {};
@@ -121,7 +121,7 @@ describe('installCopilotHooks', () => {
     }
   });
 
-  it('every entry contains the vibeyard hook marker', () => {
+  it('every entry contains the finevibe hook marker', () => {
     mockFiles({});
     installCopilotHooks(PROJECT);
     const { hooks } = JSON.parse(String(findWrite(HOOK_FILE)![1]));
@@ -158,7 +158,7 @@ describe('installCopilotHooks', () => {
     expect(start).toContain('"sessionStart"');
     expect(start).toContain('"session_start"');
     expect(start).toContain('"waiting"');
-    expect(start).toContain('"VIBEYARD_SESSION_ID"');
+    expect(start).toContain('"FINEVIBE_SESSION_ID"');
 
     const submit = hooks.userPromptSubmitted[0].bash as string;
     expect(submit).toContain('"userPromptSubmitted"');

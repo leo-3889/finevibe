@@ -8,18 +8,18 @@ const { execFileSync, spawn } = require('child_process');
 const os = require('os');
 
 const { version } = require('../package.json');
-const APP_DIR = path.join(os.homedir(), '.vibeyard', 'app');
+const APP_DIR = path.join(os.homedir(), '.finevibe', 'app');
 const VERSION_FILE = path.join(APP_DIR, 'version.json');
 const isWin = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 const appPathForPlatform = () => {
-  if (isWin) return path.join(APP_DIR, 'Vibeyard.exe');
-  if (isMac) return path.join(APP_DIR, 'Vibeyard.app');
-  return path.join(APP_DIR, 'Vibeyard.AppImage');
+  if (isWin) return path.join(APP_DIR, 'FineVibe.exe');
+  if (isMac) return path.join(APP_DIR, 'FineVibe.app');
+  return path.join(APP_DIR, 'FineVibe.AppImage');
 };
 const APP_PATH = appPathForPlatform();
 // P1-7 (audit plan §1(iv), FORK identity): releases come ONLY from the fork
-// repo named by VIBEYARD_RELEASE_REPO. There is no built-in default — an
+// repo named by FINEVIBE_RELEASE_REPO. There is no built-in default — an
 // unset/malformed value means no feed, and a download then fails closed
 // rather than silently pulling upstream bytes into a fork install (the same
 // precedence the packaged auto-updater applies).
@@ -27,7 +27,7 @@ function parseReleaseRepo(value) {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : null;
 }
-const REPO = parseReleaseRepo(process.env.VIBEYARD_RELEASE_REPO);
+const REPO = parseReleaseRepo(process.env.FINEVIBE_RELEASE_REPO);
 const RELEASES_URL = REPO ? `https://github.com/${REPO}/releases` : null;
 const RELEASE_API_URL = REPO
   ? `https://api.github.com/repos/${REPO}/releases/tags/v${version}`
@@ -35,17 +35,17 @@ const RELEASE_API_URL = REPO
 
 function getAssetName() {
   if (isWin) {
-    return `Vibeyard-${version}-win-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`;
+    return `FineVibe-${version}-win-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`;
   }
   if (isMac) {
     return process.arch === 'arm64'
-      ? `Vibeyard-${version}-arm64-mac.zip`
-      : `Vibeyard-${version}-mac.zip`;
+      ? `FineVibe-${version}-arm64-mac.zip`
+      : `FineVibe-${version}-mac.zip`;
   }
   // electron-builder expands ${arch} to `amd64` in linux artifact names
   // (builder-util toLinuxArchString); requesting `x64` 404s every install.
   // main() restricts linux to x64, so amd64 is the only published name.
-  return `Vibeyard-${version}-linux-amd64.AppImage`;
+  return `FineVibe-${version}-linux-amd64.AppImage`;
 }
 
 function getInstalledVersion() {
@@ -66,7 +66,7 @@ function followRedirects(url, maxRedirects = 10, headers = {}) {
     if (!url.startsWith('https://')) {
       return reject(new Error(`Refusing non-HTTPS download URL: ${url}`));
     }
-    https.get(url, { headers: { 'User-Agent': 'vibeyard-cli', ...headers } }, (res) => {
+    https.get(url, { headers: { 'User-Agent': 'finevibe-cli', ...headers } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         let nextUrl;
@@ -164,7 +164,7 @@ async function download(assetName) {
   for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
     fs.rmSync(tmpFile, { force: true });
 
-    console.log(`Downloading Vibeyard v${version} for ${process.platform}-${process.arch}...`);
+    console.log(`Downloading FineVibe v${version} for ${process.platform}-${process.arch}...`);
 
     const res = await followRedirects(url);
 
@@ -283,22 +283,22 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (args.includes('--help') || args.includes('-h')) {
-    console.log(`Vibeyard v${version} — Terminal-centric IDE for AI-powered CLI tools
+    console.log(`FineVibe v${version} — Terminal-centric IDE for AI-powered CLI tools
 
-Usage: vibeyard [options]
+Usage: finevibe [options]
 
 Options:
   --update    Force re-download of the latest app build
   --version   Print version and exit
   --help      Show this help message
 
-Any other arguments are forwarded to the Vibeyard app.`);
+Any other arguments are forwarded to the FineVibe app.`);
     return;
   }
 
   if (args.includes('--version') || args.includes('-v')) {
     const installed = getInstalledVersion();
-    console.log(`vibeyard v${version} (app: ${installed ? `v${installed}` : 'not installed'})`);
+    console.log(`finevibe v${version} (app: ${installed ? `v${installed}` : 'not installed'})`);
     return;
   }
 
@@ -320,8 +320,8 @@ Any other arguments are forwarded to the Vibeyard app.`);
   if (needsDownload) {
     if (!REPO) {
       throw new Error(
-        'No release feed configured: VIBEYARD_RELEASE_REPO is unset or not "owner/repo". ' +
-        'Refusing to download from a default repository — set VIBEYARD_RELEASE_REPO to the ' +
+        'No release feed configured: FINEVIBE_RELEASE_REPO is unset or not "owner/repo". ' +
+        'Refusing to download from a default repository — set FINEVIBE_RELEASE_REPO to the ' +
         'fork repository that publishes these releases (see README.md).',
       );
     }

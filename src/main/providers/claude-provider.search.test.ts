@@ -94,9 +94,9 @@ describe('ClaudeProvider.discoverTranscripts()', () => {
   it('unions the default config dir with every claude profile config dir', async () => {
     mockLoadState.mockReturnValue({
       profiles: [
-        { id: 'work', name: 'Work', providerId: 'claude', configDir: '/mock/home/.vibeyard/profiles/work', managed: true, createdAt: 0 },
+        { id: 'work', name: 'Work', providerId: 'claude', configDir: '/mock/home/.finevibe/profiles/work', managed: true, createdAt: 0 },
         // Non-claude profile is ignored.
-        { id: 'cdx', name: 'Codex', providerId: 'codex', configDir: '/mock/home/.vibeyard/profiles/cdx', managed: true, createdAt: 0 },
+        { id: 'cdx', name: 'Codex', providerId: 'codex', configDir: '/mock/home/.finevibe/profiles/cdx', managed: true, createdAt: 0 },
       ],
     } as any);
     // Default root, then its slug files; then the profile root, then its slug files.

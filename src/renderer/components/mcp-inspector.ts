@@ -96,7 +96,7 @@ async function doConnect(
   btn.textContent = 'Connecting...';
   dot.className = 'mcp-status connecting';
 
-  const result = await window.vibeyard.mcp.connect(sessionId, url);
+  const result = await window.finevibe.mcp.connect(sessionId, url);
   if (instances.get(sessionId) !== instance) return;
   if (result.success) {
     instance.connected = true;
@@ -120,7 +120,7 @@ async function doDisconnect(
   dot: HTMLElement,
   content: HTMLElement,
 ): Promise<void> {
-  await window.vibeyard.mcp.disconnect(sessionId);
+  await window.finevibe.mcp.disconnect(sessionId);
   if (instances.get(sessionId) !== instance) return;
   instance.connected = false;
   instance.toolsList = [];
@@ -136,9 +136,9 @@ async function doDisconnect(
 
 async function refreshLists(sessionId: string, instance: McpInspectorInstance, content: HTMLElement): Promise<void> {
   const [tools, resources, prompts] = await Promise.all([
-    window.vibeyard.mcp.listTools(sessionId),
-    window.vibeyard.mcp.listResources(sessionId),
-    window.vibeyard.mcp.listPrompts(sessionId),
+    window.finevibe.mcp.listTools(sessionId),
+    window.finevibe.mcp.listResources(sessionId),
+    window.finevibe.mcp.listPrompts(sessionId),
   ]);
 
   instance.toolsList = tools.success ? (tools.data as unknown[]) : [];
@@ -225,7 +225,7 @@ function renderToolsList(sessionId: string, tools: unknown[], container: HTMLEle
           resultPre.textContent = 'Loading...';
 
           const args = formRef ? formRef.getValues() : {};
-          const res = await window.vibeyard.mcp.callTool(sessionId, tool.name, args);
+          const res = await window.finevibe.mcp.callTool(sessionId, tool.name, args);
           resultPre.textContent = JSON.stringify(res.success ? res.data : { error: res.error }, null, 2);
           execBtn.disabled = false;
           execBtn.textContent = 'Execute';
@@ -271,7 +271,7 @@ function renderResourcesList(sessionId: string, resources: unknown[], container:
         resultPre.textContent = 'Loading...';
         body.appendChild(resultPre);
 
-        const res = await window.vibeyard.mcp.readResource(sessionId, resource.uri);
+        const res = await window.finevibe.mcp.readResource(sessionId, resource.uri);
         resultPre.textContent = JSON.stringify(res.success ? res.data : { error: res.error }, null, 2);
       }
     });
@@ -350,7 +350,7 @@ function renderPromptsList(sessionId: string, prompts: unknown[], container: HTM
               if (input.value.trim()) args[name] = input.value.trim();
             }
           }
-          const res = await window.vibeyard.mcp.getPrompt(sessionId, prompt.name, args);
+          const res = await window.finevibe.mcp.getPrompt(sessionId, prompt.name, args);
           resultPre.textContent = JSON.stringify(res.success ? res.data : { error: res.error }, null, 2);
           execBtn.disabled = false;
           execBtn.textContent = 'Run';
@@ -373,7 +373,7 @@ export function destroyInspectorPane(sessionId: string): void {
   instances.delete(sessionId);
   instance.element.remove();
   // Request teardown even while a connect is still pending.
-  void window.vibeyard.mcp.disconnect(sessionId);
+  void window.finevibe.mcp.disconnect(sessionId);
 }
 
 export function showInspectorPane(sessionId: string, split: boolean): void {
@@ -409,7 +409,7 @@ export async function disconnectInspector(sessionId: string): Promise<void> {
   const instance = instances.get(sessionId);
   if (!instance) return;
   // Request teardown even while a connect is still pending.
-  await window.vibeyard.mcp.disconnect(sessionId);
+  await window.finevibe.mcp.disconnect(sessionId);
   instance.connected = false;
 }
 

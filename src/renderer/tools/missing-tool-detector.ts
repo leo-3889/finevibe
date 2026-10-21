@@ -79,7 +79,7 @@ export function handleToolFailure(sessionId: string, data: ToolFailureData): voi
 }
 
 export function initToolDetector(): void {
-  window.vibeyard.session.onToolFailure((sessionId, data) => {
+  window.finevibe.session.onToolFailure((sessionId, data) => {
     handleToolFailure(sessionId, data);
   });
 

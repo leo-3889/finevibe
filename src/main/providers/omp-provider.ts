@@ -82,7 +82,7 @@ export class OmpProvider implements CliProvider {
     // pinned profile (below) is the single effective identity: the installed
     // OMP resolver honors OMP_PROFILE (and legacy PI_PROFILE) over any
     // relocated dir, so an inherited native profile must not silently
-    // repoint the child away from the tree Vibeyard tracks.
+    // repoint the child away from the tree FineVibe tracks.
     removeEnvKey(env, 'PI_CODING_AGENT_DIR');
     removeEnvKey(env, 'PI_CONFIG_DIR');
     removeEnvKey(env, 'PI_PROFILE');
@@ -144,7 +144,7 @@ export class OmpProvider implements CliProvider {
 
   validateSettings(): SettingsValidationResult {
     // Nothing to validate — OMP has no hooks or status line.
-    return { statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} };
+    return { statusLine: 'finevibe', hooks: 'complete', hookDetails: {} };
   }
 
   // OMP has no hook system to report the session id, and (unlike Pi) no

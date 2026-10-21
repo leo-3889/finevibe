@@ -70,7 +70,7 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
   // Load profiles
   let profiles: ChromeProfile[] = [];
   try {
-    profiles = await window.vibeyard.chromeImport.listProfiles();
+    profiles = await window.finevibe.chromeImport.listProfiles();
   } catch (err) {
     note.textContent = `Failed to read Chrome profiles: ${(err as Error).message}`;
   }
@@ -99,7 +99,7 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
       cookiesBar.style.display = 'flex';
       statusLine.textContent = 'Starting…';
 
-      unsubProgress = window.vibeyard.chromeImport.onProgress((p: ChromeImportProgress) => {
+      unsubProgress = window.finevibe.chromeImport.onProgress((p: ChromeImportProgress) => {
         if (p.stage === 'starting') statusLine.textContent = 'Reading Chrome data…';
         else if (p.stage === 'copy') statusLine.textContent = 'Copying database files…';
         else if (p.stage === 'cookies') {
@@ -118,7 +118,7 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
       let result: ChromeImportResult | null = null;
       let runErr: Error | null = null;
       try {
-        result = await window.vibeyard.chromeImport.run({
+        result = await window.finevibe.chromeImport.run({
           profileId: select!.getValue(),
         });
       } catch (err) {
@@ -180,7 +180,7 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
       'An import is already running in the background. Wait for it to finish before starting another.';
     progressBox.style.display = 'block';
     statusLine.textContent = 'Import running…';
-    liveUnsub = window.vibeyard.chromeImport.onProgress((p: ChromeImportProgress) => {
+    liveUnsub = window.finevibe.chromeImport.onProgress((p: ChromeImportProgress) => {
       if (p.stage === 'cookies') {
         cookiesBar.style.display = 'flex';
         updateBar(cookiesBar, p.done ?? 0, p.total ?? 0);

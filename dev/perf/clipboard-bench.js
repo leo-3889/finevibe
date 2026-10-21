@@ -13,7 +13,7 @@ const TMP = os.tmpdir();
 const PS = process.platform === 'win32' ? 'powershell.exe' : 'powershell';
 const PASSES = 11;
 const RESULTS_JSON = path.join(TMP, 'clipbench-results.json');
-const PASTE_DIR = path.join(TMP, 'vibeyard-paste');
+const PASTE_DIR = path.join(TMP, 'finevibe-paste');
 const FILES_DIR = path.join(TMP, 'clipbench-files');
 const HTML_FILE = path.join(TMP, 'clipbench-rich.html');
 

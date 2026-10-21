@@ -76,12 +76,12 @@ function renderProviderHeader(parent: HTMLElement, displayName: string) {
 }
 
 async function fetchProviderStatuses(): Promise<ProviderStatus[]> {
-  const providers = await window.vibeyard.provider.listProviders();
+  const providers = await window.finevibe.provider.listProviders();
   return Promise.all(
     providers.map(meta =>
       Promise.all([
-        window.vibeyard.settings.validate(meta.id),
-        window.vibeyard.provider.checkBinary(meta.id),
+        window.finevibe.settings.validate(meta.id),
+        window.finevibe.provider.checkBinary(meta.id),
       ]).then(([validation, binaryOk]) => ({ meta, validation, binaryOk })),
     ),
   );
@@ -95,7 +95,7 @@ export async function updateSetupBadge(ctx: PreferencesContext): Promise<void> {
 
 export function createSetupSection(ctx: PreferencesContext): SectionController {
   async function fixAndRerender(providerId?: ProviderId) {
-    await window.vibeyard.settings.reinstall(providerId);
+    await window.finevibe.settings.reinstall(providerId);
     ctx.rerenderSection('setup');
   }
 
@@ -134,7 +134,7 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
         const { capabilities } = meta;
 
         if (capabilities.costTracking || capabilities.contextWindow) {
-          const slOk = validation.statusLine === 'vibeyard';
+          const slOk = validation.statusLine === 'finevibe';
           let slStatus = t('setup.statusLineConfigured');
           if (validation.statusLine === 'missing') slStatus = t('setup.statusLineMissing');
           else if (validation.statusLine === 'foreign') slStatus = t('setup.statusLineForeign');
@@ -179,7 +179,7 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
           }
           section.appendChild(hookList);
 
-          if (capabilities.costTracking && validation.statusLine !== 'vibeyard' && !hooksOk) {
+          if (capabilities.costTracking && validation.statusLine !== 'finevibe' && !hooksOk) {
             const fixAllRow = document.createElement('div');
             fixAllRow.className = 'setup-fix-all-row';
 

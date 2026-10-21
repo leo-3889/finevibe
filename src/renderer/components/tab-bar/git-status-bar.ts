@@ -69,7 +69,7 @@ export async function showBranchContextMenu(e: MouseEvent): Promise<void> {
   setActiveContextMenu(menu);
 
   try {
-    const branches = await window.vibeyard.git.listBranches(gitPath);
+    const branches = await window.finevibe.git.listBranches(gitPath);
 
     // Menu was dismissed during loading
     if (getActiveContextMenu() !== menu) return;
@@ -218,7 +218,7 @@ async function switchBranch(gitPath: string, branchName: string): Promise<void> 
   }
 
   try {
-    await window.vibeyard.git.checkoutBranch(gitPath, branchName);
+    await window.finevibe.git.checkoutBranch(gitPath, branchName);
     refreshGitStatus();
   } catch (err) {
     alert(`Failed to switch branch: ${err instanceof Error ? err.message : err}`);
@@ -239,7 +239,7 @@ function promptCreateBranch(gitPath: string): void {
       return;
     }
     try {
-      await window.vibeyard.git.createBranch(gitPath, name);
+      await window.finevibe.git.createBranch(gitPath, name);
       closeModal();
       refreshGitStatus();
     } catch (err) {

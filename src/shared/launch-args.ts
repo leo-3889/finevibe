@@ -1,6 +1,6 @@
 /**
  * Tokenization of raw "extra args" strings and detection of launch options
- * that conflict with Vibeyard's own session/profile management.
+ * that conflict with FineVibe's own session/profile management.
  *
  * The tokenizer defines its own quoting/escaping semantics. It is NOT a
  * shell: no variable expansion, no backticks, no globs, no command
@@ -101,26 +101,26 @@ interface LaunchFlagConflict {
 }
 
 /**
- * Launch flags that conflict with Vibeyard's own profile/session management.
- * Vibeyard pins the profile (config dir), owns the session-identity flags
+ * Launch flags that conflict with FineVibe's own profile/session management.
+ * FineVibe pins the profile (config dir), owns the session-identity flags
  * and the session storage root; a second source for any of these would make
  * the child process and the transcript readers disagree about which
  * profile/conversation is active.
  */
 const CONFLICTING_FLAG_REASONS: Record<string, string> = {
-  '--profile': 'Vibeyard pins the profile from the session settings; pick the profile there instead of passing --profile.',
-  '--session-dir': "Vibeyard tracks sessions in the profile's default storage; a custom session dir would hide them from history, search and resume.",
-  '--no-session': 'Vibeyard needs the session to be persisted to track it; --no-session (ephemeral) is not supported.',
-  '--session': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing --session.',
-  '--session-id': 'Vibeyard pins --session-id with the id it tracks the transcript by; a later --session-id makes the CLI write under an id the session watcher never sees, so title, status, archive and resume all stop working.',
-  '--resume': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing --resume.',
-  '--continue': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing --continue.',
-  '-r': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing -r.',
-  '-c': 'Vibeyard owns session identity (resume is handled by the session picker); pick the session there instead of passing -c.',
+  '--profile': 'FineVibe pins the profile from the session settings; pick the profile there instead of passing --profile.',
+  '--session-dir': "FineVibe tracks sessions in the profile's default storage; a custom session dir would hide them from history, search and resume.",
+  '--no-session': 'FineVibe needs the session to be persisted to track it; --no-session (ephemeral) is not supported.',
+  '--session': 'FineVibe owns session identity (resume is handled by the session picker); pick the session there instead of passing --session.',
+  '--session-id': 'FineVibe pins --session-id with the id it tracks the transcript by; a later --session-id makes the CLI write under an id the session watcher never sees, so title, status, archive and resume all stop working.',
+  '--resume': 'FineVibe owns session identity (resume is handled by the session picker); pick the session there instead of passing --resume.',
+  '--continue': 'FineVibe owns session identity (resume is handled by the session picker); pick the session there instead of passing --continue.',
+  '-r': 'FineVibe owns session identity (resume is handled by the session picker); pick the session there instead of passing -r.',
+  '-c': 'FineVibe owns session identity (resume is handled by the session picker); pick the session there instead of passing -c.',
 };
 
 /**
- * Find launch flags that conflict with Vibeyard's own profile/session
+ * Find launch flags that conflict with FineVibe's own profile/session
  * management. `args` is the tokenized argument vector (see
  * {@link tokenizeArgs}); both value forms (`--profile x` and
  * `--profile=x`) are detected.
@@ -144,13 +144,13 @@ export function findConflictingLaunchFlags(args: string[]): LaunchFlagConflict[]
 
 /**
  * Environment selectors that point the CLI at a session storage location
- * Vibeyard does not track. Detected in user-provided session env (rejected
+ * FineVibe does not track. Detected in user-provided session env (rejected
  * with an actionable pre-spawn error). Inherited values are stripped by the
  * providers' buildEnv so the child always uses the tracked root.
  */
 const UNSUPPORTED_STORAGE_ENV_KEYS: readonly string[] = [
   'PI_CODING_AGENT_SESSION_DIR',
-  // CODEX_HOME relocates both the hooks Vibeyard installs at ~/.codex and the
+  // CODEX_HOME relocates both the hooks FineVibe installs at ~/.codex and the
   // rollout dir its watcher scans, so the child would silently stop reporting.
   'CODEX_HOME',
 ];

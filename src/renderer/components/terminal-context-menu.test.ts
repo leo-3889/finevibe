@@ -113,7 +113,7 @@ describe('terminal-context-menu', () => {
     const mockWrite = vi.fn().mockResolvedValue(undefined);
     const mockWriteText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText: mockWriteText, readText: vi.fn() } });
-    (window as any).vibeyard = { clipboard: { write: mockWrite } };
+    (window as any).finevibe = { clipboard: { write: mockWrite } };
 
     const terminal = makeMockTerminal(true, 'hello world');
     showTerminalContextMenu(100, 100, terminal, writeToPty);
@@ -131,7 +131,7 @@ describe('terminal-context-menu', () => {
     const mockReadForPaste = vi.fn().mockResolvedValue({
       text: 'pasted text', html: '', files: [], imagePath: null, hasContent: true,
     });
-    (window as any).vibeyard = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
+    (window as any).finevibe = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
 
     const terminal = makeMockTerminal();
     showTerminalContextMenu(100, 100, terminal, writeToPty);
@@ -147,9 +147,9 @@ describe('terminal-context-menu', () => {
 
   it('Paste click writes a clipboard image as an attachment path', async () => {
     const mockReadForPaste = vi.fn().mockResolvedValue({
-      text: '', html: '', files: [], imagePath: '/tmp/vibeyard-paste/paste-3.png', hasContent: true,
+      text: '', html: '', files: [], imagePath: '/tmp/finevibe-paste/paste-3.png', hasContent: true,
     });
-    (window as any).vibeyard = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
+    (window as any).finevibe = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
 
     const terminal = makeMockTerminal();
     showTerminalContextMenu(100, 100, terminal, writeToPty);
@@ -158,7 +158,7 @@ describe('terminal-context-menu', () => {
     (items[1] as HTMLElement).click();
 
     await vi.waitFor(() => {
-      expect(writeToPty).toHaveBeenCalledWith('/tmp/vibeyard-paste/paste-3.png ');
+      expect(writeToPty).toHaveBeenCalledWith('/tmp/finevibe-paste/paste-3.png ');
     });
   });
 
@@ -170,7 +170,7 @@ describe('terminal-context-menu', () => {
     const mockReadForPaste = vi.fn().mockResolvedValue({
       text: '', html: '', files: ['C:\\repo\\report.pdf', 'C:\\repo\\data.csv'], imagePath: null, hasContent: true,
     });
-    (window as any).vibeyard = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
+    (window as any).finevibe = { clipboard: { write: vi.fn(), readForPaste: mockReadForPaste, saveImage: vi.fn() } };
 
     const terminal = makeMockTerminal();
     showTerminalContextMenu(100, 100, terminal, writeToPty);

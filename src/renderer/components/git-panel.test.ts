@@ -90,7 +90,7 @@ beforeEach(() => {
   getFiles.mockReset();
   vi.mocked(onGitStatusChange).mockReset();
   document.body.innerHTML = '';
-  (window as unknown as { vibeyard: unknown }).vibeyard = { git: { getFiles } };
+  (window as unknown as { finevibe: unknown }).finevibe = { git: { getFiles } };
   setActiveProject('p1');
   vi.mocked(gitChangeCount).mockReturnValue(2);
   vi.mocked(getActiveGitPath).mockReturnValue('/repo');

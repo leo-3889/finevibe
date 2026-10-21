@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 function tempUserData(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-chrome-paths-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-chrome-paths-'));
   dirs.push(root);
   return root;
 }
@@ -39,7 +39,7 @@ describe('chromeProfileDir containment', () => {
     // target (any cookie DB on the machine) was the directory the import
     // copied from. Canonical containment closes the link.
     const userData = tempUserData();
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-chrome-outside-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-chrome-outside-'));
     dirs.push(outside);
     fs.writeFileSync(path.join(outside, 'Cookies'), 'foreign-db');
     fs.symlinkSync(outside, path.join(userData, 'Profile 1'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -48,7 +48,7 @@ describe('chromeProfileDir containment', () => {
 
   it('throws for a link in an existing parent that leaves the user-data dir', () => {
     const userData = tempUserData();
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-chrome-outside-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-chrome-outside-'));
     dirs.push(outside);
     const link = path.join(userData, 'link');
     fs.symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');

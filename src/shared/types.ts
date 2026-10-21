@@ -193,7 +193,7 @@ export interface Profile {
   id: string;
   name: string;
   providerId: ProviderId;
-  /** Absolute, resolved config dir (managed under ~/.vibeyard/profiles/<id> or a custom path). */
+  /** Absolute, resolved config dir (managed under ~/.finevibe/profiles/<id> or a custom path). */
   configDir: string;
   /** True when configDir is the auto-managed path; false when the user supplied a custom path. */
   managed: boolean;
@@ -213,7 +213,7 @@ export interface ArchivedSession {
   /** Preserved so a resumed session reuses the same profile config dir (CLAUDE_CONFIG_DIR). */
   profileId?: string;
   /**
-   * 'active' while the owning Vibeyard session is live (history records the
+   * 'active' while the owning FineVibe session is live (history records the
    * session from creation, not only at close); 'closed' (or absent, for
    * entries written before the field existed) after finalization.
    */
@@ -251,7 +251,7 @@ export interface DeepSearchResult {
   projectCwd: string;
   snippet: string;
   score: number;
-  /** Title derived from the first user message — fallback when Vibeyard has no name for this session. */
+  /** Title derived from the first user message — fallback when FineVibe has no name for this session. */
   derivedName?: string;
   /** Profile whose config dir holds this transcript, so resume reopens under the right CLAUDE_CONFIG_DIR. */
   profileId?: string;
@@ -468,7 +468,7 @@ export interface Preferences {
   readinessExcludedProviders?: ProviderId[];
   sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;
-  /** Model A: start the shared agentmemory engine when Vibeyard launches (start-if-absent; never killed on quit). */
+  /** Model A: start the shared agentmemory engine when FineVibe launches (start-if-absent; never killed on quit). */
   agentmemoryAutoStart?: boolean;
   chromeImport?: ChromeImportSummary;
 }
@@ -531,12 +531,12 @@ export interface StartupPrefs {
   zoomFactor: number | null;
 }
 
-export const BROWSER_DEFAULT_PARTITION = 'persist:vibeyard-browser';
+export const BROWSER_DEFAULT_PARTITION = 'persist:finevibe-browser';
 
 // --- Settings Validation ---
 
 export interface SettingsValidationResult {
-  statusLine: 'missing' | 'vibeyard' | 'foreign';
+  statusLine: 'missing' | 'finevibe' | 'foreign';
   hooks: 'missing' | 'complete' | 'partial';
   foreignStatusLineCommand?: string;
   hookDetails: Record<string, boolean>;

@@ -58,7 +58,7 @@ export function findInvalidEnvLines(text: string): string[] {
  * (config and the `session-state` transcripts), `PI_PROFILE` and
  * `OMP_PROFILE` select a native profile (the Pi/OMP resolvers honor them
  * over any relocated dir), and `CLAUDE_IDE_SESSION_ID` and
- * `VIBEYARD_SESSION_ID` key the per-session status files that the hooks and
+ * `FINEVIBE_SESSION_ID` key the per-session status files that the hooks and
  * the statusLine write (Claude uses the former, Codex/Copilot/Gemini the
  * latter). Allowing a session's own `envVars` to override any of these
  * would silently point that session at a different login's config, make it
@@ -76,7 +76,7 @@ const PROVIDER_OWNED_ENV_KEYS: readonly string[] = [
   'PI_PROFILE',
   'OMP_PROFILE',
   'CLAUDE_IDE_SESSION_ID',
-  'VIBEYARD_SESSION_ID',
+  'FINEVIBE_SESSION_ID',
   'COPILOT_HOME',
 ];
 

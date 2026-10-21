@@ -43,7 +43,7 @@ beforeEach(async () => {
   run = vi.fn();
   unsub = vi.fn();
   progressCbs = [];
-  (window as unknown as { vibeyard: unknown }).vibeyard = {
+  (window as unknown as { finevibe: unknown }).finevibe = {
     chromeImport: {
       listProfiles,
       run,

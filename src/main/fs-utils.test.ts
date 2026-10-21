@@ -108,7 +108,7 @@ describe('isBinaryBuffer', () => {
 
 describe('isMacPackagePath', () => {
   it('flags directories macOS launches instead of browsing', () => {
-    expect(isMacPackagePath('out/Vibeyard.app')).toBe(true);
+    expect(isMacPackagePath('out/FineVibe.app')).toBe(true);
     expect(isMacPackagePath('ios/Runner.xcodeproj')).toBe(true);
     // HFS+/APFS are case-insensitive.
     expect(isMacPackagePath('Some.APP')).toBe(true);

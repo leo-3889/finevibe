@@ -63,12 +63,12 @@ function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPa
 
   if (entry.area === 'staged') {
     menu.appendChild(createMenuItem('Unstage', async () => {
-      await window.vibeyard.git.unstageFile(gitPath, entry.path);
+      await window.finevibe.git.unstageFile(gitPath, entry.path);
       afterAction();
     }));
   } else {
     menu.appendChild(createMenuItem('Stage', async () => {
-      await window.vibeyard.git.stageFile(gitPath, entry.path);
+      await window.finevibe.git.stageFile(gitPath, entry.path);
       afterAction();
     }));
   }
@@ -77,7 +77,7 @@ function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPa
     menu.appendChild(createMenuItem('Discard Changes', async () => {
       const msg = discardConfirmMessage(entry);
       if (confirm(msg)) {
-        await window.vibeyard.git.discardFile(gitPath, entry.path, entry.area);
+        await window.finevibe.git.discardFile(gitPath, entry.path, entry.area);
         afterAction();
       }
     }));
@@ -86,7 +86,7 @@ function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPa
   menu.appendChild(createSeparator());
 
   menu.appendChild(createMenuItem('Open in Editor', async () => {
-    await window.vibeyard.git.openInEditor(gitPath, entry.path);
+    await window.finevibe.git.openInEditor(gitPath, entry.path);
   }));
 
   menu.appendChild(createMenuItem('Copy Path', () => {
@@ -254,7 +254,7 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
 
   let files: GitFileEntry[];
   try {
-    files = await window.vibeyard.git.getFiles(gitPath) as GitFileEntry[];
+    files = await window.finevibe.git.getFiles(gitPath) as GitFileEntry[];
   } catch {
     body.innerHTML = '';
     lastFilesKey = '';
@@ -313,7 +313,7 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
 
       if (entry.area === 'staged') {
         actions.appendChild(createActionButton('Unstage', '−', async () => {
-          await window.vibeyard.git.unstageFile(gitPath, entry.path);
+          await window.finevibe.git.unstageFile(gitPath, entry.path);
           afterAction();
         }));
       } else {
@@ -321,13 +321,13 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
           actions.appendChild(createActionButton('Discard Changes', '↩', async () => {
             const msg = discardConfirmMessage(entry);
             if (confirm(msg)) {
-              await window.vibeyard.git.discardFile(gitPath, entry.path, entry.area);
+              await window.finevibe.git.discardFile(gitPath, entry.path, entry.area);
               afterAction();
             }
           }));
         }
         actions.appendChild(createActionButton('Stage', '+', async () => {
-          await window.vibeyard.git.stageFile(gitPath, entry.path);
+          await window.finevibe.git.stageFile(gitPath, entry.path);
           afterAction();
         }));
       }

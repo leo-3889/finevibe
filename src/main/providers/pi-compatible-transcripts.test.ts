@@ -38,7 +38,7 @@ describe('findTranscriptPathSync configDir threading', () => {
   });
 
   it('scans the default tree for an undefined config dir', () => {
-    const sessionsRootOf = vi.fn(() => path.join(os.tmpdir(), 'vibeyard-compat-missing-root'));
+    const sessionsRootOf = vi.fn(() => path.join(os.tmpdir(), 'finevibe-compat-missing-root'));
     expect(findTranscriptPathSync(sessionsRootOf, 'cli-1', '/proj')).toBeNull();
     expect(sessionsRootOf).toHaveBeenCalledWith(undefined);
   });

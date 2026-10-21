@@ -243,7 +243,7 @@ describe('showPreferencesModal theme preference', () => {
     });
 
     vi.stubGlobal('window', {
-      vibeyard: {
+      finevibe: {
         provider: {
           listProviders: vi.fn(async () => []),
           checkBinary: vi.fn(async () => true),
@@ -355,7 +355,7 @@ describe('General section plan-mode defaults', () => {
     });
 
     vi.stubGlobal('window', {
-      vibeyard: {
+      finevibe: {
         provider: {
           listProviders: vi.fn(async () => []),
           checkBinary: vi.fn(async () => true),

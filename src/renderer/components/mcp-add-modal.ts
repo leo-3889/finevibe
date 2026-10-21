@@ -161,7 +161,7 @@ async function submit(overlay: HTMLElement): Promise<void> {
     showError(overlay, 'No active project for project scope');
     return;
   }
-  const result = await window.vibeyard.mcp.addServer(name, config, scope, projectPath, addConfigDir);
+  const result = await window.finevibe.mcp.addServer(name, config, scope, projectPath, addConfigDir);
   if (!result.success) {
     showError(overlay, result.error || 'Failed to add server');
     return;

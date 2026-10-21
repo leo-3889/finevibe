@@ -63,7 +63,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 800,
     minHeight: 500,
-    title: 'Vibeyard',
+    title: 'FineVibe',
     icon: path.join(__dirname, '..', '..', '..', 'build', 'icon.png'),
     // A visible Windows menu bar latches on the Alt half of Alt+Tab (the
     // alt-press flag is not reset on window blur), and the native menu bar then
@@ -170,7 +170,7 @@ function createWindow(): void {
 
 function startMainProcess(): void {
   // Winner-only: a relaunch while the app runs focuses the existing
-  // window, so launching again behaves like "focus Vibeyard".
+  // window, so launching again behaves like "focus FineVibe".
   app.on('second-instance', () => {
     const win = mainWindow && !mainWindow.isDestroyed()
       ? mainWindow
@@ -185,8 +185,8 @@ function startMainProcess(): void {
     // P2-47 pin (boot call site; the after-import sweep lives in
     // ipc-handlers.ts chromeImport:run): quit/crash mid-import used to
     // leave the Chrome cookie snapshot in the OS temp dir for the
-    // machine's life. Sweep stale vibeyard-chrome-import-* dirs at boot,
-    // mirroring the vibeyard-screenshots prune's 24h bound — an in-flight
+    // machine's life. Sweep stale finevibe-chrome-import-* dirs at boot,
+    // mirroring the finevibe-screenshots prune's 24h bound — an in-flight
     // fresh dir is never touched. Never throws; tmpdir-sized, negligible
     // on the boot path.
     sweepImportTempDirs();
@@ -200,9 +200,9 @@ function startMainProcess(): void {
     if (missing.length === providers.length) {
       const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
       dialog.showErrorBox(
-        'Vibeyard — No CLI Provider Found',
-        `Vibeyard needs at least one supported CLI provider installed to run.\n\n` +
-          `Install one of the following, then restart Vibeyard:\n\n${bullets}`,
+        'FineVibe — No CLI Provider Found',
+        `FineVibe needs at least one supported CLI provider installed to run.\n\n` +
+          `Install one of the following, then restart FineVibe:\n\n${bullets}`,
       );
       app.quit();
       return;
@@ -218,11 +218,11 @@ function startMainProcess(): void {
     // is not clearable from the renderer.
     ipcMain.on('browser:clearIsolatedStorage', (_event, sessionId: unknown) => {
       if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return;
-      const partDir = path.join(app.getPath('userData'), 'Partitions', `vibeyard-browser-iso-${sessionId}`);
+      const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
       // Existence guard: releasing/clearing a session that never browsed in
       // isolation must not materialise a partition via fromPartition().
       if (!fs.existsSync(partDir)) return;
-      session.fromPartition(`persist:vibeyard-browser-iso-${sessionId}`)
+      session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
         .clearStorageData()
         .catch((err) => console.warn('clearStorageData failed:', err));
     });
@@ -239,7 +239,7 @@ function startMainProcess(): void {
       if (owner) {
         dialog.showMessageBox(owner, {
           type: 'warning',
-          title: 'Vibeyard — Python Not Found',
+          title: 'FineVibe — Python Not Found',
           message: pythonWarning,
         });
       }
@@ -259,7 +259,7 @@ function startMainProcess(): void {
     // before any agent session spawns, so its first MCP connect hits a live
     // daemon. Fire-and-forget: a cold boot (engine self-install) must never block
     // startup. The daemon is shared by all agent CLIs, so it is intentionally NOT
-    // stopped on quit (see before-quit) — that would sever memory outside Vibeyard.
+    // stopped on quit (see before-quit) — that would sever memory outside FineVibe.
     if (loadState().preferences.agentmemoryAutoStart !== false) {
       void ensureAgentmemoryRunning().then(
         (s) => console.log(`[agentmemory] ${s.running ? `running${s.serviceVersion ? ` v${s.serviceVersion}` : ''}` : 'not running'}`),

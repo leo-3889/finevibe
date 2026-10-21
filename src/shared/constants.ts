@@ -49,7 +49,7 @@ export const EXTRA_ALERT_IGNORE = [
 export const TOKEN_TRUNCATION_KEY = 'truncatedByTokenCap';
 
 /**
- * Prefix Vibeyard writes on the synthetic `.toolfailure` record it derives from
+ * Prefix FineVibe writes on the synthetic `.toolfailure` record it derives from
  * that flag, and which `large-file-detector.ts` matches on. Owned by us, so it
  * is safe to reword — kept separate from TOKEN_TRUNCATION_KEY precisely so a
  * reword cannot silently break the payload lookup.

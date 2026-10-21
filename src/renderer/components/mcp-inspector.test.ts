@@ -38,7 +38,7 @@ beforeEach(() => {
     listResources: vi.fn(async () => ({ success: true, data: [] })),
     listPrompts: vi.fn(async () => ({ success: true, data: [] })),
   };
-  (globalThis as unknown as { window: { vibeyard: { mcp: McpApi } } }).window.vibeyard = { mcp };
+  (globalThis as unknown as { window: { finevibe: { mcp: McpApi } } }).window.finevibe = { mcp };
   document.body.innerHTML = '';
 });
 

@@ -1,7 +1,7 @@
 import type { Locale } from '../shared/types.js';
 
 /**
- * Resolve a Vibeyard locale from the browser's `navigator.language`. Any
+ * Resolve a FineVibe locale from the browser's `navigator.language`. Any
  * `zh*` value (e.g. `zh-CN`, `zh-Hans-CN`, `zh-Hant-TW`) maps to
  * Simplified Chinese; everything else falls back to English. Missing or
  * empty input is treated as "no preference" and returns English.

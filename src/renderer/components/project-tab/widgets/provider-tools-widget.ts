@@ -92,7 +92,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
     removeBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!confirm(`Remove MCP server "${server.name}"?`)) return;
-      await window.vibeyard.mcp.removeServer(server.name, server.filePath, server.scope, projectPath, getEffectiveConfigDir('claude'));
+      await window.finevibe.mcp.removeServer(server.name, server.filePath, server.scope, projectPath, getEffectiveConfigDir('claude'));
       void refresh();
     });
     el.appendChild(removeBtn);
@@ -176,7 +176,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
   const watchActiveProvider = () => {
     const projectPath = getProjectPath();
     if (!projectPath) return;
-    window.vibeyard.provider.watchProject(getActiveProviderId(), projectPath);
+    window.finevibe.provider.watchProject(getActiveProviderId(), projectPath);
   };
 
   const buildToolbarSelect = () => {
@@ -222,7 +222,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
 
     let config: ProviderConfig;
     try {
-      config = await window.vibeyard.provider.getConfig(
+      config = await window.finevibe.provider.getConfig(
         providerId,
         projectPath,
         getEffectiveConfigDir(providerId)
@@ -266,7 +266,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
   watchActiveProvider();
   void refresh();
 
-  unsubConfigChanged = window.vibeyard.provider.onConfigChanged(() => {
+  unsubConfigChanged = window.finevibe.provider.onConfigChanged(() => {
     void refresh();
   });
 

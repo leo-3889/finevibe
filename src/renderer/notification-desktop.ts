@@ -33,14 +33,14 @@ function showNotification(sessionId: string, status: SessionStatus): void {
   // already knows destroys the first one's click listener — while that banner
   // is still sitting in Notification Center. Clicking it then does nothing but
   // raise the app. Without a tag each notification gets its own id and listener.
-  const notification = new Notification(found?.project.name ?? 'Vibeyard', {
+  const notification = new Notification(found?.project.name ?? 'FineVibe', {
     body: bodyForStatus(found?.session.name ?? 'Session', status),
     silent: true,
   });
   activeNotifications.set(sessionId, notification);
 
   notification.onclick = () => {
-    window.vibeyard.app.focus();
+    window.finevibe.app.focus();
     // Re-resolve rather than capturing `found`: the session may have been
     // renamed or moved, and capturing it would pin the whole ProjectRecord
     // alive for as long as this retained notification lives.

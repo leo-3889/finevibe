@@ -69,7 +69,7 @@
       "defaultProfileLabel": "默认配置文件"
     },
     "removeConfirm": {
-      "withDataMessage": "确定移除项目「{name}」？这将从 Vibeyard 中删除 {parts}。不会影响磁盘上的文件。",
+      "withDataMessage": "确定移除项目「{name}」？这将从 FineVibe 中删除 {parts}。不会影响磁盘上的文件。",
       "emptyMessage": "确定移除项目「{name}」？不会影响磁盘上的文件。",
       "title": "移除项目",
       "confirmLabel": "移除",
@@ -84,8 +84,8 @@
       "title": "活动会话"
     },
     "discussions": {
-      "tooltip": "Vibeyard 讨论",
-      "title": "Vibeyard 讨论",
+      "tooltip": "FineVibe 讨论",
+      "title": "FineVibe 讨论",
       "description": "加入关于 AI 编程的讨论"
     }
   },
@@ -483,7 +483,7 @@
     "descriptionPi": "Pi：配置目录通过 PI_CODING_AGENT_DIR 注入。创建配置文件后，请在该配置目录中完成认证和模型配置。",
     "descriptionOmp": "Oh my Pi：配置目录通过 PI_CODING_AGENT_DIR 注入（与 Pi 相同的 omp agent dir 机制）。请确保已安装 omp CLI，创建配置文件后，请在该配置目录中完成认证和模型配置。",
     "keychainUnsupported": "此版本的 Claude Code{version} 将所有登录信息存储在同一个 macOS 钥匙串条目中，因此配置文件无法保持账号隔离。请更新 Claude Code 后再创建并使用配置文件。",
-    "keychainUnknown": "Vibeyard 还无法确认此 Claude Code 版本是否在 macOS 钥匙串中隔离配置文件登录。请登录一次配置文件，隔离状态将自动验证。",
+    "keychainUnknown": "FineVibe 还无法确认此 Claude Code 版本是否在 macOS 钥匙串中隔离配置文件登录。请登录一次配置文件，隔离状态将自动验证。",
     "empty": "暂无配置文件。",
     "tagManaged": "托管",
     "tagCustom": "自定义",
@@ -579,7 +579,7 @@
     "gitAheadDesc": "领先/落后于远程的提交数"
   },
   "about": {
-    "appName": "Vibeyard",
+    "appName": "FineVibe",
     "versionLoading": "版本：加载中…",
     "updateButton": "检查更新",
     "updateChecking": "检查中…",
@@ -589,7 +589,7 @@
     "githubLink": "GitHub",
     "bugLink": "报告 Bug",
     "contributeLink": "在 GitHub 上贡献代码",
-    "communityPrefix": "Vibeyard 是开源的。",
+    "communityPrefix": "FineVibe 是开源的。",
     "communitySuffix": "——如果觉得有用，请给我们点个 Star！",
     "debugModeLabel": "调试模式",
     "versionLoaded": "版本：{ver}"
@@ -650,7 +650,7 @@
     "closeMessageOther": "有 {count} 个会话仍在活动。关闭将中断它们。",
     "closeConfirmOne": "关闭",
     "closeConfirmOther": "全部关闭",
-    "quitTitle": "退出 Vibeyard",
+    "quitTitle": "退出 FineVibe",
     "quitMessageOne": "仍有会话在活动。退出将中断它。",
     "quitMessageOther": "有 {count} 个会话仍在活动。退出将中断它们。",
     "quitConfirm": "退出"

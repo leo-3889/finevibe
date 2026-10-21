@@ -41,7 +41,7 @@ async function confirmRemoteHost(host: string): Promise<boolean> {
     type: 'warning',
     title: 'Connect to MCP server?',
     message: `Connect to ${host}?`,
-    detail: 'Vibeyard will send requests to this host from the main process. Only continue for servers you trust.',
+    detail: 'FineVibe will send requests to this host from the main process. Only continue for servers you trust.',
     buttons: ['Cancel', 'Confirm'],
     defaultId: 0,
     cancelId: 0,

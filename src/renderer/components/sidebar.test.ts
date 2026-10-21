@@ -27,7 +27,7 @@ function stubDom() {
     body: new FakeElement(),
   };
   vi.stubGlobal('document', doc);
-  vi.stubGlobal('window', { vibeyard: {} });
+  vi.stubGlobal('window', { finevibe: {} });
 }
 
 // Capability table matching the real provider registry: claude, pi and omp

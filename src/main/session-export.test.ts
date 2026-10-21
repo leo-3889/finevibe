@@ -17,7 +17,7 @@ vi.mock('./launch-session-dir', () => ({
   launchSessionDir: (...a: [string, string]) => launchSessionDir(...a),
 }));
 
-const statusDir = path.join(os.tmpdir(), 'vibeyard-export-test-status');
+const statusDir = path.join(os.tmpdir(), 'finevibe-export-test-status');
 vi.mock('./hook-status', () => ({
   get STATUS_DIR() { return statusDir; },
   statusFilePath: (id: string, ext: string) =>
@@ -103,7 +103,7 @@ describe('exportSessionArchive() zip', () => {
     const zip = await JSZip.loadAsync(await fs.readFile(out));
     expect(await zip.file('transcript/t.jsonl')!.async('string')).toBe('A\nB');
     const metaJson = JSON.parse(await zip.file('meta.json')!.async('string'));
-    expect(metaJson.format).toBe('vibeyard-session-backup-v1');
+    expect(metaJson.format).toBe('finevibe-session-backup-v1');
     expect(metaJson.session.id).toBe('a1');
     expect(metaJson.projectPath).toBe('/proj');
     expect(await zip.file('sidecars/ui-1.status')!.async('string')).toBe('working');
@@ -195,7 +195,7 @@ describe('exportSessionArchive() single file', () => {
     await exportSessionArchive(win, params({ format: 'file' }));
 
     const body = JSON.parse(await fs.readFile(out, 'utf8'));
-    expect(body.format).toBe('vibeyard-session-backup-v1');
+    expect(body.format).toBe('finevibe-session-backup-v1');
     expect(body.session.id).toBe('a1');
   });
 

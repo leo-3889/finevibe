@@ -123,7 +123,7 @@ async function loadDiff(instance: FileViewerInstance, sessionId: string): Promis
   const gen = ++loadGeneration;
 
   try {
-    const diff = await window.vibeyard.git.getDiff(instance.worktreePath ?? project.path, instance.filePath, instance.area);
+    const diff = await window.finevibe.git.getDiff(instance.worktreePath ?? project.path, instance.filePath, instance.area);
     if (gen !== loadGeneration) return; // superseded by a newer load
     body.innerHTML = '';
     body.appendChild(parseDiffLines(diff));
@@ -140,7 +140,7 @@ async function loadDiff(instance: FileViewerInstance, sessionId: string): Promis
 
 function ensureFileChangedListener(): void {
   if (unwatchFileChanged) return;
-  unwatchFileChanged = window.vibeyard.fs.onFsChange((changes) => {
+  unwatchFileChanged = window.finevibe.fs.onFsChange((changes) => {
     for (const change of changes) {
       for (const [sessionId, instance] of instances) {
         if (instance.resolvedPath && samePath(instance.resolvedPath, change.path) && instance.loaded) {
@@ -189,7 +189,7 @@ export function destroyFileViewerPane(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
   if (instance.resolvedPath) {
-    window.vibeyard.fs.unwatchDir(dirname(instance.resolvedPath));
+    window.finevibe.fs.unwatchDir(dirname(instance.resolvedPath));
   }
   pendingReloads.delete(sessionId);
   if (pendingReloads.size === 0 && removeSelectionListener) {
@@ -214,7 +214,7 @@ export function showFileViewerPane(sessionId: string, isSplit: boolean): void {
     const fullPath = resolveFilePath(instance);
     instance.resolvedPath = fullPath;
     ensureFileChangedListener();
-    window.vibeyard.fs.watchDir(dirname(fullPath));
+    window.finevibe.fs.watchDir(dirname(fullPath));
   }
 
   loadDiff(instance, sessionId);

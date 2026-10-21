@@ -68,7 +68,7 @@ vi.mock('electron', () => ({
   },
   app: {
     getPath: () => '/mock/app',
-    getName: () => 'vibeyard',
+    getName: () => 'finevibe',
     getVersion: () => 'test',
     on: vi.fn(),
     whenReady: () => Promise.resolve(),
@@ -168,7 +168,7 @@ vi.mock('./platform', async () => ({
 }));
 vi.mock('./chrome-import/importer', autoStub);
 vi.mock('./settings-guard', autoStub);
-vi.mock('./vibeyardignore', autoStub);
+vi.mock('./finevibeignore', autoStub);
 vi.mock('./close-state', autoStub);
 vi.mock('./profiles', autoStub);
 vi.mock('./claude-keychain', autoStub);
@@ -244,7 +244,7 @@ beforeEach(() => {
 
 describe('project file read boundary', () => {
   it('rejects a link inside a project whose target is outside it', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-ipc-test-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ipc-test-'));
     try {
       const project = path.join(root, 'project');
       const outside = path.join(root, 'outside');
@@ -261,7 +261,7 @@ describe('project file read boundary', () => {
   });
 
   it('rejects a text file larger than the bounded reader limit', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-ipc-test-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ipc-test-'));
     try {
       const large = path.join(root, 'large.txt');
       const fd = fs.openSync(large, 'w');
@@ -278,7 +278,7 @@ describe('project file read boundary', () => {
 describe('git:* root gate', () => {
   it('blocks git handlers aimed at a cwd the renderer invented', async () => {
     const gitStatus = await import('./git-status');
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       const outside = path.join(root, 'worktree');
       fs.mkdirSync(outside);
@@ -297,7 +297,7 @@ describe('git:* root gate', () => {
 
   it('accepts a known project directory', async () => {
     const gitStatus = await import('./git-status');
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       knownPaths.push(root);
       handlers.get('git:getStatus')!({}, root);
@@ -308,7 +308,7 @@ describe('git:* root gate', () => {
   });
 
   it('keeps a watched worktree git-capable after its project is closed', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       const project = path.join(root, 'project');
       const worktree = path.join(project, '.wt', 'w1');
@@ -324,7 +324,7 @@ describe('git:* root gate', () => {
   });
 
   it('recognizes a watched root reached through a link', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       const project = path.join(root, 'project');
       const worktree = path.join(project, '.wt', 'w1');
@@ -346,7 +346,7 @@ describe('git:* root gate', () => {
   });
 
   it('refuses a git file path that escapes the root', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       knownPaths.push(root);
       expect(() => handlers.get('git:getDiff')!({}, root, '../escape.txt', 'staged'))
@@ -358,7 +358,7 @@ describe('git:* root gate', () => {
 
   it('refuses a git file path that resolves to the root itself', async () => {
     const gitStatus = await import('./git-status');
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       knownPaths.push(root);
       // P1-17: '' resolves (path.resolve(root,'')===root) and `isWithin`
@@ -414,7 +414,7 @@ describe('readiness/github git-executing handlers share the root gate', () => {
     // `git remote get-url`) - the same sink the 13 git:* handlers gate.
     // The analyzer/detectRepo stubs are the autoStub proxies; importing them
     // statically is what lets these assertions see the calls.
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       const outside = path.join(root, 'invented');
       fs.mkdirSync(outside);
@@ -431,7 +431,7 @@ describe('readiness/github git-executing handlers share the root gate', () => {
   });
 
   it('runs them for a known project, on the resolved path', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       knownPaths.push(root);
 
@@ -453,7 +453,7 @@ describe('pty launch path gate (P1-15)', () => {
     // pty:create is the one process-launch channel: it runs the provider
     // CLI with renderer-supplied flags in a renderer-supplied cwd. The gate
     // must fire before provider hooks, transcript sync, and the spawn.
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-pty-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-pty-gate-'));
     try {
       const invented = path.join(root, 'invented');
       fs.mkdirSync(invented);
@@ -486,7 +486,7 @@ describe('pty launch path gate (P1-15)', () => {
 
   it('gates pty:createShell cwd the same way', async () => {
     const ptyManager = await import('./pty-manager');
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-pty-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-pty-gate-'));
     try {
       const invented = path.join(root, 'invented');
       fs.mkdirSync(invented);
@@ -517,7 +517,7 @@ describe('fs:listDirs home gate (P1-19)', () => {
   });
 
   it('lists a home-tree directory with no confirm (pre-project picker flow)', async () => {
-    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-listdirs-'));
+    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-listdirs-'));
     try {
       fs.mkdirSync(path.join(homeDir, 'proj'));
       const dirs = await handlers.get('fs:listDirs')!({}, homeDir);
@@ -535,7 +535,7 @@ describe('fs:isDirectory home gate (P2-38)', () => {
   });
 
   it('reports true for a home-tree directory (pre-project add flow)', () => {
-    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-isdir-'));
+    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-isdir-'));
     try {
       expect(handlers.get('fs:isDirectory')!({}, homeDir)).toBe(true);
     } finally {
@@ -550,7 +550,7 @@ describe('fs:unwatchDir gate (P2-30)', () => {
     handlers.get('fs:unwatchDir')!({}, OUTSIDE_HOME);
     expect(fileWatcher.unwatchDir).not.toHaveBeenCalled();
 
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-watch-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-watch-gate-'));
     try {
       knownPaths.push(root);
       handlers.get('fs:unwatchDir')!({}, root);
@@ -1292,7 +1292,7 @@ describe('clipboard:readForPaste bounds + off-main encode (P4)', () => {
     const payload = await readPaste();
 
     expect(clipboard.readImage).not.toHaveBeenCalled();
-    expect(payload.imagePath).toMatch(/[\\/]vibeyard-paste[\\/].*\.png$/);
+    expect(payload.imagePath).toMatch(/[\\/]finevibe-paste[\\/].*\.png$/);
     expect(fs.readFileSync(payload.imagePath!)).toEqual(Buffer.from('PNGBYTES'));
   });
 
@@ -1459,7 +1459,7 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
 
 describe('team-agent install/remove scope (P2-116 / P2-117)', () => {
   // Install stamps this frontmatter marker; remove gates every unlink on it.
-  const markerLine = (slug: string) => `# installed-by: vibeyard ${slug}`;
+  const markerLine = (slug: string) => `# installed-by: finevibe ${slug}`;
   const stamped = (slug: string) => `---\n${markerLine(slug)}\nname: ${slug}\n---\nbody\n`;
 
   /** Fake team-capable provider writing under a real temp agents dir. */
@@ -1479,13 +1479,13 @@ describe('team-agent install/remove scope (P2-116 / P2-117)', () => {
 
   let root: string;
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-agents-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-agents-'));
   });
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('install stamps the vibeyard marker and threads a managed configDir to claude only', async () => {
+  it('install stamps the finevibe marker and threads a managed configDir to claude only', async () => {
     const claude = agentProvider('claude', path.join(root, 'claude-agents'));
     const gemini = agentProvider('gemini', path.join(root, 'gemini-agents'));
     vi.mocked(getAllProviders).mockReturnValue([claude, gemini] as never);
@@ -1516,7 +1516,7 @@ describe('team-agent install/remove scope (P2-116 / P2-117)', () => {
     const dir = path.join(root, 'gemini-agents');
     fs.mkdirSync(dir);
     const userFile = path.join(dir, 'security-auditor.md');
-    fs.writeFileSync(userFile, '---\nname: security-auditor\n---\nuser-authored, never installed by Vibeyard\n');
+    fs.writeFileSync(userFile, '---\nname: security-auditor\n---\nuser-authored, never installed by FineVibe\n');
     const gemini = agentProvider('gemini', dir);
     vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
     const results = await handlers.get('provider:removeAgent')!({}, 'security-auditor') as Array<{ status: string }>;
@@ -1634,7 +1634,7 @@ describe('fs:cloneRepo gates', () => {
   });
 
   it('rejects a destination that exists and is not empty', async () => {
-    const dir = fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-clone-'));
+    const dir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-clone-'));
     try {
       fs.writeFileSync(path.join(dir, 'occupied'), 'x');
       const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', dir);
@@ -1646,7 +1646,7 @@ describe('fs:cloneRepo gates', () => {
   });
 
   it('rejects a destination that exists as a file, not a directory', async () => {
-    const file = path.join(fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-clone-')), 'blocker');
+    const file = path.join(fs.mkdtempSync(path.join(os.homedir(), '.finevibe-clone-')), 'blocker');
     try {
       fs.writeFileSync(file, 'x');
       const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', file);

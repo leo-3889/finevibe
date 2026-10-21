@@ -68,7 +68,7 @@ import { showElementInfo } from './inspect-mode.js';
 describe('createBrowserTabPane guest popup containment', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
-    (window as unknown as { vibeyard: unknown }).vibeyard = {
+    (window as unknown as { finevibe: unknown }).finevibe = {
       app: {
         getBrowserPreloadPath: vi.fn(async () => 'C:/app/browser-tab-preload.js'),
         openExternal: vi.fn(async () => {}),
@@ -108,7 +108,7 @@ describe('createBrowserTabPane guest popup containment', () => {
   it('pins the shared partition attribute used by the main-process attach guard', () => {
     createBrowserTabPane('sess-1');
     const webview = instances.get('sess-1')!.webview as unknown as HTMLElement;
-    expect(webview.getAttribute('partition')).toBe('persist:vibeyard-browser');
+    expect(webview.getAttribute('partition')).toBe('persist:finevibe-browser');
   });
 });
 
@@ -123,7 +123,7 @@ describe('isolation toggle rebuild', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     clearIsolatedStorage = vi.fn();
-    (window as unknown as { vibeyard: unknown }).vibeyard = {
+    (window as unknown as { finevibe: unknown }).finevibe = {
       app: {
         getBrowserPreloadPath: vi.fn(async () => 'C:/app/browser-tab-preload.js'),
         openExternal: vi.fn(async () => {}),
@@ -163,19 +163,19 @@ describe('isolation toggle rebuild', () => {
 
   it('clears the isolated jar on every toggle, both directions', async () => {
     createBrowserTabPane('sess-1');
-    expect(partition()).toBe('persist:vibeyard-browser');
+    expect(partition()).toBe('persist:finevibe-browser');
 
     clickIsolation();
     await vi.waitFor(() => expect(clearIsolatedStorage).toHaveBeenCalledWith('sess-1'));
     expect(appState.setSessionBrowserIsolated).toHaveBeenCalledWith('sess-1', true);
-    expect(partition()).toBe('persist:vibeyard-browser-iso-sess-1');
+    expect(partition()).toBe('persist:finevibe-browser-iso-sess-1');
 
     // Leaving isolation clears the jar too: an isolated login must not
     // survive in it for the app's life.
     clickIsolation();
     await vi.waitFor(() => expect(clearIsolatedStorage).toHaveBeenCalledTimes(2));
     expect(appState.setSessionBrowserIsolated).toHaveBeenCalledWith('sess-1', false);
-    expect(partition()).toBe('persist:vibeyard-browser');
+    expect(partition()).toBe('persist:finevibe-browser');
   });
 
   it('carries recorded flow steps and the recording mode over the rebuild', async () => {

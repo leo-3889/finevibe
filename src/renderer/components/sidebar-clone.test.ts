@@ -83,8 +83,8 @@ interface FsStub {
   cloneRepo: Mock;
 }
 
-function testWindow(): { vibeyard: { app: { openExternal: Mock }; store: { load: Mock; save: Mock }; fs: FsStub } } {
-  return window as unknown as { vibeyard: { app: { openExternal: Mock }; store: { load: Mock; save: Mock }; fs: FsStub } };
+function testWindow(): { finevibe: { app: { openExternal: Mock }; store: { load: Mock; save: Mock }; fs: FsStub } } {
+  return window as unknown as { finevibe: { app: { openExternal: Mock }; store: { load: Mock; save: Mock }; fs: FsStub } };
 }
 
 let fsStub: FsStub;
@@ -103,7 +103,7 @@ function stubDom() {
     browseDirectory: vi.fn(async () => null as string | null),
     cloneRepo: vi.fn(async () => ({ ok: true })),
   };
-  testWindow().vibeyard = {
+  testWindow().finevibe = {
     app: { openExternal: vi.fn() },
     store: { load: vi.fn(), save: vi.fn(async () => {}) },
     fs: fsStub,

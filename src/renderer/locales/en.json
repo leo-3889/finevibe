@@ -69,7 +69,7 @@
       "defaultProfileLabel": "Default profile"
     },
     "removeConfirm": {
-      "withDataMessage": "Remove project \"{name}\"? This will delete {parts} from Vibeyard. No files on disk will be affected.",
+      "withDataMessage": "Remove project \"{name}\"? This will delete {parts} from FineVibe. No files on disk will be affected.",
       "emptyMessage": "Remove project \"{name}\"? No files on disk will be affected.",
       "title": "Remove project",
       "confirmLabel": "Remove",
@@ -84,8 +84,8 @@
       "title": "Active Sessions"
     },
     "discussions": {
-      "tooltip": "Vibeyard Discussions",
-      "title": "Vibeyard Discussions",
+      "tooltip": "FineVibe Discussions",
+      "title": "FineVibe Discussions",
       "description": "Join the conversation about coding with AI"
     }
   },
@@ -483,7 +483,7 @@
     "descriptionPi": "Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR. Set up auth and models in that config directory after creating the profile.",
     "descriptionOmp": "Oh my Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR (the same omp agent dir mechanism as Pi). Make sure the omp CLI is installed, then set up auth and models in that config directory after creating the profile.",
     "keychainUnsupported": "This version of Claude Code{version} stores every login under a single macOS keychain entry, so profiles can't keep accounts separate. Update Claude Code to create and use profiles.",
-    "keychainUnknown": "Vibeyard can't yet confirm this Claude Code build isolates profile logins in the macOS keychain. Sign in to a profile once and isolation will be verified automatically.",
+    "keychainUnknown": "FineVibe can't yet confirm this Claude Code build isolates profile logins in the macOS keychain. Sign in to a profile once and isolation will be verified automatically.",
     "empty": "No profiles yet.",
     "tagManaged": "managed",
     "tagCustom": "custom",
@@ -579,7 +579,7 @@
     "gitAheadDesc": "Commits ahead/behind remote"
   },
   "about": {
-    "appName": "Vibeyard",
+    "appName": "FineVibe",
     "versionLoading": "Version: loading...",
     "updateButton": "Check for Updates",
     "updateChecking": "Checking...",
@@ -589,7 +589,7 @@
     "githubLink": "GitHub",
     "bugLink": "Report a Bug",
     "contributeLink": "Contribute on GitHub",
-    "communityPrefix": "Vibeyard is open source. ",
+    "communityPrefix": "FineVibe is open source. ",
     "communitySuffix": " — and if you find it useful, give it a star!",
     "debugModeLabel": "Debug Mode",
     "versionLoaded": "Version: {ver}"
@@ -650,7 +650,7 @@
     "closeMessageOther": "{count} sessions are still active. Closing will interrupt them.",
     "closeConfirmOne": "Close",
     "closeConfirmOther": "Close all",
-    "quitTitle": "Quit Vibeyard",
+    "quitTitle": "Quit FineVibe",
     "quitMessageOne": "A session is still active. Quitting will interrupt it.",
     "quitMessageOther": "{count} sessions are still active. Quitting will interrupt them.",
     "quitConfirm": "Quit"

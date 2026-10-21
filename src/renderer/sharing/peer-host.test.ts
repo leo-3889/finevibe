@@ -87,7 +87,7 @@ beforeEach(() => {
   sentMessages.length = 0;
 
   ptyWrite.mockReset();
-  vi.stubGlobal('window', { vibeyard: { pty: { write: ptyWrite } } });
+  vi.stubGlobal('window', { finevibe: { pty: { write: ptyWrite } } });
 
   class FakeRTCPeerConnection {
     iceConnectionState: RTCIceConnectionState = 'new';

@@ -9,7 +9,7 @@ import { writeCliSessionId } from './hook-status';
  * Codex CLI has no hook system that reliably reports session IDs back to the
  * host app. When hooks are incomplete, we attribute new rollout files
  * (`~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl[.zst]`) to the
- * Vibeyard tabs that launched Codex.
+ * FineVibe tabs that launched Codex.
  *
  * Attribution is per-cwd FIFO: a rollout's `session_meta` line carries the
  * cwd Codex ran in, and only tabs registered for that cwd are eligible.

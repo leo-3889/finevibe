@@ -1,4 +1,4 @@
-import type { VibeyardApi } from './types.js';
+import type { FinevibeApi } from './types.js';
 import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout, SidebarViews } from '../shared/types.js';
 import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
@@ -85,7 +85,7 @@ export const MAX_PROJECT_NAME_LENGTH = 80;
 
 declare global {
   interface Window {
-    vibeyard: VibeyardApi;
+    finevibe: FinevibeApi;
   }
 }
 
@@ -213,7 +213,7 @@ class AppState {
   async load(): Promise<void> {
     let loaded: PersistedState | null = null;
     try {
-      loaded = (await window.vibeyard.store.load()) as PersistedState | null;
+      loaded = (await window.finevibe.store.load()) as PersistedState | null;
     } catch (err) {
       // A failed load must not leave loadedFlag false forever: every later
       // persist() would be dropped by the premature-persist guard and the
@@ -277,7 +277,7 @@ class AppState {
   /** Serialize + ship right now; the only writer of the store. */
   private writeStateNow(): void {
     this.lastPersistAt = Date.now();
-    window.vibeyard.store.save(serializeForSave(this.state));
+    window.finevibe.store.save(serializeForSave(this.state));
   }
 
   /** Drop the armed trailing save and write immediately (quit paths, tests). */
@@ -641,7 +641,7 @@ class AppState {
     this.persist();
     this.emit('team-changed');
     if (member.installAsAgent) {
-      void syncAgentInstallPure(window.vibeyard.provider, this.team, member, () => this.persist());
+      void syncAgentInstallPure(window.finevibe.provider, this.team, member, () => this.persist());
     }
     return member;
   }
@@ -654,7 +654,7 @@ class AppState {
     // A rename/role edit changes the assignee badge on any board task assigned
     // to this member; board views key off board-changed, so announce it here.
     if (this.boardReferencesMember(id)) this.notifyBoardChanged();
-    void reconcileAgentPure(window.vibeyard.provider, this.team, result.before, result.after, () => this.persist());
+    void reconcileAgentPure(window.finevibe.provider, this.team, result.before, result.after, () => this.persist());
     return result.after;
   }
 
@@ -682,7 +682,7 @@ class AppState {
     this.emit('team-changed');
     if (boardChanged) this.notifyBoardChanged();
     if (removed.installAsAgent && removed.agentSlug) {
-      fireAndForgetRemoveAgent(window.vibeyard.provider, removed.agentSlug);
+      fireAndForgetRemoveAgent(window.finevibe.provider, removed.agentSlug);
     }
   }
 
@@ -713,7 +713,7 @@ class AppState {
    */
   async addProfile(input: { name: string; providerId: ProviderId; customPath?: string }): Promise<Profile> {
     const id = crypto.randomUUID();
-    const { configDir, managed } = await window.vibeyard.profiles.provision(id, input.customPath, input.providerId);
+    const { configDir, managed } = await window.finevibe.profiles.provision(id, input.customPath, input.providerId);
     const profile: Profile = {
       id,
       name: input.name.trim(),
@@ -943,7 +943,7 @@ class AppState {
   private isArchivable(session: SessionRecord, project: ProjectRecord): boolean {
     if (!session.cliSessionId) return false;
     const providerId = session.providerId ?? 'claude';
-    return window.vibeyard.session.transcriptExistsSync(
+    return window.finevibe.session.transcriptExistsSync(
       providerId,
       session.cliSessionId,
       project.path,
@@ -1038,7 +1038,7 @@ class AppState {
       }
     }
 
-    const exists = await window.vibeyard.session.transcriptExists(
+    const exists = await window.finevibe.session.transcriptExists(
       archived.providerId,
       archived.cliSessionId,
       project.path,
@@ -1056,7 +1056,7 @@ class AppState {
     return this.resumeFromHistory(projectId, archivedSessionId);
   }
 
-  /** Open a CLI session by cliSessionId, bypassing Vibeyard history. Used for cross-project deep search results. */
+  /** Open a CLI session by cliSessionId, bypassing FineVibe history. Used for cross-project deep search results. */
   openCliSession(projectId: string, cliSessionId: string, name: string, providerId: ProviderId = 'claude', profileId?: string): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
@@ -1094,7 +1094,7 @@ class AppState {
     // The source transcript lives under its profile's config dir (if any), so
     // pass it through to locate the right .jsonl when building the handoff.
     const sourceProfile = resolved.profileId ? this.profiles.find((p) => p.id === resolved.profileId && p.providerId === resolved.providerId) : undefined;
-    const initialPrompt = await window.vibeyard.session.buildResumeWithPrompt(
+    const initialPrompt = await window.finevibe.session.buildResumeWithPrompt(
       resolved.providerId,
       resolved.cliSessionId ?? null,
       project.path,

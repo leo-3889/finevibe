@@ -19,8 +19,8 @@ beforeEach(() => {
   exists.mockResolvedValue(true);
   isDirectory.mockResolvedValue(false);
   activeProject = { id: 'p1', path: '/repo' };
-  (globalThis as unknown as { window: { vibeyard: unknown } }).window = {
-    vibeyard: { fs: { exists, isDirectory } },
+  (globalThis as unknown as { window: { finevibe: unknown } }).window = {
+    finevibe: { fs: { exists, isDirectory } },
   } as never;
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });

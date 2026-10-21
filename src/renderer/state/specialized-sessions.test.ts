@@ -6,7 +6,7 @@ const mockSave = vi.fn();
 const mockProvision = vi.fn(async (id: string) => ({ configDir: `/cfg/${id}`, managed: true }));
 
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: mockLoad, save: mockSave },
     profiles: { provision: mockProvision },
   },
