@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tokenizeArgs, findConflictingLaunchFlags, findConflictingEnvKeys, UNSUPPORTED_STORAGE_ENV_KEYS } from './launch-args';
+import { tokenizeArgs, findConflictingLaunchFlags, findConflictingEnvKeys } from './launch-args';
 
 describe('tokenizeArgs', () => {
   it('splits on runs of whitespace', () => {
@@ -113,8 +113,6 @@ describe('findConflictingLaunchFlags', () => {
 
 describe('findConflictingEnvKeys', () => {
   it('matches the unsupported storage selectors case-insensitively', () => {
-    expect(UNSUPPORTED_STORAGE_ENV_KEYS).toContain('PI_CODING_AGENT_SESSION_DIR');
-    expect(UNSUPPORTED_STORAGE_ENV_KEYS).toContain('CODEX_HOME');
     expect(findConflictingEnvKeys({ PI_CODING_AGENT_SESSION_DIR: '/x', SAFE: '1' })).toEqual(['PI_CODING_AGENT_SESSION_DIR']);
     expect(findConflictingEnvKeys({ pi_coding_agent_session_dir: '/x' })).toEqual(['pi_coding_agent_session_dir']);
     expect(findConflictingEnvKeys({ CODEX_HOME: '/work/codex' })).toEqual(['CODEX_HOME']);

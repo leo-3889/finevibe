@@ -9,7 +9,7 @@ export const ZOOM_MAX = 2.0;
 // --- Provider ---
 
 export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi' | 'omp';
-export type PendingPromptTrigger = 'session-start' | 'startup-arg';
+type PendingPromptTrigger = 'session-start' | 'startup-arg';
 
 /**
  * UI language tag. Defined here (rather than imported from `renderer/i18n.ts`)
@@ -105,7 +105,7 @@ export interface ContextWindowInfo {
 
 // --- Session / State ---
 
-export type SessionType =
+type SessionType =
   | 'mcp-inspector'
   | 'diff-viewer'
   | 'file-reader'
@@ -257,7 +257,7 @@ export interface DeepSearchResult {
   profileId?: string;
 }
 
-export interface ProjectInsightsData {
+interface ProjectInsightsData {
   initialContextSnapshots: InitialContextSnapshot[];
   dismissed: string[];
 }
@@ -459,7 +459,7 @@ export interface ChromeProfile {
   displayName: string;
 }
 
-export interface ChromeImportSummary {
+interface ChromeImportSummary {
   lastImportedAt: number;
   profileId: string;
   cookieCount: number;
@@ -709,14 +709,14 @@ export interface McpResult {
 
 // --- Usage Stats ---
 
-export interface StatsDailyActivity {
+interface StatsDailyActivity {
   date: string;
   messageCount: number;
   sessionCount: number;
   toolCallCount: number;
 }
 
-export interface StatsModelUsage {
+interface StatsModelUsage {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;

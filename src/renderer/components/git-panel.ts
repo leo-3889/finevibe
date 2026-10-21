@@ -388,8 +388,7 @@ export function initGitPanel(): void {
   onWorktreeChange(() => { lastFilesKey = ''; scheduleRefresh(); });
 }
 
-// --- Test-only exports ---
-export const _test = { loadFiles };
+// --- Test-only state reset ---
 export function _resetForTesting(): void {
   lastCountKey = '';
   lastFilesKey = '';

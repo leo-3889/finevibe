@@ -91,7 +91,7 @@ export function tokenizeArgs(input: string): string[] {
   return args;
 }
 
-export interface LaunchFlagConflict {
+interface LaunchFlagConflict {
   /** Normalized flag name, e.g. `--profile`. */
   flag: string;
   /** The offending token as written by the user. */
@@ -148,7 +148,7 @@ export function findConflictingLaunchFlags(args: string[]): LaunchFlagConflict[]
  * with an actionable pre-spawn error). Inherited values are stripped by the
  * providers' buildEnv so the child always uses the tracked root.
  */
-export const UNSUPPORTED_STORAGE_ENV_KEYS: readonly string[] = [
+const UNSUPPORTED_STORAGE_ENV_KEYS: readonly string[] = [
   'PI_CODING_AGENT_SESSION_DIR',
   // CODEX_HOME relocates both the hooks Vibeyard installs at ~/.codex and the
   // rollout dir its watcher scans, so the child would silently stop reporting.

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GitFileEntry } from '../../shared/types';
 
 // git-panel pulls in a lot of unrelated modules at import time; stub them so the
-// only behavior under test is loadFiles().
+// only behavior under test is the mount/refresh load flow.
 vi.mock('../state.js', () => ({ appState: { on: vi.fn(), activeProjectId: null, activeProject: null } }));
 vi.mock('../git-status.js', () => ({
   onChange: vi.fn(),
@@ -22,17 +22,22 @@ vi.mock('../dom-utils.js', async (importOriginal) => ({
   areaLabel: (area: string) => area,
 }));
 
-import { _test, _resetForTesting, mountGitPanel, closeGitPanel } from './git-panel.js';
+import { _resetForTesting, initGitPanel, mountGitPanel, closeGitPanel } from './git-panel.js';
 import { appState } from '../state.js';
-import { gitChangeCount, getActiveGitPath, getWorktrees } from '../git-status.js';
-
-const { loadFiles } = _test;
+import {
+  onChange as onGitStatusChange,
+  gitChangeCount,
+  getActiveGitPath,
+  getWorktrees,
+} from '../git-status.js';
 
 const FILES_A: GitFileEntry[] = [{ path: 'a.ts', status: 'modified', area: 'working' }];
 const FILES_B: GitFileEntry[] = [{ path: 'b.ts', status: 'added', area: 'staged' }];
 
+const project = { id: 'p1' } as never;
+
 /** A promise whose resolution is controlled by the test, so we can inspect the
- *  DOM in the window between loadFiles being called and getFiles resolving. */
+ *  DOM in the window between the load starting and getFiles resolving. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -42,157 +47,176 @@ function deferred<T>() {
 
 const getFiles = vi.fn();
 
-function makeBody(): HTMLElement {
-  const body = document.createElement('div');
-  document.body.appendChild(body);
-  return body;
+function setActiveProject(id: string): void {
+  (appState as { activeProject: unknown }).activeProject = { id };
+  (appState as { activeProjectId: string | null }).activeProjectId = id;
 }
 
-/** Drive a full load to completion and return the body with rendered rows. */
-async function primeWithFiles(body: HTMLElement, gitPath: string, files: GitFileEntry[]) {
+function makeContainer(): HTMLElement {
+  const c = document.createElement('div');
+  document.body.appendChild(c);
+  return c;
+}
+
+function hasLoader(root: ParentNode): boolean {
+  return root.querySelector('.git-loading') !== null;
+}
+
+/** Mount the panel — the public load trigger — and capture the deferred
+ *  getFiles call the mount kicks off, so the test controls the in-flight load. */
+function mountLoading(container = makeContainer()) {
   const d = deferred<GitFileEntry[]>();
   getFiles.mockReturnValueOnce(d.promise);
-  const p = loadFiles(body, gitPath);
-  d.resolve(files);
-  await p;
+  mountGitPanel(project, container);
+  return { container, ...d };
 }
 
-function hasLoader(body: HTMLElement): boolean {
-  return body.querySelector('.git-loading') !== null;
+/** Mount the panel and drive the cold load to completion with `files`. */
+async function prime(files: GitFileEntry[]): Promise<HTMLElement> {
+  const { container, resolve, promise } = mountLoading();
+  resolve(files);
+  await promise;
+  return container;
+}
+
+/** Fire the git-status subscription initGitPanel registered. */
+function fireGitStatusChange(counts: { staged: number; modified: number; untracked: number; conflicted: number }): void {
+  const handler = vi.mocked(onGitStatusChange).mock.calls.at(-1)![0];
+  handler('p1', counts as never);
 }
 
 beforeEach(() => {
   _resetForTesting();
   getFiles.mockReset();
+  vi.mocked(onGitStatusChange).mockReset();
   document.body.innerHTML = '';
   (window as unknown as { vibeyard: unknown }).vibeyard = { git: { getFiles } };
+  setActiveProject('p1');
+  vi.mocked(gitChangeCount).mockReturnValue(2);
+  vi.mocked(getActiveGitPath).mockReturnValue('/repo');
+  vi.mocked(getWorktrees).mockReturnValue(null);
 });
 
-describe('git-panel loadFiles — cold-load vs refresh', () => {
-  it('shows the loader on the first (cold) load, then renders files', async () => {
-    const body = makeBody();
-    const d = deferred<GitFileEntry[]>();
-    getFiles.mockReturnValueOnce(d.promise);
-
-    const p = loadFiles(body, '/repo');
+describe('git-panel mount/refresh loads — cold-load vs refresh', () => {
+  it('shows the loader on the first (cold) mount, then renders files', async () => {
+    const { container, resolve, promise } = mountLoading();
 
     // While the git call is in flight, the spinner is visible.
-    expect(hasLoader(body)).toBe(true);
+    expect(hasLoader(container)).toBe(true);
 
-    d.resolve(FILES_A);
-    await p;
+    resolve(FILES_A);
+    await promise;
 
     // Once data arrives the loader is replaced by the file rows.
-    expect(hasLoader(body)).toBe(false);
-    expect(body.textContent).toContain('a.ts');
+    expect(hasLoader(container)).toBe(false);
+    expect(container.textContent).toContain('a.ts');
   });
 
   it('stays silent on a background refresh of the same path', async () => {
-    const body = makeBody();
-    await primeWithFiles(body, '/repo', FILES_A);
+    initGitPanel();
+    const container = await prime(FILES_A);
 
     // Refresh the same path with changed files.
     const d = deferred<GitFileEntry[]>();
     getFiles.mockReturnValueOnce(d.promise);
-    const p = loadFiles(body, '/repo');
+    fireGitStatusChange({ staged: 1, modified: 1, untracked: 0, conflicted: 0 });
 
     // No spinner flash — the existing rows remain on screen while loading.
-    expect(hasLoader(body)).toBe(false);
-    expect(body.textContent).toContain('a.ts');
+    expect(hasLoader(container)).toBe(false);
+    expect(container.textContent).toContain('a.ts');
 
     d.resolve(FILES_B);
-    await p;
+    await d.promise;
 
-    expect(hasLoader(body)).toBe(false);
-    expect(body.textContent).toContain('b.ts');
-    expect(body.textContent).not.toContain('a.ts');
+    expect(hasLoader(container)).toBe(false);
+    expect(container.textContent).toContain('b.ts');
+    expect(container.textContent).not.toContain('a.ts');
   });
 
-  it('shows the loader and clears stale rows when the path switches', async () => {
-    const body = makeBody();
-    await primeWithFiles(body, '/repoA', FILES_A);
+  it('shows the loader and clears stale rows when the panel switches project path', async () => {
+    const container = await prime(FILES_A);
 
-    // Switch to a different worktree/project path: body still holds repoA's rows.
+    // Switch to a different project: the body still holds repoA's rows.
+    const other = { id: 'p2' } as never;
+    setActiveProject('p2');
+    vi.mocked(getActiveGitPath).mockReturnValue('/repoB');
     const d = deferred<GitFileEntry[]>();
     getFiles.mockReturnValueOnce(d.promise);
-    const p = loadFiles(body, '/repoB');
+    mountGitPanel(other, container);
 
     // Loader appears and the previous path's rows are gone (no cross-project bleed).
-    expect(hasLoader(body)).toBe(true);
-    expect(body.textContent).not.toContain('a.ts');
+    expect(hasLoader(container)).toBe(true);
+    expect(container.textContent).not.toContain('a.ts');
 
     d.resolve(FILES_B);
-    await p;
+    await d.promise;
 
-    expect(hasLoader(body)).toBe(false);
-    expect(body.textContent).toContain('b.ts');
+    expect(hasLoader(container)).toBe(false);
+    expect(container.textContent).toContain('b.ts');
   });
 
   it('skips the DOM rebuild when a same-path refresh returns identical files', async () => {
-    const body = makeBody();
-    await primeWithFiles(body, '/repo', FILES_A);
-    const renderedNode = body.firstElementChild;
-    const renderedHtml = body.innerHTML;
+    initGitPanel();
+    const container = await prime(FILES_A);
+    const renderedNode = container.firstElementChild;
+    const renderedHtml = container.innerHTML;
 
     // Same path, identical file list (fresh objects, same serialization).
-    await primeWithFiles(body, '/repo', FILES_A.map((f) => ({ ...f })));
+    const d = deferred<GitFileEntry[]>();
+    getFiles.mockReturnValueOnce(d.promise);
+    fireGitStatusChange({ staged: 1, modified: 1, untracked: 0, conflicted: 0 });
+    d.resolve(FILES_A.map((f) => ({ ...f })));
+    await d.promise;
 
     // Dedup short-circuits: the rendered nodes are untouched (no churn, no loader).
-    expect(hasLoader(body)).toBe(false);
-    expect(body.firstElementChild).toBe(renderedNode);
-    expect(body.innerHTML).toBe(renderedHtml);
+    expect(hasLoader(container)).toBe(false);
+    expect(container.firstElementChild).toBe(renderedNode);
+    expect(container.innerHTML).toBe(renderedHtml);
   });
 
   it('treats the next load as cold after a failed fetch (loader returns)', async () => {
-    const body = makeBody();
-    await primeWithFiles(body, '/repo', FILES_A);
+    initGitPanel();
+    const container = await prime(FILES_A);
 
     // A failed refresh clears the panel and forgets the displayed path.
     const failed = deferred<GitFileEntry[]>();
     getFiles.mockReturnValueOnce(failed.promise);
-    const pFail = loadFiles(body, '/repo');
+    fireGitStatusChange({ staged: 1, modified: 1, untracked: 0, conflicted: 0 });
     failed.reject(new Error('git failed'));
-    await pFail;
-    expect(body.textContent).toBe('');
+    await failed.promise.catch(() => undefined);
+    expect(container.querySelector('.git-panel-body')!.textContent).toBe('');
 
-    // The subsequent same-path load is therefore cold again — loader shows.
+    // The subsequent same-path refresh is therefore cold again — loader shows.
     const d = deferred<GitFileEntry[]>();
     getFiles.mockReturnValueOnce(d.promise);
-    const p = loadFiles(body, '/repo');
-    expect(hasLoader(body)).toBe(true);
+    fireGitStatusChange({ staged: 0, modified: 2, untracked: 0, conflicted: 0 });
+    expect(hasLoader(container)).toBe(true);
     d.resolve(FILES_A);
-    await p;
-    expect(body.textContent).toContain('a.ts');
+    await d.promise;
+    expect(container.textContent).toContain('a.ts');
   });
 });
 
 describe('git-panel mountGitPanel — reload gating', () => {
-  const project = { id: 'p1' } as never;
-
   // Detached on purpose: the sidebar mounts the panel during buildProjectRow,
   // before the row is appended to the document — so refreshMounted must render
   // without depending on DOM connectivity.
-  function makeContainer(): HTMLElement {
+  function makeDetachedContainer(): HTMLElement {
     return document.createElement('div');
   }
 
   beforeEach(() => {
-    (appState as { activeProject: unknown }).activeProject = project;
-    (appState as { activeProjectId: string }).activeProjectId = 'p1';
-    vi.mocked(gitChangeCount).mockReturnValue(2);
-    vi.mocked(getActiveGitPath).mockReturnValue('/repo');
-    vi.mocked(getWorktrees).mockReturnValue(null);
     getFiles.mockResolvedValue(FILES_A);
   });
 
   it('loads files on first mount but not on a same-project re-mount', () => {
-    const c1 = makeContainer();
+    const c1 = makeDetachedContainer();
     mountGitPanel(project, c1);
     expect(getFiles).toHaveBeenCalledTimes(1);
 
     // A plain sidebar re-render reparents the panel into a fresh container —
     // this must NOT trigger another getFiles IPC.
-    const c2 = makeContainer();
+    const c2 = makeDetachedContainer();
     mountGitPanel(project, c2);
     expect(getFiles).toHaveBeenCalledTimes(1);
     // The persistent node was moved, not duplicated.
@@ -201,45 +225,42 @@ describe('git-panel mountGitPanel — reload gating', () => {
   });
 
   it('reloads when the active project switches', () => {
-    mountGitPanel(project, makeContainer());
+    mountGitPanel(project, makeDetachedContainer());
     expect(getFiles).toHaveBeenCalledTimes(1);
 
     const other = { id: 'p2' } as never;
-    (appState as { activeProject: unknown }).activeProject = other;
-    (appState as { activeProjectId: string }).activeProjectId = 'p2';
+    setActiveProject('p2');
     vi.mocked(getActiveGitPath).mockReturnValue('/repoB');
-    mountGitPanel(other, makeContainer());
+    mountGitPanel(other, makeDetachedContainer());
     expect(getFiles).toHaveBeenCalledTimes(2);
   });
 
   it('reloads on the next open after close', () => {
-    mountGitPanel(project, makeContainer());
+    mountGitPanel(project, makeDetachedContainer());
     expect(getFiles).toHaveBeenCalledTimes(1);
 
     closeGitPanel();
-    mountGitPanel(project, makeContainer());
+    mountGitPanel(project, makeDetachedContainer());
     expect(getFiles).toHaveBeenCalledTimes(2);
   });
 });
 
-describe('git-panel loadFiles — path rendering (P2-102)', () => {
+describe('git-panel file rows — path rendering (P2-102)', () => {
   it('renders a filename containing a double quote as a literal, not an attribute injection', async () => {
-    const body = makeBody();
     const path = 'x" onmouseover="alert(1).ts';
-    await primeWithFiles(body, '/repo', [{ path, status: 'modified', area: 'working' }]);
-    const detail = body.querySelector('.config-item-detail')!;
+    const container = await prime([{ path, status: 'modified', area: 'working' }]);
+    const detail = container.querySelector('.config-item-detail')!;
     // Pre-fix, the raw `"` closed the interpolated title attribute and the
     // payload became a live onmouseover attribute.
     expect(detail.getAttribute('title')).toBe(path);
     expect(detail.textContent).toBe(path);
     expect(detail.getAttribute('onmouseover')).toBeNull();
-    expect(body.querySelector('[onmouseover]')).toBeNull();
+    expect(container.querySelector('[onmouseover]')).toBeNull();
   });
 
   it('renders the status badge as a literal letter span', async () => {
-    const body = makeBody();
-    await primeWithFiles(body, '/repo', [{ path: 'a.ts', status: 'modified', area: 'working' }]);
-    const badge = body.querySelector('.git-file-badge')!;
+    const container = await prime(FILES_A);
+    const badge = container.querySelector('.git-file-badge')!;
     expect(badge.textContent).toBe('M');
     expect(badge.className).toBe('git-file-badge modified');
   });

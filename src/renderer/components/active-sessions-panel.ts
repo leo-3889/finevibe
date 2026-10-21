@@ -101,10 +101,6 @@ function rowHtml(row: ActiveSessionRow): string {
   `;
 }
 
-/** @internal Exported for tests: the P2-102 attribute-interpolation coverage
- * exercises rowHtml directly (data-project-id/data-session-id/title). */
-export const _test = { rowHtml };
-
 // Coalesce the many event sources that can invalidate the panel into a single
 // rebuild per frame — a burst (e.g. state-loaded plus a wave of session-added)
 // collapses to one render.

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { isCliSession } from './session-utils';
-import type { SessionType } from '../shared/types';
+import type { SessionRecord } from '../shared/types';
+
+type SessionType = NonNullable<SessionRecord['type']>;
 
 describe('isCliSession', () => {
   it('returns true when type is undefined (regular CLI session)', () => {

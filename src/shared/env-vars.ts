@@ -69,7 +69,7 @@ export function findInvalidEnvLines(text: string): string[] {
  * `PATH` is deliberately NOT listed: overriding it is a supported use case
  * ("user vars win").
  */
-export const PROVIDER_OWNED_ENV_KEYS: readonly string[] = [
+const PROVIDER_OWNED_ENV_KEYS: readonly string[] = [
   'CLAUDE_CONFIG_DIR',
   'PI_CODING_AGENT_DIR',
   'PI_CONFIG_DIR',
