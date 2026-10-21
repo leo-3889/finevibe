@@ -93,6 +93,49 @@ Per-launch retention policy: a directory is expired only when every timestamp it
 
 Covered by `src/main/launch-session-dir.test.ts`.
 
+## Measured runtime baseline (W2, 2026-10-19, Windows)
+
+The only measured runtime numbers this machine has for the app's hot paths, from the
+2026-10-19/20 audit fleet's performance audit (W2Perf). Baseline: the `rebuild` tree at
+`858d97c`, Windows 10.0.26300 (NTFS, real-time AV active), Node v24.14.0. Every row
+below drove the real modules — bundled with esbuild, `electron` stubbed — except the
+startup row, which ran the real Electron app in the dev tree (not packaged); no gate ran
+concurrently, so no vitest contention. **The measurement harnesses no longer exist**: the
+agent workspace that held them was dissolved on 2026-10-21, so this is a baseline
+snapshot, not a rerunnable suite.
+
+| Metric | Measured | Conditions |
+| --- | --- | --- |
+| Pi/OMP poll tick, 200 tabs | 521.0 ms p50 / 1095.8 ms max every 2 s tick — 26% main-thread duty; 526.0 ms of it is 200 × `readSessionHeaderSync` (~2.07 ms each) | 200 exclusive per-launch dirs, one post-registration transcript each (steady state of a fresh launch); W2-01 |
+| Pi/OMP poll tick, 50 tabs | 201.4 ms p50 / 896.1 ms max ≈ 10% duty | same shape at 50 tabs; W2-01 |
+| Pi/OMP event-driven tick | 613.3 ms p50 at 200 tabs | transcripts appending, so ≥1 event scan/s on top of the poll; W2-01 |
+| Pi/OMP tick, header-cache shape | 67.7 ms p50 at 200 tabs, 0 header reads/tick | the resume shape the W2-01 header-id cache produces (adopted file inside the generation snapshot) — measured as a shape, not a shipped fix |
+| Watcher handles | 1 / 10 / 50 / 200 `fs.watch` handles at 1 / 10 / 50 / 200 tabs; idle handle ≈ 0 CPU, RSS Δ ≤ +2 MB across the sweep | one non-recursive watcher per exclusive dir; W2-02 |
+| Registration synchronous listing | p50 5.1–8.5 ms, max 25.4 ms per registration; 200 serial registrations sum 1.3–1.6 s | at the syscall floor (`statSync` 113.5 µs, `readdirSync` 1 file 192.6 µs, open + 8 KiB read + close 1994.8 µs, full header read 2074.6 µs/op, 2000-op medians); PO-06 no-action row |
+| Codex `.zst` meta scan, adversarial | 176.3 ms p50 / 203.5 ms max per 2 s scan, 20 decompressions, 64.5 MB decompressed, 130.8 ms decompression CPU, +108 MB RSS over 10 scans | 20 growing external `.jsonl.zst` rollouts (~3 MB body, ~30 KB compressed) re-compressed between scans, one tab whose cwd never matches; W2-03 |
+| Store persist burst | 49 `saveState` calls at 200 ms → 0 writes for the full 10 s, 1 write after the burst; `writeStateAtomically` p50 4.76 ms / max 6.68 ms at 75,072 B | 200 sessions / 50 projects, renderer cadence modeled on the leading-edge 200 ms throttle; W2-04 |
+| Deep search, hot query | 1598 ms with all 500 hot texts cached — 777 ms discovery + 1002 `fs.promises.stat` version checks (~1.5 ms each under AV); cold 5513 ms, warm 2039 ms, cancellation returns 1 ms after abort | 1002-file fixture (200 project dirs × 5 transcripts, 93.6 MB indexed, one ~10 MB and one ~70 MB file); W2-05 |
+| First window | 4.97–7.07 s from process start, with `app.whenReady` at ~2.3 s; the gap is 2354 ms of synchronous per-provider CLI probes (codex 1427 ms) serialized before the window | real Electron app, dev tree, NOT packaged, 3 runs, probe via `--require`; W2-06 |
+| Renderer bundle | 2.05 MB single unminified chunk — `@xterm/*` 750 KB (37%), gridstack 231 KB, project code 937 KB | esbuild metafile under the same flags as the `build:renderer` script (no minify, no split); W2-07 |
+
+Reading the rows: the figures **predate the Wave A–D fixes**, so they are the pre-fix
+baseline for behavior that the sections above now contract — see *Pi/OMP discovery and
+remaining costs*, *Codex rollout attribution scan cost*, *Session search work and
+storage* and *Static footprint audit (2026-10-18)* — and they are harness measurements
+against the real modules, not measurements in the running app. **PO-06 stays open for
+exactly that reason**: watcher cost in the running app (main-thread delay, RSS and
+handle counts under a live window) has never been measured. The same audit's measured
+no-action rows are cited here for the same reason and with the same caveat: registration
+delay, idle watcher (0 fs calls), watcher RSS ≤ 2 MB, Codex meta cache 91% steady-state
+hits with 0 steady decompressions, date-dir name pruning (365 fresh-mtime day-dirs →
+1.4 ms/scan, 4 readdir, 1 stat), quit flush (no late write), `loadState` cache 0.04 µs
+per hot call, store write rate ~0.7 MB/min, search cancellation 1 ms, the disk-index
+warm tier (0 transcript re-reads) and `statusTailCache` at 512 entries (≤ 51 KB). The
+live work stays open in *Measurement protocol for the live run* and *Evidence and open
+measurement* below.
+
+Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), [Codex session watcher](../src/main/codex-session-watcher.ts), [state store](../src/main/store.ts), [deep-search coordinator](../src/main/session-deep-search.ts), [startup order](../src/main/main.ts), and the [audit status](AUDIT_STATUS.md) closure record of the program that produced them.
+
 ## Clipboard and paste baseline (P0, 2026-10-21, Windows)
 
 First measured numbers for the terminal copy/paste path, from the P0 harness in `dev/perf/` (`dev/perf/clipboard-bench.js` = Electron main + hidden window replaying the `clipboard:readForPaste` sub-op order per scenario; `clipbench.ps1` + `hold.ps1` = raw Win32 clipboard contention; `dev/perf/pty-paste-probe.js` = node-pty ConPTY paste drain). Box: Windows 10.0.26300, Node 24.14.0, Electron 41.1.0 (Chrome 146), node-pty 1.1.0. Clipboard scenarios are set from a child process via raw Win32 `SetClipboardData` (WinForms delayed-rendered writes die at setup-process exit — a harness lesson, not an app cost). All numbers p50/max ms over 11 back-to-back passes. The plan's §6 claim that the Windows clipboard is unreachable from the agent shell is **disproven on this box**: `OpenClipboard` succeeds, every leg ran from the agent shell.

@@ -67,3 +67,26 @@ file opt/Vibeyard/resources/app.asar.unpacked/node_modules/node-pty/build/Releas
 `vibeyard --version` core-dumps over headless SSH (Electron needs a display);
 the definitive smoke test is launching from the desktop session and opening a
 terminal (PTY) session.
+
+## Verifying a Windows build (host prerequisites)
+
+The native-module step described under the deb section runs on whatever host performs
+the build: `postinstall` → `electron-builder install-app-deps` compiles `node-pty`
+against the target Electron ABI. On Windows that requires the platform native
+toolchain, so a release verification started on a plain developer box can stop before
+it produces an artifact:
+
+| Requirement | Why | Observed failure without it |
+|---|---|---|
+| Visual C++ build toolchain (detected through `vswhere`) | node-pty's native rebuild for the Electron ABI; Python + node-gyp alone are not enough | `electron-builder --dir` fails at the node-pty rebuild — `vswhere` not found on the host |
+| Symlink privilege (Windows Developer Mode, or an elevated shell) | electron-builder extracts `winCodeSign` through symlinks | with the native rebuild skipped (`npmRebuild=false`), `electron-builder --dir` fails extracting `winCodeSign` |
+
+Both were observed on 2026-10-21 on a plain Windows 10.0.26300 host during the
+2026-10-19/20 audit program's packaged-smoke attempt, which was recorded BLOCKED rather
+than failed: an environment gap, not an app defect — the same tree had produced the
+previously packaged app on the packaging machine (evidence row in
+[audit status](AUDIT_STATUS.md)). Run `npm run pack` / `npm run dist` for release
+verification on a host that has both prerequisites, or on the CI `windows-2022` runner
+(`build-windows` in `release.yml`); read a toolchain or symlink error on a bare box as a
+host problem, never as a regression in the tree under test.
+

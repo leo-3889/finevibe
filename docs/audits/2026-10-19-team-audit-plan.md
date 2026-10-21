@@ -266,3 +266,20 @@ Overrun policy: never compress Phase 0, the clarification gate, or any wave gate
 ## 14. Evidence rule (completion predicate)
 
 Every §0.3 criterion is satisfied only by an observed artifact in the current tree: a file, a command output, a test run, a smoke observation recorded in the state file. "Worker reported done", "commit message says", "should pass" are not evidence. The coordinator re-runs each verifying command itself immediately before `goal complete`.
+
+## 15. Provenance (2026-10-21)
+
+Every `<llm>/…` path in this spec (§0.3 G1/G2/G7/G9, §3 step 6, §5–§11, Q8) resolved to
+the out-of-repo agent workspace `../vibeyard-llm/` — a sibling of the repo root, created
+by §2 rule 8 and §7A precisely so it could never be committed. That workspace was
+dissolved on 2026-10-21: the four audit reports, the consolidated backlog, the
+coordinator's state file and the W2 measurement harnesses no longer exist, so the §11
+checkboxes that name them are not actionable and no line above this section is rewritten
+to say otherwise. The program's surviving records live in this repository: the closure
+record (consolidation counts, the Wave A–D rosters, the FINAL GATE at `f61453b`, the
+user-action list and the blocked packaged-smoke evidence) in
+[`docs/AUDIT_STATUS.md`](../AUDIT_STATUS.md), the measured W2 baselines in
+[`docs/performance.md`](../performance.md), the Windows build-host requirement in
+[`docs/packaging.md`](../packaging.md), and the standing fork-rebuildable-on-origin
+constraint in `todos/fork-rebuildable-on-origin.md`. This file is kept as the historical
+program spec.
