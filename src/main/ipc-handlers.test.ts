@@ -538,13 +538,37 @@ describe('fs:unwatchDir gate (P2-30)', () => {
   });
 });
 
-describe('session:transcriptExistsSync foreign configDir (P2-113)', () => {
-  it('reports false when the provider declines the config dir (null = absent)', () => {
+describe('session transcript channels: configDir boundary gate (P2-113)', () => {
+  it('denies at the boundary: an unallowlisted configDir never reaches a provider scan root', () => {
     provider.getTranscriptPath = vi.fn(() => null);
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
     const event: { returnValue?: unknown } = {};
     handlers.get('session:transcriptExistsSync')!(event, 'claude', 'cli-1', '/proj', '/foreign/dir', undefined);
-    expect(provider.getTranscriptPath).toHaveBeenCalledWith('cli-1', '/proj', '/foreign/dir', undefined);
+    expect(provider.getTranscriptPath).not.toHaveBeenCalled();
     expect(event.returnValue).toBe(false);
+  });
+  it('passes an allowlisted configDir to the provider; null path still means absent', () => {
+    provider.getTranscriptPath = vi.fn(() => null);
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(true);
+    const event: { returnValue?: unknown } = {};
+    handlers.get('session:transcriptExistsSync')!(event, 'claude', 'cli-1', '/proj', '/profiles/work', undefined);
+    expect(isManagedMcpConfigDir).toHaveBeenCalledWith('/profiles/work');
+    expect(provider.getTranscriptPath).toHaveBeenCalledWith('cli-1', '/proj', '/profiles/work', undefined);
+    expect(event.returnValue).toBe(false);
+  });
+  it('buildResumeWithPrompt rejects before reading any transcript', async () => {
+    provider.getTranscriptPath = vi.fn(() => '/t.jsonl');
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    await expect(
+      handlers.get('session:buildResumeWithPrompt')!({}, 'claude', 'cli-1', '/proj', 'S', '/foreign/dir'),
+    ).rejects.toThrow('Not a managed profile config dir');
+    expect(provider.getTranscriptPath).not.toHaveBeenCalled();
+  });
+  it('session:exportArchive rejects before touching the archive writer', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    await expect(
+      handlers.get('session:exportArchive')!({}, 'claude', 'cli-1', '/proj', '/foreign/dir', {} as never, 'zip'),
+    ).rejects.toThrow('Not a managed profile config dir');
   });
 });
 describe('pty:create provider hooks', () => {
@@ -1048,7 +1072,7 @@ describe('team-agent install/remove scope (P2-116 / P2-117)', () => {
       meta: { id },
       validatePrerequisites: () => true,
       agentsDir: () => dir,
-      installAgent: vi.fn(async (slug: string, content: string, configDir?: string) => ({
+      installAgent: vi.fn(async (slug: string, _content: string, configDir?: string) => ({
         filePath: path.join(configDir ?? dir, `${slug}.md`),
       })),
       removeAgent: vi.fn(async (slug: string, configDir?: string) => {

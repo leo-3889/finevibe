@@ -4,7 +4,13 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
   promises: { readFile: vi.fn(), readdir: vi.fn(), stat: vi.fn(), open: vi.fn() },
 }));
-vi.mock('os', () => ({ homedir: () => '/mock/home' }));
+vi.mock('os', () => ({
+  homedir: () => '/mock/home',
+  // hook-status.ts calls os.tmpdir() at module load (STATUS_DIR); the
+  // import chain gemini-provider → … → claude-cli → hook-status hits it
+  // before any test runs, so the mock must carry it.
+  tmpdir: () => '/tmp',
+}));
 
 vi.mock('../pty-manager', () => ({ getFullPath: () => '' }));
 vi.mock('../gemini-config', () => ({ getGeminiConfig: async () => ({}) }));

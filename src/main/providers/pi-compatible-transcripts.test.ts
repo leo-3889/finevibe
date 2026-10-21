@@ -12,13 +12,6 @@ import {
   findTranscriptPathSync,
   TAIL_READ_BYTES,
 } from './pi-compatible-transcripts';
-import { isManagedMcpConfigDir } from '../claude-cli';
-
-// findTranscriptPathSync gates a renderer-supplied configDir through the
-// managed-config-dir allowlist (P2-113); the scan-root tests exercise it.
-vi.mock('../claude-cli', () => ({
-  isManagedMcpConfigDir: vi.fn(() => true),
-}));
 
 const header = (id: string, cwd: string, title?: string) =>
   JSON.stringify({
@@ -33,20 +26,21 @@ const header = (id: string, cwd: string, title?: string) =>
 const titleEntry = (title: string) =>
   JSON.stringify({ type: 'title', v: 1, title, source: 'auto', updatedAt: 't' });
 
-describe('findTranscriptPathSync configDir gate (P2-113)', () => {
-  it('returns null for a foreign configDir before touching the tree', () => {
-    // The scan reads + head-parses every candidate under <configDir>/sessions
-    // and reports the answer to the renderer (transcriptExists / export /
-    // resume) - an ungated configDir is a filesystem-wide existence oracle.
-    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
-    expect(findTranscriptPathSync(() => '/definitely/not/a/root', 'cli-1', '/proj', '/home/attacker/.pi')).toBeNull();
-    expect(isManagedMcpConfigDir).toHaveBeenCalledWith('/home/attacker/.pi');
+describe('findTranscriptPathSync configDir threading', () => {
+  it('scans the overridden tree for a configDir override', () => {
+    // A pinned profile's configDir relocates the whole agent tree: the scan
+    // must start under sessionsRootOf(configDir), not the provider default.
+    // (P2-113 gates the renderer-supplied configDir at the IPC boundary;
+    // this scan trusts what its main-process caller threads through.)
+    const sessionsRootOf = vi.fn(() => '/definitely/not/a/root');
+    expect(findTranscriptPathSync(sessionsRootOf, 'cli-1', '/proj', '/profiles/work')).toBeNull();
+    expect(sessionsRootOf).toHaveBeenCalledWith('/profiles/work');
   });
 
-  it('scans normally for the default (undefined) config dir', () => {
-    vi.mocked(isManagedMcpConfigDir).mockClear();
-    expect(findTranscriptPathSync(() => path.join(os.tmpdir(), 'vibeyard-compat-missing-root'), 'cli-1', '/proj')).toBeNull();
-    expect(isManagedMcpConfigDir).not.toHaveBeenCalled();
+  it('scans the default tree for an undefined config dir', () => {
+    const sessionsRootOf = vi.fn(() => path.join(os.tmpdir(), 'vibeyard-compat-missing-root'));
+    expect(findTranscriptPathSync(sessionsRootOf, 'cli-1', '/proj')).toBeNull();
+    expect(sessionsRootOf).toHaveBeenCalledWith(undefined);
   });
 });
 

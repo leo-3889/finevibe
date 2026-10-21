@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
-import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './provider';
+import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, CliSessionStatus, McpServer, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
@@ -14,7 +14,6 @@ import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSess
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession, stopPiSessionWatcher } from '../pi-session-watcher';
 import { writeCliSessionId } from '../hook-status';
-import { isManagedMcpConfigDir } from '../claude-cli';
 import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMeta, listLaunchSessionDirs, profileIdForConfigDir } from '../launch-session-dir';
 
 const binaryCache = { path: null as string | null };
@@ -216,11 +215,11 @@ export class PiProvider implements CliProvider {
       const inDir = findTranscriptPathInFlatDir(sessionDir, cliSessionId, projectPath);
       if (inDir) return inDir;
     }
-    // P2-113: the legacy-tree scan reads a renderer-supplied configDir
-    // (transcriptExists / exportArchive / resume answer from it), so only
-    // managed roots may be scanned; undefined = the default agent dir.
-    // The sessionDir branch above is main-derived (launch-session-dir.ts).
-    if (configDir && !isManagedMcpConfigDir(configDir)) return null;
+    // A pinned profile's configDir relocates the agent tree: the legacy
+    // scan runs under <configDir>/sessions. The P2-113 renderer gate lives
+    // at the IPC boundary (ipc-handlers), not here — every main-side caller
+    // threads a configDir it resolved from app state (pty:create gates its
+    // own at the launch; the sessionDir branch above is main-derived).
     return findTranscriptPathSync(piSessionsRoot, cliSessionId, projectPath, configDir);
   }
 

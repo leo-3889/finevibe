@@ -27,11 +27,6 @@ vi.mock('./pi-compatible-transcripts', () => ({
   readTranscriptStatusSync: vi.fn(),
   readSessionExitReasonSync: vi.fn(),
 }));
-vi.mock('../claude-cli', () => ({
-  // The transcript read-path gate (P2-113) consults the managed-config-dir
-  // allowlist; the rejection test overrides it.
-  isManagedMcpConfigDir: vi.fn(() => true),
-}));
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -39,7 +34,6 @@ import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession } from '../pi-session-watcher';
 import { PiProvider, _resetCachedPath } from './pi-provider';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
-import { isManagedMcpConfigDir } from '../claude-cli';
 const mockReadFile = vi.mocked(fs.promises.readFile);
 const mockResolveBinary = vi.mocked(resolveBinary);
 const mockValidateBinaryExists = vi.mocked(validateBinaryExists);
@@ -316,14 +310,4 @@ describe('getTranscriptPath', () => {
     expect(findTranscriptPathSync).toHaveBeenCalledWith(expect.any(Function), 'cli-9', '/proj', '/profiles/work');
   });
 
-  it('refuses a foreign configDir before scanning its tree (P2-113 read gate)', () => {
-    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
-    expect(provider.getTranscriptPath!('cli-9', '/proj', '/home/attacker/.pi')).toBeNull();
-    expect(findTranscriptPathSync).not.toHaveBeenCalled();
-  });
-
-  it('scans the legacy trees for a managed configDir (gate passes)', () => {
-    vi.mocked(findTranscriptPathSync).mockReturnValue('/sessions/dir-a/2026.jsonl');
-    expect(provider.getTranscriptPath!('cli-9', '/proj', '/mock/home/.vibeyard/profiles/work')).toBe('/sessions/dir-a/2026.jsonl');
-  });
 });

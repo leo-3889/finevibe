@@ -897,6 +897,9 @@ export function registerIpcHandlers(): void {
     configDir?: string,
     liveSessionId?: string,
   ) => {
+    // P2-113 boundary gate: a renderer-supplied configDir reaches provider
+    // scan roots here - allowlist it before any read, mirroring pty:create.
+    if (configDir && !isManagedMcpConfigDir(configDir)) throw new Error('Not a managed profile config dir');
     const sourceProvider = getProvider(sourceProviderId);
     const fromProviderLabel = sourceProvider.meta.displayName;
     let transcriptPath: string | null = null;
@@ -925,6 +928,9 @@ export function registerIpcHandlers(): void {
     liveSessionId?: string,
   ): boolean => {
     if (!cliSessionId) return true;
+    // P2-113 boundary gate: an unallowlisted configDir must never reach a
+    // provider scan root - report "no transcript" (deny, not fail-open).
+    if (configDir && !isManagedMcpConfigDir(configDir)) return false;
     try {
       const provider = getProvider(providerId);
       if (!provider.getTranscriptPath) return true;
@@ -949,6 +955,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('session:exportArchive', async (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file') => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
     if (!win) throw new Error('no window');
+    if (configDir && !isManagedMcpConfigDir(configDir)) throw new Error('Not a managed profile config dir');
     return exportSessionArchive(win, { providerId, cliSessionId, projectPath, configDir, meta, format });
   });
 
