@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockLoad = vi.fn();
 const mockSave = vi.fn();
+const mockFsExists = vi.fn();
 
 vi.stubGlobal('window', {
   vibeyard: {
     store: { load: mockLoad, save: mockSave },
+    fs: { exists: mockFsExists },
   },
 });
 
@@ -40,6 +42,8 @@ import { appState, _resetForTesting } from './state';
 import {
   closeSessionWithConfirm,
   closeAllSessionsWithConfirm,
+  closeSessionById,
+  closeSessionIfFileMissing,
   closeOtherSessionsWithConfirm,
   closeSessionsFromRightWithConfirm,
   closeSessionsFromLeftWithConfirm,
@@ -454,5 +458,66 @@ describe('closeSessionsFromLeftWithConfirm', () => {
     expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
     confirmDialog();
     expect(project.sessions.map((s) => s.id)).toEqual([sessions[1].id, sessions[2].id]);
+  });
+});
+
+describe('closeSessionById', () => {
+  it('removes the session from its owning project with no confirm gate', () => {
+    const { project, sessions } = seedProject(2);
+    mockGetStatus.mockReturnValue('working'); // by-id close is the unattended path: never prompts
+
+    closeSessionById(sessions[0].id);
+
+    expect(project.sessions.map((s) => s.id)).toEqual([sessions[1].id]);
+    expect(mockShowConfirmDialog).not.toHaveBeenCalled();
+  });
+
+  it('finds the owning project among several', () => {
+    const a = seedProject(1);
+    const b = seedProject(1);
+
+    closeSessionById(b.sessions[0].id);
+
+    expect(a.project.sessions).toHaveLength(1);
+    expect(b.project.sessions).toHaveLength(0);
+  });
+
+  it('is a no-op for an unknown session id', () => {
+    const { project } = seedProject(1);
+
+    closeSessionById('no-such-session');
+
+    expect(project.sessions).toHaveLength(1);
+    expect(mockShowConfirmDialog).not.toHaveBeenCalled();
+  });
+});
+
+describe('closeSessionIfFileMissing', () => {
+  it('probes the exact path and keeps the session when the file exists', async () => {
+    const { project, sessions } = seedProject(1);
+    mockFsExists.mockResolvedValue(true);
+
+    await expect(closeSessionIfFileMissing(sessions[0].id, '/p/S1.md')).resolves.toBe(false);
+
+    expect(mockFsExists).toHaveBeenCalledWith('/p/S1.md');
+    expect(project.sessions).toHaveLength(1);
+  });
+
+  it('closes the session and returns true when the file is gone', async () => {
+    const { project, sessions } = seedProject(1);
+    mockFsExists.mockResolvedValue(false);
+
+    await expect(closeSessionIfFileMissing(sessions[0].id, '/p/gone.md')).resolves.toBe(true);
+
+    expect(project.sessions).toHaveLength(0);
+  });
+
+  it('propagates a failed exists() probe without closing (the module has no catch)', async () => {
+    const { project, sessions } = seedProject(1);
+    mockFsExists.mockRejectedValue(new Error('IPC channel unavailable'));
+
+    await expect(closeSessionIfFileMissing(sessions[0].id, '/p/S1.md')).rejects.toThrow('IPC channel unavailable');
+
+    expect(project.sessions).toHaveLength(1);
   });
 });
