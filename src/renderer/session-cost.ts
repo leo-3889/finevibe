@@ -36,11 +36,45 @@ export function setCostData(sessionId: string, rawData: CostData): void {
   for (const cb of listeners) cb(sessionId, info);
 }
 
+// P5 (R4): the fallback scan used to run a stripAnsi regex over EVERY PTY
+// chunk — CPU paid on every paste-echo frame. The structured
+// `session:costData` channel is the primary source, so the fallback
+// throttles itself: the leading edge scans immediately, then one trailing
+// scan of the newest chunk per window, so the final cost of a burst
+// still lands while bursts cost ~1 scan instead of one per chunk.
+const COST_SCAN_INTERVAL_MS = 1000;
+type ScanWindow = { last: number; timer: ReturnType<typeof setTimeout> | null; pending: string | null };
+const scanWindows = new Map<string, ScanWindow>();
 /** Fallback: parse $X.XX from raw terminal output (older CLI without statusline) */
 export function parseCost(sessionId: string, rawData: string): void {
   // Don't overwrite structured data with regex fallback
   if (costs.has(sessionId) && costs.get(sessionId)!.totalInputTokens > 0) return;
 
+  let window = scanWindows.get(sessionId);
+  if (!window) {
+    window = { last: Number.NEGATIVE_INFINITY, timer: null, pending: null };
+    scanWindows.set(sessionId, window);
+  }
+  const now = Date.now();
+  if (now - window.last >= COST_SCAN_INTERVAL_MS) {
+    window.last = now;
+    scanForCost(sessionId, rawData);
+    return;
+  }
+  window.pending = rawData;
+  if (window.timer === null) {
+    const w = window;
+    w.timer = setTimeout(() => {
+      w.timer = null;
+      w.last = Date.now();
+      const pending = w.pending;
+      w.pending = null;
+      if (pending !== null) scanForCost(sessionId, pending);
+    }, COST_SCAN_INTERVAL_MS - (now - w.last));
+  }
+}
+
+function scanForCost(sessionId: string, rawData: string): void {
   const clean = stripAnsi(rawData);
   let match: RegExpExecArray | null;
   let lastCost: string | null = null;
@@ -115,10 +149,19 @@ export function formatTokens(n: number): string {
 
 export function removeSession(sessionId: string): void {
   costs.delete(sessionId);
+  const window = scanWindows.get(sessionId);
+  if (window) {
+    if (window.timer !== null) clearTimeout(window.timer);
+    scanWindows.delete(sessionId);
+  }
 }
 
 /** @internal Test-only: reset all module state */
 export function _resetForTesting(): void {
   costs.clear();
   listeners.length = 0;
+  for (const window of scanWindows.values()) {
+    if (window.timer !== null) clearTimeout(window.timer);
+  }
+  scanWindows.clear();
 }

@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # P2-5: keep app + toolchain dependencies (and the pinned actions in the
+  # workflows below) current with bounded weekly PR batches.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -4,6 +4,7 @@ name: CMO
 role: Chief Marketing Officer
 domain: product-design
 description: Orchestrates messaging, growth, and launch strategy
+source: leo-3889/vibeyard (fork of elirantutia/vibeyard)
 ---
 
 You are the Chief Marketing Officer.

@@ -5,9 +5,10 @@ import { getStatusLineScriptPath } from './hook-status';
 import { HOOK_MARKER, installHooksOnly, installStatusLine, getSupportedHookEvents } from './claude-cli';
 import { readJsonSafe } from './fs-utils';
 import { loadState, saveState } from './store';
-import type { SettingsValidationResult } from '../shared/types';
+import { isWin } from './platform';
+import type { Preferences, SettingsValidationResult } from '../shared/types';
 
-const LEGACY_STATUSLINE_RE = /[/\\]vibeyard[/\\]statusline\.(sh|cmd)$/;
+const LEGACY_STATUSLINE_RE = /[/\\]finevibe[/\\]statusline\.(sh|cmd)$/;
 
 const CANDIDATE_HOOK_EVENTS = [
   'SessionStart', 'UserPromptSubmit', 'PostToolUse',
@@ -29,11 +30,11 @@ function readClaudeSettings(configDir: string = path.join(homedir(), '.claude'))
   return readJsonSafe(path.join(configDir, 'settings.json')) ?? {};
 }
 
-export function isVibeyardStatusLine(statusLine: unknown): boolean {
+export function isFineVibeStatusLine(statusLine: unknown): boolean {
   if (!statusLine || typeof statusLine !== 'object') return false;
   const sl = statusLine as Record<string, unknown>;
   if (sl.command === getStatusLineScriptPath()) return true;
-  // Recognize legacy Vibeyard statusline paths (e.g. /tmp/vibeyard/statusline.sh)
+  // Recognize legacy FineVibe statusline paths (e.g. /tmp/finevibe/statusline.sh)
   // so upgrades silently replace them without showing a conflict dialog.
   if (typeof sl.command === 'string') {
     return LEGACY_STATUSLINE_RE.test(sl.command);
@@ -48,8 +49,8 @@ export function validateSettings(configDir?: string): SettingsValidationResult {
   let statusLine: SettingsValidationResult['statusLine'] = 'missing';
   let foreignStatusLineCommand: string | undefined;
   if (settings.statusLine) {
-    if (isVibeyardStatusLine(settings.statusLine)) {
-      statusLine = 'vibeyard';
+    if (isFineVibeStatusLine(settings.statusLine)) {
+      statusLine = 'finevibe';
     } else {
       statusLine = 'foreign';
       const sl = settings.statusLine as Record<string, unknown>;
@@ -91,7 +92,7 @@ export function shouldWarnStatusLine(
   consentCommand: string | null | undefined,
   currentForeignCommand: string | null | undefined,
 ): boolean {
-  if (statusLine === 'vibeyard') return false;
+  if (statusLine === 'finevibe') return false;
   if (
     statusLine === 'foreign' &&
     consent === 'declined' &&
@@ -102,6 +103,59 @@ export function shouldWarnStatusLine(
     return false;
   }
   return true;
+}
+
+/** Default Claude config dir — the dir app boot and guardedInstall() own. */
+function defaultClaudeDir(): string {
+  return path.join(homedir(), '.claude');
+}
+
+/**
+ * Normalized consent key for a config dir: resolved, separator-normalized
+ * and case-folded where the filesystem is case-insensitive, so one dir
+ * always maps to one record no matter how the caller spelled it.
+ */
+export function consentDirKey(configDir: string): string {
+  const resolved = path.resolve(configDir).split(path.sep).join('/');
+  return isWin ? resolved.toLowerCase() : resolved;
+}
+
+function isDefaultClaudeDir(configDir?: string): boolean {
+  return !configDir || consentDirKey(configDir) === consentDirKey(defaultClaudeDir());
+}
+
+/**
+ * The statusLine consent record that governs a config dir (P1-14). The
+ * default dir keeps the original global fields; every profile dir has its
+ * own record, so a Keep/Replace decided for one dir never governs another.
+ */
+export function getDirConsent(
+  prefs: Preferences,
+  configDir?: string,
+): { consent: 'granted' | 'declined' | null | undefined; command: string | null | undefined } {
+  if (isDefaultClaudeDir(configDir)) {
+    return { consent: prefs.statusLineConsent, command: prefs.statusLineConsentCommand };
+  }
+  const record = prefs.statusLineConsentByDir?.[consentDirKey(configDir!)];
+  return { consent: record?.consent, command: record?.command };
+}
+
+/** Persist a consent decision for a config dir (global fields for the default dir). */
+export function recordDirConsent(
+  configDir: string | undefined,
+  consent: 'granted' | 'declined',
+  command: string | null,
+): void {
+  const state = loadState();
+  if (isDefaultClaudeDir(configDir)) {
+    state.preferences.statusLineConsent = consent;
+    state.preferences.statusLineConsentCommand = command;
+  } else {
+    const byDir = { ...state.preferences.statusLineConsentByDir };
+    byDir[consentDirKey(configDir!)] = { consent, command };
+    state.preferences.statusLineConsentByDir = byDir;
+  }
+  saveState(state);
 }
 
 /**
@@ -115,7 +169,7 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
   // Always install hooks (additive, non-destructive)
   installHooksOnly();
 
-  if (validation.statusLine === 'vibeyard' || validation.statusLine === 'missing') {
+  if (validation.statusLine === 'finevibe' || validation.statusLine === 'missing') {
     installStatusLine();
     return;
   }
@@ -148,9 +202,32 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
   // No prior decision for this foreign command — ask the user via in-app modal
   if (!win) return;
 
-  // Wait for renderer to be ready before sending IPC
+  // Wait for renderer to be ready before sending IPC. The consent dialog
+  // below pairs its IPC listener with a 'closed' listener; this gate needs
+  // the same counterpart (P2-32): without it, quitting while the window is
+  // still loading leaves the promise pending forever, guardedInstall never
+  // reaches installStatusLine(), and the did-finish-load listener stays
+  // attached. A window that dies mid-load is an explicit dismissal, not
+  // consent — return without recording a decision, so no install happens
+  // and the next launch re-prompts.
   if (win.webContents.isLoading()) {
-    await new Promise<void>(resolve => win.webContents.once('did-finish-load', resolve));
+    const settled = await new Promise<'ready' | 'dismissed'>((resolve) => {
+      const onReady = () => {
+        win.removeListener('closed', onDismissed);
+        win.webContents.removeListener('destroyed', onDismissed);
+        resolve('ready');
+      };
+      const onDismissed = () => {
+        win.webContents.removeListener('did-finish-load', onReady);
+        win.removeListener('closed', onDismissed);
+        win.webContents.removeListener('destroyed', onDismissed);
+        resolve('dismissed');
+      };
+      win.webContents.once('did-finish-load', onReady);
+      win.once('closed', onDismissed);
+      win.webContents.once('destroyed', onDismissed);
+    });
+    if (settled === 'dismissed') return;
   }
 
   const foreignCmd = validation.foreignStatusLineCommand ?? '(unknown)';
@@ -179,16 +256,66 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
 }
 
 /**
+ * Consent-gated hook/statusLine install for a PROFILE config dir, run at
+ * every profiled spawn (P1-14). Spawn is a hot path, so unlike
+ * guardedInstall() this NEVER shows the conflict modal: the per-session
+ * warning banner is the single consent surface for profile dirs —
+ * - "Fix Settings" is the explicit Replace: reinstallSettings() repairs
+ *   exactly this dir (P2-127) and records a granted per-dir record;
+ * - the banner's dismissal is the Keep: settings:declineStatusLine records
+ *   a declined per-dir record.
+ * This function's half of the contract:
+ * - hooks are additive: always installed (mirrors guardedInstall);
+ * - a fresh/owned dir gets the statusLine installed (legacy paths upgraded);
+ * - a prior Replace covering THIS foreign command installs;
+ * - a prior Keep skips the install (a command-less declined record freezes
+ *   onto the current foreign command, mirroring the default-dir flow);
+ * - a first-run foreign statusLine gets NO install and NO recorded
+ *   decision: no silent overwrite, and the banner keeps asking.
+ */
+export function guardedProfileInstall(configDir: string): void {
+  const validation = validateSettings(configDir);
+
+  // Always install hooks (additive, non-destructive)
+  installHooksOnly(configDir);
+
+  if (validation.statusLine === 'finevibe' || validation.statusLine === 'missing') {
+    installStatusLine(configDir);
+    return;
+  }
+
+  const { consent, command } = getDirConsent(loadState().preferences, configDir);
+  const currentForeign = validation.foreignStatusLineCommand ?? '';
+  if (consent === 'declined') {
+    if (!command) recordDirConsent(configDir, 'declined', currentForeign);
+    return;
+  }
+  if (consent === 'granted' && command && command === currentForeign) {
+    installStatusLine(configDir);
+  }
+  // Undecided, a new foreign command, or a record that belongs to the
+  // default dir: the foreign statusLine stays untouched — the banner carries it.
+}
+
+/**
  * Force reinstall both hooks and statusLine (for "Fix Settings" CTA).
  * Resets consent to granted since this is an explicit user action.
+ * `configDir` is the dir the warning banner was computed from (P2-127): a
+ * profiled session reads its pinned profile dir, never ~/.claude, so
+ * repairing the default dir for a profile banner repairs nothing. No dir =
+ * the default dir, byte-identical to the pre-P2-127 behavior.
  */
-export function reinstallSettings(): void {
-  installHooksOnly();
-  installStatusLine();
+export function reinstallSettings(configDir?: string): void {
+  installHooksOnly(configDir);
+  installStatusLine(configDir);
 
-  const state = loadState();
-  state.preferences.statusLineConsent = 'granted';
-  // No specific foreign command anymore — Vibeyard now owns the statusLine.
-  state.preferences.statusLineConsentCommand = null;
-  saveState(state);
+  if (isDefaultClaudeDir(configDir)) {
+    const state = loadState();
+    state.preferences.statusLineConsent = 'granted';
+    // No specific foreign command anymore — FineVibe now owns the statusLine.
+    state.preferences.statusLineConsentCommand = null;
+    saveState(state);
+    return;
+  }
+  recordDirConsent(configDir, 'granted', null);
 }

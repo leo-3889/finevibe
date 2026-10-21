@@ -8,7 +8,7 @@ import path from 'node:path';
 const mockReadFile = vi.fn().mockResolvedValue({ ok: true, content: '' });
 
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: vi.fn().mockResolvedValue(null), save: vi.fn() },
     session: { onToolFailure: vi.fn() },
     fs: { readFile: mockReadFile },
@@ -356,9 +356,9 @@ describe('handleToolFailure', () => {
     expect(alerts).toHaveLength(0);
   });
 
-  // --- .vibeyardignore exclusions ---
+  // --- .finevibeignore exclusions ---
 
-  it('does not alert for files matching .vibeyardignore patterns', async () => {
+  it('does not alert for files matching .finevibeignore patterns', async () => {
     const projectId = setupProject();
     const session = appState.addSession(projectId, 'Session 1')!;
     const alerts: LargeFileAlert[] = [];
@@ -370,7 +370,7 @@ describe('handleToolFailure', () => {
     expect(alerts).toHaveLength(0);
   });
 
-  it('still alerts for files not matching .vibeyardignore patterns', async () => {
+  it('still alerts for files not matching .finevibeignore patterns', async () => {
     const projectId = setupProject();
     const session = appState.addSession(projectId, 'Session 1')!;
     const alerts: LargeFileAlert[] = [];
@@ -382,7 +382,7 @@ describe('handleToolFailure', () => {
     expect(alerts).toHaveLength(1);
   });
 
-  it('handles missing .vibeyardignore gracefully', async () => {
+  it('handles missing .finevibeignore gracefully', async () => {
     const projectId = setupProject();
     const session = appState.addSession(projectId, 'Session 1')!;
     const alerts: LargeFileAlert[] = [];
@@ -394,7 +394,7 @@ describe('handleToolFailure', () => {
     expect(alerts).toHaveLength(1);
   });
 
-  it('caches .vibeyardignore patterns per project', async () => {
+  it('caches .finevibeignore patterns per project', async () => {
     const projectId = setupProject();
     const session = appState.addSession(projectId, 'Session 1')!;
     const alerts: LargeFileAlert[] = [];

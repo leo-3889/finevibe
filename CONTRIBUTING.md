@@ -15,15 +15,25 @@ Thanks for your interest in contributing! Here's how to get started.
    npm start
    ```
 
-   `npm start` compiles all three targets first, so running `npm run build`
-   separately beforehand just builds everything twice.
+   `npm start` compiles all three targets (main, preload, renderer) before
+   launching. The standalone build and check commands live under [Testing](#testing).
 
 There is **no hot reload** — changes require a full rebuild and app restart.
 
 ## Testing
 
+All four checks below must pass before a change is complete:
+
 ```bash
-npm test              # Run all tests once
+npm run build               # Compile all three targets (main, preload, renderer)
+npm test                    # Run all tests once
+npx tsc -p tsconfig.renderer.json --noEmit   # Renderer typecheck
+git diff --check            # No whitespace errors in the diff
+```
+
+Vitest conveniences:
+
+```bash
 npm run test:watch    # Watch mode (re-runs on file changes)
 npm run test:coverage # Coverage report (terminal + HTML at coverage/index.html)
 ```
@@ -77,7 +87,7 @@ ad-hoc Ubuntu package without releasing.
 1. Fork the repository
 2. Create a feature branch from `main`
 3. Make your changes and add tests where appropriate
-4. Run `npm run build` and `npm test` to verify nothing is broken
+4. Run all four checks from [Testing](#testing) — `npm run build`, `npm test`, the renderer typecheck (`npx tsc -p tsconfig.renderer.json --noEmit`), and `git diff --check` — to verify nothing is broken
 5. Open a PR against `main`
 
 ## Reporting Issues

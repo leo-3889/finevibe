@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.stubGlobal('window', {
-  vibeyard: { store: { load: vi.fn(), save: vi.fn() } },
+  finevibe: { store: { load: vi.fn(), save: vi.fn() } },
 });
 
 let uuidCounter = 0;

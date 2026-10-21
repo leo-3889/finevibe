@@ -165,7 +165,7 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
     if (hostPeer.authState !== 'verified') return;
 
     if (msg.type === 'input' && mode === 'readwrite') {
-      window.vibeyard.pty.write(sessionId, msg.payload);
+      window.finevibe.pty.write(sessionId, msg.payload);
     } else if (msg.type === 'pong') {
       hostPeer.missedPongs = 0;
     }

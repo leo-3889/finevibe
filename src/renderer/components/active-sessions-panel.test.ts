@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { selectActiveSessions } from './active-sessions-panel.js';
+// @vitest-environment jsdom
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { selectActiveSessions, initActiveSessions } from './active-sessions-panel.js';
+import { appState } from '../state.js';
 import type { SessionStatus } from '../session-activity.js';
 import type { ProjectRecord, ProviderId } from '../../shared/types.js';
 
@@ -101,5 +103,57 @@ describe('selectActiveSessions', () => {
   it('returns empty for no projects or no sessions', () => {
     expect(selectActiveSessions([], statusMap({}))).toEqual([]);
     expect(selectActiveSessions([project('p1', 'Alpha', [])], statusMap({}))).toEqual([]);
+  });
+});
+
+// P2-102: the row markup interpolates esc() inside quoted attributes
+// (data-project-id, data-session-id, title) and into text nodes. The DOM text
+// serializer never escaped `"`, so a quoted value closed its attribute and
+// injected markup. The rows are rendered through the public path —
+// initActiveSessions over real appState — with quote payloads riding the
+// user-controlled fields that reach the markup (project/session names).
+describe('active session row attribute safety', () => {
+  const created: string[] = [];
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="sidebar-active-sessions"></div>';
+  });
+
+  afterEach(() => {
+    for (const id of created.splice(0)) appState.removeProject(id);
+  });
+
+  it('renders quoted names as literals that cannot break the attributes', () => {
+    const name = 'proj"x " onmouseover="alert(1)';
+    const alpha = appState.addProject(name, '/alpha');
+    const beta = appState.addProject('Beta', '/beta');
+    created.push(alpha.id, beta.id);
+    appState.addSession(alpha.id, 'name"y');
+
+    initActiveSessions();
+
+    const container = document.getElementById('sidebar-active-sessions')!;
+    expect(container.querySelectorAll('.active-session-row')).toHaveLength(1);
+    const row = container.querySelector('.active-session-row')!;
+    // Pre-fix the payload closed title="..." and parsed as a live attribute.
+    expect(row.getAttribute('title')).toBe(name);
+    expect(row.getAttribute('onmouseover')).toBeNull();
+    expect(container.querySelector('[onmouseover]')).toBeNull();
+    // The delegated click handler routes on the dataset — ids round-trip.
+    expect(row.dataset.projectId).toBe(alpha.id);
+    expect(row.querySelector('.active-session-name')!.textContent).toBe('name"y');
+  });
+
+  it('keeps the row text readable when the escaper serializes quotes', () => {
+    const alpha = appState.addProject('a "quoted" repo', '/alpha');
+    const beta = appState.addProject('Beta', '/beta');
+    created.push(alpha.id, beta.id);
+    appState.addSession(alpha.id, 'fix "x" bug');
+
+    initActiveSessions();
+
+    const container = document.getElementById('sidebar-active-sessions')!;
+    expect(container.querySelector('.active-session-name')!.textContent).toBe('fix "x" bug');
+    expect(container.querySelector('.active-session-project')!.textContent).toBe('a "quoted" repo');
   });
 });

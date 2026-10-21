@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tokenizeArgs, findConflictingLaunchFlags, findConflictingEnvKeys, UNSUPPORTED_STORAGE_ENV_KEYS } from './launch-args';
+import { tokenizeArgs, findConflictingLaunchFlags, findConflictingEnvKeys } from './launch-args';
 
 describe('tokenizeArgs', () => {
   it('splits on runs of whitespace', () => {
@@ -75,7 +75,7 @@ describe('findConflictingLaunchFlags', () => {
       [['--continue'], '--continue'],
       [['-r'], '-r'],
       [['-c'], '-c'],
-      // Vibeyard pins --session-id itself (claude/pi fresh launches); a later
+      // FineVibe pins --session-id itself (claude/pi fresh launches); a later
       // user occurrence wins in argv, so the CLI writes a transcript the
       // session watcher can never attribute.
       [['--session-id', '019d3512-caf9-7b50-8d2b-ccccdcf8ff14'], '--session-id'],
@@ -94,6 +94,17 @@ describe('findConflictingLaunchFlags', () => {
     expect(findConflictingLaunchFlags(['--model', 'no-session-9000'])).toEqual([]);
   });
 
+  it('does not resolve prototype-chain names off the reason map', () => {
+    // A positional arg named like an Object.prototype member used to index
+    // through the prototype chain and return the function as the "reason" —
+    // blocking the spawn with `function Object() { [native code] }` as the
+    // actionable error. Lookup is hasOwn-guarded.
+    expect(findConflictingLaunchFlags(['constructor'])).toEqual([]);
+    expect(findConflictingLaunchFlags(['__proto__'])).toEqual([]);
+    expect(findConflictingLaunchFlags(['toString'])).toEqual([]);
+    expect(findConflictingLaunchFlags(['toString=1'])).toEqual([]);
+  });
+
   it('reports every conflicting token, not just the first', () => {
     const conflicts = findConflictingLaunchFlags(['--no-session', '--profile', 'work']);
     expect(conflicts.map((c) => c.flag).sort()).toEqual(['--no-session', '--profile']);
@@ -102,8 +113,6 @@ describe('findConflictingLaunchFlags', () => {
 
 describe('findConflictingEnvKeys', () => {
   it('matches the unsupported storage selectors case-insensitively', () => {
-    expect(UNSUPPORTED_STORAGE_ENV_KEYS).toContain('PI_CODING_AGENT_SESSION_DIR');
-    expect(UNSUPPORTED_STORAGE_ENV_KEYS).toContain('CODEX_HOME');
     expect(findConflictingEnvKeys({ PI_CODING_AGENT_SESSION_DIR: '/x', SAFE: '1' })).toEqual(['PI_CODING_AGENT_SESSION_DIR']);
     expect(findConflictingEnvKeys({ pi_coding_agent_session_dir: '/x' })).toEqual(['pi_coding_agent_session_dir']);
     expect(findConflictingEnvKeys({ CODEX_HOME: '/work/codex' })).toEqual(['CODEX_HOME']);

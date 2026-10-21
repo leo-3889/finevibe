@@ -7,13 +7,13 @@ import { readFileSafe, readJsonSafe } from './fs-utils';
 import type { InspectorEventType, SettingsValidationResult } from '../shared/types';
 import { pyLiteral } from '../shared/python';
 
-export const CODEX_HOOK_MARKER = '# vibeyard-hook';
+export const CODEX_HOOK_MARKER = '# finevibe-hook';
 
 const CODEX_DIR = path.join(homedir(), '.codex');
 const HOOKS_JSON_PATH = path.join(CODEX_DIR, 'hooks.json');
 const CONFIG_TOML_PATH = path.join(CODEX_DIR, 'config.toml');
 
-export const SESSION_ID_VAR = 'VIBEYARD_SESSION_ID';
+export const SESSION_ID_VAR = 'FINEVIBE_SESSION_ID';
 
 const EXPECTED_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'];
 
@@ -211,7 +211,7 @@ with open(os.path.join(status_dir,sid+".events"),"a") as f:
 export function validateCodexHooks(): SettingsValidationResult {
   if (!isCodexHooksFeatureEnabled()) {
     const hookDetails: Record<string, boolean> = Object.fromEntries(EXPECTED_HOOK_EVENTS.map(e => [e, false]));
-    return { statusLine: 'vibeyard', hooks: 'missing', hookDetails };
+    return { statusLine: 'finevibe', hooks: 'missing', hookDetails };
   }
 
   // Check hooks.json
@@ -234,7 +234,7 @@ export function validateCodexHooks(): SettingsValidationResult {
     hooks = 'partial';
   }
 
-  return { statusLine: 'vibeyard', hooks, hookDetails };
+  return { statusLine: 'finevibe', hooks, hookDetails };
 }
 
 // ---------------------------------------------------------------------------

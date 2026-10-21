@@ -18,7 +18,13 @@
     "showInsightAlerts": "显示洞察提醒",
     "autoNameSessions": "根据 CLI 的会话标题自动命名会话（仅限 Claude）",
     "confirmClosingActiveSession": "关闭活动会话前进行确认",
-    "copyOnSelect": "选中即复制"
+    "copyOnSelect": "选中即复制",
+    "askAiFocus": "Ask AI 在何处打开新会话",
+    "askAiFocusSwitch": "新标签页（并切换焦点）",
+    "askAiFocusStay": "后台 — 保留当前标签页",
+    "planModeHeading": "快捷 AI 会话默认计划模式",
+    "defaultProjectsFolder": "默认项目文件夹",
+    "defaultProjectsFolderPlaceholder": "新建项目所在的文件夹"
   },
   "appearance": {
     "theme": "主题",
@@ -50,17 +56,20 @@
       "nameLabel": "名称",
       "namePlaceholder": "我的项目",
       "pathLabel": "路径",
-      "pathPlaceholder": "/path/to/project",
+      "urlPlaceholder": "现有目录 —— 或粘贴 GitHub/Codeberg URL",
       "browseButton": "浏览",
       "defaultProfileLabel": "默认配置文件",
-      "directoryNotExist": "目录不存在"
+      "directoryNotExist": "目录不存在",
+      "checkoutAndCreate": "检出并创建",
+      "cloning": "正在克隆…",
+      "cloneFailed": "克隆失败"
     },
     "projectSettings": {
       "title": "项目设置",
       "defaultProfileLabel": "默认配置文件"
     },
     "removeConfirm": {
-      "withDataMessage": "确定移除项目「{name}」？这将从 Vibeyard 中删除 {parts}。不会影响磁盘上的文件。",
+      "withDataMessage": "确定移除项目「{name}」？这将从 FineVibe 中删除 {parts}。不会影响磁盘上的文件。",
       "emptyMessage": "确定移除项目「{name}」？不会影响磁盘上的文件。",
       "title": "移除项目",
       "confirmLabel": "移除",
@@ -75,8 +84,8 @@
       "title": "活动会话"
     },
     "discussions": {
-      "tooltip": "Vibeyard 讨论",
-      "title": "Vibeyard 讨论",
+      "tooltip": "FineVibe 讨论",
+      "title": "FineVibe 讨论",
       "description": "加入关于 AI 编程的讨论"
     }
   },
@@ -101,8 +110,15 @@
     },
     "shareIndicatorTooltip": "分享中",
     "closeTooltip": "关闭会话",
+    "scrollLeftTooltip": "向左滚动标签页",
+    "scrollRightTooltip": "向右滚动标签页",
     "newSession": {
       "defaultName": "会话 {num}"
+    },
+    "group": {
+      "defaultName": "分组 {num}",
+      "tooltip": "{name} · {count} 个标签",
+      "renameTooltip": "重命名分组"
     },
     "moreMenu": {
       "swarmLayoutActive": "群组布局 ✓",
@@ -116,12 +132,20 @@
       "argumentsLabel": "参数",
       "argumentsPlaceholder": "例如 --model sonnet",
       "keepArgsLabel": "为后续会话保留参数",
+      "planModeLabel": "计划模式",
+      "planModeUnsupportedTooltip": "该提供方不支持计划模式",
       "envLabel": "环境变量",
       "envPlaceholder": "KEY=VALUE（每行一个）",
       "keepEnvLabel": "为后续会话保留环境变量",
       "providerLabel": "提供方",
       "providerNotInstalled": "{name}（未安装）",
       "profileLabel": "配置文件",
+      "personaLabel": "团队角色",
+      "personaNone": "无",
+      "personaNotCapable": "{name} 无法运行团队角色",
+      "personaPinNote": "{name} 已固定到 {provider};启动时将使用固定后端。",
+      "promptLabel": "提示词",
+      "promptPlaceholder": "为该角色添加自定义提示词…",
       "title": "新建会话",
       "envError": "请使用 KEY=VALUE 格式——非法行：{line}"
     },
@@ -157,7 +181,9 @@
       "copyCliSessionId": "复制 CLI 会话 ID",
       "copyInternalId": "复制内部 ID",
       "closeInspector": "关闭检查器",
-      "inspect": "检查"
+      "inspect": "检查",
+      "renameGroup": "重命名分组",
+      "ungroup": "取消分组"
     },
     "board": {
       "deleteTag": "删除标签"
@@ -457,7 +483,7 @@
     "descriptionPi": "Pi：配置目录通过 PI_CODING_AGENT_DIR 注入。创建配置文件后，请在该配置目录中完成认证和模型配置。",
     "descriptionOmp": "Oh my Pi：配置目录通过 PI_CODING_AGENT_DIR 注入（与 Pi 相同的 omp agent dir 机制）。请确保已安装 omp CLI，创建配置文件后，请在该配置目录中完成认证和模型配置。",
     "keychainUnsupported": "此版本的 Claude Code{version} 将所有登录信息存储在同一个 macOS 钥匙串条目中，因此配置文件无法保持账号隔离。请更新 Claude Code 后再创建并使用配置文件。",
-    "keychainUnknown": "Vibeyard 还无法确认此 Claude Code 版本是否在 macOS 钥匙串中隔离配置文件登录。请登录一次配置文件，隔离状态将自动验证。",
+    "keychainUnknown": "FineVibe 还无法确认此 Claude Code 版本是否在 macOS 钥匙串中隔离配置文件登录。请登录一次配置文件，隔离状态将自动验证。",
     "empty": "暂无配置文件。",
     "tagManaged": "托管",
     "tagCustom": "自定义",
@@ -553,7 +579,7 @@
     "gitAheadDesc": "领先/落后于远程的提交数"
   },
   "about": {
-    "appName": "Vibeyard",
+    "appName": "FineVibe",
     "versionLoading": "版本：加载中…",
     "updateButton": "检查更新",
     "updateChecking": "检查中…",
@@ -563,7 +589,7 @@
     "githubLink": "GitHub",
     "bugLink": "报告 Bug",
     "contributeLink": "在 GitHub 上贡献代码",
-    "communityPrefix": "Vibeyard 是开源的。",
+    "communityPrefix": "FineVibe 是开源的。",
     "communitySuffix": "——如果觉得有用，请给我们点个 Star！",
     "debugModeLabel": "调试模式",
     "versionLoaded": "版本：{ver}"
@@ -624,7 +650,7 @@
     "closeMessageOther": "有 {count} 个会话仍在活动。关闭将中断它们。",
     "closeConfirmOne": "关闭",
     "closeConfirmOther": "全部关闭",
-    "quitTitle": "退出 Vibeyard",
+    "quitTitle": "退出 FineVibe",
     "quitMessageOne": "仍有会话在活动。退出将中断它。",
     "quitMessageOther": "有 {count} 个会话仍在活动。退出将中断它们。",
     "quitConfirm": "退出"

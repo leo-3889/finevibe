@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import { vi } from 'vitest';
 import type { AnalysisContext } from './types';
-import { buildVibeyardignoreMatcher } from '../vibeyardignore';
+import { buildFineVibeIgnoreMatcher } from '../finevibeignore';
 
 /**
  * Stubs the filesystem for readiness checkers against an in-memory `suffix -> content` map.
@@ -72,10 +72,10 @@ export function mockInstructionFiles(
 
 /**
  * An `AnalysisContext` for checker tests. `isIgnored` is built from the mocked filesystem,
- * so a test that stubs `.vibeyardignore` gets a real matcher; with no stub nothing is ignored.
+ * so a test that stubs `.finevibeignore` gets a real matcher; with no stub nothing is ignored.
  */
 export function makeAnalysisContext(trackedFiles: string[] = [], projectPath = '/test/project'): AnalysisContext {
-  return { trackedFiles, isIgnored: buildVibeyardignoreMatcher(projectPath) };
+  return { trackedFiles, isIgnored: buildFineVibeIgnoreMatcher(projectPath) };
 }
 
 /** `n` lines of filler — for exercising the instruction-file size thresholds. */

@@ -6,7 +6,7 @@ import { BoundedEventReader, EVENT_READ_BYTES, MAX_EVENT_BYTES } from './bounded
 
 let dir: string;
 let file: string;
-beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-events-')); file = path.join(dir, 'events'); });
+beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-events-')); file = path.join(dir, 'events'); });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe('bounded event ingestion', () => {

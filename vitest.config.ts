@@ -19,7 +19,14 @@ export default defineConfig({
     // under contention without any regression. 15s keeps real hangs failing.
     testTimeout: 15_000,
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    // `.flake-tmp/` is a local snapshot scaffold (untracked, undeletable on
+    // this host). Its copies of `src/**` are real `.test.ts` files: left in
+    // discovery they double every path-filtered run's counts and re-report
+    // stale sources as failures.
+    exclude: ['**/node_modules/**', '**/.flake-tmp/**', '**/dist/**'],
+    // P1-6: afterEach backstop restoring any leaked console spy before the
+    // file tears down (see test/console-guard.ts).
+    setupFiles: [fileURLToPath(new URL('./test/console-guard.ts', import.meta.url))],
     alias: {
       // CI installs with ELECTRON_SKIP_BINARY_DOWNLOAD=1, so importing the real
       // `electron` module throws ("Electron failed to install correctly").
@@ -33,20 +40,16 @@ export default defineConfig({
       reportsDirectory: 'coverage',
       include: [
         'src/main/**/*.ts',
-        'src/renderer/**/*.ts',
+        'src/preload/**/*.ts',
       ],
       exclude: [
-        'src/main/main.ts',
-        'src/main/ipc-handlers.ts',
         'src/main/mcp-ipc-handlers.ts',
         'src/main/menu.ts',
         'src/main/mcp-client.ts',
         'src/renderer/index.ts',
-        'src/renderer/components/**',
         'src/renderer/keybindings.ts',
         'src/renderer/notification-sound.ts',
         'src/renderer/git-status.ts',
-        'src/preload/**',
       ],
     },
   },

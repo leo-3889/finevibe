@@ -4,6 +4,8 @@ import { injectPromptIntoRunningSession, setPendingPrompt } from '../terminal-pa
 import type { BrowserTabInstance } from './types.js';
 import { buildPrompt, dismissInspect } from './inspect-mode.js';
 import { buildFlowPrompt, dismissFlow } from './flow-recording.js';
+import { shouldActivateAskAiSession } from '../../ask-ai-focus.js';
+import { resolvePlanModePreference, resolvePlanProvider } from '../../state/specialized-sessions.js';
 import {
   buildDrawPrompt,
   captureScreenshotPath,
@@ -33,7 +35,8 @@ export function sendFlowToNewSession(instance: BrowserTabInstance): void {
   const project = appState.activeProject;
   if (!project) return;
 
-  const newSession = appState.addPlanSession(project.id, `Flow: ${instruction.slice(0, 30)}`, instance.flowPlanModeCheckbox.checked);
+  const planMode = resolvePlanModePreference(appState.preferences, resolvePlanProvider(project, appState.preferences, undefined));
+  const newSession = appState.addPlanSession(project.id, `Flow: ${instruction.slice(0, 30)}`, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
   if (newSession) {
     setPendingPrompt(newSession.id, prompt);
   }
@@ -44,10 +47,13 @@ export function sendFlowToCustomSession(instance: BrowserTabInstance): void {
   const prompt = buildFlowPrompt(instance);
   if (!prompt) return;
 
-  promptNewSession((session) => {
-    setPendingPrompt(session.id, prompt);
-    dismissFlow(instance);
-  });
+  promptNewSession(
+    (session) => {
+      setPendingPrompt(session.id, prompt);
+      dismissFlow(instance);
+    },
+    { activate: shouldActivateAskAiSession(appState.preferences) },
+  );
 }
 
 export function sendToNewSession(instance: BrowserTabInstance): void {
@@ -58,7 +64,8 @@ export function sendToNewSession(instance: BrowserTabInstance): void {
   if (!project) return;
 
   const sessionName = `${info.tagName}: ${instance.instructionInput.value.trim().slice(0, 30)}`;
-  const newSession = appState.addPlanSession(project.id, sessionName, instance.inspectPlanModeCheckbox.checked);
+  const planMode = resolvePlanModePreference(appState.preferences, resolvePlanProvider(project, appState.preferences, undefined));
+  const newSession = appState.addPlanSession(project.id, sessionName, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
   if (newSession) {
     setPendingPrompt(newSession.id, prompt);
   }
@@ -69,10 +76,13 @@ export function sendToCustomSession(instance: BrowserTabInstance): void {
   const prompt = buildPrompt(instance);
   if (!prompt) return;
 
-  promptNewSession((session) => {
-    setPendingPrompt(session.id, prompt);
-    dismissInspect(instance);
-  });
+  promptNewSession(
+    (session) => {
+      setPendingPrompt(session.id, prompt);
+      dismissInspect(instance);
+    },
+    { activate: shouldActivateAskAiSession(appState.preferences) },
+  );
 }
 
 export function deliverInspect(instance: BrowserTabInstance, session: SessionRecord): void {

@@ -79,6 +79,7 @@ export function renderActiveSessions(): void {
   }
 
   containerEl.classList.remove('hidden');
+  // pi-lens-ignore: xss-innerhtml, slop
   containerEl.innerHTML = `
     <div class="active-sessions-header">
       <span class="active-sessions-title">${esc(t('sidebar.activeSessions.title'))}</span>

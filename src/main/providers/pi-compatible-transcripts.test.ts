@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -9,6 +9,7 @@ import {
   readTranscriptStatusSync,
   sessionExitReasonFromTail,
   readSessionExitReasonSync,
+  findTranscriptPathSync,
   TAIL_READ_BYTES,
 } from './pi-compatible-transcripts';
 
@@ -24,6 +25,24 @@ const header = (id: string, cwd: string, title?: string) =>
 
 const titleEntry = (title: string) =>
   JSON.stringify({ type: 'title', v: 1, title, source: 'auto', updatedAt: 't' });
+
+describe('findTranscriptPathSync configDir threading', () => {
+  it('scans the overridden tree for a configDir override', () => {
+    // A pinned profile's configDir relocates the whole agent tree: the scan
+    // must start under sessionsRootOf(configDir), not the provider default.
+    // (P2-113 gates the renderer-supplied configDir at the IPC boundary;
+    // this scan trusts what its main-process caller threads through.)
+    const sessionsRootOf = vi.fn(() => '/definitely/not/a/root');
+    expect(findTranscriptPathSync(sessionsRootOf, 'cli-1', '/proj', '/profiles/work')).toBeNull();
+    expect(sessionsRootOf).toHaveBeenCalledWith('/profiles/work');
+  });
+
+  it('scans the default tree for an undefined config dir', () => {
+    const sessionsRootOf = vi.fn(() => path.join(os.tmpdir(), 'finevibe-compat-missing-root'));
+    expect(findTranscriptPathSync(sessionsRootOf, 'cli-1', '/proj')).toBeNull();
+    expect(sessionsRootOf).toHaveBeenCalledWith(undefined);
+  });
+});
 
 describe('sessionHeaderFromWindow', () => {
   it('finds the header on line 1 (Pi layout, no title line)', () => {
@@ -127,6 +146,14 @@ describe('transcriptStatusFromTail', () => {
   it('skips a mid-write tail line and keeps scanning backwards', () => {
     const tail = [assistant('toolUse'), '{"type":"message","message":{"role":"assistant","st'].join('\n');
     expect(transcriptStatusFromTail(tail)).toBe('working');
+  });
+
+  it('skips a bare null / scalar line and keeps scanning backwards', () => {
+    // JSON.parse('null') succeeds and yields null, so an unguarded `.type`
+    // read threw a TypeError out of the status poller on every poll of a
+    // transcript containing such a line.
+    expect(transcriptStatusFromTail(['null', assistant('stop')].join('\n'))).toBe('completed');
+    expect(transcriptStatusFromTail(['42', '"a string"', 'true'].join('\n'))).toBeNull();
   });
 
   it('returns null for a null or non-JSON tail', () => {

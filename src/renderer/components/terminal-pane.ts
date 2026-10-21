@@ -31,6 +31,10 @@ interface TerminalInstance {
   isResume: boolean;
   wasResumed: boolean;
   spawned: boolean;
+  /** True only once `pty:create` has resolved, i.e. main has a PTY registered
+   * for this session. `spawned` is set BEFORE the await (it guards re-entry),
+   * so anything that writes to the PTY must gate on this flag. */
+  ptyReady: boolean;
   exited: boolean;
   pendingPrompt: string | null;
   pendingSystemPrompt: string | null;
@@ -97,7 +101,7 @@ export function createTerminalPane(
     linkHandler: {
       activate: (event, uri) => {
         if (event.metaKey || event.ctrlKey) {
-          window.vibeyard.app.openExternal(uri);
+          window.finevibe.app.openExternal(uri);
         }
       },
     },
@@ -111,11 +115,11 @@ export function createTerminalPane(
 
   terminal.loadAddon(new WebLinksAddon((event, url) => {
     if (event.metaKey || event.ctrlKey) {
-      window.vibeyard.app.openExternal(url);
+      window.finevibe.app.openExternal(url);
     }
   }));
 
-  const writeToPty = (data: string) => window.vibeyard.pty.write(sessionId, data);
+  const writeToPty = (data: string) => window.finevibe.pty.write(sessionId, data);
   const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty);
 
   // Send CSI u encoding for Shift+Enter so Claude CLI treats it as newline
@@ -123,11 +127,11 @@ export function createTerminalPane(
     const handled = handleWin32Key(e);
     if (handled !== undefined) return handled;
     if (e.shiftKey && e.key === 'Enter') {
-      if (e.type === 'keydown') window.vibeyard.pty.write(sessionId, '\x1b[13;2u');
+      if (e.type === 'keydown') window.finevibe.pty.write(sessionId, '\x1b[13;2u');
       e.preventDefault();
       return false;
     }
-  }, writeToPty);
+  });
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: TerminalInstance = {
@@ -145,6 +149,7 @@ export function createTerminalPane(
     isResume,
     wasResumed: isResume,
     spawned: false,
+    ptyReady: false,
     exited: false,
     pendingPrompt: null,
     pendingSystemPrompt: null,
@@ -173,7 +178,7 @@ export function createTerminalPane(
   }
 
   // Register GitHub #123 link provider
-  window.vibeyard.git.getRemoteUrl(projectPath).then((repoUrl) => {
+  window.finevibe.git.getRemoteUrl(projectPath).then((repoUrl) => {
     if (repoUrl) {
       terminal.registerLinkProvider(new GithubLinkProvider(repoUrl, terminal));
     }
@@ -181,7 +186,7 @@ export function createTerminalPane(
 
   // Handle user input → PTY
   terminal.onData((data) => {
-    window.vibeyard.pty.write(sessionId, data);
+    window.finevibe.pty.write(sessionId, data);
   });
 
   // Focus tracking
@@ -198,7 +203,7 @@ export function createTerminalPane(
     }
   });
 
-  attachFileDropHandler(terminal, element, writeToPty, () => instance.spawned && !instance.exited);
+  attachFileDropHandler(terminal, element, writeToPty, () => instance.ptyReady && !instance.exited);
 
   xtermWrap.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -236,13 +241,13 @@ export function setPendingSystemPrompt(sessionId: string, prompt: string): void 
 export function injectTextIntoRunningSession(sessionId: string, text: string): boolean {
   const instance = instances.get(sessionId);
   if (!instance || !instance.spawned || instance.exited) return false;
-  window.vibeyard.pty.write(sessionId, wrapBracketedPaste(instance.terminal, text));
+  window.finevibe.pty.write(sessionId, wrapBracketedPaste(instance.terminal, text));
   return true;
 }
 
 export function injectPromptIntoRunningSession(sessionId: string, prompt: string): boolean {
   if (!injectTextIntoRunningSession(sessionId, prompt)) return false;
-  window.vibeyard.pty.write(sessionId, '\r');
+  window.finevibe.pty.write(sessionId, '\r');
   return true;
 }
 
@@ -280,12 +285,13 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     instance.pendingSystemPrompt = null;
   }
   try {
-    await window.vibeyard.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
+    await window.finevibe.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
   } catch (err) {
     // pty:create rejected (missing binary, ConPTY failure, provider spawn
     // error). Callers fire spawnTerminal un-awaited, so a throw here becomes
     // an unhandled rejection and the tab sits blank with no explanation.
     instance.spawned = false;
+    instance.ptyReady = false;
     removeSession(sessionId);
     const failOverlay = document.createElement('div');
     failOverlay.className = 'terminal-exit-overlay';
@@ -303,6 +309,10 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     instance.element.appendChild(failOverlay);
     return;
   }
+  // From here main has a registered PTY. Before this line `spawned` was
+  // already true while `pty:create` was suspended (Copilot awaits a hook
+  // install), and a file dropped into the pane was written to nothing.
+  instance.ptyReady = true;
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
 
   // Callers fire this un-awaited and fit the pane immediately after, so that fit
@@ -373,7 +383,7 @@ export function fitTerminal(sessionId: string): void {
     const size = `${cols}x${rows}`;
     if (size === instance.lastSize) return;
     instance.lastSize = size;
-    window.vibeyard.pty.resize(sessionId, cols, rows);
+    window.finevibe.pty.resize(sessionId, cols, rows);
   } catch {
     // Element not yet visible
   }
@@ -435,10 +445,13 @@ export function destroyTerminal(sessionId: string): void {
   if (!instance) return;
 
   clearPendingPromptTimer(instance);
-  window.vibeyard.pty.kill(sessionId);
+  window.finevibe.pty.kill(sessionId);
   instance.terminal.dispose();
   instance.element.remove();
   instances.delete(sessionId);
+  // A destroyed pane must not stay "focused": the rail and the keyboard
+  // routing read this id to decide where a paste/keystroke belongs.
+  if (focusedSessionId === sessionId) focusedSessionId = null;
   removeSession(sessionId);
   removeCostSession(sessionId);
   removeContextSession(sessionId);

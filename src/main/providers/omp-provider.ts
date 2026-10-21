@@ -1,11 +1,11 @@
 import type { BrowserWindow } from 'electron';
-import type { CliProvider, TranscriptDescriptor } from './provider';
+import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, CliSessionStatus, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
-import { collectProfileRoots } from './transcript-utils';
+import { collectProfileRoots, TranscriptDiscoveryScan } from './transcript-utils';
 import { ompSessionsRoot, readTranscriptTitleSync } from './omp-transcripts';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
@@ -46,6 +46,19 @@ export class OmpProvider implements CliProvider {
       configReading: false,
       shiftEnterNewline: false,
       pendingPromptTrigger: 'startup-arg',
+      // Verified live on omp/18.12.3 (2026-10-21): `omp --help` advertises
+      // `--plan-yolo` as "Force read-only plan mode at start", and a real spawn
+      // enforced it — a write-tool attempt was refused ("Plan mode is active…
+      // the write tool is restricted to local:// planning artifacts") with no file
+      // created. omp exits on unknown flags, so the flag's acceptance is proof it
+      // exists. Caveats: --plan-yolo auto-approves the plan on the model's first
+      // resolve call, then hands off to `--plan-yolo-into` (default the `@smol`
+      // role), which must have auth at startup — the spawn fails at startup
+      // otherwise ("No API key for …"). `--plan <model>` is the plan-role model
+      // selector, NOT plan mode; `--config` takes an overlay FILE path (no inline
+      // key=value); `plan.defaultOnStartup` is the verified config key behind the
+      // config-dir fallback route (omp config get → false).
+      planModeArg: '--plan-yolo',
       systemPromptInjection: true,
       profiles: true,
       selfTitles: true,
@@ -69,7 +82,7 @@ export class OmpProvider implements CliProvider {
     // pinned profile (below) is the single effective identity: the installed
     // OMP resolver honors OMP_PROFILE (and legacy PI_PROFILE) over any
     // relocated dir, so an inherited native profile must not silently
-    // repoint the child away from the tree Vibeyard tracks.
+    // repoint the child away from the tree FineVibe tracks.
     removeEnvKey(env, 'PI_CODING_AGENT_DIR');
     removeEnvKey(env, 'PI_CONFIG_DIR');
     removeEnvKey(env, 'PI_PROFILE');
@@ -131,7 +144,7 @@ export class OmpProvider implements CliProvider {
 
   validateSettings(): SettingsValidationResult {
     // Nothing to validate — OMP has no hooks or status line.
-    return { statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} };
+    return { statusLine: 'finevibe', hooks: 'complete', hookDetails: {} };
   }
 
   // OMP has no hook system to report the session id, and (unlike Pi) no
@@ -206,19 +219,27 @@ export class OmpProvider implements CliProvider {
       const inDir = findTranscriptPathInFlatDir(sessionDir, cliSessionId, projectPath);
       if (inDir) return inDir;
     }
+    // A pinned profile's configDir relocates the agent tree: the legacy
+    // scan runs under <configDir>/sessions. The P2-113 renderer gate lives
+    // at the IPC boundary (ipc-handlers), not here — every main-side caller
+    // threads a configDir it resolved from app state (pty:create gates its
+    // own at the launch; the sessionDir branch above is main-derived).
     return findTranscriptPathSync(ompSessionsRoot, cliSessionId, projectPath, configDir);
   }
 
-  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDiscovery> {
     // Search the default agent dir plus every omp profile's config dir, so
     // global session search surfaces transcripts created under an isolated
     // profile. Each root carries its profileId (undefined = default) so
-    // resume can reopen against the right config dir.
+    // resume can reopen against the right config dir. A root whose scan
+    // throws (other than "root missing") marks the pass incomplete (P2-70).
     const roots = collectProfileRoots('omp', ompSessionsRoot(), 'sessions');
-    const results: TranscriptDescriptor[] = [];
+    const scan = new TranscriptDiscoveryScan();
     for (const [root, profileId] of roots) {
       if (signal?.aborted) break;
-      results.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+      await scan.collect(root, async () => {
+        scan.descriptors.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+      });
     }
     // Plus every per-launch dir this app created (flat layout). Legacy
     // history above is untouched; the sidecar carries each dir's profile.
@@ -226,9 +247,11 @@ export class OmpProvider implements CliProvider {
       if (signal?.aborted) break;
       const meta = readLaunchSessionMeta(sessionDir);
       const profileId = profileIdForConfigDir('omp', meta?.configDir);
-      results.push(...await scanFlatSessionDir(sessionDir, profileId, signal));
+      await scan.collect(sessionDir, async () => {
+        scan.descriptors.push(...await scanFlatSessionDir(sessionDir, profileId, signal));
+      });
     }
-    return results;
+    return scan.result();
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

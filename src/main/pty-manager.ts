@@ -8,7 +8,7 @@ import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
 import { registerSession } from './hook-status';
-import { installHooksOnly, installStatusLine } from './claude-cli';
+import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
 import { isWin, pathSep, utf8LocaleEnv } from './platform';
 import { nvmDefaultNodeBinDir } from './providers/nvm';
@@ -272,7 +272,7 @@ export interface LaunchSpec {
   storageMode: SessionStorageMode;
 }
 
-/** Thrown when a launch request uses options Vibeyard cannot track. */
+/** Thrown when a launch request uses options FineVibe cannot track. */
 export class LaunchSpecError extends Error {
   constructor(message: string) {
     super(message);
@@ -308,7 +308,7 @@ export function resolveLaunchSpec(params: {
   const userEnv = parseEnvVars(envVars);
   for (const key of findConflictingEnvKeys(userEnv)) {
     issues.push(
-      `Environment variable ${key} is not supported: Vibeyard tracks sessions in the profile's default storage, ` +
+      `Environment variable ${key} is not supported: FineVibe tracks sessions in the profile's default storage, ` +
         'and a custom session dir would hide them from history, search and resume. Remove it from the session environment and start again.',
     );
   }
@@ -328,7 +328,7 @@ export function resolveLaunchSpec(params: {
   Object.assign(env, userAllowed);
 
   // Conflict detection runs on the user's extra args only — never on the
-  // flags Vibeyard itself adds (e.g. its own --session/--resume).
+  // flags FineVibe itself adds (e.g. its own --session/--resume).
   for (const conflict of findConflictingLaunchFlags(tokenizeArgs(extraArgs))) {
     issues.push(`${conflict.raw}: ${conflict.reason}`);
   }
@@ -420,11 +420,16 @@ export async function spawnPty(
     }
 
     // Profile support: a Claude session bound to a profile uses an isolated
-    // config dir, so Vibeyard's hooks + statusLine (boot-installed into ~/.claude)
+    // config dir, so FineVibe's hooks + statusLine (boot-installed into ~/.claude)
     // must also be installed there or cost/activity tracking silently breaks.
-    // Fresh profile dirs have no foreign statusLine, so install directly (the
-    // guarded/consent flow stays bound to the shared ~/.claude). Both calls are
-    // idempotent, mirroring the per-spawn Copilot install above.
+    // The install goes through settings-guard's consent gate (P1-14): hooks
+    // are additive and always installed, the statusLine is installed only for
+    // a fresh/owned dir or under a Replace consent for the exact foreign
+    // command — a prior Keep is honored and a first-run foreign statusLine is
+    // never silently overwritten. Spawn is a hot path, so the consent dialog
+    // never fires here: the per-session banner is the profile's consent
+    // surface (Fix Settings repairs this dir, P2-127; dismissal records a Keep).
+    // Idempotent, mirroring the per-spawn Copilot install above.
     // Guardrail: on macOS, older Claude Code builds reuse a single keychain entry
     // ("Claude Code-credentials") for every config dir, so logging into one
     // profile silently overwrites every other profile's token — the accounts
@@ -450,8 +455,7 @@ export async function spawnPty(
 
     if (providerId === 'claude' && configDir) {
       try {
-        installHooksOnly(configDir);
-        installStatusLine(configDir);
+        guardedProfileInstall(configDir);
       } catch (err) {
         console.warn('Failed to install hooks into profile config dir:', configDir, err);
       }

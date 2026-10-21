@@ -2,13 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
-import type { CliProvider, TranscriptDescriptor } from './provider';
+import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, CliSessionStatus, McpServer, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
-import { collectProfileRoots } from './transcript-utils';
+import { collectProfileRoots, TranscriptDiscoveryScan } from './transcript-utils';
 import { piAgentDir, piSessionsRoot } from './pi-transcripts';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
@@ -22,7 +22,7 @@ const binaryCache = { path: null as string | null };
  * Per-launch identity, established by onSessionStarted/onSessionResumed
  * BEFORE spawnPty runs (the pty:create handler calls the hook first):
  *  - sessionDir: the exclusive `--session-dir` for this launch.
- *  - knownCliId: Pi's fresh launches pin a Vibeyard-generated id via
+ *  - knownCliId: Pi's fresh launches pin a FineVibe-generated id via
  *    `--session-id`, so the transcript id is known before the first write;
  *    resumes carry the id they were resumed with.
  *  - resumeTarget: the transcript to resume — the resolved path when the
@@ -71,7 +71,7 @@ export class PiProvider implements CliProvider {
     // Strip inherited profile/storage selectors case-insensitively so the
     // pinned profile (below) is the single effective identity: a native
     // profile or relocated dir in the user's global environment must not
-    // silently repoint the child away from the tree Vibeyard tracks.
+    // silently repoint the child away from the tree FineVibe tracks.
     removeEnvKey(env, 'PI_CODING_AGENT_DIR');
     removeEnvKey(env, 'PI_CONFIG_DIR');
     removeEnvKey(env, 'PI_PROFILE');
@@ -95,7 +95,7 @@ export class PiProvider implements CliProvider {
       // disk (Pi appends to it in place), else the bare id.
       args.push('--session', state?.resumeTarget ?? opts.cliSessionId);
     } else if (!opts.isResume) {
-      // Fresh launch: pin the Vibeyard-generated id so the transcript is
+      // Fresh launch: pin the FineVibe-generated id so the transcript is
       // attributable before its first write.
       const knownCliId = state?.knownCliId;
       if (knownCliId) args.push('--session-id', knownCliId);
@@ -160,11 +160,11 @@ export class PiProvider implements CliProvider {
 
   validateSettings(): SettingsValidationResult {
     // Nothing to validate — Pi has no hooks or status line.
-    return { statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} };
+    return { statusLine: 'finevibe', hooks: 'complete', hookDetails: {} };
   }
 
   // Pi has no hook system to report the session id. A fresh launch pins a
-  // Vibeyard-generated id (`--session-id`) into its exclusive `--session-dir`
+  // FineVibe-generated id (`--session-id`) into its exclusive `--session-dir`
   // before spawn, so the id is known up front and the watcher adopts the
   // file carrying exactly that id — no cwd/time inference.
   onSessionStarted(sessionId: string, cwd: string, _win: BrowserWindow, configDir?: string): void {
@@ -215,6 +215,11 @@ export class PiProvider implements CliProvider {
       const inDir = findTranscriptPathInFlatDir(sessionDir, cliSessionId, projectPath);
       if (inDir) return inDir;
     }
+    // A pinned profile's configDir relocates the agent tree: the legacy
+    // scan runs under <configDir>/sessions. The P2-113 renderer gate lives
+    // at the IPC boundary (ipc-handlers), not here — every main-side caller
+    // threads a configDir it resolved from app state (pty:create gates its
+    // own at the launch; the sessionDir branch above is main-derived).
     return findTranscriptPathSync(piSessionsRoot, cliSessionId, projectPath, configDir);
   }
 
@@ -237,16 +242,19 @@ export class PiProvider implements CliProvider {
     return readSessionExitReasonSync(transcriptPath);
   }
 
-  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDiscovery> {
     // Search the default agent dir plus every pi profile's config dir, so
     // global session search surfaces transcripts created under an isolated
     // profile. Each root carries its profileId (undefined = default) so
-    // resume can reopen against the right config dir.
+    // resume can reopen against the right config dir. A root whose scan
+    // throws (other than "root missing") marks the pass incomplete (P2-70).
     const roots = collectProfileRoots('pi', piSessionsRoot(), 'sessions');
-    const results: TranscriptDescriptor[] = [];
+    const scan = new TranscriptDiscoveryScan();
     for (const [root, profileId] of roots) {
       if (signal?.aborted) break;
-      results.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+      await scan.collect(root, async () => {
+        scan.descriptors.push(...await scanTranscriptSessionsRoot(root, profileId, signal));
+      });
     }
     // Plus every per-launch dir this app created (flat layout). Legacy
     // history above is untouched; the sidecar carries each dir's profile.
@@ -254,9 +262,11 @@ export class PiProvider implements CliProvider {
       if (signal?.aborted) break;
       const meta = readLaunchSessionMeta(sessionDir);
       const profileId = profileIdForConfigDir('pi', meta?.configDir);
-      results.push(...await scanFlatSessionDir(sessionDir, profileId, signal));
+      await scan.collect(sessionDir, async () => {
+        scan.descriptors.push(...await scanFlatSessionDir(sessionDir, profileId, signal));
+      });
     }
-    return results;
+    return scan.result();
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

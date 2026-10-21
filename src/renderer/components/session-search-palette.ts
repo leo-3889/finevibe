@@ -142,7 +142,7 @@ function createOverlay(): void {
 
 function onInput(): void {
   latestSearchToken++;
-  window.vibeyard.session.cancelDeepSearch();
+  window.finevibe.session.cancelDeepSearch();
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => searchSessions(), 400);
 }
@@ -165,7 +165,7 @@ async function searchSessions(): Promise<void> {
 
   let raw: DeepSearchResult[] = [];
   try {
-    raw = await window.vibeyard.session.deepSearch(query);
+    raw = await window.finevibe.session.deepSearch(query);
   } catch {
     raw = [];
   }
@@ -265,7 +265,7 @@ function openResult(r: ResolvedResult): void {
     appState.setActiveProject(r.projectId);
     void appState.resumeFromHistorySafe(r.projectId, r.archivedId);
   } else {
-    // Not in Vibeyard — find or create project by cwd, then open session directly
+    // Not in FineVibe — find or create project by cwd, then open session directly
     let project = appState.projects.find(p => p.path === r.projectCwd);
     if (!project) {
       const name = deriveProjectName(r.projectCwd, r.projectSlug);
@@ -306,7 +306,7 @@ export function showSessionSearchPalette(): void {
 }
 
 function hidePalette(): void {
-  window.vibeyard.session.cancelDeepSearch();
+  window.finevibe.session.cancelDeepSearch();
   if (overlay) overlay.style.display = 'none';
   if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
   latestSearchToken++;

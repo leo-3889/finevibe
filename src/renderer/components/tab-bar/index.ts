@@ -7,9 +7,10 @@ import { ICON_TERMINAL, ICON_MENU } from '../../icons.js';
 import { onShareChange } from '../../sharing/share-manager.js';
 import { loadProviderAvailability, hasMultipleAvailableProviders } from '../../provider-availability.js';
 import { getActiveContextMenu, hideTabContextMenu } from './menu.js';
-import { gitStatusEl } from './dom.js';
+import { gitStatusEl, tabListEl } from './dom.js';
 import { render, updateTabStatus } from './tab-list.js';
 import { clearTabScrollState } from './tab-scroll.js';
+import { initTabArrows, syncTabArrows } from './tab-arrows.js';
 import { renderGitStatus, showBranchContextMenu } from './git-status-bar.js';
 import { showMoreMenu, promptNewSession, quickNewSession } from './session-menu.js';
 
@@ -49,6 +50,14 @@ export function initTabBar(): void {
     if (project) appState.addBrowserTabSession(project.id);
   });
   gitStatusEl.addEventListener('click', (e) => showBranchContextMenu(e));
+
+  initTabArrows();
+  // Every offset change lands here — arrow clicks, scrollbar drags, the
+  // auto-scroll on session switch, and smooth-scroll settling at an edge.
+  tabListEl.addEventListener('scroll', syncTabArrows, { passive: true });
+  // Every width change too: window resize, sidebar drag, and the strip's own
+  // gain/loss of the arrow reserve (tabsOverflow's hysteresis converges it).
+  new ResizeObserver(syncTabArrows).observe(tabListEl);
 
   // Icons only distinguish providers when multiple are installed
   loadProviderAvailability().then(() => {

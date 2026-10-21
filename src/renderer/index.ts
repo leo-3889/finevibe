@@ -67,20 +67,20 @@ import { confirmAppClose } from './session-close.js';
 // matches the saved preferences. `loadState()` never throws (corrupt or missing
 // state falls back to defaults in main), so this cannot break bootstrap.
 function applyStartupPrefs(): void {
-  const prefs = window.vibeyard.store.startupPrefs();
+  const prefs = window.finevibe.store.startupPrefs();
   document.documentElement.dataset.theme = prefs.theme ?? 'dark';
-  if (prefs.zoomFactor && prefs.zoomFactor !== 1.0) window.vibeyard.zoom.set(prefs.zoomFactor);
+  if (prefs.zoomFactor && prefs.zoomFactor !== 1.0) window.finevibe.zoom.set(prefs.zoomFactor);
 }
 applyStartupPrefs();
 
 let isQuitting = false;
-window.vibeyard.app.onQuitting(() => {
+window.finevibe.app.onQuitting(() => {
   isQuitting = true;
   cleanupAllShares();
 });
 
-window.vibeyard.app.onConfirmClose(() => {
-  confirmAppClose(() => window.vibeyard.app.closeConfirmed());
+window.finevibe.app.onConfirmClose(() => {
+  confirmAppClose(() => window.finevibe.app.closeConfirmed());
 });
 
 /**
@@ -88,7 +88,7 @@ window.vibeyard.app.onConfirmClose(() => {
  * (Pi/OMP). Claude self-titles too but pushes via its statusLine hook, so it
  * needs no re-derivation and is excluded. Sent to `session:syncRestored` at
  * startup so a reopened tab whose `cliSessionId` is already known catches up to
- * a title the CLI set while Vibeyard was closed. A tab whose id was never
+ * a title the CLI set while FineVibe was closed. A tab whose id was never
  * persisted stays unresolved — its title is not re-derived from a guessed
  * conversation.
  */
@@ -125,15 +125,40 @@ function collectRestoredSelfTitlingSessions(): RestoredSyncSession[] {
 
 async function main(): Promise<void> {
   // Wire PTY data/exit events from main process
-  window.vibeyard.pty.onData((sessionId, data) => {
+  // P5 (R4): the 'Interrupted' scan ran on every PTY chunk. notifyInterrupt
+  // is idempotent (it only acts while the session is `working`), so a
+  // leading-edge hit plus one trailing hit per 200 ms window per session
+  // delivers the same signal at a fraction of the scans.
+  const interruptWindows = new Map<string, { last: number; timer: ReturnType<typeof setTimeout> | null }>();
+  function scanInterrupted(sessionId: string, data: string): void {
+    if (!data.includes('Interrupted')) return;
+    let window = interruptWindows.get(sessionId);
+    if (!window) {
+      window = { last: Number.NEGATIVE_INFINITY, timer: null };
+      interruptWindows.set(sessionId, window);
+    }
+    const now = Date.now();
+    if (now - window.last >= 200) {
+      window.last = now;
+      notifyInterrupt(sessionId);
+      return;
+    }
+    if (window.timer === null) {
+      const w = window;
+      w.timer = setTimeout(() => {
+        w.timer = null;
+        w.last = Date.now();
+        notifyInterrupt(sessionId);
+      }, 200 - (now - w.last));
+    }
+  }
+  window.finevibe.pty.onData((sessionId, data) => {
     if (isShellSessionId(sessionId)) {
       handleShellPtyData(sessionId, data);
     } else if (!isMcpSession(sessionId)) {
       handlePtyData(sessionId, data);
       parseCost(sessionId, data);
-      if (data.includes('Interrupted')) {
-        notifyInterrupt(sessionId);
-      }
+      scanInterrupted(sessionId, data);
       // Forward to P2P share if active
       if (isSharing(sessionId)) {
         forwardPtyData(sessionId, data);
@@ -141,13 +166,13 @@ async function main(): Promise<void> {
     }
   });
 
-  window.vibeyard.session.onSessionName((sessionId, name, cliSessionId) => {
+  window.finevibe.session.onSessionName((sessionId, name, cliSessionId) => {
     if (!appState.hasSession(sessionId)) return;
     logDebugEvent('sessionName', sessionId, name);
     applyCliSessionName(sessionId, name, cliSessionId);
   });
 
-  window.vibeyard.session.onCostData((sessionId, costData) => {
+  window.finevibe.session.onCostData((sessionId, costData) => {
     if (!appState.hasSession(sessionId)) return;
     logDebugEvent('costData', sessionId, costData);
     setCostData(sessionId, costData);
@@ -187,19 +212,19 @@ async function main(): Promise<void> {
     appState.updateSessionContext(sessionId, info);
   });
 
-  window.vibeyard.session.onHookStatus((sessionId, status, hookName) => {
+  window.finevibe.session.onHookStatus((sessionId, status, hookName) => {
     if (!appState.hasSession(sessionId)) return;
     logDebugEvent('hookStatus', sessionId, hookName ? `${hookName}: ${status}` : status);
     setHookStatus(sessionId, status, hookName);
   });
 
-  window.vibeyard.session.onInspectorEvents((sessionId, events) => {
+  window.finevibe.session.onInspectorEvents((sessionId, events) => {
     if (!appState.hasSession(sessionId)) return;
     logDebugEvent('inspectorEvents', sessionId, { count: events.length });
     addInspectorEvents(sessionId, events);
   });
 
-  window.vibeyard.session.onCliSessionId((sessionId, cliSessionId) => {
+  window.finevibe.session.onCliSessionId((sessionId, cliSessionId) => {
     logDebugEvent('cliSessionId', sessionId, cliSessionId);
     // Find the project containing this session and persist the CLI session ID
     const project = appState.projects.find(p => p.sessions.some(s => s.id === sessionId));
@@ -208,7 +233,7 @@ async function main(): Promise<void> {
     }
   });
 
-  window.vibeyard.pty.onExit((sessionId, exitCode, signal, exitReason, pid) => {
+  window.finevibe.pty.onExit((sessionId, exitCode, signal, exitReason, pid) => {
     logDebugEvent('ptyExit', sessionId, { exitCode, signal, exitReason, pid });
     if (isShellSessionId(sessionId)) {
       handleShellPtyExit(sessionId, exitCode);
@@ -312,7 +337,7 @@ window.addEventListener('beforeunload', () => appState.flushPersist());
   // id stays unresolved (ownership is not inferred from cwd + creation time).
   const restored = collectRestoredSelfTitlingSessions();
   if (restored.length) {
-    await window.vibeyard.session.syncRestored(restored);
+    await window.finevibe.session.syncRestored(restored);
   }
 
   // A restored tab that is closed without ever being resumed has no PTY exit to
@@ -320,7 +345,7 @@ window.addEventListener('beforeunload', () => appState.flushPersist());
   // already cleaned up in main, so this is an idempotent no-op for it.
   appState.on('session-removed', (data) => {
     const { sessionId } = data as { sessionId: string };
-    window.vibeyard.session.release(sessionId);
+    window.finevibe.session.release(sessionId);
   });
 
   // Apply the persisted locale (OS fallback on first launch). The always-on
@@ -348,7 +373,7 @@ window.addEventListener('beforeunload', () => appState.flushPersist());
     // Titles already on disk produce no new fs event (the hook writes only on
     // change), so re-enabling auto-naming needs an explicit replay.
     const autoTitle = appState.preferences.autoTitleEnabled;
-    if (autoTitle && !lastAutoTitle) window.vibeyard.session.resyncStatus();
+    if (autoTitle && !lastAutoTitle) window.finevibe.session.resyncStatus();
     lastAutoTitle = autoTitle;
 
     const newLocale = appState.preferences.locale;
@@ -363,7 +388,7 @@ window.addEventListener('beforeunload', () => appState.flushPersist());
   appState.on('profiles-changed', () => refreshProfileLabels());
 
   const savedZoom = getZoomFactor();
-  if (savedZoom !== 1.0) window.vibeyard.zoom.set(savedZoom);
+  if (savedZoom !== 1.0) window.finevibe.zoom.set(savedZoom);
 
   // Auto-open new project modal when no projects exist
   if (appState.projects.length === 0) {

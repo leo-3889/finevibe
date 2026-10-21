@@ -2,6 +2,7 @@ import type { BoardColumn, BoardData, PersistedState, Preferences, ProjectRecord
 import { restoreCost } from '../session-cost.js';
 import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
+import { normalizeTabGroups } from './tab-group-state.js';
 
 export function createDefaultBoard(): BoardData {
   const columns: BoardColumn[] = [
@@ -74,6 +75,10 @@ export function ensureProjectDefaults(state: PersistedState): void {
     if (!project.board) project.board = createDefaultBoard();
     for (const task of project.board.tasks) task.sessionId = undefined;
 
+    // Hydrate sanitising for tab groups: dead ids, cross-group duplicates and
+    // broken contiguity from a hand-edited state.json never reach the strip.
+    normalizeTabGroups(project);
+
     const legacyMode = (project.layout as { mode: string }).mode;
     if (legacyMode === 'board') {
       project.layout.mode = 'tabs';
@@ -86,14 +91,29 @@ export function ensureProjectDefaults(state: PersistedState): void {
 }
 
 /**
- * Strip transient fields that should never be persisted (in-flight prompts).
+ * Strip fields that must never reach disk:
+ * - transient in-flight prompts;
+ * - per-session `envVars` (P2-101): the New-session box takes raw
+ *   `KEY=VALUE` lines such as `ANTHROPIC_API_KEY=...`, and a verbatim
+ *   copy in state.json is readable by any local user (the atomic writer
+ *   is now 0600, but backups/syncs still fan the file out), by any peer
+ *   on a read-write share, and by the git history of any dotfile repo
+ *   the user symlinks it into.
+ * `project.defaultEnv` is deliberately NOT stripped: the opt-in
+ * "keep env" UX persists the value there on purpose so every later
+ * session of that project inherits it (session-menu.ts, state.ts
+ * addSession). Secrets at rest therefore shrink to the explicit,
+ * project-scoped choice the user made.
+ * A restarted session resumes without its typed env vars; that is the
+ * accepted cost — the live in-memory record keeps them for the session's
+ * lifetime (spawn, split-layout resume wiring reads the live object).
  */
 export function serializeForSave(state: PersistedState): PersistedState {
   return {
     ...state,
     projects: state.projects.map((p: ProjectRecord) => ({
       ...p,
-      sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, ...rest }: SessionRecord) => rest as SessionRecord),
+      sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, envVars, ...rest }: SessionRecord) => rest as SessionRecord),
     })),
   };
 }

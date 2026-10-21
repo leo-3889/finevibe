@@ -17,7 +17,7 @@ vi.mock('fs', () => ({
 import { execFile } from 'child_process';
 import { promises as fsPromises } from 'fs';
 import * as path from 'path';
-import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitDiscardFile, checkoutGitBranch, createGitBranch } from './git-status';
+import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitDiscardFile, checkoutGitBranch, createGitBranch, getGitRemoteUrl } from './git-status';
 
 const mockExecFile = vi.mocked(execFile);
 const mockRm = vi.mocked(fsPromises.rm);
@@ -234,29 +234,91 @@ describe('getGitDiff', () => {
 });
 
 describe('gitDiscardFile', () => {
-  it('removes an untracked file via fs.rm with recursive+force', async () => {
+  // P1-17: the untracked branch is a real recursive delete. Every discard
+  // must first prove the cwd is inside a git WORKING TREE
+  // (`rev-parse --show-toplevel`), the target is not the tree root, git
+  // reports the target as untracked, and the target carries no tracked
+  // content — then, and only then, does fs.rm run.
+  const workingTree = (toplevel = '/repo') => simulateExecFile(null, `${toplevel}\n`);
+  const listing = (out: string) => simulateExecFile(null, out);
+
+  it('removes an untracked file after git verifies the tree and the untracked status', async () => {
+    workingTree();
+    listing('new.ts\n'); // ls-files --others: the target is untracked
+    listing('');         // ls-files: no tracked content at the target
     mockRm.mockResolvedValueOnce(undefined);
     await gitDiscardFile('/repo', 'new.ts', 'untracked');
     expect(mockRm).toHaveBeenCalledWith(path.join('/repo', 'new.ts'), { recursive: true, force: true });
-    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['rev-parse', '--show-toplevel'],
+      expect.objectContaining({ cwd: '/repo' }),
+      expect.any(Function),
+    );
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['ls-files', '--others', '--exclude-standard', '--', 'new.ts'],
+      expect.anything(),
+      expect.any(Function),
+    );
   });
 
-  it('removes an untracked folder (path with trailing slash)', async () => {
+  it('removes an untracked folder only after git lists its files as untracked', async () => {
+    workingTree();
+    listing('e2e/a.spec.ts\ne2e/b.spec.ts\n');
+    listing('');
     mockRm.mockResolvedValueOnce(undefined);
     await gitDiscardFile('/repo', 'e2e/', 'untracked');
     expect(mockRm).toHaveBeenCalledWith(path.join('/repo', 'e2e/'), { recursive: true, force: true });
   });
 
+  it('refuses an empty filePath and never reaches fs.rm', async () => {
+    // The P1-17 kill chain: git:discardFile(root, '', 'untracked') used to
+    // run rm(root, {recursive:true}) — the whole tree, no repo check.
+    await expect(gitDiscardFile('/repo', '', 'untracked')).rejects.toThrow();
+    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses a path that resolves to the working-tree root', async () => {
+    workingTree('/repo');
+    await expect(gitDiscardFile('/repo', '.', 'untracked')).rejects.toThrow();
+    expect(mockRm).not.toHaveBeenCalled();
+  });
+
+  it('refuses untracked discard when the cwd is not a git working tree', async () => {
+    // The watched ~/.claude grant: rev-parse fails → nothing may be deleted.
+    simulateExecFile({ message: 'fatal: not a git repository' } as ExecFileException, '');
+    await expect(gitDiscardFile('/home/user/.claude', 'settings.json', 'untracked')).rejects.toThrow();
+    expect(mockRm).not.toHaveBeenCalled();
+  });
+
+  it('refuses a path git does not report as untracked', async () => {
+    // Covers tracked, ignored and missing targets — rm never runs blind.
+    workingTree();
+    listing('');
+    await expect(gitDiscardFile('/repo', 'settings.json', 'untracked')).rejects.toThrow();
+    expect(mockRm).not.toHaveBeenCalled();
+  });
+
+  it('refuses a folder that carries tracked files', async () => {
+    workingTree();
+    listing('src/temp.ts\n');  // something untracked under src/
+    listing('src/index.ts\n'); // tracked content under src/
+    await expect(gitDiscardFile('/repo', 'src', 'untracked')).rejects.toThrow();
+    expect(mockRm).not.toHaveBeenCalled();
+  });
+
   it('runs git checkout for working-tree changes', async () => {
-    simulateExecFile(null, '');
+    workingTree();
+    listing(''); // checkout
     await gitDiscardFile('/repo', 'file.ts', 'working');
     expect(mockExecFile).toHaveBeenCalledWith(
       'git',
       ['checkout', '--', 'file.ts'],
-      expect.any(Object),
+      { cwd: '/repo', timeout: 5000 },
       expect.any(Function),
     );
-    expect(mockRm).not.toHaveBeenCalled();
   });
 });
 
@@ -417,5 +479,32 @@ describe('checkoutGitBranch / createGitBranch branch-name gate', () => {
     await expect(checkoutGitBranch('/repo', 'a..b')).rejects.toThrow(/Invalid branch name/);
 
     expect(argv()).toEqual([['check-ref-format', '--branch', 'a..b']]);
+  });
+});
+
+describe('getGitRemoteUrl', () => {
+  it('normalizes SSH remotes to HTTPS and strips the .git suffix', async () => {
+    simulateExecFile(null, 'git@github.com:foo/bar.git\n');
+    expect(await getGitRemoteUrl('/test')).toBe('https://github.com/foo/bar');
+  });
+
+  // P2-24: every sibling execFile in git-status.ts bounds its spawn with
+  // timeout: 5000; getGitRemoteUrl was the outlier that could hang the
+  // repo-detection promise forever on a git credential prompt.
+  it('bounds the git spawn with the 5s sibling timeout', async () => {
+    simulateExecFile(null, 'https://github.com/foo/bar.git\n');
+    expect(await getGitRemoteUrl('/test')).toBe('https://github.com/foo/bar');
+    const [cmd, args, opts] = mockExecFile.mock.calls[0] as unknown as
+      [string, string[], { cwd: string; timeout: number }];
+    expect(cmd).toBe('git');
+    expect(args).toEqual(['remote', 'get-url', 'origin']);
+    expect(opts.cwd).toBe('/test');
+    expect(opts.timeout).toBe(5000);
+  });
+
+  it('resolves null when git fails — the timeout kill included', async () => {
+    const err = Object.assign(new Error('timed out'), { killed: true }) as ExecFileException;
+    simulateExecFile(err, '');
+    expect(await getGitRemoteUrl('/test')).toBeNull();
   });
 });

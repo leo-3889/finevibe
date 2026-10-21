@@ -1,5 +1,6 @@
-import type { VibeyardApi } from './types.js';
+import type { FinevibeApi } from './types.js';
 import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout, SidebarViews } from '../shared/types.js';
+import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
@@ -38,6 +39,7 @@ import {
   applyMemberPatch,
   buildNewMember,
   buildTeamChatSession,
+  type TeamChatOpts,
   fireAndForgetRemoveAgent,
   reconcileAgent as reconcileAgentPure,
   removeMember,
@@ -69,6 +71,12 @@ import {
   sessionIdAtIndex,
   toggleSwarmMode,
 } from './state/layout-state.js';
+import {
+  groupTabsInProject,
+  pruneSessionFromTabGroups,
+  renameTabGroupInProject,
+  ungroupInProject,
+} from './state/tab-group-state.js';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession } from '../shared/types.js';
 
@@ -77,7 +85,7 @@ export const MAX_PROJECT_NAME_LENGTH = 80;
 
 declare global {
   interface Window {
-    vibeyard: VibeyardApi;
+    finevibe: FinevibeApi;
   }
 }
 
@@ -119,6 +127,7 @@ const defaultPreferences: Preferences = {
   sidebarViews: { gitPanel: true, sessionHistory: true, discussions: true, fileTree: true, activeSessions: true },
   boardCardMetrics: true,
   locale: 'en',
+  defaultProjectsFolder: '',
 };
 
 class AppState {
@@ -204,7 +213,7 @@ class AppState {
   async load(): Promise<void> {
     let loaded: PersistedState | null = null;
     try {
-      loaded = (await window.vibeyard.store.load()) as PersistedState | null;
+      loaded = (await window.finevibe.store.load()) as PersistedState | null;
     } catch (err) {
       // A failed load must not leave loadedFlag false forever: every later
       // persist() would be dropped by the premature-persist guard and the
@@ -268,7 +277,7 @@ class AppState {
   /** Serialize + ship right now; the only writer of the store. */
   private writeStateNow(): void {
     this.lastPersistAt = Date.now();
-    window.vibeyard.store.save(serializeForSave(this.state));
+    window.finevibe.store.save(serializeForSave(this.state));
   }
 
   /** Drop the armed trailing save and write immediately (quit paths, tests). */
@@ -383,18 +392,21 @@ class AppState {
   }
 
   get preferences(): Preferences {
-    // May return defaults when read before load(); callers that render from
-    // this re-apply on `state-loaded`/`preferences-changed`.
-    return this.state.preferences;
+    // Single accessor (P2-84): a persisted state file may omit
+    // `preferences`; `load()` normalizes via `hydrateLoadedState`, and this
+    // lazy fill covers reads before `load()` (pre-hydration defaults).
+    // Callers that render from this re-apply on
+    // `state-loaded`/`preferences-changed`.
+    return (this.state.preferences ??= { ...defaultPreferences });
   }
 
   /** Sidebar-section lookup with the default-on fallback baked in. */
   sidebarView(key: keyof SidebarViews): boolean {
-    return this.state.preferences.sidebarViews?.[key] ?? true;
+    return this.preferences.sidebarViews?.[key] ?? true;
   }
 
   setPreference<K extends keyof Preferences>(key: K, value: Preferences[K]): void {
-    this.state.preferences[key] = value;
+    this.preferences[key] = value;
     this.persist();
     this.emit('preferences-changed');
   }
@@ -443,7 +455,10 @@ class AppState {
     }
     this.persist();
     for (const session of sessions) {
-      this.emit('session-removed', { projectId: id, sessionId: session.id });
+      // `deferRender`: consumers that tear down a pane per session (split-layout)
+      // skip their per-event layout render — the `project-changed` emit below
+      // renders once for the whole batch, so removing N sessions costs 1 render, not N+1.
+      this.emit('session-removed', { projectId: id, sessionId: session.id, deferRender: true });
     }
     this.emit('project-removed', id);
     this.emit('project-changed');
@@ -465,23 +480,24 @@ class AppState {
     planMode: boolean = true,
     providerIdOverride?: ProviderId,
     profileId?: string,
+    opts?: { activate?: boolean },
   ): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
-    const providerId = resolvePlanProvider(project, this.state.preferences, providerIdOverride);
+    const providerId = resolvePlanProvider(project, this.preferences, providerIdOverride);
     const args = buildPlanSessionArgs(project, getProviderCapabilities(providerId), planMode);
-    return this.addSession(projectId, name, args, providerId, profileId);
+    return this.addSession(projectId, name, args, providerId, profileId, undefined, opts);
   }
 
-  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId, profileId?: string, envVars?: string): SessionRecord | undefined {
+  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId, profileId?: string, envVars?: string, opts?: { activate?: boolean }): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
-    const cliProviderId = resolveCliProvider(this.state.preferences, providerId, project);
+    const cliProviderId = resolveCliProvider(this.preferences, providerId, project);
     // Pin the effective profile (explicit > project default > global default,
     // provider-matched) onto the session at creation so it stays sticky — resume
     // must reuse the same config dir even if a default changes later.
-    const pinnedProfileId = resolveProfile({ profileId }, project, this.state.preferences, cliProviderId, this.profiles)?.id;
+    const pinnedProfileId = resolveProfile({ profileId }, project, this.preferences, cliProviderId, this.profiles)?.id;
     const session = buildCliSession({
       name,
       providerId: cliProviderId,
@@ -489,8 +505,8 @@ class AppState {
       profileId: pinnedProfileId,
       envVars: envVars ?? project.defaultEnv,
     });
-    attachSessionToProject(project, session, { addToSwarm: true });
-    this.commitNewSession(projectId, session);
+    attachSessionToProject(project, session, { addToSwarm: true, activate: opts?.activate ?? true });
+    this.commitNewSession(projectId, session, opts);
     return session;
   }
 
@@ -504,16 +520,18 @@ class AppState {
     return existing;
   }
 
-  private commitNewSession(projectId: string, session: SessionRecord): void {
+  private commitNewSession(projectId: string, session: SessionRecord, opts?: { activate?: boolean }): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (project) this.sessionIndex.set(session.id, { project, session });
     // History tracks CLI sessions from creation: a spawn shows in the history
     // panel immediately, and a close finalizes the entry in place.
-    if (project && isCliSession(session) && this.state.preferences.sessionHistoryEnabled) {
+    if (project && isCliSession(session) && this.preferences.sessionHistoryEnabled) {
       archiveSessionOnCreate(project, session);
       this.emit('history-changed', project.id);
     }
-    this.pushNav(session.id);
+    // A background session (`activate: false`) must stay out of the nav ring —
+    // Cmd+[ must not land on a tab the user never opened.
+    if (opts?.activate !== false) this.pushNav(session.id);
     this.persist();
     this.emit('session-added', { projectId, session });
     this.emit('session-changed');
@@ -532,7 +550,7 @@ class AppState {
     return session;
   }
 
-  addRemoteSession(projectId: string, sessionId: string, hostSessionName: string, shareMode: 'readonly' | 'readwrite'): SessionRecord | undefined {
+  addRemoteSession(projectId: string, sessionId: string, hostSessionName: string, shareMode: ShareMode): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
@@ -623,7 +641,7 @@ class AppState {
     this.persist();
     this.emit('team-changed');
     if (member.installAsAgent) {
-      void syncAgentInstallPure(window.vibeyard.provider, this.team, member, () => this.persist());
+      void syncAgentInstallPure(window.finevibe.provider, this.team, member, () => this.persist());
     }
     return member;
   }
@@ -636,7 +654,7 @@ class AppState {
     // A rename/role edit changes the assignee badge on any board task assigned
     // to this member; board views key off board-changed, so announce it here.
     if (this.boardReferencesMember(id)) this.notifyBoardChanged();
-    void reconcileAgentPure(window.vibeyard.provider, this.team, result.before, result.after, () => this.persist());
+    void reconcileAgentPure(window.finevibe.provider, this.team, result.before, result.after, () => this.persist());
     return result.after;
   }
 
@@ -664,7 +682,7 @@ class AppState {
     this.emit('team-changed');
     if (boardChanged) this.notifyBoardChanged();
     if (removed.installAsAgent && removed.agentSlug) {
-      fireAndForgetRemoveAgent(window.vibeyard.provider, removed.agentSlug);
+      fireAndForgetRemoveAgent(window.finevibe.provider, removed.agentSlug);
     }
   }
 
@@ -695,7 +713,7 @@ class AppState {
    */
   async addProfile(input: { name: string; providerId: ProviderId; customPath?: string }): Promise<Profile> {
     const id = crypto.randomUUID();
-    const { configDir, managed } = await window.vibeyard.profiles.provision(id, input.customPath, input.providerId);
+    const { configDir, managed } = await window.finevibe.profiles.provision(id, input.customPath, input.providerId);
     const profile: Profile = {
       id,
       name: input.name.trim(),
@@ -746,7 +764,7 @@ class AppState {
         if (task.profileId === id) task.profileId = undefined;
       }
     }
-    const defaultProfiles = this.state.preferences.defaultProfiles;
+    const defaultProfiles = this.preferences.defaultProfiles;
     if (defaultProfiles) {
       for (const providerId of Object.keys(defaultProfiles)) {
         if (defaultProfiles[providerId as ProviderId] === id) delete defaultProfiles[providerId as ProviderId];
@@ -773,7 +791,7 @@ class AppState {
   setProjectCodingDefaults(projectId: string, providerId: ProviderId | undefined, profileId?: string): void {
     const project = this.state.projects.find(p => p.id === projectId);
     if (!project) return;
-    const effectiveProvider = providerId ?? this.state.preferences.defaultProvider ?? 'claude';
+    const effectiveProvider = providerId ?? this.preferences.defaultProvider ?? 'claude';
     project.defaultProvider = providerId;
     project.defaultProfileId = this.profiles.find(p => p.id === profileId && p.providerId === effectiveProvider)?.id;
     this.persist();
@@ -782,7 +800,7 @@ class AppState {
 
   /** Set (or clear) the global default profile for one provider. */
   setProviderDefaultProfile(providerId: ProviderId, profileId: string | undefined): void {
-    const map = { ...this.state.preferences.defaultProfiles };
+    const map = { ...this.preferences.defaultProfiles };
     if (profileId) map[providerId] = profileId;
     else delete map[providerId];
     this.setPreference('defaultProfiles', map);
@@ -792,6 +810,7 @@ class AppState {
     projectId: string,
     member: TeamMember,
     overrideProviderId?: ProviderId,
+    opts?: TeamChatOpts,
   ): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
@@ -800,14 +819,14 @@ class AppState {
     const backend = resolveTeamChatBackend(
       member,
       project,
-      this.state.preferences,
+      this.preferences,
       activeSession,
       this.profiles,
       overrideProviderId,
     );
     if (!backend) return undefined;
 
-    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId);
+    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId, opts);
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);
     return session;
@@ -874,7 +893,7 @@ class AppState {
       // finalize it on close even when there is no transcript — the row then
       // carries `transcriptAvailable: false` and offers no Resume.
       const hadCreateEntry = !!findCreateEntry(project, sessionId);
-      if (this.state.preferences.sessionHistoryEnabled) {
+      if (this.preferences.sessionHistoryEnabled) {
         if (opts?.exitReason || transcriptAvailable || hadCreateEntry) {
           this.archiveSession(project, session, { ...opts, transcriptAvailable, finalize: hadCreateEntry });
         }
@@ -900,6 +919,10 @@ class AppState {
     }
     // Also remove from split/swarm panes
     project.layout.splitPanes = project.layout.splitPanes.filter((id) => id !== sessionId);
+    // Group membership is persisted state, so it is pruned inline beside the
+    // splitPanes filter — removeSession is the single funnel for every close
+    // path (batch closes loop through it); a group below 2 members dissolves.
+    pruneSessionFromTabGroups(project, sessionId);
     this.persist();
     this.emit('session-removed', { projectId, sessionId });
     this.emit('session-changed');
@@ -920,7 +943,7 @@ class AppState {
   private isArchivable(session: SessionRecord, project: ProjectRecord): boolean {
     if (!session.cliSessionId) return false;
     const providerId = session.providerId ?? 'claude';
-    return window.vibeyard.session.transcriptExistsSync(
+    return window.finevibe.session.transcriptExistsSync(
       providerId,
       session.cliSessionId,
       project.path,
@@ -1015,7 +1038,7 @@ class AppState {
       }
     }
 
-    const exists = await window.vibeyard.session.transcriptExists(
+    const exists = await window.finevibe.session.transcriptExists(
       archived.providerId,
       archived.cliSessionId,
       project.path,
@@ -1033,7 +1056,7 @@ class AppState {
     return this.resumeFromHistory(projectId, archivedSessionId);
   }
 
-  /** Open a CLI session by cliSessionId, bypassing Vibeyard history. Used for cross-project deep search results. */
+  /** Open a CLI session by cliSessionId, bypassing FineVibe history. Used for cross-project deep search results. */
   openCliSession(projectId: string, cliSessionId: string, name: string, providerId: ProviderId = 'claude', profileId?: string): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
@@ -1071,7 +1094,7 @@ class AppState {
     // The source transcript lives under its profile's config dir (if any), so
     // pass it through to locate the right .jsonl when building the handoff.
     const sourceProfile = resolved.profileId ? this.profiles.find((p) => p.id === resolved.profileId && p.providerId === resolved.providerId) : undefined;
-    const initialPrompt = await window.vibeyard.session.buildResumeWithPrompt(
+    const initialPrompt = await window.finevibe.session.buildResumeWithPrompt(
       resolved.providerId,
       resolved.cliSessionId ?? null,
       project.path,
@@ -1135,7 +1158,7 @@ class AppState {
     session.cliSessionId = cliSessionId;
     // Mirror the discovered id onto the active history entry (spawned before
     // the id existed) so the history row is resumable/live-linked immediately.
-    if (this.state.preferences.sessionHistoryEnabled && syncCreateEntryCliId(project, sessionId, cliSessionId)) {
+    if (this.preferences.sessionHistoryEnabled && syncCreateEntryCliId(project, sessionId, cliSessionId)) {
       this.emit('history-changed', project.id);
     }
     this.persist();
@@ -1344,6 +1367,31 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
     if (!reorderSessionInProject(project, sessionId, toIndex)) return;
+    this.persist();
+    this.emit('session-changed');
+  }
+
+  /** Center-zone tab drop: group the dragged tab (or its whole group) with the target. */
+  groupSessions(projectId: string, draggedSessionId: string, targetSessionId: string): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (!groupTabsInProject(project, draggedSessionId, targetSessionId)) return;
+    this.persist();
+    this.emit('session-changed');
+  }
+
+  renameTabGroup(projectId: string, groupId: string, name: string): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (!renameTabGroupInProject(project, groupId, name.slice(0, MAX_SESSION_NAME_LENGTH))) return;
+    this.persist();
+    this.emit('session-changed');
+  }
+
+  ungroupTabGroup(projectId: string, groupId: string): void {
+    const project = this.state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (!ungroupInProject(project, groupId)) return;
     this.persist();
     this.emit('session-changed');
   }

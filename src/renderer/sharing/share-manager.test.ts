@@ -158,6 +158,42 @@ describe('shareSession', () => {
     handle.__fireDisconnected?.();
     expect(change).toHaveBeenCalledTimes(2);
   });
+
+  // P2-63: registration happened before the await and onDisconnected after,
+  // so a rejecting getOffer() left the share registered: badge stays, PTY
+  // output keeps feeding a dead peer, and the RTCPeerConnection runs ICE to
+  // its timeout. The hardened guest path is the template.
+  it('tears the share down when getOffer rejects', async () => {
+    const handle = makeShareHandle();
+    handle.getOffer = vi.fn(async () => {
+      throw new Error('setLocalDescription failed');
+    });
+    hostState.startShare.mockReturnValue(handle);
+    const change = vi.fn();
+    onShareChange(change);
+
+    await expect(shareSession('s1', 'readonly', '1234')).rejects.toThrow('setLocalDescription failed');
+
+    // The peer is stopped (map entry + PC released inside peer-host)...
+    expect(hostState.stopShare).toHaveBeenCalledWith('s1');
+    // ...and the handle is out of the share map, so nothing can drive it.
+    await expect(acceptShareAnswer('s1', 'answer')).rejects.toThrow(/No active share/);
+  });
+
+  it('wires disconnect teardown before the offer await', async () => {
+    // The teardown callback must exist BEFORE getOffer settles: attach-
+    // after-await is the exact window P2-63 exploits.
+    let disconnectWiredDuringOffer = false;
+    const handle = makeShareHandle();
+    handle.getOffer = vi.fn(async () => {
+      disconnectWiredDuringOffer = handle.__fireDisconnected !== null;
+      return 'fake-offer';
+    });
+    hostState.startShare.mockReturnValue(handle);
+
+    await shareSession('s1', 'readonly', '1234');
+    expect(disconnectWiredDuringOffer).toBe(true);
+  });
 });
 
 describe('acceptShareAnswer', () => {

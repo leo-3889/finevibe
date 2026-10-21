@@ -21,7 +21,7 @@ export function checkPythonAvailable(): string | null {
   }
   return (
     'Python not found.\n\n' +
-    'Vibeyard uses Python on Windows for session tracking (cost, status, events).\n' +
+    'FineVibe uses Python on Windows for session tracking (cost, status, events).\n' +
     'These features will not work until Python is installed and available on PATH.\n\n' +
     'Install Python from https://www.python.org/downloads/ or via:\n' +
     '  winget install Python.Python.3\n'

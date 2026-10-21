@@ -20,7 +20,7 @@ vi.mock('../pty-manager', () => ({
 }));
 
 vi.mock('../hook-status', () => ({
-  getStatusLineScriptPath: vi.fn(() => '/tmp/vibeyard/statusline.sh'),
+  getStatusLineScriptPath: vi.fn(() => '/tmp/finevibe/statusline.sh'),
   installStatusLineScript: vi.fn(),
   cleanupAll: vi.fn(),
 }));
@@ -28,11 +28,39 @@ vi.mock('../hook-status', () => ({
 vi.mock('../claude-cli', () => ({
   installHooks: vi.fn(),
   getClaudeConfig: vi.fn(),
+  // The transcript read-path gate (P2-113) consults the managed-config-dir
+  // allowlist; tests that exercise the rejection override it per-test.
+  isManagedMcpConfigDir: vi.fn(() => true),
 }));
+
+// The banner-driven repair path threads the profile config dir through the
+// provider into settings-guard (P2-127): stub the guard so the threading is
+// the only thing under test.
+vi.mock('../settings-guard', () => ({
+  guardedInstall: vi.fn(),
+  validateSettings: vi.fn(() => ({})),
+  reinstallSettings: vi.fn(),
+}));
+
+// P2-116: install/remove target the agents tree the spawned CLI reads;
+vi.mock('./agent-files', async () => {
+  const path = await import('path');
+  return {
+    writeAgentFile: vi.fn(async (dir: string, slug: string, _content: string) => ({
+      filePath: path.join(dir, `${slug}.md`),
+    })),
+    deleteAgentFile: vi.fn(async () => undefined),
+  };
+});
 
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { ClaudeProvider, _resetCachedPath } from './claude-provider';
+import { isManagedMcpConfigDir } from '../claude-cli';
+import { validateSettings as guardValidateSettings, reinstallSettings as guardReinstallSettings } from '../settings-guard';
+import { writeAgentFile, deleteAgentFile } from './agent-files';
+import { installStatusLineScript } from '../hook-status';
+import { invalidateBinaryCache } from './resolve-binary';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -45,6 +73,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
+  invalidateBinaryCache();
   provider = new ClaudeProvider();
 });
 
@@ -96,15 +125,27 @@ describe('resolveBinaryPath', () => {
     expect(provider.resolveBinaryPath()).toBe('claude');
   });
 
-  it('caches result on subsequent calls', () => {
+  it('caches result on subsequent calls while the binary exists', () => {
     mockStatSync.mockImplementation((p) => {
       if (p === firstCandidate) return fileStat;
       throw new Error('ENOENT');
     });
     provider.resolveBinaryPath();
-    mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); }); // change behavior
-    // Should still return cached value
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    // P2-26: cache hit = one stat, zero subprocess re-probes.
     expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('re-resolves when the cached binary disappears', () => {
+    mockStatSync.mockImplementation((p) => {
+      if (p === firstCandidate) return fileStat;
+      throw new Error('ENOENT');
+    });
+    provider.resolveBinaryPath();
+    mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockExecSync.mockReturnValue('/some/other/path/claude\n' as any);
+    expect(provider.resolveBinaryPath()).toBe('/some/other/path/claude');
   });
 });
 
@@ -152,8 +193,8 @@ describe('buildEnv', () => {
   });
 
   it('sets CLAUDE_CONFIG_DIR when a profile configDir is given', () => {
-    const env = provider.buildEnv('sess-123', {}, { configDir: '/mock/home/.vibeyard/profiles/work' });
-    expect(env.CLAUDE_CONFIG_DIR).toBe('/mock/home/.vibeyard/profiles/work');
+    const env = provider.buildEnv('sess-123', {}, { configDir: '/mock/home/.finevibe/profiles/work' });
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/mock/home/.finevibe/profiles/work');
   });
 
   it('does not set CLAUDE_CONFIG_DIR when no configDir is given', () => {
@@ -166,63 +207,64 @@ describe('buildEnv', () => {
 
 describe('buildArgs', () => {
   it('returns ["-r", id] when isResume=true with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
     expect(args).toEqual(['-r', 'sid-1']);
   });
 
   it('returns ["--session-id", id] when isResume=false with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
     expect(args).toEqual(['--session-id', 'sid-1']);
   });
 
   it('returns [] when cliSessionId is null', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--verbose  --debug' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--verbose  --debug' });
     expect(args).toEqual(['--verbose', '--debug']);
   });
 
   it('combines session args and extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--verbose' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--verbose' });
     expect(args).toEqual(['-r', 'sid-1', '--verbose']);
   });
 
   it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
     expect(args).toEqual(['--model', 'my model']);
   });
 
   it('preserves empty quoted extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
     expect(args).toEqual(['--flag', '']);
   });
 
   it('passes initialPrompt as positional arg', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
     expect(args).toEqual(['fix the linter']);
   });
 
   it('passes initialPrompt after session-id args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '', initialPrompt: 'fix the linter' });
     expect(args).toEqual(['--session-id', 'sid-1', 'fix the linter']);
   });
 
   it('passes systemPrompt as --append-system-prompt argv pair', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).toEqual(['--append-system-prompt', 'You are the CMO.']);
   });
 
   it('preserves multi-line systemPrompt as a single argv element', () => {
     const prompt = 'You are the CMO.\n\nFocus on:\n- growth\n- retention';
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: prompt });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: prompt });
     expect(args).toEqual(['--append-system-prompt', prompt]);
   });
 
   it('puts systemPrompt before initialPrompt and extra args', () => {
     const args = provider.buildArgs({
+      sessionId: 'sess-1',
       cliSessionId: 'sid-1',
       isResume: false,
       extraArgs: '--verbose',
@@ -261,8 +303,26 @@ describe('getTranscriptPath', () => {
 
   it('resolves under a profile config dir when given', () => {
     mockExistsSync.mockReturnValue(true);
-    const out = provider.getTranscriptPath('abc-123', '/tmp/proj', '/mock/home/.vibeyard/profiles/work');
-    expect(out).toBe(path.join('/mock/home/.vibeyard/profiles/work', 'projects', '-tmp-proj', 'abc-123.jsonl'));
+    const out = provider.getTranscriptPath('abc-123', '/tmp/proj', '/mock/home/.finevibe/profiles/work');
+    expect(out).toBe(path.join('/mock/home/.finevibe/profiles/work', 'projects', '-tmp-proj', 'abc-123.jsonl'));
+  });
+
+  it('refuses a configDir outside the managed roots (P2-113 read gate)', () => {
+    // The channel echoes an existsSync answer back to the renderer, so a
+    // foreign configDir must never be probed at all - the same allowlist
+    // mcp:addServer enforces on its WRITE target, now on the read side.
+    mockExistsSync.mockReturnValue(true);
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    expect(provider.getTranscriptPath('abc-123', '/tmp/proj', '/home/attacker/.claude')).toBeNull();
+    expect(isManagedMcpConfigDir).toHaveBeenCalledWith('/home/attacker/.claude');
+    expect(mockExistsSync).not.toHaveBeenCalled();
+  });
+
+  it('accepts a managed profile configDir (gate passes)', () => {
+    mockExistsSync.mockReturnValue(true);
+    expect(provider.getTranscriptPath('abc-123', '/tmp/proj', '/mock/home/.finevibe/profiles/work')).toBe(
+      path.join('/mock/home/.finevibe/profiles/work', 'projects', '-tmp-proj', 'abc-123.jsonl'),
+    );
   });
 
   it('refuses a session id that is a path, not a file name', () => {
@@ -300,5 +360,65 @@ describe('parseCostFromOutput', () => {
   it('handles multiple cost values and picks last one', () => {
     const result = provider.parseCostFromOutput('Cost: $0.50 then $1.75 then $3.20');
     expect(result).toEqual({ totalCostUsd: 3.20 });
+  });
+});
+
+// P1-14 / P2-127: the banner is computed from (and must repair) the profile
+// session's config dir — the tree the profiled CLI actually reads.
+describe('validateSettings / reinstallSettings configDir threading', () => {
+  it('validateSettings validates the profile config dir, not ~/.claude', () => {
+    provider.validateSettings('/proj', '/profiles/work');
+    expect(guardValidateSettings).toHaveBeenCalledWith('/profiles/work');
+  });
+
+  it('validateSettings without a dir validates the default dir', () => {
+    provider.validateSettings('/proj');
+    expect(guardValidateSettings).toHaveBeenCalledWith(undefined);
+  });
+
+  it('reinstallSettings repairs the profile config dir and refreshes the script', () => {
+    provider.reinstallSettings('/profiles/work');
+    expect(guardReinstallSettings).toHaveBeenCalledWith('/profiles/work');
+    expect(installStatusLineScript).toHaveBeenCalledTimes(1);
+  });
+
+  it('reinstallSettings without a dir keeps repairing the default dir', () => {
+    provider.reinstallSettings();
+    expect(guardReinstallSettings).toHaveBeenCalledWith(undefined);
+    expect(installStatusLineScript).toHaveBeenCalledTimes(1);
+  });
+});
+
+// P2-116: a profile-pinned CLI runs with CLAUDE_CONFIG_DIR=<profileDir> and
+// reads agents from <profileDir>/agents — install/remove must target that
+// tree, mirroring the MCP configDir threading in claude-cli.ts.
+describe('agent install/remove configDir threading (P2-116)', () => {
+  it('agentsDir defaults to ~/.claude/agents', () => {
+    expect(provider.agentsDir()).toBe(path.join('/mock/home', '.claude', 'agents'));
+  });
+
+  it('agentsDir with a configDir targets the profile tree the CLI reads', () => {
+    expect(provider.agentsDir('/profiles/work')).toBe(path.join('/profiles/work', 'agents'));
+  });
+
+  it('installAgent with a configDir writes into profileDir/agents', async () => {
+    const result = await provider.installAgent('auditor', 'body', '/profiles/work');
+    expect(writeAgentFile).toHaveBeenCalledWith(path.join('/profiles/work', 'agents'), 'auditor', 'body');
+    expect(result.filePath).toBe(path.join('/profiles/work', 'agents', 'auditor.md'));
+  });
+
+  it('installAgent without a configDir keeps the default tree', async () => {
+    await provider.installAgent('auditor', 'body');
+    expect(writeAgentFile).toHaveBeenCalledWith(path.join('/mock/home', '.claude', 'agents'), 'auditor', 'body');
+  });
+
+  it('removeAgent with a configDir deletes from profileDir/agents', async () => {
+    await provider.removeAgent('auditor', '/profiles/work');
+    expect(deleteAgentFile).toHaveBeenCalledWith(path.join('/profiles/work', 'agents'), 'auditor');
+  });
+
+  it('removeAgent without a configDir keeps the default tree', async () => {
+    await provider.removeAgent('auditor');
+    expect(deleteAgentFile).toHaveBeenCalledWith(path.join('/mock/home', '.claude', 'agents'), 'auditor');
   });
 });

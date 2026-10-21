@@ -3,7 +3,7 @@ import * as readline from 'readline';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import * as os from 'os';
-import type { CliProvider, TranscriptDescriptor } from './provider';
+import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
@@ -13,13 +13,35 @@ import { getCodexConfig } from '../codex-config';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks, SESSION_ID_VAR } from '../codex-hooks';
 import { startCodexSessionWatcher, stopCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from '../codex-session-watcher';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
-import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget } from './transcript-utils';
+import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, TranscriptDiscoveryScan, readdirForDiscovery } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 const CODEX_FILE_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/i;
 
 import type { BrowserWindow } from 'electron';
 
 const binaryCache = { path: null as string | null };
+
+// onSessionStarted ran validateCodexHooks() — several synchronous file
+// reads — pre-spawn on EVERY Codex launch (audit P3-5). The hooks status is
+// bounded-TTL cached: launches within HOOK_VALIDATION_TTL_MS reuse the last
+// result; install/reinstall/settings validation and cleanup refresh the
+// cache, so hook repair is seen on the next launch, not a TTL away.
+const HOOK_VALIDATION_TTL_MS = 30_000;
+let hookValidationCache: { result: SettingsValidationResult; at: number } | null = null;
+
+function validateCodexHooksCached(): SettingsValidationResult {
+  const now = Date.now();
+  if (hookValidationCache && now - hookValidationCache.at < HOOK_VALIDATION_TTL_MS) {
+    return hookValidationCache.result;
+  }
+  const result = validateCodexHooks();
+  hookValidationCache = { result, at: now };
+  return result;
+}
+
+function invalidateHookValidationCache(): void {
+  hookValidationCache = null;
+}
 
 export class CodexProvider implements CliProvider {
   readonly meta: CliProviderMeta = {
@@ -34,6 +56,16 @@ export class CodexProvider implements CliProvider {
       configReading: true,
       shiftEnterNewline: false,
       pendingPromptTrigger: 'startup-arg',
+      // planModeArg intentionally UNSET — VERIFICATION-PENDING. Codex plan mode is
+      // GA (rust-v0.94.0 collaboration mode; TUI /plan, Shift+Tab), but
+      // `--collaboration-mode` is `codex exec`-only (headless JSON, incompatible
+      // with FineVibe's PTY terminal), there is no TUI startup parameter
+      // (openai/codex#13377 — the startup config field is removed on main), and
+      // the required probe (`codex --help` on an installed binary) could not run
+      // on 2026-10-21: the CLI is not installed here. Never ship a planModeArg
+      // from docs alone — an unknown flag makes codex exit at startup, bricking
+      // every spawn. Probe outcomes + the `/plan` startup-input fallback are in
+      // docs/provider-contracts.md and todos/ask-ai-plan-mode-provider-support-plan.md.
       systemPromptInjection: true,
       profiles: false,
       selfTitles: false,
@@ -84,6 +116,7 @@ export class CodexProvider implements CliProvider {
 
   async installHooks(): Promise<void> {
     installCodexHooks();
+    invalidateHookValidationCache();
   }
 
   installStatusScripts(): void {}
@@ -94,9 +127,10 @@ export class CodexProvider implements CliProvider {
     // The rollout watcher is a recursive fs.watch plus a 2s interval: without
     // this it survives quit, and a scan armed within its 500ms arming window
     // fires after cleanupAll() deleted STATUS_DIR and recreates
-    // os.tmpdir()/vibeyard with a .sessionid file (Pi/OMP do the same in their
+    // os.tmpdir()/finevibe with a .sessionid file (Pi/OMP do the same in their
     // cleanup()).
     stopCodexSessionWatcher();
+    invalidateHookValidationCache();
   }
 
   startConfigWatcher(win: BrowserWindow, projectPath: string): void {
@@ -113,7 +147,7 @@ export class CodexProvider implements CliProvider {
   // oldest pending tab, so it runs only as the fallback for installs
   // without complete hooks.
   onSessionStarted(sessionId: string, cwd: string, win: BrowserWindow): void {
-    if (validateCodexHooks().hooks === 'complete') return;
+    if (validateCodexHooksCached().hooks === 'complete') return;
     startCodexSessionWatcher(win);
     registerPendingCodexSession(sessionId, cwd);
   }
@@ -131,11 +165,14 @@ export class CodexProvider implements CliProvider {
   }
 
   validateSettings(): SettingsValidationResult {
-    return validateCodexHooks();
+    const result = validateCodexHooks();
+    hookValidationCache = { result, at: Date.now() };
+    return result;
   }
 
   reinstallSettings(): void {
     installCodexHooks();
+    invalidateHookValidationCache();
   }
 
   agentsDir(): string {
@@ -173,23 +210,23 @@ export class CodexProvider implements CliProvider {
       return null;
     }
   }
-  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDiscovery> {
+    // sessions are partitioned as YYYY/MM/DD/rollout-<ts>-<id>.jsonl[.zst].
+    // A readdir failure anywhere in the walk (other than "dir missing")
+    // propagates and marks the pass incomplete — a partial tree is not
+    // evidence the corpus shrank, and pruning the derived index off it
+    // re-reads every rollout on the next search (P2-70).
     const root = path.join(os.homedir(), '.codex', 'sessions');
-    const out: TranscriptDescriptor[] = [];
+    const scan = new TranscriptDiscoveryScan();
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (signal?.aborted) return;
-      let entries: fs.Dirent[];
-      try {
-        entries = await fs.promises.readdir(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
+      const entries = await readdirForDiscovery(dir, true);
       if (depth === 3) {
         for (const entry of entries) {
           if (signal?.aborted) return;
           const m = entry.name.match(CODEX_FILE_RE);
           if (!m) continue;
-          out.push({ cliSessionId: m[1], transcriptPath: path.join(dir, entry.name) });
+          scan.descriptors.push({ cliSessionId: m[1], transcriptPath: path.join(dir, entry.name) });
         }
         return;
       }
@@ -198,8 +235,8 @@ export class CodexProvider implements CliProvider {
         if (entry.isDirectory()) await walk(path.join(dir, entry.name), depth + 1);
       }
     };
-    await walk(root, 0);
-    return out;
+    await scan.collect(root, () => walk(root, 0));
+    return scan.result();
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {
@@ -287,4 +324,9 @@ function descSortedReaddir(dir: string): string[] {
 /** @internal Test-only: reset cached binary path */
 export function _resetCachedPath(): void {
   binaryCache.path = null;
+}
+
+/** @internal Test-only: reset the cached hooks validation */
+export function _resetHookValidationCache(): void {
+  invalidateHookValidationCache();
 }

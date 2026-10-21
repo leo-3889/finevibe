@@ -116,20 +116,35 @@ export function resolveTeamChatBackend(
   return { providerId, profileId: profile?.id };
 }
 
-/** Build the SessionRecord for a team chat session, including the pendingSystemPrompt and teamMemberId. */
+/** New-session-modal fields forwarded onto a team-chat session record. */
+export interface TeamChatOpts {
+  name?: string;
+  args?: string;
+  envVars?: string;
+}
+
+/**
+ * Build the SessionRecord for a team chat session, including the pendingSystemPrompt and teamMemberId.
+ * `opts` carries the New Session modal's fields: an explicit `name` (blank keeps the
+ * member-derived "Name - Session N"), an explicit `args` — a present key wins even when
+ * undefined, so clearing the field clears the args; an absent key keeps the project
+ * default — and `envVars`.
+ */
 export function buildTeamChatSession(
   project: ProjectRecord,
   member: TeamMember,
   providerId: ProviderId,
   maxNameLength: number,
   profileId?: string,
+  opts?: TeamChatOpts,
 ): SessionRecord {
   const sessionNum = project.sessions.filter((s) => s.teamMemberId === member.id).length + 1;
   const base = buildCliSession({
-    name: `${member.name} - Session ${sessionNum}`.slice(0, maxNameLength),
+    name: (opts?.name?.trim() || `${member.name} - Session ${sessionNum}`).slice(0, maxNameLength),
     providerId,
-    args: project.defaultArgs,
+    args: opts && 'args' in opts ? opts.args : project.defaultArgs,
     profileId,
+    envVars: opts?.envVars,
   });
   return {
     ...base,

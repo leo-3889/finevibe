@@ -525,7 +525,7 @@ export const createReadinessWidget: WidgetFactory = (host: WidgetHost): WidgetIn
 
     try {
       const excluded = appState.preferences.readinessExcludedProviders ?? [];
-      const result = await window.vibeyard.readiness.analyze(project.path, excluded.length > 0 ? excluded : undefined);
+      const result = await window.finevibe.readiness.analyze(project.path, excluded.length > 0 ? excluded : undefined);
       appState.setProjectReadiness(project.id, result);
     } catch (err) {
       console.warn('Readiness scan failed:', err);

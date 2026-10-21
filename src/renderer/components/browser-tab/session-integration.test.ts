@@ -22,6 +22,7 @@ vi.mock('../../state.js', () => ({
     get activeProject() { return activeProjectValue; },
     setActiveSession,
     addPlanSession,
+    preferences: {},
   },
 }));
 
@@ -54,6 +55,12 @@ vi.mock('./draw-mode.js', () => ({
   showDrawError,
 }));
 
+const resolvePlanModePreference = vi.fn<(prefs: unknown, id: string) => boolean>(() => true);
+vi.mock('../../state/specialized-sessions.js', () => ({
+  resolvePlanProvider: () => 'claude',
+  resolvePlanModePreference,
+}));
+
 function makeSession(id: string, name = id): SessionRecord {
   return { id, name } as unknown as SessionRecord;
 }
@@ -63,9 +70,6 @@ function makeInstance(overrides: Partial<Record<string, unknown>> = {}): Browser
     instructionInput: { value: 'inspect me' } as HTMLTextAreaElement,
     flowInstructionInput: { value: 'replay flow' } as HTMLTextAreaElement,
     drawInstructionInput: { value: 'annotate this' } as HTMLTextAreaElement,
-    inspectPlanModeCheckbox: { checked: false } as HTMLInputElement,
-    flowPlanModeCheckbox: { checked: false } as HTMLInputElement,
-    drawPlanModeCheckbox: { checked: false } as HTMLInputElement,
     selectedElement: {
       tagName: 'DIV',
       id: '',
@@ -211,6 +215,32 @@ describe('deliverDraw', () => {
 
     expect(captureScreenshotPath).not.toHaveBeenCalled();
     expect(injectPromptIntoRunningSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendToNewSession', () => {
+  it('passes the config-derived plan-mode value to addPlanSession', async () => {
+    setProject([]);
+    const { sendToNewSession } = await import('./session-integration.js');
+
+    sendToNewSession(makeInstance());
+
+    expect(resolvePlanModePreference).toHaveBeenCalledWith({}, 'claude');
+    expect(addPlanSession).toHaveBeenCalledWith('proj-1', 'DIV: inspect me', true, undefined, undefined, { activate: true });
+    expect(dismissInspect).toHaveBeenCalled();
+  });
+});
+
+describe('sendFlowToNewSession', () => {
+  it('passes the config-derived plan-mode value to addPlanSession', async () => {
+    setProject([]);
+    resolvePlanModePreference.mockReturnValueOnce(false);
+    const { sendFlowToNewSession } = await import('./session-integration.js');
+
+    sendFlowToNewSession(makeInstance());
+
+    expect(addPlanSession).toHaveBeenCalledWith('proj-1', 'Flow: replay flow', false, undefined, undefined, { activate: true });
+    expect(dismissFlow).toHaveBeenCalled();
   });
 });
 

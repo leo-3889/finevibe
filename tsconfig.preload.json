@@ -1,15 +1,14 @@
 {
+  "extends": "./tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
     "moduleResolution": "node",
     "outDir": "dist/preload",
     "rootDir": "src",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
     "declaration": true,
     "composite": true
   },
+  "exclude": ["src/preload/**/*.test.ts"],
   "include": ["src/preload/**/*.ts", "src/shared/**/*.ts"]
 }

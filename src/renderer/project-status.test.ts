@@ -53,7 +53,7 @@ describe('getProjectStatus', () => {
 
 describe('projectInitial', () => {
   it('returns the uppercased first character', () => {
-    expect(projectInitial('vibeyard')).toBe('V');
+    expect(projectInitial('finevibe')).toBe('F');
     expect(projectInitial('  forty-api')).toBe('F');
   });
 

@@ -2,7 +2,7 @@ import * as path from 'path';
 import type { ReadinessCheck } from '../../../shared/types';
 import type { ReadinessCheckProducer, TaggedCheck, AnalysisContext } from '../types';
 import { countFileLines } from '../utils';
-import { buildVibeyardignoreMatcher } from '../../vibeyardignore';
+import { buildFineVibeIgnoreMatcher } from '../../finevibeignore';
 import { buildSplitFilesPrompt } from '../../../shared/split-file-prompt';
 
 const TEXT_EXTENSIONS = new Set([
@@ -24,7 +24,7 @@ function checkLargeFiles(projectPath: string, trackedFiles: string[]): Readiness
     };
   }
 
-  const isIgnored = buildVibeyardignoreMatcher(projectPath);
+  const isIgnored = buildFineVibeIgnoreMatcher(projectPath);
 
   const largeFiles: string[] = [];
   const LINE_THRESHOLD = 1000;
@@ -49,7 +49,7 @@ function checkLargeFiles(projectPath: string, trackedFiles: string[]): Readiness
     }
   }
 
-  const largeFilesRationale = 'Files with thousands of lines bloat the context window, slowing the AI and inflating costs. Excluding generated artifacts via .vibeyardignore — and refactoring genuine giants — leaves more room for the source code the AI actually needs to reason about.';
+  const largeFilesRationale = 'Files with thousands of lines bloat the context window, slowing the AI and inflating costs. Excluding generated artifacts via .finevibeignore — and refactoring genuine giants — leaves more room for the source code the AI actually needs to reason about.';
 
   const count = largeFiles.length;
   if (count === 0) {
@@ -58,7 +58,7 @@ function checkLargeFiles(projectPath: string, trackedFiles: string[]): Readiness
   if (count <= 3) {
     return {
       id: 'large-files', name: 'No extremely large files', status: 'warning',
-      description: `${count} file(s) over ${LINE_THRESHOLD} lines: ${largeFiles.slice(0, 3).join(', ')}. Edit .vibeyardignore to exclude files from scanning.`,
+      description: `${count} file(s) over ${LINE_THRESHOLD} lines: ${largeFiles.slice(0, 3).join(', ')}. Edit .finevibeignore to exclude files from scanning.`,
       score: 50, maxScore: 100,
       fixPrompt: buildSplitFilesPrompt(largeFiles),
       effort: 'medium', impact: 65, rationale: largeFilesRationale,
@@ -66,7 +66,7 @@ function checkLargeFiles(projectPath: string, trackedFiles: string[]): Readiness
   }
   return {
     id: 'large-files', name: 'No extremely large files', status: 'fail',
-    description: `${count} files over ${LINE_THRESHOLD} lines. Edit .vibeyardignore to exclude files from scanning.`,
+    description: `${count} files over ${LINE_THRESHOLD} lines. Edit .finevibeignore to exclude files from scanning.`,
     score: 0, maxScore: 100,
     fixPrompt: `${count} files exceed ${LINE_THRESHOLD} lines: ${largeFiles.slice(0, 5).join(', ')}. Large files waste AI context and make changes harder. Refactor them into smaller, focused modules.`,
     effort: 'high', impact: 80, rationale: largeFilesRationale,

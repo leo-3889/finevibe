@@ -1,5 +1,7 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import type { ProviderId } from '../../shared/types';
+import type { TranscriptDescriptor, TranscriptDiscovery } from './provider';
 import { loadState } from '../store';
 
 /** Per-session character cap when indexing transcript content for global search. */
@@ -107,4 +109,60 @@ export function collectProfileRoots(providerId: ProviderId, defaultRoot: string,
     // Profiles unavailable — fall back to the default root only.
   }
   return roots;
+}
+
+/**
+ * The errors that mean "this root has no transcripts": a provider the user
+ * never ran simply has no directory. Everything else (EIO, EPERM, EACCES on a
+ * mounted tree) is a transient failure and must NOT read as an empty corpus.
+ */
+export function isMissingRootError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/**
+ * Directory listing for transcript discovery: a missing root is an empty
+ * listing, every other failure propagates so the caller marks the pass
+ * incomplete instead of pruning the derived index off a partial scan (P2-70).
+ */
+export function readdirForDiscovery(dir: string): Promise<string[]>;
+export function readdirForDiscovery(dir: string, withFileTypes: true): Promise<fs.Dirent[]>;
+export function readdirForDiscovery(dir: string, withFileTypes = false): Promise<string[] | fs.Dirent[]> {
+  // Branched, not `{ withFileTypes }`: the option's literal type (`true` vs
+  // `false`) is part of the Node overloads, and a widened `boolean` matches
+  // neither. The branch keeps each call pinned to its overload.
+  const listing = withFileTypes
+    ? fs.promises.readdir(dir, { withFileTypes: true })
+    : fs.promises.readdir(dir);
+  return listing.catch((err) => {
+    if (isMissingRootError(err)) return [];
+    throw err;
+  });
+}
+
+/**
+ * Accumulates one provider's discovery pass and remembers every root whose
+ * scan threw, so `result()` can tell the caller the corpus is partial.
+ */
+export class TranscriptDiscoveryScan {
+  readonly descriptors: TranscriptDescriptor[] = [];
+  readonly incompleteRoots: string[] = [];
+
+  /** Run one root's scan; a throw on an existing root marks it incomplete. */
+  async collect(root: string, scan: () => Promise<void>): Promise<void> {
+    try {
+      await scan();
+    } catch (err) {
+      if (!isMissingRootError(err)) this.incompleteRoots.push(root);
+    }
+  }
+
+  result(): TranscriptDiscovery {
+    return {
+      descriptors: this.descriptors,
+      complete: this.incompleteRoots.length === 0,
+      incompleteRoots: this.incompleteRoots,
+    };
+  }
 }

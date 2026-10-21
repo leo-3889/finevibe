@@ -1,12 +1,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { McpResult } from '../shared/types';
 
-interface McpResult {
-  success: boolean;
-  data?: unknown;
-  error?: string;
-}
+export type { McpResult };
 
 interface McpConnection {
   client: Client;
@@ -128,7 +125,7 @@ export async function connect(id: string, url: string): Promise<McpResult> {
     const transport = url.endsWith('/sse')
       ? new SSEClientTransport(new URL(url), transportOptions)
       : new StreamableHTTPClientTransport(new URL(url), transportOptions);
-    const client = new Client({ name: 'vibeyard-mcp-inspector', version: '1.0.0' });
+    const client = new Client({ name: 'finevibe-mcp-inspector', version: '1.0.0' });
     conn = { client, transport, closed: false };
   } catch (err) {
     if (connections.get(id) === entry) connections.delete(id);

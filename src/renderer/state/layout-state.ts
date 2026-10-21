@@ -1,5 +1,6 @@
 import type { ProjectRecord } from '../../shared/types.js';
 import { isCliSession } from '../session-utils.js';
+import { normalizeTabGroups } from './tab-group-state.js';
 
 /** Toggle between 'swarm' and 'tabs' layout modes. When entering swarm, reconcile splitPanes with current CLI sessions. */
 export function toggleSwarmMode(project: ProjectRecord): void {
@@ -60,5 +61,8 @@ export function reorderSessionInProject(project: ProjectRecord, sessionId: strin
       .filter((s) => project.layout.splitPanes.includes(s.id))
       .map((s) => s.id);
   }
+  // Same resync idiom for tab groups: a reorder that pulls a member out of a
+  // group's middle detaches it and splits the rest (runs of 1 dissolve).
+  normalizeTabGroups(project);
   return true;
 }

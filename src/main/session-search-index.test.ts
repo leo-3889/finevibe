@@ -6,7 +6,7 @@ const location = vi.hoisted(() => ({ dir: '' }));
 vi.mock('electron', () => ({ app: { getPath: () => location.dir } }));
 import { readSearchIndex, writeSearchIndex, pruneSearchIndex } from './session-search-index';
 
-beforeEach(async () => { location.dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vibeyard-index-')); });
+beforeEach(async () => { location.dir = await fs.mkdtemp(path.join(os.tmpdir(), 'finevibe-index-')); });
 afterEach(async () => { await fs.rm(location.dir, { recursive: true, force: true }); });
 
 it('reuses a persisted index only for the matching source version', async () => {

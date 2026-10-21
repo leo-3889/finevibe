@@ -19,6 +19,7 @@ interface ShellTerminalInstance {
   projectId: string;
   sessionId: string;
   spawned: boolean;
+  lastSize: string;
 }
 
 const shells = new Map<string, ShellTerminalInstance[]>();
@@ -85,8 +86,8 @@ function createShell(projectId: string): ShellTerminalInstance {
   const shellId = crypto.randomUUID();
   const sessionId = `shell-${projectId}-${shellId}`;
 
-  const writeToPty = (data: string) => window.vibeyard.pty.write(sessionId, data);
-  attachClipboardCopyHandler(terminal, undefined, writeToPty);
+  const writeToPty = (data: string) => window.finevibe.pty.write(sessionId, data);
+  attachClipboardCopyHandler(terminal, undefined);
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: ShellTerminalInstance = {
@@ -99,6 +100,7 @@ function createShell(projectId: string): ShellTerminalInstance {
     projectId,
     sessionId,
     spawned: false,
+    lastSize: '',
   };
 
   // Dropping a file types its path into the shell, the same contract the session
@@ -107,7 +109,7 @@ function createShell(projectId: string): ShellTerminalInstance {
   attachFileDropHandler(terminal, element, writeToPty, () => instance.spawned);
 
   terminal.onData((data) => {
-    window.vibeyard.pty.write(sessionId, data);
+    window.finevibe.pty.write(sessionId, data);
   });
 
   getShellsFor(projectId).push(instance);
@@ -121,7 +123,54 @@ async function spawnShell(instance: ShellTerminalInstance, projectPath: string):
   const overlay = instance.element.querySelector('.terminal-exit-overlay');
   if (overlay) overlay.remove();
 
-  await window.vibeyard.pty.createShell(instance.sessionId, projectPath);
+  try {
+    await window.finevibe.pty.createShell(instance.sessionId, projectPath);
+    // A fresh PTY starts at the spawn default; force the next fit to
+    // re-send the pane's current geometry.
+    instance.lastSize = '';
+  } catch (err) {
+    // `activateShellInstance` fires this un-awaited. A rejected `createShell`
+    // (missing shell binary, ConPTY failure) used to surface as an unhandled
+    // rejection: the tab stayed blank, and `spawned === true` blocked every
+    // later retry. Mirror the session pane's failure overlay.
+    instance.spawned = false;
+    appendExitOverlay(
+      instance,
+      `Failed to start shell: ${err instanceof Error ? err.message : String(err)}`,
+      'Retry',
+      () => spawnShell(instance, projectPath),
+    );
+  }
+}
+
+/**
+ * The pane overlay carrying a message and one action (exit notice, spawn
+ * failure). Built with DOM APIs, never innerHTML: the message includes
+ * exception text, which must not be parsed as markup.
+ */
+function appendExitOverlay(
+  instance: ShellTerminalInstance,
+  message: string,
+  buttonLabel: string,
+  onRestart: () => void,
+): void {
+  const overlay = document.createElement('div');
+  overlay.className = 'terminal-exit-overlay';
+  const box = document.createElement('div');
+  box.className = 'terminal-exit-message';
+  const line = document.createElement('div');
+  line.textContent = message;
+  const button = document.createElement('button');
+  button.className = 'respawn-btn';
+  button.textContent = buttonLabel;
+  button.addEventListener('click', () => {
+    overlay.remove();
+    onRestart();
+  });
+  box.appendChild(line);
+  box.appendChild(button);
+  overlay.appendChild(box);
+  instance.element.appendChild(overlay);
 }
 
 function activateShellInstance(instance: ShellTerminalInstance): void {
@@ -224,7 +273,7 @@ function closeShell(projectId: string, shellId: string): void {
   const instance = list[idx];
 
   destroySearchBar(instance.sessionId);
-  window.vibeyard.pty.kill(instance.sessionId);
+  window.finevibe.pty.kill(instance.sessionId);
   instance.terminal.dispose();
   instance.element.remove();
   list.splice(idx, 1);
@@ -288,7 +337,16 @@ function fitActiveShell(): void {
   try {
     instance.fitAddon.fit();
     const { cols, rows } = instance.terminal;
-    window.vibeyard.pty.resize(instance.sessionId, cols, rows);
+    // Mirrors fitTerminal()'s memo: renderLayout() ends in a fitAllVisible(),
+    // and a redundant resize makes the CLI redraw underneath an in-progress
+    // selection — only a changed geometry goes over the wire.
+    const size = `${cols}x${rows}`;
+    if (size === instance.lastSize) return;
+    instance.lastSize = size;
+    // pty.resize is typed void, but the bridge hands back the
+    // ipcRenderer.invoke promise; a rejected resize would otherwise surface
+    // as an unhandled rejection.
+    Promise.resolve(window.finevibe.pty.resize(instance.sessionId, cols, rows)).catch(() => {});
   } catch {
     // not visible yet
   }
@@ -318,22 +376,12 @@ export function handleShellPtyExit(sessionId: string, exitCode: number): void {
   if (!instance) return;
   instance.spawned = false;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'terminal-exit-overlay';
-  overlay.innerHTML = `
-    <div class="terminal-exit-message">
-      <div>Shell exited (code: ${exitCode})</div>
-      <button class="respawn-btn">Restart</button>
-    </div>
-  `;
-  overlay.querySelector('.respawn-btn')!.addEventListener('click', () => {
-    overlay.remove();
+  appendExitOverlay(instance, `Shell exited (code: ${exitCode})`, 'Restart', () => {
     const project = appState.projects.find(p => p.id === instance.projectId);
     if (project) {
       spawnShell(instance, project.path);
     }
   });
-  instance.element.appendChild(overlay);
 }
 
 function isShellSessionId(sessionId: string): boolean {
@@ -345,7 +393,7 @@ function destroyAllShells(projectId: string): void {
   if (!list) return;
   for (const instance of list) {
     destroySearchBar(instance.sessionId);
-    window.vibeyard.pty.kill(instance.sessionId);
+    window.finevibe.pty.kill(instance.sessionId);
     instance.terminal.dispose();
     instance.element.remove();
   }

@@ -4,7 +4,7 @@ const mockLoad = vi.fn();
 const mockSave = vi.fn();
 
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: mockLoad, save: mockSave },
   },
 });
@@ -65,7 +65,7 @@ describe('applyCliSessionName', () => {
     expect(nameOf(project.id, session.id)).toBe('Session 1');
   });
 
-  it('does not overwrite a name the user set in Vibeyard', () => {
+  it('does not overwrite a name the user set in FineVibe', () => {
     const { project, session } = addProjectAndSession();
     appState.renameSession(project.id, session.id, 'my careful name', true);
 

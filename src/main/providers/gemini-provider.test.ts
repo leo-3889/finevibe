@@ -9,6 +9,10 @@ vi.mock('fs', () => ({
 
 vi.mock('os', () => ({
   homedir: () => '/mock/home',
+  // hook-status.ts calls os.tmpdir() at module load (STATUS_DIR); the
+  // import chain gemini-provider → gemini-hooks → … → hook-status hits it
+  // before any test runs, so the mock must carry it.
+  tmpdir: () => '/tmp',
 }));
 
 vi.mock('child_process', () => ({
@@ -30,9 +34,9 @@ vi.mock('../config-watcher', () => ({
 
 vi.mock('../gemini-hooks', () => ({
   installGeminiHooks: vi.fn(),
-  validateGeminiHooks: vi.fn(() => ({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} })),
+  validateGeminiHooks: vi.fn(() => ({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} })),
   cleanupGeminiHooks: vi.fn(),
-  SESSION_ID_VAR: 'VIBEYARD_SESSION_ID',
+  SESSION_ID_VAR: 'FINEVIBE_SESSION_ID',
 }));
 
 import * as fs from 'fs';
@@ -41,6 +45,7 @@ import { GeminiProvider, _resetCachedPath } from './gemini-provider';
 import { getGeminiConfig } from '../gemini-config';
 import { startConfigWatcher, stopConfigWatcher } from '../config-watcher';
 import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks } from '../gemini-hooks';
+import { invalidateBinaryCache } from './resolve-binary';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -59,6 +64,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
+  invalidateBinaryCache();
   provider = new GeminiProvider();
 });
 
@@ -109,14 +115,27 @@ describe('resolveBinaryPath', () => {
     expect(provider.resolveBinaryPath()).toBe('gemini');
   });
 
-  it('caches result on subsequent calls', () => {
+  it('caches result on subsequent calls while the binary exists', () => {
+    mockStatSync.mockImplementation((p) => {
+      if (p === firstCandidate) return fileStat;
+      throw new Error('ENOENT');
+    });
+    provider.resolveBinaryPath();
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    // P2-26: cache hit = one stat, zero subprocess re-probes.
+    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('re-resolves when the cached binary disappears', () => {
     mockStatSync.mockImplementation((p) => {
       if (p === firstCandidate) return fileStat;
       throw new Error('ENOENT');
     });
     provider.resolveBinaryPath();
     mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    mockExecSync.mockReturnValue('/some/other/path/gemini\n' as any);
+    expect(provider.resolveBinaryPath()).toBe('/some/other/path/gemini');
   });
 });
 
@@ -152,9 +171,9 @@ describe('buildEnv', () => {
     expect(env.PATH).toBe(isWin ? '/usr/local/bin;/usr/bin' : '/usr/local/bin:/usr/bin');
   });
 
-  it('sets VIBEYARD_SESSION_ID to the session ID', () => {
+  it('sets FINEVIBE_SESSION_ID to the session ID', () => {
     const env = provider.buildEnv('sess-123', {});
-    expect(env.VIBEYARD_SESSION_ID).toBe('sess-123');
+    expect(env.FINEVIBE_SESSION_ID).toBe('sess-123');
   });
 
   it('preserves existing env vars', () => {
@@ -166,52 +185,52 @@ describe('buildEnv', () => {
 
 describe('buildArgs', () => {
   it('returns ["-r", id] when isResume=true with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
     expect(args).toEqual(['-r', 'sid-1']);
   });
 
   it('returns [] when isResume=false with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('returns [] when cliSessionId is null', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model gemini-2.5-flash  --sandbox' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model gemini-2.5-flash  --sandbox' });
     expect(args).toEqual(['--model', 'gemini-2.5-flash', '--sandbox']);
   });
 
   it('combines resume args and extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gemini-2.5-flash' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gemini-2.5-flash' });
     expect(args).toEqual(['-r', 'sid-1', '--model', 'gemini-2.5-flash']);
   });
 
   it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
     expect(args).toEqual(['--model', 'my model']);
   });
 
   it('preserves empty quoted extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
     expect(args).toEqual(['--flag', '']);
   });
 
   it('appends -i flag when initialPrompt is provided', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'Fix the hooks config' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'Fix the hooks config' });
     expect(args).toEqual(['-i', 'Fix the hooks config']);
   });
 
   it('does not append -i flag when initialPrompt is absent', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('does not emit a system-prompt flag (Gemini CLI has none; team chat is gated off this provider)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).not.toContain('--system-prompt');
     expect(args).not.toContain('You are the CMO.');
   });
@@ -236,7 +255,7 @@ describe('hooks integration', () => {
   it('validateSettings delegates to validateGeminiHooks', () => {
     const result = provider.validateSettings();
     expect(mockValidateGeminiHooks).toHaveBeenCalled();
-    expect(result).toEqual({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
+    expect(result).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   });
 
   it('cleanup calls cleanupGeminiHooks and stopConfigWatcher', () => {

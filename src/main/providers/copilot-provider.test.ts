@@ -31,9 +31,9 @@ vi.mock('../config-watcher', () => ({
 
 vi.mock('../copilot-hooks', () => ({
   installCopilotHooks: vi.fn(),
-  validateCopilotHooks: vi.fn(() => ({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} })),
+  validateCopilotHooks: vi.fn(() => ({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} })),
   cleanupCopilotHooks: vi.fn(),
-  SESSION_ID_VAR: 'VIBEYARD_SESSION_ID',
+  SESSION_ID_VAR: 'FINEVIBE_SESSION_ID',
 }));
 
 vi.mock('./agent-files', () => ({
@@ -50,6 +50,7 @@ import { getCopilotConfig } from '../copilot-config';
 import { startConfigWatcher, stopConfigWatcher } from '../config-watcher';
 import { installCopilotHooks, validateCopilotHooks, cleanupCopilotHooks } from '../copilot-hooks';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
+import { invalidateBinaryCache } from './resolve-binary';
 
 const mockStatSync = vi.mocked(fs.statSync);
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -68,6 +69,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
+  invalidateBinaryCache();
   provider = new CopilotProvider();
 });
 
@@ -118,14 +120,27 @@ describe('resolveBinaryPath', () => {
     expect(provider.resolveBinaryPath()).toBe('copilot');
   });
 
-  it('caches result on subsequent calls', () => {
+  it('caches result on subsequent calls while the binary exists', () => {
+    mockStatSync.mockImplementation((p) => {
+      if (p === firstCandidate) return fileStat;
+      throw new Error('ENOENT');
+    });
+    provider.resolveBinaryPath();
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    // P2-26: cache hit = one stat, zero subprocess re-probes.
+    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('re-resolves when the cached binary disappears', () => {
     mockStatSync.mockImplementation((p) => {
       if (p === firstCandidate) return fileStat;
       throw new Error('ENOENT');
     });
     provider.resolveBinaryPath();
     mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    mockExecSync.mockReturnValue('/some/other/path/copilot\n' as any);
+    expect(provider.resolveBinaryPath()).toBe('/some/other/path/copilot');
   });
 });
 
@@ -161,9 +176,9 @@ describe('buildEnv', () => {
     expect(env.PATH).toBe(isWin ? '/usr/local/bin;/usr/bin' : '/usr/local/bin:/usr/bin');
   });
 
-  it('sets VIBEYARD_SESSION_ID to the session ID', () => {
+  it('sets FINEVIBE_SESSION_ID to the session ID', () => {
     const env = provider.buildEnv('sess-123', {});
-    expect(env.VIBEYARD_SESSION_ID).toBe('sess-123');
+    expect(env.FINEVIBE_SESSION_ID).toBe('sess-123');
   });
 
   it('preserves existing env vars', () => {
@@ -175,52 +190,52 @@ describe('buildEnv', () => {
 
 describe('buildArgs', () => {
   it('returns ["--resume=<id>"] when isResume=true with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
     expect(args).toEqual(['--resume=sid-1']);
   });
 
   it('returns [] when isResume=false with cliSessionId (no continue-in-place)', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('returns [] when cliSessionId is null', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('passes initialPrompt as -i arg when not resuming', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the bug' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the bug' });
     expect(args).toEqual(['-i', 'fix the bug']);
   });
 
   it('passes the queued prompt on the resume branch too (terminal-pane hands it over for every startup-arg provider)', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'fix the bug' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'fix the bug' });
     expect(args).toEqual(['--resume=sid-1', '-i', 'fix the bug']);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model gpt-5.2  --autopilot' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model gpt-5.2  --autopilot' });
     expect(args).toEqual(['--model', 'gpt-5.2', '--autopilot']);
   });
 
   it('combines resume args and extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gpt-5.2' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gpt-5.2' });
     expect(args).toEqual(['--resume=sid-1', '--model', 'gpt-5.2']);
   });
 
   it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
     expect(args).toEqual(['--model', 'my model']);
   });
 
   it('preserves empty quoted extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
     expect(args).toEqual(['--flag', '']);
   });
 
   it('does not emit a system-prompt flag (Copilot CLI has none; team chat is gated off this provider)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).not.toContain('--system-prompt');
     expect(args).not.toContain('You are the CMO.');
   });
@@ -245,7 +260,7 @@ describe('hooks integration', () => {
   it('validateSettings delegates to validateCopilotHooks with projectPath', () => {
     const result = provider.validateSettings('/some/project');
     expect(mockValidateCopilotHooks).toHaveBeenCalledWith('/some/project');
-    expect(result).toEqual({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
+    expect(result).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   });
 
   it('cleanup calls cleanupCopilotHooks and stopConfigWatcher', () => {
@@ -277,7 +292,7 @@ describe('agent install/remove', () => {
 
 describe('other methods', () => {
   it('getConfig delegates to copilot config reader', async () => {
-    const config = { mcpServers: [{ name: 'a', url: 'b', status: 'configured', scope: 'user', filePath: '/x' }], agents: [], skills: [], commands: [] };
+    const config = { mcpServers: [{ name: 'a', url: 'b', status: 'configured', scope: 'user' as const, filePath: '/x' }], agents: [], skills: [], commands: [] };
     mockGetCopilotConfig.mockResolvedValueOnce(config);
     await expect(provider.getConfig('/some/path')).resolves.toEqual(config);
     expect(mockGetCopilotConfig).toHaveBeenCalledWith('/some/path');
@@ -311,7 +326,7 @@ describe('getTranscriptPath', () => {
 
     expect(provider.getTranscriptPath('../../.ssh', '/proj')).toBeNull();
     expect(provider.getTranscriptPath('.hidden', '/proj')).toBeNull();
-    expect(provider.getTranscriptPath(uuid + '/events', '/proj')).toBeNull();
+    expect(provider.getTranscriptPath(`${uuid}/events`, '/proj')).toBeNull();
     expect(mockExistsSync).not.toHaveBeenCalled();
   });
 });

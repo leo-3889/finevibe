@@ -23,7 +23,7 @@ function makeMeta(overrides: Partial<CliProviderMeta['capabilities']> = {}): Cli
 
 function makeValidation(overrides: Partial<SettingsValidationResult> = {}): SettingsValidationResult {
   return {
-    statusLine: 'vibeyard',
+    statusLine: 'finevibe',
     hooks: 'complete',
     hookDetails: {},
     ...overrides,
@@ -84,7 +84,7 @@ describe('hasProviderIssue', () => {
   it('returns false when binary installed and everything configured', () => {
     const status = makeStatus({
       meta: makeMeta({ costTracking: true, hookStatus: true }),
-      validation: makeValidation({ statusLine: 'vibeyard', hooks: 'complete' }),
+      validation: makeValidation({ statusLine: 'finevibe', hooks: 'complete' }),
     });
     expect(hasProviderIssue(status)).toBe(false);
   });

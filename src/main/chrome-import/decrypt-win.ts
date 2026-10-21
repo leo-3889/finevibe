@@ -5,6 +5,9 @@ import { chromeUserDataDir, localStatePath } from './paths';
 
 let cachedKey: Buffer | null = null;
 
+/** Bounded so a hung PowerShell spawn cannot block the import. */
+const DPAPI_TIMEOUT_MS = 15_000;
+
 interface LocalState {
   os_crypt?: { encrypted_key?: string };
 }
@@ -19,6 +22,7 @@ function dpapiUnprotect(encryptedB64: string): Buffer {
     encoding: 'utf-8',
     env: { ...process.env, VBY_DPAPI_INPUT: encryptedB64 },
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: DPAPI_TIMEOUT_MS,
   });
   return Buffer.from(out.trim(), 'base64');
 }
@@ -27,8 +31,16 @@ function getMasterKey(): Buffer {
   if (cachedKey) return cachedKey;
   const userDataDir = chromeUserDataDir();
   if (!userDataDir) throw new Error('Chrome user data directory not found');
-  const raw = fs.readFileSync(localStatePath(userDataDir), 'utf-8');
-  const parsed = JSON.parse(raw) as LocalState;
+  const statePath = localStatePath(userDataDir);
+  const raw = fs.readFileSync(statePath, 'utf-8');
+  let parsed: LocalState;
+  try {
+    parsed = JSON.parse(raw) as LocalState;
+  } catch {
+    // A half-written / hand-edited Local State used to surface a bare
+    // `SyntaxError: Unexpected token` in the import UI.
+    throw new Error(`Chrome "Local State" is not valid JSON: ${statePath}`);
+  }
   const b64 = parsed.os_crypt?.encrypted_key;
   if (!b64) throw new Error('encrypted_key not found in Local State');
   const blob = Buffer.from(b64, 'base64');

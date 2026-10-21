@@ -27,7 +27,10 @@ export function mcpUrlPolicy(url: string): { ok: boolean; needsConfirm: boolean;
     return { ok: false, needsConfirm: false, reason: `Unsupported MCP URL scheme "${parsed.protocol}" (http/https only)` };
   }
   const host = parsed.hostname;
-  if (host in LOCAL_HOSTS || /^127(\.\d{1,3}){3}$/.test(host)) {
+  // `host in LOCAL_HOSTS` would walk the prototype chain: `constructor`,
+  // `__proto__`, `toString` are inherited keys and would hit the exemption,
+  // bypassing the confirm dialog. The exact-host promise covers own keys only.
+  if (Object.hasOwn(LOCAL_HOSTS, host) || /^127(\.\d{1,3}){3}$/.test(host)) {
     return { ok: true, needsConfirm: false };
   }
   return { ok: true, needsConfirm: true };
@@ -38,7 +41,7 @@ async function confirmRemoteHost(host: string): Promise<boolean> {
     type: 'warning',
     title: 'Connect to MCP server?',
     message: `Connect to ${host}?`,
-    detail: 'Vibeyard will send requests to this host from the main process. Only continue for servers you trust.',
+    detail: 'FineVibe will send requests to this host from the main process. Only continue for servers you trust.',
     buttons: ['Cancel', 'Confirm'],
     defaultId: 0,
     cancelId: 0,

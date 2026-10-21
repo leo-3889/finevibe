@@ -8,7 +8,7 @@ const mockGetWorktrees = vi.fn();
 const mockOnChanged = vi.fn(() => () => {});
 
 vi.stubGlobal('window', {
-  vibeyard: {
+  finevibe: {
     store: { load: mockLoad, save: mockSave },
     git: {
       watchProject: mockWatchProject,

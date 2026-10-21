@@ -9,7 +9,7 @@ const watchRecs = vi.hoisted(() => [] as Array<{ fire: () => void; closed: boole
 
 vi.mock('./providers/registry', () => ({ getProvider: mockGetProvider }));
 vi.mock('./hook-status', () => ({
-  STATUS_DIR: '/tmp/vibeyard',
+  STATUS_DIR: '/tmp/finevibe',
   writeCliSessionName: mockWriteName,
   writeStatus: mockWriteStatus,
 }));

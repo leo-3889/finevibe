@@ -191,8 +191,11 @@ describe('checkNestedFileSizes thresholds and resilience', () => {
       [GONE_KEY]: linesOf(700),
       [NESTED_KEY]: linesOf(700),
     });
-    const baseOpen = vi.mocked(mockFs.openSync).getMockImplementation()!;
-    vi.mocked(mockFs.openSync).mockImplementation(((filePath: fs.PathLike) => {
+    // vi.mocked over an already-mocked module property degrades the mock to a
+    // constructable union, so reach through mockFs directly; the helper's
+    // openSync implementation only reads the path argument.
+    const baseOpen = mockFs.openSync.getMockImplementation() as (filePath: fs.PathLike) => number;
+    mockFs.openSync.mockImplementation(((filePath: fs.PathLike) => {
       if (String(filePath).endsWith(GONE_KEY)) throw eacces();
       return baseOpen(filePath);
     }) as typeof fs.openSync);

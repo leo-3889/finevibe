@@ -6,6 +6,8 @@ import { positionPopover } from './popover.js';
 import { getViewportContext } from './viewport.js';
 import { isWin } from '../../platform.js';
 import { sanitizeArgPrompt, safeSend } from './prompt-utils.js';
+import { shouldActivateAskAiSession } from '../../ask-ai-focus.js';
+import { resolvePlanModePreference, resolvePlanProvider } from '../../state/specialized-sessions.js';
 
 export function toggleDrawMode(instance: BrowserTabInstance): void {
   instance.drawMode = !instance.drawMode;
@@ -58,7 +60,7 @@ export function showDrawError(instance: BrowserTabInstance, message: string): vo
 export async function captureScreenshotPath(instance: BrowserTabInstance): Promise<string | null> {
   try {
     const image = await instance.webview.capturePage();
-    return await window.vibeyard.browser.saveScreenshot(instance.sessionId, image.toDataURL());
+    return await window.finevibe.browser.saveScreenshot(instance.sessionId, image.toDataURL());
   } catch (err) {
     console.error('Failed to capture browser screenshot', err);
     return null;
@@ -94,7 +96,8 @@ export async function sendDrawToNewSession(instance: BrowserTabInstance): Promis
   }
 
   const prompt = buildDrawPrompt(instance, imagePath);
-  const newSession = appState.addPlanSession(project.id, `Draw: ${instruction.slice(0, 30)}`, instance.drawPlanModeCheckbox.checked);
+  const planMode = resolvePlanModePreference(appState.preferences, resolvePlanProvider(project, appState.preferences, undefined));
+  const newSession = appState.addPlanSession(project.id, `Draw: ${instruction.slice(0, 30)}`, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
   if (newSession) {
     setPendingPrompt(newSession.id, prompt);
   }
@@ -113,8 +116,11 @@ export async function sendDrawToCustomSession(instance: BrowserTabInstance): Pro
   }
 
   const prompt = buildDrawPrompt(instance, imagePath);
-  promptNewSession((session) => {
-    setPendingPrompt(session.id, prompt);
-    dismissDraw(instance);
-  });
+  promptNewSession(
+    (session) => {
+      setPendingPrompt(session.id, prompt);
+      dismissDraw(instance);
+    },
+    { activate: shouldActivateAskAiSession(appState.preferences) },
+  );
 }

@@ -21,7 +21,7 @@ import { listProfiles } from './profiles';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
-const mockReaddirSync = vi.mocked(fs.readdirSync);
+const mockReaddirSync = vi.mocked<(p: string, o: { withFileTypes: true }) => fs.Dirent[]>(fs.readdirSync);
 
 beforeEach(() => {
   vi.clearAllMocks();

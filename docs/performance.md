@@ -30,7 +30,7 @@ The derived disk index lives at:
 <Electron userData>/search-index-v2/<provider>/<SHA-256-of-source-path>.json
 ```
 
-The index contains extracted user text, its working directory and source version metadata. It is local plaintext data; hashed filenames do not encrypt its contents. Source mtime, size and ctime determine reuse. Each record's text is capped at 50 Ki characters, and its serialized JSON must fit within 332 KiB. Records for sources absent from a completed, uncancelled provider discovery/index pass are pruned. A cancelled pass can leave them until a later completed pass.
+The index contains extracted user text, its working directory and source version metadata. It is local plaintext data; hashed filenames do not encrypt its contents. Source mtime, size and ctime determine reuse. Each record's text is capped at 50 Ki characters, and its serialized JSON must fit within 332 KiB. Records for sources absent from a completed, uncancelled provider discovery/index pass are pruned. A cancelled pass can leave them until a later completed pass. A pass whose discovery reported an incomplete scan root (`TranscriptDiscovery.complete` false, P2-70) counts as not-completed for pruning: its records survive untouched, because a root that failed to list is not evidence its transcripts are gone (see [provider contracts](provider-contracts.md)).
 
 Disk usage scales with history; there is no fixed aggregate disk quota. Eviction from the in-memory cache does not require reparsing an unchanged transcript when its disk index remains valid. Search still performs discovery and reads index records, so it is not free of filesystem work.
 
@@ -60,13 +60,14 @@ Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), 
 
 ## Codex rollout attribution scan cost
 
-For hookless Codex tabs, `src/main/codex-session-watcher.ts` scans `~/.codex/sessions/YYYY/MM/DD/` for rollouts to attribute to pending tabs: `fs.watch` events are coalesced into at most one scan per 500 ms, and a 2 s poll fallback keeps scanning while any tab is pending. Three bounds keep a scan cheap:
+For hookless Codex tabs, `src/main/codex-session-watcher.ts` scans `~/.codex/sessions/YYYY/MM/DD/` for rollouts to attribute to pending tabs: `fs.watch` events are coalesced into at most one scan per 500 ms, and a 2 s poll fallback keeps scanning while any tab is pending. Four bounds keep a scan cheap:
 
-- Parsed `session_meta` is cached per path (`metaCache`, capped at 256 entries, oldest evicted first) and invalidated by `(mtimeMs, size)`, so a rollout is read — and a `.jsonl.zst` decompressed, at roughly 10× the compressed size — once per change, not once per scan. Before the cache, every scan re-read and re-decompressed every rollout in today's directory up to twice a second for the whole life of a pending tab.
-- A compressed rollout larger than `MAX_COMPRESSED_META_FILE_BYTES` (8 MiB, the compressed size) is skipped for meta entirely; the meta slice itself is bounded by `META_READ_BYTES` (64 KiB) on both the plain and decompressed paths.
+- Parsed `session_meta` is cached per path (`metaCache`, capped at `MAX_META_CACHE_ENTRIES = 256`, oldest evicted first, `src/main/codex-session-watcher.ts:68-69`) and invalidated by `(mtimeMs, size)`, so a rollout is read once per change, not once per scan. Before the cache, every scan re-read and re-decompressed every rollout in today's directory up to twice a second for the whole life of a pending tab.
+- A `.jsonl.zst` meta read touches at most a 256 KiB compressed prefix (`META_PREFIX_BYTES`, `:55`) through a head-only read (`readHead`, `:116-124`) — the whole file is never materialized. `session_meta` is the FIRST line of the zstd frame, so the prefix decodes to it, and a rollout mid-append can end mid-frame: a cut frame decodes the blocks it already holds (Node's sync zstd returns the partial output, `:225-229`).
+- When the prefix yields no usable meta line, `scheduleFullDecode` (`:154-205`) streams the file through the zstd decoder off the pairing path, stops at the first newline or `META_READ_BYTES` (64 KiB, `:47`) of decompressed output (`:195-202`), and publishes the result — nulls included — into `metaCache` for the file's `(mtime, size)`, so a rollout version decodes once, never once per scan (`:158-168`, `:230-231`). The scheduling scan returns null (the tab stays pending); the 500 ms/2 s cadence picks the cached meta up. `MAX_COMPRESSED_META_FILE_BYTES` (8 MiB compressed, `:59`) gates this fallback (`:222`); the plain `.jsonl` path stays bounded to the 64 KiB head (`:220`).
 - The tree is zero-padded `YYYY/MM/DD` and the walk is newest-first, so year/month/day directories whose names sort below the oldest pending registration (minus the 60 s `MTIME_SKEW_MS` window) are pruned by name — no stat, no readdir. A day directory that survives name pruning and has an older mtime costs one stat. A scan is O(recent days) no matter how much Codex history exists on disk.
 
-Honest bound: these are structural removals of repeated I/O, verified by `src/main/codex-session-watcher.test.ts` (meta parsed once per change; day pruning by name). The measured cost in a running app — scan wall-time against years of history, decompression peaks, watcher handles — remains unmeasured, like the Pi/OMP numbers above.
+Honest bound: these are structural removals of repeated I/O, verified by `src/main/codex-session-watcher.test.ts` (meta parsed once per change, bounded prefix reads counted inside the `fs` mock; day pruning by name). The measured cost in a running app — scan wall-time against years of history, decompression peaks, watcher handles — remains unmeasured, like the Pi/OMP numbers above.
 
 Sources: [Codex session watcher](../src/main/codex-session-watcher.ts).
 
@@ -88,9 +89,120 @@ A full static audit of main + renderer verified every bound above against source
 
 Sources: [state store](../src/main/store.ts), [session export](../src/main/session-export.ts), [hook status](../src/main/hook-status.ts), [terminal pane](../src/renderer/components/terminal-pane.ts), [file tree](../src/renderer/components/file-tree.ts).
 
-Per-launch retention policy: a directory is expired only when every timestamp it exposes is older than 30 days — the `.vibeyard.json` sidecar's `createdAt`, the newest `*.jsonl` mtime, and the directory's own mtime (the last-activity proxy for pre-sidecar dirs and launches that never wrote a transcript). A resumed tab rewrites a fresh transcript, so its old sidecar never gets it deleted; a directory whose age cannot be established is kept. The sweep runs inside `ensureLaunchSessionDir()`, which every Pi/OMP start/resume calls before spawning the CLI, uses `lstat` only (symlinked directories are skipped, never followed) and removes paths built by joining the provider base with a single `readdir` name, so it cannot escape its own base directory. Search visibility follows the same rule: a directory with no activity inside the window can only contain transcripts retention is about to delete, so it is filtered out before its sidecar is read.
+Per-launch retention policy: a directory is expired only when every timestamp it exposes is older than 30 days — the `.vibeyard.json` sidecar's `createdAt`, the newest `*.jsonl` mtime, and the directory's own mtime (the last-activity proxy for pre-sidecar dirs and launches that never wrote a transcript). A resumed tab rewrites a fresh transcript, so its old sidecar never gets it deleted; a directory whose age cannot be established is kept. The sweep runs inside `ensureLaunchSessionDir()`, which every Pi/OMP start/resume calls before spawning the CLI, uses `lstat` only (symlinked directories are skipped, never followed) and removes paths built by joining the provider base with a single `readdir` name, so it cannot escape its own base directory. Search visibility follows the same rule: a directory with no activity inside the window can only contain transcripts retention is about to delete, so it is filtered out before its sidecar is read. Scan bound: at most `PRUNE_SCAN_LIMIT = 2000` dirs are examined per pass (`src/main/launch-session-dir.ts:58,126`); on an over-limit base the names are first ordered by dir mtime ascending (`oldestDirsFirst`, `:157-171` — one extra `lstat` per name, over-limit only), so the examined prefix is the deletion-candidate set and expired dirs can no longer hide in the unexamined tail past the cap; symlinks, non-dirs and vanished entries are parked behind the real dirs and never displace an examination slot (`:164-170`). The unexamined tail is safe by the AND rule above: a dir with an in-window mtime is undeletable.
 
 Covered by `src/main/launch-session-dir.test.ts`.
+
+## Measured runtime baseline (W2, 2026-10-19, Windows)
+
+The only measured runtime numbers this machine has for the app's hot paths, from the
+2026-10-19/20 audit fleet's performance audit (W2Perf). Baseline: the `rebuild` tree at
+`858d97c`, Windows 10.0.26300 (NTFS, real-time AV active), Node v24.14.0. Every row
+below drove the real modules — bundled with esbuild, `electron` stubbed — except the
+startup row, which ran the real Electron app in the dev tree (not packaged); no gate ran
+concurrently, so no vitest contention. **The measurement harnesses no longer exist**: the
+agent workspace that held them was dissolved on 2026-10-21, so this is a baseline
+snapshot, not a rerunnable suite.
+
+| Metric | Measured | Conditions |
+| --- | --- | --- |
+| Pi/OMP poll tick, 200 tabs | 521.0 ms p50 / 1095.8 ms max every 2 s tick — 26% main-thread duty; 526.0 ms of it is 200 × `readSessionHeaderSync` (~2.07 ms each) | 200 exclusive per-launch dirs, one post-registration transcript each (steady state of a fresh launch); W2-01 |
+| Pi/OMP poll tick, 50 tabs | 201.4 ms p50 / 896.1 ms max ≈ 10% duty | same shape at 50 tabs; W2-01 |
+| Pi/OMP event-driven tick | 613.3 ms p50 at 200 tabs | transcripts appending, so ≥1 event scan/s on top of the poll; W2-01 |
+| Pi/OMP tick, header-cache shape | 67.7 ms p50 at 200 tabs, 0 header reads/tick | the resume shape the W2-01 header-id cache produces (adopted file inside the generation snapshot) — measured as a shape, not a shipped fix |
+| Watcher handles | 1 / 10 / 50 / 200 `fs.watch` handles at 1 / 10 / 50 / 200 tabs; idle handle ≈ 0 CPU, RSS Δ ≤ +2 MB across the sweep | one non-recursive watcher per exclusive dir; W2-02 |
+| Registration synchronous listing | p50 5.1–8.5 ms, max 25.4 ms per registration; 200 serial registrations sum 1.3–1.6 s | at the syscall floor (`statSync` 113.5 µs, `readdirSync` 1 file 192.6 µs, open + 8 KiB read + close 1994.8 µs, full header read 2074.6 µs/op, 2000-op medians); PO-06 no-action row |
+| Codex `.zst` meta scan, adversarial | 176.3 ms p50 / 203.5 ms max per 2 s scan, 20 decompressions, 64.5 MB decompressed, 130.8 ms decompression CPU, +108 MB RSS over 10 scans | 20 growing external `.jsonl.zst` rollouts (~3 MB body, ~30 KB compressed) re-compressed between scans, one tab whose cwd never matches; W2-03 |
+| Store persist burst | 49 `saveState` calls at 200 ms → 0 writes for the full 10 s, 1 write after the burst; `writeStateAtomically` p50 4.76 ms / max 6.68 ms at 75,072 B | 200 sessions / 50 projects, renderer cadence modeled on the leading-edge 200 ms throttle; W2-04 |
+| Deep search, hot query | 1598 ms with all 500 hot texts cached — 777 ms discovery + 1002 `fs.promises.stat` version checks (~1.5 ms each under AV); cold 5513 ms, warm 2039 ms, cancellation returns 1 ms after abort | 1002-file fixture (200 project dirs × 5 transcripts, 93.6 MB indexed, one ~10 MB and one ~70 MB file); W2-05 |
+| First window | 4.97–7.07 s from process start, with `app.whenReady` at ~2.3 s; the gap is 2354 ms of synchronous per-provider CLI probes (codex 1427 ms) serialized before the window | real Electron app, dev tree, NOT packaged, 3 runs, probe via `--require`; W2-06 |
+| Renderer bundle | 2.05 MB single unminified chunk — `@xterm/*` 750 KB (37%), gridstack 231 KB, project code 937 KB | esbuild metafile under the same flags as the `build:renderer` script (no minify, no split); W2-07 |
+
+Reading the rows: the figures **predate the Wave A–D fixes**, so they are the pre-fix
+baseline for behavior that the sections above now contract — see *Pi/OMP discovery and
+remaining costs*, *Codex rollout attribution scan cost*, *Session search work and
+storage* and *Static footprint audit (2026-10-18)* — and they are harness measurements
+against the real modules, not measurements in the running app. **PO-06 stays open for
+exactly that reason**: watcher cost in the running app (main-thread delay, RSS and
+handle counts under a live window) has never been measured. The same audit's measured
+no-action rows are cited here for the same reason and with the same caveat: registration
+delay, idle watcher (0 fs calls), watcher RSS ≤ 2 MB, Codex meta cache 91% steady-state
+hits with 0 steady decompressions, date-dir name pruning (365 fresh-mtime day-dirs →
+1.4 ms/scan, 4 readdir, 1 stat), quit flush (no late write), `loadState` cache 0.04 µs
+per hot call, store write rate ~0.7 MB/min, search cancellation 1 ms, the disk-index
+warm tier (0 transcript re-reads) and `statusTailCache` at 512 entries (≤ 51 KB). The
+live work stays open in *Measurement protocol for the live run* and *Evidence and open
+measurement* below.
+
+Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), [Codex session watcher](../src/main/codex-session-watcher.ts), [state store](../src/main/store.ts), [deep-search coordinator](../src/main/session-deep-search.ts), [startup order](../src/main/main.ts), and the [audit status](AUDIT_STATUS.md) closure record of the program that produced them.
+
+## Clipboard and paste baseline (P0, 2026-10-21, Windows)
+
+First measured numbers for the terminal copy/paste path, from the P0 harness in `dev/perf/` (`dev/perf/clipboard-bench.js` = Electron main + hidden window replaying the `clipboard:readForPaste` sub-op order per scenario; `clipbench.ps1` + `hold.ps1` = raw Win32 clipboard contention; `dev/perf/pty-paste-probe.js` = node-pty ConPTY paste drain). Box: Windows 10.0.26300, Node 24.14.0, Electron 41.1.0 (Chrome 146), node-pty 1.1.0. Clipboard scenarios are set from a child process via raw Win32 `SetClipboardData` (WinForms delayed-rendered writes die at setup-process exit — a harness lesson, not an app cost). All numbers p50/max ms over 11 back-to-back passes. The plan's §6 claim that the Windows clipboard is unreachable from the agent shell is **disproven on this box**: `OpenClipboard` succeeds, every leg ran from the agent shell.
+
+### Per-op clipboard reads (main process, per paste keystroke)
+
+| Sub-op (ipc-handlers order) | empty | text-40B | text-100KB | text-1MB | rich-html | file-list | image-1080p | image-1440p |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| availableFormats | 0.008/0.083 | 0.009/0.021 | 0.009/0.027 | 0.011/0.020 | 0.011/0.024 | 0.008/0.025 | 0.026/0.030 | 0.029/0.070 |
+| readText | 0.002/0.010 | 0.034/0.714 | 0.151/0.912 | 2.108/2.891 | 0.003/0.023 | 0.002/0.006 | 0.005/0.007 | 0.006/0.009 |
+| readBuffer:FileNameW | 0.043/0.463 | 0.036/0.117 | 0.039/0.079 | 0.219/0.292 | 0.052/0.106 | 0.041/0.111 | 0.087/0.123 | 0.096/7.669 |
+| readBuffer:CF_HDROP | 0.047/0.075 | 0.036/0.049 | 0.037/0.061 | 0.046/0.064 | 0.052/0.065 | 0.045/0.081 | 0.073/0.101 | 0.086/0.213 |
+| readBuffer:NSFilenamesPboardType | 0.043/0.052 | 0.035/0.043 | 0.036/0.039 | 0.040/0.052 | 0.051/0.081 | 0.040/0.054 | 0.067/0.094 | 0.076/0.254 |
+| read:text/uri-list | 0.040/0.048 | 0.034/0.054 | 0.034/0.048 | 0.035/0.061 | 0.048/0.085 | 0.037/0.059 | 0.052/0.083 | 0.066/0.152 |
+| readImage | — | — | — | — | — | — | 66.84/126.71 | 118.94/246.52 |
+| toPNG | — | — | — | — | — | — | 192.01/352.91 | 306.58/476.95 |
+| writePastedFile | — | — | — | — | — | — | 1.92/3.41 | 1.98/13.73 |
+| readHTML (empty-text only) | 0.035/0.055 | 0.002/0.039 | 0.001/0.004 | 0.003/0.004 | 0.109/0.126 | 0.032/0.045 | 0.571/0.937 | 1.103/1.318 |
+| **handler total** | **0.222/0.768** | **0.185/1.033** | **0.306/1.136** | **2.484/3.362** | **0.334/0.379** | **0.206/0.341** | **261.3/483.7** | **420.7/740.6** |
+
+Findings: (1) the six-open-sessions text path is cheap in isolation — a plain-text paste costs ≤ 1.1 ms p50 (≤ 3.4 ms max), a 1 MB text copy 2.5 ms, so R1's per-read `OpenClipboard` cycle costs sub-millisecond on an uncontended clipboard; (2) the **image** paste is the real main-thread freeze: `readImage` + `toPNG` are 96 %+ of the handler, 259 ms p50 at 1080p and 426 ms at 1440p (max 484/741 ms) — confirming the plan's zlib proxy model (214/403 ms) and adding `writePastedFile` (≈2 ms, ≤14 ms max); (3) `clipboard.readBuffer('CF_HDROP')` returns **0 bytes** under Electron on Windows even with a real `CF_HDROP` on the clipboard — Chromium maps the drop list onto `text/uri-list`, so the app's FileNameW branch is the live file-list path and the CF_HDROP probe is dead weight on Windows.
+
+### OpenClipboard contention (the R1 number)
+
+Second process (`hold.ps1`) holds `OpenClipboard` for 2.5 s (models `rdpclip.exe`); the bench then replays Chromium's 5 × `Sleep(5)` acquisition pattern:
+
+| Scenario | 5 × 5 ms pattern | last Win32 error | unbounded quantification |
+| --- | --- | --- | --- |
+| text | acquired in-window = true | 0 | time-to-acquire 1.6 ms, 1 attempt |
+| files (CF_HDROP) | acquired in-window = true | 0 | time-to-acquire 0.1 ms, 1 attempt |
+
+**R1's acquire-retry freeze does not reproduce on this Windows build.** `OpenClipboard(IntPtr.Zero)` is not cross-process exclusive: a second process acquires while the holder holds, in one attempt. The real contention is one layer down — while the holder holds, a second process's **data reads fail** (`Get-Clipboard` → `ExternalException`, i.e. `GetClipboardData` refuses). The 25 ms-sleep-per-failed-acquire model and its 6-reads-≈-150 ms bound stay a code fact, not a measured cost here; the measured failure surface is a refused read, which the app swallows per-format in `clipboardFilePaths` today.
+
+### ConPTY paste drain (node-pty, byte-echo child)
+
+Payload `\x1b[200~` + N bytes + `\x1b[201~` written once to the PTY; child echoes every byte back through ConPTY.
+
+| N | `write()` returns | echo drain | chunks | chunk min/med/max B |
+| --- | --- | --- | --- | --- |
+| 1 KB | 0.07 ms | (partial — settle swallowed first chunk) | 1 | 1024/1024/1024 |
+| 10 KB | 0.07 ms | 10.4 ms | 6 | 22/1768/4176 |
+| 100 KB | 0.18 ms | 147.2 ms | 87 | 14/792/4176 |
+| 1 MB | 0.76 ms | 1661.7 ms | 1383 | 14/396/4224 |
+
+`pty.write()` is a sub-millisecond async handoff at every size — the paste write itself never stalls the main thread. Drain scales ~linearly at ConPTY's console read granularity (max chunk ≈ 4.2 KB), so a 1 MB paste arrives back as ~1,380 `pty:data` IPCs (R4's per-chunk fan-out, measured). With `omp` as the child (R3): paste response arrives 178–300 ms after write in 23–24 output chunks, and the pasted marker never re-appears intact inside a single chunk — output is ANSI re-rendered frames, consistent with the win32-input-mode per-record re-encode model; a hard keydown→rendered-frame number needs ANSI-strip accumulation, left to the in-app `[paste-timing]` flag below.
+
+### Opt-in instrumentation
+
+`FINEVIBE_CLIPBOARD_TIMING=1` prints `[paste-timing]` (main: one line per `readForPaste` with every sub-op above, plus `saveImage`; renderer: paste-request → `readForPaste` reply → `pty:write` sent → first parsed PTY output, with per-interaction clipboard-read/write counts) and `[copy-timing]` (selection-change → clipboard write resolved) lines. Off is the default and byte-identical. The renderer gate reads `globalThis.__FINEVIBE_CLIPBOARD_TIMING__` (the preload/devtools injection point — `preload.ts` does not forward the env var yet) or `process.env` under vitest.
+
+**Coverage:** Windows rows are measured. macOS and Linux (X11 + Wayland) rows for all three tables: **harness ready, pending a machine of that OS** — the Electron bench and PTY probe are cross-platform by construction; the ps1 contention harness is Windows-specific by design, its macOS (`pbcopy` busy-owner) and Linux (`SIGSTOP` owner) counterparts are user-executed checks (the CI matrix has no OS clipboard, and this agent box is Windows-only). `readImage`/`toPNG`/`writePastedFile` on the text scenarios are the handler's real skips, not missing runs.
+
+Sources: [clipboard bench](../dev/perf/clipboard-bench.js), [contention harness](../dev/perf/clipbench.ps1), [PTY probe](../dev/perf/pty-paste-probe.js), [clipboard handlers](../src/main/ipc-handlers.ts), [paste renderer path](../src/renderer/components/terminal-utils.ts), and [the investigation plan](../todos/clipboard-paste-latency-plan.md).
+
+### Copy/paste plan results (P1–P5, 2026-10-21)
+
+All five phases shipped behind automated, mocked-clipboard coverage. Rows that need a real OS clipboard are marked pending; the CI matrix (`macos-latest`/`ubuntu-latest`/`windows-2022`) runs the mocked platform branches. This section supersedes one note above: `preload.ts` now forwards `FINEVIBE_CLIPBOARD_TIMING` into the sandbox at startup (P1), so the renderer gate works in the packaged app, not only under vitest.
+
+| Phase | Shipped behavior | Automated evidence |
+| --- | --- | --- |
+| P1 | Plain-text paste goes through the native paste event on all three platforms: Windows `Ctrl+V` is no longer `preventDefault()`-ed, Chromium's paste event fires, and xterm writes `text/plain` itself — a plain-text paste performs **0 clipboard IPCs**. `clipboard:readForPaste` stays as the per-platform fallback (file-only copies, context-menu Paste, no-DataTransfer keystrokes). Preload forwards the timing flag. | `terminal-utils.test.ts` (no `readForPaste` call for a native text paste) |
+| P2 | File-list probes are format-gated: `FileNameW`/`CF_HDROP` (Windows), `NSFilenamesPboardType` (macOS), `text/uri-list` (Linux) are each probed only on their platform AND only when `availableFormats()` advertises the format — **6 → 2 clipboard opens per plain-text paste** (P0 recorded acquire counts; P0 also showed 1-attempt acquires, so contention is not the freeze factor). An empty format list (Wayland permission denial) passes through to the passthrough flavor untouched. | `ipc-handlers.test.ts` (open-count 6 → 2 on mocked clipboard; empty-list passthrough) |
+| P3 | Copy is fire-and-forget (`clipboard:write` is `ipcRenderer.send` — no per-selection promise round trip); a byte-identical `(text, source)` pair is skipped; a selection-driven copy past 256 Ki chars is deferred (explicit copies are never dropped). X11 PRIMARY invariant: only `selection`-source copies set PRIMARY, and the skip compares the pair, so an explicit→selection sequence of the same string still reaches main. | `ipc-handlers.test.ts` (one write per selection, PRIMARY invariants), `terminal-utils.test.ts` (budget, skip, pair semantics) |
+| P4 | Pasted text is capped at 8 Mi UTF-16 characters; `textTruncated: true` makes the renderer show a pane banner (visible cut, never silent loss). Images per the plan's per-OS flavor table: a clipboard advertising `PNG`/`image/png` is read as bytes (memcpy — Windows Snipping Tool/Win+Shift+S register a PNG flavor, macOS lists `png`, X11 publishes `image/png`); a raw-image-only clipboard (CF_DIB/TIFF/BMP) pays `readImage()`'s main-only decode and the PNG encode now runs in the `src/main/png-encode-worker.ts` utilityProcess (P0: `toPNG` p50 192/307 ms at 1080p/1440p was the dominant main-thread freeze of a screenshot paste); worker fork/encode/exit/timeout failure degrades to the pre-P4 main-thread `toPNG()`, never a crash; a clipboard with no image flavor skips every image read (the Wayland-portal degrade). | `png-encode-worker.test.ts` (encoder + protocol), `ipc-handlers.test.ts` (PNG-flavor hit skips `readImage`, worker path, main-thread degradation, Wayland skip, 8 Mi cap + flag), `terminal-utils.test.ts` (banner) |
+| P5 | Main coalesces `pty:data` per session: one message per 4 ms window capped at 64 KiB; a chunk that alone fills the budget ships immediately (the window degrades to a no-op — bulk output never gains latency), and `pty:exit` flushes the buffer before sending so the renderer never tears a pane down before its last data (P0: a 1 MB paste echo arrives as 1,383 chunks, median 396 B). Renderer: the fallback cost scan runs leading-edge + one trailing scan of the newest chunk per 1 s per session (the structured `session:costData` channel is the primary source and disables the fallback); the `Interrupted` scan is leading + trailing per 200 ms (`notifyInterrupt` is idempotent). | `ipc-handlers.test.ts` (window join, budget immediate-ship, flush-before-exit, per-session isolation), `session-cost.test.ts` (throttle, structured-disable) |
+
+**Pending runtime checks (not runnable on this box):** P4's < 50 ms main-thread freeze target for a real 1080p/1440p screenshot paste (`dev/perf/clipboard-bench.js`), P5's ≥ 5× messages/sec reduction on the echo (`dev/perf/pty-paste-probe.js`), and the plan's §3 interactive rows — Explorer/Finder/Nautilus file copies, Linux middle-click, Wayland permission denial — on macOS, X11, Wayland, and packaged Windows. Recorded as coverage gaps in [FEATURES](FEATURES.md) §24.
 
 ## Measurement protocol for the live run
 

@@ -18,7 +18,13 @@
     "showInsightAlerts": "Show insight alerts",
     "autoNameSessions": "Auto-name sessions from the CLI's session title (Claude only)",
     "confirmClosingActiveSession": "Confirm closing an active session",
-    "copyOnSelect": "Copy on select"
+    "copyOnSelect": "Copy on select",
+    "askAiFocus": "Ask AI opens the new session in",
+    "askAiFocusSwitch": "a new focused tab",
+    "askAiFocusStay": "the background — keep my tab",
+    "planModeHeading": "Plan mode by default for quick AI sessions",
+    "defaultProjectsFolder": "Default projects folder",
+    "defaultProjectsFolderPlaceholder": "Folder new projects are created in"
   },
   "appearance": {
     "theme": "Theme",
@@ -50,17 +56,20 @@
       "nameLabel": "Name",
       "namePlaceholder": "My Project",
       "pathLabel": "Path",
-      "pathPlaceholder": "/path/to/project",
+      "urlPlaceholder": "Existing directory — or paste a GitHub/Codeberg URL",
       "browseButton": "Browse",
       "defaultProfileLabel": "Default profile",
-      "directoryNotExist": "Directory does not exist"
+      "directoryNotExist": "Directory does not exist",
+      "checkoutAndCreate": "Checkout and create",
+      "cloning": "Cloning…",
+      "cloneFailed": "Clone failed"
     },
     "projectSettings": {
       "title": "Project Settings",
       "defaultProfileLabel": "Default profile"
     },
     "removeConfirm": {
-      "withDataMessage": "Remove project \"{name}\"? This will delete {parts} from Vibeyard. No files on disk will be affected.",
+      "withDataMessage": "Remove project \"{name}\"? This will delete {parts} from FineVibe. No files on disk will be affected.",
       "emptyMessage": "Remove project \"{name}\"? No files on disk will be affected.",
       "title": "Remove project",
       "confirmLabel": "Remove",
@@ -75,8 +84,8 @@
       "title": "Active Sessions"
     },
     "discussions": {
-      "tooltip": "Vibeyard Discussions",
-      "title": "Vibeyard Discussions",
+      "tooltip": "FineVibe Discussions",
+      "title": "FineVibe Discussions",
       "description": "Join the conversation about coding with AI"
     }
   },
@@ -101,8 +110,15 @@
     },
     "shareIndicatorTooltip": "Sharing",
     "closeTooltip": "Close session",
+    "scrollLeftTooltip": "Scroll tabs left",
+    "scrollRightTooltip": "Scroll tabs right",
     "newSession": {
       "defaultName": "Session {num}"
+    },
+    "group": {
+      "defaultName": "Group {num}",
+      "tooltip": "{name} · {count} tabs",
+      "renameTooltip": "Rename group"
     },
     "moreMenu": {
       "swarmLayoutActive": "Swarm Layout ✓",
@@ -116,12 +132,20 @@
       "argumentsLabel": "Arguments",
       "argumentsPlaceholder": "e.g. --model sonnet",
       "keepArgsLabel": "Keep args for future sessions",
+      "planModeLabel": "Plan mode",
+      "planModeUnsupportedTooltip": "Provider does not support plan mode",
       "envLabel": "Environment Variables",
       "envPlaceholder": "KEY=VALUE (one per line)",
       "keepEnvLabel": "Keep env vars for future sessions",
       "providerLabel": "Provider",
       "providerNotInstalled": "{name} (not installed)",
       "profileLabel": "Profile",
+      "personaLabel": "Team Persona",
+      "personaNone": "None",
+      "personaNotCapable": "{name} can't run team personas",
+      "personaPinNote": "{name} is pinned to {provider}; the pinned backend wins at launch.",
+      "promptLabel": "Prompt",
+      "promptPlaceholder": "Add a custom prompt for this persona…",
       "title": "New Session",
       "envError": "Use KEY=VALUE — invalid line: {line}"
     },
@@ -157,7 +181,9 @@
       "copyCliSessionId": "Copy CLI Session ID",
       "copyInternalId": "Copy Internal ID",
       "closeInspector": "Close Inspector",
-      "inspect": "Inspect"
+      "inspect": "Inspect",
+      "renameGroup": "Rename Group",
+      "ungroup": "Ungroup"
     },
     "board": {
       "deleteTag": "Delete Tag"
@@ -457,7 +483,7 @@
     "descriptionPi": "Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR. Set up auth and models in that config directory after creating the profile.",
     "descriptionOmp": "Oh my Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR (the same omp agent dir mechanism as Pi). Make sure the omp CLI is installed, then set up auth and models in that config directory after creating the profile.",
     "keychainUnsupported": "This version of Claude Code{version} stores every login under a single macOS keychain entry, so profiles can't keep accounts separate. Update Claude Code to create and use profiles.",
-    "keychainUnknown": "Vibeyard can't yet confirm this Claude Code build isolates profile logins in the macOS keychain. Sign in to a profile once and isolation will be verified automatically.",
+    "keychainUnknown": "FineVibe can't yet confirm this Claude Code build isolates profile logins in the macOS keychain. Sign in to a profile once and isolation will be verified automatically.",
     "empty": "No profiles yet.",
     "tagManaged": "managed",
     "tagCustom": "custom",
@@ -553,7 +579,7 @@
     "gitAheadDesc": "Commits ahead/behind remote"
   },
   "about": {
-    "appName": "Vibeyard",
+    "appName": "FineVibe",
     "versionLoading": "Version: loading...",
     "updateButton": "Check for Updates",
     "updateChecking": "Checking...",
@@ -563,7 +589,7 @@
     "githubLink": "GitHub",
     "bugLink": "Report a Bug",
     "contributeLink": "Contribute on GitHub",
-    "communityPrefix": "Vibeyard is open source. ",
+    "communityPrefix": "FineVibe is open source. ",
     "communitySuffix": " — and if you find it useful, give it a star!",
     "debugModeLabel": "Debug Mode",
     "versionLoaded": "Version: {ver}"
@@ -624,7 +650,7 @@
     "closeMessageOther": "{count} sessions are still active. Closing will interrupt them.",
     "closeConfirmOne": "Close",
     "closeConfirmOther": "Close all",
-    "quitTitle": "Quit Vibeyard",
+    "quitTitle": "Quit FineVibe",
     "quitMessageOne": "A session is still active. Quitting will interrupt it.",
     "quitMessageOther": "{count} sessions are still active. Quitting will interrupt them.",
     "quitConfirm": "Quit"

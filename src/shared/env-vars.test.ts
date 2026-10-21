@@ -48,9 +48,18 @@ describe('profile-owned environment', () => {
   });
 
   it('drops the per-session hook status keys in any casing', () => {
-    expect(partitionUserEnv({ VIBEYARD_SESSION_ID: 'x', claude_ide_session_id: 'y', SAFE: 'yes' })).toEqual({
+    expect(partitionUserEnv({ FINEVIBE_SESSION_ID: 'x', claude_ide_session_id: 'y', SAFE: 'yes' })).toEqual({
       allowed: { SAFE: 'yes' },
-      dropped: ['VIBEYARD_SESSION_ID', 'claude_ide_session_id'],
+      dropped: ['FINEVIBE_SESSION_ID', 'claude_ide_session_id'],
+    });
+  });
+
+  it('drops COPILOT_HOME so a session cannot relocate the Copilot data tree', () => {
+    // The transcript readers only scan the pinned home; a session that
+    // overrides COPILOT_HOME writes transcripts where the app never looks.
+    expect(partitionUserEnv({ COPILOT_HOME: '/other', copilot_home: '/x', SAFE: 'yes' })).toEqual({
+      allowed: { SAFE: 'yes' },
+      dropped: ['COPILOT_HOME', 'copilot_home'],
     });
   });
 });

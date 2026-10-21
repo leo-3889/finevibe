@@ -33,10 +33,18 @@ interface GuestPeer {
   mode: ShareMode | null;
   connected: boolean;
   authenticated: boolean;
+  authTimeout: ReturnType<typeof setTimeout> | null;
 }
 
 const guestPeers = new Map<string, GuestPeer>();
 let guestIdCounter = 0;
+
+// Host parity (peer-host.ts AUTH_TIMEOUT): a join whose handshake stalls
+// after the data channel opens — auth-challenge/auth-result never arrive
+// because the host abandoned it — has no ICE `disconnected` to reclaim it,
+// so an abandoned join would keep a live RTCPeerConnection and a
+// pendingJoinHandles entry until app quit.
+const AUTH_TIMEOUT = 10_000;
 
 export function joinShare(offer: string, passphrase: string): { guestId: string; handle: JoinHandle } {
   const keyError = validateShareKey(passphrase);
@@ -59,6 +67,7 @@ export function joinShare(offer: string, passphrase: string): { guestId: string;
     mode: null,
     connected: false,
     authenticated: false,
+    authTimeout: null,
   };
 
   guestPeers.set(guestId, guestPeer);
@@ -69,6 +78,17 @@ export function joinShare(offer: string, passphrase: string): { guestId: string;
 
     dc.onopen = () => {
       guestPeer.connected = true;
+      // Handshake deadline: the channel opened, so the host accepted our
+      // answer — if no valid auth-result ever arrives the join is abandoned;
+      // tear it down (closes the RTCPeerConnection and fires disconnectedCbs,
+      // which reclaims the share-manager pendingJoinHandles entry).
+      guestPeer.authTimeout = setTimeout(() => {
+        guestPeer.authTimeout = null;
+        if (!guestPeer.authenticated) {
+          authFailedCb?.('Authentication timed out');
+          handleDisconnect();
+        }
+      }, AUTH_TIMEOUT);
     };
 
     dc.onmessage = (msgEvent: MessageEvent) => {
@@ -89,6 +109,10 @@ export function joinShare(offer: string, passphrase: string): { guestId: string;
       }
 
       if (msg.type === 'auth-result') {
+        if (guestPeer.authTimeout) {
+          clearTimeout(guestPeer.authTimeout);
+          guestPeer.authTimeout = null;
+        }
         if (msg.ok) {
           guestPeer.authenticated = true;
         } else {
@@ -194,6 +218,10 @@ export function joinShare(offer: string, passphrase: string): { guestId: string;
 function disconnectGuest(guestId: string): void {
   const guestPeer = guestPeers.get(guestId);
   if (!guestPeer) return;
+  if (guestPeer.authTimeout) {
+    clearTimeout(guestPeer.authTimeout);
+    guestPeer.authTimeout = null;
+  }
   if (guestPeer.dc) guestPeer.dc.close();
   guestPeer.pc.close();
   cleanupGuest(guestId);

@@ -1,11 +1,17 @@
-# FineVibe - An enhanced Vibeyard
+<p align="center">
+  <img src="build/icon.png" alt="Vibeyard" width="128" />
+</p>
 
-> **Fork notice.** FineVibe is a fork of
-> **[elirantutia/vibeyard](https://github.com/elirantutia/vibeyard)**.
-> For the product as its authors describe it, read the
+# Vibeyard — the `leo-3889/vibeyard` fork
+
+> **Fork notice.** This repository — `leo-3889/vibeyard`, the fork — is a
+> fork of **[elirantutia/vibeyard](https://github.com/elirantutia/vibeyard)**,
+> branched from upstream `v0.3.8` (Sep 2026). For the product as its authors
+> describe it, read the
 > **[upstream README](https://github.com/elirantutia/vibeyard#readme)** —
-> a verbatim copy lives here as
-> [`README.upstream.md`](README.upstream.md).
+> [`README.upstream.md`](README.upstream.md) is a snapshot of it with the
+> provider and profile lines updated to describe this fork, so it is *not*
+> verbatim; upstream's own README lags this code.
 
 | | |
 |---|---|
@@ -19,9 +25,12 @@ This README covers only what the fork adds. Everything else is upstream's.
 
 ## What this fork is for
 
-**Drive more than one AI CLI.** Upstream ships four backends. This fork adds
-**Pi** and **Oh my Pi** — six total. The goal isn't those two tools; it's proving
-the `CliProvider` abstraction absorbs a CLI the original authors never targeted.
+**Drive more than one AI CLI.** Upstream ships four backends — Claude Code,
+Codex, Copilot, Gemini (its README still advertises three). This fork adds
+**Pi** and **Oh my Pi** — six total, fork-only until
+[#167](https://github.com/elirantutia/vibeyard/pull/167) merges. The goal isn't
+those two tools; it's proving the `CliProvider` abstraction absorbs a CLI the
+original authors never targeted.
 
 **Make hook-less CLIs first-class.** Live state normally arrives via Claude's hooks.
 CLIs without them rendered as dead boxes. A **polled transcript sync**
@@ -40,7 +49,7 @@ handling, `cmd.exe` argument limits, credential-store behaviour, installer shape
 
 ## What it does *not* do
 
-- **FineVibe names the fork, not the app.** Same product name, UI, and data inside.
+- **The fork is `leo-3889/vibeyard`; the product is Vibeyard.** No rebrand inside: same product name, UI, and data. (The repo was briefly `leo-3889/finevibe` and the product briefly "Finevibe" mid-2026 — that rename was rolled back; the tree is Vibeyard throughout.)
 - No fork-only telemetry, analytics, or phone-home.
 - No config lock-in or migration that blocks a return to upstream.
 - No upstream feature removed or disabled.
@@ -53,11 +62,12 @@ handling, `cmd.exe` argument limits, credential-store behaviour, installer shape
   beyond `src/main/platform.ts`, but neither OS was exercised.
 - **`pi` and `omp` must be on `PATH`** or the provider stays hidden — upstream
   behaviour, not a fork quirk.
-- **Fork builds still update from upstream.** The npm launcher and the packaged
-  auto-updater fetch releases from `elirantutia/vibeyard` unless
-  `VIBEYARD_RELEASE_REPO=owner/repo` is set, which points both at that fork's
-  releases (the fork must publish the same asset names, e.g.
-  `Vibeyard-<version>-win-<arch>.zip`).
+- **Updates come only from the fork's release feed.** The npm launcher and the
+  packaged auto-updater use `FINEVIBE_RELEASE_REPO=owner/repo` and nothing
+  else: unset/malformed, the launcher refuses to download and the
+  auto-updater disables itself with a warning — a fork build never checks the
+  upstream release feed (the fork publishes the same asset names, e.g.
+  `FineVibe-<version>-win-<arch>.zip`).
 
 ## Sync
 
@@ -85,10 +95,10 @@ npm test      # vitest
 ### Ubuntu package
 
 Installable `.deb` builds: run the **Ubuntu package** workflow from the Actions
-tab and download the `vibeyard-deb-x64` artifact, then on the Ubuntu machine:
+tab and download the `finevibe-deb-x64` artifact, then on the Ubuntu machine:
 
 ```bash
-sudo apt install ./Vibeyard-<version>-linux-amd64.deb
+sudo apt install ./FineVibe-<version>-linux-amd64.deb
 ```
 
 Tagged releases ship the same `.deb` (plus an AppImage) as release assets.

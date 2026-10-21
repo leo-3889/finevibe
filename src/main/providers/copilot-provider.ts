@@ -3,7 +3,7 @@ import * as readline from 'readline';
 import * as path from 'path';
 import * as os from 'os';
 import type { BrowserWindow } from 'electron';
-import type { CliProvider, TranscriptDescriptor } from './provider';
+import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
@@ -11,7 +11,7 @@ import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { getCopilotConfig, AGENT_EXT } from '../copilot-config';
 import { installCopilotHooks, validateCopilotHooks, cleanupCopilotHooks, SESSION_ID_VAR } from '../copilot-hooks';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
-import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE } from './transcript-utils';
+import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE, TranscriptDiscoveryScan, readdirForDiscovery } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 
 const binaryCache = { path: null as string | null };
@@ -139,32 +139,32 @@ export class CopilotProvider implements CliProvider {
     return fs.existsSync(filePath) ? filePath : null;
   }
 
-  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDescriptor[]> {
+  async discoverTranscripts(signal?: AbortSignal): Promise<TranscriptDiscovery> {
+    // A readdir failure on the root (other than "root missing") marks the
+    // pass incomplete, so the caller keeps the derived index instead of
+    // pruning it off a scan that saw nothing (P2-70).
     const root = path.join(os.homedir(), '.copilot', 'session-state');
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(root, { withFileTypes: true });
-    } catch {
-      return [];
-    }
-    const out: TranscriptDescriptor[] = [];
-    for (const entry of entries) {
-      if (signal?.aborted) return out;
-      if (!entry.isDirectory() || !UUID_RE.test(entry.name)) continue;
-      const cliSessionId = entry.name;
-      const dir = path.join(root, cliSessionId);
-      const transcriptPath = path.join(dir, 'events.jsonl');
-      let projectCwd = '';
-      try {
-        const yaml = await fs.promises.readFile(path.join(dir, 'workspace.yaml'), 'utf-8');
-        const m = yaml.match(/^cwd:\s*"?([^"\n]+?)"?\s*$/m);
-        if (m) projectCwd = m[1].trim();
-      } catch {
-        // workspace.yaml may be absent on partial-init sessions; cwd stays empty
+    const scan = new TranscriptDiscoveryScan();
+    await scan.collect(root, async () => {
+      const entries = await readdirForDiscovery(root, true);
+      for (const entry of entries) {
+        if (signal?.aborted) return;
+        if (!entry.isDirectory() || !UUID_RE.test(entry.name)) continue;
+        const cliSessionId = entry.name;
+        const dir = path.join(root, cliSessionId);
+        const transcriptPath = path.join(dir, 'events.jsonl');
+        let projectCwd = '';
+        try {
+          const yaml = await fs.promises.readFile(path.join(dir, 'workspace.yaml'), 'utf-8');
+          const m = yaml.match(/^cwd:\s*"?([^"\n]+?)"?\s*$/m);
+          if (m) projectCwd = m[1].trim();
+        } catch {
+          // workspace.yaml may be absent on partial-init sessions; cwd stays empty
+        }
+        scan.descriptors.push({ cliSessionId, transcriptPath, projectCwd });
       }
-      out.push({ cliSessionId, transcriptPath, projectCwd });
-    }
-    return out;
+    });
+    return scan.result();
   }
 
   async indexTranscript(transcriptPath: string): Promise<{ text: string; cwd: string }> {

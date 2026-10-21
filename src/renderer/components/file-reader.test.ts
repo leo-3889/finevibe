@@ -5,6 +5,14 @@ const addFileReaderSession = vi.fn();
 const openExternal = vi.fn();
 const exists = vi.fn();
 const isDirectory = vi.fn();
+// The module installs ONE process-wide fs-change listener
+// (`ensureFileChangedListener` returns early once installed), so the handler
+// is captured from the shared mock and fired at whichever pane a test owns.
+const fsChangeHandlers: Array<(changes: { path: string }[]) => void> = [];
+const onFsChange = vi.fn((handler: (changes: { path: string }[]) => void) => {
+  fsChangeHandlers.push(handler);
+  return () => {};
+});
 let activeProject: { id: string; path: string } | null = { id: 'p1', path: '/repo' };
 
 vi.mock('../state.js', () => ({
@@ -27,9 +35,9 @@ beforeEach(() => {
   document.body.innerHTML = '';
   // jsdom does not implement scrollIntoView.
   Element.prototype.scrollIntoView = vi.fn();
-  (globalThis as unknown as { window: { vibeyard: unknown } }).window.vibeyard = {
+  (globalThis as unknown as { window: { finevibe: unknown } }).window.finevibe = {
     app: { openExternal },
-    fs: { exists, isDirectory },
+    fs: { exists, isDirectory, onFsChange, watchDir: vi.fn(), unwatchDir: vi.fn() },
   };
 });
 
@@ -117,9 +125,9 @@ describe('renderMarkdownContent link handling', () => {
 
 it('keeps a large file DOM bounded while navigating to a distant line', async () => {
   const content = Array.from({length: 200000}, (_, i) => 'line ' + (i + 1)).join('\n');
-  Object.assign(window.vibeyard.fs, {
+  Object.assign(window.finevibe.fs, {
     readFile: vi.fn(async () => ({ok: true, content})),
-    watchDir: vi.fn(), unwatchDir: vi.fn(), onFsChange: vi.fn(() => () => {}),
+    watchDir: vi.fn(), unwatchDir: vi.fn(),
   });
   createFileReaderPane('large-preview', '/repo/large.txt');
   const instance = getFileReaderInstance('large-preview')!;
@@ -137,4 +145,58 @@ it('keeps a large file DOM bounded while navigating to a distant line', async ()
     expect(instance.element.querySelector('.file-reader-line-num')?.textContent).toBe('152000');
     expect(instance.element.querySelectorAll('.file-reader-line')).toHaveLength(2000);
   } finally { destroyFileReaderPane('large-preview'); }
+});
+
+it('re-reads on a file change after the first read threw', async () => {
+  // P2-118: the catch used to leave `loaded` false, and the fs watcher only
+  // reloads a pane whose `loaded` is true — so a file whose read failed once
+  // (EMFILE, a transient IPC rejection) never recovered: the pane sat on
+  // "Failed to load file" for the rest of the session, whatever the file did.
+  const readFile = vi.fn()
+    .mockRejectedValueOnce(new Error('EMFILE: too many open files'))
+    .mockResolvedValue({ ok: true, content: 'recovered after the change' });
+  Object.assign(window.finevibe.fs, { readFile });
+  createFileReaderPane('flaky-read', '/repo/flaky.txt');
+  const instance = getFileReaderInstance('flaky-read')!;
+  document.body.appendChild(instance.element);
+  const fireFsChange = fsChangeHandlers[fsChangeHandlers.length - 1]!;
+  try {
+    showFileReaderPane('flaky-read', false);
+    // A thrown read must land in the same terminal state as the sibling
+    // failures (missing file, binary file): unsupported AND loaded.
+    await vi.waitFor(() => expect(instance.loaded).toBe(true));
+    expect(instance.unsupported).toBe(true);
+    expect(instance.element.textContent).toContain('Failed to load file');
+    expect(readFile).toHaveBeenCalledTimes(1);
+    fireFsChange([{ path: '/repo/flaky.txt' }]);
+    await vi.waitFor(() => expect(instance.element.textContent).toContain('recovered after the change'));
+    expect(readFile).toHaveBeenCalledTimes(2);
+  } finally { destroyFileReaderPane('flaky-read'); }
+});
+
+it('reloads per fs change per pane — there is no coalescer (P3-11)', async () => {
+  // Pins the behavior the surviving code implements: ensureFileChangedListener
+  // reloads each matching pane on each change it processes. The former
+  // pendingReloads/reloadTimer block promising "one reload per session after
+  // the main-process 150 ms coalescing window" was dead code and is gone;
+  // nothing batches, and this test fails the day prose and code diverge.
+  const readFile = vi.fn().mockResolvedValue({ ok: true, content: 'v1' });
+  Object.assign(window.finevibe.fs, { readFile });
+  createFileReaderPane('burst', '/repo/burst.txt');
+  const instance = getFileReaderInstance('burst')!;
+  document.body.appendChild(instance.element);
+  const fireFsChange = fsChangeHandlers[fsChangeHandlers.length - 1]!;
+  try {
+    showFileReaderPane('burst', false);
+    await vi.waitFor(() => expect(instance.loaded).toBe(true));
+    expect(readFile).toHaveBeenCalledTimes(1);
+
+    readFile.mockResolvedValue({ ok: true, content: 'v2' });
+    fireFsChange([{ path: '/repo/burst.txt' }]);
+    await vi.waitFor(() => expect(readFile).toHaveBeenCalledTimes(2));
+    fireFsChange([{ path: '/repo/burst.txt' }]);
+    await vi.waitFor(() => expect(readFile).toHaveBeenCalledTimes(3));
+  } finally {
+    destroyFileReaderPane('burst');
+  }
 });

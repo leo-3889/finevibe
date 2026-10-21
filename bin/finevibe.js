@@ -8,33 +8,44 @@ const { execFileSync, spawn } = require('child_process');
 const os = require('os');
 
 const { version } = require('../package.json');
-const APP_DIR = path.join(os.homedir(), '.vibeyard', 'app');
+const APP_DIR = path.join(os.homedir(), '.finevibe', 'app');
 const VERSION_FILE = path.join(APP_DIR, 'version.json');
 const isWin = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 const appPathForPlatform = () => {
-  if (isWin) return path.join(APP_DIR, 'Vibeyard.exe');
-  if (isMac) return path.join(APP_DIR, 'Vibeyard.app');
-  return path.join(APP_DIR, 'Vibeyard.AppImage');
+  if (isWin) return path.join(APP_DIR, 'FineVibe.exe');
+  if (isMac) return path.join(APP_DIR, 'FineVibe.app');
+  return path.join(APP_DIR, 'FineVibe.AppImage');
 };
 const APP_PATH = appPathForPlatform();
-const REPO = process.env.VIBEYARD_RELEASE_REPO || 'elirantutia/vibeyard';
-const RELEASES_URL = `https://github.com/${REPO}/releases`;
-const RELEASE_API_URL = `https://api.github.com/repos/${REPO}/releases/tags/v${version}`;
+// P1-7 (audit plan §1(iv), FORK identity): releases come ONLY from the fork
+// repo named by FINEVIBE_RELEASE_REPO. There is no built-in default — an
+// unset/malformed value means no feed, and a download then fails closed
+// rather than silently pulling upstream bytes into a fork install (the same
+// precedence the packaged auto-updater applies).
+function parseReleaseRepo(value) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : null;
+}
+const REPO = parseReleaseRepo(process.env.FINEVIBE_RELEASE_REPO);
+const RELEASES_URL = REPO ? `https://github.com/${REPO}/releases` : null;
+const RELEASE_API_URL = REPO
+  ? `https://api.github.com/repos/${REPO}/releases/tags/v${version}`
+  : null;
 
 function getAssetName() {
   if (isWin) {
-    return `Vibeyard-${version}-win-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`;
+    return `FineVibe-${version}-win-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`;
   }
   if (isMac) {
     return process.arch === 'arm64'
-      ? `Vibeyard-${version}-arm64-mac.zip`
-      : `Vibeyard-${version}-mac.zip`;
+      ? `FineVibe-${version}-arm64-mac.zip`
+      : `FineVibe-${version}-mac.zip`;
   }
   // electron-builder expands ${arch} to `amd64` in linux artifact names
   // (builder-util toLinuxArchString); requesting `x64` 404s every install.
   // main() restricts linux to x64, so amd64 is the only published name.
-  return `Vibeyard-${version}-linux-amd64.AppImage`;
+  return `FineVibe-${version}-linux-amd64.AppImage`;
 }
 
 function getInstalledVersion() {
@@ -55,7 +66,7 @@ function followRedirects(url, maxRedirects = 10, headers = {}) {
     if (!url.startsWith('https://')) {
       return reject(new Error(`Refusing non-HTTPS download URL: ${url}`));
     }
-    https.get(url, { headers: { 'User-Agent': 'vibeyard-cli', ...headers } }, (res) => {
+    https.get(url, { headers: { 'User-Agent': 'finevibe-cli', ...headers } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         let nextUrl;
@@ -103,8 +114,11 @@ function sha256File(file) {
   });
 }
 
-// Returns true (digest matched), false (mismatch), or null (no digest
-// available — GitHub API failure or asset without a published digest).
+// Returns 'ok' (digest published and matched), 'mismatch' (published and
+// differs), or 'unavailable' (nothing to verify against: asset absent from
+// the release metadata, no digest published, or the API request failed).
+// P2-2: 'unavailable' is NOT a pass — see download()'s refuse-and-redownload
+// loop; unverified bytes are never extracted.
 async function verifyAssetDigest(tmpFile, assetName) {
   let digest;
   try {
@@ -112,88 +126,109 @@ async function verifyAssetDigest(tmpFile, assetName) {
     const assets = Array.isArray(release.assets) ? release.assets : [];
     const asset = assets.find((a) => a && a.name === assetName);
     if (!asset) {
-      console.log(`Asset ${assetName} not found in release metadata; skipping checksum verification.`);
-      return null;
+      console.log(`Asset ${assetName} not found in release metadata; checksum cannot be verified.`);
+      return 'unavailable';
     }
     if (typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(asset.digest)) {
-      console.log(`No sha256 digest published for ${assetName}; skipping checksum verification.`);
-      return null;
+      console.log(`No sha256 digest published for ${assetName}; checksum cannot be verified.`);
+      return 'unavailable';
     }
     digest = asset.digest.slice('sha256:'.length).toLowerCase();
   } catch (err) {
-    // Rate limits or API outages must not brick installs.
-    console.log(`Could not fetch release metadata (${err.message}); skipping checksum verification.`);
-    return null;
+    console.log(`Could not fetch release metadata (${err.message}); checksum cannot be verified.`);
+    return 'unavailable';
   }
   const actual = await sha256File(tmpFile);
   if (actual !== digest) {
     console.error(`Checksum mismatch for ${assetName}: expected ${digest}, got ${actual}.`);
-    return false;
+    return 'mismatch';
   }
   console.log('Checksum verified.');
-  return true;
+  return 'ok';
 }
 
+const DOWNLOAD_ATTEMPTS = 2;
+
+// P2-2: a download is installable only when the published sha256 digest
+// confirms it. Mismatched bytes are corrupt or hostile; a missing digest
+// (asset absent, none published, API outage) means we CANNOT prove the
+// bytes are the real app. Both cases: delete, redownload, re-verify; after
+// DOWNLOAD_ATTEMPTS attempts refuse the install — never extract unverified
+// bytes, and never silently continue.
 async function download(assetName) {
   const url = `${RELEASES_URL}/download/v${version}/${assetName}`;
   const tmpFile = path.join(APP_DIR, `${assetName}.tmp`);
 
   fs.mkdirSync(APP_DIR, { recursive: true });
-  fs.rmSync(tmpFile, { force: true });
 
-  console.log(`Downloading Vibeyard v${version} for ${process.platform}-${process.arch}...`);
-
-  const res = await followRedirects(url);
-
-  if (res.statusCode === 404) {
-    throw new Error(`Release v${version} not found. Download manually from: ${RELEASES_URL}`);
-  }
-  if (res.statusCode !== 200) {
-    throw new Error(`Download failed with status ${res.statusCode}`);
-  }
-
-  const totalBytes = parseInt(res.headers['content-length'], 10) || 0;
-  const totalMB = totalBytes ? (totalBytes / 1048576).toFixed(1) : null;
-
-  const zipPath = await new Promise((resolve, reject) => {
-    let receivedBytes = 0;
-    const file = fs.createWriteStream(tmpFile);
-
-    file.on('error', (err) => {
-      res.destroy();
-      fs.rmSync(tmpFile, { force: true });
-      reject(err);
-    });
-
-    res.on('data', (chunk) => {
-      receivedBytes += chunk.length;
-      if (totalBytes) {
-        const pct = Math.round((receivedBytes / totalBytes) * 100);
-        const receivedMB = (receivedBytes / 1048576).toFixed(1);
-        process.stdout.write(`\r  ${pct}% (${receivedMB}/${totalMB} MB)`);
-      }
-    });
-
-    res.on('error', (err) => {
-      file.destroy();
-      fs.rmSync(tmpFile, { force: true });
-      reject(err);
-    });
-
-    res.pipe(file);
-
-    file.on('finish', () => {
-      console.log('\n');
-      resolve(tmpFile);
-    });
-  });
-
-  const verified = await verifyAssetDigest(zipPath, assetName);
-  if (verified === false) {
+  for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
     fs.rmSync(tmpFile, { force: true });
-    throw new Error(`Downloaded ${assetName} failed checksum verification. Download manually from: ${RELEASES_URL}`);
+
+    console.log(`Downloading FineVibe v${version} for ${process.platform}-${process.arch}...`);
+
+    const res = await followRedirects(url);
+
+    if (res.statusCode === 404) {
+      throw new Error(`Release v${version} not found. Download manually from: ${RELEASES_URL}`);
+    }
+    if (res.statusCode !== 200) {
+      throw new Error(`Download failed with status ${res.statusCode}`);
+    }
+
+    const totalBytes = parseInt(res.headers['content-length'], 10) || 0;
+    const totalMB = totalBytes ? (totalBytes / 1048576).toFixed(1) : null;
+
+    const zipPath = await new Promise((resolve, reject) => {
+      let receivedBytes = 0;
+      const file = fs.createWriteStream(tmpFile);
+
+      file.on('error', (err) => {
+        res.destroy();
+        fs.rmSync(tmpFile, { force: true });
+        reject(err);
+      });
+
+      res.on('data', (chunk) => {
+        receivedBytes += chunk.length;
+        if (totalBytes) {
+          const pct = Math.round((receivedBytes / totalBytes) * 100);
+          const receivedMB = (receivedBytes / 1048576).toFixed(1);
+          process.stdout.write(`\r  ${pct}% (${receivedMB}/${totalMB} MB)`);
+        }
+      });
+
+      res.on('error', (err) => {
+        file.destroy();
+        fs.rmSync(tmpFile, { force: true });
+        reject(err);
+      });
+
+      res.pipe(file);
+
+      file.on('finish', () => {
+        console.log('\n');
+        resolve(tmpFile);
+      });
+    });
+
+    const verified = await verifyAssetDigest(zipPath, assetName);
+    if (verified === 'ok') {
+      return zipPath;
+    }
+    fs.rmSync(tmpFile, { force: true });
+
+    const reason = verified === 'mismatch'
+      ? `Checksum mismatch for ${assetName}`
+      : `No verifiable sha256 digest for ${assetName}`;
+    if (attempt < DOWNLOAD_ATTEMPTS) {
+      console.log(`${reason}; redownloading (attempt ${attempt + 1}/${DOWNLOAD_ATTEMPTS}).`);
+      continue;
+    }
+    throw new Error(
+      `${reason} after ${DOWNLOAD_ATTEMPTS} attempts. ` +
+      `Refusing to install unverified bytes. Download manually from: ${RELEASES_URL}`,
+    );
   }
-  return zipPath;
 }
 
 function extract(zipPath) {
@@ -248,27 +283,27 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (args.includes('--help') || args.includes('-h')) {
-    console.log(`Vibeyard v${version} — Terminal-centric IDE for AI-powered CLI tools
+    console.log(`FineVibe v${version} — Terminal-centric IDE for AI-powered CLI tools
 
-Usage: vibeyard [options]
+Usage: finevibe [options]
 
 Options:
   --update    Force re-download of the latest app build
   --version   Print version and exit
   --help      Show this help message
 
-Any other arguments are forwarded to the Vibeyard app.`);
+Any other arguments are forwarded to the FineVibe app.`);
     return;
   }
 
   if (args.includes('--version') || args.includes('-v')) {
     const installed = getInstalledVersion();
-    console.log(`vibeyard v${version} (app: ${installed ? `v${installed}` : 'not installed'})`);
+    console.log(`finevibe v${version} (app: ${installed ? `v${installed}` : 'not installed'})`);
     return;
   }
 
   if (!isMac && !isWin && process.platform !== 'linux') {
-    console.error(`Unsupported platform ${process.platform}. Download from: ${RELEASES_URL}`);
+    console.error(`Unsupported platform ${process.platform}. Download from: ${RELEASES_URL ?? 'https://github.com/leo-3889/vibeyard/releases'}`);
     process.exit(1);
   }
   if (process.platform === 'linux' && process.arch !== 'x64') {
@@ -283,6 +318,13 @@ Any other arguments are forwarded to the Vibeyard app.`);
   const needsDownload = forceUpdate || installedVersion !== version || !fs.existsSync(APP_PATH);
 
   if (needsDownload) {
+    if (!REPO) {
+      throw new Error(
+        'No release feed configured: FINEVIBE_RELEASE_REPO is unset or not "owner/repo". ' +
+        'Refusing to download from a default repository — set FINEVIBE_RELEASE_REPO to the ' +
+        'fork repository that publishes these releases (see README.md).',
+      );
+    }
     const zipPath = await download(assetName);
     extract(zipPath);
   }

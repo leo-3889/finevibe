@@ -11,7 +11,7 @@ beforeEach(() => {
   listProviders.mockReset();
   checkBinary.mockReset();
   (globalThis as unknown as { window: unknown }).window = {
-    vibeyard: {
+    finevibe: {
       provider: { listProviders, checkBinary },
     },
   };

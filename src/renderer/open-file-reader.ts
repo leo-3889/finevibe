@@ -36,8 +36,8 @@ export async function openFileReaderChecked(
 
   try {
     const [exists, isDir] = await Promise.all([
-      window.vibeyard.fs.exists(fullPath),
-      window.vibeyard.fs.isDirectory(fullPath),
+      window.finevibe.fs.exists(fullPath),
+      window.finevibe.fs.isDirectory(fullPath),
     ]);
     if (!exists || isDir) {
       console.warn(`[open-file] not an openable file: ${fullPath}`);

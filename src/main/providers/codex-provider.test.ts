@@ -41,18 +41,20 @@ vi.mock('../codex-session-watcher', () => ({
 
 vi.mock('../codex-hooks', () => ({
   installCodexHooks: vi.fn(),
-  validateCodexHooks: vi.fn(() => ({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} })),
+  validateCodexHooks: vi.fn(() => ({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} })),
   cleanupCodexHooks: vi.fn(),
-  SESSION_ID_VAR: 'VIBEYARD_SESSION_ID',
+  SESSION_ID_VAR: 'FINEVIBE_SESSION_ID',
 }));
 
 import * as fs from 'fs';
 import { execSync } from 'child_process';
-import { CodexProvider, _resetCachedPath } from './codex-provider';
+import { CodexProvider, _resetCachedPath, _resetHookValidationCache } from './codex-provider';
 import { getCodexConfig } from '../codex-config';
 import { startConfigWatcher, stopConfigWatcher } from '../config-watcher';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks } from '../codex-hooks';
 import { stopCodexSessionWatcher } from '../codex-session-watcher';
+import { invalidateBinaryCache } from './resolve-binary';
+import { startCodexSessionWatcher, registerPendingCodexSession } from '../codex-session-watcher';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -67,6 +69,8 @@ const mockInstallCodexHooks = vi.mocked(installCodexHooks);
 const mockValidateCodexHooks = vi.mocked(validateCodexHooks);
 const mockCleanupCodexHooks = vi.mocked(cleanupCodexHooks);
 const mockStopCodexSessionWatcher = vi.mocked(stopCodexSessionWatcher);
+const mockStartCodexSessionWatcher = vi.mocked(startCodexSessionWatcher);
+const mockRegisterPendingCodexSession = vi.mocked(registerPendingCodexSession);
 
 let provider: CodexProvider;
 
@@ -74,6 +78,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
+  _resetHookValidationCache();
+  invalidateBinaryCache();
+  mockValidateCodexHooks.mockReturnValue({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   provider = new CodexProvider();
 });
 
@@ -94,6 +101,10 @@ describe('meta', () => {
     expect(caps.shiftEnterNewline).toBe(false);
     expect(caps.pendingPromptTrigger).toBe('startup-arg');
     expect(caps.systemPromptInjection).toBe(true);
+    // planModeArg stays UNSET — VERIFICATION-PENDING: no verified TUI startup
+    // flag exists (see provider capabilities comment); the live probe requires an
+    // installed codex CLI, absent on the 2026-10-21 probe machine.
+    expect(caps.planModeArg).toBeUndefined();
   });
 
   it('has defaultContextWindowSize of 200,000', () => {
@@ -124,14 +135,27 @@ describe('resolveBinaryPath', () => {
     expect(provider.resolveBinaryPath()).toBe('codex');
   });
 
-  it('caches result on subsequent calls', () => {
+  it('caches result on subsequent calls while the binary exists', () => {
+    mockStatSync.mockImplementation((p) => {
+      if (p === firstCandidate) return fileStat;
+      throw new Error('ENOENT');
+    });
+    provider.resolveBinaryPath();
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    // P2-26: cache hit = one stat, zero subprocess re-probes.
+    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('re-resolves when the cached binary disappears', () => {
     mockStatSync.mockImplementation((p) => {
       if (p === firstCandidate) return fileStat;
       throw new Error('ENOENT');
     });
     provider.resolveBinaryPath();
     mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    mockExecSync.mockReturnValue('/some/other/path/codex\n' as any);
+    expect(provider.resolveBinaryPath()).toBe('/some/other/path/codex');
   });
 });
 
@@ -167,9 +191,9 @@ describe('buildEnv', () => {
     expect(env.PATH).toBe(isWin ? '/usr/local/bin;/usr/bin' : '/usr/local/bin:/usr/bin');
   });
 
-  it('sets VIBEYARD_SESSION_ID to the session ID', () => {
+  it('sets FINEVIBE_SESSION_ID to the session ID', () => {
     const env = provider.buildEnv('sess-123', {});
-    expect(env.VIBEYARD_SESSION_ID).toBe('sess-123');
+    expect(env.FINEVIBE_SESSION_ID).toBe('sess-123');
   });
 
   it('strips an inherited CODEX_HOME and preserves other env vars', () => {
@@ -185,52 +209,52 @@ describe('buildEnv', () => {
 
 describe('buildArgs', () => {
   it('returns ["resume", id] when isResume=true with cliSessionId', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '' });
     expect(args).toEqual(['resume', 'sid-1']);
   });
 
   it('returns [] when isResume=false with cliSessionId (no continue-in-place)', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('returns [] when cliSessionId is null', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
   });
 
   it('passes initialPrompt as positional arg when not resuming', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the bug' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', initialPrompt: 'fix the bug' });
     expect(args).toEqual(['fix the bug']);
   });
 
   it('passes the prompt as trailing positional when resuming', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'fix the bug' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'fix the bug' });
     expect(args).toEqual(['resume', 'sid-1', 'fix the bug']);
   });
 
   it('splits extraArgs on whitespace and appends', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model gpt-4o  --full-auto' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model gpt-4o  --full-auto' });
     expect(args).toEqual(['--model', 'gpt-4o', '--full-auto']);
   });
 
   it('combines resume args and extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gpt-4o' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gpt-4o' });
     expect(args).toEqual(['resume', 'sid-1', '--model', 'gpt-4o']);
   });
 
   it('tokenizes quoted extra args (spaces stay inside one argument)', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--model "my model"' });
     expect(args).toEqual(['--model', 'my model']);
   });
 
   it('preserves empty quoted extra args', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '--flag ""' });
     expect(args).toEqual(['--flag', '']);
   });
 
   it('passes systemPrompt via -c developer_instructions config override', () => {
-    const args = provider.buildArgs({ cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '', systemPrompt: 'You are the CMO.' });
     expect(args).toEqual(['-c', 'developer_instructions=You are the CMO.']);
   });
 });
@@ -296,7 +320,7 @@ describe('hooks integration', () => {
   it('validateSettings delegates to validateCodexHooks', () => {
     const result = provider.validateSettings();
     expect(mockValidateCodexHooks).toHaveBeenCalled();
-    expect(result).toEqual({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
+    expect(result).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   });
 
   it('cleanup stops the config watcher, the hooks and the rollout session watcher', () => {
@@ -306,7 +330,7 @@ describe('hooks integration', () => {
     // The rollout watcher is a recursive fs.watch plus a 2s interval with no
     // other production caller: without this it survives quit, and a scan
     // armed inside its 500ms arming window fires after cleanupAll() deleted
-    // STATUS_DIR and recreates os.tmpdir()/vibeyard with a .sessionid file.
+    // STATUS_DIR and recreates os.tmpdir()/finevibe with a .sessionid file.
     expect(mockStopCodexSessionWatcher).toHaveBeenCalled();
   });
 
@@ -316,9 +340,61 @@ describe('hooks integration', () => {
   });
 });
 
+describe('onSessionStarted hooks validation cache', () => {
+  const win = { id: 1 } as any;
+
+  it('does not re-validate hooks synchronously on the second launch within the TTL', () => {
+    provider.onSessionStarted('s1', '/p1', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);
+
+    provider.onSessionStarted('s2', '/p2', win);
+    // The launch path must not run the file validation a second time (audit P3-5).
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);
+    expect(mockStartCodexSessionWatcher).not.toHaveBeenCalled();
+  });
+
+  it('reuses the cached missing-hooks verdict for the watcher fallback', () => {
+    mockValidateCodexHooks.mockReturnValue({ statusLine: 'finevibe', hooks: 'missing', hookDetails: {} });
+    provider.onSessionStarted('s1', '/p1', win);
+    provider.onSessionStarted('s2', '/p2', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);
+    // Every hookless session still registers with the rollout watcher.
+    expect(mockStartCodexSessionWatcher).toHaveBeenCalledTimes(2);
+    expect(mockRegisterPendingCodexSession).toHaveBeenCalledWith('s1', '/p1');
+    expect(mockRegisterPendingCodexSession).toHaveBeenCalledWith('s2', '/p2');
+  });
+
+  it('reinstallSettings clears the cache so the next launch re-validates', () => {
+    provider.onSessionStarted('s1', '/p1', win);
+    provider.reinstallSettings();
+    provider.onSessionStarted('s2', '/p2', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(2);
+  });
+
+  it('installHooks clears the cache', async () => {
+    provider.onSessionStarted('s1', '/p1', win);
+    await provider.installHooks();
+    provider.onSessionStarted('s2', '/p2', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(2);
+  });
+
+  it('validateSettings refreshes the cache with a fresh result', () => {
+    provider.validateSettings();
+    provider.onSessionStarted('s1', '/p1', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleanup clears the cache', () => {
+    provider.onSessionStarted('s1', '/p1', win);
+    provider.cleanup();
+    provider.onSessionStarted('s2', '/p2', win);
+    expect(mockValidateCodexHooks).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('other methods', () => {
   it('getConfig delegates to codex config reader', async () => {
-    const config = { mcpServers: [{ name: 'a', url: 'b', status: 'configured', scope: 'user', filePath: '/x' }], agents: [], skills: [], commands: [] };
+    const config = { mcpServers: [{ name: 'a', url: 'b', status: 'configured', scope: 'user' as const, filePath: '/x' }], agents: [], skills: [], commands: [] };
     mockGetCodexConfig.mockResolvedValueOnce(config);
     await expect(provider.getConfig('/some/path')).resolves.toEqual(config);
     expect(mockGetCodexConfig).toHaveBeenCalledWith('/some/path');

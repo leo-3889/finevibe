@@ -11,8 +11,16 @@ permissions:
   actions: read
 
 jobs:
+  # P2-7: the review agent runs Bash on untrusted PR content. Pin the job to
+  # least privilege so a top-level widening can never hand that token write
+  # access to the repository: read-only contents, and pull-requests: write
+  # only for the `gh pr review` post (actions: read for the artifact download).
   review:
     if: github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

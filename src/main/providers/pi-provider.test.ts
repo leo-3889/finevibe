@@ -71,6 +71,8 @@ describe('meta', () => {
     expect(caps.shiftEnterNewline).toBe(false);
     expect(caps.pendingPromptTrigger).toBe('startup-arg');
     expect(caps.systemPromptInjection).toBe(true);
+    // Permanent non-goal: the Pi author explicitly rejects a built-in plan mode
+    // (pi-mono blog + README) — the UI shows a disabled checkbox with a tooltip.
     expect(caps.planModeArg).toBeUndefined();
   });
 
@@ -206,7 +208,7 @@ describe('no-op lifecycle methods', () => {
   });
 
   it('validateSettings reports complete (Pi has no hooks or status line)', () => {
-    expect(provider.validateSettings()).toEqual({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
+    expect(provider.validateSettings()).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   });
 
   it('getShiftEnterSequence returns null', () => {
@@ -309,4 +311,5 @@ describe('getTranscriptPath', () => {
     expect(provider.getTranscriptPath!('cli-9', '/proj', '/profiles/work')).toBe('/sessions/dir-a/2026.jsonl');
     expect(findTranscriptPathSync).toHaveBeenCalledWith(expect.any(Function), 'cli-9', '/proj', '/profiles/work');
   });
+
 });

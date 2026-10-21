@@ -51,10 +51,10 @@ export function resolveExportTranscript(
 /**
  * Backup a session via a save dialog, in one of two formats:
  * - `zip`:  the provider-native transcript file (verbatim) + `meta.json`
- *   (the Vibeyard history entry) + readable hook sidecars when present.
+ *   (the FineVibe history entry) + readable hook sidecars when present.
  * - `file`: the transcript alone, verbatim, as a single file (meta.json
  *   when no transcript exists, so the export is never empty).
- * The transcript is the provider's own record — Vibeyard never owns a copy —
+ * The transcript is the provider's own record — FineVibe never owns a copy —
  * so exports are reference snapshots; `meta.json` carries the resume
  * coordinates (provider, CLI session id, profile config dir, project path).
  */
@@ -74,7 +74,7 @@ export async function exportSessionArchive(
 
   const metaJson = JSON.stringify(
     {
-      format: 'vibeyard-session-backup-v1',
+      format: 'finevibe-session-backup-v1',
       exportedAt: new Date().toISOString(),
       projectPath: params.projectPath,
       configDir: params.configDir ?? null,
@@ -113,12 +113,12 @@ export async function exportSessionArchive(
   zip.file('meta.json', metaJson);
   zip.file(
     'README.txt',
-    'Vibeyard session backup.\n' +
-      'meta.json    - Vibeyard history entry (provider, session id, profile, costs, exit info).\n' +
+    'FineVibe session backup.\n' +
+      'meta.json    - FineVibe history entry (provider, session id, profile, costs, exit info).\n' +
       (transcriptPath ? 'transcript/  - the provider-native transcript file, copied verbatim.\n' : '') +
       (params.meta.liveSessionId ? 'sidecars/    - hook event/status files; present while the session is live (cleaned up at close).\n' : '') +
       (params.cliSessionId
-        ? `\nResume in Vibeyard: import is not wired; the entry's providerId + cliSessionId + projectPath locate the session in the provider's own storage.\n`
+        ? `\nResume in FineVibe: import is not wired; the entry's providerId + cliSessionId + projectPath locate the session in the provider's own storage.\n`
         : '\nNo CLI session id was known for this session: meta.json only.\n'),
   );
   if (transcriptPath) {

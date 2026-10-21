@@ -1,8 +1,9 @@
 import { appState } from '../state.js';
-import { createPlanModeRow } from '../dom-utils.js';
+import { resolvePlanModePreference, resolvePlanProvider } from '../state/specialized-sessions.js';
 import { setPendingPrompt } from './terminal-pane.js';
 import { getFileViewerInstance } from './file-viewer.js';
 import { getFileReaderInstance } from './file-reader.js';
+import { shouldActivateAskAiSession } from '../ask-ai-focus.js';
 import { promptNewSession } from './tab-bar/session-menu.js';
 import { wireSubmitDisabled } from './submit-disabled.js';
 
@@ -24,7 +25,6 @@ let askBubble: HTMLButtonElement | null = null;
 let popover: HTMLDivElement | null = null;
 let popoverInfo: HTMLDivElement | null = null;
 let popoverTextarea: HTMLTextAreaElement | null = null;
-let popoverPlanModeCheckbox: HTMLInputElement | null = null;
 let currentCtx: PaneContext | null = null;
 
 function findFilePane(node: Node | null): { el: HTMLElement; kind: PaneKind; bodyEl: HTMLElement } | null {
@@ -164,9 +164,6 @@ function ensureComposer(): HTMLDivElement {
   inputRow.appendChild(textarea);
   p.appendChild(inputRow);
 
-  const { row: planModeRow, checkbox: planModeCheckbox } = createPlanModeRow();
-  p.appendChild(planModeRow);
-
   const submitGroup = document.createElement('div');
   submitGroup.className = 'inspect-submit-group';
   const submitBtn = document.createElement('button');
@@ -204,7 +201,6 @@ function ensureComposer(): HTMLDivElement {
   popover = p;
   popoverInfo = info;
   popoverTextarea = textarea;
-  popoverPlanModeCheckbox = planModeCheckbox;
   return p;
 }
 
@@ -244,7 +240,6 @@ function openComposer(ctx: PaneContext): void {
 
   popoverTextarea!.value = '';
   popoverTextarea!.dispatchEvent(new Event('input'));
-  popoverPlanModeCheckbox!.checked = true;
 
   const paneRect = ctx.paneEl.getBoundingClientRect();
   const selRect = getSelectionRect();
@@ -287,8 +282,8 @@ function submit(): void {
   if (!project) return;
   const fileName = composed.ctx.filePath.split('/').pop() || 'file';
   const sessionName = `${fileName}: ${composed.instruction.slice(0, 30)}`;
-  const planMode = popoverPlanModeCheckbox?.checked ?? true;
-  const newSession = appState.addPlanSession(project.id, sessionName, planMode);
+  const planMode = resolvePlanModePreference(appState.preferences, resolvePlanProvider(project, appState.preferences, undefined));
+  const newSession = appState.addPlanSession(project.id, sessionName, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
   if (newSession) {
     setPendingPrompt(newSession.id, composed.prompt);
   }
@@ -298,10 +293,13 @@ function submit(): void {
 function submitToCustomSession(): void {
   const composed = composeOrNull();
   if (!composed) return;
-  promptNewSession((session) => {
-    setPendingPrompt(session.id, composed.prompt);
-    dismiss();
-  });
+  promptNewSession(
+    (session) => {
+      setPendingPrompt(session.id, composed.prompt);
+      dismiss();
+    },
+    { activate: shouldActivateAskAiSession(appState.preferences) },
+  );
 }
 
 function showBubbleForSelection(ctx: PaneContext): void {

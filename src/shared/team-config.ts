@@ -3,8 +3,8 @@
 // top-level `personas/` folder so curated content can be updated
 // independently of app releases — flip the four fields below to retarget.
 
-export const TEAM_MEMBERS_REPO = {
-  owner: 'elirantutia',
+const TEAM_MEMBERS_REPO = {
+  owner: 'leo-3889',
   repo: 'vibeyard',
   branch: 'main',
   path: 'personas',

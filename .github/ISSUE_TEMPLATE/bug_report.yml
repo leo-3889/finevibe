@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug to help us improve Vibeyard
+description: Report a bug to help us improve FineVibe
 body:
   - type: input
     id: os
@@ -10,10 +10,10 @@ body:
     validations:
       required: true
   - type: input
-    id: vibeyard-version
+    id: finevibe-version
     attributes:
-      label: Vibeyard Version
-      description: From "About Vibeyard" in the app menu
+      label: FineVibe Version
+      description: From "About FineVibe" in the app menu
       placeholder: e.g., 1.2.0
     validations:
       required: true

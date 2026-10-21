@@ -225,7 +225,7 @@ export function badgeClass(type: string): string {
     case 'subagent_start': case 'subagent_stop': case 'teammate_idle': return 'agent';
     case 'session_end': case 'pre_compact': case 'post_compact': case 'instructions_loaded': return 'lifecycle';
     case 'task_created': case 'task_completed': return 'task';
-    case 'cwd_changed': case 'file_changed': case 'config_change': case 'worktree_create': case 'worktree_remove': case 'status_update': return 'system';
+    case 'cwd_changed': case 'file_changed': case 'config_change': case 'worktree_remove': case 'status_update': return 'system';
     case 'notification': return 'notify';
     default: return 'default';
   }
@@ -250,7 +250,6 @@ export function badgeLabel(type: string): string {
     case 'post_compact': return 'Compact';
     case 'task_created': return 'Task+';
     case 'task_completed': return 'Task OK';
-    case 'worktree_create': return 'Worktree+';
     case 'worktree_remove': return 'Worktree-';
     case 'cwd_changed': return 'CWD';
     case 'file_changed': return 'File';

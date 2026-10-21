@@ -128,7 +128,7 @@ export const createTopFilesWidget: WidgetFactory = (host) => {
     setStatus('Scanning project files…', 'loading');
 
     try {
-      const result = await window.vibeyard.fs.topFilesByTokens(project.path, limit);
+      const result = await window.finevibe.fs.topFilesByTokens(project.path, limit);
       if (token !== renderToken) return;
       if (!result.ok) {
         setStatus('Could not scan project files.', 'empty');

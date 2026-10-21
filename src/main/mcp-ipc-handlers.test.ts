@@ -17,7 +17,7 @@ const mockConnect = vi.hoisted(() => vi.fn(async (id: string, url: string) => {
   registry.set(id, { generation, state: 'connected', transportUrl: url, closed: false });
   return { success: true };
 }));
-const mockShowMessageBox = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ response: 1 })));
+const mockShowMessageBox = vi.hoisted(() => vi.fn(async (_win: unknown, _options: Electron.MessageBoxOptions) => ({ response: 1 })));
 const mockGetFocusedWindow = vi.hoisted(() => vi.fn(() => null as unknown));
 
 vi.mock('electron', () => ({
@@ -31,7 +31,7 @@ vi.mock('electron', () => ({
     // Electron's 1-arg overload shifts args; normalize for assertions.
     showMessageBox: (...args: unknown[]) => {
       const twoArg = args.length > 1;
-      return mockShowMessageBox(twoArg ? args[0] : undefined, twoArg ? args[1] : args[0]);
+      return mockShowMessageBox(twoArg ? args[0] : undefined, (twoArg ? args[1] : args[0]) as Electron.MessageBoxOptions);
     },
   },
 }));
@@ -161,6 +161,22 @@ describe('mcpUrlPolicy', () => {
       'http://notlocalhost:9000/mcp',
       'http://evil.localhost/mcp',
       'http://mydev.localhost:8080/sse',
+    ]) {
+      expect(mcpUrlPolicy(url)).toEqual({ ok: true, needsConfirm: true });
+    }
+  });
+
+  it('requires confirm for Object.prototype member names used as hosts (P2-51)', () => {
+    // The gate read `host in LOCAL_HOSTS`, which walks the prototype chain:
+    // `constructor`, `__proto__` and `toString` are inherited keys, so those
+    // hosts hit the loopback exemption and reached needsConfirm:false — the
+    // confirm dialog was bypassed against the doc's own exact-host promise.
+    // The exemption must cover own keys only.
+    for (const url of [
+      'http://constructor/',
+      'http://__proto__/',
+      'http://toString/',
+      'http://hasOwnProperty:8080/mcp',
     ]) {
       expect(mcpUrlPolicy(url)).toEqual({ ok: true, needsConfirm: true });
     }

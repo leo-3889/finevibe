@@ -3,9 +3,10 @@ import { searchSessions } from './session-deep-search';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { CliProvider } from './providers/provider';
 import * as fs from 'fs';
-import { clipboard } from 'electron';
+import { clipboard, dialog, utilityProcess } from 'electron';
 import * as os from 'os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { ClipboardPastePayload } from '../shared/types';
 import * as path from 'path';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 
@@ -31,7 +32,7 @@ const mockSpawnPty = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise
 const mockRegisterSync = vi.hoisted(() => vi.fn());
 const mockUnregisterSync = vi.hoisted(() => vi.fn(() => { calls.push('unregister'); }));
 const mockGetProvider = vi.hoisted(() => vi.fn());
-const mockGetSyncedPath = vi.hoisted(() => vi.fn(() => null));
+const mockGetSyncedPath = vi.hoisted(() => vi.fn((): string | null => null));
 const mockRegisterSession = vi.hoisted(() => vi.fn());
 
 // Modules the handler-under-test imports but this suite never exercises: a
@@ -63,16 +64,17 @@ vi.mock('electron', () => ({
   BrowserWindow: {
     getAllWindows: () => [fakeWin],
     fromWebContents: () => fakeWin,
+    getFocusedWindow: () => fakeWin,
   },
   app: {
     getPath: () => '/mock/app',
-    getName: () => 'vibeyard',
+    getName: () => 'finevibe',
     getVersion: () => 'test',
     on: vi.fn(),
     whenReady: () => Promise.resolve(),
     quit: vi.fn(),
   },
-  dialog: { showMessageBox: () => Promise.resolve({ response: 0 }) },
+  dialog: { showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })) },
   shell: { openExternal: () => Promise.resolve() },
   clipboard: {
     writeText: vi.fn(),
@@ -84,6 +86,10 @@ vi.mock('electron', () => ({
     readImage: vi.fn(() => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) })),
     availableFormats: vi.fn(() => [] as string[]),
   },
+  // P4: the off-main PNG encoder forks a utilityProcess; the default stub
+  // refuses the fork, so handlers take the documented main-thread
+  // fallback. Worker-success tests override `fork` per test.
+  utilityProcess: { fork: vi.fn(() => null as never) },
 }));
 
 vi.mock('./pty-manager', () => ({
@@ -104,7 +110,6 @@ vi.mock('./session-transcript-sync', () => ({
 
 vi.mock('./providers/registry', () => ({
   getProvider: mockGetProvider,
-  getProviderMeta: vi.fn(),
   getAllProviderMetas: vi.fn(),
   getAllProviders: vi.fn(),
 }));
@@ -140,20 +145,43 @@ vi.mock('./fs-utils', async (importOriginal) => ({
   isMacPackagePath: () => false,
   BINARY_SNIFF_BYTES: 8000,
 }));
-vi.mock('./platform', autoStub);
+const platformState = vi.hoisted(() => ({ os: 'win32' as 'win32' | 'darwin' | 'linux' }));
+// P2: the clipboard probes branch on the platform, so tests must be able to
+// pick one — the autoStub alone made every isWin/isMac/isLinux a truthy
+// mock function. The getters re-evaluate per access (vitest's ESM interop
+// reads the namespace property at each use), so one assignment flips the OS.
+// Default 'win32': the P0-measured live file format (FileNameW) is Windows'.
+// fs:cloneRepo spawns `git clone` through execFile; the suite swaps in a spy
+// (keeping every other child_process export real for transitive importers) so
+// the gate tests can assert git is never launched on a rejected request.
+const mockGitCloneSpawn = vi.hoisted(() => vi.fn());
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+  execFile: mockGitCloneSpawn,
+}));
+
+vi.mock('./platform', async () => ({
+  ...(autoStub() as object),
+  get isWin() { return platformState.os === 'win32'; },
+  get isMac() { return platformState.os === 'darwin'; },
+  get isLinux() { return platformState.os === 'linux'; },
+}));
 vi.mock('./chrome-import/importer', autoStub);
 vi.mock('./settings-guard', autoStub);
-vi.mock('./vibeyardignore', autoStub);
+vi.mock('./finevibeignore', autoStub);
 vi.mock('./close-state', autoStub);
 vi.mock('./profiles', autoStub);
 vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
 
 import { registerIpcHandlers } from './ipc-handlers';
+import { isManagedMcpConfigDir } from './claude-cli';
 import { loadState } from './store';
+import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { cleanupSessionStatus } from './hook-status';
 import { analyzeReadiness } from './readiness/analyzer';
 import { detectRepo } from './github-cli';
+import { getAllProviders } from './providers/registry';
 
 function makeProvider(): CliProvider {
   return {
@@ -177,6 +205,9 @@ async function create(
 ): Promise<void> {
   const handler = handlers.get('pty:create');
   if (!handler) throw new Error('pty:create was not registered');
+  // The launch gate binds cwd to the project tier; the lifecycle tests
+  // launch in '/proj', so make it a known project.
+  knownPaths.push('/proj');
   await handler(
     {},
     sessionId,
@@ -204,12 +235,16 @@ beforeEach(() => {
   knownPaths.length = 0;
   provider = makeProvider();
   mockGetProvider.mockReturnValue(provider);
+  // pty:create gates a renderer-supplied configDir through the managed
+  // profile allowlist (claude-cli, autoStubbed here): tests that want the
+  // gate exercised override it per-test.
+  vi.mocked(isManagedMcpConfigDir).mockReturnValue(true);
   registerIpcHandlers();
 });
 
 describe('project file read boundary', () => {
   it('rejects a link inside a project whose target is outside it', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-ipc-test-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ipc-test-'));
     try {
       const project = path.join(root, 'project');
       const outside = path.join(root, 'outside');
@@ -226,7 +261,7 @@ describe('project file read boundary', () => {
   });
 
   it('rejects a text file larger than the bounded reader limit', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-ipc-test-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ipc-test-'));
     try {
       const large = path.join(root, 'large.txt');
       const fd = fs.openSync(large, 'w');
@@ -243,7 +278,7 @@ describe('project file read boundary', () => {
 describe('git:* root gate', () => {
   it('blocks git handlers aimed at a cwd the renderer invented', async () => {
     const gitStatus = await import('./git-status');
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       const outside = path.join(root, 'worktree');
       fs.mkdirSync(outside);
@@ -262,7 +297,7 @@ describe('git:* root gate', () => {
 
   it('accepts a known project directory', async () => {
     const gitStatus = await import('./git-status');
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       knownPaths.push(root);
       handlers.get('git:getStatus')!({}, root);
@@ -273,7 +308,7 @@ describe('git:* root gate', () => {
   });
 
   it('keeps a watched worktree git-capable after its project is closed', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       const project = path.join(root, 'project');
       const worktree = path.join(project, '.wt', 'w1');
@@ -289,7 +324,7 @@ describe('git:* root gate', () => {
   });
 
   it('recognizes a watched root reached through a link', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       const project = path.join(root, 'project');
       const worktree = path.join(project, '.wt', 'w1');
@@ -311,7 +346,7 @@ describe('git:* root gate', () => {
   });
 
   it('refuses a git file path that escapes the root', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       knownPaths.push(root);
       expect(() => handlers.get('git:getDiff')!({}, root, '../escape.txt', 'staged'))
@@ -319,6 +354,57 @@ describe('git:* root gate', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('refuses a git file path that resolves to the root itself', async () => {
+    const gitStatus = await import('./git-status');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
+    try {
+      knownPaths.push(root);
+      // P1-17: '' resolves (path.resolve(root,'')===root) and `isWithin`
+      // accepts the root itself, so the old gate let an untracked "discard"
+      // of the whole tree reach gitDiscardFile's recursive rm. The root
+      // spelling is now refused at requireGitFilePath, for every git file
+      // channel — a single-file op is never the tree root.
+      for (const target of ['', '.', '.wt/..']) {
+        await expect(handlers.get('git:discardFile')!({}, root, target, 'untracked'))
+          .rejects.toThrow(/not the project root/);
+      }
+      expect(vi.mocked(gitStatus.gitDiscardFile)).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to make a CLI config dir a git-capable watched root', async () => {
+    const gitStatus = await import('./git-status');
+    const gitWatcher = await import('./git-watcher');
+    // The real home: isAllowedReadPath matches ~/.claude by spelling, and the
+    // P1-17 chain started exactly there — config dirs ARE read-allowed, which
+    // is what made watchProject a route into requireGitRoot's admit set.
+    const claudeDir = path.join(os.homedir(), '.claude');
+    handlers.get('git:watchProject')!({}, claudeDir);
+    expect(vi.mocked(gitWatcher.startGitWatcher)).not.toHaveBeenCalled();
+    // Today the watched root becomes git-capable; after the fix the config
+    // tree never joins gitWatchedRoots, so git handlers reject it.
+    expect(() => handlers.get('git:getStatus')!({}, claudeDir)).toThrow(/not within a known project/);
+    expect(vi.mocked(gitStatus.getGitStatus)).not.toHaveBeenCalled();
+  });
+});
+
+// P1-12: the gate's root set is main-owned. The store suite proves the store
+// validates every writer; this pins the handler wiring: store:save hands the
+// payload to the store verifier and never feeds the gate, so a payload
+// inventing a root cannot open fs/git channels outside the known set.
+describe('store:save cannot widen the root set', () => {
+  it('routes the renderer payload through the store verifier, not the gate', async () => {
+    const store = await import('./store');
+    knownPaths.length = 0;
+    const poison = { projects: [{ id: 'x', path: 'C:\\' }], preferences: {} };
+    handlers.get('store:save')!({}, poison);
+    expect(vi.mocked(store.saveState)).toHaveBeenCalledWith(poison);
+    expect(knownPaths).not.toContain('C:\\');
+    expect(handlers.get('fs:readFile')!({}, 'C:\\')).toEqual({ ok: false, reason: 'error' });
   });
 });
 
@@ -328,7 +414,7 @@ describe('readiness/github git-executing handlers share the root gate', () => {
     // `git remote get-url`) - the same sink the 13 git:* handlers gate.
     // The analyzer/detectRepo stubs are the autoStub proxies; importing them
     // statically is what lets these assertions see the calls.
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       const outside = path.join(root, 'invented');
       fs.mkdirSync(outside);
@@ -345,7 +431,7 @@ describe('readiness/github git-executing handlers share the root gate', () => {
   });
 
   it('runs them for a known project, on the resolved path', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
     try {
       knownPaths.push(root);
 
@@ -360,6 +446,154 @@ describe('readiness/github git-executing handlers share the root gate', () => {
   });
 });
 
+const OUTSIDE_HOME = process.platform === 'win32' ? 'C:\\Windows' : '/etc';
+
+describe('pty launch path gate (P1-15)', () => {
+  it('refuses a cwd outside every known project before any side effect', async () => {
+    // pty:create is the one process-launch channel: it runs the provider
+    // CLI with renderer-supplied flags in a renderer-supplied cwd. The gate
+    // must fire before provider hooks, transcript sync, and the spawn.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-pty-gate-'));
+    try {
+      const invented = path.join(root, 'invented');
+      fs.mkdirSync(invented);
+      await handlers.get('pty:create')!({}, 'ui-1', invented, null, false, '', 'pi');
+      expect(mockSpawnPty).not.toHaveBeenCalled();
+      expect(provider.onSessionStarted).not.toHaveBeenCalled();
+      expect(mockRegisterSync).not.toHaveBeenCalled();
+      // Channel contract: the reason lands in the pane via pty:data and the
+      // exit carries the spawn-rejected sentinel, so the renderer keeps the
+      // pane open instead of archiving a crash.
+      expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:data', 'ui-1', expect.stringContaining('not a known project'));
+      expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a configDir that is not a managed profile dir', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValue(false);
+    await create('ui-1', null, { configDir: '/home/attacker/.claude' });
+    expect(mockSpawnPty).not.toHaveBeenCalled();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:data', 'ui-1', expect.stringContaining('managed profile'));
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+  });
+
+  it('spawns for a known-project cwd with a managed configDir', async () => {
+    await create('ui-1', null, { configDir: '/profiles/work' });
+    expect(mockSpawnPty).toHaveBeenCalled();
+  });
+
+  it('gates pty:createShell cwd the same way', async () => {
+    const ptyManager = await import('./pty-manager');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-pty-gate-'));
+    try {
+      const invented = path.join(root, 'invented');
+      fs.mkdirSync(invented);
+      handlers.get('pty:createShell')!({}, 'sh-1', invented);
+      expect(ptyManager.spawnShellPty).not.toHaveBeenCalled();
+
+      knownPaths.push('/proj');
+      handlers.get('pty:createShell')!({}, 'sh-1', '/proj');
+      expect(ptyManager.spawnShellPty).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fs:listDirs home gate (P1-19)', () => {
+  it('returns nothing for a home-outside, root-outside directory when the confirm is denied', async () => {
+    // dialog.showMessageBox resolves response 0 (Cancel) by default.
+    const dirs = await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    expect(dirs).toEqual([]);
+    expect(dialog.showMessageBox).toHaveBeenCalled();
+  });
+
+  it('enumerates a home-outside directory only after an explicit confirm', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    const dirs = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
+    expect(dirs.length).toBeGreaterThan(0);
+  });
+
+  it('lists a home-tree directory with no confirm (pre-project picker flow)', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-listdirs-'));
+    try {
+      fs.mkdirSync(path.join(homeDir, 'proj'));
+      const dirs = await handlers.get('fs:listDirs')!({}, homeDir);
+      expect(dirs).toEqual([path.join(homeDir, 'proj')]);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fs:isDirectory home gate (P2-38)', () => {
+  it('reports false for a home-outside directory - same oracle fs:exists denies', () => {
+    expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).toBe(false);
+  });
+
+  it('reports true for a home-tree directory (pre-project add flow)', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-isdir-'));
+    try {
+      expect(handlers.get('fs:isDirectory')!({}, homeDir)).toBe(true);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fs:unwatchDir gate (P2-30)', () => {
+  it('mirrors fs:watchDir: a blocked path never reaches the watcher', async () => {
+    const fileWatcher = await import('./file-watcher');
+    handlers.get('fs:unwatchDir')!({}, OUTSIDE_HOME);
+    expect(fileWatcher.unwatchDir).not.toHaveBeenCalled();
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-watch-gate-'));
+    try {
+      knownPaths.push(root);
+      handlers.get('fs:unwatchDir')!({}, root);
+      expect(fileWatcher.unwatchDir).toHaveBeenCalledWith(path.resolve(root));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('session transcript channels: configDir boundary gate (P2-113)', () => {
+  it('denies at the boundary: an unallowlisted configDir never reaches a provider scan root', () => {
+    provider.getTranscriptPath = vi.fn(() => null);
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    const event: { returnValue?: unknown } = {};
+    handlers.get('session:transcriptExistsSync')!(event, 'claude', 'cli-1', '/proj', '/foreign/dir', undefined);
+    expect(provider.getTranscriptPath).not.toHaveBeenCalled();
+    expect(event.returnValue).toBe(false);
+  });
+  it('passes an allowlisted configDir to the provider; null path still means absent', () => {
+    provider.getTranscriptPath = vi.fn(() => null);
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(true);
+    const event: { returnValue?: unknown } = {};
+    handlers.get('session:transcriptExistsSync')!(event, 'claude', 'cli-1', '/proj', '/profiles/work', undefined);
+    expect(isManagedMcpConfigDir).toHaveBeenCalledWith('/profiles/work');
+    expect(provider.getTranscriptPath).toHaveBeenCalledWith('cli-1', '/proj', '/profiles/work', undefined);
+    expect(event.returnValue).toBe(false);
+  });
+  it('buildResumeWithPrompt rejects before reading any transcript', async () => {
+    provider.getTranscriptPath = vi.fn(() => '/t.jsonl');
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    await expect(
+      handlers.get('session:buildResumeWithPrompt')!({}, 'claude', 'cli-1', '/proj', 'S', '/foreign/dir'),
+    ).rejects.toThrow('Not a managed profile config dir');
+    expect(provider.getTranscriptPath).not.toHaveBeenCalled();
+  });
+  it('session:exportArchive rejects before touching the archive writer', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    await expect(
+      handlers.get('session:exportArchive')!({}, 'claude', 'cli-1', '/proj', '/foreign/dir', {} as never, 'zip'),
+    ).rejects.toThrow('Not a managed profile config dir');
+  });
+});
 describe('pty:create provider hooks', () => {
   it('a fresh session registers for cli-session-id discovery', async () => {
     await create('ui-1', null);
@@ -470,6 +704,85 @@ describe('session:release', () => {
     release({}, 'ui-1');
     expect(mockUnregisterSync).toHaveBeenCalledWith('ui-1');
     expect(cleanupSessionStatus).toHaveBeenCalledWith('ui-1');
+  });
+});
+
+// P5 (R4): one `webContents.send('pty:data')` per node-pty chunk meant a
+// paste echo arrived as a storm of IPCs — the P0 probe measured a 1 MB
+// paste returning through ConPTY as 1,383 chunks (median 396 B;
+// docs/performance.md). Main now coalesces per session: ≤ 4 ms window,
+// ≤ 64 KiB per message, immediate ship when one chunk fills the budget
+// (the window degrades to a no-op, never an added delay), and a flush
+// before `pty:exit` so the renderer never sees exit-before-data.
+describe('pty:data coalescing (P5)', () => {
+  /** The data callback spawnPty was handed (positional arg 9). */
+  function dataCallback(): (data: string) => void {
+    return mockSpawnPty.mock.calls[0][9] as (data: string) => void;
+  }
+
+  function dataSends(): string[] {
+    return (fakeWin.webContents.send.mock.calls as unknown as Array<[string, string, string]>)
+      .filter((c) => c[0] === 'pty:data')
+      .map((c) => c[2]);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('joins chunks of one window into a single pty:data message', async () => {
+    await create('ui-1', null);
+    const push = dataCallback();
+
+    push('hello ');
+    push('world');
+    expect(fakeWin.webContents.send).not.toHaveBeenCalledWith('pty:data', 'ui-1', 'hello world');
+
+    vi.advanceTimersByTime(4);
+
+    expect(dataSends()).toEqual(['hello world']);
+  });
+
+  it('ships a chunk that fills the 64 KiB budget immediately — no window delay', async () => {
+    await create('ui-1', null);
+    const push = dataCallback();
+
+    push('x'.repeat(64 * 1024));
+
+    expect(dataSends()).toEqual(['x'.repeat(64 * 1024)]);
+    vi.advanceTimersByTime(10);
+    expect(dataSends()).toHaveLength(1);
+  });
+
+  it('flushes buffered data BEFORE the pty:exit message', async () => {
+    await create('ui-1', 'cli-1', { isResume: true });
+    fakeWin.webContents.send.mockClear();
+    const push = dataCallback();
+
+    push('last words');
+    exitCallback()(0);
+
+    const channels = (fakeWin.webContents.send.mock.calls as unknown as Array<[string]>).map((c) => c[0]);
+    expect(channels).toEqual(['pty:data', 'pty:exit']);
+    expect(dataSends()).toEqual(['last words']);
+  });
+
+  it('keeps sessions independent', async () => {
+    await create('ui-1', null);
+    await create('ui-2', null);
+    const push1 = mockSpawnPty.mock.calls[0][9] as (d: string) => void;
+    const push2 = mockSpawnPty.mock.calls[1][9] as (d: string) => void;
+
+    push1('a');
+    push2('b');
+    vi.advanceTimersByTime(4);
+
+    const sends = fakeWin.webContents.send.mock.calls as unknown as Array<[string, string, string]>;
+    expect(sends.filter((c) => c[0] === 'pty:data').map((c) => [c[1], c[2]]))
+      .toEqual([['ui-1', 'a'], ['ui-2', 'b']]);
   });
 });
 
@@ -653,6 +966,7 @@ describe('clipboard:readForPaste file lists', () => {
   // clearAllMocks keeps per-test mockImplementation; restore each test's
   // clipboard to the mock's defaults so the next read starts on an empty clipboard.
   afterEach(() => {
+    platformState.os = 'win32';
     for (const fn of [clipboard.readBuffer, clipboard.readText, clipboard.readHTML, clipboard.read, clipboard.availableFormats]) {
       vi.mocked(fn as (...args: never[]) => unknown).mockReset();
     }
@@ -678,7 +992,7 @@ describe('clipboard:readForPaste file lists', () => {
     return buf;
   }
 
-  async function readPaste(): Promise<{ text: string; html: string; files: string[]; imagePath: string | null }> {
+  async function readPaste(): Promise<ClipboardPastePayload> {
     return await handlers.get('clipboard:readForPaste')!({}) as never;
   }
 
@@ -711,6 +1025,7 @@ describe('clipboard:readForPaste file lists', () => {
   });
 
   it('reads Finder copies from the XML plist and decodes entities', async () => {
+    platformState.os = 'darwin';
     formatsWith('NSFilenamesPboardType');
     bufferFor('NSFilenamesPboardType', () => Buffer.from(
       '<array><string>/tmp/a &amp; b.txt</string><string>/tmp/caf&#xE9;.md</string></array>',
@@ -721,6 +1036,8 @@ describe('clipboard:readForPaste file lists', () => {
   });
 
   it('reads file-manager copies on Linux from text/uri-list, skipping web links', async () => {
+    platformState.os = 'linux';
+    formatsWith('text/uri-list', 'text/plain');
     const target = '/tmp/report.pdf';
     // A rootless file URL is not absolute on Windows, so build the URL from a
     // path the platform considers absolute; the handler decodes it back.
@@ -744,5 +1061,629 @@ describe('clipboard:readForPaste file lists', () => {
 
     const payload = await readPaste();
     expect(payload.html).toBe('<b>notes</b>');
+  });
+});
+// P2: one clipboard acquisition per `readForPaste`, probed per platform. A
+// plain-text copy used to pay six OpenClipboard cycles (formats, text, plus
+// four file-list probes that are meaningless on text, three of them throwing
+// and logging). The live formats per OS are from the P0 baseline
+// (docs/performance.md): Windows FileNameW (Electron's readBuffer('CF_HDROP')
+// answers 0 bytes — Chromium maps the drop list onto text/uri-list), macOS
+// NSFilenamesPboardType, Linux text/uri-list (X11; portal-gated on Wayland).
+describe('clipboard:readForPaste acquisition gating (P2)', () => {
+  afterEach(() => {
+    platformState.os = 'win32';
+    for (const fn of [clipboard.readBuffer, clipboard.readText, clipboard.readHTML, clipboard.read, clipboard.availableFormats]) {
+      vi.mocked(fn as (...args: never[]) => unknown).mockReset();
+    }
+  });
+
+  function formatsWith(...names: string[]) {
+    vi.mocked(clipboard.availableFormats).mockReturnValue(names);
+  }
+
+  function bufferFor(format: string, build: () => Buffer) {
+    vi.mocked(clipboard.readBuffer).mockImplementation((fmt: string) => {
+      if (fmt === format) return build();
+      throw new Error(`${fmt} not on clipboard`);
+    });
+  }
+
+  async function readPaste(): Promise<ClipboardPastePayload> {
+    return await handlers.get('clipboard:readForPaste')!({}) as never;
+  }
+
+  async function expectPlainTextCost(os: 'win32' | 'darwin' | 'linux'): Promise<void> {
+    platformState.os = os;
+    formatsWith('text/plain', 'text/html', 'UTF8 String');
+    vi.mocked(clipboard.readText).mockReturnValue('hello');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const payload = await readPaste();
+      expect(payload.text).toBe('hello');
+      expect(payload.hasContent).toBe(true);
+      // Two acquisitions: availableFormats + readText. No file probes, no
+      // HTML read (text is non-empty), no image read, no thrown probe.
+      expect(clipboard.availableFormats).toHaveBeenCalledTimes(1);
+      expect(clipboard.readText).toHaveBeenCalledTimes(1);
+      expect(clipboard.readBuffer).not.toHaveBeenCalled();
+      expect(clipboard.read).not.toHaveBeenCalled();
+      expect(clipboard.readHTML).not.toHaveBeenCalled();
+      expect(clipboard.readImage).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it('Windows plain-text paste costs 2 clipboard opens (formats, text)', async () => {
+    await expectPlainTextCost('win32');
+  });
+
+  it('macOS plain-text paste costs 2 clipboard opens (formats, text)', async () => {
+    await expectPlainTextCost('darwin');
+  });
+
+  it('Linux plain-text paste costs 2 clipboard opens (formats, text)', async () => {
+    await expectPlainTextCost('linux');
+  });
+
+  it('Linux file-list paste costs 3 opens through text/uri-list only', async () => {
+    platformState.os = 'linux';
+    formatsWith('text/uri-list', 'text/plain');
+    const uri = pathToFileURL('/tmp/report.pdf').href;
+    vi.mocked(clipboard.read).mockReturnValue(`${uri}\n`);
+
+    expect((await readPaste()).files).toEqual([fileURLToPath(uri)]);
+    // formats, text, uri-list — and nothing else.
+    expect(clipboard.read).toHaveBeenCalledTimes(1);
+    expect(clipboard.readBuffer).not.toHaveBeenCalled();
+  });
+
+  it('Windows file-list paste reads the live FileNameW branch, never the POSIX formats', async () => {
+    platformState.os = 'win32';
+    formatsWith('FileNameW', 'text/plain');
+    bufferFor('FileNameW', () => Buffer.from('C:\\tmp\\x.png\0\0', 'utf16le'));
+
+    expect((await readPaste()).files).toEqual(['C:\\tmp\\x.png']);
+    expect(clipboard.readBuffer).toHaveBeenCalledTimes(1);
+    expect(clipboard.readBuffer).toHaveBeenCalledWith('FileNameW');
+    expect(clipboard.read).not.toHaveBeenCalled();
+  });
+
+  it('macOS file-list paste reads NSFilenamesPboardType only', async () => {
+    platformState.os = 'darwin';
+    formatsWith('NSFilenamesPboardType', 'text/plain');
+    bufferFor('NSFilenamesPboardType', () => Buffer.from('<array><string>/tmp/a.md</string></array>', 'utf8'));
+
+    expect((await readPaste()).files).toEqual(['/tmp/a.md']);
+    expect(clipboard.readBuffer).toHaveBeenCalledTimes(1);
+    expect(clipboard.readBuffer).toHaveBeenCalledWith('NSFilenamesPboardType');
+    expect(clipboard.read).not.toHaveBeenCalled();
+  });
+
+  it('an empty format list probes nothing and keeps the passthrough shape (Wayland portals)', async () => {
+    platformState.os = 'linux';
+    // availableFormats() defaults to []: portal permission denial empties
+    // the readable set. hasContent stays false so the renderer answers with
+    // the CLI's own paste, not a silent no-op.
+    const payload = await readPaste();
+
+    expect(payload.hasContent).toBe(false);
+    expect(clipboard.readBuffer).not.toHaveBeenCalled();
+    expect(clipboard.read).not.toHaveBeenCalled();
+  });
+});
+
+// P3: `clipboard:write` moved from `ipcMain.handle` to `ipcMain.on` —
+// fire-and-forget, no promise round trip per copy. The Linux PRIMARY split
+// survives: a selection-driven copy writes CLIPBOARD + PRIMARY, an explicit
+// copy never touches PRIMARY (docs/ui-conventions.md, shared/types.ts
+// ClipboardSource). As an `on` body it must also swallow throws (P2-108).
+describe('clipboard:write (P3 fire-and-forget)', () => {
+  afterEach(() => {
+    platformState.os = 'win32';
+  });
+
+  it('is registered on the send channel (ipcMain.on)', () => {
+    expect(handlers.has('clipboard:write')).toBe(true);
+  });
+
+  it('a selection copy on Linux writes CLIPBOARD and PRIMARY', () => {
+    platformState.os = 'linux';
+    handlers.get('clipboard:write')!({}, 'selected text', 'selection');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(2);
+    expect(clipboard.writeText).toHaveBeenNthCalledWith(1, 'selected text');
+    expect(clipboard.writeText).toHaveBeenNthCalledWith(2, 'selected text', 'selection');
+  });
+
+  it('an explicit copy never touches PRIMARY, on any platform', () => {
+    platformState.os = 'linux';
+    handlers.get('clipboard:write')!({}, 'copied', 'explicit');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    expect(clipboard.writeText).toHaveBeenCalledWith('copied');
+
+    vi.mocked(clipboard.writeText).mockClear();
+    handlers.get('clipboard:write')!({}, 'copied');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    expect(clipboard.writeText).toHaveBeenCalledWith('copied');
+  });
+
+  it('a selection copy on Windows/macOS writes CLIPBOARD only', () => {
+    platformState.os = 'win32';
+    handlers.get('clipboard:write')!({}, 'sel', 'selection');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    vi.mocked(clipboard.writeText).mockClear();
+    platformState.os = 'darwin';
+    handlers.get('clipboard:write')!({}, 'sel', 'selection');
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it('swallows a clipboard throw instead of killing main (P2-108 on-body contract)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(clipboard.writeText).mockImplementation(() => {
+        throw new Error('clipboard busy');
+      });
+      expect(() => handlers.get('clipboard:write')!({}, 'text', 'selection')).not.toThrow();
+      expect(warn).toHaveBeenCalledWith('clipboard:write failed:', expect.any(Error));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+
+// P4: bound and offload the image paste (plan P4). P0 measured the
+// screenshot freeze as readImage + toPNG = 96 %+ of `readForPaste`
+// (261/421 ms p50 at 1080p/1440p, max 741 ms; docs/performance.md). Three
+// changes: (1) text is bounded at 8 Mi characters with a user-visible flag;
+// (2) a clipboard that already carries encoded PNG (Windows' registered
+// `PNG` flavor from Snipping Tool, macOS `png`, X11 `image/png`) is read as
+// bytes — no decode, no encode, main idle; (3) a raw-image-only clipboard
+// (CF_DIB/TIFF) decodes on main (Electron's clipboard API is main-only)
+// and encodes in a utilityProcess — with a documented degrade to the
+// main-thread encode when the worker cannot start, never a crash.
+describe('clipboard:readForPaste bounds + off-main encode (P4)', () => {
+  afterEach(() => {
+    platformState.os = 'win32';
+    for (const fn of [clipboard.readBuffer, clipboard.readText, clipboard.readHTML, clipboard.read, clipboard.availableFormats, clipboard.readImage]) {
+      vi.mocked(fn as (...args: never[]) => unknown).mockReset();
+    }
+    vi.mocked(utilityProcess.fork).mockReset().mockReturnValue(null as never);
+  });
+
+  function formatsWith(...names: string[]) {
+    vi.mocked(clipboard.availableFormats).mockReturnValue(names);
+  }
+
+  async function readPaste(): Promise<ClipboardPastePayload> {
+    return await handlers.get('clipboard:readForPaste')!({}) as never;
+  }
+
+  it('bounds pasted text at 8 Mi characters and flags the truncation', async () => {
+    formatsWith('text/plain');
+    vi.mocked(clipboard.readText).mockReturnValue('a'.repeat(8 * 1024 * 1024 + 7));
+
+    const payload = await readPaste();
+
+    expect(payload.text).toHaveLength(8 * 1024 * 1024);
+    expect(payload.textTruncated).toBe(true);
+  });
+
+  it('leaves text inside the bound untouched and unflagged', async () => {
+    formatsWith('text/plain');
+    vi.mocked(clipboard.readText).mockReturnValue('notes');
+
+    const payload = await readPaste();
+
+    expect(payload.text).toBe('notes');
+    expect(payload.textTruncated).toBeUndefined();
+  });
+
+  it('reads a PNG clipboard flavor as bytes — no decode, no encode (per-OS flavor table)', async () => {
+    platformState.os = 'win32';
+    formatsWith('PNG', 'bitmap', 'text/plain');
+    vi.mocked(clipboard.readBuffer).mockImplementation((fmt: string) => {
+      if (fmt === 'PNG') return Buffer.from('PNGBYTES');
+      throw new Error(`${fmt} not on clipboard`);
+    });
+
+    const payload = await readPaste();
+
+    expect(clipboard.readImage).not.toHaveBeenCalled();
+    expect(payload.imagePath).toMatch(/[\\/]finevibe-paste[\\/].*\.png$/);
+    expect(fs.readFileSync(payload.imagePath!)).toEqual(Buffer.from('PNGBYTES'));
+  });
+
+  it('encodes a raw-image flavor off the main thread through the utility worker', async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const listeners = new Map<string, (e: unknown) => void>();
+    const proc = {
+      on: (ev: string, cb: (e: unknown) => void) => { listeners.set(ev, cb); },
+      postMessage: (msg: { id: number }) => {
+        queueMicrotask(() => listeners.get('message')?.({
+          data: { id: msg.id, ok: true, png: pngBytes.buffer.slice(pngBytes.byteOffset, pngBytes.byteOffset + pngBytes.byteLength) },
+        }));
+      },
+      kill: vi.fn(),
+    };
+    vi.mocked(utilityProcess.fork).mockReturnValue(proc as never);
+    formatsWith('image/bmp', 'bitmap');
+    const toPNG = vi.fn(() => Buffer.from('MAIN-PNG'));
+    vi.mocked(clipboard.readImage).mockReturnValue({
+      isEmpty: () => false,
+      getSize: () => ({ width: 1, height: 1 }),
+      toBitmap: () => Buffer.from([1, 2, 3, 255]),
+      toPNG,
+    } as never);
+
+    const payload = await readPaste();
+
+    expect(fs.readFileSync(payload.imagePath!)).toEqual(pngBytes);
+    // The encode left the main thread: the synchronous encoder never ran.
+    expect(toPNG).not.toHaveBeenCalled();
+    expect(utilityProcess.fork).toHaveBeenCalledTimes(1);
+  });
+
+  it('degrades to the main-thread encode when the worker cannot start — never a crash', async () => {
+    vi.mocked(utilityProcess.fork).mockReturnValue(null as never);
+    formatsWith('image/tiff');
+    vi.mocked(clipboard.readImage).mockReturnValue({
+      isEmpty: () => false,
+      getSize: () => ({ width: 1, height: 1 }),
+      toBitmap: () => Buffer.from([1, 2, 3, 255]),
+      toPNG: () => Buffer.from('MAIN-PNG'),
+    } as never);
+
+    const payload = await readPaste();
+
+    expect(fs.readFileSync(payload.imagePath!)).toEqual(Buffer.from('MAIN-PNG'));
+  });
+
+  it('a clipboard with no image flavor (Wayland) skips every image read', async () => {
+    platformState.os = 'linux';
+    formatsWith('text/plain');
+    vi.mocked(clipboard.readText).mockReturnValue('');
+
+    const payload = await readPaste();
+
+    expect(clipboard.readImage).not.toHaveBeenCalled();
+    expect(utilityProcess.fork).not.toHaveBeenCalled();
+    expect(payload.imagePath).toBeNull();
+  });
+});
+
+// P2-108: an `ipcMain.on` body runs on Electron's main-process dispatch path
+// and src/main installs no uncaughtException handler (the only mentions in
+// src/main are comments stating its absence), so a throw escaping any `on`
+// body is a fatal main-process exception — every live PTY and window dies.
+// Every `on` body must therefore swallow-and-log, and the sendSync twins must
+// answer with a benign shape.
+describe('ipcMain.on bodies are non-fatal', () => {
+  it('swallows a throw from a non-string payload instead of killing the main process', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The real registry throws `Unknown CLI provider: …` for ids it does
+      // not know (registry.ts), and the git/fs bodies hit
+      // ERR_INVALID_ARG_TYPE inside path.resolve on the same payload.
+      mockGetProvider.mockImplementation(() => {
+        throw new Error('Unknown CLI provider: [object Object]');
+      });
+      expect(() => handlers.get('config:watchProject')!({}, {}, '/proj')).not.toThrow();
+      expect(() => handlers.get('git:watchProject')!({}, {})).not.toThrow();
+      expect(() => handlers.get('fs:unwatchDir')!({}, {})).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a sync channel answers with a benign shape when its body throws', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(loadState).mockImplementationOnce(() => {
+        throw new Error('state cache corrupted');
+      });
+      const event: { returnValue?: unknown } = {};
+      expect(() => handlers.get('store:startup-prefs')!(event)).not.toThrow();
+      // The renderer's sendSync gets the never-saved shape, not an
+      // "interface not implemented" throw on its own side.
+      expect(event.returnValue).toEqual({ theme: null, zoomFactor: null });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// P1-14 / P2-127: the per-session banner is computed from the profiled
+// session's config dir, so (a) its consent lookup must be the PER-DIR
+// record (a Keep on ~/.claude must not mute a profile banner, and vice
+// versa), (b) the payload carries the dir the banner was computed from so
+// the Fix Settings CTA repairs THAT dir, and (c) banner dismissal on a
+// profile records the per-dir Keep — the banner is the profile's single
+// consent surface (spawn is a hot path and never shows the modal).
+describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
+  beforeEach(() => {
+    provider.meta.capabilities.hookStatus = true;
+    vi.mocked(getDirConsent).mockReturnValue({ consent: undefined, command: undefined });
+    provider.validateSettings = vi.fn(() => ({
+      statusLine: 'foreign', hooks: 'complete', foreignStatusLineCommand: '/usr/bin/other-statusline',
+    })) as never;
+    vi.mocked(shouldWarnStatusLine).mockReturnValue(true);
+  });
+
+  it('carries the profile configDir the validation was computed from', async () => {
+    await create('ui-1', null, { configDir: '/profiles/work' });
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith(
+      'settings:warning',
+      expect.objectContaining({
+        sessionId: 'ui-1',
+        statusLine: 'foreign',
+        configDir: '/profiles/work',
+        foreignStatusLineCommand: '/usr/bin/other-statusline',
+      }),
+    );
+  });
+
+  it('consults the per-dir consent record for a profiled session', async () => {
+    await create('ui-1', null, { configDir: '/profiles/work' });
+    expect(getDirConsent).toHaveBeenCalledWith(expect.anything(), '/profiles/work');
+  });
+
+  it('settings:reinstall repairs the profile dir the banner was computed from', async () => {
+    await handlers.get('settings:reinstall')!({}, 'claude', '/profiles/work');
+    expect(provider.reinstallSettings).toHaveBeenCalledWith('/profiles/work');
+  });
+
+  it('settings:reinstall refuses a configDir outside the managed-profile allowlist', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    const result = await handlers.get('settings:reinstall')!({}, 'claude', '/home/attacker/.claude');
+    expect(result).toMatchObject({ success: false });
+    expect(provider.reinstallSettings).not.toHaveBeenCalled();
+  });
+
+  it('settings:reinstall without a configDir keeps repairing the default dir', async () => {
+    await handlers.get('settings:reinstall')!({}, 'claude');
+    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined);
+  });
+
+  it('settings:declineStatusLine records the per-dir Keep and gates unmanaged dirs', () => {
+    handlers.get('settings:declineStatusLine')!({}, '/profiles/work', '/usr/bin/other-statusline');
+    expect(recordDirConsent).toHaveBeenCalledWith('/profiles/work', 'declined', '/usr/bin/other-statusline');
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    handlers.get('settings:declineStatusLine')!({}, '/home/attacker/.claude', '/x');
+    expect(recordDirConsent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('team-agent install/remove scope (P2-116 / P2-117)', () => {
+  // Install stamps this frontmatter marker; remove gates every unlink on it.
+  const markerLine = (slug: string) => `# installed-by: finevibe ${slug}`;
+  const stamped = (slug: string) => `---\n${markerLine(slug)}\nname: ${slug}\n---\nbody\n`;
+
+  /** Fake team-capable provider writing under a real temp agents dir. */
+  function agentProvider(id: string, dir: string) {
+    return {
+      meta: { id },
+      validatePrerequisites: () => true,
+      agentsDir: () => dir,
+      installAgent: vi.fn(async (slug: string, _content: string, configDir?: string) => ({
+        filePath: path.join(configDir ?? dir, `${slug}.md`),
+      })),
+      removeAgent: vi.fn(async (slug: string, configDir?: string) => {
+        fs.rmSync(path.join(configDir ? path.join(configDir, 'agents') : dir, `${slug}.md`), { force: true });
+      }),
+    };
+  }
+
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-agents-'));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('install stamps the finevibe marker and threads a managed configDir to claude only', async () => {
+    const claude = agentProvider('claude', path.join(root, 'claude-agents'));
+    const gemini = agentProvider('gemini', path.join(root, 'gemini-agents'));
+    vi.mocked(getAllProviders).mockReturnValue([claude, gemini] as never);
+    const results = await handlers.get('provider:installAgent')!(
+      {}, 'auditor', '---\nname: auditor\n---\nbody\n', '/profiles/work'
+    ) as Array<{ providerId: string; ok: boolean }>;
+    expect(results.every((r) => r.ok)).toBe(true);
+    const [slug, stampedContent, claudeDir] = claude.installAgent.mock.calls[0];
+    expect(slug).toBe('auditor');
+    expect(claudeDir).toBe('/profiles/work');
+    expect(stampedContent.startsWith(`---\n${markerLine('auditor')}\n`)).toBe(true);
+    // Other providers have no profiled agents tree; they keep the default dir.
+    expect(gemini.installAgent.mock.calls[0][2]).toBeUndefined();
+    expect(gemini.installAgent.mock.calls[0][1]).toContain(markerLine('auditor'));
+  });
+
+  it('install rejects a configDir outside the managed allowlist before any write', async () => {
+    const claude = agentProvider('claude', path.join(root, 'claude-agents'));
+    vi.mocked(getAllProviders).mockReturnValue([claude] as never);
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    await expect(
+      handlers.get('provider:installAgent')!({}, 'auditor', 'x', '/home/attacker/.claude')
+    ).rejects.toThrow(/managed/);
+    expect(claude.installAgent).not.toHaveBeenCalled();
+  });
+
+  it('remove of a never-installed name does NOT unlink a pre-existing user file', async () => {
+    const dir = path.join(root, 'gemini-agents');
+    fs.mkdirSync(dir);
+    const userFile = path.join(dir, 'security-auditor.md');
+    fs.writeFileSync(userFile, '---\nname: security-auditor\n---\nuser-authored, never installed by FineVibe\n');
+    const gemini = agentProvider('gemini', dir);
+    vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'security-auditor') as Array<{ status: string }>;
+    expect(fs.existsSync(userFile)).toBe(true);
+    expect(gemini.removeAgent).not.toHaveBeenCalled();
+    expect(results).toEqual([
+      { providerId: 'gemini', filePath: userFile, status: 'skipped' },
+    ]);
+  });
+
+  it('uninstall of an installed agent removes exactly it, leaving neighbors', async () => {
+    const dir = path.join(root, 'gemini-agents');
+    fs.mkdirSync(dir);
+    const target = path.join(dir, 'auditor.md');
+    const neighbor = path.join(dir, 'designer.md');
+    fs.writeFileSync(target, stamped('auditor'));
+    fs.writeFileSync(neighbor, stamped('designer'));
+    const gemini = agentProvider('gemini', dir);
+    vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'auditor') as Array<{ status: string }>;
+    expect(results).toEqual([
+      { providerId: 'gemini', filePath: target, status: 'removed' },
+    ]);
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.existsSync(neighbor)).toBe(true);
+  });
+
+  it('remove probes the .agent.md naming and skips unmarked same-slug files', async () => {
+    const dir = path.join(root, 'copilot-agents');
+    fs.mkdirSync(dir);
+    const installed = path.join(dir, 'cmo.agent.md');
+    const userNote = path.join(dir, 'cmo.md');
+    fs.writeFileSync(installed, stamped('cmo'));
+    fs.writeFileSync(userNote, 'user note, no marker\n');
+    const copilot = agentProvider('copilot', dir);
+    copilot.removeAgent = vi.fn(async (slug: string) => {
+      fs.rmSync(path.join(dir, `${slug}.agent.md`), { force: true });
+    });
+    vi.mocked(getAllProviders).mockReturnValue([copilot] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'cmo') as Array<{ filePath: string; status: string }>;
+    expect(results).toEqual([
+      { providerId: 'copilot', filePath: userNote, status: 'skipped' },
+      { providerId: 'copilot', filePath: installed, status: 'removed' },
+    ]);
+    expect(fs.existsSync(installed)).toBe(false);
+    expect(fs.existsSync(userNote)).toBe(true);
+  });
+
+  it('remove scans claude profile agents dirs, not just the default tree', async () => {
+    const profDir = path.join(root, 'profile');
+    const defDir = path.join(root, 'claude-agents');
+    fs.mkdirSync(path.join(profDir, 'agents'), { recursive: true });
+    fs.mkdirSync(defDir);
+    const inProfile = path.join(profDir, 'agents', 'lead.md');
+    const inDefault = path.join(defDir, 'lead.md');
+    fs.writeFileSync(inProfile, stamped('lead'));
+    fs.writeFileSync(inDefault, stamped('lead'));
+    vi.mocked(loadState).mockImplementationOnce(() => ({
+      projects: [], preferences: {}, profiles: [{ id: 'p1', providerId: 'claude', configDir: profDir }],
+    } as never));
+    const claude = agentProvider('claude', defDir);
+    vi.mocked(getAllProviders).mockReturnValue([claude] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'lead') as Array<{ status: string }>;
+    expect(results.map((r) => r.status)).toEqual(['removed', 'removed']);
+    expect(fs.existsSync(inProfile)).toBe(false);
+    expect(fs.existsSync(inDefault)).toBe(false);
+    expect(claude.removeAgent).toHaveBeenCalledWith('lead', profDir);
+    expect(claude.removeAgent).toHaveBeenCalledWith('lead', undefined);
+  });
+
+  it('remove surfaces a provider unlink failure per file instead of swallowing it', async () => {
+    const dir = path.join(root, 'gemini-agents');
+    fs.mkdirSync(dir);
+    const target = path.join(dir, 'auditor.md');
+    fs.writeFileSync(target, stamped('auditor'));
+    const gemini = agentProvider('gemini', dir);
+    gemini.removeAgent = vi.fn(async () => { throw new Error('EPERM: operation not permitted'); });
+    vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
+    const results = await handlers.get('provider:removeAgent')!({}, 'auditor') as Array<{ status: string; error?: string }>;
+    expect(results).toEqual([
+      { providerId: 'gemini', filePath: target, status: 'failed', error: 'EPERM: operation not permitted' },
+    ]);
+    expect(fs.existsSync(target)).toBe(true);
+  });
+
+  it('install/remove reject an unsafe slug before touching the filesystem', async () => {
+    const gemini = agentProvider('gemini', path.join(root, 'gemini-agents'));
+    vi.mocked(getAllProviders).mockReturnValue([gemini] as never);
+    await expect(handlers.get('provider:removeAgent')!({}, '../evil')).rejects.toThrow(/Unsafe agent slug/);
+    await expect(handlers.get('provider:installAgent')!({}, '..\\evil', 'x')).rejects.toThrow(/Unsafe agent slug/);
+    expect(gemini.removeAgent).not.toHaveBeenCalled();
+    expect(gemini.installAgent).not.toHaveBeenCalled();
+  });
+});
+
+// "Checkout and create" (plan 65-67): the clone destination is a pre-project
+// WRITE, so fs:cloneRepo takes the fs:listDirs gate shape — home tree / known
+// roots pass, home-outside needs the explicit confirm — and re-validates the
+// URL against the shared allowlist before any spawn. Every rejection must
+// happen before git is launched, so `git clone` is the child_process spy's
+// canary: the suite mocks node:child_process wholesale.
+describe('fs:cloneRepo gates', () => {
+  it('rejects an off-allowlist URL before touching the filesystem', async () => {
+    const res = await handlers.get('fs:cloneRepo')!({}, 'https://gitlab.com/owner/repo', path.join(os.homedir(), 'repo'));
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('URL') });
+    expect(mockGitCloneSpawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a home-outside, root-outside destination when the confirm is denied', async () => {
+    // dialog.showMessageBox resolves response 0 (Cancel) by default.
+    const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', OUTSIDE_HOME);
+    expect(res).toMatchObject({ ok: false });
+    expect(dialog.showMessageBox).toHaveBeenCalled();
+    expect(mockGitCloneSpawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects a destination that exists and is not empty', async () => {
+    const dir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-clone-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'occupied'), 'x');
+      const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', dir);
+      expect(res).toMatchObject({ ok: false, error: expect.stringContaining('not empty') });
+      expect(mockGitCloneSpawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a destination that exists as a file, not a directory', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.homedir(), '.finevibe-clone-')), 'blocker');
+    try {
+      fs.writeFileSync(file, 'x');
+      const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', file);
+      expect(res).toMatchObject({ ok: false, error: expect.stringContaining('not a directory') });
+      expect(mockGitCloneSpawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  it('spawns git clone -- <url> <dest> argv for a home-tree target and reports stderr on failure', async () => {
+    mockGitCloneSpawn.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null) => void) => {
+      // Real execFile errors carry the child's stderr on the error object;
+      // promisify drops the separate callback args.
+      cb(Object.assign(new Error('Command failed'), { stderr: 'fatal: repository \x27https://github.com/owner/repo\x27 not found' }));
+    });
+    const dest = path.join(os.homedir(), 'repo');
+    const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', dest);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(1);
+    const [cmd, args] = mockGitCloneSpawn.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('git');
+    // `--` before the URL: an allowlisted-shape URL must never parse as an
+    // option (`--upload-pack`, ext:: transport) no matter what the renderer sent.
+    expect(args).toEqual(['clone', '--', 'https://github.com/owner/repo', dest]);
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('not found') });
+  });
+
+  it('reports a missing git binary without throwing', async () => {
+    const enoent = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
+    mockGitCloneSpawn.mockImplementationOnce((_cmd: string, _args: unknown, _opts: unknown, cb: (err: Error | null) => void) => cb(enoent));
+    const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', path.join(os.homedir(), 'repo'));
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('git') });
+  });
+
+  it('reports ok for a successful clone', async () => {
+    mockGitCloneSpawn.mockImplementationOnce((_cmd: string, _args: unknown, _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
+    const res = await handlers.get('fs:cloneRepo')!({}, 'git@github.com:owner/repo.git', path.join(os.homedir(), 'repo'));
+    expect(res).toEqual({ ok: true });
   });
 });

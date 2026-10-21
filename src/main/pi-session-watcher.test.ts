@@ -7,7 +7,7 @@ vi.mock('fs', () => ({
   closeSync: vi.fn(),
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
-  watch: vi.fn(),
+  watch: vi.fn(() => ({ close: vi.fn(), on: vi.fn() })),
 }));
 
 vi.mock('os', () => ({
@@ -22,7 +22,7 @@ vi.mock('electron', () => ({
 
 const { STATUS_DIR: MOCK_STATUS_DIR } = vi.hoisted(() => {
   const path = require('path');
-  return { STATUS_DIR: path.join('/tmp', 'vibeyard') };
+  return { STATUS_DIR: path.join('/tmp', 'finevibe') };
 });
 
 const mockRegisterTranscriptSync = vi.hoisted(() => vi.fn());
@@ -121,7 +121,10 @@ function header(piId: string, cwd: string): string {
 
 function startWatcher(): fs.FSWatcher & { close: () => void } {
   // Fake native watcher — the fs.watch mock hands it to the implementation.
-  const mockWatcher = { close: vi.fn() } as unknown as fs.FSWatcher & { close: () => void };
+  // `on` is required: the implementation attaches an 'error' listener to every
+  // FSWatcher (EMFILE/ENOSPC on a recursive watch throw out of the emitter),
+  // so a fake without `on` crashes the watcher setup.
+  const mockWatcher = { close: vi.fn(), on: vi.fn() } as unknown as fs.FSWatcher & { close: () => void };
   mockWatch.mockReturnValue(mockWatcher);
   startPiSessionWatcher();
   return mockWatcher;
@@ -423,7 +426,7 @@ describe('session ID assignment', () => {
     startWatcher();
 
     mockDirs({ [DIR_UI1]: [] });
-    // Pi fresh launches pass a Vibeyard-generated id via --session-id.
+    // Pi fresh launches pass a FineVibe-generated id via --session-id.
     registerPendingPiSession('ui-1', '/proj', undefined, { sessionDir: DIR_UI1, knownCliId: 'pi-first' });
     mockDirs({ [DIR_UI1]: ['other.jsonl', 'right.jsonl'] });
     mockFilesByHeader({

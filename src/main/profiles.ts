@@ -4,7 +4,7 @@ import * as os from 'os';
 import { isWin } from './platform';
 
 /** Root directory holding all auto-managed profile config dirs. */
-export const PROFILES_ROOT = path.join(os.homedir(), '.vibeyard', 'profiles');
+export const PROFILES_ROOT = path.join(os.homedir(), '.finevibe', 'profiles');
 
 /** App-generated profile ids are slug/uuid shaped; anything else is a
  * renderer-supplied value that must not steer writes outside the managed
@@ -36,8 +36,8 @@ function foldsCase(dir: string): boolean {
     if (parent === anchor) return true;
     anchor = parent;
   }
-  const probe = path.join(anchor, `VibeyardCaseProbe-${process.pid}`);
-  const flipped = path.join(anchor, `vibeyardCASEprobe-${process.pid}`);
+  const probe = path.join(anchor, `FineVibeCaseProbe-${process.pid}`);
+  const flipped = path.join(anchor, `finevibeCASEprobe-${process.pid}`);
   try {
     fs.writeFileSync(probe, '');
     return fs.existsSync(flipped);
@@ -96,6 +96,22 @@ export function provisionProfileDir(
     : managedProfileDir(profileId);
 
   const target = canonicalDir(dir);
+  // P2-39 containment, mirroring the MCP config-dir gate (isManagedMcpConfigDir
+  // in claude-cli.ts): customPath is renderer-supplied, this function mkdir -p's
+  // it, and the CLI then reads config from there - an ungated value is a
+  // directory-creation sink anywhere the CLI can login/read. Allowed root: the
+  // user's home tree, under which every legitimate CLI config dir and
+  // PROFILES_ROOT live. Canonical compare, symlink-safe: canonicalDir resolves
+  // links in the nearest existing ancestor and folds case, so `~`-expanded
+  // traversals and link spellings cannot escape it.
+  const homeRoot = canonicalDir(os.homedir());
+  const homeRel = path.relative(homeRoot, target);
+  if (homeRel !== '' && (homeRel === '..' || homeRel.startsWith('..' + path.sep) || path.isAbsolute(homeRel))) {
+    throw new Error(
+      `Profile path ${dir} is outside your home directory. ` +
+      `Choose a directory under ${os.homedir()} — each profile's config dir must live in your user tree.`
+    );
+  }
   const collision = existingProfiles.find(
     (p) => p.id !== profileId && canonicalDir(p.configDir) === target
   );

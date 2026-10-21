@@ -71,7 +71,7 @@ function stubDOM(): void {
     body,
   });
   vi.stubGlobal('window', {
-    vibeyard: { app: { openExternal: vi.fn() } },
+    finevibe: { app: { openExternal: vi.fn() } },
   });
 }
 

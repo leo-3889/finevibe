@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -8,7 +8,7 @@ const ZOOM_MIN = 0.75;
 const ZOOM_MAX = 2.0;
 export type { CostData } from '../shared/types';
 
-export interface VibeyardApi {
+export interface FineVibeApi {
   pty: {
     create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
@@ -27,7 +27,7 @@ export interface VibeyardApi {
     exportArchive(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file'): Promise<string | null>;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
     cancelDeepSearch(): void;
-    onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
+    onHookStatus(callback: (sessionId: string, status: CliSessionStatus, hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
@@ -43,6 +43,7 @@ export interface VibeyardApi {
     listDirs(dirPath: string, prefix?: string): Promise<string[]>;
     listDir(dirPath: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
     browseDirectory(): Promise<string | null>;
+    cloneRepo(url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
     exists(filePath: string): Promise<boolean>;
@@ -67,7 +68,6 @@ export interface VibeyardApi {
   };
   provider: {
     getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
-    getMeta(providerId: ProviderId): Promise<CliProviderMeta>;
     listProviders(): Promise<CliProviderMeta[]>;
     checkBinary(providerId?: ProviderId): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
@@ -79,7 +79,7 @@ export interface VibeyardApi {
     getStatus(path: string): Promise<unknown>;
     getFiles(path: string): Promise<unknown>;
     getDiff(path: string, file: string, area: string): Promise<string>;
-    getWorktrees(path: string): Promise<unknown>;
+    getWorktrees(path: string): Promise<GitWorktree[]>;
     getRemoteUrl(path: string): Promise<string | null>;
     stageFile(path: string, file: string): Promise<void>;
     unstageFile(path: string, file: string): Promise<void>;
@@ -115,6 +115,7 @@ export interface VibeyardApi {
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
+    clearIsolatedStorage(sessionId: string): void;
   };
   chromeImport: {
     listProfiles(): Promise<ChromeProfile[]>;
@@ -124,16 +125,16 @@ export interface VibeyardApi {
     clearCookies(): Promise<void>;
   };
   mcp: {
-    connect(id: string, url: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    disconnect(id: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    listTools(id: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    listResources(id: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    listPrompts(id: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    callTool(id: string, name: string, args: Record<string, unknown>): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    readResource(id: string, uri: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    getPrompt(id: string, name: string, args: Record<string, string>): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<{ success: boolean; error?: string }>;
-    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<{ success: boolean; error?: string }>;
+    connect(id: string, url: string): Promise<McpResult>;
+    disconnect(id: string): Promise<McpResult>;
+    listTools(id: string): Promise<McpResult>;
+    listResources(id: string): Promise<McpResult>;
+    listPrompts(id: string): Promise<McpResult>;
+    callTool(id: string, name: string, args: Record<string, unknown>): Promise<McpResult>;
+    readResource(id: string, uri: string): Promise<McpResult>;
+    getPrompt(id: string, name: string, args: Record<string, string>): Promise<McpResult>;
+    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<McpResult>;
+    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<McpResult>;
   };
   readiness: {
     analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
@@ -151,11 +152,14 @@ export interface VibeyardApi {
     onWarning(callback: (data: SettingsWarningData) => void): () => void;
     onConflictDialog(callback: (data: StatusLineConflictData) => void): () => void;
     respondConflictDialog(choice: 'replace' | 'keep'): void;
-    reinstall(providerId?: ProviderId): Promise<{ success: boolean }>;
+    reinstall(providerId?: ProviderId, configDir?: string): Promise<{ success: boolean; error?: string }>;
     validate(providerId?: ProviderId): Promise<SettingsValidationResult>;
+    declineConflict(configDir?: string, foreignCommand?: string | null): void;
   };
   clipboard: {
-    write(text: string, source?: ClipboardSource): Promise<void>;
+    // P3: fire-and-forget — copies never need a reply; the invoke twin paid
+    // a promise round trip (and cloned the reply) per selection.
+    write(text: string, source?: ClipboardSource): void;
     readForPaste(): Promise<ClipboardPastePayload>;
     saveImage(dataUrl: string): Promise<string | null>;
   };
@@ -182,7 +186,7 @@ function onChannel(channel: string, callback: (...args: unknown[]) => void): () 
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
-const api: VibeyardApi = {
+const api: FineVibeApi = {
   pty: {
     create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir) =>
       ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt, systemPrompt, envVars || '', configDir),
@@ -216,7 +220,7 @@ const api: VibeyardApi = {
       ipcRenderer.invoke('session:deepSearch', query),
     onHookStatus: (callback) =>
       onChannel('session:hookStatus', (sessionId, status, hookName) =>
-        callback(sessionId as string, status as 'working' | 'waiting' | 'completed' | 'input', (hookName as string) || '')),
+        callback(sessionId as string, status as CliSessionStatus, (hookName as string) || '')),
     onCliSessionId: (callback) =>
       onChannel('session:cliSessionId', (sessionId, cliSessionId) =>
         callback(sessionId as string, cliSessionId as string)),
@@ -242,6 +246,7 @@ const api: VibeyardApi = {
     listDirs: (dirPath: string, prefix?: string) => ipcRenderer.invoke('fs:listDirs', dirPath, prefix),
     listDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
     browseDirectory: () => ipcRenderer.invoke('fs:browseDirectory'),
+    cloneRepo: (url: string, destPath: string) => ipcRenderer.invoke('fs:cloneRepo', url, destPath),
     listFiles: (cwd: string, query: string) => ipcRenderer.invoke('fs:listFiles', cwd, query),
     topFilesByTokens: (cwd: string, limit: number) => ipcRenderer.invoke('fs:topFilesByTokens', cwd, limit),
     exists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
@@ -257,7 +262,6 @@ const api: VibeyardApi = {
   },
   provider: {
     getConfig: (providerId, projectPath, configDir?) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath, configDir),
-    getMeta: (providerId) => ipcRenderer.invoke('provider:getMeta', providerId),
     listProviders: () => ipcRenderer.invoke('provider:listProviders'),
     checkBinary: (providerId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude'),
     watchProject: (providerId, projectPath) => ipcRenderer.send('config:watchProject', providerId, projectPath),
@@ -316,6 +320,8 @@ const api: VibeyardApi = {
   browser: {
     saveScreenshot: (sessionId: string, dataUrl: string) =>
       ipcRenderer.invoke('browser:saveScreenshot', sessionId, dataUrl),
+    clearIsolatedStorage: (sessionId: string) =>
+      ipcRenderer.send('browser:clearIsolatedStorage', sessionId),
   },
   chromeImport: {
     listProfiles: () => ipcRenderer.invoke('chromeImport:listProfiles'),
@@ -353,11 +359,12 @@ const api: VibeyardApi = {
     onWarning: (cb) => onChannel('settings:warning', (data) => cb(data as SettingsWarningData)),
     onConflictDialog: (cb) => onChannel('settings:showConflictDialog', (data) => cb(data as StatusLineConflictData)),
     respondConflictDialog: (choice) => ipcRenderer.send('settings:conflictDialogResponse', choice),
-    reinstall: (providerId) => ipcRenderer.invoke('settings:reinstall', providerId || 'claude'),
+    reinstall: (providerId, configDir) => ipcRenderer.invoke('settings:reinstall', providerId || 'claude', configDir),
     validate: (providerId) => ipcRenderer.invoke('settings:validate', providerId || 'claude'),
+    declineConflict: (configDir, foreignCommand) => ipcRenderer.send('settings:declineStatusLine', configDir, foreignCommand),
   },
   clipboard: {
-    write: (text: string, source?: ClipboardSource) => ipcRenderer.invoke('clipboard:write', text, source),
+    write: (text: string, source?: ClipboardSource) => ipcRenderer.send('clipboard:write', text, source),
     readForPaste: () => ipcRenderer.invoke('clipboard:readForPaste'),
     saveImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:saveImage', dataUrl),
   },
@@ -380,4 +387,15 @@ const api: VibeyardApi = {
   },
 };
 
-contextBridge.exposeInMainWorld('vibeyard', api);
+contextBridge.exposeInMainWorld('finevibe', api);
+
+// P0 clipboard-timing env forwarding. The renderer is a sandboxed Browser
+// World with no process.env, so `clipboardTimingOn()` in
+// renderer/components/terminal-utils.ts reads this global; the preload is a
+// sandboxed context whose polyfilled `process` does expose `env`. This makes
+// `FINEVIBE_CLIPBOARD_TIMING=1 electron .` light the [paste-timing] /
+// [copy-timing] probes end to end.
+contextBridge.exposeInMainWorld(
+  '__FINEVIBE_CLIPBOARD_TIMING__',
+  process.env.FINEVIBE_CLIPBOARD_TIMING === '1'
+);

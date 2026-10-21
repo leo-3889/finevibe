@@ -29,16 +29,20 @@ vi.mock('../pty-manager', () => ({
 }));
 
 import * as fs from 'fs';
-import { resolveBinary, validateBinaryExists } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, invalidateBinaryCache } from './resolve-binary';
 
 const mockStatSync = vi.mocked(fs.statSync);
 
 const fileStat = { isFile: () => true } as fs.Stats;
 
+// Must match the mocked getFullPath() above (P2-26 cache validation key).
+const MOCKED_PATH = 'C:\\Windows\\system32;C:\\Users\\test\\AppData\\Roaming\\npm';
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   mockExecSync.mockImplementation(() => { throw new Error('not found'); });
+  invalidateBinaryCache();
 });
 
 describe('resolveBinary (Windows)', () => {
@@ -122,11 +126,66 @@ describe('resolveBinary (Windows)', () => {
     expect(result).toBe('claude');
   });
 
-  it('uses cached path on subsequent calls', () => {
-    const cache = { path: 'C:\\cached\\claude.cmd' };
+  it('uses a cache entry while the binary exists and PATH is unchanged', () => {
+    const cached = 'C:\\cached\\claude.cmd';
+    mockStatSync.mockImplementation((p) => {
+      if (String(p) === cached) return fileStat;
+      throw new Error('ENOENT');
+    });
+    const cache = { path: cached, pathEnv: MOCKED_PATH };
     const result = resolveBinary('claude', cache);
 
-    expect(result).toBe('C:\\cached\\claude.cmd');
+    expect(result).toBe(cached);
+    // Cache validation is a single stat — no PATH/dir/nvm re-probes.
+    expect(mockStatSync).toHaveBeenCalledTimes(1);
+    expect(mockExecSync).not.toHaveBeenCalled();
+  });
+
+  // P2-26: a stale shim permanently shadowed the PATH binary — the cache
+  // must re-resolve when the cached file disappears or PATH changes.
+  it('re-resolves when the cached binary disappears', () => {
+    // statSync default: everything ENOENT, including the cached path.
+    const cache = { path: 'C:\\cached\\claude.cmd', pathEnv: MOCKED_PATH };
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.startsWith('where')) return 'C:\\bin\\claude.cmd\n';
+      throw new Error('not found');
+    });
+    const result = resolveBinary('claude', cache);
+
+    expect(result).toBe('C:\\bin\\claude.cmd');
+    expect(cache.path).toBe('C:\\bin\\claude.cmd');
+  });
+
+  it('re-resolves when PATH changed since the cache was filled', () => {
+    const scoopPath = path.join('C:\\Users\\test', 'scoop', 'shims', 'claude.cmd');
+    mockStatSync.mockImplementation((p) => {
+      if (String(p) === scoopPath) return fileStat;
+      throw new Error('ENOENT');
+    });
+    const cache = { path: 'C:\\cached\\claude.cmd', pathEnv: 'D:\\old-path' };
+    const result = resolveBinary('claude', cache);
+
+    expect(result).toBe(scoopPath);
+    expect(cache.pathEnv).toBe(MOCKED_PATH);
+  });
+
+  // P2-26: user PATH wins over common-dir shims. A scoop shim earlier in
+  // the search dirs must NOT shadow the binary PATH points at.
+  it('prefers the user PATH winner over a shim in a common dir', () => {
+    const scoopPath = path.join('C:\\Users\\test', 'scoop', 'shims', 'claude.cmd');
+    mockStatSync.mockImplementation((p) => {
+      if (String(p) === scoopPath) return fileStat;
+      throw new Error('ENOENT');
+    });
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.startsWith('where')) return 'D:\\tools\\claude.cmd\n';
+      throw new Error('not found');
+    });
+    const cache = { path: null as string | null };
+    const result = resolveBinary('claude', cache);
+
+    expect(result).toBe('D:\\tools\\claude.cmd');
+    // The PATH probe runs before any common-dir stat.
     expect(mockStatSync).not.toHaveBeenCalled();
   });
 });
@@ -160,5 +219,56 @@ describe('validateBinaryExists (Windows)', () => {
 
   it('returns false when all methods fail', () => {
     expect(validateBinaryExists('claude')).toBe(false);
+  });
+
+  it('caches positive results: the second call spawns no probes', () => {
+    // Resolve via `where` (subprocess) so the probe count is meaningful.
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.startsWith('where')) return 'C:\\bin\\claude.cmd\n';
+      throw new Error('not found');
+    });
+
+    expect(validateBinaryExists('claude')).toBe(true);
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    expect(probesAfterFirst).toBeGreaterThan(0);
+
+    // Any probe on a cache hit throws: bin dirs, nvm, which and npm prefix
+    // must all stay untouched on the second call (audit P3-5).
+    mockExecSync.mockImplementation(() => { throw new Error('SUBPROCESS ON CACHE HIT'); });
+    mockStatSync.mockImplementation(() => { throw new Error('FS PROBE ON CACHE HIT'); });
+
+    expect(validateBinaryExists('claude')).toBe(true);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('caches negative results for the TTL and re-probes after it expires', () => {
+    vi.useFakeTimers();
+    try {
+      expect(validateBinaryExists('claude')).toBe(false);
+      const probesAfterFirst = mockExecSync.mock.calls.length;
+      expect(probesAfterFirst).toBeGreaterThan(0);
+
+      expect(validateBinaryExists('claude')).toBe(false);
+      expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+
+      vi.setSystemTime(Date.now() + 31_000);
+      expect(validateBinaryExists('claude')).toBe(false);
+      expect(mockExecSync.mock.calls.length).toBeGreaterThan(probesAfterFirst);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('invalidateBinaryCache clears the entry for one binary', () => {
+    expect(validateBinaryExists('claude')).toBe(false);
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+
+    invalidateBinaryCache('gemini');
+    expect(validateBinaryExists('claude')).toBe(false);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+
+    invalidateBinaryCache('claude');
+    expect(validateBinaryExists('claude')).toBe(false);
+    expect(mockExecSync.mock.calls.length).toBeGreaterThan(probesAfterFirst);
   });
 });

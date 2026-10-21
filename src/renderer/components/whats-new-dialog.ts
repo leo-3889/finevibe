@@ -134,7 +134,7 @@ function buildSection(title: string, items: string[]): HTMLElement {
 }
 
 export async function checkWhatsNew(): Promise<void> {
-  const currentVersion = await window.vibeyard.app.getVersion();
+  const currentVersion = await window.finevibe.app.getVersion();
   const lastSeen = appState.lastSeenVersion;
 
   // Skip on a fresh install — no previous version to compare against, so nothing's "new"

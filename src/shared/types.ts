@@ -1,6 +1,7 @@
 // Shared type definitions used across main, preload, and renderer processes.
 
 import type { TeamDomain } from './team-config.js';
+import type { ShareMode } from './sharing-types.js';
 
 export const ZOOM_MIN = 0.75;
 export const ZOOM_MAX = 2.0;
@@ -8,7 +9,7 @@ export const ZOOM_MAX = 2.0;
 // --- Provider ---
 
 export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi' | 'omp';
-export type PendingPromptTrigger = 'session-start' | 'first-output' | 'startup-arg';
+type PendingPromptTrigger = 'session-start' | 'startup-arg';
 
 /**
  * UI language tag. Defined here (rather than imported from `renderer/i18n.ts`)
@@ -104,7 +105,7 @@ export interface ContextWindowInfo {
 
 // --- Session / State ---
 
-export type SessionType =
+type SessionType =
   | 'mcp-inspector'
   | 'diff-viewer'
   | 'file-reader'
@@ -134,7 +135,7 @@ export interface SessionRecord {
   cost?: CostInfo;
   contextWindow?: ContextWindowInfo;
   remoteHostName?: string;
-  shareMode?: 'readonly' | 'readwrite';
+  shareMode?: ShareMode;
   browserTabUrl?: string;
   /** When true, the browser-tab webview uses an isolated partition that doesn't see imported cookies/passwords. */
   browserIsolated?: boolean;
@@ -192,7 +193,7 @@ export interface Profile {
   id: string;
   name: string;
   providerId: ProviderId;
-  /** Absolute, resolved config dir (managed under ~/.vibeyard/profiles/<id> or a custom path). */
+  /** Absolute, resolved config dir (managed under ~/.finevibe/profiles/<id> or a custom path). */
   configDir: string;
   /** True when configDir is the auto-managed path; false when the user supplied a custom path. */
   managed: boolean;
@@ -212,7 +213,7 @@ export interface ArchivedSession {
   /** Preserved so a resumed session reuses the same profile config dir (CLAUDE_CONFIG_DIR). */
   profileId?: string;
   /**
-   * 'active' while the owning Vibeyard session is live (history records the
+   * 'active' while the owning FineVibe session is live (history records the
    * session from creation, not only at close); 'closed' (or absent, for
    * entries written before the field existed) after finalization.
    */
@@ -250,13 +251,13 @@ export interface DeepSearchResult {
   projectCwd: string;
   snippet: string;
   score: number;
-  /** Title derived from the first user message — fallback when Vibeyard has no name for this session. */
+  /** Title derived from the first user message — fallback when FineVibe has no name for this session. */
   derivedName?: string;
   /** Profile whose config dir holds this transcript, so resume reopens under the right CLAUDE_CONFIG_DIR. */
   profileId?: string;
 }
 
-export interface ProjectInsightsData {
+interface ProjectInsightsData {
   initialContextSnapshots: InitialContextSnapshot[];
   dismissed: string[];
 }
@@ -299,6 +300,16 @@ export interface TagDefinition {
   color: string;
 }
 
+/** Named cluster of adjacent session tabs in the tab strip. */
+export interface TabGroupRecord {
+  id: string;
+  name: string;
+  /** Member session ids, kept in project.sessions order. */
+  sessionIds: string[];
+  /** Index into the tab-group color palette. */
+  colorIndex: number;
+}
+
 export interface BoardData {
   columns: BoardColumn[];
   tasks: BoardTask[];
@@ -331,6 +342,8 @@ export interface ProjectRecord {
   readinessHistory?: ReadinessSnapshot[];
   overviewLayout?: OverviewLayout;
   githubLastSeen?: Record<string, string>;
+  /** Hover-to-group tab clusters; absent on projects that never grouped anything (no migration needed). */
+  tabGroups?: TabGroupRecord[];
 }
 
 // --- Overview Widgets ---
@@ -417,18 +430,45 @@ export interface Preferences {
   locale?: Locale;
   /** Per-provider global fallback profile, applied when neither the session nor the project specifies one. */
   defaultProfiles?: Partial<Record<ProviderId, string>>;
+  /**
+   * Per-provider default for "Plan mode" on the checkbox-less quick-send
+   * paths (Ask AI / Inspect / Draw / Flow "Send to AI", Kanban create) and
+   * the New Session modal's initial tick. Absent = `true` for plan-capable
+   * providers (the pre-setting behavior — no upgrade surprise); providers
+   * without a verified `planModeArg` are always off regardless
+   * (`isPlanModeSupported` short-circuits, `buildPlanSessionArgs` drops the
+   * flag). Per-provider rows: Preferences → General (`pref-plan-mode-<id>`).
+   */
+  planModeDefaults?: Partial<Record<ProviderId, boolean>>;
   statusLineConsent?: 'granted' | 'declined' | null;
   // The foreign statusLine command the user was asked about when they made
   // the consent decision. Used to detect new conflicts (different command)
   // vs the previously-acknowledged one.
   statusLineConsentCommand?: string | null;
+  // P1-14: per-profile-dir statusLine consent, keyed by settings-guard's
+  // consentDirKey. The default ~/.claude keeps the global fields above; a
+  // profile dir's Keep/Replace never governs another dir (and vice versa).
+  statusLineConsentByDir?: Record<string, { consent: 'granted' | 'declined'; command: string | null }>;
   copyOnSelect?: boolean;
+  /**
+   * Where an Ask AI / new-session send from a file pane or browser tab opens:
+   * 'switch' (absent = default) makes the new session the active tab; 'stay'
+   * runs it in the background and keeps focus on the current tab.
+   */
+  askAiFocus?: 'switch' | 'stay';
+  /**
+   * Root directory for new projects. The Add-project modal pre-fills the path
+   * as `<defaultProjectsFolder>/<name>` while the name is edited, and a git
+   * URL checkout lands at `<defaultProjectsFolder>/<repo>`. Absent/'' = unset:
+   * the free-path behavior (and the checkout browse-folder prompt) is kept.
+   */
+  defaultProjectsFolder?: string;
   keybindings?: Record<string, string>;
   theme?: 'dark' | 'light';
   readinessExcludedProviders?: ProviderId[];
   sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;
-  /** Model A: start the shared agentmemory engine when Vibeyard launches (start-if-absent; never killed on quit). */
+  /** Model A: start the shared agentmemory engine when FineVibe launches (start-if-absent; never killed on quit). */
   agentmemoryAutoStart?: boolean;
   chromeImport?: ChromeImportSummary;
 }
@@ -454,7 +494,7 @@ export interface ChromeProfile {
   displayName: string;
 }
 
-export interface ChromeImportSummary {
+interface ChromeImportSummary {
   lastImportedAt: number;
   profileId: string;
   cookieCount: number;
@@ -491,12 +531,12 @@ export interface StartupPrefs {
   zoomFactor: number | null;
 }
 
-export const BROWSER_DEFAULT_PARTITION = 'persist:vibeyard-browser';
+export const BROWSER_DEFAULT_PARTITION = 'persist:finevibe-browser';
 
 // --- Settings Validation ---
 
 export interface SettingsValidationResult {
-  statusLine: 'missing' | 'vibeyard' | 'foreign';
+  statusLine: 'missing' | 'finevibe' | 'foreign';
   hooks: 'missing' | 'complete' | 'partial';
   foreignStatusLineCommand?: string;
   hookDetails: Record<string, boolean>;
@@ -506,6 +546,12 @@ export interface SettingsWarningData {
   sessionId: string;
   statusLine: SettingsValidationResult['statusLine'];
   hooks: SettingsValidationResult['hooks'];
+  /** P2-127: the profile config dir the validation was computed from;
+   * undefined = the default ~/.claude. The Fix Settings CTA repairs THIS dir. */
+  configDir?: string;
+  /** The foreign statusLine command, present when statusLine === 'foreign'
+   * (P1-14: the banner's dismissal records a Keep bound to this command). */
+  foreignStatusLineCommand?: string;
 }
 
 export interface StatusLineConflictData {
@@ -516,7 +562,12 @@ export interface PersistedState {
   version: 1;
   projects: ProjectRecord[];
   activeProjectId: string | null;
-  preferences: Preferences;
+  /** Optional at the persistence boundary: a `version: 1` file predating
+   * this field (peer share, hand-edit, downgrade) parses verbatim, so every
+   * loader normalizes it once (`store.ts` on the main side,
+   * `hydrateLoadedState` on the renderer side) and consumers read the
+   * normalized object, never this optional field. */
+  preferences?: Preferences;
   sidebarWidth?: number;
   sidebarCollapsed?: boolean;
   lastSeenVersion?: string;
@@ -627,7 +678,7 @@ export type InspectorEventType =
   | 'pre_compact' | 'post_compact'
   | 'session_end'
   | 'task_created' | 'task_completed'
-  | 'worktree_create' | 'worktree_remove'
+  | 'worktree_remove'
   | 'cwd_changed' | 'file_changed' | 'config_change'
   | 'elicitation' | 'elicitation_result'
   | 'instructions_loaded'
@@ -645,9 +696,7 @@ export interface InspectorEvent {
   context_snapshot?: { total_tokens: number; context_window_size: number; used_percentage: number };
   // Copied verbatim from the hook payload by INSPECTOR_FIELDS in claude-cli.ts.
   // Keep the two lists in step — a name here with no counterpart there is dead.
-  tool_use_id?: string;
   duration_ms?: number;
-  is_interrupt?: boolean;
   agent_id?: string;
   agent_type?: string;
   agent_transcript_path?: string;
@@ -656,30 +705,20 @@ export interface InspectorEvent {
   message?: string;
   title?: string;
   notification_type?: string;
-  source?: string;
   model?: string;
   reason?: string;
   error_details?: string;
-  trigger?: string;
   task_id?: string;
   task_subject?: string;
-  task_description?: string;
-  team_name?: string;
   teammate_name?: string;
   worktree_path?: string;
   file_path?: string;
   event?: string;
   new_cwd?: string;
-  old_cwd?: string;
-  load_reason?: string;
-  memory_type?: string;
   mcp_server_name?: string;
   /** Elicitation discriminator: 'form' | 'url'. */
   mode?: string;
   action?: string;
-  elicitation_id?: string;
-  content?: string;
-  url?: string;
 }
 
 export interface ToolUsageStats {
@@ -705,14 +744,14 @@ export interface McpResult {
 
 // --- Usage Stats ---
 
-export interface StatsDailyActivity {
+interface StatsDailyActivity {
   date: string;
   messageCount: number;
   sessionCount: number;
   toolCallCount: number;
 }
 
-export interface StatsModelUsage {
+interface StatsModelUsage {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
@@ -790,4 +829,6 @@ export type ClipboardPastePayload = {
   imagePath: string | null;
   /** False only for a truly empty clipboard; any other untranslated flavor forwards Ctrl+V. */
   hasContent: boolean;
+  /** P4: true when main cut the text at the 8 Mi paste bound — a visible truncation the renderer must surface. */
+  textTruncated?: boolean;
 };

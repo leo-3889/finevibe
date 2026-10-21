@@ -4,11 +4,14 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
   openSync: vi.fn(),
+  fchmodSync: vi.fn(),
   writeSync: vi.fn(),
   fsyncSync: vi.fn(),
   closeSync: vi.fn(),
   mkdirSync: vi.fn(),
   renameSync: vi.fn(),
+  statSync: vi.fn(),
+  realpathSync: vi.fn(),
 }));
 
 vi.mock('os', () => ({
@@ -16,8 +19,8 @@ vi.mock('os', () => ({
 }));
 
 import * as fs from 'fs';
-import { loadState, saveState, flushState, saveStateSync, invalidateStateCache } from './store';
-import type { PersistedState } from './store';
+import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, getKnownProjectPaths, DEFAULT_PREFERENCES } from './store';
+import type { PersistedState, ProjectRecord } from './store';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
@@ -27,14 +30,20 @@ const mockFsyncSync = vi.mocked(fs.fsyncSync);
 const mockCloseSync = vi.mocked(fs.closeSync);
 const mockMkdirSync = vi.mocked(fs.mkdirSync);
 const mockRenameSync = vi.mocked(fs.renameSync);
+const mockStatSync = vi.mocked(fs.statSync);
+const mockRealpathSync = vi.mocked(fs.realpathSync);
 
 const DEFAULT_STATE: PersistedState = {
   version: 1,
   projects: [],
   activeProjectId: null,
-  preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true },
+  preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true, defaultProjectsFolder: '' },
 };
 
+// Monotonic fake epoch: vi.useFakeTimers() re-bases Date.now to the (barely
+// advanced) real clock, so a fixed advance from real time is not enough —
+// each case must start 10 s past the PREVIOUS case's fake clock.
+let fakeClockBase = Date.now();
 beforeEach(() => {
   vi.clearAllMocks();
   // fs.writeSync reports the byte count and production code loops on it, so the
@@ -45,6 +54,16 @@ beforeEach(() => {
     position = 0,
   ) => buffer.length - position) as unknown as typeof fs.writeSync);
   vi.useFakeTimers();
+  // Each case starts 10 s past the previous case's fake clock, so the
+  // first saveState of every case takes the leading edge regardless of
+  // when the previous case last touched lastSaveAt.
+  // P1-12 root-set validation stats + realpath-projects. Default mock
+  // semantics: every path is a real directory and realpath is identity;
+  // cases override when a dir must not exist.
+  mockStatSync.mockImplementation(() => ({ isDirectory: () => true }) as unknown as fs.Stats);
+  mockRealpathSync.mockImplementation((p) => String(p));
+  fakeClockBase += 10_000;
+  vi.setSystemTime(fakeClockBase);
   invalidateStateCache();
 });
 
@@ -63,7 +82,7 @@ describe('loadState', () => {
       version: 1,
       projects: [{ id: 'p1', name: 'Test', path: '/test', sessions: [], activeSessionId: null, layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' } }],
       activeProjectId: 'p1',
-      preferences: { soundOnSessionWaiting: true },
+      preferences: { ...DEFAULT_PREFERENCES, soundOnSessionWaiting: true },
     };
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify(state));
@@ -81,34 +100,71 @@ describe('loadState', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ version: 99 }));
     expect(loadState()).toEqual(DEFAULT_STATE);
   });
+
+  it('fills the documented default preferences once for a file without them (P2-84)', () => {
+    // A `version: 1` file predates the field; every main-side consumer
+    // reads `state.preferences.X` unguarded (LoadedState guarantees it), so
+    // the loader must normalize — a missing object is a TypeError per read.
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, projects: [], activeProjectId: null }));
+    const loaded = loadState();
+    expect(loaded.preferences).toEqual(DEFAULT_PREFERENCES);
+    // Cached reads carry the same normalized object (single fill, not per call).
+    expect(loadState()).toBe(loaded);
+  });
+
+  it('normalizes the cache on saveStateSync for a writer without preferences (P2-84)', () => {
+    // The renderer's persisted payload is PersistedState (preferences optional);
+    // after a sync save, loadState reads from the cache, so the write path must
+    // normalize too — otherwise the guarantee exists only on the read path.
+    const raw = { version: 1, projects: [], activeProjectId: 'p1' } as unknown as PersistedState;
+    saveStateSync(raw);
+    expect(loadState().preferences).toEqual(DEFAULT_PREFERENCES);
+    expect(loadState().activeProjectId).toBe('p1');
+  });
 });
 
 describe('saveState', () => {
-  it('debounces writes by 300ms', () => {
+  it('writes the leading edge immediately, not 300ms later', () => {
     saveState(DEFAULT_STATE);
-    expect(mockWriteSync).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(299);
-    expect(mockWriteSync).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(1);
+    // P1-2: with the old trailing debounce nothing reached disk until the
+    // timer fired, so a crash inside the window lost the state. The
+    // leading edge writes through at once.
     expect(mockWriteSync).toHaveBeenCalledOnce();
-    expect(String(mockRenameSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json.tmp');
-    expect(String(mockRenameSync.mock.calls[0][1]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json');
+    expect(String(mockRenameSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.finevibe/state.json.tmp');
+    expect(String(mockRenameSync.mock.calls[0][1]).replaceAll('\\', '/')).toContain('/mock/home/.finevibe/state.json');
+
+    // The first write opens the throttle window; bursts inside it coalesce
+    // into ONE trailing write of the LATEST state.
+    saveState({ ...DEFAULT_STATE, activeProjectId: 'p2' });
+    saveState({ ...DEFAULT_STATE, activeProjectId: 'p3' });
+    expect(mockWriteSync).toHaveBeenCalledOnce();
+
+    vi.advanceTimersByTime(300);
+    expect(mockWriteSync).toHaveBeenCalledTimes(2);
+    const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(written.activeProjectId).toBe('p3');
+    expect(mockRenameSync).toHaveBeenCalledTimes(2);
   });
 
-  it('resets timer on rapid calls', () => {
-    saveState(DEFAULT_STATE);
+  it('takes the leading edge again once the throttle window has passed', () => {
+    saveState(DEFAULT_STATE); // leading
     vi.advanceTimersByTime(200);
 
     const updated = { ...DEFAULT_STATE, activeProjectId: 'p1' };
-    saveState(updated);
+    saveState(updated); // inside the window: trailing armed
     vi.advanceTimersByTime(300);
 
-    expect(mockWriteSync).toHaveBeenCalledOnce();
-    expect(mockRenameSync).toHaveBeenCalledOnce();
-    const written = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
+    expect(mockWriteSync).toHaveBeenCalledTimes(2);
+    const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
     expect(written.activeProjectId).toBe('p1');
+
+    vi.advanceTimersByTime(1_000);
+    const later = { ...DEFAULT_STATE, activeProjectId: 'p2' };
+    saveState(later); // window passed: leading again
+    expect(mockWriteSync).toHaveBeenCalledTimes(3);
+    const written2 = JSON.parse(String(mockWriteSync.mock.calls[2][1]));
+    expect(written2.activeProjectId).toBe('p2');
   });
 
   it('creates directory if needed', () => {
@@ -117,7 +173,7 @@ describe('saveState', () => {
     vi.advanceTimersByTime(300);
 
     expect(mockMkdirSync).toHaveBeenCalledWith(
-      expect.stringContaining('.vibeyard'),
+      expect.stringContaining('.finevibe'),
       { recursive: true },
     );
   });
@@ -145,7 +201,7 @@ describe('saveStateSync', () => {
     // many bytes it moved, so the pieces must tile the payload exactly.
     const written = Buffer.concat(mockWriteSync.mock.calls.map(([ , buffer, position], i) => {
       const start = (position as number) ?? 0;
-      return (buffer as Buffer).subarray(start, start + (mockWriteSync.mock.results[i].value as number));
+      return (buffer as unknown as Buffer).subarray(start, start + (mockWriteSync.mock.results[i].value as number));
     }));
     expect(written.toString('utf-8')).toBe(JSON.stringify(state, null, 2));
     expect(mockFsyncSync).toHaveBeenCalledOnce();
@@ -165,13 +221,27 @@ describe('saveStateSync', () => {
   it('fsyncs and closes the temp file before renaming it into place', () => {
     saveStateSync(DEFAULT_STATE);
 
-    expect(String(mockOpenSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.vibeyard/state.json.tmp');
+    expect(String(mockOpenSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.finevibe/state.json.tmp');
     expect(mockFsyncSync).toHaveBeenCalledOnce();
     expect(mockCloseSync).toHaveBeenCalledOnce();
     // Neither may overtake the data flush: a rename that wins leaves a
     // truncated state.json with the .tmp recovery copy already consumed.
     expect(mockFsyncSync.mock.invocationCallOrder[0]).toBeLessThan(mockRenameSync.mock.invocationCallOrder[0]);
     expect(mockCloseSync.mock.invocationCallOrder[0]).toBeLessThan(mockRenameSync.mock.invocationCallOrder[0]);
+  });
+
+  // P2-101: state.json can carry secrets (`project.defaultEnv`). The writer
+  // opens the temp file 0600 (mode at create) and fchmods it (covers a .tmp
+  // left by an older 0644 build); the rename carries the mode to state.json.
+  it('opens the temp file 0600 and chmods it for secrets at rest', () => {
+    saveStateSync(DEFAULT_STATE);
+
+    expect(mockOpenSync.mock.calls[0][1]).toBe('w');
+    expect(mockOpenSync.mock.calls[0][2]).toBe(0o600);
+    expect(vi.mocked(fs.fchmodSync)).toHaveBeenCalledWith(
+      mockOpenSync.mock.results[0].value,
+      0o600,
+    );
   });
 
   it('closes the descriptor and skips the rename when the write fails', () => {
@@ -186,10 +256,80 @@ describe('saveStateSync', () => {
 });
 
 describe('flushState', () => {
-  it('writes pending state immediately', () => {
-    saveState(DEFAULT_STATE);
+  it('writes pending state immediately and disarms the trailing timer', () => {
+    saveState(DEFAULT_STATE); // leading write
+    saveState({ ...DEFAULT_STATE, activeProjectId: 'pending' }); // trailing armed
     flushState();
-    expect(mockWriteSync).toHaveBeenCalledOnce();
+    const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(written.activeProjectId).toBe('pending');
+    vi.advanceTimersByTime(1_000);
+    expect(mockWriteSync).toHaveBeenCalledTimes(2); // flush disarmed the timer
   });
 });
 
+
+// P1-12: the gate root set (isWithinKnownProject → fs:*, git:*, readiness,
+// MCP) is main-owned. projects[].path arrives from the renderer
+// (`store:save`) and from a disk file any local peer can write — never
+// verbatim.
+describe('main-owned gate root set (P1-12)', () => {
+  const FS_ROOT = process.platform === 'win32' ? 'C:\\' : '/';
+  const projectAt = (projectPath: string): ProjectRecord => ({
+    id: `p-${projectPath}`,
+    name: 'P',
+    path: projectPath,
+    sessions: [],
+    activeSessionId: null,
+    layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+  });
+  const missing = (p: string): void => {
+    mockStatSync.mockImplementation((pathLike) => {
+      if (String(pathLike) === p) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { isDirectory: () => true } as unknown as fs.Stats;
+    });
+  };
+
+  it('saveState refuses a fabricated gate root: the root set does not widen', () => {
+    saveState({ ...DEFAULT_STATE, projects: [projectAt(FS_ROOT)] });
+    // One `store:save` with projects:[{path:'C:\\'}] must not authorize
+    // arbitrary fs/git/MCP access — the root set stays shut.
+    expect(getKnownProjectPaths()).toEqual([]);
+  });
+
+  it('saveState refuses the home root, missing dirs and CLI config dirs, keeps real dirs', () => {
+    missing('/mock/home/gone');
+    saveState({
+      ...DEFAULT_STATE,
+      projects: [
+        projectAt('/mock/home'),
+        projectAt('/mock/home/gone'),
+        projectAt('/mock/home/.claude'),
+        projectAt('/mock/home/projects/real'),
+      ],
+    });
+    expect(getKnownProjectPaths()).toEqual(['/mock/home/projects/real']);
+  });
+
+  it('saveState persists the renderer payload verbatim (persistence is not the gate)', () => {
+    saveState({ ...DEFAULT_STATE, projects: [projectAt(FS_ROOT)] });
+    const written = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
+    expect(written.projects.map((p: ProjectRecord) => p.path)).toContain(FS_ROOT);
+  });
+
+  it('loadState drops persisted projects that fail root validation and logs drops', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    missing('/mock/home/gone');
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      version: 1,
+      projects: [projectAt('/mock/home/projects/real'), projectAt(FS_ROOT), projectAt('/mock/home/gone')],
+      activeProjectId: null,
+    }));
+    const loaded = loadState();
+    // A peer-written state.json must not persist a gate root across boots.
+    expect(loaded.projects.map(p => p.path)).toEqual(['/mock/home/projects/real']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(FS_ROOT));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('/mock/home/gone'));
+    warn.mockRestore();
+  });
+});

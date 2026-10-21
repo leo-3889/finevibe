@@ -40,8 +40,10 @@ export async function shareSession(sessionId: string, mode: ShareMode, passphras
   shareHandles.set(sessionId, handle);
   notifyShareChange();
 
-  const offer = await handle.getOffer();
-
+  // Attach the lifecycle callbacks BEFORE the await, mirroring the hardened
+  // guest path below: getOffer() can reject (createOffer/setLocalDescription
+  // failure) and the teardown wiring must already be in place — the offer
+  // itself is irrelevant to cleanup.
   handle.onConnected(() => {
     notifyShareChange();
   });
@@ -50,6 +52,18 @@ export async function shareSession(sessionId: string, mode: ShareMode, passphras
     shareHandles.delete(sessionId);
     notifyShareChange();
   });
+
+  let offer: string;
+  try {
+    offer = await handle.getOffer();
+  } catch (err) {
+    // The RTCPeerConnection is live and gathering ICE (STUN probes leak the
+    // host's local IP:port until the 10 s timeout); without stopShare the
+    // share map entry, badge and PTY feed all persist for a peer that can
+    // never connect.
+    endShare(sessionId);
+    throw err;
+  }
 
   return { offer, handle };
 }

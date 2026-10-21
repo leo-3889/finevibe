@@ -11,8 +11,8 @@ import { pinWebviewGuest, pinGuestPermissions, isBrowserGuestPreload } from './w
 const { handlers, fromPartition } = vi.hoisted(() => {
   const handlers: Array<{
     partition: string;
-    request?: (permission: string, callback: (granted: boolean) => void) => void;
-    check?: (permission: string) => boolean;
+    request?: (webContents: unknown, permission: string, callback: (granted: boolean) => void) => void;
+    check?: (webContents: unknown, permission: string) => boolean;
   }> = [];
   const fromPartition = vi.fn((partition: string) => {
     const entry = { partition } as (typeof handlers)[number];
@@ -58,33 +58,33 @@ describe('pinWebviewGuest', () => {
     // crosses the renderer -> main boundary for a webview guest. The
     // allowlist silently never installed and Electron auto-approved every
     // permission in the partition holding imported Chrome cookies.
-    attach({ partition: 'persist:vibeyard-browser' });
-    expect(fromPartition).toHaveBeenCalledWith('persist:vibeyard-browser');
-    expect(granted('persist:vibeyard-browser', 'media')).toBe(false);
-    expect(granted('persist:vibeyard-browser', 'geolocation')).toBe(false);
-    expect(granted('persist:vibeyard-browser', 'notifications')).toBe(false);
+    attach({ partition: 'persist:finevibe-browser' });
+    expect(fromPartition).toHaveBeenCalledWith('persist:finevibe-browser');
+    expect(granted('persist:finevibe-browser', 'media')).toBe(false);
+    expect(granted('persist:finevibe-browser', 'geolocation')).toBe(false);
+    expect(granted('persist:finevibe-browser', 'notifications')).toBe(false);
     // The app's host allowlist must not leak into the guest: the guest page
     // has no business reading the clipboard.
-    expect(granted('persist:vibeyard-browser', 'clipboard-read')).toBe(false);
-    expect(granted('persist:vibeyard-browser', 'fullscreen')).toBe(true);
-    expect(granted('persist:vibeyard-browser', 'clipboard-sanitized-write')).toBe(true);
+    expect(granted('persist:finevibe-browser', 'clipboard-read')).toBe(false);
+    expect(granted('persist:finevibe-browser', 'fullscreen')).toBe(true);
+    expect(granted('persist:finevibe-browser', 'clipboard-sanitized-write')).toBe(true);
   });
 
   it('applies the same allowlist to the synchronous check handler', () => {
-    attach({ partition: 'persist:vibeyard-browser-iso-7' });
-    const entry = handlers.find(h => h.partition === 'persist:vibeyard-browser-iso-7');
+    attach({ partition: 'persist:finevibe-browser-iso-7' });
+    const entry = handlers.find(h => h.partition === 'persist:finevibe-browser-iso-7');
     expect(entry?.check).toBeDefined();
     expect(entry?.check?.({}, 'media')).toBe(false);
     expect(entry?.check?.({}, 'fullscreen')).toBe(true);
   });
 
   it('covers the per-session isolated partitions, each resolved by its own name', () => {
-    attach({ partition: 'persist:vibeyard-browser-iso-1' });
-    attach({ partition: 'persist:vibeyard-browser-iso-2' });
+    attach({ partition: 'persist:finevibe-browser-iso-1' });
+    attach({ partition: 'persist:finevibe-browser-iso-2' });
     expect(fromPartition).toHaveBeenCalledTimes(2);
     expect(handlers.map(h => h.partition)).toEqual([
-      'persist:vibeyard-browser-iso-1',
-      'persist:vibeyard-browser-iso-2',
+      'persist:finevibe-browser-iso-1',
+      'persist:finevibe-browser-iso-2',
     ]);
   });
 
@@ -101,15 +101,20 @@ describe('pinWebviewGuest', () => {
 
   it('forces the privilege shape regardless of what the renderer asked for', () => {
     const webPreferences = {
-      partition: 'persist:vibeyard-browser',
+      partition: 'persist:finevibe-browser',
       nodeIntegration: true,
       contextIsolation: false,
       sandbox: false,
+      // P2-115: `webpreferences` is renderer-authored (browser-tab pane), so
+      // a compromised renderer can ask for a nested <webview> the guest page
+      // then attaches into the SAME partition — with no pinning applied.
+      webviewTag: true,
     };
     attach(webPreferences);
     expect(webPreferences.nodeIntegration).toBe(false);
     expect(webPreferences.contextIsolation).toBe(true);
     expect(webPreferences.sandbox).toBe(true);
+    expect(webPreferences.webviewTag).toBe(false);
   });
 
   it('keeps only the shipped browser-tab preload', () => {

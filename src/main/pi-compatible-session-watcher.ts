@@ -19,7 +19,7 @@ import { readSessionHeaderSync } from './providers/pi-compatible-transcripts';
  *
  * Two attribution modes per registration:
  *  - knownCliId: the CLI id is known before the first write (Pi fresh
- *    launches pass a Vibeyard-generated id via `--session-id`; every
+ *    launches pass a FineVibe-generated id via `--session-id`; every
  *    resume knows its id). The watcher adopts the file carrying exactly
  *    that id.
  *  - unknown id (OMP fresh launches): the first transcript to appear in
@@ -329,10 +329,25 @@ export function createCompatibleSessionWatcher(
     const existing = dirWatchers.get(dir);
     if (existing) return;
     try {
-      dirWatchers.set(dir, fs.watch(dir, (event) => {
+      const w = fs.watch(dir, (event) => {
         if (event === 'rename') dirtyDirectories.add(dir);
         scheduleScan();
-      }));
+      });
+      // An FSWatcher error (EMFILE, the watched dir removed) emits 'error'
+      // on the watcher; with no listener that is an uncaught exception in
+      // main — it takes down the process and every live PTY with it. Log
+      // once per watcher, release the slot, and keep the polling fallback
+      // alive (same contract as hook-status/session-transcript-sync).
+      let errorLogged = false;
+      w.on('error', () => {
+        if (!errorLogged) {
+          errorLogged = true;
+          console.warn(`[pi-compatible-watcher] watch failed for ${dir}; relying on polling`);
+        }
+        try { w.close(); } catch { /* already closed */ }
+        if (dirWatchers.get(dir) === w) dirWatchers.delete(dir);
+      });
+      dirWatchers.set(dir, w);
     } catch {
       // Directory might not exist yet; the polling fallback covers it.
       dirWatchers.delete(dir);

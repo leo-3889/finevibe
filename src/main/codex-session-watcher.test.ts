@@ -1,4 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import type { BrowserWindow } from 'electron';
@@ -24,6 +25,7 @@ vi.mock('fs', () => ({
     const base = path.basename(p);
     if (parent && parent.entries.has(base)) {
       const v = parent.entries.get(base);
+      if (v === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
       if (v === 'dir') {
         const d = dirs.get(p)!;
         return { mtimeMs: d.mtimeMs, size: 0, isDirectory: () => true };
@@ -48,9 +50,13 @@ vi.mock('fs', () => ({
   openSync: (p: string) => { counters.openSync++; return p; },
   readSync: (_fd: string, buf: Buffer, _o: number, len: number, _pos: number) => {
     const parent = vfs.get(path.dirname(_fd));
-    const v = parent?.entries.get(path.basename(_fd));
+    const base = path.basename(_fd);
+    const v = parent?.entries.get(base);
     if (!v || v === 'dir') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-    const bytes = Buffer.from(v.content, 'utf-8').subarray(0, len);
+    // latin1 for .zst (compressed bytes stored byte-per-char), utf-8 for
+    // plain rollouts: the meta path now reads a bounded prefix through
+    // openSync/readSync, never a whole readFileSync.
+    const bytes = Buffer.from(v.content, base.endsWith('.zst') ? 'latin1' : 'utf-8').subarray(0, len);
     bytes.copy(buf, 0);
     return bytes.length;
   },
@@ -64,7 +70,7 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false }] },
 }));
 vi.mock('./hook-status', () => ({
-  STATUS_DIR: path.join(path.sep + 'tmp', 'vibeyard'),
+  STATUS_DIR: path.join(path.sep + 'tmp', 'finevibe'),
   writeCliSessionId: vi.fn(),
 }));
 
@@ -338,20 +344,25 @@ describe('codex rollout attribution (per-cwd FIFO)', () => {
     // An unmatched (foreign-cwd) rollout is revisited every scan for the whole
     // life of a pending tab. Without the meta cache each scan re-read it - and
     // for `.jsonl.zst` decompressed it whole, allocating ~10x the compressed
-    // size - up to twice a second.
+    // size (P1-3) - up to twice a second. The meta read is now a bounded
+    // prefix through openSync/readSync, cached by (path, mtime, size).
     registerPendingCodexSession('ui-1', '/repo/alpha');
     startCodexSessionWatcher(fakeWin);
     const day = mkDay(new Date(NOW));
     addRollout(day, 'codex-foreign', { cwd: '/other/project', zst: true });
 
     scanAll();
-    expect(counters.readFileSync).toBe(1);
+    // One bounded prefix read per file version; the whole file is never
+    // readFileSync'ed for meta again (P1-3).
+    expect(counters.openSync).toBe(1);
+    expect(counters.readFileSync).toBe(0);
 
     scanAll();
     scanAll();
     // Two more scans, zero extra reads: the parsed meta is cached by
     // (path, mtime, size), so the decompression cost is paid once per change.
-    expect(counters.readFileSync).toBe(1);
+    expect(counters.openSync).toBe(1);
+    expect(counters.readFileSync).toBe(0);
     expect(mockWriteCliSessionId).not.toHaveBeenCalled();
   });
 });
@@ -361,5 +372,45 @@ describe('startCodexSessionWatcher()', () => {
     expect(mockWatch).toHaveBeenCalledWith(SESSIONS_ROOT, { recursive: true }, expect.any(Function));
     startCodexSessionWatcher(fakeWin);
     expect(mockWatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// P1-11: fs.watch with no 'error' listener. A real FSWatcher emits 'error'
+// (EMFILE, watched dir removed), and an EventEmitter with no 'error'
+// listener THROWS from emit() — that is the uncaught main-process
+// exception that takes down every live PTY. The fake watcher returned by
+// the fs.watch mock is a REAL EventEmitter and the module wires its
+// handler onto this exact object, so the emit has real Node semantics.
+describe('watcher error resilience (P1-11)', () => {
+  it('survives an FSWatcher error: logs once, releases the watcher, keeps polling', () => {
+    const created: (EventEmitter & { close: ReturnType<typeof vi.fn> })[] = [];
+    mockWatch.mockImplementation(() => {
+      const w = new EventEmitter() as EventEmitter & { close: ReturnType<typeof vi.fn> };
+      w.close = vi.fn();
+      created.push(w);
+      return w as unknown as fs.FSWatcher;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      startCodexSessionWatcher(fakeWin);
+      const w = created[0];
+      expect(w).toBeDefined();
+
+      // Pre-fix: no 'error' listener is attached, so the first emit throws.
+      expect(() => w.emit('error', new Error('EMFILE: too many open files'))).not.toThrow();
+      expect(() => w.emit('error', new Error('EMFILE again'))).not.toThrow();
+
+      expect(warn).toHaveBeenCalledTimes(1); // logged once per watcher
+      expect(w.close).toHaveBeenCalled(); // watcher released
+      expect(w.listenerCount('error')).toBe(1);
+
+      // The released slot is re-watchable: stop + start creates a fresh watcher.
+      stopCodexSessionWatcher();
+      startCodexSessionWatcher(fakeWin);
+      expect(created.length).toBe(2);
+    } finally {
+      warn.mockRestore();
+      mockWatch.mockReset(); // restores the vi.fn(() => ({ close: vi.fn() })) factory
+    }
   });
 });

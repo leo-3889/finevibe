@@ -12,7 +12,7 @@ vi.mock('../file-url.js', () => ({ pathToFileURL: (p: string) => `file://${p}` }
 import { renderFileTree, _resetForTesting, DirEntry, isExpanded, FILE_MANAGER } from './file-tree.js';
 import { showContextMenu, MenuOption } from './board/board-context-menu.js';
 
-// --- Fake filesystem backing window.vibeyard.fs ---
+// --- Fake filesystem backing window.finevibe.fs ---
 let dirContents: Map<string, DirEntry[]>;
 let fsChangeCb: ((changes: FsChange[]) => void) | null = null;
 const watchedDirs = new Set<string>();
@@ -27,7 +27,7 @@ beforeEach(() => {
   fsChangeCb = null;
   watchedDirs.clear();
   (globalThis as any).window = globalThis;
-  (globalThis as any).vibeyard = {
+  (globalThis as any).finevibe = {
     fs: {
       listDir: vi.fn((dir: string) => Promise.resolve(dirContents.get(dir) ?? [])),
       showInFolder: vi.fn(() => Promise.resolve({ ok: true })),
@@ -177,6 +177,84 @@ describe('file tree reconciliation', () => {
     expect(watchedDirs.has('/proj/src')).toBe(false);
     expect(isExpanded('p1', '/proj/src')).toBe(false);
   });
+
+  it('re-reads the root listing from disk when the panel re-renders', async () => {
+    // Gap 1: the root cache survives the whole session, so a missed watcher
+    // event at the project root was never manually recoverable.
+    dirContents.set('/proj', [entry('a.ts', '/proj', false)]);
+    const container = document.createElement('div');
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container);
+    await settle();
+    expect(rows(container)).toEqual(['/proj/a.ts']);
+
+    // Filesystem change with NO watcher event, then a panel re-render
+    // (reopen / project switch / preferences-changed).
+    dirContents.set('/proj', [entry('a.ts', '/proj', false), entry('b.ts', '/proj', false)]);
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container);
+    await settle();
+    expect(rows(container)).toEqual(['/proj/a.ts', '/proj/b.ts']);
+  });
+
+  it('re-reads a folder from disk on every expand', async () => {
+    dirContents.set('/proj', [entry('src', '/proj', true)]);
+    dirContents.set('/proj/src', [entry('a.ts', '/proj/src', false)]);
+    const container = document.createElement('div');
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container);
+    await settle();
+    const srcRow = container.querySelector('[data-entry-path="/proj/src"]') as HTMLElement;
+    const listDir = vi.mocked(window.finevibe.fs.listDir);
+    const callsFor = (dir: string) => listDir.mock.calls.filter((c) => c[0] === dir).length;
+
+    srcRow.dispatchEvent(new Event('click')); // expand
+    await settle();
+    expect(rows(container)).toContain('/proj/src/a.ts');
+
+    srcRow.dispatchEvent(new Event('click')); // collapse
+    await settle();
+
+    // fs change while collapsed, with no watcher event.
+    dirContents.set('/proj/src', [entry('a.ts', '/proj/src', false), entry('b.ts', '/proj/src', false)]);
+    const before = callsFor('/proj/src');
+    srcRow.dispatchEvent(new Event('click')); // re-expand
+    await settle();
+    expect(callsFor('/proj/src')).toBe(before + 1);
+    expect(rows(container)).toContain('/proj/src/b.ts');
+  });
+
+  it('expand re-reads even while a stale listing read is in flight', async () => {
+    dirContents.set('/proj', [entry('src', '/proj', true)]);
+    dirContents.set('/proj/src', [entry('a.ts', '/proj/src', false)]);
+    const container = document.createElement('div');
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container);
+    await settle();
+
+    // The first expand's /proj/src read stays in flight; later reads hit disk.
+    const listDir = vi.mocked(window.finevibe.fs.listDir);
+    const baseImpl = listDir.getMockImplementation()!;
+    const callsFor = (dir: string) => listDir.mock.calls.filter((c) => c[0] === dir).length;
+    let resolveStale: (entries: DirEntry[]) => void = () => {};
+    listDir.mockImplementationOnce((dir: string) =>
+      dir === '/proj/src'
+        ? new Promise<DirEntry[]>((res) => { resolveStale = res; })
+        : baseImpl(dir),
+    );
+
+    const srcRow = container.querySelector('[data-entry-path="/proj/src"]') as HTMLElement;
+    srcRow.dispatchEvent(new Event('click')); // expand #1 — read in flight
+    await settle();
+
+    dirContents.set('/proj/src', [entry('a.ts', '/proj/src', false), entry('b.ts', '/proj/src', false)]);
+    srcRow.dispatchEvent(new Event('click')); // collapse
+    srcRow.dispatchEvent(new Event('click')); // expand #2 — must start a fresh read
+    await settle();
+    expect(callsFor('/proj/src')).toBe(2);
+    expect(rows(container)).toContain('/proj/src/b.ts');
+
+    // The stale in-flight read lands late; it must not repopulate the cache
+    // (guarded in loadEntries), so it is silently dropped.
+    resolveStale([entry('a.ts', '/proj/src', false)]);
+    await settle();
+  });
 });
 
 describe('show in file manager menu option', () => {
@@ -190,7 +268,7 @@ describe('show in file manager menu option', () => {
     expect(options.map((o) => o.label)).toEqual([`Open in ${FILE_MANAGER}`, 'Copy Path', 'Delete']);
 
     options[0].action();
-    expect((globalThis as any).vibeyard.fs.showInFolder).toHaveBeenCalledWith('/proj/src');
+    expect((globalThis as any).finevibe.fs.showInFolder).toHaveBeenCalledWith('/proj/src');
   });
 
   it('reveals a file in the file manager', async () => {
@@ -205,7 +283,7 @@ describe('show in file manager menu option', () => {
     ]);
 
     options[1].action();
-    expect((globalThis as any).vibeyard.fs.showInFolder).toHaveBeenCalledWith('/proj/a.ts');
+    expect((globalThis as any).finevibe.fs.showInFolder).toHaveBeenCalledWith('/proj/a.ts');
   });
 
   it('copies the absolute path of a folder to the clipboard', async () => {

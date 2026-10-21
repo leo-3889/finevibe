@@ -1,7 +1,7 @@
 /**
  * macOS keychain credential-isolation guardrail for Claude profiles.
  *
- * Background: Vibeyard "profiles" give each Claude Code session an isolated
+ * Background: FineVibe "profiles" give each Claude Code session an isolated
  * `CLAUDE_CONFIG_DIR` so separate logins/licenses don't collide. On Linux and
  * Windows that isolation is automatic — credentials live in
  * `<configDir>/.credentials.json`. On macOS, Claude Code stores OAuth
@@ -94,17 +94,6 @@ function anyProfileKeychainNamespaced(): boolean {
     if (keychainEntryExists(keychainServiceForConfigDir(p.configDir))) return true;
   }
   return false;
-}
-
-/**
- * Verify a single profile's login is stored under its own isolated keychain
- * entry. Use this AFTER a profile session has been logged into to confirm
- * isolation actually took effect. Non-macOS always returns true (file-based
- * isolation under `<configDir>/.credentials.json`).
- */
-export function profileKeychainIsolated(configDir: string): boolean {
-  if (!isMac) return true;
-  return keychainEntryExists(keychainServiceForConfigDir(configDir));
 }
 
 /**

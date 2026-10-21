@@ -33,7 +33,10 @@ out/
 # Local electron-builder overrides
 electron-builder.local.json
 
-vibeyard-copilot-hooks.json
+finevibe-copilot-hooks.json
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Local dev sandbox
+dev/

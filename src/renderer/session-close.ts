@@ -56,7 +56,7 @@ export function closeSessionById(sessionId: string): void {
 }
 
 export async function closeSessionIfFileMissing(sessionId: string, fullPath: string): Promise<boolean> {
-  if (await window.vibeyard.fs.exists(fullPath)) return false;
+  if (await window.finevibe.fs.exists(fullPath)) return false;
   closeSessionById(sessionId);
   return true;
 }

@@ -77,39 +77,76 @@ function findViaNpmPrefix(binaryName: string, fullPath: string): string | null {
   return prefix ? findBinaryInDir(prefix, binaryName) : null;
 }
 
-export function resolveBinary(binaryName: string, cache: { path: string | null }): string {
-  if (cache.path) return cache.path;
+/** A provider's memoized binary path (audit P2-26). The entry is trusted
+ *  only while `pathEnv` still equals the live PATH and `path` still exists
+ *  on disk — an app-lifetime cache let a stale shim permanently shadow the
+ *  binary the user's PATH points at. */
+export interface BinaryCache {
+  path: string | null;
+  pathEnv?: string;
+}
 
+export function resolveBinary(binaryName: string, cache: BinaryCache): string {
   const fullPath = getFullPath();
+  if (cache.path && cache.pathEnv === fullPath && fileExists(cache.path)) {
+    return cache.path;
+  }
+  cache.path = resolveBinaryUncached(binaryName, fullPath);
+  cache.pathEnv = fullPath;
+  return cache.path;
+}
+
+function resolveBinaryUncached(binaryName: string, fullPath: string): string {
+  // P2-26: the user's PATH wins. Searching the common dirs (and nvm) first
+  // let a stale shim in scoop/volta/npm-global permanently shadow the
+  // binary PATH was deliberately pointed at — PATH changes mid-session
+  // (shell profile edits, portable toolchains) were never picked up.
+  const resolved = whichBinary(binaryName, fullPath);
+  if (resolved) return resolved;
 
   for (const dir of COMMON_BIN_DIRS) {
     const found = findBinaryInDir(dir, binaryName);
-    if (found) {
-      cache.path = found;
-      return found;
-    }
+    if (found) return found;
   }
 
   const nvmFound = findBinaryInNvm(binaryName);
-  if (nvmFound) {
-    cache.path = nvmFound;
-    return nvmFound;
-  }
-
-  const resolved = whichBinary(binaryName, fullPath);
-  if (resolved) {
-    cache.path = resolved;
-    return resolved;
-  }
+  if (nvmFound) return nvmFound;
 
   const npmFound = findViaNpmPrefix(binaryName, fullPath);
-  if (npmFound) { cache.path = npmFound; return npmFound; }
+  if (npmFound) return npmFound;
 
-  cache.path = binaryName;
   return binaryName;
 }
 
+// Availability probe cache (audit P3-5): the probe below walks every common
+// bin dir, scans nvm, and spawns `which`/`npm prefix -g` — on every
+// `provider.validatePrerequisites()` call (startup, readiness analysis, the
+// provider IPC). Positive results are cached for the process, matching
+// resolveBinary's resolved-path cache; negative results expire after
+// NEGATIVE_PROBE_TTL_MS so a CLI installed after app start is picked up
+// without a restart. invalidateBinaryCache() clears both on provider
+// install/uninstall and settings changes (see registry.invalidateAvailabilityCache).
+const NEGATIVE_PROBE_TTL_MS = 30_000;
+const probeCache = new Map<string, { exists: boolean; checkedAt: number }>();
+
 export function validateBinaryExists(binaryName: string): boolean {
+  const hit = probeCache.get(binaryName);
+  if (hit && (hit.exists || Date.now() - hit.checkedAt < NEGATIVE_PROBE_TTL_MS)) {
+    return hit.exists;
+  }
+  const exists = probeBinaryExists(binaryName);
+  probeCache.set(binaryName, { exists, checkedAt: Date.now() });
+  return exists;
+}
+
+/** Drop cached availability for one binary (or all) so the next probe
+ *  re-scans. Called by registry.invalidateAvailabilityCache(). */
+export function invalidateBinaryCache(binaryName?: string): void {
+  if (binaryName === undefined) probeCache.clear();
+  else probeCache.delete(binaryName);
+}
+
+function probeBinaryExists(binaryName: string): boolean {
   for (const dir of COMMON_BIN_DIRS) {
     if (findBinaryInDir(dir, binaryName)) return true;
   }

@@ -63,7 +63,7 @@ describe('meta', () => {
     expect(provider.meta.binaryName).toBe('omp');
   });
 
-  it('declares resume + system-prompt injection, no hooks/cost/context', () => {
+  it('declares resume + system-prompt injection + plan mode, no hooks/cost/context', () => {
     const caps = provider.meta.capabilities;
     expect(caps.sessionResume).toBe(true);
     expect(caps.costTracking).toBe(false);
@@ -73,7 +73,7 @@ describe('meta', () => {
     expect(caps.shiftEnterNewline).toBe(false);
     expect(caps.pendingPromptTrigger).toBe('startup-arg');
     expect(caps.systemPromptInjection).toBe(true);
-    expect(caps.planModeArg).toBeUndefined();
+    expect(caps.planModeArg).toBe('--plan-yolo');
   });
 
   it('has defaultContextWindowSize of 200,000', () => {
@@ -209,7 +209,7 @@ describe('no-op lifecycle methods', () => {
   });
 
   it('validateSettings reports complete (OMP has no hooks or status line)', () => {
-    expect(provider.validateSettings()).toEqual({ statusLine: 'vibeyard', hooks: 'complete', hookDetails: {} });
+    expect(provider.validateSettings()).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
   });
 
   it('getShiftEnterSequence returns null', () => {
@@ -293,6 +293,7 @@ describe('getTranscriptPath', () => {
     expect(provider.getTranscriptPath!('cli-9', '/proj', '/profiles/work')).toBe('/sessions/dir-a/2026.jsonl');
     expect(findTranscriptPathSync).toHaveBeenCalledWith(expect.any(Function), 'cli-9', '/proj', '/profiles/work');
   });
+
 });
 
 describe('getConfig', () => {

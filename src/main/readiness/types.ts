@@ -10,7 +10,7 @@ export interface TaggedCheck {
 export interface AnalysisContext {
   trackedFiles: string[];
   /**
-   * Whether a project-relative path is excluded by `.vibeyardignore`. Built once per scan:
+   * Whether a project-relative path is excluded by `.finevibeignore`. Built once per scan:
    * it reads the file and compiles two picomatch matchers, which is not worth repeating in
    * every producer.
    */

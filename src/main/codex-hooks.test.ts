@@ -15,10 +15,10 @@ vi.mock('os', () => ({
 vi.mock('./hook-commands', () => ({
   installHookScripts: vi.fn(),
   installEventScript: vi.fn(),
-  statusCmd: vi.fn((e: string, s: string, _v: string, marker: string) => `echo ${e}:${s} > $VIBEYARD_SESSION_ID.status ${marker}`),
-  captureSessionIdCmd: vi.fn((_v: string, marker: string) => `capture .sessionid $VIBEYARD_SESSION_ID ${marker}`),
+  statusCmd: vi.fn((e: string, s: string, _v: string, marker: string) => `echo ${e}:${s} > $FINEVIBE_SESSION_ID.status ${marker}`),
+  captureSessionIdCmd: vi.fn((_v: string, marker: string) => `capture .sessionid $FINEVIBE_SESSION_ID ${marker}`),
   captureToolFailureCmd: vi.fn((_v: string, marker: string) => `capture-toolfailure ${marker}`),
-  wrapPythonHookCmd: vi.fn((_name: string, _code: string, marker: string) => `capture-event $VIBEYARD_SESSION_ID .events ${marker}`),
+  wrapPythonHookCmd: vi.fn((_name: string, _code: string, marker: string) => `capture-event $FINEVIBE_SESSION_ID .events ${marker}`),
 }));
 
 import * as fs from 'fs';
@@ -167,7 +167,7 @@ describe('installCodexHooks', () => {
     expect(hasSessionIdCapture('Stop')).toBe(false);
   });
 
-  it('all hook commands contain the vibeyard marker', () => {
+  it('all hook commands contain the finevibe marker', () => {
     installCodexHooks();
 
     const hooksCall = mockWriteFileSync.mock.calls.find(c => String(c[0]) === HOOKS_JSON);
@@ -182,7 +182,7 @@ describe('installCodexHooks', () => {
     }
   });
 
-  it('all hook commands reference $VIBEYARD_SESSION_ID', () => {
+  it('all hook commands reference $FINEVIBE_SESSION_ID', () => {
     installCodexHooks();
 
     const hooksCall = mockWriteFileSync.mock.calls.find(c => String(c[0]) === HOOKS_JSON);
@@ -191,7 +191,7 @@ describe('installCodexHooks', () => {
     for (const [, matchers] of Object.entries(hooks) as [string, any[]][]) {
       for (const matcher of matchers) {
         for (const h of matcher.hooks) {
-          expect(h.command).toContain('VIBEYARD_SESSION_ID');
+          expect(h.command).toContain('FINEVIBE_SESSION_ID');
         }
       }
     }
@@ -223,11 +223,11 @@ describe('installCodexHooks', () => {
     );
     expect(userMatcher).toBeDefined();
 
-    // Vibeyard hooks also present
-    const vibeyardMatcher = hooks.SessionStart.find(
+    // FineVibe hooks also present
+    const fineVibeMatcher = hooks.SessionStart.find(
       (m: any) => m.hooks.some((h: any) => h.command.includes(CODEX_HOOK_MARKER))
     );
-    expect(vibeyardMatcher).toBeDefined();
+    expect(fineVibeMatcher).toBeDefined();
   });
 
   it('is idempotent — no duplicate hooks on second run', () => {
@@ -291,7 +291,7 @@ describe('validateCodexHooks', () => {
     });
 
     const result = validateCodexHooks();
-    expect(result.statusLine).toBe('vibeyard');
+    expect(result.statusLine).toBe('finevibe');
     expect(result.hooks).toBe('complete');
     expect(result.hookDetails.SessionStart).toBe(true);
     expect(result.hookDetails.UserPromptSubmit).toBe(true);
@@ -347,7 +347,7 @@ describe('validateCodexHooks', () => {
 });
 
 describe('cleanupCodexHooks', () => {
-  it('removes vibeyard hooks and preserves user hooks', () => {
+  it('removes finevibe hooks and preserves user hooks', () => {
     const existing = {
       hooks: {
         SessionStart: [
@@ -367,7 +367,7 @@ describe('cleanupCodexHooks', () => {
     expect(written.hooks.SessionStart[0].hooks[0].command).toBe('echo user-hook');
   });
 
-  it('removes hooks key when all hooks are vibeyard hooks', () => {
+  it('removes hooks key when all hooks are finevibe hooks', () => {
     const existing = {
       version: '1.0',
       hooks: {

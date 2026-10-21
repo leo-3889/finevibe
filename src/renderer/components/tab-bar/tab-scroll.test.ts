@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   scrollDelta,
+  tabsOverflow,
+  arrowsEnabled,
+  scrollStep,
   bankScroll,
   planScroll,
   commitScroll,
@@ -30,6 +33,60 @@ describe('scrollDelta', () => {
   it('handles sub-pixel overhangs', () => {
     expect(scrollDelta(-0.5, -60)).toBe(-0.5);
     expect(scrollDelta(40, 0.5)).toBe(0.5);
+  });
+});
+
+describe('tabsOverflow', () => {
+  it('wants arrows when the tabs are wider than the strip', () => {
+    expect(tabsOverflow(900, 800, false)).toBe(true);
+  });
+
+  it('wants no arrows while the tabs fit', () => {
+    expect(tabsOverflow(800, 800, false)).toBe(false);
+  });
+
+  it('absorbs sub-pixel layout within 1px when hidden', () => {
+    expect(tabsOverflow(800.5, 800, false)).toBe(false);
+  });
+
+  it('keeps arrows that fit content only on an unreserved strip', () => {
+    // 830px of tabs fit the strip the moment the arrows hide and give back
+    // their reserve — hiding here would re-overflow, so the hysteresis holds.
+    expect(tabsOverflow(830, 800, true)).toBe(true);
+  });
+
+  it('hides arrows once content fits the strip with them on screen', () => {
+    expect(tabsOverflow(800, 800, true)).toBe(false);
+    expect(tabsOverflow(760, 800, true)).toBe(false);
+  });
+});
+
+describe('arrowsEnabled', () => {
+  it('disables the left arrow at the start of the strip', () => {
+    expect(arrowsEnabled(0, 900, 800)).toEqual({ canLeft: false, canRight: true });
+  });
+
+  it('disables the right arrow at the far end', () => {
+    expect(arrowsEnabled(100, 900, 800)).toEqual({ canLeft: true, canRight: false });
+  });
+
+  it('enables both arrows in the middle', () => {
+    expect(arrowsEnabled(50, 900, 800)).toEqual({ canLeft: true, canRight: true });
+  });
+
+  it('treats a sub-pixel gap at the far end as the end', () => {
+    expect(arrowsEnabled(99.6, 900, 800)).toEqual({ canLeft: true, canRight: false });
+  });
+});
+
+describe('scrollStep', () => {
+  it('never steps less than 120px', () => {
+    expect(scrollStep(100)).toBe(120);
+  });
+
+  it('grows with the strip width', () => {
+    expect(scrollStep(800)).toBe(480);
+    expect(scrollStep(1000)).toBe(600);
   });
 });
 
@@ -111,5 +168,27 @@ describe('tab strip scroll state', () => {
     expect(render('p1', null, 0, 0).autoScroll).toBe(true);
     expect(render('p1', null, 50).autoScroll).toBe(false);
     expect(render('p1', 's1', 50, 300).autoScroll).toBe(true);
+  });
+
+  it('banks a hand-scroll made during an open rename (bank precedes the early return)', () => {
+    // render() early-returns while a rename input is open, and tab-list.ts
+    // runs bankScroll ahead of that return — the sequence below is that
+    // order of ops; skip the first bankScroll and the plan goes stale.
+    render('p1', 's1', 0, 0);
+    // The user drags the strip to 120; a chatty render fires while the
+    // rename is open: bank, early-return, no plan/commit.
+    bankScroll(120);
+    // The next project's render banks whatever offset the strip carries;
+    // the early-return render released the strip, so this bank is a no-op.
+    bankScroll(120);
+    expect(planScroll('p1', 's1').scrollLeft).toBe(120);
+  });
+
+  it('stays put once an arrow has scrolled the strip', () => {
+    // An arrow click moves scrollLeft exactly like a scrollbar drag, and the
+    // memo must read it the same way: a user scroll, to be kept. Regression
+    // cover for the arrow glue riding the bank → plan → commit sequence.
+    render('p1', 's1', 0, 400);
+    expect(render('p1', 's1', 480)).toMatchObject({ scrollLeft: 480, autoScroll: false, settled: 480 });
   });
 });

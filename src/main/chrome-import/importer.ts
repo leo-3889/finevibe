@@ -42,10 +42,24 @@ export async function runImport(
   try {
     if (snap.cookiesPath) {
       try {
-        const { records, skippedV11: ck } = readCookies(snap.cookiesPath);
+        const { records, skippedV11: ck, keyError } = readCookies(snap.cookiesPath);
         skippedV11 += ck;
+        // P2-49: a keychain/keyring denial must make the import fail loudly.
+        // Swallowing it here is what let `{ok:true, cookieCount:0}` be
+        // persisted as a completed import.
+        if (keyError) errors.push(`Cookies: ${keyError}`);
         onProgress({ stage: 'cookies', done: 0, total: records.length });
         const sess = session.fromPartition(BROWSER_DEFAULT_PARTITION, { cache: true });
+        // Named async helper so the `map` callback below returns the promise
+        // it starts (an async arrow whose body ends without `return` is the
+        // shape this codebase's array-callback rule flags as a silent drop).
+        const setOneCookie = async (record: (typeof records)[number], index: number): Promise<void> => {
+          await sess.cookies.set(record);
+          if (index % 25 === 0) {
+            onProgress({ stage: 'cookies', done: index + 1, total: records.length });
+          }
+        };
+
         // Batch into chunks: an unbounded Promise.allSettled over every
         // cookie floods the session's cookie store with concurrent sets.
         const CHUNK_SIZE = 50;
@@ -53,13 +67,7 @@ export async function runImport(
         for (let start = 0; start < records.length; start += CHUNK_SIZE) {
           results.push(
             ...(await Promise.allSettled(
-              records.slice(start, start + CHUNK_SIZE).map(async (r, j) => {
-                const i = start + j;
-                await sess.cookies.set(r);
-                if (i % 25 === 0) {
-                  onProgress({ stage: 'cookies', done: i + 1, total: records.length });
-                }
-              }),
+              records.slice(start, start + CHUNK_SIZE).map((r, j) => setOneCookie(r, start + j)),
             )),
           );
         }

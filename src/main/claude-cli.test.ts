@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),
@@ -36,7 +36,11 @@ vi.mock('./hook-commands', () => ({
   installHookScripts: vi.fn(),
   installEventScript: vi.fn(),
   statusCmd: vi.fn((e: string, s: string, _v: string, marker: string) => `echo ${e}:${s} > .status ${marker}`),
-  stopStatusCmd: vi.fn((_v: string, marker: string) => `stop_status_writer .subagents > .status ${marker}`),
+  // P2-73: the stub renders its arguments verbatim and contains none of the
+  // real generator's output tokens (`stop_status_writer`, `.subagents`,
+  // `.status`) — assertions below can only pass when claude-cli.ts feeds the
+  // real session-var/marker arguments through to stopStatusCmd.
+  stopStatusCmd: vi.fn((v: string, marker: string) => `stop-writer ${v} ${marker}`),
   captureSessionIdCmd: vi.fn((_v: string, marker: string) => `capture-sessionid .sessionid ${marker}`),
   captureToolFailureCmd: vi.fn((_v: string, marker: string) => `capture-toolfailure .toolfailure ${marker}`),
   wrapPythonHookCmd: vi.fn((_name: string, _code: string, marker: string) => `capture-event .events ${marker}`),
@@ -56,11 +60,15 @@ vi.mock('./store', () => ({
 import * as fs from 'fs';
 import * as path from 'path';
 import { addMcpServer, getClaudeConfig, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
-import { installEventScript } from './hook-commands';
+import { installEventScript, stopStatusCmd } from './hook-commands';
 import { getClaudeVersion } from './providers/claude-version';
 
-const mockReadFileSync = vi.mocked(fs.readFileSync);
-const mockReaddirSync = vi.mocked(fs.readdirSync);
+const mockStopStatusCmd = vi.mocked(stopStatusCmd);
+
+// fs.readFileSync/readdirSync are overloaded; vi.mocked binds one overload
+// (the buffer-flavored one), so pin the call shape these tests mock.
+const mockReadFileSync = vi.mocked(fs.readFileSync) as unknown as Mock<(p: fs.PathLike, options?: unknown) => string>;
+const mockReaddirSync = vi.mocked(fs.readdirSync) as unknown as Mock<(dirPath: fs.PathLike) => fs.Dirent<string>[]>;
 const mockWriteFileSync = vi.mocked(fs.writeFileSync);
 const mockMkdirSync = vi.mocked(fs.mkdirSync);
 const mockOpenSync = vi.mocked(fs.openSync);
@@ -402,7 +410,7 @@ describe('getClaudeConfig', () => {
 });
 
 describe('install into a profile config dir', () => {
-  const profileDir = path.join('/mock/home', '.vibeyard', 'profiles', 'work');
+  const profileDir = path.join('/mock/home', '.finevibe', 'profiles', 'work');
 
   it('installHooksOnly writes to the given config dir, not ~/.claude', () => {
     installHooksOnly(profileDir);
@@ -502,7 +510,7 @@ describe('installHooks', () => {
     expect(withStatusLine.statusLine.type).toBe('command');
   });
 
-  it('preserves existing non-vibeyard hooks', () => {
+  it('preserves existing non-finevibe hooks', () => {
     mockReadFileSync.mockImplementation((filePath) => {
       if (n(String(filePath)) === '/mock/home/.claude/settings.json') {
         return JSON.stringify({
@@ -521,7 +529,7 @@ describe('installHooks', () => {
 
     const written = JSON.parse(settingsWrites()[0]);
     const promptHooks = written.hooks.UserPromptSubmit;
-    // Should have the existing user hook matcher + the new vibeyard matcher
+    // Should have the existing user hook matcher + the new finevibe matcher
     expect(promptHooks.length).toBe(2);
     const userHook = promptHooks.find((m: { hooks: Array<{ command: string }> }) =>
       m.hooks.some((h: { command: string }) => h.command === 'echo user-hook')
@@ -529,14 +537,14 @@ describe('installHooks', () => {
     expect(userHook).toBeDefined();
   });
 
-  it('removes old vibeyard hooks before installing new ones', () => {
+  it('removes old finevibe hooks before installing new ones', () => {
     mockReadFileSync.mockImplementation((filePath) => {
       if (n(String(filePath)) === '/mock/home/.claude/settings.json') {
         return JSON.stringify({
           hooks: {
             Stop: [{
               matcher: '',
-              hooks: [{ type: 'command', command: 'echo waiting # vibeyard-hook' }],
+              hooks: [{ type: 'command', command: 'echo waiting # finevibe-hook' }],
             }],
           },
         });
@@ -547,13 +555,13 @@ describe('installHooks', () => {
     installHooks();
 
     const written = JSON.parse(settingsWrites()[0]);
-    // The old vibeyard hook should be replaced, not duplicated
+    // The old finevibe hook should be replaced, not duplicated
     const stopHooks = written.hooks.Stop;
-    const vibeyardHookCount = stopHooks.reduce((count: number, m: { hooks: Array<{ command: string }> }) =>
-      count + m.hooks.filter((h: { command: string }) => h.command.includes('# vibeyard-hook')).length, 0
+    const fineVibeHookCount = stopHooks.reduce((count: number, m: { hooks: Array<{ command: string }> }) =>
+      count + m.hooks.filter((h: { command: string }) => h.command.includes('# finevibe-hook')).length, 0
     );
-    // Should have exactly 2 vibeyard hooks (status hook + inspector event capture hook)
-    expect(vibeyardHookCount).toBe(2);
+    // Should have exactly 2 finevibe hooks (status hook + inspector event capture hook)
+    expect(fineVibeHookCount).toBe(2);
   });
 
   it('installs all 25 hook events (7 core + 18 inspector-only)', () => {
@@ -589,7 +597,13 @@ describe('installHooks', () => {
     for (const event of coreEvents) {
       const matchers = written.hooks[event];
       const allHooks = matchers.flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks);
-      expect(allHooks.some((h: { command: string }) => h.command.includes('.status'))).toBe(true);
+      // Stop's status writer is stop_status_writer.py — its command line
+      // carries no `.status` literal (the writer resolves the file itself),
+      // so key its hook on the writer stub token. P2-73: the old stub echoed
+      // `.status` verbatim, making this check stub-supplied for Stop.
+      expect(allHooks.some((h: { command: string }) =>
+        event === 'Stop' ? h.command.includes('stop-writer') : h.command.includes('.status')
+      )).toBe(true);
       expect(allHooks.some((h: { command: string }) => h.command.includes('.events'))).toBe(true);
     }
 
@@ -621,11 +635,17 @@ describe('installHooks', () => {
     const stopCommands = written.hooks.Stop
       .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks)
       .map((h: { command: string }) => h.command);
-    expect(stopCommands.some((c: string) => c.includes('stop_status_writer'))).toBe(true);
+    // Command must carry the arguments the generator supplied — a dropped
+    // in-flight-subagent session var (the counter file the writer reads is
+    // keyed by it) fails here, not silently.
+    expect(stopCommands.some((c: string) =>
+      c.includes('stop-writer CLAUDE_IDE_SESSION_ID # finevibe-hook')
+    )).toBe(true);
+    expect(mockStopStatusCmd).toHaveBeenCalledWith('CLAUDE_IDE_SESSION_ID', '# finevibe-hook');
     expect(stopCommands.some((c: string) => c.includes('echo Stop:completed'))).toBe(false);
     // Still exactly the status writer + the inspector event capture hook.
-    const vibeyardHookCount = stopCommands.filter((c: string) => c.includes('# vibeyard-hook')).length;
-    expect(vibeyardHookCount).toBe(2);
+    const fineVibeHookCount = stopCommands.filter((c: string) => c.includes('# finevibe-hook')).length;
+    expect(fineVibeHookCount).toBe(2);
   });
 
   it('falls back to the echo Stop writer when SubagentStart is unsupported', () => {
@@ -640,7 +660,7 @@ describe('installHooks', () => {
       .flatMap((m: { hooks: Array<{ command: string }> }) => m.hooks)
       .map((h: { command: string }) => h.command);
     expect(stopCommands.some((c: string) => c.includes('echo Stop:completed'))).toBe(true);
-    expect(stopCommands.some((c: string) => c.includes('stop_status_writer'))).toBe(false);
+    expect(mockStopStatusCmd).not.toHaveBeenCalled();
   });
 
   it('injects the in-flight subagent counter only into the relevant event scripts', () => {
@@ -812,7 +832,7 @@ describe('removeMcpServer writable-path allowlist', () => {
 // showed a config the launched CLI never reads; removeMcpServer's allowlist had
 // no configDir entries, so deleting a profile server threw.
 describe('profile-scoped MCP config', () => {
-  const profileDir = path.join('/mock/home', '.vibeyard', 'profiles', 'work');
+  const profileDir = path.join('/mock/home', '.finevibe', 'profiles', 'work');
   const profileClaudeJson = path.join(profileDir, '.claude.json');
   const profileConfig = (servers: Record<string, unknown>) => {
     mockReadFileSync.mockImplementation((p: fs.PathLike) => {
@@ -856,7 +876,7 @@ describe('profile-scoped MCP config', () => {
     // Custom profile paths live anywhere the user picked, including inside a
     // project; the gate is the store's dir list, not the managed root.
     storeProjects.push('/project');
-    const insideProject = path.join('/project', '.vibeyard-config');
+    const insideProject = path.join('/project', '.finevibe-config');
     mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
     addMcpServer('github', { url: 'http://x' }, 'user', undefined, insideProject);

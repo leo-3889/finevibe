@@ -8,8 +8,10 @@ and re-check it against the docs whenever a hook changes.
 
 ## Scope
 
-This document covers the **Claude Code** hook integration, which is the only
-provider with a push-based hook system. The other backends reach the same session
+This document covers the **Claude Code** hook integration. Claude Code has the
+richest push-based hook system (the full event set below); Codex CLI, GitHub
+Copilot and Gemini CLI ship a push-based hook subset, and the remaining
+backends reach the same session
 state by different means:
 
 | Provider | Status source |
@@ -146,7 +148,7 @@ guarantee of eventual completion. Any later hook event cancels it.
 | `.cost` | `statusline.py` (via the `statusLine` setting) | Cost, tokens, context window, model |
 | `.name` | `statusline.py` | `session_name` for tab auto-titling |
 | `.toolfailure` | `PostToolUseFailure`, plus a token-capped `Read` (see below) | `tool_name`, `tool_input`, `error` |
-| `.events` | Every event's capture script | Bounded recent JSONL inspector timeline; see [event retention](docs/performance.md#inspector-event-retention) |
+| `.events` | Every event's capture script | Append-only JSONL inspector timeline — no on-disk cap (the 64 KiB bound is the reader's per-turn budget; retention is enforced renderer-side); see [event retention](docs/performance.md#inspector-event-retention) |
 | `.subagents` | `SubagentStart`/`SubagentStop`/`PostToolUse`/`SessionStart` | `{n, t}` in-flight counter (Stop fallback only; never forwarded to the renderer) |
 
 ### The token-capped `Read` case

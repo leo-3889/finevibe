@@ -77,7 +77,6 @@ export interface BrowserTabInstance {
   inspectPanel: HTMLDivElement;
   instructionInput: HTMLTextAreaElement;
   inspectAttachDimsCheckbox: HTMLInputElement;
-  inspectPlanModeCheckbox: HTMLInputElement;
   elementInfoEl: HTMLDivElement;
   inspectMode: boolean;
   selectedElement: ElementInfo | null;
@@ -89,8 +88,6 @@ export interface BrowserTabInstance {
   flowStepsList: HTMLDivElement;
   flowInputRow: HTMLDivElement;
   flowInstructionInput: HTMLTextAreaElement;
-  flowPlanModeRow: HTMLLabelElement;
-  flowPlanModeCheckbox: HTMLInputElement;
   flowMode: boolean;
   flowSteps: FlowStep[];
   flowPickerOverlay: HTMLDivElement;
@@ -100,7 +97,6 @@ export interface BrowserTabInstance {
   drawPanel: HTMLDivElement;
   drawInstructionInput: HTMLTextAreaElement;
   drawAttachDimsCheckbox: HTMLInputElement;
-  drawPlanModeCheckbox: HTMLInputElement;
   drawErrorEl: HTMLDivElement;
   drawMode: boolean;
   sendMenuOverlay: HTMLDivElement;

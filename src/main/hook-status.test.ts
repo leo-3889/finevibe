@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
 import { isWin } from './platform';
 
-const STATUS_DIR = path.join('/tmp', 'vibeyard');
-const SCRIPT_DIR = path.join('/home/test', '.vibeyard', 'run');
+const STATUS_DIR = path.join('/tmp', 'finevibe');
+const SCRIPT_DIR = path.join('/home/test', '.finevibe', 'run');
 const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'statusline.sh');
 
 vi.mock('fs', () => ({
@@ -138,12 +138,12 @@ describe('hook-status', () => {
     });
 
     it.each([
-      ['posix', '/tmp/vibeyard'],
-      ['windows backslashes', 'C:\\Users\\dev\\Temp\\vibeyard'],
-      ['apostrophe in path', "C:\\Users\\O'Brien\\Temp\\vibeyard"],
-      ['double quote in path', '/tmp/we"ird/vibeyard'],
-      ['trailing separator', '/tmp/vibeyard/'],
-      ['non-ascii', '/tmp/\u00fcn\u00efcode/vibeyard'],
+      ['posix', '/tmp/finevibe'],
+      ['windows backslashes', 'C:\\Users\\dev\\Temp\\finevibe'],
+      ['apostrophe in path', "C:\\Users\\O'Brien\\Temp\\finevibe"],
+      ['double quote in path', '/tmp/we"ird/finevibe'],
+      ['trailing separator', '/tmp/finevibe/'],
+      ['non-ascii', '/tmp/\u00fcn\u00efcode/finevibe'],
     ])('embeds a %s status dir as a valid Python literal', (_label, dir) => {
       // A SyntaxError here is silent in production and kills cost, context,
       // sessionid and name at once. A raw literal breaks on an apostrophe.
@@ -180,7 +180,7 @@ describe('hook-status', () => {
       // writes are observed from inside Python instead.
       const tmp = path.join(
         process.env.TMPDIR || process.env.TEMP || '/tmp',
-        `vibeyard-statusline-${process.pid}`,
+        `finevibe-statusline-${process.pid}`,
       );
       const driver = `
 import sys,os,io,json,builtins,shutil

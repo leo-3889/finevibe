@@ -15,6 +15,19 @@ export interface TranscriptDescriptor {
   profileId?: string;
 }
 
+/**
+ * One discovery pass over a provider's transcript roots. `complete` is false
+ * when a root scan threw anything other than "root missing" (EIO/EPERM/EACCES
+ * on a mounted tree): the descriptor list is then a partial corpus, so the
+ * caller MUST NOT prune the provider's derived index from it. `incompleteRoots`
+ * carries the failing roots in scan order for the caller's log.
+ */
+export interface TranscriptDiscovery {
+  descriptors: TranscriptDescriptor[];
+  complete: boolean;
+  incompleteRoots: string[];
+}
+
 export interface CliProvider {
   readonly meta: CliProviderMeta;
   resolveBinaryPath(): string;
@@ -34,12 +47,26 @@ export interface CliProvider {
   getConfig(projectPath: string, configDir?: string): Promise<ProviderConfig>;
   getShiftEnterSequence(): string | null;
   validateSettings(projectPath?: string, configDir?: string): SettingsValidationResult;
-  reinstallSettings(): void;
+  /**
+   * Force-repair the provider's hook/statusLine config ("Fix Settings").
+   * `configDir` is the dir the per-session warning banner was computed from
+   * (P2-127): a profiled Claude session reads its pinned profile dir, not
+   * ~/.claude, so the repair MUST target that dir when one is given.
+   * Providers whose settings tree is not relocatable ignore it.
+   */
+  reinstallSettings(configDir?: string): void;
   parseCostFromOutput?(rawText: string): { totalCostUsd: number } | null;
   /** Return the absolute path to the source transcript file for a prior session, if any. */
   getTranscriptPath?(cliSessionId: string, projectPath: string, configDir?: string, sessionDir?: string): string | null;
-  /** Cheap enumeration of every on-disk transcript for global session search. */
-  discoverTranscripts?(signal?: AbortSignal): Promise<TranscriptDescriptor[]>;
+  /**
+   * Cheap enumeration of every on-disk transcript for global session search.
+   * The result reports completeness: a root whose scan threw a real error
+   * (EIO/EPERM on a mounted tree) yields a partial descriptor list, and the
+   * caller MUST NOT prune the provider's derived index from it — pruning a
+   * partial list reads as "this provider has no transcripts" and unlinks the
+   * whole corpus, so every later search re-reads every transcript (P2-70).
+   */
+  discoverTranscripts?(signal?: AbortSignal): Promise<TranscriptDiscovery>;
   /** Read user-visible text (and optionally the cwd) out of one transcript file. */
   indexTranscript?(transcriptPath: string): Promise<{ text: string; cwd: string }>;
   startConfigWatcher?(win: BrowserWindow, projectPath: string): void;
@@ -89,10 +116,15 @@ export interface CliProvider {
   readSessionExitReason?(transcriptPath: string): SessionExitReason | null;
   /** Cancel pending session-id discovery — PTY exited, or the spawn failed. */
   onSessionExited?(sessionId: string): void;
-  /** Absolute path to the user-global agents directory (e.g. ~/.claude/agents). */
-  agentsDir?(): string;
+  /**
+   * Absolute path to the user-global agents directory (e.g. ~/.claude/agents).
+   * `configDir` pins the CLI config root whose agents dir the spawned CLI
+   * reads (CLAUDE_CONFIG_DIR for a profile-pinned Claude launch); omit it
+   * for the provider's default root (P2-116).
+   */
+  agentsDir?(configDir?: string): string;
   /** Write `<slug>.md` into the agents dir with the given markdown content. */
-  installAgent?(slug: string, content: string): Promise<{ filePath: string }>;
+  installAgent?(slug: string, content: string, configDir?: string): Promise<{ filePath: string }>;
   /** Remove `<slug>.md` from the agents dir. Best-effort: missing file is not an error. */
-  removeAgent?(slug: string): Promise<void>;
+  removeAgent?(slug: string, configDir?: string): Promise<void>;
 }

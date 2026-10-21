@@ -23,7 +23,7 @@ export function applyCliSessionName(sessionId: string, name: string, cliSessionI
   if (!found) return;
   const { project, session } = found;
 
-  // A rename typed in Vibeyard is sticky and always wins.
+  // A rename typed in FineVibe is sticky and always wins.
   if (session.userRenamed) return;
   if (cliSessionId && session.cliSessionId && session.cliSessionId !== cliSessionId) return;
   // Claude re-sends the title on every statusLine render, and resync replays it

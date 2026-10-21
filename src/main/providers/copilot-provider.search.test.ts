@@ -16,6 +16,7 @@ vi.mock('../config-watcher', () => ({ startConfigWatcher: () => {}, stopConfigWa
 vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { Readable } from 'stream';
 import { CopilotProvider } from './copilot-provider';
 
@@ -45,7 +46,8 @@ describe('CopilotProvider.discoverTranscripts()', () => {
       'id: ' + UUID + '\ncwd: /Users/me/dev/repo\nsummary_count: 0\n' as any,
     );
 
-    const out = await new CopilotProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new CopilotProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].cliSessionId).toBe(UUID);
     expect(out[0].projectCwd).toBe('/Users/me/dev/repo');
@@ -56,14 +58,25 @@ describe('CopilotProvider.discoverTranscripts()', () => {
     mockReaddir.mockResolvedValueOnce([dir(UUID)] as any);
     mockReadFile.mockRejectedValueOnce(new Error('ENOENT'));
 
-    const out = await new CopilotProvider().discoverTranscripts();
+    const { descriptors: out, complete } = await new CopilotProvider().discoverTranscripts();
+    expect(complete).toBe(true);
     expect(out).toHaveLength(1);
     expect(out[0].projectCwd).toBe('');
   });
 
-  it('returns [] when session-state root is missing', async () => {
-    mockReaddir.mockRejectedValueOnce(new Error('ENOENT'));
-    expect(await new CopilotProvider().discoverTranscripts()).toEqual([]);
+  it('reports a complete empty pass when the session-state root is missing', async () => {
+    mockReaddir.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    expect(await new CopilotProvider().discoverTranscripts())
+      .toEqual({ descriptors: [], complete: true, incompleteRoots: [] });
+  });
+
+  it('marks the pass incomplete when the root readdir fails transiently (P2-70)', async () => {
+    mockReaddir.mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }));
+
+    const { descriptors: out, complete, incompleteRoots } = await new CopilotProvider().discoverTranscripts();
+    expect(out).toEqual([]);
+    expect(complete).toBe(false);
+    expect(incompleteRoots).toEqual([path.join('/mock/home', '.copilot', 'session-state')]);
   });
 });
 

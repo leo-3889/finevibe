@@ -197,9 +197,9 @@ describe('codexInstructionsProducer nested AGENTS.md', () => {
     expect(nested.maxScore).toBe(0);
   });
 
-  it('honors .vibeyardignore', () => {
+  it('honors .finevibeignore', () => {
     mockInstructionFiles(mockFs, {
-      '.vibeyardignore': 'vendor/**\n',
+      '.finevibeignore': 'vendor/**\n',
       [path.join('vendor', 'thing', 'AGENTS.md')]: linesOf(700),
     });
 

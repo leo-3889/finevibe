@@ -3,7 +3,8 @@ import { createModalShell } from './modal-shell.js';
 import { pushModal } from './modal-manager.js';
 
 const STAR_THRESHOLD = 10;
-const REPO_URL = 'https://github.com/elirantutia/vibeyard';
+// legacy: the GitHub repo slug stays `vibeyard` — the repository is NOT renamed with the product.
+const REPO_URL = 'https://github.com/leo-3889/vibeyard';
 
 let cleanupFn: (() => void) | null = null;
 
@@ -13,7 +14,7 @@ function showStarPromptDialog(): void {
 
   const { overlay, body, actions } = createModalShell({
     id: 'star-prompt-overlay',
-    title: 'Enjoying Vibeyard?',
+    title: 'Enjoying FineVibe?',
   });
   body.innerHTML = '';
   actions.innerHTML = '';
@@ -29,7 +30,7 @@ function showStarPromptDialog(): void {
   const message = document.createElement('div');
   message.className = 'star-prompt-message';
   message.textContent =
-    "If Vibeyard has been useful to you, consider giving it a star on GitHub. It helps others discover the project!";
+    "If FineVibe has been useful to you, consider giving it a star on GitHub. It helps others discover the project!";
   container.appendChild(message);
 
   const innerActions = document.createElement('div');
@@ -63,7 +64,7 @@ function showStarPromptDialog(): void {
   };
 
   const handleStar = () => {
-    window.vibeyard.app.openExternal(REPO_URL);
+    window.finevibe.app.openExternal(REPO_URL);
     appState.dismissStarPrompt();
     close();
   };

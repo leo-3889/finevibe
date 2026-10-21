@@ -58,7 +58,7 @@ describe('countFileLines', () => {
 
 describe('getTrackedFiles', () => {
   function mockLsFiles(stdout: string): void {
-    vi.mocked(execSync).mockReturnValue(stdout as unknown as Buffer);
+    vi.mocked(execSync).mockReturnValue(stdout);
   }
 
   it('disables git path quoting so non-ASCII directories stay matchable', () => {
