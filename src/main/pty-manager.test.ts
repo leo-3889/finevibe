@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import * as path from 'path';
+import type * as PlatformModule from './platform';
 import { isMac, isWin } from './platform';
 
 const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
@@ -875,7 +876,117 @@ describe('getRegistryPath', () => {
 
 describe('getFullPath (macOS)', () => {
   if (isWin) {
-    it.skip('macOS-only', () => {});
+    // Exercise getFullPath's darwin branch on Windows: fresh-import pty-manager
+    // with the platform seam pinned to macOS (isWin/pathSep are read at module
+    // load), the login-shell probe mocked through child_process, $SHELL/$PATH
+    // stubbed, and os.homedir mocked to '/mock/home'. Mirrors the Windows
+    // registry suite above: feed execSync output, assert the resulting PATH.
+    // Static import cannot work here: the platform constants are baked at
+    // module load, so the darwin build of pty-manager needs a fresh module
+    // registry (test-case exception to the static-import rule).
+    async function importDarwinPtyManager() {
+      vi.resetModules();
+      vi.doMock('./platform', async (importOriginal) => ({
+        ...(await importOriginal<typeof PlatformModule>()),
+        isWin: false,
+        isMac: true,
+        isLinux: false,
+        pathSep: ':',
+        whichCmd: 'which',
+        utf8LocaleEnv: { LC_CTYPE: 'UTF-8' },
+      }));
+      const cp = await import('child_process');
+      const pm = await import('./pty-manager');
+      return { pm, execSync: vi.mocked(cp.execSync) };
+    }
+
+    afterEach(() => {
+      vi.doUnmock('./platform');
+      vi.resetModules();
+      vi.unstubAllEnvs();
+      // The child_process mock instance survives resetModules (the factory
+      // result is cached), so restore its factory default for the suites
+      // that run on the statically-imported pty-manager.
+      mockExecSync.mockImplementation(() => {
+        throw new Error('not found');
+      });
+    });
+
+    beforeEach(() => {
+      mockNvmDefaultNodeBinDir.mockReturnValue(null);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      vi.stubEnv('PATH', '/usr/bin:/bin');
+    });
+
+    it('parses PATH from output with plugin garbage around the marker block', async () => {
+      const { pm, execSync } = await importDarwinPtyManager();
+      execSync.mockImplementation(() =>
+        'p10k instant prompt noise\n' +
+        '\x1b[?2004h__VY_PATH_BEGIN__/opt/homebrew/bin:/usr/local/bin__VY_PATH_END__\n' +
+        'trailing zshrc chatter\n',
+      );
+      expect(pm.getFullPath()).toBe('/opt/homebrew/bin:/usr/local/bin');
+    });
+
+    it('invokes $SHELL with -ilc and the marker echo (regression guard: do not drop -i)', async () => {
+      const { pm, execSync } = await importDarwinPtyManager();
+      execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
+      expect(pm.getFullPath()).toBe('/usr/bin');
+      expect(execSync).toHaveBeenCalledTimes(1);
+      const [cmd, opts] = execSync.mock.calls[0] as unknown as [string, { env: Record<string, string | undefined>; timeout: number }];
+      expect(cmd).toBe('/bin/zsh -ilc \'echo "__VY_PATH_BEGIN__${PATH}__VY_PATH_END__"\'');
+      // A Finder/Dock-launched app must probe with HOME pinned to the real home
+      // dir (os seam: '/mock/home') so .zshrc/.zprofile resolve.
+      expect(opts.env.HOME).toBe('/mock/home');
+      expect(opts.timeout).toBe(8000);
+    });
+
+    it('falls back to inherited PATH + well-known dirs + nvm bin when the login shell probe fails', async () => {
+      const { pm, execSync } = await importDarwinPtyManager();
+      execSync.mockImplementation(() => {
+        throw new Error('login shell unavailable');
+      });
+      mockNvmDefaultNodeBinDir.mockReturnValue('/mock/home/.nvm/versions/node/v24.11.1/bin');
+      const result = pm.getFullPath();
+      expect(result.startsWith('/usr/bin:/bin:')).toBe(true);
+      for (const dir of [
+        '/usr/local/bin',
+        '/opt/homebrew/bin',
+        '/usr/local/sbin',
+        '/opt/homebrew/sbin',
+        path.join('/mock/home', '.local', 'bin'),
+        path.join('/mock/home', '.npm-global', 'bin'),
+        '/mock/home/.nvm/versions/node/v24.11.1/bin',
+      ]) {
+        expect(result).toContain(dir);
+      }
+    });
+
+    it('omits the nvm bin dir from the fallback PATH when nvm is not installed', async () => {
+      const { pm, execSync } = await importDarwinPtyManager();
+      execSync.mockImplementation(() => {
+        throw new Error('login shell unavailable');
+      });
+      const result = pm.getFullPath();
+      expect(result).not.toContain('.nvm');
+      expect(result).toContain('/opt/homebrew/bin');
+    });
+
+    it('caches both successful and fallback results; resetPathCache allows retry', async () => {
+      const { pm, execSync } = await importDarwinPtyManager();
+      execSync.mockImplementation(() => {
+        throw new Error('timeout');
+      });
+      pm.getFullPath(); // probe fails → fallback, cached
+      pm.getFullPath();
+      expect(execSync).toHaveBeenCalledTimes(1);
+
+      pm.resetPathCache();
+      execSync.mockImplementation(() => '__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__');
+      expect(pm.getFullPath()).toBe('/usr/bin');
+      expect(execSync).toHaveBeenCalledTimes(2);
+    });
+
     return;
   }
 

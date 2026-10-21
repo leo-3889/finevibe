@@ -97,17 +97,6 @@ function anyProfileKeychainNamespaced(): boolean {
 }
 
 /**
- * Verify a single profile's login is stored under its own isolated keychain
- * entry. Use this AFTER a profile session has been logged into to confirm
- * isolation actually took effect. Non-macOS always returns true (file-based
- * isolation under `<configDir>/.credentials.json`).
- */
-export function profileKeychainIsolated(configDir: string): boolean {
-  if (!isMac) return true;
-  return keychainEntryExists(keychainServiceForConfigDir(configDir));
-}
-
-/**
  * Determine whether Claude profile login isolation works on this machine.
  *
  * - Non-macOS: always `supported` (isolation is file-based and version-agnostic).

@@ -15,10 +15,10 @@ vi.mock('./providers/resolve-binary', () => ({ resolveBinary: vi.fn(() => '/usr/
 
 import { execFileSync } from 'child_process';
 import { loadState } from './store';
+import type { LoadedState } from './store';
 import { getClaudeVersion } from './providers/claude-version';
 import {
   keychainServiceForConfigDir,
-  profileKeychainIsolated,
   getKeychainIsolationStatus,
   LAST_UNNAMESPACED_VERSION,
   _resetForTesting,
@@ -51,6 +51,13 @@ function keychainThrowsLike(code: string) {
   });
 }
 
+
+/** Seed the profile list the keychain probe iterates; the probe reads only
+ * providerId/configDir, so a structural cast is enough for the store shape. */
+function profilesWith(profiles: { providerId: string; configDir: string }[]) {
+  loadStateMock.mockReturnValue({ profiles } as unknown as LoadedState);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   _resetForTesting();
@@ -73,41 +80,6 @@ describe('keychainServiceForConfigDir', () => {
 
   it('hashes the path verbatim (a trailing slash changes the result)', () => {
     expect(keychainServiceForConfigDir('/a/b')).not.toBe(keychainServiceForConfigDir('/a/b/'));
-  });
-});
-
-describe('profileKeychainIsolated', () => {
-  it('returns true off macOS without touching the keychain', () => {
-    mockPlatform.isMac = false;
-    expect(profileKeychainIsolated('/some/dir')).toBe(true);
-    expect(execFileSyncMock).not.toHaveBeenCalled();
-  });
-
-  it('returns true on macOS when the namespaced entry exists', () => {
-    keychainWith(new Set([svc('/work')]));
-    expect(profileKeychainIsolated('/work')).toBe(true);
-  });
-
-  it('returns false on macOS when the namespaced entry is absent', () => {
-    keychainWith(new Set());
-    expect(profileKeychainIsolated('/work')).toBe(false);
-  });
-
-  it('returns false when /usr/bin/security is missing (ENOENT)', () => {
-    keychainThrowsLike('ENOENT');
-    expect(profileKeychainIsolated('/work')).toBe(false);
-  });
-
-  it('returns false when the keychain probe is denied (EACCES)', () => {
-    keychainThrowsLike('EACCES');
-    expect(profileKeychainIsolated('/work')).toBe(false);
-  });
-
-  it('returns true on Windows through the platform seam, without a probe', () => {
-    mockPlatform.isMac = false;
-    mockPlatform.isWin = true;
-    expect(profileKeychainIsolated('/work')).toBe(true);
-    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 });
 
@@ -171,7 +143,19 @@ describe('getKeychainIsolationStatus', () => {
   });
 
   it('classifies a denied keychain probe by version: old is blocked, new is allowed', () => {
+    profilesWith([{ providerId: 'claude', configDir: '/work' }]);
     keychainThrowsLike('EACCES');
+    getClaudeVersionMock.mockReturnValue(LAST_UNNAMESPACED_VERSION);
+    expect(getKeychainIsolationStatus()).toEqual({ status: 'unsupported', version: LAST_UNNAMESPACED_VERSION });
+
+    _resetForTesting();
+    getClaudeVersionMock.mockReturnValue('2.1.159');
+    expect(getKeychainIsolationStatus().status).toBe('unknown');
+  });
+
+  it('classifies a missing security binary (ENOENT) by version: old is blocked, new is allowed', () => {
+    profilesWith([{ providerId: 'claude', configDir: '/work' }]);
+    keychainThrowsLike('ENOENT');
     getClaudeVersionMock.mockReturnValue(LAST_UNNAMESPACED_VERSION);
     expect(getKeychainIsolationStatus()).toEqual({ status: 'unsupported', version: LAST_UNNAMESPACED_VERSION });
 
