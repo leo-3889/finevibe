@@ -456,6 +456,13 @@ export interface Preferences {
    * runs it in the background and keeps focus on the current tab.
    */
   askAiFocus?: 'switch' | 'stay';
+  /**
+   * Root directory for new projects. The Add-project modal pre-fills the path
+   * as `<defaultProjectsFolder>/<name>` while the name is edited, and a git
+   * URL checkout lands at `<defaultProjectsFolder>/<repo>`. Absent/'' = unset:
+   * the free-path behavior (and the checkout browse-folder prompt) is kept.
+   */
+  defaultProjectsFolder?: string;
   keybindings?: Record<string, string>;
   theme?: 'dark' | 'light';
   readinessExcludedProviders?: ProviderId[];

@@ -7,6 +7,7 @@ import { getProjectStatus, projectInitial } from '../project-status.js';
 import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, markSeen as markDiscussionsSeen, onChange as onDiscussionsChange, DISCUSSIONS_URL } from '../discussions-badge.js';
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
+import { detectGitCheckoutUrl } from '../../shared/git-url.js';
 import { esc } from '../dom-utils.js';
 import { projectProfileBadge, providerProfileOptions } from '../profile-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree, FILE_MANAGER } from './file-tree.js';
@@ -483,15 +484,25 @@ export function promptNewProject(): void {
   // A new project has no sessions yet, so its coding tool is the global
   // default — scope the profile picker to that tool.
   const profileOptions = providerProfileOptions(appState.preferences.defaultProvider ?? 'claude');
+
+  // Live-read so a General-section change while the modal is open is honored
+  // on confirm; the pre-fill/sync uses the folder as it was at open.
+  const currentFolder = () => appState.preferences.defaultProjectsFolder?.trim() ?? '';
+  const initialFolder = currentFolder();
+  let pathManuallyEdited = false;
+  let cloning = false;
   const fields: FieldDef[] = [
     { label: t('sidebar.newProject.nameLabel'), id: 'project-name', placeholder: t('sidebar.newProject.namePlaceholder') },
     {
-      label: t('sidebar.newProject.pathLabel'), id: 'project-path', placeholder: t('sidebar.newProject.pathPlaceholder'),
+      label: t('sidebar.newProject.pathLabel'), id: 'project-path',
+      placeholder: t('sidebar.newProject.urlPlaceholder'),
+      defaultValue: initialFolder || undefined,
       buttonLabel: t('sidebar.newProject.browseButton'),
       onButtonClick: async (input) => {
         const dir = await window.vibeyard.fs.browseDirectory();
         if (!dir) return;
         input.value = dir;
+        pathManuallyEdited = true;
         autoFillName(dir);
       },
     },
@@ -509,29 +520,89 @@ export function promptNewProject(): void {
     });
   }
   showModal(t('sidebar.newProject.title'), fields, async (values) => {
+    if (cloning) return;
     const name = values['project-name']?.trim();
     const rawPath = values['project-path']?.trim();
-    if (!name || !rawPath) return;
+    if (!rawPath) return;
 
-    const projectPath = await window.vibeyard.fs.expandPath(rawPath);
-    const isDir = await window.vibeyard.fs.isDirectory(projectPath);
-    if (!isDir) {
-      setModalError('project-path', t('sidebar.newProject.directoryNotExist'));
+    const checkout = detectGitCheckoutUrl(rawPath);
+    if (!checkout) {
+      if (!name) return;
+      const projectPath = await window.vibeyard.fs.expandPath(rawPath);
+      const isDir = await window.vibeyard.fs.isDirectory(projectPath);
+      if (!isDir) {
+        setModalError('project-path', t('sidebar.newProject.directoryNotExist'));
+        return;
+      }
+      closeModal();
+      appState.addProject(name, projectPath, values['profile'] || undefined);
       return;
     }
 
+    // "Checkout and create": target <folder>/<repo> — the default projects
+    // folder, browsed for when unset (plan item 2's friendlier fallback; a
+    // cancelled browse leaves the modal open with the URL in place).
+    const projectName = name || checkout.repoName;
+    let parent = currentFolder();
+    if (!parent) {
+      const picked = await window.vibeyard.fs.browseDirectory();
+      if (!picked) return;
+      parent = picked;
+    }
+    const targetPath = await window.vibeyard.fs.expandPath(
+      parent.replace(/[\\/]+$/, '') + '/' + checkout.repoName
+    );
+
+    // Clone is the slow step: the confirm button carries the progress state
+    // and the busy guard swallows Enter/click re-triggers while it runs.
+    const confirmBtn = document.getElementById('modal-confirm') as HTMLButtonElement | null;
+    if (confirmBtn) {
+      confirmBtn.textContent = t('sidebar.newProject.cloning');
+      confirmBtn.disabled = true;
+    }
+    const res = await window.vibeyard.fs.cloneRepo(checkout.url, targetPath);
+    cloning = false;
+    if (confirmBtn) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = t('sidebar.newProject.checkoutAndCreate');
+    }
+    if (!res?.ok) {
+      setModalError('project-path', t('sidebar.newProject.cloneFailed') + (res?.error ? `: ${res.error}` : ''));
+      return;
+    }
     closeModal();
-    appState.addProject(name, projectPath, values['profile'] || undefined);
+    appState.addProject(projectName, targetPath, values['profile'] || undefined);
   });
+
+  // The confirm label is swapped in place while a URL owns the path field —
+  // showModal's label is fixed at open, the URL arrives on input.
+  const confirmBtnEl = document.getElementById('modal-confirm');
+  const baseConfirmLabel = confirmBtnEl?.textContent ?? '';
+  const setCheckoutLabel = (on: boolean) => {
+    if (confirmBtnEl) confirmBtnEl.textContent = on ? t('sidebar.newProject.checkoutAndCreate') : baseConfirmLabel;
+  };
 
   const nameInput = document.getElementById('modal-project-name') as HTMLInputElement | null;
   let nameManuallyEdited = false;
-  nameInput?.addEventListener('input', () => { nameManuallyEdited = true; });
+  nameInput?.addEventListener('input', () => {
+    nameManuallyEdited = true;
+    syncPathFromName();
+  });
 
   const autoFillName = (path: string) => {
-    if (nameInput && !nameManuallyEdited) {
+    if (nameInput && !nameManuallyEdited && !detectGitCheckoutUrl(path)) {
       nameInput.value = deriveProjectName(path);
     }
+  };
+
+  // Name → path sync under the default folder (plan item 1): the same
+  // manual-edit guard style, applied to both fields — a hand-typed path is
+  // left alone, and a URL owns the field (its target is computed on confirm).
+  const syncPathFromName = () => {
+    const pathEl = document.getElementById('modal-project-path') as HTMLInputElement | null;
+    if (!initialFolder || !pathEl || pathManuallyEdited) return;
+    if (detectGitCheckoutUrl(pathEl.value)) return;
+    pathEl.value = initialFolder.replace(/[\\/]+$/, '') + '/' + (nameInput?.value.trim() ?? '');
   };
 
   // Attach path autocomplete to the rendered input
@@ -573,7 +644,17 @@ export function promptNewProject(): void {
     };
 
     pathInput.addEventListener('input', async () => {
+      pathManuallyEdited = true;
       const value = pathInput.value;
+      const checkout = detectGitCheckoutUrl(value);
+      setCheckoutLabel(!!checkout);
+      if (checkout) {
+        // The URL owns the field: name from the repo, and no path
+        // autocomplete — a URL's dirPart is not a filesystem path to enumerate.
+        if (nameInput && !nameManuallyEdited) nameInput.value = checkout.repoName;
+        hideDropdown();
+        return;
+      }
       autoFillName(value);
       const lastSlash = lastSeparatorIndex(value);
       if (lastSlash === -1) { hideDropdown(); return; }

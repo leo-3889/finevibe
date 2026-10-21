@@ -22,7 +22,9 @@
     "askAiFocus": "Ask AI opens the new session in",
     "askAiFocusSwitch": "a new focused tab",
     "askAiFocusStay": "the background — keep my tab",
-    "planModeHeading": "Plan mode by default for quick AI sessions"
+    "planModeHeading": "Plan mode by default for quick AI sessions",
+    "defaultProjectsFolder": "Default projects folder",
+    "defaultProjectsFolderPlaceholder": "Folder new projects are created in"
   },
   "appearance": {
     "theme": "Theme",
@@ -54,10 +56,13 @@
       "nameLabel": "Name",
       "namePlaceholder": "My Project",
       "pathLabel": "Path",
-      "pathPlaceholder": "/path/to/project",
+      "urlPlaceholder": "Existing directory — or paste a GitHub/Codeberg URL",
       "browseButton": "Browse",
       "defaultProfileLabel": "Default profile",
-      "directoryNotExist": "Directory does not exist"
+      "directoryNotExist": "Directory does not exist",
+      "checkoutAndCreate": "Checkout and create",
+      "cloning": "Cloning…",
+      "cloneFailed": "Clone failed"
     },
     "projectSettings": {
       "title": "Project Settings",

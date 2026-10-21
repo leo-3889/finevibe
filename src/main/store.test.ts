@@ -37,7 +37,7 @@ const DEFAULT_STATE: PersistedState = {
   version: 1,
   projects: [],
   activeProjectId: null,
-  preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true },
+  preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true, defaultProjectsFolder: '' },
 };
 
 // Monotonic fake epoch: vi.useFakeTimers() re-bases Date.now to the (barely

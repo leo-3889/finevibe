@@ -151,6 +151,15 @@ const platformState = vi.hoisted(() => ({ os: 'win32' as 'win32' | 'darwin' | 'l
 // mock function. The getters re-evaluate per access (vitest's ESM interop
 // reads the namespace property at each use), so one assignment flips the OS.
 // Default 'win32': the P0-measured live file format (FileNameW) is Windows'.
+// fs:cloneRepo spawns `git clone` through execFile; the suite swaps in a spy
+// (keeping every other child_process export real for transitive importers) so
+// the gate tests can assert git is never launched on a rejected request.
+const mockGitCloneSpawn = vi.hoisted(() => vi.fn());
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+  execFile: mockGitCloneSpawn,
+}));
+
 vi.mock('./platform', async () => ({
   ...(autoStub() as object),
   get isWin() { return platformState.os === 'win32'; },
@@ -1600,5 +1609,81 @@ describe('team-agent install/remove scope (P2-116 / P2-117)', () => {
     await expect(handlers.get('provider:installAgent')!({}, '..\\evil', 'x')).rejects.toThrow(/Unsafe agent slug/);
     expect(gemini.removeAgent).not.toHaveBeenCalled();
     expect(gemini.installAgent).not.toHaveBeenCalled();
+  });
+});
+
+// "Checkout and create" (plan 65-67): the clone destination is a pre-project
+// WRITE, so fs:cloneRepo takes the fs:listDirs gate shape — home tree / known
+// roots pass, home-outside needs the explicit confirm — and re-validates the
+// URL against the shared allowlist before any spawn. Every rejection must
+// happen before git is launched, so `git clone` is the child_process spy's
+// canary: the suite mocks node:child_process wholesale.
+describe('fs:cloneRepo gates', () => {
+  it('rejects an off-allowlist URL before touching the filesystem', async () => {
+    const res = await handlers.get('fs:cloneRepo')!({}, 'https://gitlab.com/owner/repo', path.join(os.homedir(), 'repo'));
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('URL') });
+    expect(mockGitCloneSpawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a home-outside, root-outside destination when the confirm is denied', async () => {
+    // dialog.showMessageBox resolves response 0 (Cancel) by default.
+    const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', OUTSIDE_HOME);
+    expect(res).toMatchObject({ ok: false });
+    expect(dialog.showMessageBox).toHaveBeenCalled();
+    expect(mockGitCloneSpawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects a destination that exists and is not empty', async () => {
+    const dir = fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-clone-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'occupied'), 'x');
+      const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', dir);
+      expect(res).toMatchObject({ ok: false, error: expect.stringContaining('not empty') });
+      expect(mockGitCloneSpawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a destination that exists as a file, not a directory', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-clone-')), 'blocker');
+    try {
+      fs.writeFileSync(file, 'x');
+      const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', file);
+      expect(res).toMatchObject({ ok: false, error: expect.stringContaining('not a directory') });
+      expect(mockGitCloneSpawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  it('spawns git clone -- <url> <dest> argv for a home-tree target and reports stderr on failure', async () => {
+    mockGitCloneSpawn.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null) => void) => {
+      // Real execFile errors carry the child's stderr on the error object;
+      // promisify drops the separate callback args.
+      cb(Object.assign(new Error('Command failed'), { stderr: 'fatal: repository \x27https://github.com/owner/repo\x27 not found' }));
+    });
+    const dest = path.join(os.homedir(), 'repo');
+    const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', dest);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(1);
+    const [cmd, args] = mockGitCloneSpawn.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('git');
+    // `--` before the URL: an allowlisted-shape URL must never parse as an
+    // option (`--upload-pack`, ext:: transport) no matter what the renderer sent.
+    expect(args).toEqual(['clone', '--', 'https://github.com/owner/repo', dest]);
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('not found') });
+  });
+
+  it('reports a missing git binary without throwing', async () => {
+    const enoent = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
+    mockGitCloneSpawn.mockImplementationOnce((_cmd: string, _args: unknown, _opts: unknown, cb: (err: Error | null) => void) => cb(enoent));
+    const res = await handlers.get('fs:cloneRepo')!({}, 'https://github.com/owner/repo', path.join(os.homedir(), 'repo'));
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('git') });
+  });
+
+  it('reports ok for a successful clone', async () => {
+    mockGitCloneSpawn.mockImplementationOnce((_cmd: string, _args: unknown, _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
+    const res = await handlers.get('fs:cloneRepo')!({}, 'git@github.com:owner/repo.git', path.join(os.homedir(), 'repo'));
+    expect(res).toEqual({ ok: true });
   });
 });

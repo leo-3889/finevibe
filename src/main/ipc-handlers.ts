@@ -29,6 +29,7 @@ import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate'
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
+import { detectGitCheckoutUrl } from '../shared/git-url';
 import type { ProviderId, Profile, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
@@ -40,8 +41,11 @@ import { buildVibeyardignoreMatcher } from './vibeyardignore';
 import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
 import { getKeychainIsolationStatus } from './claude-keychain';
-
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
+// "Checkout and create": a full clone of a large allowlisted repo over a slow
+// link is minutes, not seconds; the modal shows a progress state, so this
+// generous bound only bounds hangs.
+const GIT_CLONE_TIMEOUT_MS = 10 * 60_000;
 
 /**
  * Check if a resolved path is within one of the known project directories.
@@ -718,6 +722,50 @@ export function registerIpcHandlers(): void {
       }));
     } catch {
       return [];
+    }
+  });
+
+  // "Checkout and create" (Add-project modal): clone a repo the renderer
+  // named into a directory the user picked. The destination is a pre-project
+  // WRITE, so it takes the pre-project picker's gate shape (fs:listDirs):
+  // home tree / known roots pass, a home-outside destination needs the same
+  // explicit confirm. The URL is re-validated against the checkout host
+  // allowlist, and `--` keeps any URL out of option parsing (`--upload-pack`,
+  // ext::) — execFile argv never sees a shell.
+  ipcMain.handle('fs:cloneRepo', async (_event, url: string, destPath: string) => {
+    try {
+      if (typeof url !== 'string' || typeof destPath !== 'string' || !destPath.trim()) {
+        return { ok: false, error: 'Invalid clone request' };
+      }
+      const target = detectGitCheckoutUrl(url);
+      if (!target) return { ok: false, error: 'Unsupported repository URL' };
+      const dest = path.resolve(expandUserPath(destPath));
+      if (!isAllowedEnumeratePath(dest) && !(await confirmHomeOutsideListing(dest))) {
+        console.warn(`fs:cloneRepo blocked: ${dest} is outside home and not confirmed`);
+        return { ok: false, error: 'Clone location is outside your home directory and was not confirmed' };
+      }
+      try {
+        const st = fs.statSync(dest);
+        if (!st.isDirectory()) return { ok: false, error: `Destination exists and is not a directory: ${dest}` };
+        if (fs.readdirSync(dest).length > 0) return { ok: false, error: `Destination is not empty: ${dest}` };
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          return { ok: false, error: `Cannot inspect the destination: ${(err as Error).message}` };
+        }
+      }
+      try {
+        await execFileAsync('git', ['clone', '--', target.url, dest], { timeout: GIT_CLONE_TIMEOUT_MS });
+      } catch (err) {
+        const e = err as NodeJS.ErrnoException & { stderr?: string; killed?: boolean };
+        if (e.code === 'ENOENT') return { ok: false, error: 'git is not installed or not on PATH' };
+        if (e.killed) return { ok: false, error: `git clone timed out after ${GIT_CLONE_TIMEOUT_MS / 1000}s` };
+        const detail = (e.stderr ?? e.message).trim().split('\n').filter(Boolean).pop();
+        return { ok: false, error: `git clone failed: ${detail || 'unknown git error'}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      console.warn('fs:cloneRepo failed:', err);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 

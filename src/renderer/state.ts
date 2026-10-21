@@ -127,6 +127,7 @@ const defaultPreferences: Preferences = {
   sidebarViews: { gitPanel: true, sessionHistory: true, discussions: true, fileTree: true, activeSessions: true },
   boardCardMetrics: true,
   locale: 'en',
+  defaultProjectsFolder: '',
 };
 
 class AppState {

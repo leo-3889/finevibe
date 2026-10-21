@@ -28,7 +28,7 @@ export function invalidateStateCache(): void {
  * (P2-84): a `version: 1` file without the field parses verbatim, and
  * `loadState` fills this in exactly once so every consumer reads a present
  * object. Keep in sync with the renderer's `defaultPreferences`. */
-export const DEFAULT_PREFERENCES: Preferences = { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true };
+export const DEFAULT_PREFERENCES: Preferences = { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true, defaultProjectsFolder: '' };
 
 /** State returned by {@link loadState}: `preferences` is guaranteed present
  * by the loader's single normalization step, so main-side consumers never

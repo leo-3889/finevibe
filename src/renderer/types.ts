@@ -36,6 +36,7 @@ export interface VibeyardApi {
     listDir(dirPath: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
     listDirs(dirPath: string, prefix?: string): Promise<string[]>;
     browseDirectory(): Promise<string | null>;
+    cloneRepo(url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
     exists(filePath: string): Promise<boolean>;

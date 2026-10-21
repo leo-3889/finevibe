@@ -22,7 +22,9 @@
     "askAiFocus": "Ask AI 在何处打开新会话",
     "askAiFocusSwitch": "新标签页（并切换焦点）",
     "askAiFocusStay": "后台 — 保留当前标签页",
-    "planModeHeading": "快捷 AI 会话默认计划模式"
+    "planModeHeading": "快捷 AI 会话默认计划模式",
+    "defaultProjectsFolder": "默认项目文件夹",
+    "defaultProjectsFolderPlaceholder": "新建项目所在的文件夹"
   },
   "appearance": {
     "theme": "主题",
@@ -54,10 +56,13 @@
       "nameLabel": "名称",
       "namePlaceholder": "我的项目",
       "pathLabel": "路径",
-      "pathPlaceholder": "/path/to/project",
+      "urlPlaceholder": "现有目录 —— 或粘贴 GitHub/Codeberg URL",
       "browseButton": "浏览",
       "defaultProfileLabel": "默认配置文件",
-      "directoryNotExist": "目录不存在"
+      "directoryNotExist": "目录不存在",
+      "checkoutAndCreate": "检出并创建",
+      "cloning": "正在克隆…",
+      "cloneFailed": "克隆失败"
     },
     "projectSettings": {
       "title": "项目设置",
