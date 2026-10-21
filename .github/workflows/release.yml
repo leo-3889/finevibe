@@ -352,6 +352,13 @@ jobs:
   publish-npm:
     needs: [prepare, build, build-linux, build-windows]
     runs-on: ubuntu-latest
+    # P2-6: npm provenance mints a signed attestation from the runner's
+    # OIDC identity — the registry publishes who built the tarball, so
+    # consumers can verify `vibeyard@x.y.z` came from this repo's release
+    # workflow. id-token: write is what lets npm request that token.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -359,10 +366,35 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          # Node 24 ships the npm (v11) where --provenance is stable. This
+          # is the *publishing* toolchain only; the launcher package's
+          # supported runtime floor stays Node 18+ via "engines".
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Strip app dependencies from the launcher manifest
+        # P2-14: the published npm package is the thin launcher — a
+        # downloader for the packaged app (see bin/vibeyard.js). It ships
+        # bin/, README.md and LICENSE only ("files"), and needs NONE of the
+        # app's runtime dependencies: publishing them made every
+        # `npm i -g vibeyard` resolve 16 app packages, compiling native
+        # modules (better-sqlite3, node-pty) on the user's machine for a
+        # binary it never links. The repo keeps "dependencies" for
+        # electron-builder; only the manifest handed to npm is stripped.
+        run: |
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            delete pkg.dependencies;
+            delete pkg.devDependencies;
+            delete pkg.scripts;
+            delete pkg.main;
+            delete pkg.build;
+            const out = JSON.stringify(pkg, null, 2) + "\n";
+            fs.writeFileSync("package.json", out);
+          '
+
       - name: Publish to npm
-        run: npm publish
+        run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

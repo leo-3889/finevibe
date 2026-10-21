@@ -1,4 +1,5 @@
 {
+  "extends": "./tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2024"],
@@ -6,10 +7,6 @@
     "moduleResolution": "node",
     "outDir": "dist/main",
     "rootDir": "src",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "resolveJsonModule": true,
     "declaration": true,
     "composite": true
   },

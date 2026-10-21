@@ -37,3 +37,6 @@ vibeyard-copilot-hooks.json
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Local dev sandbox
+dev/

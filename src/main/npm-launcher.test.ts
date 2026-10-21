@@ -468,3 +468,39 @@ describe('launcher linux asset name', () => {
     expect(exports.RELEASE_API_URL).toBe(apiUrl);
   }, 15000);
 });
+
+describe('published launcher manifest', () => {
+  // P2-14 (audit plan §6): the npm package is the thin launcher — a
+  // downloader for the packaged app (bin/vibeyard.js never links any of
+  // the app's runtime deps). The PUBLISHED manifest must carry zero app
+  // dependencies: shipping them made `npm i -g vibeyard` resolve 16 app
+  // packages and compile native modules (better-sqlite3, node-pty) on the
+  // user's machine. P2-6: the publish step must run with --provenance,
+  // which needs the runner's OIDC id-token. These tests pin the
+  // publish-npm job contract in release.yml; they are the gate for the
+  // manifest strip living in CI (the repo's own package.json keeps
+  // "dependencies" for the electron-builder app package).
+  const releaseWorkflow = fs.readFileSync(
+    path.join(process.cwd(), '.github', 'workflows', 'release.yml'),
+    'utf8',
+  );
+  // publish-npm is the last job in the file; slice from its key to EOF.
+  const npmJob = releaseWorkflow.slice(releaseWorkflow.indexOf('  publish-npm:'));
+
+  it('ships only bin/ plus docs in the tarball', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+    expect(pkg.files).toEqual(['bin/', 'README.md', 'LICENSE']);
+    expect(pkg.bin).toEqual({ vibeyard: 'bin/vibeyard.js' });
+  });
+
+  it('strips app dependencies from the manifest handed to npm', () => {
+    expect(npmJob).toMatch(/delete pkg\.dependencies/);
+    expect(npmJob).toMatch(/delete pkg\.devDependencies/);
+    expect(npmJob).toMatch(/delete pkg\.scripts/);
+  });
+
+  it('publishes with provenance and the OIDC token permission', () => {
+    expect(npmJob).toMatch(/npm publish --provenance/);
+    expect(npmJob).toMatch(/id-token: write/);
+  });
+});
