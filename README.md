@@ -1,7 +1,7 @@
-# FineVibe - An enhanced Vibeyard
+# Vibeyard — the `leo-3889/vibeyard` fork
 
-> **Fork notice.** FineVibe is a fork of
-> **[elirantutia/vibeyard](https://github.com/elirantutia/vibeyard)**.
+> **Fork notice.** This repository — `leo-3889/vibeyard`, the fork — is a
+> fork of **[elirantutia/vibeyard](https://github.com/elirantutia/vibeyard)**.
 > For the product as its authors describe it, read the
 > **[upstream README](https://github.com/elirantutia/vibeyard#readme)** —
 > a verbatim copy lives here as
@@ -40,7 +40,7 @@ handling, `cmd.exe` argument limits, credential-store behaviour, installer shape
 
 ## What it does *not* do
 
-- **FineVibe names the fork, not the app.** Same product name, UI, and data inside.
+- **The fork is `leo-3889/vibeyard`; the product is Vibeyard.** No rebrand inside: same product name, UI, and data.
 - No fork-only telemetry, analytics, or phone-home.
 - No config lock-in or migration that blocks a return to upstream.
 - No upstream feature removed or disabled.
@@ -53,10 +53,11 @@ handling, `cmd.exe` argument limits, credential-store behaviour, installer shape
   beyond `src/main/platform.ts`, but neither OS was exercised.
 - **`pi` and `omp` must be on `PATH`** or the provider stays hidden — upstream
   behaviour, not a fork quirk.
-- **Fork builds still update from upstream.** The npm launcher and the packaged
-  auto-updater fetch releases from `elirantutia/vibeyard` unless
-  `VIBEYARD_RELEASE_REPO=owner/repo` is set, which points both at that fork's
-  releases (the fork must publish the same asset names, e.g.
+- **Updates come only from the fork's release feed.** The npm launcher and the
+  packaged auto-updater use `VIBEYARD_RELEASE_REPO=owner/repo` and nothing
+  else: unset/malformed, the launcher refuses to download and the
+  auto-updater disables itself with a warning — a fork build never checks the
+  upstream release feed (the fork publishes the same asset names, e.g.
   `Vibeyard-<version>-win-<arch>.zip`).
 
 ## Sync

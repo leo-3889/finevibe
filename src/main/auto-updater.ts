@@ -26,21 +26,37 @@ export function quitAndInstall(): void {
   autoUpdater.quitAndInstall(true, true);
 }
 
-export function initAutoUpdater(): void {
-  if (!app.isPackaged) return;
+// P1-7 (audit plan §1(iv), FORK identity): a packaged fork build must NEVER
+// self-update from the upstream repo. The release feed is exactly the fork
+// repo named by VIBEYARD_RELEASE_REPO (the same override the npm launcher
+// honours); unset or malformed disables auto-update with a warning instead
+// of silently falling back to upstream releases.
+const RELEASE_REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+function resolveReleaseRepo(): string | null {
+  const value = process.env.VIBEYARD_RELEASE_REPO?.trim();
+  if (!value) return null;
+  return RELEASE_REPO_PATTERN.test(value) ? value : null;
+}
 
-  // Fork builds update from upstream unless VIBEYARD_RELEASE_REPO points at
-  // another `owner/repo` (same override the npm launcher honours).
-  const releaseRepo = process.env.VIBEYARD_RELEASE_REPO;
-  if (releaseRepo) {
-    const [owner, repo] = releaseRepo.split('/');
-    if (owner && repo) {
-      autoUpdater.setFeedURL({ provider: 'github', owner, repo, releaseType: 'release' });
-    }
+ export function initAutoUpdater(): void {
+   if (!app.isPackaged) return;
+ 
+  const releaseRepo = resolveReleaseRepo();
+  if (!releaseRepo) {
+    console.warn(
+      `[auto-updater] VIBEYARD_RELEASE_REPO=${process.env.VIBEYARD_RELEASE_REPO ?? '<unset>'} ` +
+      'is not a valid "owner/repo" — auto-update disabled (a fork build never ' +
+      'self-updates from the upstream release feed).',
+    );
+    return;
   }
+
+   autoUpdater.autoDownload = true;
+   autoUpdater.autoInstallOnAppQuit = true;
+ 
+  const [owner, repo] = releaseRepo.split('/');
+  autoUpdater.setFeedURL({ provider: 'github', owner, repo, releaseType: 'release' });
 
   autoUpdater.on('update-available', (info) => {
     sendToRenderer('update:available', { version: info.version });

@@ -11,6 +11,10 @@ const launcherVersion = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
 ).version as string;
 
+// P1-7 (fork identity): releases come only from the fork repo named by
+// VIBEYARD_RELEASE_REPO — there is no built-in default.
+const forkEnv = { VIBEYARD_RELEASE_REPO: 'leo-3889/vibeyard' };
+
 type FakeResponse = PassThrough & { statusCode: number; headers: Record<string, string> };
 
 function fakeResponse(opts: { statusCode?: number; headers?: Record<string, string> } = {}): FakeResponse {
@@ -145,22 +149,43 @@ describe('Linux npm launcher', () => {
 });
 
 describe('launcher release repo', () => {
-  it('defaults to the upstream repo', () => {
+  // P2-77/P1-7 retarget (plan §1(iv), FORK identity): the previously pinned
+  // "defaults to the upstream repo" behavior is the bug — a fork launcher
+  // must never download from the upstream feed. Unset/malformed = no feed,
+  // and a fresh install then refuses to download.
+  it('has no release feed when VIBEYARD_RELEASE_REPO is unset', () => {
     const { exports } = loadLauncher();
-    expect(exports.REPO).toBe('elirantutia/vibeyard');
-    expect(exports.RELEASES_URL).toBe('https://github.com/elirantutia/vibeyard/releases');
-    expect(exports.RELEASE_API_URL).toBe(
-      `https://api.github.com/repos/elirantutia/vibeyard/releases/tags/v${launcherVersion}`,
-    );
+    expect(exports.REPO).toBeNull();
+    expect(exports.RELEASES_URL).toBeNull();
+    expect(exports.RELEASE_API_URL).toBeNull();
   });
 
-  it('VIBEYARD_RELEASE_REPO overrides the release repo for downloads and the API', () => {
-    const { exports } = loadLauncher({ env: { VIBEYARD_RELEASE_REPO: 'leo-3889/vibeyard' } });
+  it('has no release feed for a malformed VIBEYARD_RELEASE_REPO', () => {
+    const { exports } = loadLauncher({ env: { VIBEYARD_RELEASE_REPO: 'not-a-slug' } });
+    expect(exports.REPO).toBeNull();
+    expect(exports.RELEASES_URL).toBeNull();
+  });
+
+  it('VIBEYARD_RELEASE_REPO points downloads and the API at the fork repo', () => {
+    const { exports } = loadLauncher({ env: forkEnv });
     expect(exports.REPO).toBe('leo-3889/vibeyard');
     expect(exports.RELEASES_URL).toBe('https://github.com/leo-3889/vibeyard/releases');
     expect(exports.RELEASE_API_URL).toBe(
       `https://api.github.com/repos/leo-3889/vibeyard/releases/tags/v${launcherVersion}`,
     );
+  });
+
+  it('refuses the download on a fresh install with no feed configured', async () => {
+    const httpsGet = vi.fn();
+    const { consoleError, spawn } = loadLauncher({ env: {}, installedVersion: null, httpsGet });
+    await until(
+      () => consoleError.mock.calls.length > 0,
+      () => 'launcher neither reported an error nor launched',
+    );
+    const message = consoleError.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(message).toMatch(/VIBEYARD_RELEASE_REPO/);
+    expect(httpsGet).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 });
 
@@ -216,7 +241,7 @@ describe('launcher getJson', () => {
       queueMicrotask(() => res.end(JSON.stringify({ assets: [] })));
       return { on: vi.fn() };
     });
-    const { exports } = loadLauncher({ httpsGet });
+    const { exports } = loadLauncher({ env: forkEnv, httpsGet });
     const body = await exports.getJson(exports.RELEASE_API_URL);
     expect(body).toEqual({ assets: [] });
     expect(httpsGet.mock.calls[0][1]).toMatchObject({
@@ -232,6 +257,7 @@ describe('launcher digest verification', () => {
 
   it('passes when the published sha256 digest matches', async () => {
     const { exports, fakeFs } = loadLauncher({
+      env: forkEnv,
       httpsGet: servingRelease([{ name: asset, digest: `sha256:${contentHex}` }]),
     });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
@@ -240,6 +266,7 @@ describe('launcher digest verification', () => {
 
   it('fails when the digest does not match', async () => {
     const { exports, fakeFs, consoleError } = loadLauncher({
+      env: forkEnv,
       httpsGet: servingRelease([{ name: asset, digest: `sha256:${'f'.repeat(64)}` }]),
     });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
@@ -251,6 +278,7 @@ describe('launcher digest verification', () => {
   // turns every non-'ok' into refuse-and-redownload.
   it('reports unavailable when the asset has no published digest', async () => {
     const { exports, fakeFs, consoleLog } = loadLauncher({
+      env: forkEnv,
       httpsGet: servingRelease([{ name: asset }]),
     });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
@@ -260,6 +288,7 @@ describe('launcher digest verification', () => {
 
   it('reports unavailable when the asset is missing from the release', async () => {
     const { exports, consoleLog } = loadLauncher({
+      env: forkEnv,
       httpsGet: servingRelease([{ name: 'Other-asset.zip', digest: `sha256:${contentHex}` }]),
     });
     await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('unavailable');
@@ -268,6 +297,7 @@ describe('launcher digest verification', () => {
 
   it('reports unavailable when the API returns an error status', async () => {
     const { exports, consoleLog } = loadLauncher({
+      env: forkEnv,
       httpsGet: vi.fn((_url: string, _opts: unknown, cb: (res: FakeResponse) => void) => {
         const res = fakeResponse({ statusCode: 403 });
         cb(res);
@@ -281,6 +311,7 @@ describe('launcher digest verification', () => {
 
   it('reports unavailable when the API request errors', async () => {
     const { exports, consoleLog } = loadLauncher({
+      env: forkEnv,
       httpsGet: vi.fn((_url: string, _opts: unknown, _cb: unknown) => ({
         on: (event: string, handler: (err: Error) => void) => {
           if (event === 'error') queueMicrotask(() => handler(new Error('ETIMEDOUT')));
@@ -306,7 +337,7 @@ describe('launcher download', () => {
         const assets = digest === undefined ? [{ name: asset }] : [{ name: asset, digest }];
         queueMicrotask(() => res.end(JSON.stringify({ assets })));
       } else {
-        expect(url).toBe(`https://github.com/elirantutia/vibeyard/releases/download/v${launcherVersion}/${asset}`);
+        expect(url).toBe(`https://github.com/leo-3889/vibeyard/releases/download/v${launcherVersion}/${asset}`);
         queueMicrotask(() => res.end(content));
       }
       return { on: vi.fn() };
@@ -314,7 +345,7 @@ describe('launcher download', () => {
   }
 
   it('keeps the file when the digest matches', async () => {
-    const { exports, fakeFs } = loadLauncher({ httpsGet: servingDownloadAndApi(`sha256:${contentHex}`) });
+    const { exports, fakeFs } = loadLauncher({ env: forkEnv, httpsGet: servingDownloadAndApi(`sha256:${contentHex}`) });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
     await expect(exports.download(asset)).resolves.toBe(tmpFile);
     // only the pre-download cleanup delete runs
@@ -323,6 +354,7 @@ describe('launcher download', () => {
 
   it('redownloads once, then refuses when the digest mismatches', async () => {
     const { exports, fakeFs, httpsGet } = loadLauncher({
+      env: forkEnv,
       httpsGet: servingDownloadAndApi(`sha256:${'0'.repeat(64)}`),
     });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
@@ -342,6 +374,7 @@ describe('launcher download', () => {
   // logged "skipping checksum verification" and installed the bytes.
   it('refuses to install when no digest is published', async () => {
     const { exports, fakeFs, consoleLog, httpsGet } = loadLauncher({
+      env: forkEnv,
       httpsGet: servingDownloadAndApi(undefined),
     });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
@@ -360,6 +393,7 @@ describe('launcher download', () => {
     const good = Buffer.from('vibeyard-appimage-payload-good');
     const goodHex = crypto.createHash('sha256').update(good).digest('hex');
     const { exports, fakeFs, httpsGet } = loadLauncher({
+      env: forkEnv,
       httpsGet: servingDownloadAndApi(`sha256:${goodHex}`),
     });
     // Attempt 1 hashes corrupt bytes → mismatch → redownload; attempt 2 the
@@ -384,8 +418,8 @@ describe('launcher linux asset name', () => {
   const contentHex = crypto.createHash('sha256').update(content).digest('hex');
 
   function servingAmd64Only() {
-    const downloadUrl = `https://github.com/elirantutia/vibeyard/releases/download/v${launcherVersion}/${amd64Asset}`;
-    const apiUrl = `https://api.github.com/repos/elirantutia/vibeyard/releases/tags/v${launcherVersion}`;
+    const downloadUrl = `https://github.com/leo-3889/vibeyard/releases/download/v${launcherVersion}/${amd64Asset}`;
+    const apiUrl = `https://api.github.com/repos/leo-3889/vibeyard/releases/tags/v${launcherVersion}`;
     const httpsGet = vi.fn((url: string, _opts: unknown, cb: (res: FakeResponse) => void) => {
       const known = url === downloadUrl || url === apiUrl;
       const res = fakeResponse(known ? {} : { statusCode: 404 });
@@ -407,7 +441,7 @@ describe('launcher linux asset name', () => {
 
   it('downloads and installs the linux-amd64 AppImage on a fresh linux install', async () => {
     const { httpsGet, downloadUrl, apiUrl } = servingAmd64Only();
-    const { exports, fakeFs, consoleError, spawn } = loadLauncher({ httpsGet, installedVersion: null });
+    const { exports, fakeFs, consoleError, spawn } = loadLauncher({ env: forkEnv, httpsGet, installedVersion: null });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
 
     // A stale asset name 404s, so `until` reports the launcher's own error text;

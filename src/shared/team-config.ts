@@ -4,7 +4,7 @@
 // independently of app releases — flip the four fields below to retarget.
 
 export const TEAM_MEMBERS_REPO = {
-  owner: 'elirantutia',
+  owner: 'leo-3889',
   repo: 'vibeyard',
   branch: 'main',
   path: 'personas',

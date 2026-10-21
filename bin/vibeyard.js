@@ -18,9 +18,20 @@ const appPathForPlatform = () => {
   return path.join(APP_DIR, 'Vibeyard.AppImage');
 };
 const APP_PATH = appPathForPlatform();
-const REPO = process.env.VIBEYARD_RELEASE_REPO || 'elirantutia/vibeyard';
-const RELEASES_URL = `https://github.com/${REPO}/releases`;
-const RELEASE_API_URL = `https://api.github.com/repos/${REPO}/releases/tags/v${version}`;
+// P1-7 (audit plan §1(iv), FORK identity): releases come ONLY from the fork
+// repo named by VIBEYARD_RELEASE_REPO. There is no built-in default — an
+// unset/malformed value means no feed, and a download then fails closed
+// rather than silently pulling upstream bytes into a fork install (the same
+// precedence the packaged auto-updater applies).
+function parseReleaseRepo(value) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : null;
+}
+const REPO = parseReleaseRepo(process.env.VIBEYARD_RELEASE_REPO);
+const RELEASES_URL = REPO ? `https://github.com/${REPO}/releases` : null;
+const RELEASE_API_URL = REPO
+  ? `https://api.github.com/repos/${REPO}/releases/tags/v${version}`
+  : null;
 
 function getAssetName() {
   if (isWin) {
@@ -292,7 +303,7 @@ Any other arguments are forwarded to the Vibeyard app.`);
   }
 
   if (!isMac && !isWin && process.platform !== 'linux') {
-    console.error(`Unsupported platform ${process.platform}. Download from: ${RELEASES_URL}`);
+    console.error(`Unsupported platform ${process.platform}. Download from: ${RELEASES_URL ?? 'https://github.com/leo-3889/vibeyard/releases'}`);
     process.exit(1);
   }
   if (process.platform === 'linux' && process.arch !== 'x64') {
@@ -307,6 +318,13 @@ Any other arguments are forwarded to the Vibeyard app.`);
   const needsDownload = forceUpdate || installedVersion !== version || !fs.existsSync(APP_PATH);
 
   if (needsDownload) {
+    if (!REPO) {
+      throw new Error(
+        'No release feed configured: VIBEYARD_RELEASE_REPO is unset or not "owner/repo". ' +
+        'Refusing to download from a default repository — set VIBEYARD_RELEASE_REPO to the ' +
+        'fork repository that publishes these releases (see README.md).',
+      );
+    }
     const zipPath = await download(assetName);
     extract(zipPath);
   }
