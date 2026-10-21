@@ -184,7 +184,7 @@ function cliConfigRoots(): string[] {
 
 let homeRootCanonical: string | null | undefined;
 function canonicalHomeRoot(): string {
-  if (homeRootCanonical === undefined) {
+  if (homeRootCanonical === undefined || homeRootCanonical === null) {
     try {
       homeRootCanonical = fs.realpathSync(os.homedir());
     } catch {
