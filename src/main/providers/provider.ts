@@ -47,7 +47,14 @@ export interface CliProvider {
   getConfig(projectPath: string, configDir?: string): Promise<ProviderConfig>;
   getShiftEnterSequence(): string | null;
   validateSettings(projectPath?: string, configDir?: string): SettingsValidationResult;
-  reinstallSettings(): void;
+  /**
+   * Force-repair the provider's hook/statusLine config ("Fix Settings").
+   * `configDir` is the dir the per-session warning banner was computed from
+   * (P2-127): a profiled Claude session reads its pinned profile dir, not
+   * ~/.claude, so the repair MUST target that dir when one is given.
+   * Providers whose settings tree is not relocatable ignore it.
+   */
+  reinstallSettings(configDir?: string): void;
   parseCostFromOutput?(rawText: string): { totalCostUsd: number } | null;
   /** Return the absolute path to the source transcript file for a prior session, if any. */
   getTranscriptPath?(cliSessionId: string, projectPath: string, configDir?: string, sessionDir?: string): string | null;

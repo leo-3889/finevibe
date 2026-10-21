@@ -154,6 +154,7 @@ vi.mock('../shared/token-estimate', autoStub);
 import { registerIpcHandlers } from './ipc-handlers';
 import { isManagedMcpConfigDir } from './claude-cli';
 import { loadState } from './store';
+import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { cleanupSessionStatus } from './hook-status';
 import { analyzeReadiness } from './readiness/analyzer';
 import { detectRepo } from './github-cli';
@@ -487,7 +488,7 @@ describe('fs:listDirs home gate (P1-19)', () => {
 
   it('enumerates a home-outside directory only after an explicit confirm', async () => {
     vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
-    const dirs = await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    const dirs = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
     expect(dirs.length).toBeGreaterThan(0);
   });
 
@@ -971,5 +972,66 @@ describe('ipcMain.on bodies are non-fatal', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// P1-14 / P2-127: the per-session banner is computed from the profiled
+// session's config dir, so (a) its consent lookup must be the PER-DIR
+// record (a Keep on ~/.claude must not mute a profile banner, and vice
+// versa), (b) the payload carries the dir the banner was computed from so
+// the Fix Settings CTA repairs THAT dir, and (c) banner dismissal on a
+// profile records the per-dir Keep — the banner is the profile's single
+// consent surface (spawn is a hot path and never shows the modal).
+describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
+  beforeEach(() => {
+    provider.meta.capabilities.hookStatus = true;
+    vi.mocked(getDirConsent).mockReturnValue({ consent: undefined, command: undefined });
+    provider.validateSettings = vi.fn(() => ({
+      statusLine: 'foreign', hooks: 'complete', foreignStatusLineCommand: '/usr/bin/other-statusline',
+    })) as never;
+    vi.mocked(shouldWarnStatusLine).mockReturnValue(true);
+  });
+
+  it('carries the profile configDir the validation was computed from', async () => {
+    await create('ui-1', null, { configDir: '/profiles/work' });
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith(
+      'settings:warning',
+      expect.objectContaining({
+        sessionId: 'ui-1',
+        statusLine: 'foreign',
+        configDir: '/profiles/work',
+        foreignStatusLineCommand: '/usr/bin/other-statusline',
+      }),
+    );
+  });
+
+  it('consults the per-dir consent record for a profiled session', async () => {
+    await create('ui-1', null, { configDir: '/profiles/work' });
+    expect(getDirConsent).toHaveBeenCalledWith(expect.anything(), '/profiles/work');
+  });
+
+  it('settings:reinstall repairs the profile dir the banner was computed from', async () => {
+    await handlers.get('settings:reinstall')!({}, 'claude', '/profiles/work');
+    expect(provider.reinstallSettings).toHaveBeenCalledWith('/profiles/work');
+  });
+
+  it('settings:reinstall refuses a configDir outside the managed-profile allowlist', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    const result = await handlers.get('settings:reinstall')!({}, 'claude', '/home/attacker/.claude');
+    expect(result).toMatchObject({ success: false });
+    expect(provider.reinstallSettings).not.toHaveBeenCalled();
+  });
+
+  it('settings:reinstall without a configDir keeps repairing the default dir', async () => {
+    await handlers.get('settings:reinstall')!({}, 'claude');
+    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined);
+  });
+
+  it('settings:declineStatusLine records the per-dir Keep and gates unmanaged dirs', () => {
+    handlers.get('settings:declineStatusLine')!({}, '/profiles/work', '/usr/bin/other-statusline');
+    expect(recordDirConsent).toHaveBeenCalledWith('/profiles/work', 'declined', '/usr/bin/other-statusline');
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    handlers.get('settings:declineStatusLine')!({}, '/home/attacker/.claude', '/x');
+    expect(recordDirConsent).toHaveBeenCalledTimes(1);
   });
 });

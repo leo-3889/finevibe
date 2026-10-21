@@ -45,6 +45,19 @@ vi.mock('./claude-keychain', () => ({
   getKeychainIsolationStatus: mockKeychainIsolation,
 }));
 
+// P1-14: the per-spawn profile install goes through settings-guard's consent
+// gate (foreign statusLine + prior Keep => no overwrite). The spawn-path
+// contract asserted here is the delegation itself; the gate's consent
+// semantics are pinned in settings-guard.test.ts.
+const mockGuardedProfileInstall = vi.hoisted(() => vi.fn());
+vi.mock('./settings-guard', () => ({
+  guardedProfileInstall: mockGuardedProfileInstall,
+  guardedInstall: vi.fn(),
+  validateSettings: vi.fn(() => ({})),
+  reinstallSettings: vi.fn(),
+  shouldWarnStatusLine: vi.fn(() => false),
+}));
+
 import * as fs from 'fs';
 import * as child_process from 'child_process';
 import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, LaunchSpecError } from './pty-manager';
@@ -318,6 +331,45 @@ describe('spawnPty', () => {
     expect(onData).toHaveBeenCalledTimes(1);
     expect(onData.mock.calls[0][0]).toContain('keychain login, mixing the accounts');
     expect(onExit).toHaveBeenCalledWith(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
+  });
+
+  // P1-14: the profile install must not run raw at spawn — it goes through
+  // settings-guard's consent gate so a foreign statusLine in the profile
+  // dir (e.g. with a prior Keep) is never silently overwritten.
+  it('routes a profile-pinned Claude spawn through the consent-gated profile install', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn(), '/profiles/work');
+
+    expect(mockGuardedProfileInstall).toHaveBeenCalledWith('/profiles/work');
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('never runs the profile install for a default-dir Claude spawn', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+
+    expect(mockGuardedProfileInstall).not.toHaveBeenCalled();
+  });
+
+  it('never runs the profile install for a non-Claude profile session', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    await spawnPty('s1', '/project', null, false, '', 'pi', undefined, undefined, '', vi.fn(), vi.fn(), '/profiles/work');
+
+    expect(mockGuardedProfileInstall).not.toHaveBeenCalled();
+  });
+
+  it('runs no profile install when the keychain guardrail blocks the spawn', () => {
+    mockKeychainIsolation.mockReturnValue({ status: 'unsupported', version: '2.1.19' });
+
+    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn(), '/profiles/work');
+
+    expect(mockGuardedProfileInstall).not.toHaveBeenCalled();
   });
 
   it('spawns with tokenized (quoted) extra args', () => {

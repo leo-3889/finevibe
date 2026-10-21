@@ -148,8 +148,10 @@ export class ClaudeProvider implements CliProvider {
     return validateSettings(configDir);
   }
 
-  reinstallSettings(): void {
-    reinstallSettings();
+  reinstallSettings(configDir?: string): void {
+    // P2-127: repair the dir the warning banner was computed from — for a
+    // profiled session that is the profile dir, the tree the CLI reads.
+    reinstallSettings(configDir);
     installStatusLineScript();
   }
 

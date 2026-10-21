@@ -33,11 +33,22 @@ vi.mock('../claude-cli', () => ({
   isManagedMcpConfigDir: vi.fn(() => true),
 }));
 
+// The banner-driven repair path threads the profile config dir through the
+// provider into settings-guard (P2-127): stub the guard so the threading is
+// the only thing under test.
+vi.mock('../settings-guard', () => ({
+  guardedInstall: vi.fn(),
+  validateSettings: vi.fn(() => ({})),
+  reinstallSettings: vi.fn(),
+}));
+
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { ClaudeProvider, _resetCachedPath } from './claude-provider';
 import { isManagedMcpConfigDir } from '../claude-cli';
+import { installStatusLineScript } from '../hook-status';
 import { invalidateBinaryCache } from './resolve-binary';
+import { validateSettings as guardValidateSettings, reinstallSettings as guardReinstallSettings } from '../settings-guard';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockStatSync = vi.mocked(fs.statSync);
@@ -102,15 +113,27 @@ describe('resolveBinaryPath', () => {
     expect(provider.resolveBinaryPath()).toBe('claude');
   });
 
-  it('caches result on subsequent calls', () => {
+  it('caches result on subsequent calls while the binary exists', () => {
     mockStatSync.mockImplementation((p) => {
       if (p === firstCandidate) return fileStat;
       throw new Error('ENOENT');
     });
     provider.resolveBinaryPath();
-    mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); }); // change behavior
-    // Should still return cached value
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    // P2-26: cache hit = one stat, zero subprocess re-probes.
     expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('re-resolves when the cached binary disappears', () => {
+    mockStatSync.mockImplementation((p) => {
+      if (p === firstCandidate) return fileStat;
+      throw new Error('ENOENT');
+    });
+    provider.resolveBinaryPath();
+    mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockExecSync.mockReturnValue('/some/other/path/claude\n' as any);
+    expect(provider.resolveBinaryPath()).toBe('/some/other/path/claude');
   });
 });
 
@@ -325,5 +348,31 @@ describe('parseCostFromOutput', () => {
   it('handles multiple cost values and picks last one', () => {
     const result = provider.parseCostFromOutput('Cost: $0.50 then $1.75 then $3.20');
     expect(result).toEqual({ totalCostUsd: 3.20 });
+  });
+});
+
+// P1-14 / P2-127: the banner is computed from (and must repair) the profile
+// session's config dir — the tree the profiled CLI actually reads.
+describe('validateSettings / reinstallSettings configDir threading', () => {
+  it('validateSettings validates the profile config dir, not ~/.claude', () => {
+    provider.validateSettings('/proj', '/profiles/work');
+    expect(guardValidateSettings).toHaveBeenCalledWith('/profiles/work');
+  });
+
+  it('validateSettings without a dir validates the default dir', () => {
+    provider.validateSettings('/proj');
+    expect(guardValidateSettings).toHaveBeenCalledWith(undefined);
+  });
+
+  it('reinstallSettings repairs the profile config dir and refreshes the script', () => {
+    provider.reinstallSettings('/profiles/work');
+    expect(guardReinstallSettings).toHaveBeenCalledWith('/profiles/work');
+    expect(installStatusLineScript).toHaveBeenCalledTimes(1);
+  });
+
+  it('reinstallSettings without a dir keeps repairing the default dir', () => {
+    provider.reinstallSettings();
+    expect(guardReinstallSettings).toHaveBeenCalledWith(undefined);
+    expect(installStatusLineScript).toHaveBeenCalledTimes(1);
   });
 });

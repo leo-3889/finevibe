@@ -422,6 +422,10 @@ export interface Preferences {
   // the consent decision. Used to detect new conflicts (different command)
   // vs the previously-acknowledged one.
   statusLineConsentCommand?: string | null;
+  // P1-14: per-profile-dir statusLine consent, keyed by settings-guard's
+  // consentDirKey. The default ~/.claude keeps the global fields above; a
+  // profile dir's Keep/Replace never governs another dir (and vice versa).
+  statusLineConsentByDir?: Record<string, { consent: 'granted' | 'declined'; command: string | null }>;
   copyOnSelect?: boolean;
   keybindings?: Record<string, string>;
   theme?: 'dark' | 'light';
@@ -506,6 +510,12 @@ export interface SettingsWarningData {
   sessionId: string;
   statusLine: SettingsValidationResult['statusLine'];
   hooks: SettingsValidationResult['hooks'];
+  /** P2-127: the profile config dir the validation was computed from;
+   * undefined = the default ~/.claude. The Fix Settings CTA repairs THIS dir. */
+  configDir?: string;
+  /** The foreign statusLine command, present when statusLine === 'foreign'
+   * (P1-14: the banner's dismissal records a Keep bound to this command). */
+  foreignStatusLineCommand?: string;
 }
 
 export interface StatusLineConflictData {

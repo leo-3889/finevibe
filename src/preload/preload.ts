@@ -152,8 +152,9 @@ export interface VibeyardApi {
     onWarning(callback: (data: SettingsWarningData) => void): () => void;
     onConflictDialog(callback: (data: StatusLineConflictData) => void): () => void;
     respondConflictDialog(choice: 'replace' | 'keep'): void;
-    reinstall(providerId?: ProviderId): Promise<{ success: boolean }>;
+    reinstall(providerId?: ProviderId, configDir?: string): Promise<{ success: boolean; error?: string }>;
     validate(providerId?: ProviderId): Promise<SettingsValidationResult>;
+    declineConflict(configDir?: string, foreignCommand?: string | null): void;
   };
   clipboard: {
     write(text: string, source?: ClipboardSource): Promise<void>;
@@ -356,8 +357,9 @@ const api: VibeyardApi = {
     onWarning: (cb) => onChannel('settings:warning', (data) => cb(data as SettingsWarningData)),
     onConflictDialog: (cb) => onChannel('settings:showConflictDialog', (data) => cb(data as StatusLineConflictData)),
     respondConflictDialog: (choice) => ipcRenderer.send('settings:conflictDialogResponse', choice),
-    reinstall: (providerId) => ipcRenderer.invoke('settings:reinstall', providerId || 'claude'),
+    reinstall: (providerId, configDir) => ipcRenderer.invoke('settings:reinstall', providerId || 'claude', configDir),
     validate: (providerId) => ipcRenderer.invoke('settings:validate', providerId || 'claude'),
+    declineConflict: (configDir, foreignCommand) => ipcRenderer.send('settings:declineStatusLine', configDir, foreignCommand),
   },
   clipboard: {
     write: (text: string, source?: ClipboardSource) => ipcRenderer.invoke('clipboard:write', text, source),

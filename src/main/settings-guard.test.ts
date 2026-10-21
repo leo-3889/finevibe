@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as path from 'path';
 import { isWin } from './platform';
 
@@ -59,9 +59,13 @@ vi.mock('./fs-utils', () => ({
 }));
 
 import { EventEmitter } from 'node:events';
-import { isVibeyardStatusLine, shouldWarnStatusLine, guardedInstall } from './settings-guard';
+import {
+  isVibeyardStatusLine, shouldWarnStatusLine, guardedInstall,
+  guardedProfileInstall, reinstallSettings, consentDirKey,
+} from './settings-guard';
 import { installStatusLine } from './claude-cli';
-import { saveState } from './store';
+import { saveState, loadState } from './store';
+import { readJsonSafe } from './fs-utils';
 
 describe('isVibeyardStatusLine', () => {
   it('returns true for current statusline path', () => {
@@ -199,6 +203,109 @@ describe('guardedInstall window lifecycle', () => {
     expect(saveState).toHaveBeenCalledWith(
       expect.objectContaining({
         preferences: { statusLineConsent: 'declined', statusLineConsentCommand: FOREIGN_STATUSLINE },
+      }),
+    );
+  });
+});
+
+// P1-14: the per-spawn profile install must go through the same consent gate
+// as the default dir. Spawn is a hot path — no dialog — so a first-run
+// foreign statusLine is left alone: the per-session banner is the profile's
+// consent surface (its Fix Settings CTA repairs that dir, P2-127; its
+// dismissal records a Keep), and a prior Keep must suppress the install.
+describe('guardedProfileInstall (P1-14)', () => {
+  const PROFILE_DIR = path.join('/home/test', '.claude-profiles', 'work');
+  const KEY = consentDirKey(PROFILE_DIR);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(readJsonSafe).mockReturnValue({ statusLine: { command: FOREIGN_STATUSLINE } });
+    vi.mocked(loadState).mockReturnValue({ preferences: {} } as never);
+  });
+
+  it('honors a prior Keep for this dir: hooks install, statusLine untouched, no new record', () => {
+    vi.mocked(loadState).mockReturnValue({
+      preferences: { statusLineConsentByDir: { [KEY]: { consent: 'declined', command: FOREIGN_STATUSLINE } } },
+    } as never);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledWith(PROFILE_DIR);
+    expect(installStatusLine).not.toHaveBeenCalled();
+    expect(saveState).not.toHaveBeenCalled();
+  });
+
+  it('leaves a first-run foreign statusLine alone: no silent overwrite, no recorded decision', () => {
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledWith(PROFILE_DIR);
+    expect(installStatusLine).not.toHaveBeenCalled();
+    expect(saveState).not.toHaveBeenCalled();
+  });
+
+  it('installs into a fresh profile dir (no settings.json — nothing foreign to overwrite)', () => {
+    vi.mocked(readJsonSafe).mockReturnValue(null);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installStatusLine).toHaveBeenCalledWith(PROFILE_DIR);
+  });
+
+  it('installs when Replace consent covers this exact foreign command', () => {
+    vi.mocked(loadState).mockReturnValue({
+      preferences: { statusLineConsentByDir: { [KEY]: { consent: 'granted', command: FOREIGN_STATUSLINE } } },
+    } as never);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installStatusLine).toHaveBeenCalledWith(PROFILE_DIR);
+  });
+
+  it('a Replace recorded for the default dir does not license overwriting a profile dir', () => {
+    vi.mocked(loadState).mockReturnValue({
+      preferences: { statusLineConsent: 'granted', statusLineConsentCommand: FOREIGN_STATUSLINE },
+    } as never);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installStatusLine).not.toHaveBeenCalled();
+  });
+
+  it('freezes a command-less declined record onto the current foreign command', () => {
+    vi.mocked(loadState).mockReturnValue({
+      preferences: { statusLineConsentByDir: { [KEY]: { consent: 'declined', command: null } } },
+    } as never);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installStatusLine).not.toHaveBeenCalled();
+    expect(saveState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferences: { statusLineConsentByDir: { [KEY]: { consent: 'declined', command: FOREIGN_STATUSLINE } } },
+      }),
+    );
+  });
+});
+
+// P2-127: the banner is computed from the profiled session's config dir, so
+// "Fix Settings" must repair THAT dir — the profiled CLI never reads
+// ~/.claude. With no dir, the repair is byte-identical to the old behavior.
+describe('reinstallSettings(configDir) (P2-127)', () => {
+  const PROFILE_DIR = path.join('/home/test', '.claude-profiles', 'work');
+  const KEY = consentDirKey(PROFILE_DIR);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(loadState).mockReturnValue({ preferences: {} } as never);
+  });
+
+  it('repairs the profile dir the banner was computed from, not ~/.claude', () => {
+    reinstallSettings(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledWith(PROFILE_DIR);
+    expect(installStatusLine).toHaveBeenCalledWith(PROFILE_DIR);
+    expect(saveState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferences: { statusLineConsentByDir: { [KEY]: { consent: 'granted', command: null } } },
+      }),
+    );
+  });
+
+  it('keeps the default-dir repair byte-identical: global consent record, no by-dir entry', () => {
+    reinstallSettings();
+    expect(installHooksOnly).toHaveBeenCalledWith(undefined);
+    expect(installStatusLine).toHaveBeenCalledWith(undefined);
+    expect(saveState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferences: { statusLineConsent: 'granted', statusLineConsentCommand: null },
       }),
     );
   });

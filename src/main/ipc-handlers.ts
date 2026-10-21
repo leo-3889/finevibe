@@ -33,7 +33,7 @@ import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPack
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
 import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
-import { shouldWarnStatusLine } from './settings-guard';
+import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { buildVibeyardignoreMatcher } from './vibeyardignore';
 import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
@@ -431,10 +431,13 @@ export function registerIpcHandlers(): void {
     if (provider.meta.capabilities.hookStatus) {
       const validation = provider.validateSettings(cwd, configDir);
       const prefs = loadState().preferences;
+      // P1-14: consent is per config dir — a Keep/Replace decided for
+      // ~/.claude must not mute (or amplify) a profile dir's banner.
+      const consent = getDirConsent(prefs, configDir);
       const statusLineIssue = shouldWarnStatusLine(
         validation.statusLine,
-        prefs.statusLineConsent,
-        prefs.statusLineConsentCommand,
+        consent.consent,
+        consent.command,
         validation.foreignStatusLineCommand,
       );
       const hooksIssue = validation.hooks !== 'complete';
@@ -443,6 +446,11 @@ export function registerIpcHandlers(): void {
           sessionId,
           statusLine: statusLineIssue ? validation.statusLine : 'vibeyard',
           hooks: validation.hooks,
+          // P2-127: the banner was computed from THIS dir (the profiled
+          // session's tree) — carry it so the Fix Settings CTA repairs it,
+          // not the default ~/.claude the session never reads.
+          configDir,
+          foreignStatusLineCommand: validation.foreignStatusLineCommand,
         });
       }
     }
@@ -1415,10 +1423,17 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('agentmemory:status', () => probeAgentmemory());
   ipcMain.handle('agentmemory:start', () => ensureAgentmemoryRunning());
 
-  ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude') => {
+  ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string) => {
+    // P2-127: configDir is the dir the warning banner was computed from —
+    // "Fix Settings" must repair THAT dir, since a profiled CLI never reads
+    // ~/.claude. Renderer-supplied, and this writes settings.json into it:
+    // same managed-profile gate as pty:create (P1-15).
+    if (configDir && !isManagedMcpConfigDir(configDir)) {
+      return { success: false, error: `Refused: ${configDir} is not a managed profile directory.` };
+    }
     try {
       const provider = getProvider(providerId);
-      provider.reinstallSettings();
+      provider.reinstallSettings(configDir);
       return { success: true };
     } catch (err) {
       return { success: false, error: String(err) };
@@ -1427,6 +1442,17 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('settings:validate', (_event, providerId: ProviderId = 'claude'): SettingsValidationResult => {
     return getProvider(providerId).validateSettings();
   });
+
+  // P1-14: for a profile session the warning banner is the single consent
+  // surface (spawn is a hot path and never shows the modal). Dismissing the
+  // foreign-statusLine banner is the Keep: record declined consent for that
+  // dir so the per-spawn gate honors it and the banner stops re-firing.
+  // Managed-dir gate mirrors pty:create / settings:reinstall; the record is
+  // inert data with no filesystem effect.
+  ipcMain.on('settings:declineStatusLine', safeOn('settings:declineStatusLine', (_event, configDir: string | undefined, foreignCommand: string | null) => {
+    if (configDir && !isManagedMcpConfigDir(configDir)) return;
+    recordDirConsent(configDir, 'declined', foreignCommand ?? null);
+  }));
 
   ipcMain.handle('mcp:addServer', (_event, name: string, config: McpServerConfig, scope: 'user' | 'project', projectPath?: string, configDir?: string) => {
     try {

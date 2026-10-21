@@ -39,7 +39,9 @@ export function initSettingsGuard(): void {
         onClick: async (btn) => {
           btn.disabled = true;
           btn.textContent = 'Fixing\u2026';
-          const result = await window.vibeyard.settings.reinstall();
+          // P2-127: repair the config dir the banner was computed from —
+          // for a profile session that is the profile dir, not ~/.claude.
+          const result = await window.vibeyard.settings.reinstall(undefined, data.configDir);
           if (result.success) {
             removeAlertBanner();
           } else {
@@ -48,6 +50,14 @@ export function initSettingsGuard(): void {
           }
         },
       },
+      // P1-14: for a profile session this banner is the single consent
+      // surface (spawn never shows the modal): dismissing a foreign
+      // statusLine warning records a Keep for that dir, which the
+      // per-spawn install then honors. The default dir's consent stays
+      // bound to the boot-time conflict modal, so no dismiss action there.
+      onDismiss: hasStatusLineIssue && data.statusLine === 'foreign' && data.configDir
+        ? () => window.vibeyard.settings.declineConflict(data.configDir, data.foreignStatusLineCommand ?? null)
+        : undefined,
     });
   });
 }
