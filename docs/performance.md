@@ -93,6 +93,60 @@ Per-launch retention policy: a directory is expired only when every timestamp it
 
 Covered by `src/main/launch-session-dir.test.ts`.
 
+## Clipboard and paste baseline (P0, 2026-10-21, Windows)
+
+First measured numbers for the terminal copy/paste path, from the P0 harness in `dev/perf/` (`clipboard-bench.js` = Electron main + hidden window replaying the `clipboard:readForPaste` sub-op order per scenario; `clipbench.ps1` + `hold.ps1` = raw Win32 clipboard contention; `pty-paste-probe.js` = node-pty ConPTY paste drain). Box: Windows 10.0.26300, Node 24.14.0, Electron 41.1.0 (Chrome 146), node-pty 1.1.0. Clipboard scenarios are set from a child process via raw Win32 `SetClipboardData` (WinForms delayed-rendered writes die at setup-process exit — a harness lesson, not an app cost). All numbers p50/max ms over 11 back-to-back passes. The plan's §6 claim that the Windows clipboard is unreachable from the agent shell is **disproven on this box**: `OpenClipboard` succeeds, every leg ran from the agent shell.
+
+### Per-op clipboard reads (main process, per paste keystroke)
+
+| Sub-op (ipc-handlers order) | empty | text-40B | text-100KB | text-1MB | rich-html | file-list | image-1080p | image-1440p |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| availableFormats | 0.008/0.083 | 0.009/0.021 | 0.009/0.027 | 0.011/0.020 | 0.011/0.024 | 0.008/0.025 | 0.026/0.030 | 0.029/0.070 |
+| readText | 0.002/0.010 | 0.034/0.714 | 0.151/0.912 | 2.108/2.891 | 0.003/0.023 | 0.002/0.006 | 0.005/0.007 | 0.006/0.009 |
+| readBuffer:FileNameW | 0.043/0.463 | 0.036/0.117 | 0.039/0.079 | 0.219/0.292 | 0.052/0.106 | 0.041/0.111 | 0.087/0.123 | 0.096/7.669 |
+| readBuffer:CF_HDROP | 0.047/0.075 | 0.036/0.049 | 0.037/0.061 | 0.046/0.064 | 0.052/0.065 | 0.045/0.081 | 0.073/0.101 | 0.086/0.213 |
+| readBuffer:NSFilenamesPboardType | 0.043/0.052 | 0.035/0.043 | 0.036/0.039 | 0.040/0.052 | 0.051/0.081 | 0.040/0.054 | 0.067/0.094 | 0.076/0.254 |
+| read:text/uri-list | 0.040/0.048 | 0.034/0.054 | 0.034/0.048 | 0.035/0.061 | 0.048/0.085 | 0.037/0.059 | 0.052/0.083 | 0.066/0.152 |
+| readImage | — | — | — | — | — | — | 66.84/126.71 | 118.94/246.52 |
+| toPNG | — | — | — | — | — | — | 192.01/352.91 | 306.58/476.95 |
+| writePastedFile | — | — | — | — | — | — | 1.92/3.41 | 1.98/13.73 |
+| readHTML (empty-text only) | 0.035/0.055 | 0.002/0.039 | 0.001/0.004 | 0.003/0.004 | 0.109/0.126 | 0.032/0.045 | 0.571/0.937 | 1.103/1.318 |
+| **handler total** | **0.222/0.768** | **0.185/1.033** | **0.306/1.136** | **2.484/3.362** | **0.334/0.379** | **0.206/0.341** | **261.3/483.7** | **420.7/740.6** |
+
+Findings: (1) the six-open-sessions text path is cheap in isolation — a plain-text paste costs ≤ 1.1 ms p50 (≤ 3.4 ms max), a 1 MB text copy 2.5 ms, so R1's per-read `OpenClipboard` cycle costs sub-millisecond on an uncontended clipboard; (2) the **image** paste is the real main-thread freeze: `readImage` + `toPNG` are 96 %+ of the handler, 259 ms p50 at 1080p and 426 ms at 1440p (max 484/741 ms) — confirming the plan's zlib proxy model (214/403 ms) and adding `writePastedFile` (≈2 ms, ≤14 ms max); (3) `clipboard.readBuffer('CF_HDROP')` returns **0 bytes** under Electron on Windows even with a real `CF_HDROP` on the clipboard — Chromium maps the drop list onto `text/uri-list`, so the app's FileNameW branch is the live file-list path and the CF_HDROP probe is dead weight on Windows.
+
+### OpenClipboard contention (the R1 number)
+
+Second process (`hold.ps1`) holds `OpenClipboard` for 2.5 s (models `rdpclip.exe`); the bench then replays Chromium's 5 × `Sleep(5)` acquisition pattern:
+
+| Scenario | 5 × 5 ms pattern | last Win32 error | unbounded quantification |
+| --- | --- | --- | --- |
+| text | acquired in-window = true | 0 | time-to-acquire 1.6 ms, 1 attempt |
+| files (CF_HDROP) | acquired in-window = true | 0 | time-to-acquire 0.1 ms, 1 attempt |
+
+**R1's acquire-retry freeze does not reproduce on this Windows build.** `OpenClipboard(IntPtr.Zero)` is not cross-process exclusive: a second process acquires while the holder holds, in one attempt. The real contention is one layer down — while the holder holds, a second process's **data reads fail** (`Get-Clipboard` → `ExternalException`, i.e. `GetClipboardData` refuses). The 25 ms-sleep-per-failed-acquire model and its 6-reads-≈-150 ms bound stay a code fact, not a measured cost here; the measured failure surface is a refused read, which the app swallows per-format in `clipboardFilePaths` today.
+
+### ConPTY paste drain (node-pty, byte-echo child)
+
+Payload `\x1b[200~` + N bytes + `\x1b[201~` written once to the PTY; child echoes every byte back through ConPTY.
+
+| N | `write()` returns | echo drain | chunks | chunk min/med/max B |
+| --- | --- | --- | --- | --- |
+| 1 KB | 0.07 ms | (partial — settle swallowed first chunk) | 1 | 1024/1024/1024 |
+| 10 KB | 0.07 ms | 10.4 ms | 6 | 22/1768/4176 |
+| 100 KB | 0.18 ms | 147.2 ms | 87 | 14/792/4176 |
+| 1 MB | 0.76 ms | 1661.7 ms | 1383 | 14/396/4224 |
+
+`pty.write()` is a sub-millisecond async handoff at every size — the paste write itself never stalls the main thread. Drain scales ~linearly at ConPTY's console read granularity (max chunk ≈ 4.2 KB), so a 1 MB paste arrives back as ~1,380 `pty:data` IPCs (R4's per-chunk fan-out, measured). With `omp` as the child (R3): paste response arrives 178–300 ms after write in 23–24 output chunks, and the pasted marker never re-appears intact inside a single chunk — output is ANSI re-rendered frames, consistent with the win32-input-mode per-record re-encode model; a hard keydown→rendered-frame number needs ANSI-strip accumulation, left to the in-app `[paste-timing]` flag below.
+
+### Opt-in instrumentation
+
+`FINEVIBE_CLIPBOARD_TIMING=1` prints `[paste-timing]` (main: one line per `readForPaste` with every sub-op above, plus `saveImage`; renderer: paste-request → `readForPaste` reply → `pty:write` sent → first parsed PTY output, with per-interaction clipboard-read/write counts) and `[copy-timing]` (selection-change → clipboard write resolved) lines. Off is the default and byte-identical. The renderer gate reads `globalThis.__FINEVIBE_CLIPBOARD_TIMING__` (the preload/devtools injection point — `preload.ts` does not forward the env var yet) or `process.env` under vitest.
+
+**Coverage:** Windows rows are measured. macOS and Linux (X11 + Wayland) rows for all three tables: **harness ready, pending a machine of that OS** — the Electron bench and PTY probe are cross-platform by construction; the ps1 contention harness is Windows-specific by design, its macOS (`pbcopy` busy-owner) and Linux (`SIGSTOP` owner) counterparts are user-executed checks (the CI matrix has no OS clipboard, and this agent box is Windows-only). `readImage`/`toPNG`/`writePastedFile` on the text scenarios are the handler's real skips, not missing runs.
+
+Sources: [clipboard bench](../dev/perf/clipboard-bench.js), [contention harness](../dev/perf/clipbench.ps1), [PTY probe](../dev/perf/pty-paste-probe.js), [clipboard handlers](../src/main/ipc-handlers.ts), [paste renderer path](../src/renderer/components/terminal-utils.ts), and [the investigation plan](../todos/clipboard-paste-latency-plan.md).
+
 ## Measurement protocol for the live run
 
 The static audit defines what the numbers must confirm. Launch with `--js-flags="--expose-gc"`; sample `process.memoryUsage()` (main, via `--inspect`) and `Get-Process Vibeyard` working set (PowerShell, 60 s cadence, per-process rows) plus heap snapshots. Scenarios: **S1** 10 idle tabs → expect ≈ +0.2–0.4 MB/tab renderer, flat main; **S2** a ~100 MB output burst → renderer plateaus at scrollback capacity, main heap must not scale with the burst; **S3** 1 h idle with 10 live PTYs → growth < 5 MB/h (a linear rise implicates the 2 s pollers' per-file maps, `lastMtimes` first); **S4** open 50 sessions and close all → retained `Terminal`/`TranscriptSyncEntry`/reader counts return to baseline; **S5** state seeded with 5,000 history rows → time one persist, < 250 ms; **S6** export a session with a ≥50 MB `.events` sidecar → the main heap transient equals the buffered sidecar bytes (and collapses to chunk size once streaming lands). Record CSVs and snapshots under `bench/memory/<date>/`. Pass criteria: S3 < 5 MB/h, S4 within 10% of baseline, per-tab renderer cost within 2× the 240 KB estimate, S5 < 250 ms.

@@ -711,6 +711,31 @@ describe('pasteIntoTerminal (main clipboard read)', () => {
     expect(writeToPty).toHaveBeenCalledWith('/tmp/report.pdf /tmp/data.csv ');
   });
 
+  // Flag-on twin of the test above: with the injection flag set the
+  // main-read branch stamps [paste-timing] lines; every other test in this
+  // file runs with the flag off and asserts the silent path by passing.
+  it('logs paste-timing lines when the clipboard timing flag is on', async () => {
+    (globalThis as { __FINEVIBE_CLIPBOARD_TIMING__?: boolean }).__FINEVIBE_CLIPBOARD_TIMING__ = true;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const terminal = new FakeTerminal();
+      const writeToPty = vi.fn();
+      mockReadForPaste.mockResolvedValue(pastePayload({ text: 'notes' }));
+
+      const outcome = await pasteIntoTerminal(terminal as any, writeToPty);
+
+      const lines = log.mock.calls.map((call) => String(call[0]));
+      expect(outcome).toBe('text');
+      expect(writeToPty).toHaveBeenCalledWith('notes');
+      expect(lines.some((l) => l.startsWith('[paste-timing] renderer readForPaste +'))).toBe(true);
+      expect(lines.some((l) => l.startsWith('[paste-timing] renderer pty:write sent +'))).toBe(true);
+      expect(lines).toContain('[paste-timing] counts clipboardRead=1 clipboardWrite=0');
+    } finally {
+      delete (globalThis as { __FINEVIBE_CLIPBOARD_TIMING__?: boolean }).__FINEVIBE_CLIPBOARD_TIMING__;
+      log.mockRestore();
+    }
+  });
+
   it('sends markup source when a rich-text copy carries no plain text', async () => {
     const terminal = new FakeTerminal();
     const writeToPty = vi.fn();

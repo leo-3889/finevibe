@@ -9,6 +9,15 @@ import { showAlertBanner } from './alert-banner.js';
 
 type ExtraKeyHandler = (e: KeyboardEvent) => boolean | undefined;
 
+// Renderer gate for the P0 paste-bench timing probes. The renderer is a
+// sandboxed Browser World with no process.env, so the preload/devtools
+// injection point is the global flag; the process.env form keeps the same
+// gate usable under vitest's node env.
+function clipboardTimingOn(): boolean {
+  const g = globalThis as { __FINEVIBE_CLIPBOARD_TIMING__?: boolean; process?: { env?: Record<string, string | undefined> } };
+  return g.__FINEVIBE_CLIPBOARD_TIMING__ === true || g.process?.env?.FINEVIBE_CLIPBOARD_TIMING === '1';
+}
+
 // Wraps text in bracketed-paste escapes when the shell has the mode enabled,
 // so it's delivered as a paste rather than character-by-character input.
 export function wrapBracketedPaste(terminal: Terminal, text: string): string {
@@ -150,12 +159,17 @@ export async function pasteIntoTerminal(
   writeToPty: (data: string) => void,
   data?: DataTransfer | null
 ): Promise<PasteOutcome> {
+  // Paste-request t0 for the renderer [paste-timing] stamps; 0 means off.
+  const t0 = clipboardTimingOn() ? performance.now() : 0;
   if (data && data.files.length > 0) {
     const paths = await pathsForPastedFiles(Array.from(data.files));
     if (paths.length > 0) {
       const { text, refused } = quotePathsForPty(paths);
       if (refused.length > 0) showQuoteRejection(refused);
-      if (text !== '') writeToPty(wrapBracketedPaste(terminal, text + ' '));
+      if (text !== '') {
+        writeToPty(wrapBracketedPaste(terminal, text + ' '));
+        if (t0) console.log(`[paste-timing] renderer paste-event files +${(performance.now() - t0).toFixed(1)} ms`);
+      }
       return 'files';
     }
   }
@@ -167,10 +181,31 @@ export async function pasteIntoTerminal(
     const html = data.getData('text/html').trim();
     if (html === '') return 'empty';
     writeToPty(wrapBracketedPaste(terminal, html));
+    if (t0) console.log(`[paste-timing] renderer paste-event html +${(performance.now() - t0).toFixed(1)} ms`);
     return 'text';
   }
 
   const payload = await window.vibeyard.clipboard.readForPaste();
+  if (t0) console.log(`[paste-timing] renderer readForPaste +${(performance.now() - t0).toFixed(1)} ms (since paste request)`);
+  // Wrapped so every main-read send stamps itself; the off path keeps the
+  // original writeToPty reference.
+  let outSub: { dispose(): void } | null = null;
+  const send = t0
+    ? (d: string) => {
+        writeToPty(d);
+        console.log(`[paste-timing] renderer pty:write sent +${(performance.now() - t0).toFixed(1)} ms`);
+        if (!outSub && terminal.onWriteParsed) {
+          const sub = terminal.onWriteParsed(() => {
+            console.log(`[paste-timing] renderer first pty output +${(performance.now() - t0).toFixed(1)} ms`);
+            sub.dispose();
+          });
+          outSub = sub;
+        }
+      }
+    : writeToPty;
+  const counts = () => {
+    if (t0) console.log('[paste-timing] counts clipboardRead=1 clipboardWrite=0');
+  };
   const paths = payload.imagePath ? [...payload.files, payload.imagePath] : payload.files;
   // Files first, exactly as the native paste-event path above does: a file
   // manager copy leaves the file NAME as the clipboard's plain text (Explorer
@@ -180,18 +215,22 @@ export async function pasteIntoTerminal(
   if (paths.length > 0) {
     const { text, refused } = quotePathsForPty(paths);
     if (refused.length > 0) showQuoteRejection(refused);
-    if (text !== '') writeToPty(wrapBracketedPaste(terminal, text + ' '));
+    if (text !== '') send(wrapBracketedPaste(terminal, text + ' '));
+    counts();
     return 'files';
   }
   const text = payload.text.trim() !== '' ? payload.text : payload.html.trim();
   if (text !== '') {
-    writeToPty(wrapBracketedPaste(terminal, text));
+    send(wrapBracketedPaste(terminal, text));
+    counts();
     return 'text';
   }
   if (payload.hasContent) {
-    writeToPty(CTRL_V);
+    send(CTRL_V);
+    counts();
     return 'passthrough';
   }
+  counts();
   return 'empty';
 }
 
@@ -261,8 +300,21 @@ export function attachFileDropHandler(
 // decides what a selection-driven copy means per platform.
 export function copyText(text: string, source: ClipboardSource = 'explicit'): void {
   if (!text) return;
-  window.vibeyard.clipboard.write(text, source)
-    .catch((err) => console.warn('clipboard write failed', err));
+  const t0 = clipboardTimingOn() ? performance.now() : 0;
+  const write = window.vibeyard.clipboard.write(text, source);
+  if (!t0) {
+    write.catch((err) => console.warn('clipboard write failed', err));
+    return;
+  }
+  const log = (verb: string) =>
+    console.log(`[copy-timing] renderer clipboard write ${verb} +${(performance.now() - t0).toFixed(1)} ms (source=${source}) counts clipboardWrite=1`);
+  write.then(
+    () => log('resolved'),
+    (err) => {
+      log('rejected');
+      console.warn('clipboard write failed', err);
+    }
+  );
 }
 
 export function copySelection(terminal: Terminal, source?: ClipboardSource): void {
@@ -272,6 +324,7 @@ export function copySelection(terminal: Terminal, source?: ClipboardSource): voi
 // Call after terminal.open(); the selection service doesn't fire before then.
 export function attachCopyOnSelect(terminal: Terminal): void {
   terminal.onSelectionChange(() => {
+    if (clipboardTimingOn()) console.log('[copy-timing] renderer selection-change fired');
     if (!appState.preferences.copyOnSelect) return;
     copySelection(terminal, 'selection');
   });

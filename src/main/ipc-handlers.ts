@@ -708,12 +708,29 @@ export function registerIpcHandlers(): void {
     createAppMenu(debugMode);
   });
 
+  // Opt-in clipboard latency probes for the P0 paste bench. Off is the
+  // default: every probe below sits behind this one gate, so the handlers
+  // behave identically when the flag is unset.
+  const CLIPBOARD_TIMING = process.env.FINEVIBE_CLIPBOARD_TIMING === '1';
+  const fmtMs = (value: number) => value.toFixed(1);
+  // Sub-op timings recorded by clipboardFilePaths/writePastedFile for the
+  // enclosing readForPaste line. Those helpers keep their signatures, so the
+  // accumulator object is handed over synchronously around their calls.
+  let pasteSubTimings: Record<string, number> | null = null;
+
   ipcMain.handle('clipboard:write', (_event, text: string, source?: ClipboardSource) => {
+    const t0 = CLIPBOARD_TIMING ? performance.now() : 0;
     clipboard.writeText(text);
+    const tMain = CLIPBOARD_TIMING ? performance.now() : 0;
     // On Linux a selection-driven copy also populates the X11 PRIMARY selection
     // so middle-click paste works. An explicit copy must not — it would clobber
     // whatever the user has selected in another window.
     if (source === 'selection' && isLinux) clipboard.writeText(text, 'selection');
+    if (CLIPBOARD_TIMING) {
+      const t1 = performance.now();
+      console.log(`[copy-timing] clipboard:write total=${fmtMs(t1 - t0)}ms`
+        + (source === 'selection' && isLinux ? ` selectionWrite=${fmtMs(t1 - tMain)}ms` : ''));
+    }
   });
 
   // Every provider takes attachments as a path — a file dropped on a terminal is
@@ -749,7 +766,9 @@ export function registerIpcHandlers(): void {
         PASTE_DIR,
         `paste-${Date.now()}-${randomBytes(4).toString('hex')}${ext}`,
       );
+      const tWrite = CLIPBOARD_TIMING ? performance.now() : 0;
       await fs.promises.writeFile(filePath, buffer);
+      if (pasteSubTimings) pasteSubTimings.writeFile = performance.now() - tWrite;
       return filePath;
     } catch (err) {
       console.warn('Failed to store pasted clipboard file', err);
@@ -777,11 +796,14 @@ export function registerIpcHandlers(): void {
 
   function clipboardFilePaths(): string[] {
     const paths: string[] = [];
+    const sub = pasteSubTimings;
     try {
+      const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
       // FileNameW: UTF-16LE names, NUL-separated, double-NUL terminated.
       for (const name of clipboard.readBuffer('FileNameW').toString('utf16le').split('\0')) {
         if (name) paths.push(name);
       }
+      if (sub) sub.fileNameW = performance.now() - tRead;
     } catch (err) {
       console.warn('Failed to read clipboard file list', err);
     }
@@ -791,6 +813,7 @@ export function registerIpcHandlers(): void {
         // is pFiles (name-list offset) @0, pt @4-11, fWide @12 — Explorer sets
         // fWide, so the names are UTF-16LE. Older senders use the OEM codepage,
         // where a single-byte decode keeps ASCII paths intact.
+        const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
         const hdrop = clipboard.readBuffer('CF_HDROP');
         if (hdrop.length >= 16) {
           const offset = hdrop.readUInt32LE(0);
@@ -801,6 +824,7 @@ export function registerIpcHandlers(): void {
             if (name) paths.push(name);
           }
         }
+        if (sub) sub.hdrop = performance.now() - tRead;
       } catch (err) {
         console.warn('Failed to read clipboard file drop list', err);
       }
@@ -808,15 +832,18 @@ export function registerIpcHandlers(): void {
     if (paths.length === 0) {
       try {
         // An old-style XML property list: <array><string>/path</string>…
+        const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
         const plist = clipboard.readBuffer('NSFilenamesPboardType').toString('utf8');
         for (const match of plist.matchAll(/<string>([\s\S]*?)<\/string>/g)) {
           paths.push(decodeXmlText(match[1]));
         }
+        if (sub) sub.nsPlist = performance.now() - tRead;
       } catch (err) {
         console.warn('Failed to read clipboard file URIs', err);
       }
     }
     if (paths.length === 0) {
+      const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
       for (const line of clipboard.read('text/uri-list').split(/\r?\n/)) {
         const uri = line.trim();
         if (!uri.startsWith('file://')) continue;
@@ -826,21 +853,39 @@ export function registerIpcHandlers(): void {
           // A malformed URI is not a file the CLI can read.
         }
       }
+      if (sub) sub.uriList = performance.now() - tRead;
     }
     return paths.filter((filePath) => path.isAbsolute(filePath));
   }
 
   ipcMain.handle('clipboard:readForPaste', async (): Promise<ClipboardPastePayload> => {
+    const t0 = CLIPBOARD_TIMING ? performance.now() : 0;
     const formats = clipboard.availableFormats();
+    const tFormats = CLIPBOARD_TIMING ? performance.now() : 0;
     const text = clipboard.readText();
+    const tText = CLIPBOARD_TIMING ? performance.now() : 0;
+    const sub: Record<string, number> | null = CLIPBOARD_TIMING ? {} : null;
+    pasteSubTimings = sub;
     const files = clipboardFilePaths();
+    pasteSubTimings = null;
     let imagePath: string | null = null;
+    let readImageMs = -1;
+    let toPngMs = -1;
     if (files.length === 0 && formats.some((format) => format.toLowerCase().startsWith('image/'))) {
       try {
         // Electron normalises every image flavor (BMP, TIFF, DIB) to PNG, which
         // every provider accepts as an attachment path.
+        const tImage = CLIPBOARD_TIMING ? performance.now() : 0;
         const image = clipboard.readImage();
-        if (!image.isEmpty()) imagePath = await writePastedFile(image.toPNG(), '.png');
+        if (CLIPBOARD_TIMING) readImageMs = performance.now() - tImage;
+        if (!image.isEmpty()) {
+          const tPng = CLIPBOARD_TIMING ? performance.now() : 0;
+          const png = image.toPNG();
+          if (CLIPBOARD_TIMING) toPngMs = performance.now() - tPng;
+          pasteSubTimings = sub;
+          imagePath = await writePastedFile(png, '.png');
+          pasteSubTimings = null;
+        }
       } catch (err) {
         console.warn('Failed to read clipboard image', err);
       }
@@ -848,7 +893,27 @@ export function registerIpcHandlers(): void {
     // Rich-text copies (Word, OneNote, a browser selection) carry HTML next to
     // plain text; with no text at all, the markup source is the only readable
     // content, and a CLI reads markup happily.
+    const tHtml = CLIPBOARD_TIMING ? performance.now() : 0;
     const html = text.trim() === '' ? clipboard.readHTML().trim() : '';
+    if (CLIPBOARD_TIMING) {
+      // One line per paste read, mirroring the branches above: a sub-op that
+      // never ran (file-list short-circuit, no image flavor) is omitted.
+      const parts = [
+        `[paste-timing] readForPaste total=${fmtMs(performance.now() - t0)}ms`,
+        `formats=${fmtMs(tFormats - t0)}ms`,
+        `text=${fmtMs(tText - tFormats)}ms`,
+      ];
+      if (sub) {
+        for (const key of ['fileNameW', 'hdrop', 'nsPlist', 'uriList'] as const) {
+          if (key in sub) parts.push(`${key}=${fmtMs(sub[key])}ms`);
+        }
+      }
+      if (readImageMs >= 0) parts.push(`readImage=${fmtMs(readImageMs)}ms`);
+      if (toPngMs >= 0) parts.push(`toPNG=${fmtMs(toPngMs)}ms`);
+      if (sub && 'writeFile' in sub) parts.push(`writeFile=${fmtMs(sub.writeFile)}ms`);
+      if (text.trim() === '') parts.push(`html=${fmtMs(performance.now() - tHtml)}ms`);
+      console.log(parts.join(' '));
+    }
     return { text, html, files, imagePath, hasContent: formats.length > 0 || files.length > 0 };
   });
 
@@ -859,7 +924,10 @@ export function registerIpcHandlers(): void {
     if (!ext) return null;
     // The base64 length bounds the decoded size before the decode itself.
     if (match[2].length > Math.ceil((PASTE_MAX_BYTES * 4) / 3)) return null;
-    return writePastedFile(Buffer.from(match[2], 'base64'), ext);
+    const t0 = CLIPBOARD_TIMING ? performance.now() : 0;
+    const saved = await writePastedFile(Buffer.from(match[2], 'base64'), ext);
+    if (CLIPBOARD_TIMING) console.log(`[paste-timing] saveImage total=${fmtMs(performance.now() - t0)}ms`);
+    return saved;
   });
 
   ipcMain.handle(
