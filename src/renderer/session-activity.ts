@@ -1,4 +1,5 @@
 import { STOP_INFLIGHT_TRUST_MS } from '../shared/constants';
+import type { CliSessionStatus } from '../shared/types';
 export type SessionStatus = 'working' | 'waiting' | 'idle' | 'completed' | 'input';
 
 /**
@@ -64,7 +65,7 @@ function setStatus(sessionId: string, status: SessionStatus): void {
 /**
  * Called when a hook-based status event is received from the main process.
  */
-export function setHookStatus(sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName?: string): void {
+export function setHookStatus(sessionId: string, status: CliSessionStatus, hookName?: string): void {
   const state = sessions.get(sessionId);
   if (!state) return;  // Ignore events for sessions not managed by Vibeyard
 
