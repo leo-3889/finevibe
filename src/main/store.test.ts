@@ -10,6 +10,8 @@ vi.mock('fs', () => ({
   closeSync: vi.fn(),
   mkdirSync: vi.fn(),
   renameSync: vi.fn(),
+  statSync: vi.fn(),
+  realpathSync: vi.fn(),
 }));
 
 vi.mock('os', () => ({
@@ -17,8 +19,8 @@ vi.mock('os', () => ({
 }));
 
 import * as fs from 'fs';
-import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, DEFAULT_PREFERENCES } from './store';
-import type { PersistedState } from './store';
+import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, getKnownProjectPaths, DEFAULT_PREFERENCES } from './store';
+import type { PersistedState, ProjectRecord } from './store';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
@@ -28,6 +30,8 @@ const mockFsyncSync = vi.mocked(fs.fsyncSync);
 const mockCloseSync = vi.mocked(fs.closeSync);
 const mockMkdirSync = vi.mocked(fs.mkdirSync);
 const mockRenameSync = vi.mocked(fs.renameSync);
+const mockStatSync = vi.mocked(fs.statSync);
+const mockRealpathSync = vi.mocked(fs.realpathSync);
 
 const DEFAULT_STATE: PersistedState = {
   version: 1,
@@ -53,6 +57,11 @@ beforeEach(() => {
   // Each case starts 10 s past the previous case's fake clock, so the
   // first saveState of every case takes the leading edge regardless of
   // when the previous case last touched lastSaveAt.
+  // P1-12 root-set validation stats + realpath-projects. Default mock
+  // semantics: every path is a real directory and realpath is identity;
+  // cases override when a dir must not exist.
+  mockStatSync.mockImplementation(() => ({ isDirectory: () => true }) as unknown as fs.Stats);
+  mockRealpathSync.mockImplementation((p) => String(p));
   fakeClockBase += 10_000;
   vi.setSystemTime(fakeClockBase);
   invalidateStateCache();
@@ -258,3 +267,69 @@ describe('flushState', () => {
   });
 });
 
+
+// P1-12: the gate root set (isWithinKnownProject → fs:*, git:*, readiness,
+// MCP) is main-owned. projects[].path arrives from the renderer
+// (`store:save`) and from a disk file any local peer can write — never
+// verbatim.
+describe('main-owned gate root set (P1-12)', () => {
+  const FS_ROOT = process.platform === 'win32' ? 'C:\\' : '/';
+  const projectAt = (projectPath: string): ProjectRecord => ({
+    id: `p-${projectPath}`,
+    name: 'P',
+    path: projectPath,
+    sessions: [],
+    activeSessionId: null,
+    layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+  });
+  const missing = (p: string): void => {
+    mockStatSync.mockImplementation((pathLike) => {
+      if (String(pathLike) === p) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { isDirectory: () => true } as unknown as fs.Stats;
+    });
+  };
+
+  it('saveState refuses a fabricated gate root: the root set does not widen', () => {
+    saveState({ ...DEFAULT_STATE, projects: [projectAt(FS_ROOT)] });
+    // One `store:save` with projects:[{path:'C:\\'}] must not authorize
+    // arbitrary fs/git/MCP access — the root set stays shut.
+    expect(getKnownProjectPaths()).toEqual([]);
+  });
+
+  it('saveState refuses the home root, missing dirs and CLI config dirs, keeps real dirs', () => {
+    missing('/mock/home/gone');
+    saveState({
+      ...DEFAULT_STATE,
+      projects: [
+        projectAt('/mock/home'),
+        projectAt('/mock/home/gone'),
+        projectAt('/mock/home/.claude'),
+        projectAt('/mock/home/projects/real'),
+      ],
+    });
+    expect(getKnownProjectPaths()).toEqual(['/mock/home/projects/real']);
+  });
+
+  it('saveState persists the renderer payload verbatim (persistence is not the gate)', () => {
+    saveState({ ...DEFAULT_STATE, projects: [projectAt(FS_ROOT)] });
+    const written = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
+    expect(written.projects.map((p: ProjectRecord) => p.path)).toContain(FS_ROOT);
+  });
+
+  it('loadState drops persisted projects that fail root validation and logs drops', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    missing('/mock/home/gone');
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      version: 1,
+      projects: [projectAt('/mock/home/projects/real'), projectAt(FS_ROOT), projectAt('/mock/home/gone')],
+      activeProjectId: null,
+    }));
+    const loaded = loadState();
+    // A peer-written state.json must not persist a gate root across boots.
+    expect(loaded.projects.map(p => p.path)).toEqual(['/mock/home/projects/real']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(FS_ROOT));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('/mock/home/gone'));
+    warn.mockRestore();
+  });
+});

@@ -259,12 +259,39 @@ export function gitUnstageFile(cwd: string, filePath: string): Promise<void> {
   return execGit(cwd, ['reset', 'HEAD', '--', filePath]);
 }
 
-export function gitDiscardFile(cwd: string, filePath: string, area: GitFileEntry['area']): Promise<void> {
-  if (area === 'untracked') {
-    const fullPath = path.join(cwd, filePath);
-    return fs.promises.rm(fullPath, { recursive: true, force: true });
+/** P1-17: the untracked branch is a real recursive delete, so every
+ * discard proves its bounds before anything is removed: the cwd is inside
+ * a git WORKING TREE (`rev-parse --show-toplevel` — a watched CLI config
+ * dir is not one), the target is a non-empty path strictly inside the tree
+ * (discarding the whole tree is never a single-file operation), and for
+ * untracked discards git itself reports untracked content at the path and
+ * no tracked content — every file the delete would take with it is
+ * verified individually by git's own listing. */
+export async function gitDiscardFile(cwd: string, filePath: string, area: GitFileEntry['area']): Promise<void> {
+  if (typeof filePath !== 'string' || filePath.trim() === '') {
+    throw new Error('Refusing to discard an empty path');
   }
-  return execGit(cwd, ['checkout', '--', filePath]);
+  const toplevel = (await execGitWithOutput(cwd, ['rev-parse', '--show-toplevel'])).trim();
+  if (toplevel === '') throw new Error('Not inside a git working tree');
+  const target = path.join(cwd, filePath);
+  const treeRoot = path.resolve(toplevel);
+  const rel = path.relative(treeRoot, target);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error(`Refusing to discard ${JSON.stringify(filePath)}: at or outside the repository root`);
+  }
+  if (area !== 'untracked') return execGit(cwd, ['checkout', '--', filePath]);
+  // Git-slash pathspec: entry.path arrives in git's own spelling, and a
+  // native backslash would read as a pathspec escape.
+  const pathspec = filePath.split(path.sep).join('/');
+  const untracked = (await execGitWithOutput(cwd, ['ls-files', '--others', '--exclude-standard', '--', pathspec])).trim();
+  if (untracked === '') {
+    throw new Error(`Refusing to discard ${JSON.stringify(filePath)}: git reports no untracked file there`);
+  }
+  const tracked = (await execGitWithOutput(cwd, ['ls-files', '--', pathspec])).trim();
+  if (tracked !== '') {
+    throw new Error(`Refusing to discard ${JSON.stringify(filePath)}: it carries tracked files`);
+  }
+  return fs.promises.rm(target, { recursive: true, force: true });
 }
 
 export function getGitWorktrees(cwd: string): Promise<GitWorktree[]> {

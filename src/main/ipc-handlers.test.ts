@@ -3,7 +3,7 @@ import { searchSessions } from './session-deep-search';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { CliProvider } from './providers/provider';
 import * as fs from 'fs';
-import { clipboard } from 'electron';
+import { clipboard, dialog } from 'electron';
 import * as os from 'os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ClipboardPastePayload } from '../shared/types';
@@ -64,6 +64,7 @@ vi.mock('electron', () => ({
   BrowserWindow: {
     getAllWindows: () => [fakeWin],
     fromWebContents: () => fakeWin,
+    getFocusedWindow: () => fakeWin,
   },
   app: {
     getPath: () => '/mock/app',
@@ -73,7 +74,7 @@ vi.mock('electron', () => ({
     whenReady: () => Promise.resolve(),
     quit: vi.fn(),
   },
-  dialog: { showMessageBox: () => Promise.resolve({ response: 0 }) },
+  dialog: { showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })) },
   shell: { openExternal: () => Promise.resolve() },
   clipboard: {
     writeText: vi.fn(),
@@ -151,6 +152,7 @@ vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
 
 import { registerIpcHandlers } from './ipc-handlers';
+import { isManagedMcpConfigDir } from './claude-cli';
 import { loadState } from './store';
 import { cleanupSessionStatus } from './hook-status';
 import { analyzeReadiness } from './readiness/analyzer';
@@ -178,6 +180,9 @@ async function create(
 ): Promise<void> {
   const handler = handlers.get('pty:create');
   if (!handler) throw new Error('pty:create was not registered');
+  // The launch gate binds cwd to the project tier; the lifecycle tests
+  // launch in '/proj', so make it a known project.
+  knownPaths.push('/proj');
   await handler(
     {},
     sessionId,
@@ -205,6 +210,10 @@ beforeEach(() => {
   knownPaths.length = 0;
   provider = makeProvider();
   mockGetProvider.mockReturnValue(provider);
+  // pty:create gates a renderer-supplied configDir through the managed
+  // profile allowlist (claude-cli, autoStubbed here): tests that want the
+  // gate exercised override it per-test.
+  vi.mocked(isManagedMcpConfigDir).mockReturnValue(true);
   registerIpcHandlers();
 });
 
@@ -321,6 +330,57 @@ describe('git:* root gate', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('refuses a git file path that resolves to the root itself', async () => {
+    const gitStatus = await import('./git-status');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-git-gate-'));
+    try {
+      knownPaths.push(root);
+      // P1-17: '' resolves (path.resolve(root,'')===root) and `isWithin`
+      // accepts the root itself, so the old gate let an untracked "discard"
+      // of the whole tree reach gitDiscardFile's recursive rm. The root
+      // spelling is now refused at requireGitFilePath, for every git file
+      // channel — a single-file op is never the tree root.
+      for (const target of ['', '.', '.wt/..']) {
+        await expect(handlers.get('git:discardFile')!({}, root, target, 'untracked'))
+          .rejects.toThrow(/not the project root/);
+      }
+      expect(vi.mocked(gitStatus.gitDiscardFile)).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to make a CLI config dir a git-capable watched root', async () => {
+    const gitStatus = await import('./git-status');
+    const gitWatcher = await import('./git-watcher');
+    // The real home: isAllowedReadPath matches ~/.claude by spelling, and the
+    // P1-17 chain started exactly there — config dirs ARE read-allowed, which
+    // is what made watchProject a route into requireGitRoot's admit set.
+    const claudeDir = path.join(os.homedir(), '.claude');
+    handlers.get('git:watchProject')!({}, claudeDir);
+    expect(vi.mocked(gitWatcher.startGitWatcher)).not.toHaveBeenCalled();
+    // Today the watched root becomes git-capable; after the fix the config
+    // tree never joins gitWatchedRoots, so git handlers reject it.
+    expect(() => handlers.get('git:getStatus')!({}, claudeDir)).toThrow(/not within a known project/);
+    expect(vi.mocked(gitStatus.getGitStatus)).not.toHaveBeenCalled();
+  });
+});
+
+// P1-12: the gate's root set is main-owned. The store suite proves the store
+// validates every writer; this pins the handler wiring: store:save hands the
+// payload to the store verifier and never feeds the gate, so a payload
+// inventing a root cannot open fs/git channels outside the known set.
+describe('store:save cannot widen the root set', () => {
+  it('routes the renderer payload through the store verifier, not the gate', async () => {
+    const store = await import('./store');
+    knownPaths.length = 0;
+    const poison = { projects: [{ id: 'x', path: 'C:\\' }], preferences: {} };
+    handlers.get('store:save')!({}, poison);
+    expect(vi.mocked(store.saveState)).toHaveBeenCalledWith(poison);
+    expect(knownPaths).not.toContain('C:\\');
+    expect(handlers.get('fs:readFile')!({}, 'C:\\')).toEqual({ ok: false, reason: 'error' });
+  });
 });
 
 describe('readiness/github git-executing handlers share the root gate', () => {
@@ -361,6 +421,130 @@ describe('readiness/github git-executing handlers share the root gate', () => {
   });
 });
 
+const OUTSIDE_HOME = process.platform === 'win32' ? 'C:\\Windows' : '/etc';
+
+describe('pty launch path gate (P1-15)', () => {
+  it('refuses a cwd outside every known project before any side effect', async () => {
+    // pty:create is the one process-launch channel: it runs the provider
+    // CLI with renderer-supplied flags in a renderer-supplied cwd. The gate
+    // must fire before provider hooks, transcript sync, and the spawn.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-pty-gate-'));
+    try {
+      const invented = path.join(root, 'invented');
+      fs.mkdirSync(invented);
+      await handlers.get('pty:create')!({}, 'ui-1', invented, null, false, '', 'pi');
+      expect(mockSpawnPty).not.toHaveBeenCalled();
+      expect(provider.onSessionStarted).not.toHaveBeenCalled();
+      expect(mockRegisterSync).not.toHaveBeenCalled();
+      // Channel contract: the reason lands in the pane via pty:data and the
+      // exit carries the spawn-rejected sentinel, so the renderer keeps the
+      // pane open instead of archiving a crash.
+      expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:data', 'ui-1', expect.stringContaining('not a known project'));
+      expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a configDir that is not a managed profile dir', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValue(false);
+    await create('ui-1', null, { configDir: '/home/attacker/.claude' });
+    expect(mockSpawnPty).not.toHaveBeenCalled();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:data', 'ui-1', expect.stringContaining('managed profile'));
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+  });
+
+  it('spawns for a known-project cwd with a managed configDir', async () => {
+    await create('ui-1', null, { configDir: '/profiles/work' });
+    expect(mockSpawnPty).toHaveBeenCalled();
+  });
+
+  it('gates pty:createShell cwd the same way', async () => {
+    const ptyManager = await import('./pty-manager');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-pty-gate-'));
+    try {
+      const invented = path.join(root, 'invented');
+      fs.mkdirSync(invented);
+      handlers.get('pty:createShell')!({}, 'sh-1', invented);
+      expect(ptyManager.spawnShellPty).not.toHaveBeenCalled();
+
+      knownPaths.push('/proj');
+      handlers.get('pty:createShell')!({}, 'sh-1', '/proj');
+      expect(ptyManager.spawnShellPty).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fs:listDirs home gate (P1-19)', () => {
+  it('returns nothing for a home-outside, root-outside directory when the confirm is denied', async () => {
+    // dialog.showMessageBox resolves response 0 (Cancel) by default.
+    const dirs = await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    expect(dirs).toEqual([]);
+    expect(dialog.showMessageBox).toHaveBeenCalled();
+  });
+
+  it('enumerates a home-outside directory only after an explicit confirm', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    const dirs = await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    expect(dirs.length).toBeGreaterThan(0);
+  });
+
+  it('lists a home-tree directory with no confirm (pre-project picker flow)', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-listdirs-'));
+    try {
+      fs.mkdirSync(path.join(homeDir, 'proj'));
+      const dirs = await handlers.get('fs:listDirs')!({}, homeDir);
+      expect(dirs).toEqual([path.join(homeDir, 'proj')]);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fs:isDirectory home gate (P2-38)', () => {
+  it('reports false for a home-outside directory - same oracle fs:exists denies', () => {
+    expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).toBe(false);
+  });
+
+  it('reports true for a home-tree directory (pre-project add flow)', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.vibeyard-isdir-'));
+    try {
+      expect(handlers.get('fs:isDirectory')!({}, homeDir)).toBe(true);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fs:unwatchDir gate (P2-30)', () => {
+  it('mirrors fs:watchDir: a blocked path never reaches the watcher', async () => {
+    const fileWatcher = await import('./file-watcher');
+    handlers.get('fs:unwatchDir')!({}, OUTSIDE_HOME);
+    expect(fileWatcher.unwatchDir).not.toHaveBeenCalled();
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibeyard-watch-gate-'));
+    try {
+      knownPaths.push(root);
+      handlers.get('fs:unwatchDir')!({}, root);
+      expect(fileWatcher.unwatchDir).toHaveBeenCalledWith(path.resolve(root));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('session:transcriptExistsSync foreign configDir (P2-113)', () => {
+  it('reports false when the provider declines the config dir (null = absent)', () => {
+    provider.getTranscriptPath = vi.fn(() => null);
+    const event: { returnValue?: unknown } = {};
+    handlers.get('session:transcriptExistsSync')!(event, 'claude', 'cli-1', '/proj', '/foreign/dir', undefined);
+    expect(provider.getTranscriptPath).toHaveBeenCalledWith('cli-1', '/proj', '/foreign/dir', undefined);
+    expect(event.returnValue).toBe(false);
+  });
+});
 describe('pty:create provider hooks', () => {
   it('a fresh session registers for cli-session-id discovery', async () => {
     await create('ui-1', null);

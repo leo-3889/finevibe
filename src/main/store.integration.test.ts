@@ -163,3 +163,38 @@ describe('state persistence on disk', () => {
     expect(store.loadState().activeProjectId).toBe('mode-upgrade');
   });
 });
+
+describe('main-owned gate root set (P1-12)', () => {
+  const projectAt = (projectPath: string) => ({
+    id: 'p',
+    name: 'P',
+    path: projectPath,
+    sessions: [],
+    activeSessionId: null,
+    layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+  });
+
+  it('refuses a peer-written gate root at load and keeps real projects', () => {
+    const realDir = fs.mkdtempSync(path.join(testHome.path, 'proj-'));
+    const file = path.join(testHome.path, '.vibeyard', 'state.json');
+    const poison = process.platform === 'win32' ? 'C:\\' : '/';
+    fs.writeFileSync(file, JSON.stringify({
+      version: 1,
+      projects: [projectAt(realDir), projectAt(poison), projectAt(path.join(testHome.path, 'nope-gone'))],
+      activeProjectId: null,
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    store.invalidateStateCache();
+    const loaded = store.loadState();
+    // A peer-written state.json must not persist a gate root across boots:
+    // the real project survives load, the fabricated root and vanished dir
+    // are dropped (logged). The root set itself is written by the main-side
+    // save path — the quit-path flushState -> saveStateSync round-trip
+    // carries exactly the validated set, and a reload keeps it.
+    store.saveStateSync(loaded);
+    expect(store.getKnownProjectPaths()).toEqual([fs.realpathSync(realDir)]);
+    store.invalidateStateCache();
+    expect(store.loadState().projects.map(p => p.path)).toEqual([realDir]);
+    warn.mockRestore();
+  });
+});

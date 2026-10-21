@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from './pty-manager';
-import { addMcpServer, removeMcpServer } from './claude-cli';
+import { addMcpServer, removeMcpServer, isManagedMcpConfigDir } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { fileURLToPath } from 'node:url';
 import { loadState, saveState, getKnownProjectPaths, PersistedState } from './store';
@@ -26,6 +26,7 @@ import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
 import type { ProviderId, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
+import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
@@ -54,7 +55,12 @@ function isWithinKnownProject(resolvedPath: string): boolean {
  * IPC-supplied cwd. Bound every git root to a known project directory or a
  * root the git panel actively watches — worktrees live outside the project
  * dir by design — so a compromised renderer cannot aim git (or the
- * recursive-delete sink) at arbitrary cwds.
+ * recursive-delete sink) at arbitrary cwds. P1-17: watched roots enter the
+ * set only through git:watchProject's PROJECT-tier gate — the read
+ * allowlist's CLI config dirs never join it — and the destructive sink
+ * verifies its own bounds: gitDiscardFile refuses any cwd that is not a
+ * real working tree (`rev-parse --show-toplevel`), the tree root as a
+ * target, and any untracked path git does not vouch for.
  */
 const gitWatchedRoots = new Set<string>();
 const MAX_GIT_WATCHED_ROOTS = 200;
@@ -79,6 +85,14 @@ function requireGitRoot(channel: string, projectPath: string): string {
 function requireGitFilePath(channel: string, root: string, filePath: string): string {
   if (typeof filePath !== 'string') throw new Error('Invalid file path');
   const joined = path.resolve(root, filePath);
+  // P1-17: `''`, `.` and `x/..` all resolve to the ROOT itself. Every git
+  // file channel acts on a file — an untracked "discard" of the root is a
+  // whole-tree `rm -r`, never a single-file operation — so a path that
+  // lands on the root is refused here, before any handler sees it.
+  if (path.relative(path.resolve(root), joined) === '') {
+    console.warn(`${channel} blocked: ${JSON.stringify(filePath)} resolves to the root ${root}`);
+    throw new Error('File path must be inside the project, not the project root');
+  }
   if (!isWithin(canonicalRoot(root), canonicalPath(joined))) {
     console.warn(`${channel} blocked: ${filePath} escapes ${root}`);
     throw new Error('File path escapes the project');
@@ -147,6 +161,39 @@ function isAllowedReadPath(resolvedPath: string): boolean {
 
   const target = canonicalPath(resolvedPath);
   return allowedPaths.some(allowed => isWithin(canonicalRoot(allowed), target));
+}
+
+/**
+ * fs channels that stat/enumerate renderer-named directories: fs:exists'
+ * read gate widened with the home tree. The pre-project add / new-project
+ * picker flows run in home before any project exists, so home is a
+ * legitimate enumeration root; everything outside home + known roots is
+ * not app data and needs the explicit confirm below (fs:listDirs) or is
+ * answered with the channel's empty shape (fs:isDirectory).
+ */
+function isWithinHomeTree(resolvedPath: string): boolean {
+  return isWithin(canonicalRoot(os.homedir()), canonicalPath(resolvedPath));
+}
+
+function isAllowedEnumeratePath(resolvedPath: string): boolean {
+  return isAllowedReadPath(resolvedPath) || isWithinHomeTree(resolvedPath);
+}
+
+/** Confirm flow for home-outside enumeration, mirroring confirmRemoteHost in
+ * mcp-ipc-handlers: Cancel is the default and the deny answer. */
+async function confirmHomeOutsideListing(dir: string): Promise<boolean> {
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    title: 'Browse outside home?',
+    message: `List directories in ${dir}?`,
+    detail: 'This location is outside your home directory and known projects. Only continue for directories you trust.',
+    buttons: ['Cancel', 'Confirm'],
+    defaultId: 0,
+    cancelId: 0,
+  };
+  const win = BrowserWindow.getFocusedWindow();
+  const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  return response === 1;
 }
 
 /**
@@ -240,6 +287,33 @@ export function registerIpcHandlers(): void {
     }
 
     const provider = getProvider(providerId);
+
+    // P1-15: pty:create is the one process-launch channel — the provider CLI
+    // runs with renderer-supplied flags in a renderer-supplied cwd, under a
+    // renderer-supplied configDir. An unbound (cwd, configDir) makes the
+    // agent a read/write/delete reach-everywhere machine. Bind cwd to the
+    // project tier (canonical containment under a known project — worktree
+    // launch cwds are project dirs too) and configDir to the managed-profile
+    // allowlist, the same canonical gate mcp:addServer enforces on its write
+    // target. The per-launch sessionDir (pi/omp) is main-derived:
+    // resolveLaunchSessionDir accepts only the UI session-id shape.
+    // Rejection follows the spawn-rejected contract (pane message +
+    // sentinel exit, like pty-manager's pre-spawn rejections): the renderer
+    // fires pty:create un-awaited, and a throw would swallow the reason into
+    // a blank pane.
+    const rejectLaunch = (message: string): void => {
+      console.warn(`pty:create blocked: ${message}`);
+      win.webContents.send('pty:data', sessionId, '\r\n\x1b[31m' + message + '\x1b[0m\r\n');
+      win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+    };
+    if (!isWithinKnownProject(path.resolve(cwd))) {
+      rejectLaunch(`Refused to launch: the working directory ${cwd} is not a known project.`);
+      return;
+    }
+    if (configDir && !isManagedMcpConfigDir(configDir)) {
+      rejectLaunch(`Refused to launch: the config directory ${configDir} is not a managed profile directory.`);
+      return;
+    }
 
     // Providers without a hook system that reports the CLI session id
     // discover it from on-disk artifacts after spawn (codex: history.jsonl,
@@ -378,6 +452,15 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
 
+    // P1-15: same launch gate as pty:create — the shell runs in a
+    // renderer-named cwd. Production callers (project terminals) pass the
+    // project's own path, which is a known project by construction.
+    if (!isWithinKnownProject(path.resolve(cwd))) {
+      console.warn(`pty:createShell blocked: ${cwd} is not a known project`);
+      win.webContents.send('pty:data', sessionId, '\r\n\x1b[31mRefused: the shell working directory is not a known project.\x1b[0m\r\n');
+      win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+      return;
+    }
     spawnShellPty(
       sessionId,
       cwd,
@@ -410,7 +493,12 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('fs:isDirectory', (_event, filePath: string) => {
     try {
-      return fs.statSync(expandUserPath(filePath)).isDirectory();
+      const expanded = expandUserPath(filePath);
+      // P2-38: this is fs:exists' existence oracle with a second spelling
+      // (the sidebar's pre-project add flow), so it takes the widened home
+      // gate. Outside home + known roots: answer nothing.
+      if (!isAllowedEnumeratePath(expanded)) return false;
+      return fs.statSync(expanded).isDirectory();
     } catch {
       return false;
     }
@@ -420,9 +508,14 @@ export function registerIpcHandlers(): void {
     return expandUserPath(filePath);
   });
 
-  ipcMain.handle('fs:listDirs', (_event, dirPath: string, prefix?: string) => {
+  ipcMain.handle('fs:listDirs', async (_event, dirPath: string, prefix?: string) => {
     try {
       const expanded = expandUserPath(dirPath);
+      // P1-19: fs:listDir's gate widened with the home tree — the
+      // pre-project picker starts in home. Enumeration outside home +
+      // known roots exists only for the directory picker, so it needs the
+      // explicit confirm an MCP remote-host connect gets; Cancel = empty.
+      if (!isAllowedEnumeratePath(expanded) && !(await confirmHomeOutsideListing(expanded))) return [];
       const entries = fs.readdirSync(expanded, { withFileTypes: true });
       const lowerPrefix = prefix?.toLowerCase();
       return entries
@@ -1020,9 +1113,15 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
     const resolved = path.resolve(projectPath);
-    // Watch is read-only, and watched roots become git-capable roots, so
-    // bound them to the fs gate (projects + CLI config dirs, nothing else).
-    if (!isAllowedReadPath(resolved)) {
+    // P1-17: watched roots become git-capable roots (requireGitRoot admits
+    // them) and the git panel's untracked discard ends in a recursive rm —
+    // so watch takes the PROJECT tier, not the read allowlist. The CLI
+    // config trees (~/.claude, ~/.codex, ~/.gemini, ~/.copilot, the
+    // ClaudeCode dirs) stay read-allowed for the config panels and never
+    // join the set of roots a renderer can aim git: channels at. Legit
+    // watch callers pass the active project's path (git-status.ts), and
+    // out-of-tree worktrees are project dirs by the same gate.
+    if (!isWithinKnownProject(resolved)) {
       console.warn(`git:watchProject blocked: ${resolved}`);
       return;
     }
@@ -1274,6 +1373,11 @@ export function registerIpcHandlers(): void {
 
   ipcMain.on('fs:unwatchDir', safeOn('fs:unwatchDir', (_event, dirPath: string) => {
     const resolved = path.resolve(dirPath);
+    // P2-30: mirror fs:watchDir's gate. Unwatch is destructive — the watcher
+    // refcounts by path alone, so any frame naming a watched dir silently
+    // drops the other frames' refs. A path the watch side refuses must not
+    // be unwatchable.
+    if (!isAllowedReadPath(resolved)) return;
     unwatchDir(resolved);
   }));
 

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { PersistedState, Preferences } from '../shared/types';
+import type { PersistedState, Preferences, ProjectRecord } from '../shared/types';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
 
@@ -81,9 +81,21 @@ export function loadState(): LoadedState {
     }
   }
   if (picked) {
+    // P1-12: the same root validation guards the disk path — a peer-written
+    // state.json must not persist a gate root across boots. Invalid projects
+    // are dropped from the loaded state (logged), not silently trusted.
+    const projects: ProjectRecord[] = [];
+    for (const project of picked.projects ?? []) {
+      const validated = validateGateRoot(project?.path);
+      if ('drop' in validated) {
+        console.warn(`Dropped persisted project ${JSON.stringify(project?.path)}: ${validated.drop}`);
+        continue;
+      }
+      projects.push(project);
+    }
     // Single documented default (P2-84): normalize once here, never at call
     // sites. Spread (not a cast) so the type system checks the result.
-    const normalized: LoadedState = { ...picked, preferences: picked.preferences ?? { ...DEFAULT_PREFERENCES } };
+    const normalized: LoadedState = { ...picked, projects, preferences: picked.preferences ?? { ...DEFAULT_PREFERENCES } };
     stateCache = normalized;
     return normalized;
   }
@@ -107,7 +119,7 @@ export function saveState(state: PersistedState): void {
   // P2-84: the cache is LoadedState; a writer's raw state normalizes to
   // the loader's single documented default on the way in.
   stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
-  knownProjectPaths = state.projects.map(p => p.path);
+  knownProjectPaths = deriveGateRoots(state.projects);
   // Leading-edge throttle (same shape as the renderer's persist in
   // state.ts, ffcd283): the first save of a burst writes through
   // IMMEDIATELY, so a crash loses at most the mutations after the last
@@ -135,11 +147,100 @@ let lastState: PersistedState | null = null;
 // re-parses state.json on every call, which made each fs IPC pay for a full
 // disk read + JSON.parse. State changes flow through saveState/saveStateSync,
 // so updating the cache there keeps it fresh without touching loadState.
+// P1-12: the cache is the MAIN-VALIDATED canonical root set — renderer-
+// supplied paths enter it only through deriveGateRoots.
+
+// P1-12: the gate root set (isWithinKnownProject → fs:*, git:*, readiness,
+// MCP config writes) is main-owned. `projects[].path` arrives from the
+// renderer (`store:save`) and from a disk file any local peer can write, so
+// neither is trusted verbatim: a gate root must be a real, existing,
+// canonical directory that is not a filesystem root (`C:\`, `/`), not the
+// user's home root, and not one of the CLI config trees the read allowlist
+// covers. Validation lives here, on the main side of every writer: the
+// persisted file is written verbatim (renderer persistence is not the gate),
+// the root set is what gets validated.
+
+// Mirrors the read allowlist in ipc-handlers `isAllowedReadPath` — the CLI
+// config trees a "project" must never launder into the git-exec/destructive
+// root set. `.claude.json`/`.mcp.json` are files, refused by the directory
+// check; only the directory trees need listing here.
+function cliConfigRoots(): string[] {
+  const home = os.homedir();
+  const roots = [
+    path.join(home, '.claude'),
+    path.join(home, '.codex'),
+    path.join(home, '.gemini'),
+    path.join(home, '.copilot'),
+  ];
+  if (process.platform === 'darwin') {
+    roots.push('/Library/Application Support/ClaudeCode');
+  } else if (process.platform === 'win32') {
+    roots.push('C:\\Program Files\\ClaudeCode');
+  } else {
+    roots.push('/etc/claude-code');
+  }
+  return roots;
+}
+
+let homeRootCanonical: string | null | undefined;
+function canonicalHomeRoot(): string {
+  if (homeRootCanonical === undefined) {
+    try {
+      homeRootCanonical = fs.realpathSync(os.homedir());
+    } catch {
+      homeRootCanonical = path.resolve(os.homedir());
+    }
+  }
+  return homeRootCanonical;
+}
+
+/** Canonicalize a renderer-supplied project path for the gate root set.
+ * Returns `{ canonical }` when it is a real directory safe to gate on,
+ * `{ drop }` with the refuse reason (logged by the caller) otherwise. */
+function validateGateRoot(rawPath: unknown): { canonical: string } | { drop: string } {
+  if (typeof rawPath !== 'string' || rawPath.trim() === '') return { drop: 'not a string path' };
+  if (!path.isAbsolute(rawPath)) return { drop: 'not absolute' };
+  let canonical: string;
+  try {
+    if (!fs.statSync(rawPath).isDirectory()) return { drop: 'not a directory' };
+    canonical = fs.realpathSync(rawPath);
+  } catch {
+    return { drop: 'does not exist' };
+  }
+  // Compare in resolved form so the mocked/test spellings and the
+  // platform-native separators collapse to one shape on every OS.
+  const resolved = path.resolve(canonical);
+  if (resolved === path.parse(resolved).root) return { drop: 'filesystem root' };
+  if (resolved === path.resolve(canonicalHomeRoot())) return { drop: 'home root' };
+  for (const dir of cliConfigRoots()) {
+    let realDir = dir;
+    try {
+      realDir = fs.realpathSync(dir);
+    } catch {
+      // Config dir not on disk — the allowlist spelling is the compare form.
+    }
+    if (resolved === path.resolve(realDir)) return { drop: 'CLI config dir' };
+  }
+  return { canonical };
+}
+
+function deriveGateRoots(projects: ProjectRecord[]): string[] {
+  const roots: string[] = [];
+  for (const project of projects) {
+    const validated = validateGateRoot(project?.path);
+    if ('drop' in validated) {
+      console.warn(`Dropped project root from the gate set: ${JSON.stringify(project?.path)} (${validated.drop})`);
+      continue;
+    }
+    if (!roots.includes(validated.canonical)) roots.push(validated.canonical);
+  }
+  return roots;
+}
 let knownProjectPaths: string[] | null = null;
 
 export function getKnownProjectPaths(): string[] {
   if (knownProjectPaths === null) {
-    knownProjectPaths = loadState().projects.map(p => p.path);
+    knownProjectPaths = deriveGateRoots(loadState().projects);
   }
   return knownProjectPaths;
 }
@@ -161,7 +262,7 @@ export function flushState(): void {
 
 export function saveStateSync(state: PersistedState): void {
   stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
-  knownProjectPaths = state.projects.map(p => p.path);
+  knownProjectPaths = deriveGateRoots(state.projects);
   // A synchronous write is a disk write: it opens the throttle window for
   // the leading-edge check in saveState.
   lastSaveAt = Date.now();

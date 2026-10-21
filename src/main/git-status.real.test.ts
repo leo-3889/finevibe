@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getGitFiles, getGitDiff, checkoutGitBranch, createGitBranch } from './git-status';
+import { getGitFiles, getGitDiff, checkoutGitBranch, createGitBranch, gitDiscardFile } from './git-status';
 
 function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -97,5 +97,84 @@ describe('branch checkout (real repository)', () => {
   it('refuses a ref git itself refuses', async () => {
     await expect(createGitBranch(repoDir, 'feature..x')).rejects.toThrow(/Invalid branch name/);
     expect(await head()).toBe('main');
+  });
+});
+
+// P1-17: the untracked discard is a real recursive delete. Real git proves
+// the working-tree + untracked verification end to end: the root itself,
+// ignored files, tracked content and non-repos must all survive, and the
+// legit untracked file/folder discards must still work.
+describe('gitDiscardFile (real repository)', () => {
+  let repoDir: string;
+
+  beforeEach(async () => {
+    repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vibeyard-discard-'));
+    await git(repoDir, ['init']);
+    await git(repoDir, ['config', 'user.email', 'test@vibeyard.dev']);
+    await git(repoDir, ['config', 'user.name', 'Vibeyard Test']);
+    await fs.promises.mkdir(path.join(repoDir, 'src'));
+    await fs.promises.writeFile(path.join(repoDir, 'src', 'index.ts'), 'export const a = 1;\n');
+    await fs.promises.writeFile(path.join(repoDir, '.gitignore'), 'ignored.txt\n');
+    await git(repoDir, ['add', '.']);
+    await git(repoDir, ['commit', '-m', 'init']);
+    await fs.promises.writeFile(path.join(repoDir, 'scratch.txt'), 'junk\n');
+    await fs.promises.writeFile(path.join(repoDir, 'ignored.txt'), 'secret\n');
+    await fs.promises.writeFile(path.join(repoDir, 'src', 'temp.ts'), 'tmp\n');
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(repoDir, { recursive: true, force: true });
+  });
+
+  it('discards a verified untracked file and leaves the repo intact', async () => {
+    await gitDiscardFile(repoDir, 'scratch.txt', 'untracked');
+    expect(fs.existsSync(path.join(repoDir, 'scratch.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(repoDir, 'src', 'index.ts'))).toBe(true);
+  });
+
+  it('discards a fully untracked directory', async () => {
+    await fs.promises.mkdir(path.join(repoDir, 'e2e'));
+    await fs.promises.writeFile(path.join(repoDir, 'e2e', 'a.spec.ts'), 'x');
+    await gitDiscardFile(repoDir, 'e2e', 'untracked');
+    expect(fs.existsSync(path.join(repoDir, 'e2e'))).toBe(false);
+  });
+
+  it('refuses to discard the tree root: an empty path deletes nothing', async () => {
+    await expect(gitDiscardFile(repoDir, '', 'untracked')).rejects.toThrow();
+    expect(fs.existsSync(path.join(repoDir, '.git'))).toBe(true);
+    expect(fs.existsSync(path.join(repoDir, 'src', 'index.ts'))).toBe(true);
+  });
+
+  it('refuses a path that resolves to the working-tree root', async () => {
+    await expect(gitDiscardFile(repoDir, '.', 'untracked')).rejects.toThrow();
+    expect(fs.existsSync(path.join(repoDir, '.git'))).toBe(true);
+  });
+
+  it('refuses an ignored file git reports nowhere', async () => {
+    await expect(gitDiscardFile(repoDir, 'ignored.txt', 'untracked')).rejects.toThrow();
+    expect(fs.existsSync(path.join(repoDir, 'ignored.txt'))).toBe(true);
+  });
+
+  it('refuses a tracked file routed through the untracked area', async () => {
+    await expect(gitDiscardFile(repoDir, 'src/index.ts', 'untracked')).rejects.toThrow();
+    expect(fs.existsSync(path.join(repoDir, 'src', 'index.ts'))).toBe(true);
+  });
+
+  it('refuses a directory that carries tracked files', async () => {
+    await expect(gitDiscardFile(repoDir, 'src', 'untracked')).rejects.toThrow();
+    expect(fs.existsSync(path.join(repoDir, 'src', 'index.ts'))).toBe(true);
+    expect(fs.existsSync(path.join(repoDir, 'src', 'temp.ts'))).toBe(true);
+  });
+
+  it('refuses any discard in a non-repo directory (the ~/.claude chain)', async () => {
+    const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vibeyard-norepo-'));
+    try {
+      await fs.promises.writeFile(path.join(outside, 'settings.json'), '{}');
+      await expect(gitDiscardFile(outside, '', 'untracked')).rejects.toThrow();
+      await expect(gitDiscardFile(outside, 'settings.json', 'untracked')).rejects.toThrow();
+      expect(fs.existsSync(path.join(outside, 'settings.json'))).toBe(true);
+    } finally {
+      await fs.promises.rm(outside, { recursive: true, force: true });
+    }
   });
 });
