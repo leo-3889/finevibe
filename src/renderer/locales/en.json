@@ -127,6 +127,12 @@
       "providerLabel": "Provider",
       "providerNotInstalled": "{name} (not installed)",
       "profileLabel": "Profile",
+      "personaLabel": "Team Persona",
+      "personaNone": "None",
+      "personaNotCapable": "{name} can't run team personas",
+      "personaPinNote": "{name} is pinned to {provider}; the pinned backend wins at launch.",
+      "promptLabel": "Prompt",
+      "promptPlaceholder": "Add a custom prompt for this persona…",
       "title": "New Session",
       "envError": "Use KEY=VALUE — invalid line: {line}"
     },

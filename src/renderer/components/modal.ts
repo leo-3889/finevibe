@@ -25,6 +25,12 @@ const bodyEl = document.getElementById('modal-body')!;
 const btnCancel = document.getElementById('modal-cancel')!;
 const btnConfirm = document.getElementById('modal-confirm')!;
 
+// Element that held focus when the current modal opened. closeModal() hands
+// focus back to it (standard dialog pattern) so dialogs opened from a live
+// input — e.g. the Ask AI composer's "Send to custom session" — never strand
+// keyboard focus on `body` after Cancel/Create.
+let opener: HTMLElement | null = null;
+
 /** Register a teardown callback for resources injected into the open modal
  *  (e.g. a custom-select created outside the standard FieldDef flow). Runs
  *  when the modal closes. */
@@ -51,7 +57,16 @@ export function setModalError(fieldId: string, message: string): void {
 
 export function closeModal(): void {
   overlay.classList.add('hidden');
+  const restore = opener;
+  opener = null;
   cleanup();
+  // Only a still-connected, non-body opener is restored; the rAF keeps the
+  // focus() running after the `hidden` class flip. Restoring here (the one
+  // close funnel) rather than in cleanup() avoids stealing focus when a
+  // freshly opened dialog tears down its predecessor's handlers.
+  if (restore && restore !== document.body && restore.isConnected) {
+    requestAnimationFrame(() => restore.focus());
+  }
 }
 
 const DEFAULT_CONFIRM_LABEL = 'Create';
@@ -144,6 +159,7 @@ export function showModal(
     bodyEl.appendChild(div);
   }
 
+  opener = document.activeElement as HTMLElement | null;
   overlay.classList.remove('hidden');
 
   // Select-only dialogs must take focus away from the terminal as well.
@@ -219,6 +235,7 @@ export function showConfirmDialog(
   messageEl.textContent = message;
   bodyEl.appendChild(messageEl);
 
+  opener = document.activeElement as HTMLElement | null;
   overlay.classList.remove('hidden');
 
   requestAnimationFrame(() => {
@@ -291,6 +308,7 @@ export function showPropertiesDialog(
   }
   bodyEl.appendChild(list);
 
+  opener = document.activeElement as HTMLElement | null;
   overlay.classList.remove('hidden');
 
   requestAnimationFrame(() => { btnConfirm.focus(); });

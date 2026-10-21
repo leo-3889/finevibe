@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-
+import type { TeamMember } from '../../shared/types.js';
 const mockLoad = vi.fn();
 const mockSave = vi.fn();
 const mockProvision = vi.fn(async (id: string) => ({ configDir: `/cfg/${id}`, managed: true }));
@@ -38,6 +38,7 @@ vi.mock('../provider-availability.js', () => {
 });
 
 import { appState, _resetForTesting } from '../state';
+import { buildTeamChatSession } from './team-state';
 import { getTeamChatProviderMetas } from '../provider-availability.js';
 const mockGetTeamChatProviderMetas = vi.mocked(getTeamChatProviderMetas);
 import { getCost } from '../session-cost.js';
@@ -132,6 +133,60 @@ describe('startTeamChat()', () => {
     expect(appState.startTeamChat(project.id, cmo)?.name).toBe('CMO - Session 2');
     expect(appState.startTeamChat(project.id, ceo)?.name).toBe('CEO - Session 1');
     expect(appState.startTeamChat(project.id, cmo)?.name).toBe('CMO - Session 3');
+  });
+});
+
+describe('buildTeamChatSession() modal opts', () => {
+  const member: TeamMember = {
+    id: 'm-1',
+    name: 'CMO',
+    role: 'Marketing',
+    systemPrompt: 'You are the CMO.',
+    source: 'custom',
+    createdAt: 0,
+    updatedAt: 0,
+  };
+
+  it('forwards custom name/args/env onto the session record', () => {
+    const project = addProject();
+    const session = buildTeamChatSession(project, member, 'claude', 60, 'prof-1', {
+      name: 'Sprint review',
+      args: '--model sonnet',
+      envVars: 'K=V',
+    });
+    expect(session.name).toBe('Sprint review');
+    expect(session.args).toBe('--model sonnet');
+    expect(session.envVars).toBe('K=V');
+    expect(session.profileId).toBe('prof-1');
+    expect(session.teamMemberId).toBe('m-1');
+    // The persona system prompt is a separate slot, untouched by opts.
+    expect(session.pendingSystemPrompt).toBe('You are the CMO.');
+  });
+
+  it('keeps the member-derived name and project args when opts are absent', () => {
+    const project = addProject();
+    project.defaultArgs = '--from-project';
+    const session = buildTeamChatSession(project, member, 'claude', 60);
+    expect(session.name).toBe('CMO - Session 1');
+    expect(session.args).toBe('--from-project');
+    expect(session.envVars).toBeUndefined();
+  });
+
+  it('an explicit args key with undefined clears the project default', () => {
+    const project = addProject();
+    project.defaultArgs = '--from-project';
+    const session = buildTeamChatSession(project, member, 'claude', 60, undefined, { args: undefined });
+    expect(session.args).toBeUndefined();
+  });
+
+  it('a blank custom name falls back to the member-derived name', () => {
+    const session = buildTeamChatSession(addProject(), member, 'claude', 60, undefined, { name: '   ' });
+    expect(session.name).toBe('CMO - Session 1');
+  });
+
+  it('truncates a custom name to maxNameLength', () => {
+    const session = buildTeamChatSession(addProject(), member, 'claude', 10, undefined, { name: 'A very long session name' });
+    expect(session.name).toBe('A very lon');
   });
 });
 

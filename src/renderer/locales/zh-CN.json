@@ -127,6 +127,12 @@
       "providerLabel": "提供方",
       "providerNotInstalled": "{name}（未安装）",
       "profileLabel": "配置文件",
+      "personaLabel": "团队角色",
+      "personaNone": "无",
+      "personaNotCapable": "{name} 无法运行团队角色",
+      "personaPinNote": "{name} 已固定到 {provider};启动时将使用固定后端。",
+      "promptLabel": "提示词",
+      "promptPlaceholder": "为该角色添加自定义提示词…",
       "title": "新建会话",
       "envError": "请使用 KEY=VALUE 格式——非法行：{line}"
     },
