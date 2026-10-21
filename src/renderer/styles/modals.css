@@ -203,6 +203,15 @@
   min-width: 0;
 }
 
+/* Disabled checkbox rows (e.g. Plan mode for a provider without a plan
+   flag): native `input:disabled` greys the box; dim the label to match
+   (mirrors `.custom-select-item.disabled`). */
+.modal-field-checkbox.disabled label,
+.modal-toggle-field.disabled label {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .modal-field-btn {
   padding: 8px 12px;
   background: var(--bg-tertiary);

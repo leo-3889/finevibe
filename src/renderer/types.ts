@@ -147,7 +147,7 @@ export interface VibeyardApi {
     getCache(): Promise<StatsCache | null>;
   };
   clipboard: {
-    write(text: string, source?: ClipboardSource): Promise<void>;
+    write(text: string, source?: ClipboardSource): void;
     readForPaste(): Promise<ClipboardPastePayload>;
     saveImage(dataUrl: string): Promise<string | null>;
   };

@@ -87,7 +87,7 @@ function createShell(projectId: string): ShellTerminalInstance {
   const sessionId = `shell-${projectId}-${shellId}`;
 
   const writeToPty = (data: string) => window.vibeyard.pty.write(sessionId, data);
-  attachClipboardCopyHandler(terminal, undefined, writeToPty);
+  attachClipboardCopyHandler(terminal, undefined);
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: ShellTerminalInstance = {
