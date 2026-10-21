@@ -1,12 +1,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { McpResult } from '../shared/types';
 
-interface McpResult {
-  success: boolean;
-  data?: unknown;
-  error?: string;
-}
+export type { McpResult };
 
 interface McpConnection {
   client: Client;

@@ -1,6 +1,7 @@
 // Shared type definitions used across main, preload, and renderer processes.
 
 import type { TeamDomain } from './team-config.js';
+import type { ShareMode } from './sharing-types.js';
 
 export const ZOOM_MIN = 0.75;
 export const ZOOM_MAX = 2.0;
@@ -8,7 +9,7 @@ export const ZOOM_MAX = 2.0;
 // --- Provider ---
 
 export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi' | 'omp';
-export type PendingPromptTrigger = 'session-start' | 'first-output' | 'startup-arg';
+export type PendingPromptTrigger = 'session-start' | 'startup-arg';
 
 /**
  * UI language tag. Defined here (rather than imported from `renderer/i18n.ts`)
@@ -134,7 +135,7 @@ export interface SessionRecord {
   cost?: CostInfo;
   contextWindow?: ContextWindowInfo;
   remoteHostName?: string;
-  shareMode?: 'readonly' | 'readwrite';
+  shareMode?: ShareMode;
   browserTabUrl?: string;
   /** When true, the browser-tab webview uses an isolated partition that doesn't see imported cookies/passwords. */
   browserIsolated?: boolean;
@@ -642,7 +643,7 @@ export type InspectorEventType =
   | 'pre_compact' | 'post_compact'
   | 'session_end'
   | 'task_created' | 'task_completed'
-  | 'worktree_create' | 'worktree_remove'
+  | 'worktree_remove'
   | 'cwd_changed' | 'file_changed' | 'config_change'
   | 'elicitation' | 'elicitation_result'
   | 'instructions_loaded'
@@ -660,9 +661,7 @@ export interface InspectorEvent {
   context_snapshot?: { total_tokens: number; context_window_size: number; used_percentage: number };
   // Copied verbatim from the hook payload by INSPECTOR_FIELDS in claude-cli.ts.
   // Keep the two lists in step — a name here with no counterpart there is dead.
-  tool_use_id?: string;
   duration_ms?: number;
-  is_interrupt?: boolean;
   agent_id?: string;
   agent_type?: string;
   agent_transcript_path?: string;
@@ -671,30 +670,20 @@ export interface InspectorEvent {
   message?: string;
   title?: string;
   notification_type?: string;
-  source?: string;
   model?: string;
   reason?: string;
   error_details?: string;
-  trigger?: string;
   task_id?: string;
   task_subject?: string;
-  task_description?: string;
-  team_name?: string;
   teammate_name?: string;
   worktree_path?: string;
   file_path?: string;
   event?: string;
   new_cwd?: string;
-  old_cwd?: string;
-  load_reason?: string;
-  memory_type?: string;
   mcp_server_name?: string;
   /** Elicitation discriminator: 'form' | 'url'. */
   mode?: string;
   action?: string;
-  elicitation_id?: string;
-  content?: string;
-  url?: string;
 }
 
 export interface ToolUsageStats {

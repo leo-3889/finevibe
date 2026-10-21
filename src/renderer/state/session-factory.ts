@@ -1,4 +1,5 @@
 import type { ProjectRecord, ProviderId, SessionRecord } from '../../shared/types.js';
+import type { ShareMode } from '../../shared/sharing-types.js';
 
 interface BaseOpts {
   id?: string;
@@ -33,7 +34,7 @@ export function buildDiffViewerSession(opts: BaseOpts & { name: string; filePath
   };
 }
 
-export function buildRemoteSession(opts: BaseOpts & { id: string; name: string; remoteHostName: string; shareMode: 'readonly' | 'readwrite' }): SessionRecord {
+export function buildRemoteSession(opts: BaseOpts & { id: string; name: string; remoteHostName: string; shareMode: ShareMode }): SessionRecord {
   const { id, name, remoteHostName, shareMode, createdAt = new Date().toISOString() } = opts;
   return {
     id,

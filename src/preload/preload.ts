@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -27,7 +27,7 @@ export interface VibeyardApi {
     exportArchive(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file'): Promise<string | null>;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
     cancelDeepSearch(): void;
-    onHookStatus(callback: (sessionId: string, status: 'working' | 'waiting' | 'completed' | 'input', hookName: string) => void): () => void;
+    onHookStatus(callback: (sessionId: string, status: CliSessionStatus, hookName: string) => void): () => void;
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
@@ -79,7 +79,7 @@ export interface VibeyardApi {
     getStatus(path: string): Promise<unknown>;
     getFiles(path: string): Promise<unknown>;
     getDiff(path: string, file: string, area: string): Promise<string>;
-    getWorktrees(path: string): Promise<unknown>;
+    getWorktrees(path: string): Promise<GitWorktree[]>;
     getRemoteUrl(path: string): Promise<string | null>;
     stageFile(path: string, file: string): Promise<void>;
     unstageFile(path: string, file: string): Promise<void>;
@@ -125,16 +125,16 @@ export interface VibeyardApi {
     clearCookies(): Promise<void>;
   };
   mcp: {
-    connect(id: string, url: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    disconnect(id: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    listTools(id: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    listResources(id: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    listPrompts(id: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    callTool(id: string, name: string, args: Record<string, unknown>): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    readResource(id: string, uri: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    getPrompt(id: string, name: string, args: Record<string, string>): Promise<{ success: boolean; data?: unknown; error?: string }>;
-    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<{ success: boolean; error?: string }>;
-    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<{ success: boolean; error?: string }>;
+    connect(id: string, url: string): Promise<McpResult>;
+    disconnect(id: string): Promise<McpResult>;
+    listTools(id: string): Promise<McpResult>;
+    listResources(id: string): Promise<McpResult>;
+    listPrompts(id: string): Promise<McpResult>;
+    callTool(id: string, name: string, args: Record<string, unknown>): Promise<McpResult>;
+    readResource(id: string, uri: string): Promise<McpResult>;
+    getPrompt(id: string, name: string, args: Record<string, string>): Promise<McpResult>;
+    addServer(name: string, config: unknown, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<McpResult>;
+    removeServer(name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string): Promise<McpResult>;
   };
   readiness: {
     analyze(projectPath: string, excludedProviders?: string[]): Promise<ReadinessResult>;
@@ -218,7 +218,7 @@ const api: VibeyardApi = {
       ipcRenderer.invoke('session:deepSearch', query),
     onHookStatus: (callback) =>
       onChannel('session:hookStatus', (sessionId, status, hookName) =>
-        callback(sessionId as string, status as 'working' | 'waiting' | 'completed' | 'input', (hookName as string) || '')),
+        callback(sessionId as string, status as CliSessionStatus, (hookName as string) || '')),
     onCliSessionId: (callback) =>
       onChannel('session:cliSessionId', (sessionId, cliSessionId) =>
         callback(sessionId as string, cliSessionId as string)),

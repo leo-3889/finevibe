@@ -213,7 +213,7 @@ describe('session-inspector timeline event descriptions', () => {
   it('renders CwdChanged from new_cwd', () => {
     expect(descFor({
       type: 'cwd_changed', timestamp: 1, hookEvent: 'CwdChanged',
-      new_cwd: '/repo/packages/api', old_cwd: '/repo',
+      new_cwd: '/repo/packages/api',
     })).toBe('/repo/packages/api');
   });
 
@@ -232,12 +232,12 @@ describe('session-inspector timeline event descriptions', () => {
     })).toBe('Permission needed: Claude needs your permission');
   });
 
-  // TeammateIdle carries teammate_name/team_name and no agent_id or agent_type,
-  // so the agentLabel fallback never resolved to anything useful.
+  // TeammateIdle carries no agent_id or agent_type, so the agentLabel
+  // fallback never resolved to anything useful.
   it('renders TeammateIdle from teammate_name', () => {
     expect(descFor({
       type: 'teammate_idle', timestamp: 1, hookEvent: 'TeammateIdle',
-      teammate_name: 'reviewer', team_name: 'core',
+      teammate_name: 'reviewer',
     })).toBe('Teammate idle: reviewer');
   });
 

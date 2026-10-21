@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { BrowserWindow } from 'electron';
 import { isWin, pythonBin } from './platform';
+import type { CliSessionStatus } from '../shared/types';
 
 export const STATUS_DIR = path.join(os.tmpdir(), 'vibeyard');
 export const SCRIPT_DIR = path.join(os.homedir(), '.vibeyard', 'run');
@@ -94,9 +95,10 @@ export function writeCliSessionName(uiSessionId: string, name: string, cliSessio
  * Provider-facing status channel (the same `.status` file Claude's hooks
  * write): the STATUS_DIR watcher forwards it as `session:hookStatus`. Used
  * by providers without hooks (omp, pi) that derive status from their
- * transcript. Callers write only when the status actually changed.
+ * transcript. Callers write only the `CliSessionStatus` values the renderer
+ * understands, and only when the status actually changed.
  */
-export function writeStatus(uiSessionId: string, status: string): void {
+export function writeStatus(uiSessionId: string, status: CliSessionStatus): void {
   const filePath = statusFilePath(uiSessionId, 'status');
   if (filePath === null) return;
   ensureStatusDir();
@@ -237,6 +239,11 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
         if (!win.isDestroyed()) {
           win.webContents.send('session:hookStatus', sessionId, content, hookName);
         }
+      } else if (content) {
+        // Out-of-set status (a future CliSessionStatus member the renderer
+        // has not learned yet): dropping it silently made the tab sit on a
+        // stale status with no trace. Log the drop.
+        console.warn(`[hook-status] Dropped unknown session status "${content}" for session ${sessionId}`);
       }
     } catch {
       // File may have been deleted between watch event and read

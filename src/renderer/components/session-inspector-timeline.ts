@@ -303,8 +303,6 @@ export function renderTimeline(container: HTMLElement): void {
     } else if (ev.type === 'task_completed') {
       const label = ev.task_subject || ev.task_id;
       desc.textContent = label ? `Task completed: ${label}` : 'Task completed';
-    } else if (ev.type === 'worktree_create') {
-      desc.textContent = ev.worktree_path || 'Worktree created';
     } else if (ev.type === 'worktree_remove') {
       desc.textContent = ev.worktree_path || 'Worktree removed';
     } else if (ev.type === 'cwd_changed') {

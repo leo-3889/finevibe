@@ -1,5 +1,6 @@
 import type { VibeyardApi } from './types.js';
 import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout, SidebarViews } from '../shared/types.js';
+import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { basename } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
@@ -538,7 +539,7 @@ class AppState {
     return session;
   }
 
-  addRemoteSession(projectId: string, sessionId: string, hostSessionName: string, shareMode: 'readonly' | 'readwrite'): SessionRecord | undefined {
+  addRemoteSession(projectId: string, sessionId: string, hostSessionName: string, shareMode: ShareMode): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
