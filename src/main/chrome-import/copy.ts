@@ -4,10 +4,15 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 
 /**
- * Snapshots the Cookies and Login Data DBs from the Chrome profile dir into
- * a unique temp dir. Works while Chrome is running: tries fs.copyFileSync
- * first, and on EBUSY (Windows lock) retries via a buffered readFileSync +
- * writeFileSync pair which Chrome's shared-cache sqlite mode tolerates.
+ * Snapshots the Cookies DB from the Chrome profile dir into a unique temp
+ * dir. Works while Chrome is running: tries fs.copyFileSync first, and on
+ * EBUSY (Windows lock) retries via a buffered readFileSync + writeFileSync
+ * pair which Chrome's shared-cache sqlite mode tolerates.
+ *
+ * `Login Data` is deliberately NOT copied (P2-46): the importer reads only
+ * the cookie snapshot, so the credential DB was duplicated into a 0755
+ * temp dir — with the readFileSync+writeFileSync fallback landing it 0644 —
+ * for no reader.
  *
  * The SQLite `-journal` sidecars are deliberately NOT copied: a page copy
  * plus a mid-transaction journal makes SQLite treat the snapshot as an
@@ -20,11 +25,10 @@ import * as crypto from 'crypto';
 export interface Snapshot {
   dir: string;
   cookiesPath: string | null;
-  loginDataPath: string | null;
   cleanup: () => void;
 }
 
-const FILES_TO_COPY = ['Cookies', 'Login Data'];
+const COOKIES_FILE = 'Cookies';
 
 function copyOne(src: string, dest: string): boolean {
   try {
@@ -50,22 +54,13 @@ export function snapshotProfile(profileDir: string): Snapshot {
   fs.mkdirSync(dir, { recursive: true });
 
   let cookiesPath: string | null = null;
-  let loginDataPath: string | null = null;
-
-  for (const fname of FILES_TO_COPY) {
-    const src = path.join(profileDir, fname);
-    const dest = path.join(dir, fname);
-    if (!fs.existsSync(src)) continue;
-    if (copyOne(src, dest)) {
-      if (fname === 'Cookies') cookiesPath = dest;
-      if (fname === 'Login Data') loginDataPath = dest;
-    }
-  }
+  const src = path.join(profileDir, COOKIES_FILE);
+  const dest = path.join(dir, COOKIES_FILE);
+  if (fs.existsSync(src) && copyOne(src, dest)) cookiesPath = dest;
 
   return {
     dir,
     cookiesPath,
-    loginDataPath,
     cleanup: () => {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
