@@ -117,17 +117,17 @@ export function buildMcpInspectorSession(opts: BaseOpts & { name: string }): Ses
 }
 
 /**
- * Append a session to a project, mark it active, and (when in swarm mode)
- * add it to the swarm panes. Does not call persist() or emit events — those
- * remain the caller's responsibility.
+ * Append a session to a project, mark it active (unless `activate: false`),
+ * and (when in swarm mode) add it to the swarm panes. Does not call persist()
+ * or emit events — those remain the caller's responsibility.
  */
 export function attachSessionToProject(
   project: ProjectRecord,
   session: SessionRecord,
-  opts: { addToSwarm?: boolean } = {},
+  opts: { addToSwarm?: boolean; activate?: boolean } = {},
 ): SessionRecord {
   project.sessions.push(session);
-  project.activeSessionId = session.id;
+  if (opts.activate !== false) project.activeSessionId = session.id;
   if (opts.addToSwarm && project.layout.mode === 'swarm') {
     project.layout.splitPanes.push(session.id);
   }

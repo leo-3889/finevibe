@@ -472,15 +472,16 @@ class AppState {
     planMode: boolean = true,
     providerIdOverride?: ProviderId,
     profileId?: string,
+    opts?: { activate?: boolean },
   ): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
     const providerId = resolvePlanProvider(project, this.preferences, providerIdOverride);
     const args = buildPlanSessionArgs(project, getProviderCapabilities(providerId), planMode);
-    return this.addSession(projectId, name, args, providerId, profileId);
+    return this.addSession(projectId, name, args, providerId, profileId, undefined, opts);
   }
 
-  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId, profileId?: string, envVars?: string): SessionRecord | undefined {
+  addSession(projectId: string, name: string, args?: string, providerId?: ProviderId, profileId?: string, envVars?: string, opts?: { activate?: boolean }): SessionRecord | undefined {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return undefined;
 
@@ -496,8 +497,8 @@ class AppState {
       profileId: pinnedProfileId,
       envVars: envVars ?? project.defaultEnv,
     });
-    attachSessionToProject(project, session, { addToSwarm: true });
-    this.commitNewSession(projectId, session);
+    attachSessionToProject(project, session, { addToSwarm: true, activate: opts?.activate ?? true });
+    this.commitNewSession(projectId, session, opts);
     return session;
   }
 
@@ -511,7 +512,7 @@ class AppState {
     return existing;
   }
 
-  private commitNewSession(projectId: string, session: SessionRecord): void {
+  private commitNewSession(projectId: string, session: SessionRecord, opts?: { activate?: boolean }): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (project) this.sessionIndex.set(session.id, { project, session });
     // History tracks CLI sessions from creation: a spawn shows in the history
@@ -520,7 +521,9 @@ class AppState {
       archiveSessionOnCreate(project, session);
       this.emit('history-changed', project.id);
     }
-    this.pushNav(session.id);
+    // A background session (`activate: false`) must stay out of the nav ring —
+    // Cmd+[ must not land on a tab the user never opened.
+    if (opts?.activate !== false) this.pushNav(session.id);
     this.persist();
     this.emit('session-added', { projectId, session });
     this.emit('session-changed');

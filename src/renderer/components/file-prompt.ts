@@ -3,6 +3,7 @@ import { createPlanModeRow } from '../dom-utils.js';
 import { setPendingPrompt } from './terminal-pane.js';
 import { getFileViewerInstance } from './file-viewer.js';
 import { getFileReaderInstance } from './file-reader.js';
+import { shouldActivateAskAiSession } from '../ask-ai-focus.js';
 import { promptNewSession } from './tab-bar/session-menu.js';
 import { wireSubmitDisabled } from './submit-disabled.js';
 
@@ -288,7 +289,7 @@ function submit(): void {
   const fileName = composed.ctx.filePath.split('/').pop() || 'file';
   const sessionName = `${fileName}: ${composed.instruction.slice(0, 30)}`;
   const planMode = popoverPlanModeCheckbox?.checked ?? true;
-  const newSession = appState.addPlanSession(project.id, sessionName, planMode);
+  const newSession = appState.addPlanSession(project.id, sessionName, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });
   if (newSession) {
     setPendingPrompt(newSession.id, composed.prompt);
   }
@@ -298,10 +299,13 @@ function submit(): void {
 function submitToCustomSession(): void {
   const composed = composeOrNull();
   if (!composed) return;
-  promptNewSession((session) => {
-    setPendingPrompt(session.id, composed.prompt);
-    dismiss();
-  });
+  promptNewSession(
+    (session) => {
+      setPendingPrompt(session.id, composed.prompt);
+      dismiss();
+    },
+    { activate: shouldActivateAskAiSession(appState.preferences) },
+  );
 }
 
 function showBubbleForSelection(ctx: PaneContext): void {

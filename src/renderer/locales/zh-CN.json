@@ -18,7 +18,10 @@
     "showInsightAlerts": "显示洞察提醒",
     "autoNameSessions": "根据 CLI 的会话标题自动命名会话（仅限 Claude）",
     "confirmClosingActiveSession": "关闭活动会话前进行确认",
-    "copyOnSelect": "选中即复制"
+    "copyOnSelect": "选中即复制",
+    "askAiFocus": "Ask AI 在何处打开新会话",
+    "askAiFocusSwitch": "新标签页（并切换焦点）",
+    "askAiFocusStay": "后台 — 保留当前标签页"
   },
   "appearance": {
     "theme": "主题",

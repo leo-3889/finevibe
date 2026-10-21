@@ -472,6 +472,46 @@ describe('addPlanSession()', () => {
     appState.addPlanSession(project.id, 'S1', true, 'claude', 'prof-1');
     expect(spy.mock.calls[0][4]).toBe('prof-1');
   });
+
+  it('activates the new session by default', () => {
+    const project = addProject();
+    const session = appState.addPlanSession(project.id, 'S1')!;
+    expect(appState.activeSession!.id).toBe(session.id);
+  });
+
+  // `Preferences.askAiFocus: 'stay'` sends `{activate:false}`: the session must
+  // exist, run, and announce itself — without stealing the active tab.
+  it('activate:false keeps the active tab, skips the nav ring, still emits and archives', () => {
+    const project = addProject();
+    const first = appState.addPlanSession(project.id, 'A')!;
+    const second = appState.addPlanSession(project.id, 'B')!;
+    const addedCb = vi.fn();
+    const changedCb = vi.fn();
+    appState.on('session-added', addedCb);
+    appState.on('session-changed', changedCb);
+
+    const background = appState.addPlanSession(project.id, 'C', true, undefined, undefined, { activate: false })!;
+
+    expect(project.sessions.map((s) => s.id)).toContain(background.id);
+    expect(appState.activeSession!.id).toBe(second.id);
+    expect(addedCb).toHaveBeenCalledTimes(1);
+    expect(addedCb).toHaveBeenCalledWith({ projectId: project.id, session: background });
+    expect(changedCb).toHaveBeenCalledTimes(1);
+    // The history entry is still created at spawn, exactly like an activated session.
+    expect(appState.getSessionHistory(project.id).some((h) => h.liveSessionId === background.id)).toBe(true);
+    // Nav ring unchanged: Cmd+[ walks B → A, never through the background tab.
+    appState.navigateBack();
+    expect(appState.activeSession!.id).toBe(first.id);
+  });
+
+  it('addSession forwards opts.activate:false to the same background path', () => {
+    const project = addProject();
+    const active = appState.addSession(project.id, 'A')!;
+    const background = appState.addSession(project.id, 'B', undefined, undefined, undefined, undefined, { activate: false })!;
+    expect(project.sessions.map((s) => s.id)).toContain(background.id);
+    appState.navigateBack();
+    expect(appState.activeSession!.id).toBe(active.id);
+  });
 });
 
 describe('removeSession()', () => {

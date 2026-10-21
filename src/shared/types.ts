@@ -428,6 +428,12 @@ export interface Preferences {
   // profile dir's Keep/Replace never governs another dir (and vice versa).
   statusLineConsentByDir?: Record<string, { consent: 'granted' | 'declined'; command: string | null }>;
   copyOnSelect?: boolean;
+  /**
+   * Where an Ask AI / new-session send from a file pane or browser tab opens:
+   * 'switch' (absent = default) makes the new session the active tab; 'stay'
+   * runs it in the background and keeps focus on the current tab.
+   */
+  askAiFocus?: 'switch' | 'stay';
   keybindings?: Record<string, string>;
   theme?: 'dark' | 'light';
   readinessExcludedProviders?: ProviderId[];

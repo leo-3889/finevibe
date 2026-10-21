@@ -41,6 +41,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
   let autoTitleCheckbox: HTMLInputElement | null = null;
   let confirmCloseCheckbox: HTMLInputElement | null = null;
   let copyOnSelectCheckbox: HTMLInputElement | null = null;
+  let askAiFocusSelect: CustomSelectInstance | null = null;
 
   return {
     render(container) {
@@ -131,6 +132,25 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       const copyOnSelect = toggleRow('pref-copy-on-select', t('general.copyOnSelect'), appState.preferences.copyOnSelect ?? false);
       copyOnSelectCheckbox = copyOnSelect.checkbox;
       container.appendChild(copyOnSelect.row);
+
+      // Ask AI focus: an enum, so a custom-select (the repo bans native <select>).
+      const askAiFocusRow = document.createElement('div');
+      askAiFocusRow.className = 'modal-toggle-field';
+      const askAiFocusLabel = document.createElement('label');
+      askAiFocusLabel.htmlFor = 'pref-ask-ai-focus';
+      askAiFocusLabel.textContent = t('general.askAiFocus');
+      if (askAiFocusSelect) askAiFocusSelect.destroy();
+      askAiFocusSelect = createCustomSelect(
+        'pref-ask-ai-focus',
+        [
+          { value: 'switch', label: t('general.askAiFocusSwitch') },
+          { value: 'stay', label: t('general.askAiFocusStay') },
+        ],
+        appState.preferences.askAiFocus ?? 'switch',
+      );
+      askAiFocusRow.appendChild(askAiFocusLabel);
+      askAiFocusRow.appendChild(askAiFocusSelect.element);
+      container.appendChild(askAiFocusRow);
     },
 
     save() {
@@ -142,6 +162,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       if (confirmCloseCheckbox) appState.setPreference('confirmCloseWorkingSession', confirmCloseCheckbox.checked);
       if (copyOnSelectCheckbox) appState.setPreference('copyOnSelect', copyOnSelectCheckbox.checked);
       if (providerSelect) appState.setPreference('defaultProvider', providerSelect.getValue() as ProviderId);
+      if (askAiFocusSelect) appState.setPreference('askAiFocus', askAiFocusSelect.getValue() as 'switch' | 'stay');
     },
 
     destroy() {
@@ -149,6 +170,8 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       providerSelect = null;
       if (languageSelect) languageSelect.destroy();
       languageSelect = null;
+      if (askAiFocusSelect) askAiFocusSelect.destroy();
+      askAiFocusSelect = null;
     },
   };
 }

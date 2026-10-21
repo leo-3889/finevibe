@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildCliSession } from './session-factory';
+import type { ProjectRecord } from '../../shared/types';
+import { attachSessionToProject, buildCliSession } from './session-factory';
 
 describe('buildCliSession', () => {
   it('omits args and envVars when not provided', () => {
@@ -35,5 +36,56 @@ describe('buildCliSession', () => {
   it('omits envVars for an empty string', () => {
     const session = buildCliSession({ name: 'S1', providerId: 'claude', envVars: '' });
     expect('envVars' in session).toBe(false);
+  });
+});
+
+function makeProject(overrides: { activeSessionId?: string | null; mode?: 'tabs' | 'split' | 'swarm' } = {}): ProjectRecord {
+  return {
+    id: 'p1',
+    name: 'P',
+    path: '/p',
+    sessions: [],
+    activeSessionId: overrides.activeSessionId ?? null,
+    layout: { mode: overrides.mode ?? 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+  };
+}
+
+describe('attachSessionToProject', () => {
+  it('activates the new session by default', () => {
+    const project = makeProject({ activeSessionId: 'old' });
+    const session = buildCliSession({ name: 'S1', providerId: 'claude' });
+    attachSessionToProject(project, session);
+    expect(project.sessions).toEqual([session]);
+    expect(project.activeSessionId).toBe(session.id);
+  });
+
+  it('activate:false appends the session and leaves activeSessionId untouched', () => {
+    const project = makeProject({ activeSessionId: 'old' });
+    const session = buildCliSession({ name: 'S1', providerId: 'claude' });
+    attachSessionToProject(project, session, { activate: false });
+    expect(project.sessions).toEqual([session]);
+    expect(project.activeSessionId).toBe('old');
+  });
+
+  it('activate:false keeps a null active tab null', () => {
+    const project = makeProject();
+    const session = buildCliSession({ name: 'S1', providerId: 'claude' });
+    attachSessionToProject(project, session, { activate: false });
+    expect(project.activeSessionId).toBeNull();
+  });
+
+  it('activate:false still honors addToSwarm in swarm mode', () => {
+    const project = makeProject({ activeSessionId: 'old', mode: 'swarm' });
+    const session = buildCliSession({ name: 'S1', providerId: 'claude' });
+    attachSessionToProject(project, session, { addToSwarm: true, activate: false });
+    expect(project.layout.splitPanes).toEqual([session.id]);
+    expect(project.activeSessionId).toBe('old');
+  });
+
+  it('addToSwarm is a no-op outside swarm mode', () => {
+    const project = makeProject({ mode: 'tabs' });
+    const session = buildCliSession({ name: 'S1', providerId: 'claude' });
+    attachSessionToProject(project, session, { addToSwarm: true, activate: false });
+    expect(project.layout.splitPanes).toEqual([]);
   });
 });

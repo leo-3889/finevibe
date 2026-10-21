@@ -18,7 +18,10 @@
     "showInsightAlerts": "Show insight alerts",
     "autoNameSessions": "Auto-name sessions from the CLI's session title (Claude only)",
     "confirmClosingActiveSession": "Confirm closing an active session",
-    "copyOnSelect": "Copy on select"
+    "copyOnSelect": "Copy on select",
+    "askAiFocus": "Ask AI opens the new session in",
+    "askAiFocusSwitch": "a new focused tab",
+    "askAiFocusStay": "the background — keep my tab"
   },
   "appearance": {
     "theme": "Theme",

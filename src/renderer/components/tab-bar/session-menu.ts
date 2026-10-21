@@ -59,7 +59,7 @@ export function showMoreMenu(x: number, y: number): void {
   positionMenu(menu);
 }
 
-export async function promptNewSession(onCreated?: (session: SessionRecord) => void): Promise<void> {
+export async function promptNewSession(onCreated?: (session: SessionRecord) => void, opts?: { activate?: boolean }): Promise<void> {
   const project = appState.activeProject;
   if (!project) return;
 
@@ -169,7 +169,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     // Profiles only apply to profile-capable providers; ignore the field
     // for the rest.
     const profileId = getProviderCapabilities(providerId)?.profiles === true ? (values['profile'] || undefined) : undefined;
-    const session = appState.addSession(project.id, name, args, providerId, profileId, envVars);
+    const session = appState.addSession(project.id, name, args, providerId, profileId, envVars, opts);
     if (session && onCreated) onCreated(session);
   });
 
