@@ -152,7 +152,10 @@ function buildHookEntry(event: string): HookEntry {
   // the PTY env. The Python script reads argv[4] as the env var *name*.
   const argv = `"${event}" "${type}" "${status}" "${SESSION_ID_VAR}" "${statusDir}"`;
   const bash = `${pythonBin} "${script}" ${argv} ${COPILOT_HOOK_MARKER}`;
-  const powershell = `python "${script}" ${argv} ${COPILOT_HOOK_MARKER}`;
+  // P2-23: PowerShell reads the same live `pythonBin` binding as bash — a
+  // literal `python` here dies silently on installs where the interpreter
+  // was re-pointed (py -3 launcher on Windows, probed candidate on POSIX).
+  const powershell = `${pythonBin} "${script}" ${argv} ${COPILOT_HOOK_MARKER}`;
   return { type: 'command', bash, powershell };
 }
 

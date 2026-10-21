@@ -346,7 +346,11 @@ export function getGitWorktrees(cwd: string): Promise<GitWorktree[]> {
 
 export function getGitRemoteUrl(cwd: string): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile('git', ['remote', 'get-url', 'origin'], { cwd }, (err, stdout) => {
+    // P2-24: every sibling execFile in this module bounds the spawn with
+    // timeout: 5000; a hung `git remote get-url` (credential prompt, dead
+    // network mount) used to pin the renderer's repo-detection promise
+    // forever. The failure shape is unchanged: err (incl. ETIMEDOUT) → null.
+    execFile('git', ['remote', 'get-url', 'origin'], { cwd, timeout: 5000 }, (err, stdout) => {
       if (err) { resolve(null); return; }
       const raw = stdout.trim();
       // Normalize SSH (git@github.com:owner/repo.git) to HTTPS

@@ -9,6 +9,10 @@ vi.mock('fs', () => ({
 
 vi.mock('os', () => ({
   homedir: () => '/mock/home',
+  // hook-status.ts calls os.tmpdir() at module load (STATUS_DIR); the
+  // import chain gemini-provider → gemini-hooks → … → hook-status hits it
+  // before any test runs, so the mock must carry it.
+  tmpdir: () => '/tmp',
 }));
 
 vi.mock('child_process', () => ({
@@ -111,14 +115,27 @@ describe('resolveBinaryPath', () => {
     expect(provider.resolveBinaryPath()).toBe('gemini');
   });
 
-  it('caches result on subsequent calls', () => {
+  it('caches result on subsequent calls while the binary exists', () => {
+    mockStatSync.mockImplementation((p) => {
+      if (p === firstCandidate) return fileStat;
+      throw new Error('ENOENT');
+    });
+    provider.resolveBinaryPath();
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    // P2-26: cache hit = one stat, zero subprocess re-probes.
+    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('re-resolves when the cached binary disappears', () => {
     mockStatSync.mockImplementation((p) => {
       if (p === firstCandidate) return fileStat;
       throw new Error('ENOENT');
     });
     provider.resolveBinaryPath();
     mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    mockExecSync.mockReturnValue('/some/other/path/gemini\n' as any);
+    expect(provider.resolveBinaryPath()).toBe('/some/other/path/gemini');
   });
 });
 

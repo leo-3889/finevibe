@@ -133,6 +133,22 @@ describe('installCopilotHooks', () => {
     }
   });
 
+  // P2-23: the bash branch always read the live pythonBin binding; the
+  // PowerShell branch hardcoded bare `python`, so hooks died silently on
+  // installs where the interpreter was re-pointed (py -3, probed POSIX
+  // candidate). Both fields must carry the resolved interpreter.
+  it('every powershell command carries the resolved pythonBin, not literal python', () => {
+    mockFiles({});
+    installCopilotHooks(PROJECT);
+    const { hooks } = JSON.parse(String(findWrite(HOOK_FILE)![1]));
+    for (const [, entries] of Object.entries(hooks) as [string, any[]][]) {
+      for (const h of entries) {
+        expect(h.powershell.startsWith('/usr/bin/python3 ')).toBe(true);
+        expect(h.powershell.startsWith('python ')).toBe(false);
+      }
+    }
+  });
+
   it('passes event, inspector type, status, env var, and status dir as argv to the Python script', () => {
     mockFiles({});
     installCopilotHooks(PROJECT);

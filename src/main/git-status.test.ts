@@ -17,7 +17,7 @@ vi.mock('fs', () => ({
 import { execFile } from 'child_process';
 import { promises as fsPromises } from 'fs';
 import * as path from 'path';
-import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitDiscardFile, checkoutGitBranch, createGitBranch } from './git-status';
+import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitDiscardFile, checkoutGitBranch, createGitBranch, getGitRemoteUrl } from './git-status';
 
 const mockExecFile = vi.mocked(execFile);
 const mockRm = vi.mocked(fsPromises.rm);
@@ -479,5 +479,32 @@ describe('checkoutGitBranch / createGitBranch branch-name gate', () => {
     await expect(checkoutGitBranch('/repo', 'a..b')).rejects.toThrow(/Invalid branch name/);
 
     expect(argv()).toEqual([['check-ref-format', '--branch', 'a..b']]);
+  });
+});
+
+describe('getGitRemoteUrl', () => {
+  it('normalizes SSH remotes to HTTPS and strips the .git suffix', async () => {
+    simulateExecFile(null, 'git@github.com:foo/bar.git\n');
+    expect(await getGitRemoteUrl('/test')).toBe('https://github.com/foo/bar');
+  });
+
+  // P2-24: every sibling execFile in git-status.ts bounds its spawn with
+  // timeout: 5000; getGitRemoteUrl was the outlier that could hang the
+  // repo-detection promise forever on a git credential prompt.
+  it('bounds the git spawn with the 5s sibling timeout', async () => {
+    simulateExecFile(null, 'https://github.com/foo/bar.git\n');
+    expect(await getGitRemoteUrl('/test')).toBe('https://github.com/foo/bar');
+    const [cmd, args, opts] = mockExecFile.mock.calls[0] as unknown as
+      [string, string[], { cwd: string; timeout: number }];
+    expect(cmd).toBe('git');
+    expect(args).toEqual(['remote', 'get-url', 'origin']);
+    expect(opts.cwd).toBe('/test');
+    expect(opts.timeout).toBe(5000);
+  });
+
+  it('resolves null when git fails — the timeout kill included', async () => {
+    const err = Object.assign(new Error('timed out'), { killed: true }) as ExecFileException;
+    simulateExecFile(err, '');
+    expect(await getGitRemoteUrl('/test')).toBeNull();
   });
 });

@@ -120,14 +120,27 @@ describe('resolveBinaryPath', () => {
     expect(provider.resolveBinaryPath()).toBe('copilot');
   });
 
-  it('caches result on subsequent calls', () => {
+  it('caches result on subsequent calls while the binary exists', () => {
+    mockStatSync.mockImplementation((p) => {
+      if (p === firstCandidate) return fileStat;
+      throw new Error('ENOENT');
+    });
+    provider.resolveBinaryPath();
+    const probesAfterFirst = mockExecSync.mock.calls.length;
+    // P2-26: cache hit = one stat, zero subprocess re-probes.
+    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    expect(mockExecSync).toHaveBeenCalledTimes(probesAfterFirst);
+  });
+
+  it('re-resolves when the cached binary disappears', () => {
     mockStatSync.mockImplementation((p) => {
       if (p === firstCandidate) return fileStat;
       throw new Error('ENOENT');
     });
     provider.resolveBinaryPath();
     mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    expect(provider.resolveBinaryPath()).toBe(firstCandidate);
+    mockExecSync.mockReturnValue('/some/other/path/copilot\n' as any);
+    expect(provider.resolveBinaryPath()).toBe('/some/other/path/copilot');
   });
 });
 
