@@ -22,7 +22,6 @@ export interface FineVibeApi {
   session: {
     buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string, liveSessionId?: string): Promise<string>;
     transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): Promise<boolean>;
-    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): boolean;
     /** Save-dialog backup of one session. `zip`: meta.json + provider transcript + sidecars; `file`: the transcript verbatim. Returns the written path or null when canceled. */
     exportArchive(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file'): Promise<string | null>;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
@@ -213,8 +212,6 @@ const api: FineVibeApi = {
       ipcRenderer.invoke('session:buildResumeWithPrompt', sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir, liveSessionId),
     transcriptExists: (providerId, cliSessionId, projectPath, configDir, liveSessionId) =>
       ipcRenderer.invoke('session:transcriptExists', providerId, cliSessionId, projectPath, configDir, liveSessionId),
-    transcriptExistsSync: (providerId, cliSessionId, projectPath, configDir, liveSessionId) =>
-      ipcRenderer.sendSync('session:transcriptExistsSync', providerId, cliSessionId, projectPath, configDir, liveSessionId),
     exportArchive: (providerId, cliSessionId, projectPath, configDir, meta, format) =>
       ipcRenderer.invoke('session:exportArchive', providerId, cliSessionId, projectPath, configDir, meta, format),
     cancelDeepSearch: () => ipcRenderer.send('session:cancelDeepSearch'),

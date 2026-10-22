@@ -13,15 +13,35 @@ const win32Keys: Record<string, [number, number, number, number]> = {
   Escape: [27, 1, 27, 0],
 };
 
-/** ConPTY swallows ordinary VT keys while mode 9001 (win32-input-mode) is on: cursor sequences split into text and a bare ESC vanishes. Encode these keys as INPUT_RECORD sequences instead. */
-export function attachWin32TerminalKeys(terminal: Terminal, write: (data: string) => void): (event: KeyboardEvent) => boolean | undefined {
-  let enabled = false;
-  for (const [final, value] of [['h', true], ['l', false]] as const) {
-    terminal.parser?.registerCsiHandler({ prefix: '?', final }, params => {
-      if (params.includes(9001)) enabled = value;
-      return false; // Preserve xterm's handling of other DEC private modes.
-    });
-  }
+// Mode 9001 is monotonic per PTY and the latch must match: once ANY win32-input
+// record has been written to a ConPTY-backed PTY, ConPTY's input parser is armed
+// for the lifetime of that PTY and silently discards every later bare ESC byte
+// (records and plain CSI keep flowing). A per-attach flag resets whenever the
+// Terminal is re-created/re-attached (pane re-render, app reload), the renderer's
+// own `\x1b` for Escape then dies in the armed ConPTY, and the pane shows the
+// exact symptom "arrows work, Escape dead". ConPTY advertises `?9001h` as the
+// first output bytes of every fresh PTY, so a `?9001l` sighting is never a
+// licence to write bare ESC again: the latch is keyed per PTY (`latchKey`) and
+// survives every attach.
+const latchedKeys = new Set<string>();
+
+/** ConPTY swallows ordinary VT keys while mode 9001 (win32-input-mode) is on: cursor sequences split into text and a bare ESC vanishes. Encode these keys as INPUT_RECORD sequences instead. `opts.latchKey` ties the mode-9001 sighting to the PTY, so a fresh handler attached to an already-armed PTY starts encoded; `opts.latched` pre-arms a pane that owns a local Windows PTY, whose ConPTY advertised the mode at spawn — before any parser existed. */
+export function attachWin32TerminalKeys(
+  terminal: Terminal,
+  write: (data: string) => void,
+  opts?: { latchKey?: string; latched?: boolean },
+): (event: KeyboardEvent) => boolean | undefined {
+  let enabled = opts?.latched === true || (opts?.latchKey ? latchedKeys.has(opts.latchKey) : false);
+  terminal.parser?.registerCsiHandler({ prefix: '?', final: 'h' }, params => {
+    if (params.includes(9001)) {
+      enabled = true;
+      if (opts?.latchKey) latchedKeys.add(opts.latchKey);
+    }
+    return false; // Preserve xterm's handling of other DEC private modes.
+  });
+  // Mode-off is never honoured: ConPTY's arming is monotonic, so un-latching
+  // here would re-open the fatal bare-ESC path on this and every later attach.
+  terminal.parser?.registerCsiHandler({ prefix: '?', final: 'l' }, () => false);
   return event => {
     const key = win32Keys[event.key];
     if (!enabled || !key || event.metaKey || event.isComposing) return undefined;

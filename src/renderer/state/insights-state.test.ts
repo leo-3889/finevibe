@@ -305,6 +305,7 @@ describe('setProjectReadiness()', () => {
     appState.on('readiness-changed', cb);
     const result = makeResult();
     appState.setProjectReadiness(project.id, result);
+    appState.flushPersist(); // PA-15: persist is frame-coalesced, not synchronous
     expect(project.readiness).toBe(result);
     expect(cb).toHaveBeenCalledWith(project.id);
     expect(mockSave).toHaveBeenCalled();

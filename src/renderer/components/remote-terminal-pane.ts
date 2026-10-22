@@ -9,6 +9,7 @@ import { appState } from '../state.js';
 import { attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
 import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
+import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 
 interface RemoteTerminalInstance {
   terminal: Terminal;
@@ -73,6 +74,7 @@ export function createRemoteTerminalPane(
     theme: getTerminalTheme(appState.preferences.theme ?? 'dark'),
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
+    scrollback: TERMINAL_SCROLLBACK,
     cursorBlink: mode === 'readwrite',
     allowProposedApi: true,
     disableStdin: mode === 'readonly',
@@ -90,10 +92,13 @@ export function createRemoteTerminalPane(
     });
     // The guest pane renders the host's PTY output, so the host's ConPTY
     // win32-input-mode (?9001h) arrives here through writeRemoteData; while it
-    // is on, a bare ESC forwarded to the host stalls in ConPTY's parser and VT
-    // arrows split into text. Encode the affected keys as INPUT_RECORDs.
-    // macOS/Linux never emit mode 9001, so the handler stays inert there.
-    const handleWin32Key = attachWin32TerminalKeys(terminal, onInput);
+    // is armed, a bare ESC forwarded to the host stalls in ConPTY's parser and VT
+    // arrows split into text. Encode the affected keys as INPUT_RECORDs. The
+    // host OS is unknown, so the pane latches only on a real ?9001h sighting —
+    // keyed by session id, so a guest pane re-created on a live host session
+    // starts encoded (a re-attached xterm cannot re-arm ConPTY, and the mode
+    // never comes back off). macOS/Linux hosts never emit mode 9001: inert.
+    const handleWin32Key = attachWin32TerminalKeys(terminal, onInput, { latchKey: `remote:${sessionId}` });
     terminal.attachCustomKeyEventHandler((e) => handleWin32Key(e) ?? true);
   }
 

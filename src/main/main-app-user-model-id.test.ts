@@ -25,6 +25,7 @@ const { app, windows, calls, platform, fakeProvider } = vi.hoisted(() => {
     on: vi.fn(),
     quit: vi.fn(),
     whenReady: () => Promise.resolve(),
+    getPath: () => '/mock/userdata',
     setAppUserModelId: vi.fn(() => { calls.push('aumid'); }),
   };
   const fakeProvider = {
@@ -101,6 +102,8 @@ vi.mock('./agentmemory-manager', () => ({
 }));
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
+// PA-01: main.ts wires the probe cache to userData at boot; stub the module.
+vi.mock('./providers/resolve-binary', () => ({ configureProbeCacheDir: vi.fn() }));
 // Live getter: main.ts reads `isWin` at boot, so the case can flip the flag
 // between imports without a second mock registration.
 vi.mock('./platform', () => ({ isMac: false, get isWin() { return platform.isWin; } }));

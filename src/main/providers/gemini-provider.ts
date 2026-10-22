@@ -1,11 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './provider';
+import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
-import { resolveBinary, validateBinaryExists } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { getGeminiConfig } from '../gemini-config';
 import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks, SESSION_ID_VAR } from '../gemini-hooks';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
@@ -100,6 +100,11 @@ export class GeminiProvider implements CliProvider {
 
   validatePrerequisites(): boolean {
     return validateBinaryExists('gemini');
+  }
+
+  // PA-01: async twin so boot can probe every provider concurrently.
+  validatePrerequisitesAsync(): Promise<boolean> {
+    return validateBinaryExistsAsync('gemini');
   }
 
   buildEnv(sessionId: string, baseEnv: Record<string, string>, _opts?: { configDir?: string }): Record<string, string> {
@@ -300,7 +305,8 @@ export class GeminiProvider implements CliProvider {
       } else if (Array.isArray(c)) {
         for (const block of c) {
           if (block && typeof (block as { text?: unknown }).text === 'string') {
-            text += (block as { text: string }).text + '\n';
+            text = `${text}${(block as { text: string }).text}
+`;
           }
         }
       }

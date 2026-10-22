@@ -20,12 +20,23 @@ const pendingJoinHandles = new Set<JoinHandle>();
 type ShareChangeListener = () => void;
 const shareChangeListeners: ShareChangeListener[] = [];
 
-export function onShareChange(cb: ShareChangeListener): void {
+/**
+ * PA-32: push-only arrays had no public unsubscribe (the audit's
+ * "latent growth" row). Returning a dispose closure is the pattern
+ * `appState.on` already uses; call sites that ignore it keep working.
+ */
+export function onShareChange(cb: ShareChangeListener): () => void {
   shareChangeListeners.push(cb);
+  return () => {
+    const i = shareChangeListeners.indexOf(cb);
+    if (i !== -1) shareChangeListeners.splice(i, 1);
+  };
 }
 
 function notifyShareChange(): void {
-  for (const cb of shareChangeListeners) cb();
+  // Snapshot: a listener that unsubscribes during notification must not
+  // make the splice shift entries past an un-notified neighbour.
+  for (const cb of [...shareChangeListeners]) cb();
 }
 
 // --- Host side ---

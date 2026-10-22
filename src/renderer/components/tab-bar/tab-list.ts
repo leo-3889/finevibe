@@ -73,7 +73,7 @@ function highlightGroupDrop(project: ProjectRecord, tab: HTMLElement, target: Se
 }
 
 function sweepGroupHighlights(): void {
-  tabListEl.querySelectorAll('.drag-over-group').forEach((el) => el.classList.remove('drag-over-group'));
+  for (const el of tabListEl.querySelectorAll('.drag-over-group')) el.classList.remove('drag-over-group');
 }
 
 function buildTooltip(status: SessionStatus, cliSessionId?: string): string {
@@ -82,13 +82,12 @@ function buildTooltip(status: SessionStatus, cliSessionId?: string): string {
 }
 
 function tabDisplayName(project: ProjectRecord, session: SessionRecord): string {
-  return session.type === 'project-tab'
-    ? t('tab.title.overview', { name: project.name })
-    : session.type === 'kanban'
-      ? t('tab.title.kanban', { name: project.name })
-      : session.type === 'team'
-        ? t('tab.title.team', { name: project.name })
-        : session.name;
+  switch (session.type) {
+    case 'project-tab': return t('tab.title.overview', { name: project.name });
+    case 'kanban': return t('tab.title.kanban', { name: project.name });
+    case 'team': return t('tab.title.team', { name: project.name });
+    default: return session.name;
+  }
 }
 
 function tabNamePrefix(session: SessionRecord): string {
@@ -113,7 +112,7 @@ function tabNamePrefix(session: SessionRecord): string {
   }
 }
 
-function tabTitle(project: ProjectRecord, session: SessionRecord, status: SessionStatus): string {
+function tabTitle(_project: ProjectRecord, session: SessionRecord, status: SessionStatus): string {
   switch (session.type) {
     case 'diff-viewer': return t('tab.tooltip.diff', { name: session.diffFilePath || session.name });
     case 'mcp-inspector': return t('tab.tooltip.mcpInspector');
@@ -282,7 +281,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
 
   const renamable = session.type !== 'kanban' && session.type !== 'project-tab' && session.type !== 'team';
   const renameItem = document.createElement('div');
-  renameItem.className = 'tab-context-menu-item' + (renamable ? '' : ' disabled');
+  renameItem.className = `tab-context-menu-item${renamable ? '' : ' disabled'}`;
   renameItem.textContent = t('contextMenu.tab.rename');
   if (renamable) {
     renameItem.addEventListener('click', (e) => {
@@ -317,7 +316,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   });
 
   const closeOthersItem = document.createElement('div');
-  closeOthersItem.className = 'tab-context-menu-item' + (totalSessions <= 1 ? ' disabled' : '');
+  closeOthersItem.className = `tab-context-menu-item${totalSessions <= 1 ? ' disabled' : ''}`;
   closeOthersItem.textContent = t('contextMenu.tab.closeOthers');
   if (totalSessions > 1) {
     closeOthersItem.addEventListener('click', (e) => {
@@ -328,7 +327,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   }
 
   const closeRightItem = document.createElement('div');
-  closeRightItem.className = 'tab-context-menu-item' + (sessionIdx >= totalSessions - 1 ? ' disabled' : '');
+  closeRightItem.className = `tab-context-menu-item${sessionIdx >= totalSessions - 1 ? ' disabled' : ''}`;
   closeRightItem.textContent = t('contextMenu.tab.closeRight');
   if (sessionIdx < totalSessions - 1) {
     closeRightItem.addEventListener('click', (e) => {
@@ -339,7 +338,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   }
 
   const closeLeftItem = document.createElement('div');
-  closeLeftItem.className = 'tab-context-menu-item' + (sessionIdx <= 0 ? ' disabled' : '');
+  closeLeftItem.className = `tab-context-menu-item${sessionIdx <= 0 ? ' disabled' : ''}`;
   closeLeftItem.textContent = t('contextMenu.tab.closeLeft');
   if (sessionIdx > 0) {
     closeLeftItem.addEventListener('click', (e) => {
@@ -350,7 +349,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   }
 
   const moveLeftItem = document.createElement('div');
-  moveLeftItem.className = 'tab-context-menu-item' + (sessionIdx <= 0 ? ' disabled' : '');
+  moveLeftItem.className = `tab-context-menu-item${sessionIdx <= 0 ? ' disabled' : ''}`;
   moveLeftItem.textContent = t('contextMenu.tab.moveLeft');
   if (sessionIdx > 0) {
     moveLeftItem.addEventListener('click', (e) => {
@@ -361,7 +360,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   }
 
   const moveRightItem = document.createElement('div');
-  moveRightItem.className = 'tab-context-menu-item' + (sessionIdx >= totalSessions - 1 ? ' disabled' : '');
+  moveRightItem.className = `tab-context-menu-item${sessionIdx >= totalSessions - 1 ? ' disabled' : ''}`;
   moveRightItem.textContent = t('contextMenu.tab.moveRight');
   if (sessionIdx < totalSessions - 1) {
     moveRightItem.addEventListener('click', (e) => {
@@ -382,7 +381,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   shareSeparator.className = 'tab-context-menu-separator';
 
   const shareItem = document.createElement('div');
-  shareItem.className = 'tab-context-menu-item' + (!isCli || currentlySharing ? ' disabled' : '');
+  shareItem.className = `tab-context-menu-item${!isCli || currentlySharing ? ' disabled' : ''}`;
   shareItem.textContent = t('contextMenu.tab.shareSession');
   if (isCli && !currentlySharing) {
     shareItem.addEventListener('click', (e) => {
@@ -393,7 +392,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   }
 
   const stopShareItem = document.createElement('div');
-  stopShareItem.className = 'tab-context-menu-item' + (!currentlySharing ? ' disabled' : '');
+  stopShareItem.className = `tab-context-menu-item${currentlySharing ? '' : ' disabled'}`;
   stopShareItem.textContent = t('contextMenu.tab.stopSharing');
   if (currentlySharing) {
     stopShareItem.addEventListener('click', (e) => {
@@ -445,7 +444,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
     const hasCliSession = !!cliSessionId;
 
     const copySessionIdItem = document.createElement('div');
-    copySessionIdItem.className = 'tab-context-menu-item' + (!hasCliSession ? ' disabled' : '');
+    copySessionIdItem.className = `tab-context-menu-item${hasCliSession ? '' : ' disabled'}`;
     copySessionIdItem.textContent = t('contextMenu.tab.copyCliSessionId');
     if (hasCliSession) {
       copySessionIdItem.addEventListener('click', (e) => {
@@ -472,7 +471,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   // Inspect item — only for CLI sessions
   const inspectItem = document.createElement('div');
   const isCurrentlyInspecting = isInspectorOpen() && getInspectedSessionId() === session.id;
-  inspectItem.className = 'tab-context-menu-item' + (!canInspect ? ' disabled' : '');
+  inspectItem.className = `tab-context-menu-item${canInspect ? '' : ' disabled'}`;
   inspectItem.textContent = isCurrentlyInspecting ? t('contextMenu.tab.closeInspector') : t('contextMenu.tab.inspect');
   if (canInspect) {
     inspectItem.addEventListener('click', (e) => {
@@ -546,8 +545,14 @@ export function render(): void {
   // .tab-group wrapper; strip order follows project.sessions (invariant 9).
   let currentGroupEl: HTMLElement | null = null;
   let currentGroupId: string | null = null;
+  // PA-12: resolve every tab's group once per full render instead of
+  // findGroupForSession's O(n×groups) scan inside the loop.
+  const groupBySession = new Map<string, TabGroupRecord>();
+  for (const g of project.tabGroups ?? []) {
+    for (const sid of g.sessionIds) if (!groupBySession.has(sid)) groupBySession.set(sid, g);
+  }
   for (const session of project.sessions) {
-    const sessionGroup = findGroupForSession(project, session.id);
+    const sessionGroup = groupBySession.get(session.id) ?? null;
     const tab = document.createElement('div');
     const isActive = session.id === project.activeSessionId;
     const isMcp = session.type === 'mcp-inspector';
@@ -562,10 +567,11 @@ export function render(): void {
     const isSpecial = isMcp || isDiff || isFileReader || isRemoteTab || isBrowserTab || isProjectTab || isKanban || isTeam;
     const sharing = isSharing(session.id);
     const displayName = tabDisplayName(project, session);
-    tab.className = 'tab-item' + (isActive ? ' active' : '') + (unread ? ' unread' : '') + (sharing ? ' tab-sharing' : '') + (isRemoteTab ? ' tab-remote' : '') + (sessionGroup ? ' in-group' : '');
+    tab.className = `tab-item${isActive ? ' active' : ''}${unread ? ' unread' : ''}${sharing ? ' tab-sharing' : ''}${isRemoteTab ? ' tab-remote' : ''}${sessionGroup ? ' in-group' : ''}`;
     tab.dataset.sessionId = session.id;
     tab.dataset.tabName = displayName;
     tab.dataset.cliSessionId = session.cliSessionId ?? '';
+    tab.dataset.groupId = sessionGroup?.id ?? '';
     tab.draggable = true;
     const status = getStatus(session.id);
     tab.title = tabTitle(project, session, status);
@@ -685,9 +691,9 @@ export function render(): void {
       draggingSessionId = null;
       clearGroupDwell();
       // Clean up all drag indicators
-      tabListEl.querySelectorAll('.drag-over-left, .drag-over-right, .drag-over-group').forEach(el => {
+      for (const el of tabListEl.querySelectorAll('.drag-over-left, .drag-over-right, .drag-over-group')) {
         el.classList.remove('drag-over-left', 'drag-over-right', 'drag-over-group');
-      });
+      }
     });
 
     if (isActive) activeTab = tab;
@@ -741,4 +747,93 @@ export function updateTabStatus(sessionId: string, status: SessionStatus): void 
       tab.title = buildTooltip(status, session?.cliSessionId ?? undefined);
     }
   }
+}
+
+/**
+ * PA-12: `session-changed` used to rebuild the whole strip (innerHTML='' +
+ * n tabs × 8 listeners × i18n lookups) on every tab click and every CLI-id
+ * adoption. With the payload state.ts emits ({ sessionId, kind }), patch the
+ * one affected tab (the updateTabStatus pattern). Payload-less events and
+ * structural kinds (add/remove/reorder) keep the full render.
+ */
+export function handleSessionChanged(data?: unknown): void {
+  const payload = data as { sessionId?: string; kind?: string } | null | undefined;
+  const { sessionId, kind } = payload ?? {};
+  if (!sessionId || !kind || kind === 'add' || kind === 'remove' || kind === 'reorder') {
+    render();
+    return;
+  }
+  bankScroll(tabListEl.scrollLeft);
+  if (renameInputOpen()) return;
+  const project = appState.activeProject;
+  const tab = tabListEl.querySelector<HTMLElement>(`.tab-item[data-session-id="${sessionId}"]`);
+  const session = project?.sessions.find(s => s.id === sessionId);
+  // Tab of another project, or a strip that doesn't mirror the model: rebuild.
+  if (!project || !tab || !session) { render(); return; }
+  if (kind === 'metadata') patchTabMetadata(project, session, tab);
+  else if (kind === 'activate') patchTabActivation(project, sessionId);
+  else render();
+}
+
+/** Title / CLI-id adoption: refresh name, tooltip, dataset — no DOM wipe. */
+function patchTabMetadata(project: ProjectRecord, session: SessionRecord, tab: HTMLElement): void {
+  const groupId = findGroupForSession(project, session.id)?.id ?? '';
+  // Group membership is strip structure, not tab content: that's a rebuild.
+  if ((tab.dataset.groupId ?? '') !== groupId) { render(); return; }
+  tab.dataset.cliSessionId = session.cliSessionId ?? '';
+  tab.title = tabTitle(project, session, getStatus(session.id));
+  const displayName = tabDisplayName(project, session);
+  if (tab.dataset.tabName !== displayName) {
+    tab.dataset.tabName = displayName;
+    const nameSpan = tab.querySelector<HTMLElement>('.tab-name');
+    // pi-lens-ignore: xss-innerhtml — prefix is static markup, name is escaped
+    if (nameSpan) nameSpan.innerHTML = `${tabNamePrefix(session)}${esc(displayName)}`;
+  }
+}
+
+/** Activation: toggle .active/.unread across the strip, restore scroll plan. */
+function patchTabActivation(project: ProjectRecord, sessionId: string): void {
+  if (project.activeSessionId !== sessionId) { render(); return; }
+  const byId = new Map(project.sessions.map(s => [s.id, s] as const));
+  for (const el of Array.from(tabListEl.querySelectorAll<HTMLElement>('.tab-item'))) {
+    const sid = el.dataset.sessionId ?? '';
+    const isActive = sid === sessionId;
+    el.classList.toggle('active', isActive);
+    const s = byId.get(sid);
+    const unread = !!s && !isActive && (s.type === 'project-tab' ? hasGithubUnread(project.id) : isUnread(s.id));
+    el.classList.toggle('unread', unread);
+  }
+  const activeTab = tabListEl.querySelector<HTMLElement>(`.tab-item[data-session-id="${sessionId}"]`);
+  // Same scroll contract as render()'s tail: restore the banked offset, then
+  // bring the newly active tab into view.
+  const plan = planScroll(project.id, project.activeSessionId);
+  tabListEl.scrollLeft = plan.scrollLeft;
+  if (activeTab && plan.autoScroll) {
+    const view = tabListEl.getBoundingClientRect();
+    const rect = activeTab.getBoundingClientRect();
+    tabListEl.scrollLeft += scrollDelta(rect.left - view.left, rect.right - view.right);
+  }
+  commitScroll(project.id, project.activeSessionId, tabListEl.scrollLeft, plan.autoScroll);
+  syncTabArrows();
+}
+
+/**
+ * PA-11: unread transitions flip the `.unread` class only (session-unread
+ * coalesces bursts to one pass per frame). Returns false when the strip no
+ * longer mirrors the model and the caller must full-render.
+ */
+export function patchUnread(): boolean {
+  const project = appState.activeProject;
+  const tabs = Array.from(tabListEl.querySelectorAll<HTMLElement>('.tab-item[data-session-id]'));
+  if (!project) return tabs.length === 0;
+  if (tabs.length !== project.sessions.length) return false;
+  const byId = new Map(project.sessions.map(s => [s.id, s] as const));
+  for (const tab of tabs) {
+    const sid = tab.dataset.sessionId ?? '';
+    const s = byId.get(sid);
+    if (!s) return false;
+    const unread = sid !== project.activeSessionId && (s.type === 'project-tab' ? hasGithubUnread(project.id) : isUnread(s.id));
+    tab.classList.toggle('unread', unread);
+  }
+  return true;
 }

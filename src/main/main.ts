@@ -16,6 +16,7 @@ import { stopConfigWatcher } from './config-watcher';
 import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
+import { configureProbeCacheDir } from './providers/resolve-binary';
 import { isMac, isWin } from './platform';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
@@ -210,21 +211,12 @@ function startMainProcess(): void {
     sweepImportTempDirs();
     initProviders();
 
-    const providers = getAllProviders();
-    const missing = providers.filter(p => !p.validatePrerequisites());
-    for (const p of missing) {
-      console.warn(`Provider "${p.meta.displayName}" not available`);
-    }
-    if (missing.length === providers.length) {
-      const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
-      dialog.showErrorBox(
-        'FineVibe — No CLI Provider Found',
-        `FineVibe needs at least one supported CLI provider installed to run.\n\n` +
-          `Install one of the following, then restart FineVibe:\n\n${bullets}`,
-      );
-      app.quit();
-      return;
-    }
+    // PA-01: the all-missing guard used to run BEFORE the window existed —
+    // six serial spawn-bound probes (up to 2.4 s of `which`/`npm prefix -g`
+    // spawns, W2-06) in front of the first paint. IPC/menu/window first;
+    // the probes run below, parallel, after the window is up. The window
+    // briefly flashing on the all-providers-missing path is the accepted
+    // trade for a first paint that never waits on a probe.
 
     // P2-100 companion (renderer: components/browser-tab/pane.ts isolation
     // toggle). The toggle rebuilds the pane on the SAME sessionId, so the
@@ -249,12 +241,54 @@ function startMainProcess(): void {
     createAppMenu(state.preferences?.debugMode ?? false);
     createWindow();
 
-    // Warn if Python is missing on Windows (hooks depend on it)
-    const pythonWarning = checkPythonAvailable();
+    // PA-01: cross-launch probe cache (resolved path + availability +
+    // binary mtime, mtime-invalidated per entry) lives in userData;
+    // main.ts owns the userData wiring so resolve-binary stays
+    // electron-free.
+    configureProbeCacheDir(app.getPath('userData'));
+
+    // PA-01: probes are spawn-bound (`which`, `npm prefix -g`) — fan every
+    // provider's async probe out concurrently, off the main thread.
+    // Providers without the async probe (tests, future registrations) fall
+    // back to the sync one.
+    const providers = getAllProviders();
+    const availability = await Promise.all(providers.map(p => (
+      p.validatePrerequisitesAsync
+        ? p.validatePrerequisitesAsync()
+        : Promise.resolve(p.validatePrerequisites())
+    )));
+    const missing = providers.filter((_, i) => !availability[i]);
+    for (const p of missing) {
+      console.warn(`Provider "${p.meta.displayName}" not available`);
+    }
+    if (missing.length === providers.length) {
+      const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
+      dialog.showErrorBox(
+        'FineVibe — No CLI Provider Found',
+        `FineVibe needs at least one supported CLI provider installed to run.\n\n` +
+          `Install one of the following, then restart FineVibe:\n\n${bullets}`,
+      );
+      // PA-01: with the window up first, a bare app.quit() would land on
+      // the close-confirm gate (before-quit → app:confirmClose) and prompt
+      // "Close FineVibe?" on top of the fatal dialog. This quit IS the
+      // confirmed exit.
+      setCloseConfirmed(true);
+      app.quit();
+      return;
+    }
+
+    // PA-16: async Python probe (was 2×execSync(timeout 3000) straight
+    // after createWindow — up to 6 s of main-thread block on first paint).
+    // Awaiting it here does not block the paint — the window is up. The
+    // await exists because installHooks below bakes the live pythonBin
+    // binding into the generated hook commands, so the binding must be
+    // re-pointed (setPythonBin mutates it in place; nothing synchronous
+    // gates on it) before the installs run.
+    const pythonWarning = await checkPythonAvailable();
     if (pythonWarning) {
       console.warn(pythonWarning);
       const owner = mainWindow;
-      if (owner) {
+      if (owner && !owner.isDestroyed()) {
         dialog.showMessageBox(owner, {
           type: 'warning',
           title: 'FineVibe — Python Not Found',
@@ -263,13 +297,16 @@ function startMainProcess(): void {
       }
     }
 
-    // Install hooks and status scripts for available providers (after window creation so dialogs can attach)
-    for (const provider of getAllProviders()) {
-      if (provider.validatePrerequisites()) {
-        await provider.installHooks(mainWindow);
-        provider.installStatusScripts();
-      }
-    }
+    // PA-26: install hooks and status scripts for available providers
+    // (after window creation so dialogs can attach). Each provider owns a
+    // disjoint config dir (~/.claude, ~/.codex, ~/.gemini, …), so the
+    // installs are independent — the serial await chain used to pay every
+    // provider's IO/dialog latency before the next one started. Availability
+    // reuses the probe fan-out above (same in-process cache, no re-probe).
+    await Promise.all(providers.filter((_, i) => availability[i]).map((provider) => (
+      provider.installHooks(mainWindow)
+        .then(() => provider.installStatusScripts())
+    )));
 
     initAutoUpdater();
 

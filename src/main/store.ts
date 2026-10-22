@@ -20,8 +20,16 @@ let lastSaveAt = 0;
 // invalidateStateCache() between cases.
 let stateCache: LoadedState | null = null;
 
+// PA-08: the gate-root memo (per-path canonical cache, whole-list memo and
+// the realpath'd CLI config root list — see deriveGateRoots) is fs-derived
+// state, so it is dropped here alongside stateCache: the fs mock semantics
+// change between cases.
 export function invalidateStateCache(): void {
   stateCache = null;
+  gateRootCanonicalByPath.clear();
+  gateRootMemo = null;
+  gateRootRawPaths = null;
+  cliConfigRootsCanonical = null;
 }
 
 /** The single documented default for a state file that omits `preferences`
@@ -159,6 +167,12 @@ let lastState: PersistedState | null = null;
 // covers. Validation lives here, on the main side of every writer: the
 // persisted file is written verbatim (renderer persistence is not the gate),
 // the root set is what gets validated.
+// PA-08 memoization keeps every P1-12 invariant: a canonical value enters
+// the per-path cache only after its FIRST full validation (realpath'd, then
+// cleared by recheckCanonicalRoot), and the forbidden-tree / filesystem-root
+// / home-root compares are pure string work, so they are re-checked on the
+// memoized canonical at zero syscall cost — a cache hit can never launder a
+// CLI config tree, a filesystem root, or the home root into the gate set.
 
 // Mirrors the read allowlist in ipc-handlers `isAllowedReadPath` — the CLI
 // config trees a "project" must never launder into the git-exec/destructive
@@ -182,6 +196,30 @@ function cliConfigRoots(): string[] {
   return roots;
 }
 
+// PA-08: the realpath'd compare forms of the CLI config roots. The old code
+// realpath'd every root once per project INSIDE the validateGateRoot loop
+// (≈6N syscalls per save); the list is process-constant, so compute it once
+// lazily — the canonicalHomeRoot() memo pattern. Dropped by
+// invalidateStateCache() with the rest of the gate memo: the fs mock
+// semantics (and on a real disk, directory existence) change between cases.
+let cliConfigRootsCanonical: string[] | null = null;
+function canonicalCliConfigRoots(): string[] {
+  if (cliConfigRootsCanonical === null) {
+    cliConfigRootsCanonical = cliConfigRoots().map((dir) => {
+      let realDir = dir;
+      try {
+        realDir = fs.realpathSync(dir);
+      } catch {
+        // Config dir not on disk — the allowlist spelling is the compare form.
+      }
+      // Compare in resolved form so the mocked/test spellings and the
+      // platform-native separators collapse to one shape on every OS.
+      return path.resolve(realDir);
+    });
+  }
+  return cliConfigRootsCanonical;
+}
+
 let homeRootCanonical: string | null | undefined;
 function canonicalHomeRoot(): string {
   if (homeRootCanonical === undefined || homeRootCanonical === null) {
@@ -192,6 +230,25 @@ function canonicalHomeRoot(): string {
     }
   }
   return homeRootCanonical;
+}
+
+/** P1-12: the syscall-free safety compares on an already realpath'd
+ * canonical path — not a filesystem root, not the home root, not equal to
+ * (or, by construction of the compare, inside) a CLI config tree. Pure
+ * string work, so PA-08 re-checks it on every reuse of a memoized
+ * canonical: a cache hit can never launder a forbidden tree into the set. */
+function recheckCanonicalRoot(canonical: string): { canonical: string } | { drop: string } {
+  // Compare in resolved form so the mocked/test spellings and the
+  // platform-native separators collapse to one shape on every OS.
+  const resolved = path.resolve(canonical);
+  if (resolved === path.parse(resolved).root) return { drop: 'filesystem root' };
+  if (resolved === path.resolve(canonicalHomeRoot())) return { drop: 'home root' };
+  // PA-08: realpath'd once per process (canonicalCliConfigRoots) — the
+  // forbidden-tree check is pure string compares now.
+  for (const realDir of canonicalCliConfigRoots()) {
+    if (resolved === realDir) return { drop: 'CLI config dir' };
+  }
+  return { canonical };
 }
 
 /** Canonicalize a renderer-supplied project path for the gate root set.
@@ -207,33 +264,72 @@ function validateGateRoot(rawPath: unknown): { canonical: string } | { drop: str
   } catch {
     return { drop: 'does not exist' };
   }
-  // Compare in resolved form so the mocked/test spellings and the
-  // platform-native separators collapse to one shape on every OS.
-  const resolved = path.resolve(canonical);
-  if (resolved === path.parse(resolved).root) return { drop: 'filesystem root' };
-  if (resolved === path.resolve(canonicalHomeRoot())) return { drop: 'home root' };
-  for (const dir of cliConfigRoots()) {
-    let realDir = dir;
-    try {
-      realDir = fs.realpathSync(dir);
-    } catch {
-      // Config dir not on disk — the allowlist spelling is the compare form.
-    }
-    if (resolved === path.resolve(realDir)) return { drop: 'CLI config dir' };
-  }
-  return { canonical };
+  return recheckCanonicalRoot(canonical);
+}
+
+// PA-08: every save re-derived the whole gate root set — per project one
+// statSync + one realpathSync (plus the CLI roots realpath'd in the loop),
+// ≈2N syscalls per 300 ms throttle window during every renderer mutation
+// burst. Two memos, both dropped by invalidateStateCache():
+// - gateRootCanonicalByPath: rawPath -> canonical for SUCCESSFUL
+//   validations only. A list that grows by one project validates only the
+//   new path (one stat + one realpath); cached paths cost zero syscalls and
+//   are re-checked by recheckCanonicalRoot (pure string work, so the
+//   memoized canonical can never launder a forbidden tree into the set).
+//   Failures are NEVER cached: a refused path is a broken/dangerous project
+//   path, so it re-validates on every save — that keeps the drop warning
+//   firing on every save (existing tests pin it) and lets a directory that
+//   reappears recover. The accepted trade-off: a cached directory deleted
+//   behind our back stays in the set until the memo is invalidated.
+// - gateRootMemo: the derived array keyed on the raw path list it came from;
+//   an unchanged list returns the memo with ZERO fs calls.
+const gateRootCanonicalByPath = new Map<string, string>();
+let gateRootRawPaths: string[] | null = null;
+let gateRootMemo: string[] | null = null;
+
+// Memo key: the raw path list, strings only — a non-string path drops (with
+// a warning) on every save, so a list containing one is never memoized.
+function gateMemoKey(rawPaths: unknown[]): string[] | null {
+  for (const rawPath of rawPaths) if (typeof rawPath !== 'string') return null;
+  return rawPaths as string[];
+}
+
+// Chosen comparison: order-sensitive (same length, same entry at every
+// index). A reorder counts as a change — conservative; reordering a project
+// list is rare, and the re-derivation it costs is zero-syscall because
+// every path hits the per-path cache.
+function gatePathsEqual(a: string[] | null, b: string[]): boolean {
+  if (a === null || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 function deriveGateRoots(projects: ProjectRecord[]): string[] {
+  const rawPaths: unknown[] = projects.map((project) => project?.path);
+  const key = gateMemoKey(rawPaths);
+  if (key !== null && gateRootMemo !== null && gatePathsEqual(gateRootRawPaths, key)) return gateRootMemo;
   const roots: string[] = [];
-  for (const project of projects) {
-    const validated = validateGateRoot(project?.path);
+  let allValid = key !== null;
+  for (const rawPath of rawPaths) {
+    const cached = typeof rawPath === 'string' ? gateRootCanonicalByPath.get(rawPath) : undefined;
+    // PA-08: a cache hit skips stat/realpath; the safety compares are
+    // re-run on the memoized canonical at zero syscall cost.
+    const validated = cached === undefined ? validateGateRoot(rawPath) : recheckCanonicalRoot(cached);
     if ('drop' in validated) {
-      console.warn(`Dropped project root from the gate set: ${JSON.stringify(project?.path)} (${validated.drop})`);
+      // Successes only are cached — the refused path re-validates (and
+      // warns) on every save. A cached canonical that fails the re-check
+      // is refused here but kept, so every later save behaves identically.
+      allValid = false;
+      console.warn(`Dropped project root from the gate set: ${JSON.stringify(rawPath)} (${validated.drop})`);
       continue;
     }
+    if (cached === undefined && typeof rawPath === 'string') gateRootCanonicalByPath.set(rawPath, validated.canonical);
     if (!roots.includes(validated.canonical)) roots.push(validated.canonical);
   }
+  // Whole-list memo for an all-valid list only: a list containing a refused
+  // path keeps re-running the loop, so the drop warning fires every save.
+  gateRootMemo = allValid ? roots : null;
+  gateRootRawPaths = allValid ? key : null;
   return roots;
 }
 let knownProjectPaths: string[] | null = null;

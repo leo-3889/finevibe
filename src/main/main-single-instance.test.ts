@@ -28,6 +28,10 @@ const { appHandlers, app, windows, fakeProvider } = vi.hoisted(() => {
       appHandlers[event] = cb;
     }),
     quit: vi.fn(),
+    // PA-01: the boot chain wires the probe cache via app.getPath('userData')
+    // right after createWindow; without this the continuation dies before the
+    // probe fan-out (probe-order test sees []).
+    getPath: () => '/mock/userdata',
     whenReady: () => Promise.resolve(),
   };
   const windows: MockWindow[] = [];
@@ -125,6 +129,9 @@ vi.mock('./agentmemory-manager', () => ({
 }));
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
+// PA-01: main.ts wires the cross-launch probe cache to userData at boot;
+// the real module touches fs/child_process — stub it.
+vi.mock('./providers/resolve-binary', () => ({ configureProbeCacheDir: vi.fn() }));
 vi.mock('./platform', () => ({ isMac: false, isWin: false }));
 vi.mock('./chrome-import/copy', () => ({ sweepImportTempDirs: sweepImportSpy }));
 vi.mock('./close-state', () => ({
@@ -156,6 +163,7 @@ beforeEach(() => {
   vi.mocked(app.quit).mockClear();
   vi.mocked(app.on).mockClear();
   vi.mocked(sweepImportSpy).mockClear();
+  fakeProvider.validatePrerequisites = () => true;
 });
 
 describe('single-instance gate', () => {
@@ -226,5 +234,20 @@ describe('single-instance gate', () => {
 
     expect(vi.mocked(stopGitWatcher)).toHaveBeenCalled();
     expect(vi.mocked(stopConfigWatcher)).toHaveBeenCalled();
+  });
+
+  // PA-01: the all-missing probe sweep used to gate the first window
+  // (serial spawn probes, up to 2.4 s cold). It now runs AFTER
+  // createWindow, in parallel — a probe must observe the window existing.
+  it('creates the window before the provider availability probes run', async () => {
+    const probeOrder: string[] = [];
+    fakeProvider.validatePrerequisites = () => {
+      probeOrder.push(windows.length > 0 ? 'probe-after-window' : 'probe-before-window');
+      return true;
+    };
+
+    await importPrimaryInstance();
+
+    expect(probeOrder).toEqual(['probe-after-window']);
   });
 });

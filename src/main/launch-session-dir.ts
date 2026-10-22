@@ -191,6 +191,27 @@ function newestTranscriptMtime(dir: string): number {
   return newest;
 }
 
+/** Async twin of newestTranscriptMtime() for the per-search listing (PA-19). */
+async function newestTranscriptMtimeAsync(dir: string): Promise<number> {
+  let newest = 0;
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue;
+    try {
+      const st = await fs.promises.lstat(path.join(dir, name));
+      if (st.isFile() && st.mtimeMs > newest) newest = st.mtimeMs;
+    } catch {
+      // Vanished between readdir and stat.
+    }
+  }
+  return newest;
+}
+
 export interface LaunchSessionMeta {
   providerId: LaunchSessionProvider;
   /** Project cwd the launch ran in. */
@@ -217,44 +238,89 @@ export function writeLaunchSessionMeta(sessionDir: string, meta: LaunchSessionMe
 export function readLaunchSessionMeta(sessionDir: string): LaunchSessionMeta | null {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(sessionDir, META_FILENAME), 'utf-8'));
-    if (typeof raw?.cwd !== 'string' || !raw.cwd) return null;
-    return {
-      providerId: raw.providerId === 'omp' ? 'omp' : 'pi',
-      cwd: raw.cwd,
-      configDir: typeof raw.configDir === 'string' && raw.configDir ? raw.configDir : undefined,
-      createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date(0).toISOString(),
-    };
+    return normalizeMeta(raw);
   } catch {
     return null;
   }
 }
 
+function normalizeMeta(raw: unknown): LaunchSessionMeta | null {
+  if (typeof (raw as LaunchSessionMeta)?.cwd !== 'string' || !(raw as LaunchSessionMeta).cwd) return null;
+  const r = raw as Record<string, unknown>;
+  return {
+    providerId: r.providerId === 'omp' ? 'omp' : 'pi',
+    cwd: r.cwd as string,
+    configDir: typeof r.configDir === 'string' && r.configDir ? r.configDir : undefined,
+    createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date(0).toISOString(),
+  };
+}
+
+// PA-19: the sidecar is written once at launch, but pi/OMP discovery used to
+// readFileSync it per retained dir per search. Memoize per dir keyed by the
+// dir's mtime: the listing already lstats every dir for the retention window,
+// so a re-read costs one tuple compare. Any write into the dir (sidecar,
+// transcript) bumps its mtime and conservatively invalidates the entry.
+const metaCache = new Map<string, { dirMtimeMs: number; meta: LaunchSessionMeta | null }>();
+const META_CACHE_MAX = 4000;
+
 /**
- * Per-launch session dirs under `base` that are inside the retention window.
+ * Async, memoized sidecar read for global search. `dirMtimeMs` — the lstat
+ * mtime the caller already paid for — is the cache key; stat is the fallback.
+ */
+export async function readLaunchSessionMetaCached(sessionDir: string, dirMtimeMs?: number): Promise<LaunchSessionMeta | null> {
+  let mtimeMs = dirMtimeMs;
+  if (mtimeMs === undefined) {
+    try {
+      mtimeMs = (await fs.promises.stat(sessionDir)).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+  const hit = metaCache.get(sessionDir);
+  if (hit && hit.dirMtimeMs === mtimeMs) return hit.meta;
+  let meta: LaunchSessionMeta | null = null;
+  try {
+    meta = normalizeMeta(JSON.parse(await fs.promises.readFile(path.join(sessionDir, META_FILENAME), 'utf-8')));
+  } catch {
+    meta = null;
+  }
+  if (metaCache.size >= META_CACHE_MAX) {
+    const oldest = metaCache.keys().next().value;
+    if (oldest !== undefined) metaCache.delete(oldest);
+  }
+  metaCache.set(sessionDir, { dirMtimeMs: mtimeMs, meta });
+  return meta;
+}
+
+/**
+ * Per-launch session dirs under `base` that are inside the retention window,
+ * with the lstat mtime the retention gate already paid for (the meta cache
+ * key, PA-19).
  *
  * Runs on every global session search, so dirs with no recent activity are
  * filtered here by the same rule pruneLaunchSessionDirs() deletes on: their
  * transcripts are all older than the window, so search could only surface
  * entries retention is about to remove — while paying a stat per dir for
- * thousands of them.
+ * thousands of them. All fs calls are async (PA-19): the old readdirSync +
+ * lstatSync sweep blocked main for hundreds of ms per query.
  */
-export function listLaunchSessionDirs(base: string, maxAgeMs = LAUNCH_SESSION_RETENTION_MS): string[] {
+export async function listLaunchSessionDirs(base: string, maxAgeMs = LAUNCH_SESSION_RETENTION_MS): Promise<Array<{ dir: string; mtimeMs: number }>> {
   let names: string[];
   try {
-    names = fs.readdirSync(base);
+    names = await fs.promises.readdir(base);
   } catch {
     return [];
   }
   const cutoff = Date.now() - maxAgeMs;
-  const out: string[] = [];
+  const out: Array<{ dir: string; mtimeMs: number }> = [];
   for (const name of names) {
     const dir = path.join(base, name);
     try {
       // lstat, not stat: a symlink in the search path is never followed.
-      const st = fs.lstatSync(dir);
+      const st = await fs.promises.lstat(dir);
       if (!st.isDirectory()) continue;
-      if (st.mtimeMs > cutoff) out.push(dir);
-      else if (newestTranscriptMtime(dir) > cutoff) out.push(dir);
+      if (st.mtimeMs > cutoff) out.push({ dir, mtimeMs: st.mtimeMs });
+      else if (await newestTranscriptMtimeAsync(dir) > cutoff) out.push({ dir, mtimeMs: st.mtimeMs });
     } catch {
       // Vanished between readdir and stat — skip.
     }

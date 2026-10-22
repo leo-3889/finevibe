@@ -1,5 +1,12 @@
 # Vibeyard full audit — 2026-10-10
 
+> **Status 2026-10-22: SUPERSEDED — archived.** Test gate greened by 6d3a01e (item 1 struck
+> in `docs/AUDIT_STATUS.md`); all 13 findings closed per the same-day table + the 2026-10-20
+> registry (PO-04 `pi-compatible-transcripts.ts:121,175-179`; PO-07 LRU 512 `:199-210`;
+> #8 spawn race = P1-10 a21b1fa; #13 board index = P3-7 de70291). Carried gaps (PO-06 live
+> watcher cost, S1–S6 packaged runs, gh #6/#7 one-line check) live in
+> [`../PENDING.md`](../PENDING.md).
+
 HEAD `869a7ed` (fork `leo-3889/vibeyard`, upstream `elirantutia/vibeyard`). Method: parallel subsystem reviewers against the contract docs + parent-run verification gates + inline slices. Read-only audit; no code changed. Severity: critical / high / medium / low.
 
 ## Verification gate (parent-run, this audit)

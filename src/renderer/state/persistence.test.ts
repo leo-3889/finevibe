@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../session-cost.js', () => ({ restoreCost: vi.fn() }));
 vi.mock('../session-context.js', () => ({ restoreContext: vi.fn() }));
@@ -127,5 +127,60 @@ describe('hydrateLoadedState active rows', () => {
     expect(live.state).toBe('active');
     expect(orphan.state).toBe('closed');
     expect(orphan.closedAt).toBeTruthy();
+  });
+});
+
+describe('hydrateLoadedState githubLastSeen age prune (PA-31)', () => {
+  // Fixed clock so the 90-day cutoff is deterministic.
+  const NOW = Date.parse('2026-10-22T00:00:00.000Z');
+  const iso = (daysAgo: number) => new Date(NOW - daysAgo * 86_400_000).toISOString();
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('drops entries older than 90 days and unparseable timestamps, keeps fresh ones', () => {
+    const state = baseState({});
+    state.projects[0].githubLastSeen = {
+      fresh: iso(1),
+      boundary: iso(90), // exactly at the cutoff: kept (only strictly older is dropped)
+      stale: iso(90.5),
+      garbage: 'not-a-date', // cannot be aged → dropped
+    };
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].githubLastSeen).toEqual({ fresh: iso(1), boundary: iso(90) });
+  });
+
+  it('deletes the key when every entry is dropped (no empty {} reaches disk)', () => {
+    const state = baseState({});
+    state.projects[0].githubLastSeen = { stale: iso(91), garbage: 'x' };
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect('githubLastSeen' in state.projects[0]).toBe(false);
+  });
+
+  it('keeps an all-fresh map untouched, by reference (no identity churn)', () => {
+    const state = baseState({});
+    const seen = { pr: iso(89), issue: iso(2) };
+    state.projects[0].githubLastSeen = seen;
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].githubLastSeen).toBe(seen);
+  });
+
+  it('does not create githubLastSeen for a project that has none', () => {
+    const state = baseState({});
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect('githubLastSeen' in state.projects[0]).toBe(false);
   });
 });

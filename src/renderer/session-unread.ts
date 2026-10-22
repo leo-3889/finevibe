@@ -7,8 +7,32 @@ const unreadSessions = new Set<string>();
 const listeners: UnreadChangeCallback[] = [];
 const prevStatus = new Map<string, SessionStatus>();
 let readPending = false;
+// PA-11: N background→completed transitions land in one status burst; without
+// coalescing each one rebuilt the sidebar project list AND the tab strip (2N
+// full rebuilds during terminal paint). One listener pass per frame.
+let notifyScheduled = false;
+
+function flushListeners(): void {
+  notifyScheduled = false;
+  for (const cb of listeners) cb();
+}
 
 function notify(): void {
+  // rAF coalescing pattern (active-sessions-panel.ts): burst → one rebuild/frame.
+  if (notifyScheduled) return;
+  notifyScheduled = true;
+  requestAnimationFrame(flushListeners);
+}
+
+/**
+ * Read transitions bypass the frame wait: the sidebar renders synchronously on
+ * `project-changed`, so deferring past paint would show the accent colour and
+ * then remove it (the microtask contract of markActiveSessionRead). Listeners
+ * re-derive everything from state, so one synchronous pass also absorbs any
+ * pending coalesced transition pass.
+ */
+function notifyNow(): void {
+  notifyScheduled = false;
   for (const cb of listeners) cb();
 }
 
@@ -31,7 +55,8 @@ function markActiveSessionRead(): void {
     readPending = false;
     const sessionId = appState.activeProject?.activeSessionId;
     if (!sessionId) return;
-    if (unreadSessions.delete(sessionId)) notify();
+    // PA-11: a read must land before paint, not on the transition frame.
+    if (unreadSessions.delete(sessionId)) notifyNow();
   });
 }
 
@@ -104,4 +129,5 @@ export function _resetForTesting(): void {
   listeners.length = 0;
   prevStatus.clear();
   readPending = false;
+  notifyScheduled = false;
 }

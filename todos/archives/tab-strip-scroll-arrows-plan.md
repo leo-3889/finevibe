@@ -1,6 +1,7 @@
 # Plan: scroll arrows for the tab strip (tab bar overflow)
 
-Date: 2026-10-20 · Status: plan · Owner: TBD
+Date: 2026-10-20 · Status: DONE — shipped b9a7802 + 66ecf10 (items 50-51), verified in-tree
+2026-10-22. Archived. · Owner: TBD
 
 ## Request
 

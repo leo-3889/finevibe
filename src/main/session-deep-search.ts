@@ -106,37 +106,48 @@ async function acquireRead(signal?: AbortSignal): Promise<void> {
   }
 }
 
-async function getCachedIndex(provider: CliProvider, transcriptPath: string, signal?: AbortSignal): Promise<CacheEntry> {
+async function getCachedIndex(provider: CliProvider, transcriptPath: string, signal?: AbortSignal, version?: StatVersion): Promise<CacheEntry> {
   const key = `${provider.meta.id}:${transcriptPath}`;
   const pending = inFlight.get(key);
   if (pending) return pending;
   const work = (async () => {
     await acquireRead(signal);
-    try { return await readIndex(provider, transcriptPath, signal); }
+    try { return await readIndex(provider, transcriptPath, signal, version); }
     finally { releasePermit(); }
   })();
   inFlight.set(key, work);
   try { return await work; } finally { if (inFlight.get(key) === work) inFlight.delete(key); }
 }
 
-async function readIndex(provider: CliProvider, transcriptPath: string, signal?: AbortSignal): Promise<CacheEntry> {
+/** The (mtime,size,ctime) tuple a CacheEntry validates against. */
+interface StatVersion {
+  mtime: number;
+  size: number;
+  ctime: number;
+}
+
+function statVersion(st: { mtimeMs: number; size: number; ctimeMs: number }): StatVersion {
+  return { mtime: st.mtimeMs, size: st.size, ctime: st.ctimeMs };
+}
+
+async function readIndex(provider: CliProvider, transcriptPath: string, signal?: AbortSignal, version?: StatVersion): Promise<CacheEntry> {
   try {
-    const stat = await raceAbort(fs.promises.stat(transcriptPath), signal);
-    const mtime = stat.mtimeMs;
+    // PA-18: discovery's batched stat preflight carries the version tuple so
+    // the per-transcript stat through the read gate is gone.
+    const v = version ?? statVersion(await raceAbort(fs.promises.stat(transcriptPath), signal));
     const key = `${provider.meta.id}:${transcriptPath}`;
     const cached = textCache.get(key);
-    if (cached && cached.mtime === mtime && cached.size === stat.size && cached.ctime === stat.ctimeMs) {
+    if (cached && cached.mtime === v.mtime && cached.size === v.size && cached.ctime === v.ctime) {
       // Move-to-end for true LRU semantics on cache hits.
       textCache.delete(key);
       textCache.set(key, cached);
       return cached;
     }
 
-    const version = { mtime, size: stat.size, ctime: stat.ctimeMs };
-    const saved = await raceAbort(readSearchIndex(provider.meta.id, transcriptPath, version), signal);
+    const saved = await raceAbort(readSearchIndex(provider.meta.id, transcriptPath, v), signal);
     const { text, cwd } = saved ?? await raceAbort(provider.indexTranscript!(transcriptPath), signal);
-    if (!saved) await raceAbort(writeSearchIndex(provider.meta.id, transcriptPath, { text, cwd, ...version }), signal);
-    const entry: CacheEntry = { text, textLower: text.toLowerCase(), cwd, ...version };
+    if (!saved) await raceAbort(writeSearchIndex(provider.meta.id, transcriptPath, { text, cwd, ...v }), signal);
+    const entry: CacheEntry = { text, textLower: text.toLowerCase(), cwd, ...v };
     const old = textCache.get(key);
     if (old) {
       cacheChars -= old.text.length + old.textLower.length;
@@ -176,7 +187,7 @@ function deriveName(text: string): string | undefined {
   if (!first) return undefined;
   const oneLine = first.replace(/\s+/g, ' ');
   return oneLine.length > MAX_DERIVED_NAME_LENGTH
-    ? Buffer.from(oneLine.slice(0, MAX_DERIVED_NAME_LENGTH - 1).trimEnd()).toString('utf8') + '…'
+    ? `${Buffer.from(oneLine.slice(0, MAX_DERIVED_NAME_LENGTH - 1).trimEnd()).toString('utf8')}…`
     : Buffer.from(oneLine).toString('utf8');
 }
 
@@ -193,10 +204,52 @@ function extractSnippet(text: string, textLower: string, query: string): string 
   const start = Math.max(0, idx - RADIUS);
   const end = Math.min(text.length, idx + Math.min(q.length, 120) + RADIUS);
   let snippet = text.slice(start, end).replace(/\n+/g, ' ').trim();
-  if (start > 0) snippet = '…' + snippet;
-  if (end < text.length) snippet = snippet + '…';
+  if (start > 0) snippet = `…${snippet}`;
+  if (end < text.length) snippet = `${snippet}…`;
   // Copy the short slice so it cannot retain the complete transcript backing string.
   return Buffer.from(snippet).toString('utf8');
+}
+
+const STAT_CHUNK = 64;
+
+/**
+ * PA-18: batched stat sweep over the discovered transcripts, run OUTSIDE the
+ * read gate — stats are cheap metadata reads, and serializing a full corpus
+ * through the 4-permit gate dominated the hot query. Resolves a per-path
+ * preflight: the memory-cache entry on a version match (the hot keystroke
+ * case — resolves without ever touching the gate), the fresh version tuple
+ * on a miss, and NO entry for a path whose stat failed (unreadable this
+ * pass, exactly as the old in-gate stat ENOENT produced an empty entry).
+ */
+async function preflightTranscripts(
+  provider: CliProvider,
+  paths: string[],
+  signal?: AbortSignal,
+): Promise<Map<string, { entry: CacheEntry } | { version: StatVersion }>> {
+  const preflighted = new Map<string, { entry: CacheEntry } | { version: StatVersion }>();
+  for (let i = 0; i < paths.length; i += STAT_CHUNK) {
+    if (signal?.aborted) break;
+    const chunk = paths.slice(i, i + STAT_CHUNK);
+    const stats = await raceAbort(
+      Promise.all(chunk.map(p => fs.promises.stat(p).then(statVersion, () => null))),
+      signal,
+    );
+    for (let j = 0; j < chunk.length; j++) {
+      const version = stats[j];
+      if (!version) continue;
+      const key = `${provider.meta.id}:${chunk[j]}`;
+      const cached = textCache.get(key);
+      if (cached && cached.mtime === version.mtime && cached.size === version.size && cached.ctime === version.ctime) {
+        // Move-to-end for LRU, as readIndex did on in-gate hits.
+        textCache.delete(key);
+        textCache.set(key, cached);
+        preflighted.set(chunk[j], { entry: cached });
+      } else {
+        preflighted.set(chunk[j], { version });
+      }
+    }
+  }
+  return preflighted;
 }
 
 async function searchOneProvider(provider: CliProvider, query: string, signal?: AbortSignal): Promise<DeepSearchResult[]> {
@@ -205,6 +258,14 @@ async function searchOneProvider(provider: CliProvider, query: string, signal?: 
   try { discovery = await provider.discoverTranscripts(signal); } catch { return []; }
   if (signal?.aborted) return [];
   const descriptors = discovery.descriptors;
+  let preflighted: Map<string, { entry: CacheEntry } | { version: StatVersion }>;
+  try {
+    preflighted = await preflightTranscripts(provider, descriptors.map(d => d.transcriptPath), signal);
+  } catch {
+    // Aborted mid-sweep: this provider contributes nothing, like a failed discovery.
+    return [];
+  }
+  if (signal?.aborted) return [];
   // Only compact results escape each worker; evicted transcript text can be collected immediately.
   // The same CLI session id can legitimately appear under two profiles (copied
   // history), so the dedup key is profile + cliSessionId; provider is already
@@ -212,13 +273,19 @@ async function searchOneProvider(provider: CliProvider, query: string, signal?: 
   const best = new Map<string, DeepSearchResult>();
   await mapWithConcurrency(descriptors, TRANSCRIPT_IO_CONCURRENCY, async (desc) => {
     if (signal?.aborted) return;
+    const pre = preflighted.get(desc.transcriptPath);
+    if (!pre) return; // stat failed: not searchable in this pass
     let entry: CacheEntry;
-    try {
-      entry = await getCachedIndex(provider, desc.transcriptPath, signal);
-    } catch {
-      // Aborted, or a read that failed even after the abort race ended it:
-      // this transcript is simply not searchable in this pass.
-      return;
+    if ('entry' in pre) {
+      entry = pre.entry;
+    } else {
+      try {
+        entry = await getCachedIndex(provider, desc.transcriptPath, signal, pre.version);
+      } catch {
+        // Aborted, or a read that failed even after the abort race ended it:
+        // this transcript is simply not searchable in this pass.
+        return;
+      }
     }
     if (signal?.aborted || !entry.textLower) return;
     const score = scoreFuzzy(entry.textLower, query);
@@ -252,12 +319,14 @@ export async function searchSessions(query: string, signal?: AbortSignal): Promi
   const onAbort = signal && (() => drainReadQueue());
   if (signal && onAbort) signal.addEventListener('abort', onAbort, { once: true });
   try {
-    const results: DeepSearchResult[] = [];
-    // Avoid multiplying discovery/index workers across all providers.
-    for (const provider of getAllProviders()) {
-      if (signal?.aborted) return [];
-      for (const result of await searchOneProvider(provider, query, signal)) results.push(result);
-    }
+    // PA-18: provider discovery runs concurrently; the module-global read
+    // gate is the shared permit pool, so aggregate transcript reads stay
+    // capped at TRANSCRIPT_IO_CONCURRENCY — the old serial loop just
+    // serialized six discovery sweeps on top of that cap.
+    const perProvider = await Promise.all(
+      getAllProviders().map(provider => searchOneProvider(provider, query, signal)),
+    );
+    const results = perProvider.flat();
     results.sort((a, b) => b.score - a.score);
     return signal?.aborted ? [] : results.slice(0, 20);
   } finally {

@@ -6,7 +6,7 @@ vi.mock('fs', () => ({
 }));
 vi.mock('os', () => ({ homedir: () => '/mock/home' }));
 vi.mock('../pty-manager', () => ({ getFullPath: () => '/usr/local/bin:/usr/bin' }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: vi.fn(), validateBinaryExists: vi.fn() }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: vi.fn(), validateBinaryExists: vi.fn(), validateBinaryExistsAsync: vi.fn(async () => true) }));
 vi.mock('../omp-session-watcher', () => ({
   startOmpSessionWatcher: vi.fn(),
   registerPendingOmpSession: vi.fn(),

@@ -5,7 +5,8 @@ import type { Dirent, FSWatcher, WatchListener } from 'fs';
 // Mock fs and child_process before importing the module
 vi.mock('fs', () => ({
   watch: vi.fn(),
-  readdirSync: vi.fn(),
+  // PA-17: the BFS walk is async (fs.promises.readdir per dir).
+  promises: { readdir: vi.fn() },
 }));
 
 vi.mock('child_process', () => ({
@@ -22,13 +23,13 @@ vi.mock('./platform', () => ({
   get isWin() { return false; },
 }));
 
+import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
-import * as path from 'path';
-import { startGitWatcher, stopGitWatcher, notifyGitChanged } from './git-watcher';
+import { startGitWatcher, stopGitWatcher, notifyGitChanged, onGitChanged } from './git-watcher';
 
 const mockWatch = vi.mocked(fs.watch);
-const mockReaddirSync = vi.mocked(fs.readdirSync);
+const mockReaddir = vi.mocked(fs.promises.readdir);
 const mockExecFile = vi.mocked(execFile);
 
 type Tree = Record<string, string[]>; // dir path -> immediate subdir names
@@ -47,10 +48,10 @@ function makeDirent(name: string, isDir: boolean): Dirent {
 }
 
 function installTree(tree: Tree) {
-  mockReaddirSync.mockImplementation(((dir: unknown) => {
+  mockReaddir.mockImplementation((async (dir: unknown) => {
     const subs = tree[dir as string] ?? [];
     return subs.map((name) => makeDirent(name, true));
-  }) as unknown as typeof fs.readdirSync);
+  }) as unknown as typeof fs.promises.readdir);
 }
 
 function installWatch() {
@@ -155,7 +156,7 @@ describe('startGitWatcher', () => {
     expect(watchedPaths).not.toContain(path.join(root, '__pycache__'));
     // .git itself is ignored by the working-tree walker but watched separately below
     // (non-recursive on .git dir) — assert here that we did NOT walk INTO .git
-    expect(mockReaddirSync).not.toHaveBeenCalledWith(path.join(root, '.git'), expect.anything());
+    expect(mockReaddir).not.toHaveBeenCalledWith(path.join(root, '.git'), expect.anything());
   });
 
   it('(Linux) caps the number of working-tree watches', async () => {
@@ -283,7 +284,7 @@ describe('startGitWatcher (macOS/Windows recursive working tree)', () => {
     const opts = rootCalls[0][1] as { recursive?: boolean };
     expect(opts.recursive).toBe(true);
     // No per-dir BFS: the tree is never read, and subdirs are never watched.
-    expect(mockReaddirSync).not.toHaveBeenCalled();
+    expect(mockReaddir).not.toHaveBeenCalled();
     expect(mockWatch.mock.calls.map((c) => String(c[0]))).not.toContain(path.join(root, 'src'));
   });
 
@@ -338,5 +339,24 @@ describe('notifyGitChanged', () => {
     expect(win.webContents.send).not.toHaveBeenCalled();
     vi.advanceTimersByTime(300);
     expect(win.webContents.send).toHaveBeenCalledWith('git:changed');
+  });
+
+  // PA-07: main-process subscribers (the Quick Open enumeration cache) get
+  // the signal immediately, not behind the renderer's debounce.
+  it('notifies onGitChanged listeners immediately, and unsubscribing works', async () => {
+    const root = path.join('/proj');
+    installTree({ [root]: [] });
+    installWatch();
+    stubGitRevParse(path.join(root, '.git'));
+    await startGitWatcher(makeWin() as never, root);
+
+    const listener = vi.fn();
+    const off = onGitChanged(listener);
+    notifyGitChanged();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    off();
+    notifyGitChanged();
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });

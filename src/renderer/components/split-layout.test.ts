@@ -176,3 +176,31 @@ describe('split-layout render coalescing (P2-28)', () => {
     expect(hideAllPanesMock).toHaveBeenCalled();
   });
 });
+
+describe('split-layout metadata session-changed gate (PA-13)', () => {
+  type Emitter = { emit(event: 'session-changed', data?: unknown): void };
+  const emit = () => (appState as unknown as Emitter);
+
+  it('skips renderLayout for kind=metadata (title / CLI-id adoption)', () => {
+    const project = appState.addProject('Meta', '/meta');
+    const session = appState.addSession(project.id, 'S1')!;
+
+    hideAllPanesMock.mockClear();
+    emit().emit('session-changed', { sessionId: session.id, kind: 'metadata' });
+
+    expect(hideAllPanesMock).not.toHaveBeenCalled();
+  });
+
+  it('renders for kind=activate and for payload-less session-changed', () => {
+    const project = appState.addProject('Act', '/act');
+    const session = appState.addSession(project.id, 'S1')!;
+
+    hideAllPanesMock.mockClear();
+    emit().emit('session-changed', { sessionId: session.id, kind: 'activate' });
+    expect(hideAllPanesMock).toHaveBeenCalledTimes(1);
+
+    hideAllPanesMock.mockClear();
+    emit().emit('session-changed');
+    expect(hideAllPanesMock).toHaveBeenCalledTimes(1);
+  });
+});

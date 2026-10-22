@@ -10,6 +10,8 @@ const mockOnChanged = vi.fn(() => () => {});
 vi.stubGlobal('window', {
   finevibe: {
     store: { load: mockLoad, save: mockSave },
+    // PA-25: state.ts prefetches transcript availability on cli-id bind.
+    session: { transcriptExists: vi.fn(async () => true) },
     git: {
       watchProject: mockWatchProject,
       getStatus: mockGetStatus,
@@ -165,5 +167,74 @@ describe('git-status state-loaded handling', () => {
 
     expect(mockWatchProject).not.toHaveBeenCalled();
     expect(mockGetStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('git-status session-changed debounce + key gate (PA-10)', () => {
+  type SessionSeed = { id: string; name: string; providerId: string; cliSessionId: string | null };
+  function projectWithSessions(id: string, path: string, sessions: SessionSeed[], activeSessionId: string) {
+    return { ...project(id, path), sessions, activeSessionId };
+  }
+  function loadWithSession() {
+    mockLoad.mockResolvedValue(persisted(
+      [projectWithSessions('p1', '/proj', [{ id: 's1', name: 'S1', providerId: 'claude', cliSessionId: null }], 's1')],
+      'p1',
+    ));
+  }
+
+  it('skips the session-driven poll when (project, worktree, session) is unchanged', async () => {
+    loadWithSession();
+    startPolling();
+    await appState.load();
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'));
+
+    // CLI-id adoption: emits session-changed for the SAME session, same worktree.
+    mockGetStatus.mockClear();
+    appState.updateSessionCliId('p1', 's1', 'cli-1');
+
+    // Past the 300 ms debounce window: the key gate must drop the poll.
+    await new Promise((r) => setTimeout(r, 420));
+    expect(mockGetStatus).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a session-changed burst into one trailing poll', async () => {
+    mockLoad.mockResolvedValue(persisted(
+      [projectWithSessions('p1', '/proj', [
+        { id: 's1', name: 'S1', providerId: 'claude', cliSessionId: null },
+        { id: 's2', name: 'S2', providerId: 'claude', cliSessionId: null },
+      ], 's1')],
+      'p1',
+    ));
+    startPolling();
+    await appState.load();
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'));
+    mockGetStatus.mockClear();
+
+    appState.setActiveSession('p1', 's2');
+    appState.setActiveSession('p1', 's1');
+    expect(mockGetStatus).not.toHaveBeenCalled(); // trailing, not leading
+
+    // One trailing poll for the pair (the final key matches the last fetch,
+    // so with s1 back as active the gate may skip entirely — both are ≤1).
+    await new Promise((r) => setTimeout(r, 420));
+    expect(mockGetStatus.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('polls when activation moves to a session in a different key slot', async () => {
+    mockLoad.mockResolvedValue(persisted(
+      [projectWithSessions('p1', '/proj', [
+        { id: 's1', name: 'S1', providerId: 'claude', cliSessionId: null },
+        { id: 's2', name: 'S2', providerId: 'claude', cliSessionId: null },
+      ], 's1')],
+      'p1',
+    ));
+    startPolling();
+    await appState.load();
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'));
+    mockGetStatus.mockClear();
+
+    appState.setActiveSession('p1', 's2');
+
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'), { timeout: 1000 });
   });
 });

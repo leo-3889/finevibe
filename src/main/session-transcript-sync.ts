@@ -27,6 +27,11 @@ import { writeCliSessionName, writeStatus } from './hook-status';
  *     re-resolves the path when the cached file has vanished (e.g. after a
  *     `/clear` re-adoption moves the session to a new file).
  *
+ * Poll cost is bounded by a per-entry `(mtime,size)` gate (PA-02): the tick
+ * stats the cached transcript and skips BOTH content reads when the tuple
+ * matches the last completed read pair, so 200 idle tabs cost 200 statSync
+ * calls per tick, not ~1000 open/read/close triples.
+ *
  * Caching the resolved path matters: findTranscriptPathSync scans every
  * project dir under the sessions root, so re-resolving it per read — as the
  * old split title/status pollers each did — was O(#projects) per session
@@ -69,6 +74,13 @@ interface TranscriptSyncEntry {
   nextResolveAt: number;
   /** Backoff log is once-per-entry, not once-per-tick. */
   backoffLogged: boolean;
+  /**
+   * `(mtimeMs,size)` of the transcript as of the last successful read pair.
+   * An unchanged tuple on the next tick means the CLI wrote nothing, so both
+   * the 8 KiB head (title) and 16 KiB tail (status) reads are skipped (PA-02).
+   */
+  lastStatMtimeMs: number | null;
+  lastStatSize: number | null;
   /** Best-effort watch on `transcriptPath`; null when not established. */
   watcher: fs.FSWatcher | null;
   /** Coalesces a burst of watch events into one re-sync. */
@@ -149,6 +161,8 @@ export function registerTranscriptSync(
     resolveFailures: 0,
     nextResolveAt: 0,
     backoffLogged: false,
+    lastStatMtimeMs: null,
+    lastStatSize: null,
     watcher: null,
     debounce: null,
   });
@@ -269,12 +283,17 @@ function scheduleSync(sessionId: string, e: TranscriptSyncEntry): void {
 /** Resolve the path (cached) and mirror title/status for one session. */
 function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
   const provider = getProvider(e.providerId);
-  // Resolve the transcript path once and cache it. Re-resolve only when the
-  // cached path is gone (transcript recreated, or a `/clear` re-adoption
-  // moved the session to a new file) — a cheap existsSync beats re-scanning
-  // every project dir every tick. A failed resolution backs off instead,
-  // so an unresolvable session stops hammering the filesystem.
-  if (e.transcriptPath === null || !fs.existsSync(e.transcriptPath)) {
+  // Resolve the transcript path once and cache it. The per-tick probe is a
+  // single statSync (PA-02): it replaces the old `existsSync` at the same
+  // cost, and its `(mtimeMs,size)` tuple gates BOTH reads below, so an
+  // untouched transcript costs one syscall per tick instead of the 5 (Pi) /
+  // 8 (OMP) open+read+close fd ops it used to. A failed stat means the file
+  // is gone (transcript recreated, or a `/clear` re-adoption moved the
+  // session to a new file) — re-resolve, which beats re-scanning every
+  // project dir every tick. A failed resolution backs off instead, so an
+  // unresolvable session stops hammering the filesystem.
+  let stat = e.transcriptPath === null ? null : statOrNull(e.transcriptPath);
+  if (stat === null) {
     if (e.nextResolveAt > Date.now()) return;
     try {
       e.transcriptPath = provider.getTranscriptPath?.(e.cliSessionId, e.cwd, e.configDir, e.sessionDir) ?? null;
@@ -289,44 +308,80 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
     e.nextResolveAt = 0;
     // The path is new or moved — point the watch at the current file.
     rewatch(sessionId, e);
+    // The tuple of a fresh path is unknown; stat it once so this tick's reads
+    // are recorded against a tuple the later ticks can compare.
+    stat = statOrNull(e.transcriptPath);
+    if (stat === null) return; // vanished between resolve and stat — next tick
   }
   if (!e.transcriptPath) return;
 
-  if (e.wantTitle && provider.readSessionTitle) {
-    let title: string | null = null;
-    try {
-      title = provider.readSessionTitle(e.transcriptPath) ?? null;
-    } catch {
-      title = null; // transcript mid-write / permissions — retry next tick
-    }
-    if (title && title !== e.lastTitle) {
+  // Unchanged `(mtimeMs,size)` means the CLI appended nothing since the last
+  // completed read pair: the 8 KiB title head and the 16 KiB status tail
+  // would return exactly what is already mirrored. `fs.watch` drives a
+  // re-sync the moment a write lands, so the gate costs no latency.
+  const unchanged = e.lastStatMtimeMs === stat.mtimeMs && e.lastStatSize === stat.size;
+  // The tuple is recorded only once every applicable read ran cleanly: a
+  // mid-write read error, or a failed `.name`/`.status` write (lastTitle /
+  // lastStatus not advanced), leaves the entry due so the next tick re-reads.
+  let deferred = false;
+
+  if (!unchanged) {
+    if (e.wantTitle && provider.readSessionTitle) {
+      let title: string | null = null;
       try {
-        writeCliSessionName(sessionId, title, e.cliSessionId);
-        e.lastTitle = title;
+        title = provider.readSessionTitle(e.transcriptPath) ?? null;
       } catch {
-        // A failed write is retried on the next tick (lastTitle not advanced).
+        title = null; // transcript mid-write / permissions — retry next tick
+        deferred = true;
+      }
+      if (title && title !== e.lastTitle) {
+        try {
+          writeCliSessionName(sessionId, title, e.cliSessionId);
+          e.lastTitle = title;
+        } catch {
+          // A failed write is retried on the next tick (lastTitle not advanced).
+          deferred = true;
+        }
+      }
+    }
+
+    if (e.wantStatus && provider.readSessionStatus) {
+      let status: CliSessionStatus | null = null;
+      try {
+        status = provider.readSessionStatus(e.transcriptPath) ?? null;
+      } catch {
+        status = null;
+        deferred = true;
+      }
+      if (status && status !== e.lastStatus) {
+        try {
+          writeStatus(sessionId, status);
+          e.lastStatus = status;
+        } catch {
+          // A failed write is retried on the next tick (lastStatus not advanced).
+          deferred = true;
+        }
       }
     }
   }
 
-  if (e.wantStatus && provider.readSessionStatus) {
-    let status: CliSessionStatus | null = null;
-    try {
-      status = provider.readSessionStatus(e.transcriptPath) ?? null;
-    } catch {
-      status = null;
-    }
-    if (status && status !== e.lastStatus) {
-      try {
-        writeStatus(sessionId, status);
-        e.lastStatus = status;
-      } catch {
-        // A failed write is retried on the next tick (lastStatus not advanced).
-      }
-    }
+  if (!deferred) {
+    e.lastStatMtimeMs = stat.mtimeMs;
+    e.lastStatSize = stat.size;
   }
 }
 
+/** `statSync` without the throw: null means the path is not readable right now. */
+function statOrNull(p: string): { mtimeMs: number; size: number } | null {
+  try {
+    const s = fs.statSync(p);
+    return { mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    return null;
+  }
+}
+
+/** One pass per 2s; an idle entry costs exactly one statSync (PA-02). */
 function tick(): void {
   for (const [sessionId, e] of entries) {
     syncEntry(sessionId, e);

@@ -445,3 +445,59 @@ it('does not reparse unchanged transcripts when the corpus exceeds the memory ca
   await searchSessions('match');
   expect(provider.indexTranscript).toHaveBeenCalledTimes(1000);
 });
+
+it('skips transcripts whose stat failed, without queueing them behind the read gate (PA-18)', async () => {
+  // The batched preflight swallows the ENOENT: the dead path never reaches
+  // the gate, the live one indexes normally.
+  providersForTest.push(fakeProvider({
+    id: 'claude',
+    descriptors: [
+      { cliSessionId: 'dead', transcriptPath: '/dead' },
+      { cliSessionId: 'ok', transcriptPath: '/ok' },
+    ],
+    index: { '/ok': { text: 'find me here', cwd: '' } },
+  }));
+  mockStat.mockImplementation((async (p: unknown) => {
+    if (String(p) === '/dead') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return makeStat(1);
+  }) as typeof fs.promises.stat);
+  const results = await searchSessions('find me');
+  expect(results.map(r => r.cliSessionId)).toEqual(['ok']);
+});
+
+it('starts provider discovery concurrently (PA-18)', async () => {
+  // A parks in discovery until B has been discovered: a serial provider loop
+  // deadlocks this test; the shared read gate (not serialization) bounds IO.
+  let bDiscovered = false;
+  let releaseA!: () => void;
+  const aGate = new Promise<void>((resolve) => { releaseA = resolve; });
+
+  const providerA = fakeProvider({
+    id: 'claude',
+    descriptors: [{ cliSessionId: 'a', transcriptPath: '/a' }],
+    index: { '/a': { text: 'find me alpha', cwd: '' } },
+  });
+  const realDiscoverA = providerA.discoverTranscripts!;
+  providerA.discoverTranscripts = async (signal?: AbortSignal) => {
+    await aGate;
+    return realDiscoverA.call(providerA, signal);
+  };
+  const providerB = fakeProvider({
+    id: 'codex',
+    descriptors: [{ cliSessionId: 'b', transcriptPath: '/b' }],
+    index: { '/b': { text: 'find me beta', cwd: '' } },
+  });
+  const realDiscoverB = providerB.discoverTranscripts!;
+  providerB.discoverTranscripts = async (signal?: AbortSignal) => {
+    bDiscovered = true;
+    return realDiscoverB.call(providerB, signal);
+  };
+  providersForTest.push(providerA, providerB);
+  mockStat.mockResolvedValue(makeStat(1));
+
+  const search = searchSessions('find me');
+  await waitFor(() => bDiscovered, 'provider B discovery starts while provider A discovery is parked');
+  releaseA();
+  const results = await search;
+  expect(results.map(r => r.providerId)).toEqual(['claude', 'codex']);
+});

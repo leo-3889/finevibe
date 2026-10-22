@@ -3,12 +3,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockLoad = vi.fn();
 const mockSave = vi.fn();
 
-// Same harness as layout-state.test.ts; transcriptExistsSync is what
-// removeSession's archive path (isArchivable) calls for CLI sessions.
+// Same harness as layout-state.test.ts (no session probes needed: these
+// mutators touch layout only).
 vi.stubGlobal('window', {
   finevibe: {
     store: { load: mockLoad, save: mockSave },
-    session: { transcriptExistsSync: () => false },
+    session: {},
   },
 });
 

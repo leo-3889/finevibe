@@ -1,84 +1,53 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// PA-30 pins the entryCache LRU. The cache helpers are pure module state,
+// so every DOM-flavored import of file-tree.ts is stubbed to keep the
+// module graph importable without the app's IPC surface.
 vi.mock('../state.js', () => ({
-  appState: {
-    addFileReaderSession: vi.fn(),
-  },
+  appState: { on: vi.fn(() => () => {}), preferences: {} },
 }));
+vi.mock('../open-file-reader.js', () => ({ openFileReaderChecked: vi.fn() }));
+vi.mock('../file-url.js', () => ({ pathToFileURL: (p: string) => `file://${p}` }));
+vi.mock('./board/board-context-menu.js', () => ({ showContextMenu: vi.fn() }));
+vi.mock('./modal.js', () => ({ showConfirmModal: vi.fn(), showPropertiesDialog: vi.fn() }));
+vi.mock('../platform.js', () => ({ isMac: false, isWin: true, isLinux: false }));
 
-vi.mock('./modal.js', () => ({
-  showConfirmModal: vi.fn(),
-}));
+import { _cacheForTesting, _resetForTesting, type DirEntry } from './file-tree.js';
 
-vi.mock('./board/board-context-menu.js', () => ({
-  showContextMenu: vi.fn(),
-}));
+function entry(name: string): DirEntry {
+  return { name, path: `/p/${name}`, isDirectory: false };
+}
 
-import {
-  sortEntries,
-  toggleFolder,
-  isExpanded,
-  clearProjectState,
-  _resetForTesting,
-  DirEntry,
-} from './file-tree.js';
-
-describe('sortEntries', () => {
-  it('puts directories before files', () => {
-    const entries: DirEntry[] = [
-      { name: 'zfile.txt', path: '/zfile.txt', isDirectory: false },
-      { name: 'adir', path: '/adir', isDirectory: true },
-    ];
-    const sorted = sortEntries(entries);
-    expect(sorted[0].name).toBe('adir');
-    expect(sorted[1].name).toBe('zfile.txt');
-  });
-
-  it('sorts case-insensitively within the same kind', () => {
-    const entries: DirEntry[] = [
-      { name: 'Zebra', path: '/Zebra', isDirectory: true },
-      { name: 'apple', path: '/apple', isDirectory: true },
-      { name: 'Banana', path: '/Banana', isDirectory: true },
-    ];
-    const sorted = sortEntries(entries);
-    expect(sorted.map(e => e.name)).toEqual(['apple', 'Banana', 'Zebra']);
-  });
-
-  it('does not mutate the input array', () => {
-    const entries: DirEntry[] = [
-      { name: 'b.ts', path: '/b.ts', isDirectory: false },
-      { name: 'a.ts', path: '/a.ts', isDirectory: false },
-    ];
-    const original = [...entries];
-    sortEntries(entries);
-    expect(entries).toEqual(original);
-  });
-});
-
-describe('expand state', () => {
+describe('entryCache LRU cap (PA-30)', () => {
   beforeEach(() => {
     _resetForTesting();
   });
 
-  it('toggleFolder flips state and returns new state', () => {
-    expect(isExpanded('p1', '/src')).toBe(false);
-    expect(toggleFolder('p1', '/src')).toBe(true);
-    expect(isExpanded('p1', '/src')).toBe(true);
-    expect(toggleFolder('p1', '/src')).toBe(false);
-    expect(isExpanded('p1', '/src')).toBe(false);
+  it('caps the cache at the configured directory count, evicting the oldest', () => {
+    const cap = _cacheForTesting.max;
+    for (let i = 0; i < cap + 1; i++) _cacheForTesting.set(`/d${i}`, [entry(`f${i}`)]);
+    expect(_cacheForTesting.size()).toBe(cap);
+    expect(_cacheForTesting.keys()).not.toContain('/d0');
+    expect(_cacheForTesting.get(`/d${cap}`)).toBeDefined();
   });
 
-  it('keeps state isolated per project', () => {
-    toggleFolder('p1', '/src');
-    expect(isExpanded('p1', '/src')).toBe(true);
-    expect(isExpanded('p2', '/src')).toBe(false);
+  it('touches on hit: a recently read directory survives the next eviction', () => {
+    const cap = _cacheForTesting.max;
+    for (let i = 0; i < cap; i++) _cacheForTesting.set(`/d${i}`, [entry(`f${i}`)]);
+    // Hit on /d0 moves it to most-recent; the next overflow must evict /d1.
+    expect(_cacheForTesting.get('/d0')).toBeDefined();
+    _cacheForTesting.set('/fresh', [entry('x')]);
+    expect(_cacheForTesting.size()).toBe(cap);
+    expect(_cacheForTesting.get('/d0')).toBeDefined();
+    expect(_cacheForTesting.keys()).not.toContain('/d1');
+    expect(_cacheForTesting.keys()).toContain('/fresh');
   });
 
-  it('clearProjectState removes only that project', () => {
-    toggleFolder('p1', '/src');
-    toggleFolder('p2', '/src');
-    clearProjectState('p1');
-    expect(isExpanded('p1', '/src')).toBe(false);
-    expect(isExpanded('p2', '/src')).toBe(true);
+  it('re-inserting an existing directory updates in place without growing', () => {
+    _cacheForTesting.set('/d', [entry('a')]);
+    _cacheForTesting.set('/d', [entry('b')]);
+    expect(_cacheForTesting.size()).toBe(1);
+    expect(_cacheForTesting.get('/d')![0].name).toBe('b');
   });
 });

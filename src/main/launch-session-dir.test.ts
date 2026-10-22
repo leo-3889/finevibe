@@ -14,6 +14,8 @@ import {
   launchSessionDir,
   ensureLaunchSessionDir,
   writeLaunchSessionMeta,
+  readLaunchSessionMeta,
+  readLaunchSessionMetaCached,
   pruneLaunchSessionDirs,
   listLaunchSessionDirs,
   LAUNCH_SESSION_RETENTION_MS,
@@ -191,27 +193,74 @@ describe('pruneLaunchSessionDirs() scan bound (P2-57)', () => {
 });
 
 describe('listLaunchSessionDirs()', () => {
-  it('lists dirs with recent activity', () => {
+  const dirsOf = (entries: Array<{ dir: string; mtimeMs: number }>) => entries.map(e => e.dir);
+
+  it('lists dirs with recent activity', async () => {
     const live = makeDir('live', { createdAt: RECENT, transcripts: [RECENT] });
-    expect(listLaunchSessionDirs(base)).toEqual([live]);
+    const entries = await listLaunchSessionDirs(base);
+    expect(dirsOf(entries)).toEqual([live]);
+    // PA-19: the lstat mtime the retention gate paid for rides along — it is
+    // the meta cache key, so the sidecar read needs no second stat.
+    expect(entries[0].mtimeMs).toBeCloseTo(fs.lstatSync(live).mtimeMs, 0);
   });
 
-  it('drops dirs whose activity is entirely outside the retention window', () => {
+  it('drops dirs whose activity is entirely outside the retention window', async () => {
     makeDir('dead', { createdAt: OLD, transcripts: [OLD], dirMtime: OLD });
     const live = makeDir('live', { createdAt: OLD, transcripts: [RECENT], dirMtime: OLD });
     // The dir mtime is old (coarse filesystem, restored backup): the newest
     // transcript mtime keeps the dir visible to search.
-    expect(listLaunchSessionDirs(base)).toEqual([live]);
+    expect(dirsOf(await listLaunchSessionDirs(base))).toEqual([live]);
   });
 
-  it('returns nothing for a base that does not exist', () => {
-    expect(listLaunchSessionDirs(path.join(base, 'missing'))).toEqual([]);
+  it('returns nothing for a base that does not exist', async () => {
+    expect(await listLaunchSessionDirs(path.join(base, 'missing'))).toEqual([]);
   });
 
-  it('skips files and symlinks in the base dir', () => {
+  it('skips files and symlinks in the base dir', async () => {
     const live = makeDir('live', { createdAt: RECENT, transcripts: [RECENT] });
     fs.writeFileSync(path.join(base, 'stray.jsonl'), 'x');
-    expect(listLaunchSessionDirs(base)).toEqual([live]);
+    expect(dirsOf(await listLaunchSessionDirs(base))).toEqual([live]);
+  });
+});
+
+describe('readLaunchSessionMetaCached()', () => {
+  it('reads the sidecar once per dir mtime (PA-19)', async () => {
+    const dir = makeDir('live', { createdAt: RECENT, transcripts: [RECENT] });
+    const dirMtime = fs.lstatSync(dir).mtimeMs;
+    const readSpy = vi.spyOn(fs.promises, 'readFile');
+    try {
+      const sidecarOnly = (call: unknown[]) => String(call[0]).endsWith('.finevibe.json');
+      const first = await readLaunchSessionMetaCached(dir, dirMtime);
+      expect(first?.cwd).toBe('/proj');
+      expect(readSpy.mock.calls.filter(sidecarOnly)).toHaveLength(1);
+
+      // Same dir mtime: served from the cache, no second read.
+      const second = await readLaunchSessionMetaCached(dir, dirMtime);
+      expect(second).toEqual(first);
+      expect(readSpy.mock.calls.filter(sidecarOnly)).toHaveLength(1);
+
+      // A write into the dir bumps its mtime (the sidecar is written once at
+      // launch; any later touch is conservative invalidation): re-read.
+      writeLaunchSessionMeta(dir, { providerId: 'pi', cwd: '/other', createdAt: new Date(RECENT).toISOString() });
+      // Force a strictly-newer dir mtime: on a fast filesystem the write can
+      // land inside the same timestamp granularity, making the cache key
+      // identical and the invalidation assertion a coin flip.
+      const bump = new Date(dirMtime + 5000);
+      fs.utimesSync(dir, bump, bump);
+      const moved = fs.lstatSync(dir).mtimeMs;
+      expect(moved).toBeGreaterThan(dirMtime);
+      const third = await readLaunchSessionMetaCached(dir, moved);
+      expect(third?.cwd).toBe('/other');
+      expect(readSpy.mock.calls.filter(sidecarOnly)).toHaveLength(2);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('mirrors readLaunchSessionMeta on a missing sidecar', async () => {
+    const legacy = makeDir('legacy', { transcripts: [RECENT] });
+    expect(await readLaunchSessionMetaCached(legacy, fs.lstatSync(legacy).mtimeMs)).toBeNull();
+    expect(readLaunchSessionMeta(legacy)).toBeNull();
   });
 });
 

@@ -27,7 +27,20 @@ let currentWin: BrowserWindow | null = null;
 // can tell, when it resumes, that a newer call (or a stop) superseded it.
 let watcherGeneration = 0;
 
+// In-process subscribers to the debounced `git:changed` signal (PA-07: the
+// Quick Open enumeration cache invalidates on the same event the renderer
+// gets). Listeners fire immediately; only the renderer send stays debounced.
+const gitChangedListeners = new Set<() => void>();
+
+export function onGitChanged(listener: () => void): () => void {
+  gitChangedListeners.add(listener);
+  return () => { gitChangedListeners.delete(listener); };
+}
+
 function notify(): void {
+  for (const listener of gitChangedListeners) {
+    try { listener(); } catch (err) { console.warn('[git-watcher] git:changed listener failed:', err); }
+  }
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     if (currentWin && !currentWin.isDestroyed()) {
@@ -47,14 +60,16 @@ function hasIgnoredSegment(filename: string): boolean {
 
 /**
  * Watch the whole working tree with a single recursive watch (macOS + Windows
- * only — Linux uses walkAndWatch). One FSEvents stream / ReadDirectoryChangesW
- * handle covers the entire tree, so project-switch teardown closes ~1 handle
- * instead of up to MAX_WATCHES — avoiding the synchronous FSEvents
- * re-registration storm that froze the UI (#142). `.git` is in IGNORE_SEGMENTS,
- * so git internals are filtered out here and handled by the fine-grained `.git`
- * watches in setupWatchers instead.
+ * — Linux keeps the capped BFS in walkAndWatch: Node's Linux recursive watch
+ * spends one inotify watch per directory with no ignore filter, exhausting
+ * fs.inotify.max_user_watches on trees the BFS prunes (#139)). One FSEvents
+ * stream / ReadDirectoryChangesW handle covers the entire tree, so
+ * project-switch teardown closes ~1 handle instead of up to MAX_WATCHES —
+ * avoiding the synchronous FSEvents re-registration storm that froze the UI
+ * (#142). `.git` is in IGNORE_SEGMENTS, so git internals are filtered out
+ * here and handled by the fine-grained `.git` watches in setupWatchers.
  */
-function watchRecursiveWorkingTree(root: string, sink: fs.FSWatcher[]): void {
+async function watchRecursiveWorkingTree(root: string, sink: fs.FSWatcher[]): Promise<void> {
   try {
     const watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
       // filename is relative to root (incl. subpath) or null when the OS
@@ -66,7 +81,7 @@ function watchRecursiveWorkingTree(root: string, sink: fs.FSWatcher[]): void {
   } catch {
     // Recursive watch unavailable/failed — fall back to per-dir BFS so we still
     // get some signal (the 60s git-status poll is the ultimate backstop).
-    walkAndWatch(root, sink);
+    await walkAndWatch(root, sink);
   }
 }
 
@@ -83,7 +98,11 @@ function watchOne(dirPath: string, onEvent: (filename: string | null) => void, s
   }
 }
 
-function walkAndWatch(root: string, sink: fs.FSWatcher[]): void {
+/**
+ * PA-17: async BFS so a 2000-dir project switch yields the main loop between
+ * directories instead of blocking it for ~0.4–1 s of readdirSync.
+ */
+async function walkAndWatch(root: string, sink: fs.FSWatcher[]): Promise<void> {
   // BFS so we watch shallower dirs first; if we hit the cap, deep dirs are skipped
   // rather than dropping the more useful top-level signals.
   const queue: string[] = [root];
@@ -103,7 +122,7 @@ function walkAndWatch(root: string, sink: fs.FSWatcher[]): void {
 
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch {
       continue; // EACCES, ENOENT — skip
     }
@@ -144,13 +163,13 @@ async function setupWatchers(projectPath: string): Promise<fs.FSWatcher[]> {
   const gitDir = await resolveGitDir(projectPath);
 
   // Working tree. macOS + Windows support a single recursive watch (one OS-level
-  // handle), which keeps project-switch teardown cheap (#142). Linux does not
-  // support recursive fs.watch (and the old recursive path leaked inotify
-  // watches, #139), so it keeps the walk-time-filtered, non-recursive, capped BFS.
+  // handle), which keeps project-switch teardown cheap (#142). Linux keeps the
+  // walk-time-filtered, non-recursive, capped BFS (#139); both walks are async
+  // (PA-17) so a large tree never blocks the main loop per project switch.
   if (isLinux) {
-    walkAndWatch(projectPath, sink);
+    await walkAndWatch(projectPath, sink);
   } else {
-    watchRecursiveWorkingTree(projectPath, sink);
+    await watchRecursiveWorkingTree(projectPath, sink);
   }
 
   // Git internals: non-recursive watch on .git/ itself, only react to a small allow-list
@@ -189,15 +208,15 @@ export async function startGitWatcher(win: BrowserWindow, projectPath: string): 
   currentWin = win;
   currentProjectPath = projectPath;
   const mine = await setupWatchers(projectPath);
-  if (generation !== watcherGeneration) {
+  if (generation === watcherGeneration) {
+    dirWatchers.push(...mine);
+  } else {
     // A newer call (or stop) started while we were awaiting. Its stopAll() ran
     // before our watchers were installed, so close only ours — a blanket
     // stopAll() here could kill the newer call's watchers if they were
     // installed first. The latest call's state (currentProjectPath/currentWin)
     // stands.
     for (const w of mine) w.close();
-  } else {
-    dirWatchers.push(...mine);
   }
 }
 

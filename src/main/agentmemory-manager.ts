@@ -84,6 +84,28 @@ export async function probeAgentmemory(): Promise<AgentmemoryStatus> {
 }
 
 /**
+ * PA-33: the daemon inherits `agentmemory.log` append-mode and nothing ever
+ * truncates it — it grew across every restart forever. Rotate at spawn when
+ * it exceeds 8 MiB: readers only ever tail ≤ 64 KiB from the current file
+ * (`readAgentmemoryLog`), so renaming the old log to `.1` loses nothing
+ * anyone reads; one rotation of history is kept.
+ */
+const LOG_ROTATE_BYTES = 8 * 1024 * 1024;
+
+function rotateLogAtSpawn(): void {
+  const logPath = getAgentmemoryLogPath();
+  try {
+    if (fs.statSync(logPath).size <= LOG_ROTATE_BYTES) return;
+    // Windows `rename` throws on an existing destination, so drop the
+    // previous rotation first. A failed rotation must never skip the spawn.
+    fs.rmSync(`${logPath}.1`, { force: true });
+    fs.renameSync(logPath, `${logPath}.1`);
+  } catch {
+    // No log yet (first launch) or rotation failed: the append-open creates it.
+  }
+}
+
+/**
  * Start agentmemory as a detached, unref'd daemon that outlives the Electron
  * process. `.cmd` is a batch shim on Windows, so it must go through a shell.
  * `getFullPath()` resolves the live PATH (registry + login shell + ~/.local/bin)
@@ -106,6 +128,7 @@ export async function probeAgentmemory(): Promise<AgentmemoryStatus> {
 export function spawnDetached(): boolean {
   let logFd: number | null = null;
   try {
+    rotateLogAtSpawn();
     try {
       logFd = fs.openSync(getAgentmemoryLogPath(), 'a');
     } catch (err) {

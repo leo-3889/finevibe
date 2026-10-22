@@ -14,7 +14,7 @@ import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
 import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
-import { startGitWatcher, notifyGitChanged } from './git-watcher';
+import { startGitWatcher, notifyGitChanged, onGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
@@ -218,28 +218,75 @@ async function enumerateProjectFiles(resolvedCwd: string): Promise<string[]> {
     );
     return stdout.split('\n').filter(Boolean);
   } catch {
-    const files: string[] = [];
-    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '__pycache__']);
-    const MAX_DEPTH = 5;
-    const MAX_FILES = 5000;
-    function walk(dir: string, depth: number): void {
-      if (depth > MAX_DEPTH || files.length >= MAX_FILES) return;
-      let entries: fs.Dirent[];
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-      for (const entry of entries) {
-        if (files.length >= MAX_FILES) return;
-        if (IGNORE.has(entry.name) || entry.name.startsWith('.')) continue;
-        const rel = path.relative(resolvedCwd, path.join(dir, entry.name));
-        if (entry.isDirectory()) {
-          walk(path.join(dir, entry.name), depth + 1);
-        } else {
-          files.push(rel);
-        }
+    return walkProjectFiles(resolvedCwd);
+  }
+}
+
+/**
+ * Non-git fallback (PA-07): async walk — the old readdirSync sweep blocked
+ * main for ~100 ms per Quick Open query on large trees. Same shape as the
+ * old sync walk: DFS in readdir order, depth/count caps, dotfiles and
+ * build dirs ignored.
+ */
+async function walkProjectFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '__pycache__']);
+  const MAX_DEPTH = 5;
+  const MAX_FILES = 5000;
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (depth > MAX_DEPTH || files.length >= MAX_FILES) return;
+    let entries: fs.Dirent[];
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (files.length >= MAX_FILES) return;
+      if (IGNORE.has(entry.name) || entry.name.startsWith('.')) continue;
+      const rel = path.relative(root, path.join(dir, entry.name));
+      if (entry.isDirectory()) {
+        await walk(path.join(dir, entry.name), depth + 1);
+      } else {
+        files.push(rel);
       }
     }
-    walk(resolvedCwd, 0);
-    return files;
   }
+  await walk(root, 0);
+  return files;
+}
+
+// PA-07: the enumeration is query-independent, yet Quick Open re-ran the
+// whole thing (a fresh `git ls-files` spawn) on every debounced keystroke.
+// Cache per cwd; invalidate on the same git:changed signal the renderer
+// gets, and cap staleness with a TTL for non-git trees the watcher never
+// covers. In-flight enumerations are shared, so a keystroke burst pays for
+// at most one.
+const enumerateCache = new Map<string, { at: number; files: string[] }>();
+const enumerateInFlight = new Map<string, Promise<string[]>>();
+const ENUMERATE_TTL_MS = 30_000;
+
+async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
+  const hit = enumerateCache.get(resolvedCwd);
+  if (hit && Date.now() - hit.at < ENUMERATE_TTL_MS) return hit.files;
+  const pending = enumerateInFlight.get(resolvedCwd);
+  if (pending) return pending;
+  const work = (async () => {
+    try {
+      const files = await enumerateProjectFiles(resolvedCwd);
+      enumerateCache.set(resolvedCwd, { at: Date.now(), files });
+      return files;
+    } finally {
+      enumerateInFlight.delete(resolvedCwd);
+    }
+  })();
+  enumerateInFlight.set(resolvedCwd, work);
+  return work;
+}
+
+// The debounced working-tree/branch-change signal from git-watcher is
+// subscribed in registerIpcHandlers (tests re-register and capture it).
+
+/** @internal Test-only: drop every cached/in-flight enumeration. */
+export function _resetEnumerateCacheForTesting(): void {
+  enumerateCache.clear();
+  enumerateInFlight.clear();
 }
 
 let hookWatcherStarted = false;
@@ -402,6 +449,9 @@ async function removeAgentFromProvider(p: CliProvider, slug: string): Promise<Ag
 }
 
 export function registerIpcHandlers(): void {
+  // PA-07: invalidate the Quick Open enumeration cache on the same debounced
+  // git:changed signal the renderer receives.
+  onGitChanged(() => enumerateCache.clear());
   ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
@@ -709,11 +759,13 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:listDir', (_event, dirPath: string) => {
+  ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
     try {
       const expanded = expandUserPath(dirPath);
       if (!isAllowedReadPath(expanded)) return [];
-      const entries = fs.readdirSync(expanded, { withFileTypes: true });
+      // PA-24: async body — ipcMain.handle, so the renderer API is unchanged;
+      // the old readdirSync blocked main on every file-tree expand.
+      const entries = await fs.promises.readdir(expanded, { withFileTypes: true });
       // Renderer sorts via sortEntries(); keep main process cheap.
       return entries.map(e => ({
         name: e.name,
@@ -1250,11 +1302,6 @@ export function registerIpcHandlers(): void {
   };
   ipcMain.handle('session:transcriptExists', (_event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string) =>
     transcriptExists(providerId, cliSessionId, projectPath, configDir, liveSessionId));
-  // Synchronous variant: the renderer gates session archiving on this at close time,
-  // where the surrounding remove/persist/emit logic must stay synchronous.
-  ipcMain.on('session:transcriptExistsSync', safeOn('session:transcriptExistsSync', (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string) => {
-    event.returnValue = transcriptExists(providerId, cliSessionId, projectPath, configDir, liveSessionId);
-  }, () => true));
   ipcMain.handle('session:exportArchive', async (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file') => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
     if (!win) throw new Error('no window');
@@ -1626,7 +1673,7 @@ export function registerIpcHandlers(): void {
       if (!isWithinKnownProject(resolvedCwd)) {
         return [];
       }
-      let files = await enumerateProjectFiles(resolvedCwd);
+      let files = await getCachedProjectFiles(resolvedCwd);
 
       if (query) {
         const lower = query.toLowerCase();
@@ -1658,7 +1705,7 @@ export function registerIpcHandlers(): void {
       }
       const clampedLimit = Math.max(1, Math.min(100, Math.floor(limit) || 10));
       const isIgnored = buildFineVibeIgnoreMatcher(resolvedCwd);
-      const relFiles = (await enumerateProjectFiles(resolvedCwd)).filter((rel) => !isIgnored(rel));
+      const relFiles = (await getCachedProjectFiles(resolvedCwd)).filter((rel) => !isIgnored(rel));
 
       const results: TopFile[] = [];
       let scanned = 0;
@@ -1735,7 +1782,7 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:readFile', (_event, filePath: string): ReadFileResult => {
+  ipcMain.handle('fs:readFile', async (_event, filePath: string): Promise<ReadFileResult> => {
     try {
       // Security: resolve to absolute and check it's within a known project directory
       const resolved = path.resolve(filePath);
@@ -1743,28 +1790,30 @@ export function registerIpcHandlers(): void {
         console.warn(`fs:readFile blocked: ${resolved} is not within an allowed path`);
         return { ok: false, reason: 'error' };
       }
+      // PA-24: async body — the channel is ipcMain.handle, so the renderer
+      // API is unchanged; the old 8 MiB sync slurp blocked main per preview.
       // Sniff the head before slurping the whole file so a multi-MB binary
       // (e.g. build artifacts in build/) doesn't get allocated just to be discarded.
       // One fd for both: open once, sniff 8KB, read the remainder from the same fd.
-      const fd = fs.openSync(resolved, 'r');
+      const handle = await fs.promises.open(resolved, 'r');
       try {
         const head = Buffer.alloc(BINARY_SNIFF_BYTES);
-        const headBytes = fs.readSync(fd, head, 0, BINARY_SNIFF_BYTES, 0);
+        const { bytesRead: headBytes } = await handle.read(head, 0, BINARY_SNIFF_BYTES, 0);
         if (isBinaryBuffer(head.subarray(0, headBytes))) {
           return { ok: false, reason: 'binary' };
         }
-        const size = fs.fstatSync(fd).size;
+        const size = (await handle.stat()).size;
         if (size > MAX_READ_FILE_BYTES) return { ok: false, reason: 'error' };
         const rest = Buffer.alloc(Math.max(0, size - headBytes));
         let off = 0;
         while (off < rest.length) {
-          const n = fs.readSync(fd, rest, off, rest.length - off, headBytes + off);
+          const { bytesRead: n } = await handle.read(rest, off, rest.length - off, headBytes + off);
           if (n === 0) break; // EOF (file shrank between fstat and read)
           off += n;
         }
         return { ok: true, content: Buffer.concat([head.subarray(0, headBytes), rest.subarray(0, off)]).toString('utf-8') };
       } finally {
-        fs.closeSync(fd);
+        await handle.close().catch(() => {});
       }
     } catch (err) {
       console.warn('fs:readFile failed:', err);
@@ -1784,7 +1833,7 @@ export function registerIpcHandlers(): void {
   };
   const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
-  ipcMain.handle('fs:readImage', (_event, filePath: string) => {
+  ipcMain.handle('fs:readImage', async (_event, filePath: string) => {
     try {
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) {
@@ -1793,12 +1842,14 @@ export function registerIpcHandlers(): void {
       }
       const mime = IMAGE_MIME_BY_EXT[path.extname(resolved).toLowerCase()];
       if (!mime) return null;
-      const stat = fs.statSync(resolved);
+      // PA-24: async stat + read; the sync whole-file slurp + base64 blocked
+      // main for the full image (up to 25 MiB) per preview.
+      const stat = await fs.promises.stat(resolved);
       if (stat.size > MAX_IMAGE_BYTES) {
         console.warn(`fs:readImage rejected: ${resolved} exceeds ${MAX_IMAGE_BYTES} bytes`);
         return null;
       }
-      const buf = fs.readFileSync(resolved);
+      const buf = await fs.promises.readFile(resolved);
       return { dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
     } catch (err) {
       console.warn('fs:readImage failed:', err);
@@ -1843,12 +1894,25 @@ export function registerIpcHandlers(): void {
     unwatchDir(resolved);
   }));
 
-  ipcMain.handle('stats:getCache', () => {
+  // PA-24: the widget renders requested this every poll; the file was read
+  // AND JSON.parsed in full each time. Memoize by (path, mtime, size) — the
+  // hook-status poll rewrites the file when usage changes, and the resulting
+  // mtime bump re-parses. Async body: the channel is ipcMain.handle.
+  let statsCacheMemo: { file: string; mtimeMs: number; size: number; data: unknown } | null = null;
+  ipcMain.handle('stats:getCache', async () => {
     try {
       const statsPath = path.join(os.homedir(), '.claude', 'stats-cache.json');
-      const raw = fs.readFileSync(statsPath, 'utf-8');
-      return JSON.parse(raw);
+      const st = await fs.promises.stat(statsPath);
+      const memo = statsCacheMemo;
+      if (memo && memo.file === statsPath && memo.mtimeMs === st.mtimeMs && memo.size === st.size) {
+        return memo.data;
+      }
+      const raw = await fs.promises.readFile(statsPath, 'utf-8');
+      const data = JSON.parse(raw);
+      statsCacheMemo = { file: statsPath, mtimeMs: st.mtimeMs, size: st.size, data };
+      return data;
     } catch {
+      statsCacheMemo = null;
       return null;
     }
   });

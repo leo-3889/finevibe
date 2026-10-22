@@ -13,7 +13,7 @@ vi.mock('../copilot-hooks', () => ({
   installCopilotHooks: () => {}, validateCopilotHooks: () => ({}), cleanupCopilotHooks: () => {}, SESSION_ID_VAR: 'COPILOT_SESSION_ID',
 }));
 vi.mock('../config-watcher', () => ({ startConfigWatcher: () => {}, stopConfigWatcher: () => {} }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -43,7 +43,7 @@ describe('CopilotProvider.discoverTranscripts()', () => {
   it('uses dir name as cliSessionId and parses cwd from workspace.yaml', async () => {
     mockReaddir.mockResolvedValueOnce([dir(UUID), dir('not-a-uuid'), file('stray.txt')] as any);
     mockReadFile.mockResolvedValueOnce(
-      'id: ' + UUID + '\ncwd: /Users/me/dev/repo\nsummary_count: 0\n' as any,
+      `id: ${UUID}\ncwd: /Users/me/dev/repo\nsummary_count: 0\n` as any,
     );
 
     const { descriptors: out, complete } = await new CopilotProvider().discoverTranscripts();
@@ -96,7 +96,7 @@ describe('CopilotProvider.indexTranscript()', () => {
   });
 
   it('tolerates malformed lines', async () => {
-    const jsonl = '{broken\n' + JSON.stringify({ type: 'user.message', data: { content: 'good prompt' } });
+    const jsonl = `{broken\n${JSON.stringify({ type: 'user.message', data: { content: 'good prompt' } })}`;
     mockIndexFile(jsonl);
     const r = await new CopilotProvider().indexTranscript('/p');
     expect(r.text).toContain('good prompt');

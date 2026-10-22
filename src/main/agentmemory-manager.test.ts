@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -27,6 +27,7 @@ import {
   ensureAgentmemoryRunning,
   getAgentmemoryLogPath,
   readAgentmemoryLog,
+  spawnDetached,
 } from './agentmemory-manager';
 
 beforeEach(() => {
@@ -108,5 +109,51 @@ describe('ensureAgentmemoryRunning', () => {
       vi.useRealTimers();
       vi.unstubAllGlobals();
     }
+  });
+});
+
+// PA-33: the append-mode daemon log grew across every restart forever.
+// Rotation runs at spawn, strictly above 8 MiB; readers tail ≤ 64 KiB from
+// the current file, so the rename is loss-free by construction.
+describe('spawnDetached log rotation', () => {
+  const CAP = 8 * 1024 * 1024;
+  const logPath = () => path.join(userDataDir, 'agentmemory.log');
+  const rotatedPath = () => path.join(userDataDir, 'agentmemory.log.1');
+
+  beforeEach(() => {
+    // spawnDetached registers 'error' and unref() on the returned child.
+    spawnMock.mockReturnValue({ on: vi.fn(), unref: vi.fn() });
+  });
+
+  it('keeps a log of exactly 8 MiB: rotation is strictly above the cap', () => {
+    writeFileSync(logPath(), Buffer.alloc(CAP, 0x61));
+    expect(spawnDetached()).toBe(true);
+    expect(existsSync(rotatedPath())).toBe(false);
+    expect(statSync(logPath()).size).toBe(CAP);
+  });
+
+  it('rotates 8 MiB + 1 byte to .1 and starts a fresh current file', () => {
+    writeFileSync(logPath(), Buffer.concat([Buffer.alloc(CAP, 0x61), Buffer.from('tail')]));
+    expect(spawnDetached()).toBe(true);
+    expect(statSync(rotatedPath()).size).toBe(CAP + 4);
+    // The append-open recreated the current log empty: the daemon writes fresh.
+    expect(statSync(logPath()).size).toBe(0);
+  });
+
+  it('overwrites the previous .1 rotation (one generation of history kept)', () => {
+    writeFileSync(rotatedPath(), 'OLD ROTATION');
+    writeFileSync(logPath(), Buffer.concat([Buffer.alloc(CAP, 0x61), Buffer.from('NEW')]));
+    expect(spawnDetached()).toBe(true);
+    expect(readFileSync(rotatedPath()).subarray(-3).toString()).toBe('NEW');
+  });
+
+  it('spawns untouched when no log exists (first launch)', () => {
+    expect(spawnDetached()).toBe(true);
+    expect(existsSync(rotatedPath())).toBe(false);
+    expect(spawnMock).toHaveBeenCalled();
+  });
+
+  it('getAgentmemoryLogPath still points at the unrotated file', () => {
+    expect(getAgentmemoryLogPath()).toBe(logPath());
   });
 });

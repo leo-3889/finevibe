@@ -1,6 +1,6 @@
 # Ask AI — focus retention setting (plan)
 
-Status: planned, not implemented.
+Status: DONE — shipped 7262bbb (item 37), verified in-tree 2026-10-22. Archived.
 Date: 2026-10-20.
 Scope: Preferences setting controlling whether an "Ask AI" send switches to the new
 session tab or leaves focus on the current tab.

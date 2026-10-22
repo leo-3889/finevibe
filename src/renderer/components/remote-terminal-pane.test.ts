@@ -296,9 +296,12 @@ describe('remote pane win32-input-mode keys', () => {
     expect(press(terminal, 'a')).toBe(true);
     expect(onInput).toHaveBeenCalledTimes(1);
 
+    // ConPTY's arming is monotonic: after `?9001l` the encoder keeps
+    // consuming Escape — a bare ESC byte would die in the armed ConPTY.
     terminal.csiHandlers.get('l')!([9001]);
-    expect(press(terminal, 'Escape')).toBe(true);
-    expect(onInput).toHaveBeenCalledTimes(1);
+    expect(press(terminal, 'Escape')).toBe(false);
+    // The encoder keeps forwarding INPUT_RECORDs to the PTY.
+    expect(onInput).toHaveBeenCalledTimes(2);
   });
 
   it('read-only panes attach no custom key handler', async () => {

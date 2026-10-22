@@ -123,16 +123,23 @@ function readHead(filePath: string, limit: number): Buffer {
   }
 }
 
-/** Parse a rollout's first line as `session_meta`; throws on non-JSON. */
+/** Parse a rollout's first line as `session_meta`; null on non-JSON. The
+ *  throw-on-garbage contract lived here while every caller wrapped it in a
+ *  try/catch mapping to null — folding that catch in keeps every read path
+ *  throw-free (PA-25-adjacent slop scan). */
 function parseMetaLine(text: string): { id?: string; cwd?: string } | null {
   const firstLine = text.split('\n', 1)[0];
   if (!firstLine.trim()) return null;
-  const entry = JSON.parse(firstLine);
-  if (entry.type !== 'session_meta' || !entry.payload) return null;
-  return {
-    id: typeof entry.payload.id === 'string' ? entry.payload.id : undefined,
-    cwd: typeof entry.payload.cwd === 'string' ? entry.payload.cwd : undefined,
-  };
+  try {
+    const entry = JSON.parse(firstLine);
+    if (entry.type !== 'session_meta' || !entry.payload) return null;
+    return {
+      id: typeof entry.payload.id === 'string' ? entry.payload.id : undefined,
+      cwd: typeof entry.payload.cwd === 'string' ? entry.payload.cwd : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** `.zst` files with a full decode in flight — one fallback per file. */
@@ -363,6 +370,21 @@ export function unregisterCodexSession(sessionId: string): void {
 let watcher: fs.FSWatcher | null = null;
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let scanTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * When the last tree walk actually ran. Both scan paths — the 500 ms
+ * watch-debounce and the 2 s poll — are gated on this one timestamp (PA-22),
+ * so a chatty rollout can no longer stack them into ~3 scans/second.
+ * Same shape as pi-compatible-session-watcher's SCAN_MIN_SPACING_MS.
+ */
+let lastScanAt = 0;
+const SCAN_DEBOUNCE_MS = 500;
+const SCAN_MIN_SPACING_MS = 1_000;
+
+/** One rollout sweep, timestamped so both scan paths see each other. */
+function runScan(): void {
+  lastScanAt = Date.now();
+  scanRollouts();
+}
 
 export function startCodexSessionWatcher(_win: BrowserWindow): void {
   if (watcher || pollInterval) return;
@@ -370,12 +392,18 @@ export function startCodexSessionWatcher(_win: BrowserWindow): void {
   try {
     fs.mkdirSync(SESSIONS_ROOT, { recursive: true });
     const w = fs.watch(SESSIONS_ROOT, { recursive: true }, () => {
-      // Codex appends in bursts; coalesce watch events into one scan.
+      // Codex appends in bursts; coalesce watch events into one scan, and
+      // never run it closer than SCAN_MIN_SPACING_MS after the previous one —
+      // including a scan the poll already did (PA-22).
       if (scanTimer !== null) return;
+      const delay = Math.max(
+        SCAN_DEBOUNCE_MS,
+        SCAN_MIN_SPACING_MS - (Date.now() - lastScanAt)
+      );
       scanTimer = setTimeout(() => {
         scanTimer = null;
-        scanRollouts();
-      }, 500);
+        runScan();
+      }, delay);
     });
     // An FSWatcher error (EMFILE, the watched dir removed) emits 'error'
     // on the watcher; with no listener that is an uncaught exception in
@@ -397,7 +425,11 @@ export function startCodexSessionWatcher(_win: BrowserWindow): void {
 
   // Polling fallback — fs.watch can miss events on some systems.
   pollInterval = setInterval(() => {
-    if (pendingSessions.size > 0) scanRollouts();
+    if (pendingSessions.size === 0) return;
+    // PA-22: the floor is shared with the watch path, so a poll that lands
+    // right after a watch-driven scan yields instead of re-walking the tree.
+    if (Date.now() - lastScanAt < SCAN_MIN_SPACING_MS) return;
+    runScan();
   }, 2000);
 }
 
@@ -414,6 +446,7 @@ export function stopCodexSessionWatcher(): void {
     clearTimeout(scanTimer);
     scanTimer = null;
   }
+  lastScanAt = 0;
   pendingSessions.clear();
   metaCache.clear();
   assignedCodexIds.clear();

@@ -61,8 +61,9 @@ vi.mock('./fs-utils', () => ({
 import { EventEmitter } from 'node:events';
 import {
   isFineVibeStatusLine, shouldWarnStatusLine, guardedInstall,
-  guardedProfileInstall, reinstallSettings, consentDirKey,
+  guardedProfileInstall, reinstallSettings, consentDirKey, resetProfileInstallMemo,
 } from './settings-guard';
+import * as fs from 'fs';
 import { installStatusLine } from './claude-cli';
 import { saveState, loadState } from './store';
 import { readJsonSafe } from './fs-utils';
@@ -221,6 +222,8 @@ describe('guardedProfileInstall (P1-14)', () => {
     vi.clearAllMocks();
     vi.mocked(readJsonSafe).mockReturnValue({ statusLine: { command: FOREIGN_STATUSLINE } });
     vi.mocked(loadState).mockReturnValue({ preferences: {} } as never);
+    // PA-26: the per-spawn memo is module state; each case must start cold.
+    resetProfileInstallMemo();
   });
 
   it('honors a prior Keep for this dir: hooks install, statusLine untouched, no new record', () => {
@@ -273,6 +276,23 @@ describe('guardedProfileInstall (P1-14)', () => {
         preferences: { statusLineConsentByDir: { [KEY]: { consent: 'declined', command: FOREIGN_STATUSLINE } } },
       }),
     );
+  });
+
+  it('PA-26: a second spawn on an unchanged settings.json is a memo hit; an mtime change re-validates', () => {
+    const stat = vi.mocked(fs.statSync);
+    stat.mockReturnValue({ mtimeMs: 111 } as fs.Stats);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledTimes(1);
+
+    // Same mtime = nothing touched settings.json: the full validate +
+    // install (the per-spawn cost PA-26 removes) must not run again.
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledTimes(1);
+
+    // settings.json rewritten (user/CLI edit, "Fix Settings") → re-validate.
+    stat.mockReturnValue({ mtimeMs: 222 } as fs.Stats);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledTimes(2);
   });
 });
 

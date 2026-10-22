@@ -346,6 +346,14 @@ window.addEventListener('beforeunload', () => appState.flushPersist());
   appState.on('session-removed', (data) => {
     const { sessionId } = data as { sessionId: string };
     window.finevibe.session.release(sessionId);
+    // PA-35: the coalescing windows lived as long as the renderer, one
+    // entry per session id ever seen. A close with an armed trailing
+    // timer must not fire `notifyInterrupt` for a session that is gone.
+    const w = interruptWindows.get(sessionId);
+    if (w) {
+      if (w.timer !== null) clearTimeout(w.timer);
+      interruptWindows.delete(sessionId);
+    }
   });
 
   // Apply the persisted locale (OS fallback on first launch). The always-on

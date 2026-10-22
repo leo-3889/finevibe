@@ -3,12 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockLoad = vi.fn();
 const mockSave = vi.fn();
 const mockTranscriptExists = vi.fn();
-const mockTranscriptExistsSync = vi.fn();
 
 vi.stubGlobal('window', {
   finevibe: {
     store: { load: mockLoad, save: mockSave },
-    session: { transcriptExists: mockTranscriptExists, transcriptExistsSync: mockTranscriptExistsSync },
+    session: { transcriptExists: mockTranscriptExists },
   },
 });
 
@@ -41,7 +40,7 @@ beforeEach(() => {
   uuidCounter = 0;
   mockGetCost.mockReturnValue(null);
   mockTranscriptExists.mockResolvedValue(true);
-  mockTranscriptExistsSync.mockReturnValue(true);
+
   _resetForTesting();
 });
 
@@ -139,13 +138,16 @@ describe('archiveSession via removeSession()', () => {
     expect(row.closedAt).toBeDefined();
   });
 
-  it('closes the row with transcriptAvailable=false when no transcript exists on disk', () => {
+  it('closes the row with transcriptAvailable=false when no transcript exists on disk', async () => {
     // cliSessionId is assigned at spawn (SessionStart hook) before any prompt; the row
     // still exists (created at spawn) but is not resumable — transcript gates resume, not presence.
-    mockTranscriptExistsSync.mockReturnValue(false);
+    mockTranscriptExists.mockResolvedValue(false);
     const project = addProject();
     const session = appState.addSession(project.id, 'Spawned')!;
     appState.updateSessionCliId(project.id, session.id, 'cli-spawn-only');
+    // Let the async availability probe settle so its transcript-gone answer
+    // is cached before the close path reads the flag.
+    await mockTranscriptExists.mock.results[0]!.value;
     appState.removeSession(project.id, session.id);
     const history = appState.getSessionHistory(project.id);
     expect(history).toHaveLength(1);
@@ -158,11 +160,11 @@ describe('archiveSession via removeSession()', () => {
     const session = appState.addSession(project.id, 'NoId')!;
     appState.removeSession(project.id, session.id);
     expect(appState.getSessionHistory(project.id)).toHaveLength(1);
-    expect(mockTranscriptExistsSync).not.toHaveBeenCalled();
+    expect(mockTranscriptExists).not.toHaveBeenCalled();
   });
 
   it('archives once a transcript exists on disk', () => {
-    mockTranscriptExistsSync.mockReturnValue(true);
+    mockTranscriptExists.mockResolvedValue(true);
     const project = addProject();
     const session = appState.addSession(project.id, 'Used')!;
     appState.updateSessionCliId(project.id, session.id, 'cli-used');
@@ -170,11 +172,11 @@ describe('archiveSession via removeSession()', () => {
     expect(appState.getSessionHistory(project.id)).toHaveLength(1);
   });
 
-  it('archives the cleared incarnation and keeps the tab row live', () => {
+  it('archives the cleared incarnation and keeps the tab row live', async () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
     // Only the first incarnation has a transcript on disk.
-    mockTranscriptExistsSync.mockImplementation((_p: string, cliId: string) => cliId === 'cli-first');
+    mockTranscriptExists.mockImplementation(async (_p: string, cliId: string) => cliId === 'cli-first');
     appState.updateSessionCliId(project.id, session.id, 'cli-first');
     // /clear: a new cliSessionId arrives — the first (real) incarnation is archived closed.
     appState.updateSessionCliId(project.id, session.id, 'cli-second');
@@ -183,6 +185,9 @@ describe('archiveSession via removeSession()', () => {
     expect(cleared.find((a) => a.cliSessionId === 'cli-first')!.state).toBe('closed');
     const live = cleared.find((a) => a.cliSessionId === 'cli-second')!;
     expect(live.state).toBe('active');
+    // Let the probe for the cleared cli id settle: its transcript never
+    // materializes, so the close below must record flag=false.
+    await mockTranscriptExists.mock.results[1]!.value;
     // Close the cleared session whose transcript never materialized: its row closes, not archived away.
     appState.removeSession(project.id, session.id);
     const history = appState.getSessionHistory(project.id);
@@ -191,13 +196,15 @@ describe('archiveSession via removeSession()', () => {
     expect(history.find((a) => a.cliSessionId === 'cli-second')!.transcriptAvailable).toBe(false);
   });
 
-  it('keeps the row (with cost) when only cost data exists and no transcript on disk', () => {
+  it('keeps the row (with cost) when only cost data exists and no transcript on disk', async () => {
     // Cost no longer gates archiving (rows exist from creation); it decorates the closed row.
     mockCostData();
-    mockTranscriptExistsSync.mockReturnValue(false);
+    mockTranscriptExists.mockResolvedValue(false);
     const project = addProject();
     const session = appState.addSession(project.id, 'CostOnly')!;
     appState.updateSessionCliId(project.id, session.id, 'cli-cost-no-transcript');
+    // Probe settles to false: cost decorates the closed row, no resume.
+    await mockTranscriptExists.mock.results[0]!.value;
     appState.removeSession(project.id, session.id);
     const history = appState.getSessionHistory(project.id);
     expect(history).toHaveLength(1);
@@ -313,7 +320,7 @@ describe('archiveSession via removeSession()', () => {
 
   it('bulk removeAllSessions archives each', () => {
     const { project, sessions } = addProjectWithSessions(3);
-    sessions.forEach((s, i) => activateSession(project.id, s.id, `cli-bulk-${i}`));
+    sessions.forEach((s, i) => { activateSession(project.id, s.id, `cli-bulk-${i}`); });
     appState.removeAllSessions(project.id);
     expect(appState.getSessionHistory(project.id)).toHaveLength(3);
   });
@@ -459,7 +466,7 @@ describe('removeHistoryEntry()', () => {
 describe('clearSessionHistory()', () => {
   it('clears all history for a project', () => {
     const { project, sessions } = addProjectWithSessions(3);
-    sessions.forEach((s, i) => activateSession(project.id, s.id, `cli-clear-${i}`));
+    sessions.forEach((s, i) => { activateSession(project.id, s.id, `cli-clear-${i}`); });
     appState.removeAllSessions(project.id);
     expect(appState.getSessionHistory(project.id)).toHaveLength(3);
     appState.clearSessionHistory(project.id);
@@ -518,7 +525,7 @@ describe('clearSessionHistory()', () => {
 
   it('preserves bookmarked sessions when clearing', () => {
     const { project, sessions } = addProjectWithSessions(3);
-    sessions.forEach((s, i) => activateSession(project.id, s.id, `cli-bm-clear-${i}`));
+    sessions.forEach((s, i) => { activateSession(project.id, s.id, `cli-bm-clear-${i}`); });
     appState.removeAllSessions(project.id);
     const historyBefore = appState.getSessionHistory(project.id);
     expect(historyBefore).toHaveLength(3);

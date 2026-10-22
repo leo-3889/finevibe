@@ -11,6 +11,7 @@ const mockInvalidateBinaryCache = vi.hoisted(() => vi.fn());
 vi.mock('./resolve-binary', () => ({
   resolveBinary: (name: string, cache: { path: string | null }) => (cache.path ??= name),
   validateBinaryExists: mockValidateBinaryExists,
+  validateBinaryExistsAsync: vi.fn(async () => true),
   invalidateBinaryCache: mockInvalidateBinaryCache,
 }));
 

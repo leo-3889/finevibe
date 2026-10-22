@@ -1,6 +1,7 @@
 # Plan: default projects folder + git-URL project creation ("Checkout and create")
 
-Date: 2026-10-21 · Status: todo · Owner: TBD
+Date: 2026-10-21 · Status: DONE — shipped 065ff6d (items 65-67) + 5e48cdc (prefs row),
+verified in-tree 2026-10-22. Archived. · Owner: TBD
 
 ## Request
 

@@ -1,6 +1,7 @@
 # Plan: session tab groups (hover-to-group, rename, ungroup)
 
-Date: 2026-10-21 · Status: plan · Owner: TBD
+Date: 2026-10-21 · Status: DONE — shipped de83f5d (items 68-71), verified in-tree 2026-10-22.
+Archived. · Owner: TBD
 
 ## Request
 

@@ -1,16 +1,16 @@
 import { appState } from '../state.js';
 import { createModalShell } from './modal-shell.js';
 import { pushModal } from './modal-manager.js';
+import { ModalCloser } from './modal-close.js';
 
 const STAR_THRESHOLD = 10;
 // legacy: the GitHub repo slug stays `vibeyard` — the repository is NOT renamed with the product.
 const REPO_URL = 'https://github.com/leo-3889/vibeyard';
 
-let cleanupFn: (() => void) | null = null;
+const closer = new ModalCloser();
 
 function showStarPromptDialog(): void {
-  cleanupFn?.();
-  cleanupFn = null;
+  closer.reset();
 
   const { overlay, body, actions } = createModalShell({
     id: 'star-prompt-overlay',
@@ -57,11 +57,7 @@ function showStarPromptDialog(): void {
 
   overlay.style.display = '';
 
-  const close = () => {
-    overlay.style.display = 'none';
-    cleanupFn?.();
-    cleanupFn = null;
-  };
+  const close = () => closer.close(overlay);
 
   const handleStar = () => {
     window.finevibe.app.openExternal(REPO_URL);
@@ -79,12 +75,12 @@ function showStarPromptDialog(): void {
   laterBtn.addEventListener('click', close);
   dontAsk.addEventListener('click', handleDontAsk);
 
-  cleanupFn = () => {
+  closer.setCleanup(() => {
     unregisterEsc();
     starBtn.removeEventListener('click', handleStar);
     laterBtn.removeEventListener('click', close);
     dontAsk.removeEventListener('click', handleDontAsk);
-  };
+  });
 }
 
 export function checkStarPrompt(): void {

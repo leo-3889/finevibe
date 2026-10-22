@@ -126,8 +126,8 @@ export async function exportSessionArchive(
     // main process with live PTYs (docs/performance.md read-budget rule).
     zip.file(`transcript/${path.basename(transcriptPath)}`, createReadStream(transcriptPath));
   }
-  for (const [name, data] of await readSidecars(params.meta.liveSessionId)) {
-    zip.file(`sidecars/${name}`, data);
+  for (const [name, stream] of await openSidecarStreams(params.meta.liveSessionId)) {
+    zip.file(`sidecars/${name}`, stream);
   }
 
   // `pipe()` returns the DESTINATION, so an error listener chained off it only
@@ -158,22 +158,34 @@ export async function exportSessionArchive(
   return filePath;
 }
 
-/** Read `STATUS_DIR/<uiSessionId>.*` sidecars; missing files are skipped. */
-async function readSidecars(uiSessionId: string | undefined): Promise<Array<[string, Buffer]>> {
+/**
+ * Open `STATUS_DIR/<uiSessionId>.*` sidecars as read streams; missing files
+ * are skipped. PA-20: the `.events` file is uncapped on disk (the 64 KiB
+ * read budget bounds readers, not writers), so buffering all seven suffixes
+ * whole spikes main-process memory during the export; JSZip's
+ * `streamFiles: true` consumes each stream incrementally, exactly as the
+ * transcript above already does.
+ */
+async function openSidecarStreams(uiSessionId: string | undefined): Promise<Array<[string, NodeJS.ReadableStream]>> {
   if (!uiSessionId) return [];
   // The id is renderer-supplied history data: the STATUS_DIR guard rejects
   // anything that could escape the directory via `..`.
   const suffixes = ['.events', '.status', '.cost', '.name', '.sessionid', '.toolfailure', '.subagents'];
-  const out: Array<[string, Buffer]> = [];
+  const out: Array<[string, NodeJS.ReadableStream]> = [];
   for (const suffix of suffixes) {
     const filePath = statusFilePath(uiSessionId, suffix.slice(1));
     if (filePath === null) return out;
     try {
-      const data = await fs.readFile(filePath);
-      out.push([`${uiSessionId}${suffix}`, data]);
+      // Existence check only — bytes never touch memory here. Sidecars are
+      // ephemeral tmp files; absent is the common case.
+      await fs.stat(filePath);
     } catch {
-      // Sidecars are ephemeral tmp files; absent is the common case.
+      continue;
     }
+    // A file unlinked between stat and open errors the stream mid-zip; the
+    // export's stream-error path already rejects and deletes the partial
+    // archive — the same exposure the transcript stream accepts.
+    out.push([`${uiSessionId}${suffix}`, createReadStream(filePath)]);
   }
   return out;
 }

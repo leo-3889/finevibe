@@ -32,6 +32,13 @@ export interface CliProvider {
   readonly meta: CliProviderMeta;
   resolveBinaryPath(): string;
   validatePrerequisites(): boolean;
+  /**
+   * PA-01: async availability probe for the boot fan-out — the probes are
+   * spawn-bound (`which`/`npm prefix -g`), so main.ts runs every
+   * provider's async probe with Promise.all AFTER the first window.
+   * Optional: callers must fall back to `validatePrerequisites()`.
+   */
+  validatePrerequisitesAsync?(): Promise<boolean>;
   buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string>;
   buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[];
   installHooks(win?: BrowserWindow | null, projectPath?: string): Promise<void>;

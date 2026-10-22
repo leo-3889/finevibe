@@ -481,3 +481,47 @@ describe('cleanupAllShares', () => {
     expect(pendingHandle.disconnect).toHaveBeenCalled();
   });
 });
+
+// PA-32: the listener array was push-only. onShareChange now returns a
+// dispose closure (the appState.on pattern); these pin removal,
+// idempotence, and splice-safety for the neighbours.
+describe('onShareChange unsubscribe', () => {
+  it('removes the listener so later notifications skip it', () => {
+    const cb = vi.fn();
+    const off = onShareChange(cb);
+    endShare('s1');
+    expect(cb).toHaveBeenCalledTimes(1);
+    off();
+    endShare('s1');
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('is idempotent: a double unsubscribe never drops a neighbour', () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    const offA = onShareChange(a);
+    onShareChange(b);
+    offA();
+    offA(); // indexOf === -1 path: must not splice b's slot
+    endShare('s1');
+    expect(a).not.toHaveBeenCalled();
+    expect(b).toHaveBeenCalledTimes(1);
+  });
+
+  it('a listener unsubscribing during notification does not starve the next one', () => {
+    // The notify loop iterates a snapshot, so c fires even though b removes
+    // itself mid-notification and shifts the live array.
+    const c = vi.fn();
+    const offRef: { off: () => void } = { off: () => {} };
+    const b = vi.fn(() => offRef.off());
+    offRef.off = onShareChange(b);
+    onShareChange(c);
+    endShare('s1');
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(c).toHaveBeenCalledTimes(1);
+    // b is gone for the next round.
+    endShare('s1');
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(c).toHaveBeenCalledTimes(2);
+  });
+});

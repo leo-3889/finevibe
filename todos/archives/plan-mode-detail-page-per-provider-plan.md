@@ -1,6 +1,7 @@
 # Plan mode → New Session "detail" page + per-coding-tool configuration
 
-Status: planned, not implemented.
+Status: DONE — shipped de83f5d (items 43-46) + 180fc83 (single prefs row, user-directed
+collapse of the per-provider list), verified in-tree 2026-10-22. Archived.
 Date: 2026-10-20.
 Scope: move the "Plan mode" control into the New Session modal below
 "Keep args for future sessions", gate it by coding tool (greyed out when unsupported), and add a

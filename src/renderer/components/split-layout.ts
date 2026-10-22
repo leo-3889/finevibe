@@ -162,7 +162,13 @@ export function initSplitLayout(): void {
   appState.on('project-changed', renderLayout);
   appState.on('session-added', onSessionAdded);
   appState.on('session-removed', onSessionRemoved);
-  appState.on('session-changed', renderLayout);
+  // PA-13: metadata-only session-changed (title / CLI-id adoption) changes no
+  // layout — a full pass costs the session loop + 9 hideAll sweeps + fitAllVisible
+  // for nothing, N times per resume storm. Payload-less stays on the full path.
+  appState.on('session-changed', (data?: unknown) => {
+    if ((data as { kind?: string } | undefined)?.kind === 'metadata') return;
+    renderLayout();
+  });
   appState.on('layout-changed', renderLayout);
 
   onUnreadChange(() => {

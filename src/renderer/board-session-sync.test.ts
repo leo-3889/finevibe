@@ -4,7 +4,7 @@ import type { Mock } from 'vitest';
 vi.stubGlobal('window', {
   finevibe: {
     store: { load: vi.fn(), save: vi.fn() },
-    session: { transcriptExistsSync: vi.fn(() => false) },
+    session: {},
   },
 });
 

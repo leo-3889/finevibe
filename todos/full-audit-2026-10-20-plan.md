@@ -1,5 +1,11 @@
 # Full project audit — consolidated remediation plan (2026-10-20)
 
+> **Status 2026-10-22 (todos audit): the Status column below is STALE.** Waves A–F shipped
+> (F61 fleet record: exit gate 191 files / 2,857 passed / 4 skipped exit 0 at 85a321d; F62
+> branch prune done, 26 branches deleted; F63 = e806e0f). Tree-true open: **P1-13, P1-16,
+> P1-18, P1-21** (+twin P2-54) · P2-18, 53, 55, 58, 60, 61, 69, 72, 74, 86, 98 · P3-4 ·
+> partials P2-11, P2-12, P2-75 · task F64. Detailed queue: [`PENDING.md`](PENDING.md) §1.
+
 Repo `vibeyard` · branch `rebuild` · HEAD `858d97c` · 469 TS files (179 colocated `*.test.ts`) · Node 24 build / Node 18+ launcher.
 Produced by 40 audit agents in five waves; every row below was re-verified in-tree by the parent at its cited lines.
 

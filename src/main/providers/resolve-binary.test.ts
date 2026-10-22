@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as path from 'path';
 
 const mockExecSync = vi.fn();
+const mockExecFile = vi.fn();
 
 vi.mock('child_process', () => ({
   execSync: (...args: unknown[]) => mockExecSync(...args),
+  // PA-01 async probes go through promisify(execFile).
+  execFile: (...args: unknown[]) => mockExecFile(...args),
 }));
 
 vi.mock('os', () => ({
@@ -14,6 +17,12 @@ vi.mock('os', () => ({
 vi.mock('fs', () => ({
   existsSync: vi.fn(() => false),
   statSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  // PA-01 disk tier: async stat + cache-file read/write.
+  promises: {
+    stat: vi.fn(() => Promise.reject(new Error('ENOENT'))),
+    readFile: vi.fn(() => Promise.reject(new Error('ENOENT'))),
+    writeFile: vi.fn(() => Promise.resolve()),
+  },
 }));
 
 // Mock platform as Windows for these tests
@@ -29,19 +38,31 @@ vi.mock('../pty-manager', () => ({
 }));
 
 import * as fs from 'fs';
-import { resolveBinary, validateBinaryExists, invalidateBinaryCache } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, invalidateBinaryCache, validateBinaryExistsAsync, configureProbeCacheDir } from './resolve-binary';
 
 const mockStatSync = vi.mocked(fs.statSync);
+const mockStatAsync = vi.mocked(fs.promises.stat);
+const mockReadFile = vi.mocked(fs.promises.readFile);
+const mockWriteFile = vi.mocked(fs.promises.writeFile);
 
 const fileStat = { isFile: () => true } as fs.Stats;
 
 // Must match the mocked getFullPath() above (P2-26 cache validation key).
 const MOCKED_PATH = 'C:\\Windows\\system32;C:\\Users\\test\\AppData\\Roaming\\npm';
 
+// Let queued microtasks (the coalesced disk-cache write) land.
+const flushAsync = () => new Promise((resolve) => setImmediate(resolve));
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   mockExecSync.mockImplementation(() => { throw new Error('not found'); });
+  mockExecFile.mockImplementation(() => { throw new Error('not found'); });
+  mockStatAsync.mockImplementation(() => Promise.reject(new Error('ENOENT')));
+  mockReadFile.mockImplementation(() => Promise.reject(new Error('ENOENT')));
+  mockWriteFile.mockImplementation(() => Promise.resolve());
+  // Disk tier OFF by default: the suites above pin the in-process behavior.
+  configureProbeCacheDir(null);
   invalidateBinaryCache();
 });
 
@@ -270,5 +291,148 @@ describe('validateBinaryExists (Windows)', () => {
     invalidateBinaryCache('claude');
     expect(validateBinaryExists('claude')).toBe(false);
     expect(mockExecSync.mock.calls.length).toBeGreaterThan(probesAfterFirst);
+  });
+});
+
+describe('validateBinaryExistsAsync — PA-01 cross-launch disk cache', () => {
+  const CACHE_FILE = path.join('C:\\mock\\userData', 'binary-probe-cache.json');
+  const scoopPath = path.join('C:\\Users\\test', 'scoop', 'shims', 'claude.cmd');
+
+  function seedDiskCache(entry: Record<string, unknown>) {
+    mockReadFile.mockImplementation((p) => {
+      if (String(p) === CACHE_FILE) {
+        return Promise.resolve(JSON.stringify({ claude: entry }) as unknown as never);
+      }
+      return Promise.reject(new Error('ENOENT'));
+    });
+  }
+
+  beforeEach(() => {
+    configureProbeCacheDir('C:\\mock\\userData');
+  });
+
+  it('trusts a fresh positive entry: availability without any probe', async () => {
+    seedDiskCache({
+      exists: true, path: scoopPath, mtimeMs: 1000, pathEnv: MOCKED_PATH, checkedAt: Date.now(),
+    });
+    mockStatAsync.mockImplementation((p) => (
+      String(p) === scoopPath
+        ? Promise.resolve({ mtimeMs: 1000, isFile: () => true } as never)
+        : Promise.reject(new Error('ENOENT'))
+    ));
+
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(true);
+    expect(mockExecSync).not.toHaveBeenCalled();
+    expect(mockExecFile).not.toHaveBeenCalled();
+    // A trusted entry is not rewritten — no disk churn per launch.
+    await flushAsync();
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it('invalidates per-entry when the binary mtime changed: full re-probe + persist', async () => {
+    seedDiskCache({
+      exists: true, path: scoopPath, mtimeMs: 1000, pathEnv: MOCKED_PATH, checkedAt: Date.now(),
+    });
+    // The CLI updated under the same path: mtime moved.
+    mockStatAsync.mockImplementation((p) => (
+      String(p) === scoopPath
+        ? Promise.resolve({ mtimeMs: 2000, isFile: () => true } as never)
+        : Promise.reject(new Error('ENOENT'))
+    ));
+
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(true);
+    await flushAsync();
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+    expect(persisted.claude).toMatchObject({ exists: true, path: scoopPath, mtimeMs: 2000 });
+  });
+
+  it('invalidates per-entry when the recorded binary vanished: re-probe finds it missing', async () => {
+    seedDiskCache({
+      exists: true, path: scoopPath, mtimeMs: 1000, pathEnv: MOCKED_PATH, checkedAt: Date.now(),
+    });
+    // statSync-based nvm/common-dir probes and async stats all ENOENT: the
+    // binary is gone.
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(false);
+    await flushAsync();
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+    expect(persisted.claude).toMatchObject({ exists: false, path: null });
+  });
+
+  it('trusts a fresh negative entry inside the TTL — no probe, no re-stat', async () => {
+    seedDiskCache({
+      exists: false, path: null, mtimeMs: null, pathEnv: MOCKED_PATH, checkedAt: Date.now(),
+    });
+
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(false);
+    expect(mockStatAsync).not.toHaveBeenCalled();
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('re-probes when the PATH moved since the entry was written', async () => {
+    seedDiskCache({
+      exists: true, path: scoopPath, mtimeMs: 1000, pathEnv: 'D:\\stale-path', checkedAt: Date.now(),
+    });
+    // Async probe: `where` (execFile) resolves the binary on the live PATH.
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: unknown, out?: { stdout: string }) => void;
+      cb(null, { stdout: 'D:\\tools\\claude.cmd\n' });
+    });
+
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(true);
+    expect(mockExecFile).toHaveBeenCalled();
+  });
+
+  it('stays entirely in-process when no cache dir is configured', async () => {
+    configureProbeCacheDir(null);
+
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(false);
+    expect(mockReadFile).not.toHaveBeenCalled();
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it('invalidateBinaryCache clears the loaded disk entry and persists the drop', async () => {
+    seedDiskCache({
+      exists: true, path: scoopPath, mtimeMs: 1000, pathEnv: MOCKED_PATH, checkedAt: Date.now(),
+    });
+    mockStatAsync.mockImplementation((p) => (
+      String(p) === scoopPath
+        ? Promise.resolve({ mtimeMs: 1000, isFile: () => true } as never)
+        : Promise.reject(new Error('ENOENT'))
+    ));
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(true);
+
+    invalidateBinaryCache('claude');
+    // The invalidation scenario is an uninstall: the phase-1 stat mock
+    // (scoopPath fresh) is also what the re-probe's async dir walk reads,
+    // so it must go ENOENT here — otherwise the probe legitimately
+    // re-finds the binary the test just invalidated.
+    mockStatAsync.mockImplementation(() => Promise.reject(new Error('ENOENT')));
+    mockReadFile.mockImplementation(() => Promise.reject(new Error('ENOENT')));
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(false);
+    await flushAsync();
+    const persisted = JSON.parse(String(mockWriteFile.mock.calls[mockWriteFile.mock.calls.length - 1][1]));
+    expect(persisted.claude).toMatchObject({ exists: false });
+  });
+
+  it('boot-time invalidation before the first probe must not wipe the cache file', async () => {
+    // registry.initProviders → invalidateAvailabilityCache lands on
+    // invalidateBinaryCache() BEFORE any probe loaded the file. Clearing an
+    // unloaded map must not delete the on-disk entries — persistence
+    // depends on exactly this.
+    seedDiskCache({
+      exists: true, path: scoopPath, mtimeMs: 1000, pathEnv: MOCKED_PATH, checkedAt: Date.now(),
+    });
+    invalidateBinaryCache();
+    mockStatAsync.mockImplementation((p) => (
+      String(p) === scoopPath
+        ? Promise.resolve({ mtimeMs: 1000, isFile: () => true } as never)
+        : Promise.reject(new Error('ENOENT'))
+    ));
+
+    await expect(validateBinaryExistsAsync('claude')).resolves.toBe(true);
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockExecSync).not.toHaveBeenCalled();
   });
 });

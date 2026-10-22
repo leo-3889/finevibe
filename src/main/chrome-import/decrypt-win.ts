@@ -83,13 +83,6 @@ export function decryptValue(encrypted: Buffer): Buffer | null {
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 }
 
-export function stripDomainHash(plaintext: Buffer, hasDomainHash: boolean): string {
-  if (hasDomainHash && plaintext.length >= 32) {
-    return plaintext.subarray(32).toString('utf-8');
-  }
-  return plaintext.toString('utf-8');
-}
-
 export function _resetCache(): void {
   cachedKey = null;
 }

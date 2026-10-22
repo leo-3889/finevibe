@@ -104,7 +104,18 @@ export function initSidebar(): void {
   appState.on('session-changed', syncProfileBadge);
   appState.on('readiness-changed', render);
 
-  onUnreadChange(render);
+  // PA-11: an unread transition only flips the project name's accent class;
+  // rebuilding the list would throw away the rename input, scroll, and panel
+  // state. Full render only when the rows no longer mirror the model.
+  onUnreadChange(() => {
+    const rows = Array.from(projectListEl.querySelectorAll<HTMLElement>('.project-item[data-project-id]'));
+    if (rows.length !== appState.projects.length) { render(); return; }
+    for (const row of rows) {
+      const name = row.querySelector<HTMLElement>('.project-name');
+      if (!name) { render(); return; }
+      name.classList.toggle('unread', hasUnreadInProject(row.dataset.projectId!));
+    }
+  });
   // Keep the active project's Git tab badge in sync. Surgical when the button is
   // already present; a full render only when repo-ness first becomes known (the
   // button needs to appear/disappear).

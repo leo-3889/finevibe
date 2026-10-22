@@ -6,7 +6,8 @@ vi.mock('child_process', () => ({
 }));
 
 import { execFileSync } from 'child_process';
-import { decryptValue, stripDomainHash, getKeyError, _resetCache } from './decrypt-mac';
+import { decryptValue, getKeyError, _resetCache } from './decrypt-mac';
+import { stripDomainHash } from './domain-hash';
 
 const mockExec = vi.mocked(execFileSync);
 

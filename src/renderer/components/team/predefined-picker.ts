@@ -6,6 +6,7 @@ import { fetchPredefinedMembers, isCacheFresh } from './github-fetcher.js';
 import { filterMembers, type DomainFilter } from './predefined-filter.js';
 import { bindModalDismiss } from '../modal-manager.js';
 import { t } from '../../i18n.js';
+import { initials } from './initials.js';
 
 interface DialogState {
   overlay: HTMLDivElement;
@@ -400,13 +401,4 @@ function applyAddState(btn: HTMLButtonElement, isInstalled: boolean, addLabel: s
   btn.textContent = isInstalled
     ? t('team.picker.addedGlyph', { label: addedLabel })
     : t('team.picker.addGlyph', { label: addLabel });
-}
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? '')
-    .join('') || '?';
 }

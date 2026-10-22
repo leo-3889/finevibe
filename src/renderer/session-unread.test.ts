@@ -28,6 +28,15 @@ function flush(): Promise<void> {
   return Promise.resolve();
 }
 
+// PA-11: transition notifies are rAF-coalesced; the read path (notifyNow) is
+// synchronous inside the microtask. Node has no rAF — queue callbacks and
+// flush them explicitly so rebuild-per-frame is observable and countable.
+const rafQueue: FrameRequestCallback[] = [];
+function flushRaf(): void {
+  const q = rafQueue.splice(0, rafQueue.length);
+  for (const cb of q) cb(0);
+}
+
 vi.mock('./session-activity', () => ({
   onChange: (cb: (sessionId: string, status: string) => void) => { statusChangeCallbacks.push(cb); },
 }));
@@ -50,6 +59,11 @@ beforeEach(() => {
   mockAppState.activeProjectId = null;
   mockAppState.on.mockReset();
   appStateListeners.clear();
+  rafQueue.length = 0;
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    rafQueue.push(cb);
+    return rafQueue.length;
+  });
 });
 
 function setupProjects(): void {
@@ -170,7 +184,28 @@ describe('session-unread', () => {
     simulateStatusChange('s1', 'working');
     simulateStatusChange('s1', 'waiting');
 
+    flushRaf();
     expect(cb).toHaveBeenCalled();
+  });
+
+  it('coalesces a burst of unread transitions into one listener pass per frame (PA-11)', () => {
+    setupProjects();
+    mockAppState.activeProjectId = 'p2';
+    init();
+    const cb = vi.fn();
+    onChange(cb);
+
+    // N-agent completion burst: three transitions in one synchronous wave.
+    for (const id of ['s1', 's2']) {
+      simulateStatusChange(id, 'working');
+    }
+    for (const id of ['s1', 's2']) {
+      simulateStatusChange(id, 'waiting');
+    }
+    expect(cb).not.toHaveBeenCalled(); // queued, not per-transition
+
+    flushRaf();
+    expect(cb).toHaveBeenCalledTimes(1); // …and exactly one rebuild for the frame
   });
 
   it('stops receiving callbacks after unsubscribe', () => {
@@ -183,7 +218,7 @@ describe('session-unread', () => {
 
     simulateStatusChange('s1', 'working');
     simulateStatusChange('s1', 'waiting');
-    expect(cb).toHaveBeenCalledTimes(1);
+    flushRaf();
 
     unsub();
     simulateStatusChange('s1', 'working');
@@ -204,6 +239,7 @@ describe('session-unread', () => {
     unsub1();
     simulateStatusChange('s1', 'working');
     simulateStatusChange('s1', 'waiting');
+    flushRaf();
 
     expect(cb1).not.toHaveBeenCalled();
     expect(cb2).toHaveBeenCalled();

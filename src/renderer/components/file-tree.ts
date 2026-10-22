@@ -15,7 +15,33 @@ export interface DirEntry {
 }
 
 const expandedFolders = new Map<string, Set<string>>();
+// PA-30 (docs/performance.md static-footprint audit): one entry list per
+// directory expanded during the session, freed only on collapse/project
+// removal. Map insertion order is the LRU order: a hit re-inserts
+// (delete+set), an insert beyond the cap evicts `keys().next()` — the
+// oldest, least-recently-touched directory listing.
+const ENTRY_CACHE_MAX_DIRS = 2000;
 const entryCache = new Map<string, DirEntry[]>();
+
+function cacheGet(folderPath: string): DirEntry[] | undefined {
+  const cached = entryCache.get(folderPath);
+  if (cached) {
+    entryCache.delete(folderPath);
+    entryCache.set(folderPath, cached);
+  }
+  return cached;
+}
+
+function cacheSet(folderPath: string, entries: DirEntry[]): void {
+  entryCache.delete(folderPath);
+  entryCache.set(folderPath, entries);
+  while (entryCache.size > ENTRY_CACHE_MAX_DIRS) {
+    const oldest = entryCache.keys().next();
+    if (oldest.done) break;
+    entryCache.delete(oldest.value);
+  }
+}
+
 const inflight = new Map<string, Promise<DirEntry[]>>();
 const watchedByProject = new Map<string, Set<string>>();
 const activeTrees = new Map<string, { project: ProjectRecord; container: HTMLElement }>();
@@ -180,6 +206,14 @@ export function closeFileTree(projectId: string): void {
   activeTrees.delete(projectId);
 }
 
+/** @internal Test-only: the LRU cache operations and cap, for the eviction gate. */
+export const _cacheForTesting = {
+  get: cacheGet,
+  set: cacheSet,
+  size: () => entryCache.size,
+  keys: () => [...entryCache.keys()],
+  max: ENTRY_CACHE_MAX_DIRS,
+};
 /** @internal Test-only: clear the module-level entry cache. */
 export function _resetForTesting(): void {
   entryCache.clear();
@@ -196,7 +230,7 @@ export function _resetForTesting(): void {
 }
 
 async function loadEntries(folderPath: string): Promise<DirEntry[]> {
-  const cached = entryCache.get(folderPath);
+  const cached = cacheGet(folderPath);
   if (cached) return cached;
   const pending = inflight.get(folderPath);
   if (pending) return pending;
@@ -205,9 +239,10 @@ async function loadEntries(folderPath: string): Promise<DirEntry[]> {
     const sorted = sortEntries(entries);
     // Only cache if this promise is still the registered inflight: if the
     // entry was evicted while the read was in flight (collapse, expand-time
-    // refresh), the result is stale and must not repopulate the cache.
+    // refresh, LRU eviction), the result is stale and must not repopulate
+    // the cache.
     if (inflight.get(folderPath) === promise) {
-      entryCache.set(folderPath, sorted);
+      cacheSet(folderPath, sorted);
       inflight.delete(folderPath);
     }
     return sorted;

@@ -34,6 +34,20 @@ const sessionWorktreeMap = new Map<string, string>();
 const manualOverride = new Map<string, string>();
 let worktreePollCounter = 0;
 let unwatchGitChanged: (() => void) | null = null;
+// PA-10: session-changed fires on every tab click / title / CLI-id adoption.
+// Trailing-debounce the session-driven poll and skip it when the
+// (project, worktree, session) key is unchanged from the last fetch — an
+// adoption touches no git state at all.
+const SESSION_POLL_DEBOUNCE_MS = 300;
+let sessionPollTimer: ReturnType<typeof setTimeout> | null = null;
+let lastFetchKey = '';
+
+/** (project, worktree, session) identity of what a poll() would fetch. */
+function sessionPollKey(): string {
+  const project = appState.activeProject;
+  if (!project) return '';
+  return `${project.id}|${getActiveGitPath(project.id)}|${appState.activeSession?.id ?? ''}`;
+}
 
 async function refreshWorktrees(projectId: string, projectPath: string): Promise<void> {
   try {
@@ -70,7 +84,7 @@ async function detectSessionWorktree(sessionId: string): Promise<void> {
     // Find which worktree the cwd falls under (longest path match)
     let bestMatch = '';
     for (const wt of worktrees) {
-      if ((cwd === wt.path || cwd.startsWith(wt.path + '/')) && wt.path.length > bestMatch.length) {
+      if ((cwd === wt.path || cwd.startsWith(`${wt.path}/`)) && wt.path.length > bestMatch.length) {
         bestMatch = wt.path;
       }
     }
@@ -119,7 +133,10 @@ async function poll(): Promise<void> {
       }
 
       // Query git status using the resolved worktree path
+      // PA-10: record what this fetch covered, so the session-changed
+      // debounce can skip a poll that would ask for the same thing.
       const gitPath = getActiveGitPath(project.id);
+      lastFetchKey = `${project.id}|${gitPath}|${activeSession?.id ?? ''}`;
       const status = await window.finevibe.git.getStatus(gitPath) as GitStatus;
       const cacheKey = `${project.id}:${gitPath}`;
       const prev = cache.get(cacheKey);
@@ -270,9 +287,17 @@ export function startPolling(): void {
     if (project) {
       manualOverride.delete(project.id);
     }
-    poll();
+    // PA-10: every tab click / adoption used to fan out into 2–4 IPCs + git
+    // spawns. Coalesce a burst into one trailing poll, and drop it when the
+    // (project, worktree, session) triple is what the last fetch already read.
+    if (sessionPollTimer) clearTimeout(sessionPollTimer);
+    sessionPollTimer = setTimeout(() => {
+      sessionPollTimer = null;
+      const key = sessionPollKey();
+      if (key && key === lastFetchKey) return;
+      poll();
+    }, SESSION_POLL_DEBOUNCE_MS);
   });
-
   // Poll when a session transitions from working → waiting/completed
   onStatusChange((_sessionId, status) => {
     if (status === 'waiting' || status === 'completed') {
@@ -301,4 +326,7 @@ export function _resetForTesting(): void {
   manualOverride.clear();
   listeners.length = 0;
   worktreeChangeListeners.length = 0;
+  if (sessionPollTimer) clearTimeout(sessionPollTimer);
+  sessionPollTimer = null;
+  lastFetchKey = '';
 }

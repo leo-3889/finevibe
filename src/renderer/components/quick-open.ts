@@ -1,5 +1,6 @@
 import { appState } from '../state.js';
 import { openFileReaderChecked } from '../open-file-reader.js';
+import { escapeHtml } from './escape-html.js';
 
 let overlay: HTMLElement | null = null;
 let input: HTMLInputElement | null = null;
@@ -7,12 +8,6 @@ let resultsList: HTMLElement | null = null;
 let activeIndex = 0;
 let results: string[] = [];
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-function escapeHtml(s: string): string {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
 
 function parseQuery(raw: string): { fileQuery: string; lineNumber?: number } {
   const m = /^(.*):(\d+)$/.exec(raw);

@@ -310,6 +310,9 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
     }
     // Always attempt cleanup — each failure is a one-shot event
     try { fs.unlinkSync(filePath); } catch { /* already gone */ }
+    // PA-23: the file is gone, so its tracked mtime is dead weight — the poll
+    // re-adds it only if the name comes back.
+    lastMtimes.delete(filename);
   } else if (filename.endsWith('.events')) {
     const sessionId = filename.replace('.events', '');
     const filePath = path.join(STATUS_DIR, filename);
@@ -331,33 +334,43 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
 
 let pollInFlight = false;
 
+// Poll cadence (PA-09): the shipped `fs.watch` already delivers every change
+// the poll exists to catch, so while that watcher is alive the interval is
+// only a watchdog for dropped events; it drops back to the fast 2 s fallback
+// the moment the watcher dies. The sweep itself is skipped outright while no
+// session is registered, and the per-file stats run in bounded batches.
+const POLL_MS = 2_000;
+const WATCHDOG_POLL_MS = 15_000;
+const STAT_CONCURRENCY = 16;
+let pollMs = POLL_MS;
+
 async function pollForChanges(win: BrowserWindow): Promise<void> {
   if (win.isDestroyed()) return;
   if (pollInFlight) return;
+  // PA-09: with an empty registry `handleFileChange` drops every file, so the
+  // readdir is pure waste. An idle app now touches STATUS_DIR zero times —
+  // docs/performance.md already claimed every poller "is a no-op while its
+  // registry is empty"; for this one the claim was false.
+  if (knownSessionIds.size === 0) return;
   pollInFlight = true;
 
   try {
     const files = await fs.promises.readdir(STATUS_DIR);
-    for (const filename of files) {
-      if (!isKnownExtension(filename)) continue;
-      const filePath = path.join(STATUS_DIR, filename);
-      try {
-        const stat = await fs.promises.stat(filePath);
-        const mtime = stat.mtimeMs;
-        const prev = lastMtimes.get(filename);
-        // `!==`, not `>`: `.name` is deleted and rewritten on /clear, and a
-        // recreated file can carry a coarser, non-increasing timestamp.
-        // `prev === undefined` means the file appeared between polls (or the
-        // poll loop just started) — process it like any other change; a file
-        // created and last-written inside one interval would otherwise be
-        // recorded and never delivered. The 2s poll cadence is the debounce.
-        if (prev !== mtime) {
-          lastMtimes.set(filename, mtime);
-          handleFileChange(win, filename);
-        }
-      } catch {
-        // File may have been deleted between readdir and stat
-      }
+    // PA-23 sweep: drop tracked mtimes for files that disappeared. `.name` is
+    // retracted on /clear and every extension is unlinked on release; without
+    // this the map only ever shrank through the two targeted deletes.
+    const present = new Set(files);
+    for (const filename of lastMtimes.keys()) {
+      if (!present.has(filename)) lastMtimes.delete(filename);
+    }
+    const names = files.filter(isKnownExtension);
+    // The loop used to `await stat` one file at a time: 50 tabs × 7
+    // extensions ≈ 350 sequential round trips per tick. Stats are independent,
+    // so they run in batches (bounded, so a huge dir can't open 10k fds).
+    for (let i = 0; i < names.length; i += STAT_CONCURRENCY) {
+      await Promise.all(
+        names.slice(i, i + STAT_CONCURRENCY).map((filename) => statAndDeliver(win, filename))
+      );
     }
   } catch {
     // Directory may not exist yet
@@ -366,9 +379,45 @@ async function pollForChanges(win: BrowserWindow): Promise<void> {
   }
 }
 
+/** One file's share of a poll: stat it, and deliver only on an mtime change. */
+async function statAndDeliver(win: BrowserWindow, filename: string): Promise<void> {
+  const filePath = path.join(STATUS_DIR, filename);
+  try {
+    const stat = await fs.promises.stat(filePath);
+    const mtime = stat.mtimeMs;
+    const prev = lastMtimes.get(filename);
+    // `!==`, not `>`: `.name` is deleted and rewritten on /clear, and a
+    // recreated file can carry a coarser, non-increasing timestamp.
+    // `prev === undefined` means the file appeared between polls (or the
+    // poll loop just started) — process it like any other change; a file
+    // created and last-written inside one interval would otherwise be
+    // recorded and never delivered. The poll cadence is the debounce.
+    if (prev !== mtime) {
+      lastMtimes.set(filename, mtime);
+      handleFileChange(win, filename);
+    }
+  } catch {
+    // File may have been deleted between readdir and stat
+  }
+}
+
 function startPolling(win: BrowserWindow): void {
   stopPolling();
-  pollInterval = setInterval(() => { void pollForChanges(win); }, 2000);
+  pollMs = watcher ? WATCHDOG_POLL_MS : POLL_MS;
+  pollInterval = setInterval(() => { void pollForChanges(win); }, pollMs);
+}
+
+/**
+ * Re-arm the interval at the cadence the watcher's state implies (PA-09).
+ * Deliberately does NOT go through stopPolling: the mtime bookkeeping must
+ * survive a cadence switch, or every file would be re-delivered at once.
+ */
+function applyPollCadence(win: BrowserWindow): void {
+  const want = watcher ? WATCHDOG_POLL_MS : POLL_MS;
+  if (!pollInterval || want === pollMs) return;
+  pollMs = want;
+  clearInterval(pollInterval);
+  pollInterval = setInterval(() => { void pollForChanges(win); }, pollMs);
 }
 
 function stopPolling(): void {
@@ -402,7 +451,10 @@ function restartWatcher(win: BrowserWindow): void {
     try { w.close(); } catch { /* already closed */ }
     // Only drop the slot when this watcher is still the incumbent.
     if (watcher === w) watcher = null;
-    // The 2s poll keeps the pipeline alive; restart the watch for next time.
+    // The 2 s poll keeps the pipeline alive; restart the watch for next time.
+    // PA-09: with no watcher to lean on, the poll goes back to its fast 2 s
+    // cadence until the restart below lands.
+    applyPollCadence(win);
     setTimeout(() => {
       if (!watcher && !win.isDestroyed()) restartWatcher(win);
     }, 5000);

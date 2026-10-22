@@ -1,5 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
+import { isWin } from '../platform.js';
 import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -11,6 +12,7 @@ import { removeSession as removeContextSession, getContext, getContextSeverity, 
 import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
+import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
@@ -96,6 +98,7 @@ export function createTerminalPane(
     theme: getTerminalTheme(appState.preferences.theme ?? 'dark'),
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
+    scrollback: TERMINAL_SCROLLBACK,
     cursorBlink: true,
     allowProposedApi: true,
     linkHandler: {
@@ -120,7 +123,10 @@ export function createTerminalPane(
   }));
 
   const writeToPty = (data: string) => window.finevibe.pty.write(sessionId, data);
-  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty);
+  // Local Windows PTY: ConPTY advertises win32-input-mode (`?9001h`) as the
+  // first output bytes at spawn, before this parser exists — latch it at
+  // creation so Escape never goes out as a bare ESC to the armed ConPTY.
+  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty, { latchKey: sessionId, latched: isWin });
 
   // Send CSI u encoding for Shift+Enter so Claude CLI treats it as newline
   attachClipboardCopyHandler(terminal, (e) => {
@@ -581,7 +587,7 @@ export function updateContextDisplay(sessionId: string, info: ContextWindowInfo)
 
   // Context-fill state drives the meter hue (iris → amber → red) on the whole bar.
   const severity = getContextSeverity(pct);
-  const state = severity === 'critical' ? 'crit' : severity === 'warning' ? 'warn' : 'ok';
+  const state = ({ critical: 'crit', warning: 'warn' } as Record<string, string>)[severity] ?? 'ok';
   const bar = instance.element.querySelector('.session-status-bar') as HTMLElement | null;
   if (bar) bar.dataset.state = state;
 

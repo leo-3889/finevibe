@@ -15,7 +15,6 @@ import {
   createAgentDetailEl,
   parseMcpToolName,
   isMcpToolEvent,
-  escapeHtml,
 } from './session-inspector-utils.js';
 
 export interface AgentSpan {
@@ -89,33 +88,50 @@ export function buildAgentModel(events: InspectorEvent[], startIdx: number): Age
   return { spans, eventOwner, stopIndices, startToAgent };
 }
 
-export function renderTimeline(container: HTMLElement): void {
-  const events = getEvents(inspectorState.inspectedSessionId!);
-  if (events.length === 0) {
-    container.innerHTML = `<div class="inspector-empty">${emptyMessage('No events yet')}</div>`;
-    return;
-  }
 
-  const list = document.createElement('div');
-  list.className = 'inspector-timeline';
+interface AgentGroupRender {
+  group: HTMLElement;
+  badge: HTMLElement;
+  desc: HTMLElement;
+  span: AgentSpan;
+  /** Re-derives badge/running-class/description from the live span. */
+  refresh: () => void;
+}
 
-  const sessionStart = events[0].timestamp;
-  const sessionId = inspectorState.inspectedSessionId!;
-  const costDeltas = getCostDeltas(inspectorState.inspectedSessionId!);
-  const deltaMap = new Map(costDeltas.map(d => [d.index, d.delta]));
+type TopEntry = { kind: 'row'; idx: number; el: HTMLElement } | { kind: 'group'; agentId: string };
 
-  // Show last 500 events
-  const startIdx = Math.max(0, events.length - 500);
-  if (startIdx > 0) {
-    const loadMore = document.createElement('div');
-    loadMore.className = 'inspector-load-more';
-    loadMore.textContent = `${startIdx} earlier events not shown`;
-    list.appendChild(loadMore);
-  }
+interface TimelineRenderState {
+  container: HTMLElement;
+  list: HTMLElement;
+  sessionId: string;
+  events: InspectorEvent[];
+  /** events.length at the last render/append. */
+  renderedCount: number;
+  startIdx: number;
+  /** events[startIdx].timestamp — detects the 2000-event cap's in-place shift. */
+  firstWindowTs: number;
+  banner: HTMLElement | null;
+  top: TopEntry[];
+  groups: Map<string, AgentGroupRender>;
+  tailRow: { idx: number; el: HTMLElement } | null;
+}
 
-  const model = buildAgentModel(events, startIdx);
+let renderState: TimelineRenderState | null = null;
+
+interface TimelineCtx {
+  events: InspectorEvent[];
+  sessionStart: number;
+  sessionId: string;
+  deltaMap: Map<number, number>;
+  model: AgentModel;
+  renderedIndices: Set<number>;
+  list: HTMLElement;
+  st: TimelineRenderState;
+}
+
+function buildTimelineRenderers(ctx: TimelineCtx) {
+  const { events, sessionStart, deltaMap, model, renderedIndices, list, st } = ctx;
   const { spans: agentSpans, stopIndices, startToAgent } = model;
-  const renderedIndices = new Set<number>();
 
   /** Render events from `from` to `to` (exclusive), appending to `parent`. */
   function renderEvents(from: number, to: number, parent: HTMLElement): void {
@@ -134,7 +150,9 @@ export function renderTimeline(container: HTMLElement): void {
         }
       }
 
-      parent.appendChild(renderEventRow(i, ev));
+      const row = renderEventRow(i, ev);
+      parent.appendChild(row);
+      if (parent === list) st.top.push({ kind: 'row', idx: i, el: row });
     }
   }
 
@@ -143,12 +161,6 @@ export function renderTimeline(container: HTMLElement): void {
     const span = agentSpans.get(agentId)!;
     const startEv = events[span.startIdx];
     const { isRunning } = span;
-    const stopEv = isRunning ? null : events[span.stopIdx];
-    const now = Date.now();
-    const duration = isRunning
-      ? now - startEv.timestamp
-      : stopEv!.timestamp - startEv.timestamp;
-    const childCount = countChildEvents(span);
 
     // Mark all span indices as rendered
     renderedIndices.add(span.startIdx);
@@ -169,12 +181,11 @@ export function renderTimeline(container: HTMLElement): void {
 
     const badge = document.createElement('span');
     badge.className = 'inspector-badge inspector-badge-agent';
-    badge.textContent = isRunning ? 'Agent\u2026' : 'Agent';
 
     const toggleEl = document.createElement('span');
     toggleEl.className = 'inspector-agent-toggle';
     const groupKey = `agent-group:${agentId}`;
-    const autoExpandKey = `${sessionId}:${groupKey}`;
+    const autoExpandKey = `${ctx.sessionId}:${groupKey}`;
     if (isRunning
       && !inspectorState.expandedRows.has(groupKey)
       && !inspectorState.autoExpandedAgentGroups.has(autoExpandKey)) {
@@ -185,10 +196,24 @@ export function renderTimeline(container: HTMLElement): void {
 
     const desc = document.createElement('span');
     desc.className = 'inspector-desc';
-    const parts = [agentLabel(startEv)];
-    parts.push(formatDuration(duration));
-    if (childCount > 0) parts.push(`${childCount} action${childCount !== 1 ? 's' : ''}`);
-    desc.textContent = parts.join(' \u00B7 ');
+
+    // PA-14: one source for the header text so the append path can refresh a
+    // running group's row (badge, running class, duration, child count) when
+    // its span closes or gains children.
+    const refresh = () => {
+      const running = span.isRunning;
+      badge.textContent = running ? 'Agent\u2026' : 'Agent';
+      if (running) group.classList.add('inspector-agent-running');
+      else group.classList.remove('inspector-agent-running');
+      const duration = running
+        ? Date.now() - startEv.timestamp
+        : events[span.stopIdx].timestamp - startEv.timestamp;
+      const childCount = countChildEvents(span);
+      const parts = [agentLabel(startEv), formatDuration(duration)];
+      if (childCount > 0) parts.push(`${childCount} action${childCount === 1 ? '' : 's'}`);
+      desc.textContent = parts.join(' \u00B7 ');
+    };
+    refresh();
 
     row.appendChild(timeEl);
     row.appendChild(badge);
@@ -197,15 +222,17 @@ export function renderTimeline(container: HTMLElement): void {
 
     group.appendChild(row);
 
-    // Children: subagent_start as first, owned child events, subagent_stop as last
+    // Children: subagent_start as first, owned child events, subagent_stop as
+    // last. Reads the LIVE span (PA-14): the toggle handler runs long after
+    // build, and the append path grows `childEventIndices` in place.
     const renderChildren = () => {
       const children = document.createElement('div');
       children.className = 'inspector-agent-children';
-      children.appendChild(renderEventRow(span.startIdx, startEv));
+      children.appendChild(renderEventRow(span.startIdx, events[span.startIdx]));
       for (const idx of span.childEventIndices) {
         children.appendChild(renderEventRow(idx, events[idx]));
       }
-      if (stopEv) children.appendChild(renderEventRow(span.stopIdx, stopEv));
+      if (!span.isRunning) children.appendChild(renderEventRow(span.stopIdx, events[span.stopIdx]));
       return children;
     };
 
@@ -229,6 +256,8 @@ export function renderTimeline(container: HTMLElement): void {
     });
 
     parent.appendChild(group);
+    st.groups.set(agentId, { group, badge, desc, span, refresh });
+    if (parent === list) st.top.push({ kind: 'group', agentId });
   }
 
   function countChildEvents(span: AgentSpan): number {
@@ -311,7 +340,8 @@ export function renderTimeline(container: HTMLElement): void {
       desc.textContent = ev.new_cwd || 'Working directory changed';
     } else if (ev.type === 'file_changed') {
       const p = ev.file_path;
-      desc.textContent = p ? (ev.event ? `${ev.event}: ${p}` : p) : 'File changed';
+      if (p && ev.event) desc.textContent = `${ev.event}: ${p}`;
+      else desc.textContent = p || 'File changed';
     } else if (ev.type === 'config_change') {
       desc.textContent = ev.file_path ? `Config: ${ev.file_path}` : 'Config changed';
     } else if (ev.type === 'elicitation') {
@@ -368,16 +398,75 @@ export function renderTimeline(container: HTMLElement): void {
     if (ev.error) {
       const errorEl = document.createElement('div');
       errorEl.className = 'inspector-error-text';
-      errorEl.textContent = ev.error.length > 200 ? ev.error.slice(0, 200) + '...' : ev.error;
+      errorEl.textContent = ev.error.length > 200 ? `${ev.error.slice(0, 200)}...` : ev.error;
       row.appendChild(errorEl);
     }
 
+    // PA-14: the last row of a render has no duration (no next event); the
+    // append path fills it in once its successor arrives.
+    st.tailRow = { idx: i, el: row };
     return row;
   }
 
+  return { renderEvents, renderEventRow };
+}
+
+export function renderTimeline(container: HTMLElement): void {
+  const events = getEvents(inspectorState.inspectedSessionId!);
+  if (events.length === 0) {
+    renderState = null;
+    // pi-lens-ignore: xss-innerhtml — fully static markup, no interpolated data
+    container.innerHTML = `<div class="inspector-empty">${emptyMessage('No events yet')}</div>`;
+    return;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'inspector-timeline';
+
+  const sessionStart = events[0].timestamp;
+  const sessionId = inspectorState.inspectedSessionId!;
+  const costDeltas = getCostDeltas(inspectorState.inspectedSessionId!);
+  const deltaMap = new Map(costDeltas.map(d => [d.index, d.delta]));
+
+  // Show last 500 events
+  const startIdx = Math.max(0, events.length - 500);
+  let banner: HTMLElement | null = null;
+  if (startIdx > 0) {
+    banner = document.createElement('div');
+    banner.className = 'inspector-load-more';
+    banner.textContent = `${startIdx} earlier events not shown`;
+    list.appendChild(banner);
+  }
+
+  const st: TimelineRenderState = {
+    container,
+    list,
+    sessionId,
+    events,
+    renderedCount: events.length,
+    startIdx,
+    firstWindowTs: events[startIdx].timestamp,
+    banner,
+    top: [],
+    groups: new Map(),
+    tailRow: null,
+  };
+
+  const ctx: TimelineCtx = {
+    events,
+    sessionStart,
+    sessionId,
+    deltaMap,
+    model: buildAgentModel(events, startIdx),
+    renderedIndices: new Set<number>(),
+    list,
+    st,
+  };
+  const { renderEvents } = buildTimelineRenderers(ctx);
   renderEvents(startIdx, events.length, list);
 
   container.appendChild(list);
+  renderState = st;
 
   if (inspectorState.autoScroll) {
     requestAnimationFrame(() => {
@@ -386,4 +475,167 @@ export function renderTimeline(container: HTMLElement): void {
       inspectorState.programmaticScroll = false;
     });
   }
+}
+
+/**
+ * PA-14: streaming used to wipe the container and rebuild up to 500 rows
+ * every 200 ms (~15k node creations/s on a busy session). This appends the
+ * events that arrived since the last render, refreshes any agent group that
+ * closed, and trims rows the 500-row window slid past. Returns false when the
+ * state can't be reconciled (session/tab switch, the 2000-event cap shifted
+ * the array in place, a group straddles the window edge) — the caller then
+ * performs the full rebuild.
+ */
+export function appendTimelineEvents(container: HTMLElement): boolean {
+  const st = renderState;
+  const sessionId = inspectorState.inspectedSessionId;
+  if (!st || !sessionId || st.container !== container || st.sessionId !== sessionId) return false;
+  // renderActiveTab's innerHTML='' detached the list: this is a full-render path.
+  if (st.list.parentElement !== container) return false;
+
+  const events = getEvents(sessionId);
+  if (events !== st.events) return false; // cleared/recreated (e.g. /clear)
+  if (events.length < st.renderedCount) return false;
+  // The 2000-event cap shifts the array in place: every index moved, no append can express it.
+  if (events[st.startIdx]?.timestamp !== st.firstWindowTs) return false;
+
+  const startIdx = Math.max(0, events.length - 500);
+  if (startIdx > st.startIdx && !trimWindow(st, startIdx)) return false;
+  if (events.length === st.renderedCount) return true; // nothing new
+
+  const ctx: TimelineCtx = {
+    events,
+    sessionStart: events[0].timestamp,
+    sessionId,
+    deltaMap: new Map(getCostDeltas(sessionId).map(d => [d.index, d.delta])),
+    model: buildAgentModel(events, st.startIdx),
+    renderedIndices: new Set<number>(),
+    list: st.list,
+    st,
+  };
+
+  // Sync the live span objects the rendered groups' closures captured.
+  for (const [agentId, g] of st.groups) {
+    const fresh = ctx.model.spans.get(agentId);
+    if (!fresh) return false; // group vanished from the model — rebuild
+    Object.assign(g.span, fresh);
+  }
+
+  // Full render gives every row a duration from its successor; the old tail
+  // row had none. Fill it before the append loop re-homes tailRow.
+  const firstNew = st.renderedCount;
+  if (st.tailRow && st.tailRow.idx === firstNew - 1) {
+    const durEl = st.tailRow.el.querySelector<HTMLElement>('.inspector-duration');
+    if (durEl && !durEl.textContent) {
+      durEl.textContent = formatDuration(events[firstNew].timestamp - events[firstNew - 1].timestamp);
+    }
+  }
+
+  const { renderEvents, renderEventRow } = buildTimelineRenderers(ctx);
+  void renderEvents; // append walks raw indices itself; renderers are reused
+  const { model } = ctx;
+  // Stop events close their group; eventOwner omits them, so reverse-map via stopIdx.
+  const stopToAgent = new Map<number, string>();
+  for (const [agentId, span] of model.spans) {
+    if (!span.isRunning) stopToAgent.set(span.stopIdx, agentId);
+  }
+  const firstNewIdx = firstNew;
+
+  for (let i = firstNewIdx; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type === 'status_update') continue;
+
+    const owner = model.eventOwner.get(i);
+    const g = owner === undefined ? undefined : st.groups.get(owner);
+    if (g) {
+      // Owned by an already-rendered agent group: full render nests it inside.
+      const children = g.group.querySelector<HTMLElement>('.inspector-agent-children');
+      if (children) children.appendChild(renderEventRow(i, ev));
+      continue;
+    }
+    if (model.stopIndices.has(i)) {
+      // Merged into the group header by full render; append refreshes the
+      // header (badge, running class, duration, count) and nests the row.
+      const stopAgent = stopToAgent.get(i);
+      const stopGroup = stopAgent === undefined ? undefined : st.groups.get(stopAgent);
+      if (stopGroup) {
+        const children = stopGroup.group.querySelector<HTMLElement>('.inspector-agent-children');
+        if (children) children.appendChild(renderEventRow(i, ev));
+        stopGroup.refresh();
+      }
+      continue;
+    }
+
+    const agentId = model.startToAgent.get(i);
+    if (ev.type === 'subagent_start' && agentId && model.spans.get(agentId)) {
+      // New agent group: full render owns its header/children/expand logic.
+      const parentGroup = st.top;
+      const before = parentGroup.length;
+      buildAgentGroupAppend(ctx, agentId);
+      if (st.top.length <= before) return false;
+      continue;
+    }
+
+    const row = renderEventRow(i, ev);
+    st.list.appendChild(row);
+    st.top.push({ kind: 'row', idx: i, el: row });
+  }
+
+  st.renderedCount = events.length;
+
+  if (inspectorState.autoScroll) {
+    requestAnimationFrame(() => {
+      inspectorState.programmaticScroll = true;
+      st.container.scrollTop = st.container.scrollHeight;
+      inspectorState.programmaticScroll = false;
+    });
+  }
+  return true;
+}
+
+/** Append a newly opened agent group at the end of the window. */
+function buildAgentGroupAppend(ctx: TimelineCtx, agentId: string): void {
+  const { renderEvents } = buildTimelineRenderers(ctx);
+  // renderEvents(startIdx=the span start, span start + 1, list) dispatches
+  // exactly the subagent_start → renderAgentGroup branch used by full render.
+  const span = ctx.model.spans.get(agentId);
+  if (!span) return;
+  renderEvents(span.startIdx, span.startIdx + 1, ctx.list);
+}
+
+/**
+ * Drop the top entries the 500-row window slid past. An agent group whose
+ * span straddles the new window edge renders differently in a full rebuild
+ * (its start event falls below the window), so that case bails to a rebuild.
+ */
+function trimWindow(st: TimelineRenderState, startIdx: number): boolean {
+  // Introducing the banner mid-window means inserting at the head; one full
+  // rebuild at the 500 boundary is cheaper than replicating DOM insertion here.
+  if (startIdx > 0 && !st.banner) return false;
+  while (st.top.length > 0) {
+    const head = st.top[0];
+    if (head.kind === 'row') {
+      if (head.idx >= startIdx) break;
+      head.el.remove();
+      st.top.shift();
+    } else {
+      const g = st.groups.get(head.agentId);
+      if (!g) return false;
+      const span = g.span;
+      const lastChild = span.childEventIndices.length > 0
+        ? span.childEventIndices[span.childEventIndices.length - 1]
+        : span.startIdx;
+      const coveredMax = span.isRunning
+        ? Math.max(st.renderedCount - 1, lastChild)
+        : span.stopIdx;
+      if (span.startIdx >= startIdx) break;
+      if (coveredMax >= startIdx) return false;
+      g.group.remove();
+      st.groups.delete(head.agentId);
+      st.top.shift();
+    }
+  }
+  st.startIdx = startIdx;
+  if (st.banner) st.banner.textContent = `${startIdx} earlier events not shown`;
+  return true;
 }

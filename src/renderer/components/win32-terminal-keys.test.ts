@@ -2,25 +2,30 @@ import { describe, it, expect, vi } from 'vitest';
 import type { Terminal } from '@xterm/xterm';
 import { attachWin32TerminalKeys } from './win32-terminal-keys';
 
-function fixture() {
+function fixture(opts?: { latchKey?: string; latched?: boolean }) {
   const modes = new Map<string, (params: number[]) => boolean>();
   const terminal = { parser: { registerCsiHandler: (id: { final: string }, cb: (params: number[]) => boolean) => modes.set(id.final, cb) } };
   const write = vi.fn();
-  const key = attachWin32TerminalKeys(terminal as unknown as Terminal, write);
+  const key = attachWin32TerminalKeys(terminal as unknown as Terminal, write, opts);
   const press = (name: string, extra = {}) => key({ key: name, type: 'keydown', preventDefault: vi.fn(), ...extra } as unknown as KeyboardEvent);
   return { modes, write, press };
 }
 
 describe('Win32 terminal key input', () => {
-  it.each([['ArrowUp', 38, 72], ['ArrowDown', 40, 80], ['ArrowLeft', 37, 75], ['ArrowRight', 39, 77]])('encodes %s only when the CLI enables mode 9001', (name, vk, scan) => {
+  // Each latch-backed test owns a distinct latchKey: the module-level latch set
+  // outlives the Terminal, exactly like ConPTY's arming outlives an attach.
+  it.each([['ArrowUp', 38, 72], ['ArrowDown', 40, 80], ['ArrowLeft', 37, 75], ['ArrowRight', 39, 77]])('encodes %s once mode 9001 is sighted and keeps encoding through ?9001l', (name, vk, scan) => {
     const f = fixture();
     expect(f.press(name as string)).toBeUndefined();
     expect(f.write).not.toHaveBeenCalled();
     expect(f.modes.get('h')!([9001, 1004])).toBe(false);
     expect(f.press(name as string)).toBe(false);
     expect(f.write).toHaveBeenCalledWith(`\x1b[${vk};${scan};0;1;256;1_`);
-    f.modes.get('l')!([9001]);
-    expect(f.press(name as string)).toBeUndefined();
+    // Mode 9001 is monotonic per PTY: ConPTY never delivers a bare ESC again,
+    // so a mode-off sighting must not return the keys to xterm.
+    expect(f.modes.get('l')!([9001])).toBe(false);
+    expect(f.press(name as string)).toBe(false);
+    expect(f.write).toHaveBeenCalledTimes(2);
   });
   it('preserves modifiers and suppresses duplicate keyup writes', () => {
     const f = fixture();
@@ -32,7 +37,7 @@ describe('Win32 terminal key input', () => {
     expect(f.press('a')).toBeUndefined();
     expect(f.press('ArrowUp', { isComposing: true })).toBeUndefined();
   });
-  it('encodes Escape as a non-enhanced INPUT_RECORD with UnicodeChar 0x1b, only under mode 9001', () => {
+  it('encodes Escape as a non-enhanced INPUT_RECORD with UnicodeChar 0x1b, latching on mode 9001', () => {
     const f = fixture();
     expect(f.press('Escape')).toBeUndefined();
     expect(f.write).not.toHaveBeenCalled();
@@ -43,6 +48,39 @@ describe('Win32 terminal key input', () => {
     expect(f.write).toHaveBeenLastCalledWith('\x1b[27;1;27;1;8;1_');
     expect(f.press('Escape', { type: 'keyup' })).toBe(false);
     f.modes.get('l')!([9001]);
+    // The bare ESC this would let through is swallowed by the armed ConPTY.
+    expect(f.press('Escape')).toBe(false);
+    expect(f.write).toHaveBeenLastCalledWith('\x1b[27;1;27;1;0;1_');
+  });
+  it('re-attach regression: a fresh handler on a latched PTY encodes Escape, never falls through to a bare ESC', () => {
+    const latchKey = 'pty-reattach';
+    const first = fixture({ latchKey });
+    first.modes.get('h')!([9001]); // ConPTY's spawn-time advertisement on the live PTY
+    const reattached = fixture({ latchKey }); // Terminal re-created/re-attached on the SAME PTY
+    // enabled starts from the PTY's latch, so the fall-through that writes the
+    // renderer's own `\x1b` (swallowed by ConPTY, killing menu dismissal) is
+    // unreachable: the key is encoded and xterm is suppressed.
+    expect(reattached.press('Escape')).toBe(false);
+    expect(reattached.write).toHaveBeenCalledWith('\x1b[27;1;27;1;0;1_');
+  });
+  it('does not un-latch a latched key on ?9001l', () => {
+    const latchKey = 'pty-unlatch';
+    const f = fixture({ latchKey });
+    f.modes.get('h')!([9001]);
+    expect(f.modes.get('l')!([9001])).toBe(false);
+    expect(f.press('Escape')).toBe(false); // same handler keeps encoding
+    const reattached = fixture({ latchKey }); // and so does the next attach
+    expect(reattached.press('Escape')).toBe(false);
+    expect(reattached.write).toHaveBeenCalledWith('\x1b[27;1;27;1;0;1_');
+  });
+  it('encodes immediately when latched is pre-set, with no prior ?9001h sighting', () => {
+    const f = fixture({ latchKey: 'pty-prearmed', latched: true });
+    expect(f.press('Escape')).toBe(false);
+    expect(f.write).toHaveBeenCalledWith('\x1b[27;1;27;1;0;1_');
+  });
+  it('leaves Escape to xterm with no latchKey and mode 9001 never sighted', () => {
+    const f = fixture();
     expect(f.press('Escape')).toBeUndefined();
+    expect(f.write).not.toHaveBeenCalled();
   });
 });

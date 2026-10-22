@@ -18,7 +18,7 @@ vi.mock('../gemini-hooks', () => ({
   installGeminiHooks: () => {}, validateGeminiHooks: () => ({}), cleanupGeminiHooks: () => {}, SESSION_ID_VAR: 'GEMINI_SESSION_ID',
 }));
 vi.mock('../config-watcher', () => ({ startConfigWatcher: () => {}, stopConfigWatcher: () => {} }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 
 import * as fs from 'fs';
 import * as path from 'path';

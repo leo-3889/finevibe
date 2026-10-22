@@ -5,9 +5,9 @@ import {
 } from '../session-inspector-state.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { inspectorState } from './session-inspector-state-ui.js';
-import { resetUIState, canInspectSession } from './session-inspector-utils.js';
-import { renderTimeline } from './session-inspector-timeline.js';
+import { renderTimeline, appendTimelineEvents } from './session-inspector-timeline.js';
 import { renderCosts, renderTools, renderContext } from './session-inspector-views.js';
+import { canInspectSession, resetUIState } from './session-inspector-utils.js';
 
 export function isInspectorOpen(): boolean {
   return inspectorState.inspectorPanel !== null && inspectorState.inspectedSessionId !== null;
@@ -148,6 +148,11 @@ export function initSessionInspector(): void {
       if (sel && sel.rangeCount > 0 && !sel.isCollapsed && inspectorState.inspectorPanel?.contains(sel.anchorNode)) {
         return; // don't destroy DOM while user is selecting text
       }
+      // PA-14: streaming used to wipe + rebuild up to 500 rows every 200 ms.
+      // On the timeline tab, append just the delta rows; the full rebuild
+      // stays the fallback (tab/session switch, /clear, cap rotation, bail).
+      const content = inspectorState.inspectorPanel?.querySelector('.inspector-content') as HTMLElement | null;
+      if (inspectorState.activeTab === 'timeline' && content && appendTimelineEvents(content)) return;
       renderActiveTab();
     }, 200);
   });
@@ -192,12 +197,12 @@ function createPanel(): HTMLElement {
   ];
   for (const tab of tabs) {
     const btn = document.createElement('button');
-    btn.className = 'inspector-tab' + (tab.id === inspectorState.activeTab ? ' active' : '');
+    btn.className = `inspector-tab${tab.id === inspectorState.activeTab ? ' active' : ''}`;
     btn.textContent = tab.label;
     btn.dataset.tab = tab.id;
     btn.addEventListener('click', () => {
       inspectorState.activeTab = tab.id;
-      tabBar.querySelectorAll('.inspector-tab').forEach(t => t.classList.remove('active'));
+      for (const t of tabBar.querySelectorAll('.inspector-tab')) t.classList.remove('active');
       btn.classList.add('active');
       renderActiveTab();
     });

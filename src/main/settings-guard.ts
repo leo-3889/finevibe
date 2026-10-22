@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { homedir } from 'os';
+import * as fs from 'fs';
 import { ipcMain, BrowserWindow } from 'electron';
 import { getStatusLineScriptPath } from './hook-status';
 import { HOOK_MARKER, installHooksOnly, installStatusLine, getSupportedHookEvents } from './claude-cli';
@@ -272,8 +273,45 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
  *   onto the current foreign command, mirroring the default-dir flow);
  * - a first-run foreign statusLine gets NO install and NO recorded
  *   decision: no silent overwrite, and the banner keeps asking.
+ *
+ * PA-26 memo: the full validate (settings.json read + hook scan) + install
+ * used to run on EVERY profile-bound spawn. The on-disk outcome is stable
+ * until settings.json changes, so a successful pass is memoized per
+ * normalized dir, keyed on the POST-install settings.json mtime (null =
+ * the file did not exist): a rewritten settings.json re-validates. Consent
+ * changes are safe under the memo — the only consent='granted' writer for a
+ * profile dir is reinstallSettings(), which rewrites settings.json (mtime
+ * bump → memo miss), and declined/undecided dirs install nothing, so a
+ * memo hit replays exactly the no-op the consent state prescribes.
  */
+const profileInstallMemo = new Map<string, number | null>();
+
+/** @internal Test-only: drop the per-spawn install memo. */
+export function resetProfileInstallMemo(): void {
+  profileInstallMemo.clear();
+}
+
 export function guardedProfileInstall(configDir: string): void {
+  const settingsFile = path.join(configDir, 'settings.json');
+  const key = consentDirKey(configDir);
+  let mtimeMs: number | null;
+  try {
+    mtimeMs = fs.statSync(settingsFile).mtimeMs;
+  } catch {
+    mtimeMs = null; // no settings.json yet
+  }
+  if (profileInstallMemo.has(key) && profileInstallMemo.get(key) === mtimeMs) return;
+  guardedProfileInstallUncached(configDir);
+  // Record the POST-install mtime: the install itself (re)writes
+  // settings.json, so caching the pre-run value would invalidate the memo
+  // on the very next spawn and PA-26 would memo nothing.
+  try {
+    mtimeMs = fs.statSync(settingsFile).mtimeMs;
+  } catch { /* file removed mid-install; next spawn re-validates */ }
+  profileInstallMemo.set(key, mtimeMs);
+}
+
+function guardedProfileInstallUncached(configDir: string): void {
   const validation = validateSettings(configDir);
 
   // Always install hooks (additive, non-destructive)

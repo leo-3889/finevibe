@@ -13,7 +13,7 @@ vi.mock('../hook-status', () => ({ installStatusLineScript: () => {}, cleanupAll
 vi.mock('../config-watcher', () => ({ startConfigWatcher: () => {}, stopConfigWatcher: () => {} }));
 vi.mock('../claude-cli', () => ({ installHooksOnly: () => {}, installStatusLine: () => {}, getClaudeConfig: async () => ({}) }));
 vi.mock('../settings-guard', () => ({ guardedInstall: async () => {}, validateSettings: () => ({}), reinstallSettings: () => {} }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 vi.mock('../store', () => ({ loadState: vi.fn(() => ({ profiles: [] })) }));
 
 import * as fs from 'fs';
@@ -22,7 +22,6 @@ import * as path from 'path';
 import { ClaudeProvider } from './claude-provider';
 import { loadState } from '../store';
 
-const mockReadFile = vi.mocked(fs.promises.readFile);
 const mockReaddir = vi.mocked(fs.promises.readdir);
 const mockLoadState = vi.mocked(loadState);
 

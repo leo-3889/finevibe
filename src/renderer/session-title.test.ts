@@ -6,6 +6,8 @@ const mockSave = vi.fn();
 vi.stubGlobal('window', {
   finevibe: {
     store: { load: mockLoad, save: mockSave },
+    // PA-25: state.ts prefetches transcript availability on cli-id bind.
+    session: { transcriptExists: vi.fn(async () => true) },
   },
 });
 

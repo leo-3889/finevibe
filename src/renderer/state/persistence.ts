@@ -4,6 +4,10 @@ import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
 import { normalizeTabGroups } from './tab-group-state.js';
 
+// PA-31 (docs/performance.md growth table "age-prune"): githubLastSeen gains
+// one entry per viewed PR/issue, forever. Drop entries older than 90 days at load.
+const GITHUB_SEEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
 export function createDefaultBoard(): BoardData {
   const columns: BoardColumn[] = [
     { id: crypto.randomUUID(), title: 'Backlog', order: 0, behavior: 'inbox' },
@@ -42,6 +46,8 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
     }
     delete (state.preferences as { defaultProfileId?: string }).defaultProfileId;
   }
+  // One clock for the whole hydrate: every project shares the PA-31 cutoff.
+  const now = Date.now();
   for (const project of state.projects) {
     for (const session of project.sessions) {
       if (session.cost) restoreCost(session.id, session.cost);
@@ -57,10 +63,29 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
         if (!entry.state) entry.state = 'closed';
         // An 'active' entry whose live session did not survive the last quit
         // (crash / hard kill skipped removeSession): finalize it on load.
+        // PA-06: finalizing crash-orphans also makes them cap-eligible —
+        // enforceHistoryCap no longer exempts active rows without a live tab.
         if (entry.state === 'active' && !liveIds.has(entry.liveSessionId ?? '')) {
           entry.state = 'closed';
           entry.closedAt = entry.closedAt ?? new Date().toISOString();
         }
+      }
+    }
+    // PA-31: age-prune githubLastSeen (see GITHUB_SEEN_RETENTION_MS). An
+    // unparseable timestamp cannot be aged and is useless to the unread
+    // logic, so drop it too (non-string values guarded; Date.parse never throws).
+    const seen = project.githubLastSeen;
+    if (seen) {
+      const cutoff = now - GITHUB_SEEN_RETENTION_MS;
+      const drop: string[] = [];
+      for (const [key, ts] of Object.entries(seen)) {
+        const time = typeof ts === 'string' ? Date.parse(ts) : NaN;
+        if (Number.isNaN(time) || time < cutoff) drop.push(key);
+      }
+      if (drop.length) {
+        for (const key of drop) delete seen[key];
+        // Drop the empty map so serializeForSave does not write `{}` per project.
+        if (Object.keys(seen).length === 0) delete project.githubLastSeen;
       }
     }
   }

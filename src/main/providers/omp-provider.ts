@@ -4,13 +4,13 @@ import type { CliProviderMeta, CliSessionStatus, ProviderConfig, SettingsValidat
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
-import { resolveBinary, validateBinaryExists } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { collectProfileRoots, TranscriptDiscoveryScan } from './transcript-utils';
 import { ompSessionsRoot, readTranscriptTitleSync } from './omp-transcripts';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession, stopOmpSessionWatcher } from '../omp-session-watcher';
-import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMeta, listLaunchSessionDirs, profileIdForConfigDir } from '../launch-session-dir';
+import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMetaCached, listLaunchSessionDirs, profileIdForConfigDir } from '../launch-session-dir';
 
 const binaryCache = { path: null as string | null };
 
@@ -73,6 +73,11 @@ export class OmpProvider implements CliProvider {
 
   validatePrerequisites(): boolean {
     return validateBinaryExists('omp');
+  }
+
+  // PA-01: async twin so boot can probe every provider concurrently.
+  validatePrerequisitesAsync(): Promise<boolean> {
+    return validateBinaryExistsAsync('omp');
   }
 
   buildEnv(_sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
@@ -243,9 +248,11 @@ export class OmpProvider implements CliProvider {
     }
     // Plus every per-launch dir this app created (flat layout). Legacy
     // history above is untouched; the sidecar carries each dir's profile.
-    for (const sessionDir of listLaunchSessionDirs(launchSessionBaseDir('omp'))) {
+    // Async sweep + mtime-keyed meta cache (PA-19): the sidecar is written
+    // once at launch, so per-search re-reads were pure overhead.
+    for (const { dir: sessionDir, mtimeMs } of await listLaunchSessionDirs(launchSessionBaseDir('omp'))) {
       if (signal?.aborted) break;
-      const meta = readLaunchSessionMeta(sessionDir);
+      const meta = await readLaunchSessionMetaCached(sessionDir, mtimeMs);
       const profileId = profileIdForConfigDir('omp', meta?.configDir);
       await scan.collect(sessionDir, async () => {
         scan.descriptors.push(...await scanFlatSessionDir(sessionDir, profileId, signal));

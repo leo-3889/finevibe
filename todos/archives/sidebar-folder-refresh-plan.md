@@ -1,6 +1,7 @@
 # Plan: refresh folder listing on click (sidebar file tree)
 
-Date: 2026-10-20 · Status: plan · Owner: TBD
+Date: 2026-10-20 · Status: code shipped 5a4b9bd (items 41-42); §Docs rows remain → see
+[`../PENDING.md`](../PENDING.md) §3. Archived 2026-10-22. · Owner: TBD
 
 ## Request
 

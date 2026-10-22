@@ -1,15 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// execSync lives in a hoisted const so the module factory can close over it.
-const { execSync } = vi.hoisted(() => ({ execSync: vi.fn() }));
-vi.mock('child_process', () => ({ execSync }));
-vi.mock('node:child_process', () => ({ execSync }));
+// PA-16: the probe is async execFile now (the execSync form blocked the main
+// thread for up to 2×3 s on every Windows launch). execFile lives in a
+// hoisted const so the module factory can close over it; prerequisites'
+// promisify(execFile) wraps this mock, so the tests program the raw
+// Node-style (cmd, args, options, callback) signature.
+const { execFile } = vi.hoisted(() => ({ execFile: vi.fn() }));
+vi.mock('child_process', () => ({ execFile }));
+vi.mock('node:child_process', () => ({ execFile }));
 
 // The App Execution Alias stub: exits 9009 with the Store nag, which makes
-// execSync throw. This is the exact failure mode of the incident e866e4a
-// fixed — the probe must fall through to the `py -3` launcher.
+// execFile's callback fire with an error. This is the exact failure mode of
+// the incident e866e4a fixed — the probe must fall through to the `py -3`
+// launcher.
 const ALIAS_STUB_FAILURE = Object.assign(
-  new Error('Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.'),
+  new Error('Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app execution aliases.'),
   { status: 9009 },
 );
 
@@ -29,9 +34,21 @@ async function loadCheck() {
   return checkPythonAvailable;
 }
 
+function answers(cmd: string, args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string, stderr?: string) => void) {
+  cb(null, `${cmd} ${args.join(' ')}\n`, '');
+}
+
+function fails(cmd: string, args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string, stderr?: string) => void) {
+  // The alias stub fails with the 9009 Store nag; the launcher ANSWERS —
+  // this is the fall-through case, so `py` must succeed (the all-fail case
+  // programs its own impl).
+  if (cmd === 'python') cb(ALIAS_STUB_FAILURE);
+  else cb(null, `Python 3.12.4 (${cmd} ${args.join(' ')})\n`, '');
+}
+
 beforeEach(() => {
   vi.resetModules();
-  execSync.mockReset();
+  execFile.mockReset();
 });
 
 afterEach(() => {
@@ -42,44 +59,51 @@ afterEach(() => {
 describe('checkPythonAvailable()', () => {
   it('returns null without probing on non-Windows', async () => {
     const setPythonBin = mockPlatform(false);
-    execSync.mockImplementation(() => {
+    execFile.mockImplementation(() => {
       throw new Error('must not probe on POSIX — pythonBin is already pinned');
     });
     expect(await (await loadCheck())()).toBeNull();
-    expect(execSync).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
     expect(setPythonBin).not.toHaveBeenCalled();
   });
 
   it('probes the `python` alias first and pins it when it answers', async () => {
     const setPythonBin = mockPlatform(true);
-    execSync.mockReturnValue('Python 3.12.4\n');
+    execFile.mockImplementation(answers);
     expect(await (await loadCheck())()).toBeNull();
     // Short-circuit: a working alias means the launcher is never probed.
-    expect(execSync).toHaveBeenCalledTimes(1);
-    expect(execSync).toHaveBeenCalledWith('python --version', { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
+    expect(execFile).toHaveBeenCalledTimes(1);
+    // execFile is shell-free: argv form + windowsHide (mirrors execSync's
+    // default — no console flash per probe).
+    expect(execFile).toHaveBeenCalledWith(
+      'python', ['--version'],
+      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
+      expect.any(Function),
+    );
     expect(setPythonBin).toHaveBeenCalledTimes(1);
     expect(setPythonBin).toHaveBeenCalledWith('python');
   });
 
   it('falls back to the `py -3` launcher when the alias stub fails, and pins the launcher', async () => {
     const setPythonBin = mockPlatform(true);
-    execSync.mockImplementation((cmd: string) => {
-      if (cmd === 'python --version') throw ALIAS_STUB_FAILURE;
-      return 'Python 3.12.4\n';
-    });
+    execFile.mockImplementation(fails);
     expect(await (await loadCheck())()).toBeNull();
     // Alias-precedence decision pinned: alias first, launcher second. A
     // flipped order would pin `py -3` on boxes where the alias is healthy.
-    expect(execSync.mock.calls.map(([cmd]) => cmd)).toEqual(['python --version', 'py -3 --version']);
-    expect(execSync).toHaveBeenNthCalledWith(2, 'py -3 --version', { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
+    // `py -3` is launcher + flag as argv — the string form only worked
+    // because execSync ran a shell.
+    expect(execFile.mock.calls.map(([cmd, args]) => [cmd, ...(args as string[])])).toEqual([
+      ['python', '--version'],
+      ['py', '-3', '--version'],
+    ]);
     expect(setPythonBin).toHaveBeenCalledTimes(1);
     expect(setPythonBin).toHaveBeenCalledWith('py -3');
   });
 
   it('returns install guidance and pins nothing when every candidate fails', async () => {
     const setPythonBin = mockPlatform(true);
-    execSync.mockImplementation(() => {
-      throw ALIAS_STUB_FAILURE;
+    execFile.mockImplementation((_cmd: string, _args: readonly string[], _opts: unknown, cb: (err: unknown) => void) => {
+      cb(ALIAS_STUB_FAILURE);
     });
     const warning = await (await loadCheck())();
     expect(warning).toContain('Python not found.');
@@ -102,15 +126,39 @@ describe('checkPythonAvailable()', () => {
           prop === 'isWin' ? true : Reflect.get(target, prop, receiver),
       });
     });
-    execSync.mockImplementation((cmd: string) => {
-      if (cmd === 'python --version') throw ALIAS_STUB_FAILURE;
-      return 'Python 3.12.4\n';
-    });
+    execFile.mockImplementation(fails);
     const platform = await import('./platform');
     const { checkPythonAvailable } = await import('./prerequisites');
     const seed = platform.pythonBin; // host seed: 'python' on Windows, /usr/bin/python3 elsewhere
-    expect(checkPythonAvailable()).toBeNull();
+    expect(await checkPythonAvailable()).toBeNull();
     expect(platform.pythonBin).toBe('py -3'); // read live, not a spread copy
     expect(platform.pythonBin).not.toBe(seed);
+  });
+
+  it('does not block the caller — the probe is async end to end (PA-16)', async () => {
+    // The probe's whole point: a pending python check must not stall the
+    // boot chain. Fake clock; a sentinel timer scheduled AFTER the probe
+    // starts fires BEFORE the probe resolves — the loop keeps turning.
+    mockPlatform(true);
+    execFile.mockImplementation((_cmd: string, _args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      setTimeout(() => cb(null, 'Python 3.12.4\n'), 10);
+    });
+    const check = await loadCheck();
+    vi.useFakeTimers();
+    try {
+      const checkPromise = check();
+      const sentinel = Promise.withResolvers<void>();
+      let loopTurned = false;
+      setTimeout(() => {
+        loopTurned = true;
+        sentinel.resolve();
+      }, 5);
+      await vi.advanceTimersByTimeAsync(15);
+      await sentinel.promise;
+      expect(loopTurned).toBe(true);
+      expect(await checkPromise).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

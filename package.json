@@ -37,12 +37,14 @@
   },
   "main": "./dist/main/main/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json && npm run build:renderer && npm run copy-assets",
-    "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=iife --target=es2022 --sourcemap --loader:.ts=ts",
+    "build": "npm run build:core && npm run build:renderer && npm run copy-assets",
+    "build:core": "tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json",
+    "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=iife --target=es2022 --minify --loader:.ts=ts",
+    "dev:renderer": "npm run build:renderer -- --sourcemap",
     "copy-assets": "node scripts/copy-assets.js",
     "icons": "node scripts/build-icons.mjs",
     "start": "npm run build && electron .",
-    "dev": "npm run build && electron .",
+    "dev": "npm run build:core && npm run dev:renderer && npm run copy-assets && electron .",
     "postinstall": "node -e \"try{require('electron-builder/package.json');require('child_process').execSync('electron-builder install-app-deps',{stdio:'inherit'})}catch{}\"",
     "pack": "npm run build && npm run icons && electron-builder --dir",
     "dist": "npm run build && npm run icons && electron-builder",
@@ -62,6 +64,7 @@
       "dist/main/**/*",
       "dist/preload/**/*",
       "dist/renderer/**/*",
+      "!dist/**/*.map",
       "build/icon.png"
     ],
     "asarUnpack": [

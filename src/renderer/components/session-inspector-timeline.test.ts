@@ -24,7 +24,7 @@ vi.mock('./session-inspector-state-ui.js', () => ({
 }));
 
 import { getEvents } from '../session-inspector-state.js';
-import { renderTimeline, buildAgentModel } from './session-inspector-timeline.js';
+import { renderTimeline, appendTimelineEvents, buildAgentModel } from './session-inspector-timeline.js';
 import { inspectorState } from './session-inspector-state-ui.js';
 import type { InspectorEvent } from '../../shared/types.js';
 
@@ -50,13 +50,22 @@ class FakeElement {
   className = '';
   classList = new FakeClassList();
   textContent = '';
-  innerHTML = '';
+  private innerHtmlValue = '';
   scrollTop = 0;
   scrollHeight = 0;
   listeners = new Map<string, Array<() => void>>();
 
   constructor(public tagName: string) {}
 
+  // Mirrors the DOM: assigning innerHTML detaches the previous children.
+  get innerHTML(): string {
+    return this.innerHtmlValue;
+  }
+  set innerHTML(value: string) {
+    for (const child of this.children) child.parentElement = null;
+    this.children.length = 0;
+    this.innerHtmlValue = value;
+  }
   appendChild(child: FakeElement): FakeElement {
     child.parentElement = this;
     this.children.push(child);
@@ -539,5 +548,93 @@ describe('renderTimeline agent grouping', () => {
     expect(inspectorState.expandedRows.has('agent-group:A')).toBe(false);
     expect(inspectorState.expandedRows.has('agent-group:B')).toBe(true);
     expect(inspectorState.autoExpandedAgentGroups.has('session-1:agent-group:B')).toBe(true);
+  });
+});
+
+describe('PA-14 append-only reconcile', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('appends rows for events that arrived since the last render, preserving row identity', () => {
+    const events = [ev('session_start', 1000), ev('tool_use', 2000, { tool_name: 'Bash' })];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const c = container as unknown as FakeElement;
+    const rowsBefore = c.querySelectorAll('.inspector-timeline-row');
+    expect(rowsBefore).toHaveLength(2);
+    const firstRow = rowsBefore[0];
+
+    events.push(ev('stop', 3000));
+    expect(appendTimelineEvents(container)).toBe(true);
+
+    const rowsAfter = c.querySelectorAll('.inspector-timeline-row');
+    expect(rowsAfter).toHaveLength(3);
+    expect(rowsAfter[0]).toBe(firstRow); // identity preserved — no wipe
+    // The old tail row had no duration (no successor at render time); the
+    // append fills in what a full rebuild would have shown.
+    expect(rowsBefore[1].querySelector('.inspector-duration')!.textContent).not.toBe('');
+  });
+
+  it('appends children to a running agent group and closes the header on stop', () => {
+    const events = [
+      ev('session_start', 1000),
+      ev('subagent_start', 2000, { agent_id: 'a1', agent_type: 'worker' }),
+    ];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const c = container as unknown as FakeElement;
+    const group = c.querySelector('.inspector-agent-group')!;
+    expect(group.classList.contains('inspector-agent-running')).toBe(true);
+
+    events.push(ev('tool_use', 3000, { agent_id: 'a1', tool_name: 'Bash' }));
+    expect(appendTimelineEvents(container)).toBe(true);
+    // header + start row + one child
+    expect(group.querySelectorAll('.inspector-timeline-row')).toHaveLength(3);
+
+    events.push(ev('subagent_stop', 4000, { agent_id: 'a1' }));
+    expect(appendTimelineEvents(container)).toBe(true);
+    expect(group.classList.contains('inspector-agent-running')).toBe(false);
+    expect(group.querySelector('.inspector-badge-agent')!.textContent).toBe('Agent');
+    // header + start + child + stop
+    expect(group.querySelectorAll('.inspector-timeline-row')).toHaveLength(4);
+  });
+
+  it('bails to a full rebuild when the event array is replaced (/clear)', () => {
+    const events = [ev('session_start', 1000)];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    vi.mocked(getEvents).mockReturnValue([ev('session_start', 5000)]);
+    expect(appendTimelineEvents(container)).toBe(false);
+  });
+
+  it('bails to a full rebuild when the event cap shifts the array in place', () => {
+    const events = [ev('session_start', 1000), ev('tool_use', 2000)];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    events.shift(); // cap rotation: same length, window head moved
+    events.push(ev('tool_use', 3000));
+    expect(appendTimelineEvents(container)).toBe(false);
+  });
+
+  it('bails after the container content was wiped (tab switch)', () => {
+    const events = [ev('session_start', 1000)];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const c = container as unknown as FakeElement;
+    c.innerHTML = ''; // stand-in for content.innerHTML = ''
+    events.push(ev('tool_use', 2000));
+    expect(appendTimelineEvents(container)).toBe(false);
   });
 });

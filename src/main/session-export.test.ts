@@ -110,6 +110,52 @@ describe('exportSessionArchive() zip', () => {
     expect(zip.file('sidecars/ui-1.events')).toBeNull();
   });
 
+  // PA-20: every sidecar suffix was `fs.readFile`-buffered whole during the
+  // zip (.events is uncapped on disk) while the transcript beside it
+  // streamed. Every transcript/sidecar entry must reach JSZip as a
+  // Readable — never a Buffer — and the bytes must still round-trip.
+  it('streams transcript and sidecars into the zip as Readables, never Buffers', async () => {
+    const transcript = path.join(tmp, 't.jsonl');
+    await fs.writeFile(transcript, 'A\nB');
+    await fs.writeFile(path.join(statusDir, 'ui-1.events'), 'E1\nE2');
+    getTranscriptPath.mockReturnValue(transcript);
+    const out = path.join(tmp, 'stream.zip');
+    showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });
+
+    const entries: Array<[string, unknown]> = [];
+    const realFile = JSZip.prototype.file;
+    const spy = vi.spyOn(JSZip.prototype, 'file').mockImplementation(function (
+      this: JSZip,
+      ...args: unknown[]
+    ) {
+      entries.push([args[0] as string, args[1]]);
+      return (realFile as (...a: unknown[]) => JSZip).apply(this, args);
+    } as never);
+    try {
+      await exportSessionArchive(win, params({
+        providerId: 'pi',
+        meta: meta({ providerId: 'pi', liveSessionId: 'ui-1' }),
+      }));
+    } finally {
+      spy.mockRestore();
+    }
+
+    const streamed = entries.filter(
+      ([name]) => name.startsWith('transcript/') || name.startsWith('sidecars/'),
+    );
+    expect(streamed.map(([name]) => name)).toEqual(
+      expect.arrayContaining(['transcript/t.jsonl', 'sidecars/ui-1.events']),
+    );
+    for (const [, data] of streamed) {
+      expect(Buffer.isBuffer(data)).toBe(false);
+      expect(typeof (data as { pipe?: unknown }).pipe).toBe('function');
+    }
+    // The streamed bytes round-trip through generateNodeStream(streamFiles).
+    const zip = await JSZip.loadAsync(await fs.readFile(out));
+    expect(await zip.file('sidecars/ui-1.events')!.async('string')).toBe('E1\nE2');
+    expect(await zip.file('transcript/t.jsonl')!.async('string')).toBe('A\nB');
+  });
+
   it('meta-only zip when no transcript resolves', async () => {
     getTranscriptPath.mockReturnValue(null);
     const out = path.join(tmp, 'out.zip');

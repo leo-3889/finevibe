@@ -6,6 +6,7 @@ import { showMemberSessionsModal } from './member-sessions-modal.js';
 import { buildTeamChatControl } from './chat-control.js';
 import { resolvePinnedTeamProfile } from '../../state/team-state.js';
 import { t } from '../../i18n.js';
+import { initials } from './initials.js';
 
 export function createMemberCard(member: TeamMember, projectId: string): HTMLElement {
   const card = document.createElement('div');
@@ -96,13 +97,4 @@ export function createMemberCard(member: TeamMember, projectId: string): HTMLEle
   card.appendChild(actions);
 
   return card;
-}
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? '')
-    .join('') || '?';
 }

@@ -3,6 +3,7 @@ import { areaLabel } from '../dom-utils.js';
 import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
 import { isAbsolutePath, dirname, samePath } from '../../shared/platform.js';
+import { escapeHtml } from './escape-html.js';
 
 interface FileViewerInstance {
   element: HTMLElement;
@@ -57,12 +58,6 @@ function ensureSelectionListener(): void {
   if (removeSelectionListener) return;
   document.addEventListener('selectionchange', onSelectionChange);
   removeSelectionListener = () => document.removeEventListener('selectionchange', onSelectionChange);
-}
-
-function escapeHtml(s: string): string {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
 }
 
 function parseDiffLines(diff: string): HTMLElement {

@@ -8,7 +8,7 @@ import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
-import { resolveBinary, validateBinaryExists } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { getCodexConfig } from '../codex-config';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks, SESSION_ID_VAR } from '../codex-hooks';
 import { startCodexSessionWatcher, stopCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from '../codex-session-watcher';
@@ -80,6 +80,11 @@ export class CodexProvider implements CliProvider {
 
   validatePrerequisites(): boolean {
     return validateBinaryExists('codex');
+  }
+
+  // PA-01: async twin so boot can probe every provider concurrently.
+  validatePrerequisitesAsync(): Promise<boolean> {
+    return validateBinaryExistsAsync('codex');
   }
 
   buildEnv(sessionId: string, baseEnv: Record<string, string>, _opts?: { configDir?: string }): Record<string, string> {
@@ -306,7 +311,7 @@ export class CodexProvider implements CliProvider {
         if (!p || p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) return;
         let text = '';
         for (const block of p.content) {
-          if (block && typeof block.text === 'string') text += block.text + '\n';
+          if (block && typeof block.text === 'string') text += `${block.text}\n`;
         }
         if (text) budget.push(text);
       } catch {

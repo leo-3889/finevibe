@@ -6,6 +6,7 @@ import {
   loadProviderAvailability,
 } from '../../../provider-availability.js';
 import { createWidgetEmpty } from './widget-empty.js';
+import { initials } from '../../team/initials.js';
 import type { WidgetFactory } from './widget-host.js';
 
 export const createTeamWidget: WidgetFactory = (host) => {
@@ -135,13 +136,4 @@ function buildCard(member: TeamMember, projectId: string): HTMLElement {
   card.appendChild(actions);
 
   return card;
-}
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? '')
-    .join('') || '?';
 }

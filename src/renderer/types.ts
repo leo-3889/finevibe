@@ -15,7 +15,6 @@ export interface FinevibeApi {
   };
   session: {
     transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): Promise<boolean>;
-    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): boolean;
     /** Save-dialog backup of one session. `zip`: meta.json + transcript + sidecars; `file`: the transcript verbatim. Resolves to the written path, or null when canceled. */
     exportArchive(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file'): Promise<string | null>;
     buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string, liveSessionId?: string): Promise<string>;

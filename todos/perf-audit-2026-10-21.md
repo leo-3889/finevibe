@@ -1,5 +1,10 @@
 # Performance & code-optimization audit — 2026-10-21
 
+> **Status 2026-10-22 (todos audit):** PA-01…PA-19, PA-22–PA-26, PA-28, PA-31 are fixed in
+> the **uncommitted working tree** (24/27 carry `PA-NN` comments; gate certification + commit
+> pending). Open: PA-20, 21, 27, 29, 30, 32, 33, 34, 35. Detailed queue:
+> [`PENDING.md`](PENDING.md) §0/§2.
+
 Tree: `rebuild` `c613d03` + uncommitted agentmemory/branding work (22 modified files). 48,976 LOC non-test TS.
 Method: 4 parallel read-only scouts (main/startup/IPC/store, watchers+transcripts, renderer, search/export/build) over the current working tree, consolidated by the parent; every P1 and the headline P2s re-verified in source by the parent.
 Scope: performance and optimization only. Correctness/security rows live in the tracked registry [`full-audit-2026-10-20-plan.md`](full-audit-2026-10-20-plan.md) — not re-reported here. Documented bounds in `docs/performance.md` are cited as `docStatus`, not re-listed as findings.
@@ -71,3 +76,15 @@ Parent- and scout-verified in current source: P5 `pty:data` coalescing 4 ms/64 K
 ## Addendum — pi-lens `release.yml` line-length finding (2026-10-21 turn)
 
 Historical finding (32 × line-length@80 on `.github/workflows/release.yml`) re-checked per system reminder: fresh full scan of the current file reports **zero** line-length diagnostics; no enforced YAML linter exists (no `.yamllint`, no CI lint step, `.editorconfig` has no `max_line_length`, `ci.yml` itself carries 28 lines >80). Disposition: **stale/advisory-only — not acted on**. The fresh scan's live advisories are zizmor classes (unpinned `uses`, excessive-permissions, artipacked) on the user's in-flight file — outside this audit's perf scope, flagged for the workflow's owner, not modified.
+
+## Integration sweep (2026-10-22): 21.10-wave test casualties
+
+Two test files from the 21.10 win32-input-mode work asserted semantics the
+final implementation deliberately reversed; they were committed untracked and
+sat red since. Fixed against the monotonic-latch contract (source is
+ground truth, documented in `win32-terminal-keys.ts`):
+
+| id | file | symptom | fix |
+| --- | --- | --- | --- |
+| W1 | `src/renderer/components/win32-terminal-keys.test.ts` | `?9001l` expected to disable INPUT_RECORD encoding | latch is monotonic per PTY; keys stay encoded after mode-off |
+| W2 | `src/renderer/components/remote-terminal-pane.test.ts` | Escape expected to pass through raw after `?9001l` | encoder keeps consuming Escape; `onInput` count 2 (encoded records) |

@@ -3,7 +3,12 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 const mockGetProvider = vi.hoisted(() => vi.fn());
 const mockWriteName = vi.hoisted(() => vi.fn());
 const mockWriteStatus = vi.hoisted(() => vi.fn());
-const mockExistsSync = vi.hoisted(() => vi.fn());
+const mockStatSync = vi.hoisted(() => vi.fn());
+// The 2s tick gates both content reads on the transcript's (mtime,size) tuple
+// (PA-02), so the mock file has one shared identity a test can move.
+const fileTuple = vi.hoisted(() => ({ mtimeMs: 1_000, size: 100 }));
+// A transcript the poller has resolved; `false` = the path is gone.
+const filePresent = vi.hoisted(() => ({ value: true }));
 // Captures each fs.watch registration so a test can fire the change callback.
 const watchRecs = vi.hoisted(() => [] as Array<{ fire: () => void; closed: boolean }>);
 
@@ -14,13 +19,31 @@ vi.mock('./hook-status', () => ({
   writeStatus: mockWriteStatus,
 }));
 vi.mock('fs', () => ({
-  existsSync: mockExistsSync,
+  statSync: mockStatSync,
   watch: (_p: string, cb: () => void) => {
     const rec = { fire: cb, closed: false };
     watchRecs.push(rec);
     return { on: () => {}, close: () => { rec.closed = true; } };
   },
 }));
+
+/** Simulate a write to the transcript: a real append moves (mtime,size). */
+function writeTranscript(): void {
+  fileTuple.mtimeMs += 1_000;
+  fileTuple.size += 64;
+}
+
+/** Remove the cached transcript (recreated/moved path → forces a re-resolve). */
+function removeTranscript(): void {
+  filePresent.value = false;
+}
+
+function statImpl(): (p: string) => { mtimeMs: number; size: number } {
+  return () => {
+    if (!filePresent.value) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return fileTuple;
+  };
+}
 
 import {
   registerTranscriptSync,
@@ -59,7 +82,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   _resetTranscriptSyncForTesting();
   mockGetProvider.mockImplementation(() => provider);
-  mockExistsSync.mockReturnValue(true); // cached path exists by default
+  filePresent.value = true;
+  fileTuple.mtimeMs = 1_000;
+  fileTuple.size = 100;
+  mockStatSync.mockImplementation(statImpl()); // cached path exists, unchanged
   watchRecs.length = 0;
 });
 
@@ -89,6 +115,7 @@ describe('title mirroring', () => {
     provider = makeProvider({ selfTitles: true, title, path: '/t.jsonl' });
     registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj');
     vi.advanceTimersByTime(2000);
+    writeTranscript(); // the title change is a real transcript write (PA-02)
     title.value = 'Two';
     vi.advanceTimersByTime(2000);
     expect(mockWriteName).toHaveBeenLastCalledWith('ui-1', 'Two', 'cli-1');
@@ -205,6 +232,7 @@ describe('status mirroring', () => {
     provider = makeProvider({ polledStatus: true, status, path: '/t.jsonl' });
     registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
     vi.advanceTimersByTime(2000);
+    writeTranscript(); // a status change is a real transcript write (PA-02)
     status.value = 'completed';
     vi.advanceTimersByTime(2000);
     expect(mockWriteStatus).toHaveBeenLastCalledWith('ui-1', 'completed');
@@ -226,17 +254,17 @@ describe('transcript path caching', () => {
     vi.advanceTimersByTime(2000);
     vi.advanceTimersByTime(2000);
     vi.advanceTimersByTime(2000);
-    // Resolved on the first tick only; later ticks hit the cache (existsSync true).
+    // Resolved on the first tick only; later ticks hit the cache (stat ok).
     expect(provider.getTranscriptPath).toHaveBeenCalledTimes(1);
   });
 
   it('re-resolves when the cached transcript path disappears', () => {
     provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: '/t.jsonl' });
-    mockExistsSync.mockReturnValue(true);
+    filePresent.value = true;
     registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
     vi.advanceTimersByTime(2000); // resolve
     expect(provider.getTranscriptPath).toHaveBeenCalledTimes(1);
-    mockExistsSync.mockReturnValue(false); // transcript recreated / moved
+    removeTranscript(); // transcript recreated / moved
     vi.advanceTimersByTime(2000); // cache miss → re-resolve
     expect(provider.getTranscriptPath).toHaveBeenCalledTimes(2);
   });
@@ -323,6 +351,7 @@ describe('fs.watch fast path', () => {
 
     // Transcript changes; the watch fires. The debounce re-syncs well before
     // the next poll tick (t=4000), proving the watch drives low latency.
+    writeTranscript(); // the watch event follows a real write (PA-02 gate)
     status.value = 'completed';
     watchRecs[0].fire();
     vi.advanceTimersByTime(150); // DEBOUNCE_MS
@@ -337,6 +366,7 @@ describe('fs.watch fast path', () => {
     vi.advanceTimersByTime(2000);
     expect(mockWriteStatus).toHaveBeenCalledTimes(1);
 
+    writeTranscript();
     status.value = 'completed';
     watchRecs[0].fire();
     watchRecs[0].fire();
@@ -463,5 +493,76 @@ describe('unresolvable transcript backoff', () => {
     vi.advanceTimersByTime(8000);
     expect(provider.getTranscriptPath).toHaveBeenCalledTimes(3);
     expect(mockWriteStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('per-tick read gating (PA-02)', () => {
+  it('reads neither head nor tail while (mtime,size) is unchanged', () => {
+    provider = makeProvider({
+      selfTitles: true,
+      polledStatus: true,
+      title: { value: 'T' },
+      status: { value: 'working' },
+      path: '/t.jsonl',
+    });
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000); // resolve + the one read pair
+    expect(provider.readSessionTitle).toHaveBeenCalledTimes(1);
+    expect(provider.readSessionStatus).toHaveBeenCalledTimes(1);
+
+    // Two idle ticks: one statSync each, zero open+read+close triples. This is
+    // the 200-tab case — the old poll re-read the head and the tail every 2s.
+    vi.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(2000);
+    expect(provider.readSessionTitle).toHaveBeenCalledTimes(1);
+    expect(provider.readSessionStatus).toHaveBeenCalledTimes(1);
+    expect(mockStatSync).toHaveBeenCalledTimes(3);
+
+    // A write moves the tuple, so the very next tick reads again.
+    writeTranscript();
+    vi.advanceTimersByTime(2000);
+    expect(provider.readSessionTitle).toHaveBeenCalledTimes(2);
+    expect(provider.readSessionStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-reads on a size change with an unchanged mtime (tuple, not mtime alone)', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: '/t.jsonl' });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    expect(provider.readSessionStatus).toHaveBeenCalledTimes(1);
+
+    fileTuple.size += 1; // a coarse-mtime filesystem can report the same mtime
+    vi.advanceTimersByTime(2000);
+    expect(provider.readSessionStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves the entry due when a read throws (transcript mid-write)', () => {
+    provider = makeProvider({ selfTitles: true, title: { value: 'T' }, path: '/t.jsonl' });
+    const reader = vi.fn<void, [string]>()
+      .mockImplementationOnce(() => { throw new Error('EAGAIN'); })
+      .mockImplementation(() => 'T');
+    provider.readSessionTitle = reader as unknown as CliProvider['readSessionTitle'];
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000); // read throws → the tuple must NOT be recorded
+    expect(reader).toHaveBeenCalledTimes(1);
+    expect(mockWriteName).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2000); // retried on the same (mtime,size)
+    expect(reader).toHaveBeenCalledTimes(2);
+    expect(mockWriteName).toHaveBeenCalledWith('ui-1', 'T', 'cli-1');
+  });
+
+  it('re-reads from scratch after a /clear re-adoption moves the file', () => {
+    provider = makeProvider({ selfTitles: true, title: { value: 'Old' }, path: '/old.jsonl' });
+    registerTranscriptSync('ui-1', 'omp', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(2000);
+    expect(provider.readSessionTitle).toHaveBeenCalledTimes(1); // gated idle tick
+
+    provider = makeProvider({ selfTitles: true, title: { value: 'New' }, path: '/new.jsonl' });
+    registerTranscriptSync('ui-1', 'omp', 'cli-2', '/proj');
+    vi.advanceTimersByTime(2000);
+    expect(provider.readSessionTitle).toHaveBeenCalledTimes(1);
+    expect(mockWriteName).toHaveBeenLastCalledWith('ui-1', 'New', 'cli-2');
   });
 });

@@ -3,11 +3,13 @@ import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { appState } from '../state.js';
+import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
 import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
+import { isWin } from '../platform.js';
 import { esc } from '../dom-utils.js';
 
 interface ShellTerminalInstance {
@@ -74,6 +76,7 @@ function createShell(projectId: string): ShellTerminalInstance {
     theme: getTerminalTheme(appState.preferences.theme ?? 'dark'),
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
+    scrollback: TERMINAL_SCROLLBACK,
     cursorBlink: true,
     allowProposedApi: true,
   });
@@ -88,7 +91,10 @@ function createShell(projectId: string): ShellTerminalInstance {
   const sessionId = `shell-${projectId}-${shellId}`;
 
   const writeToPty = (data: string) => window.finevibe.pty.write(sessionId, data);
-  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty);
+  // Same contract as session terminals: the shell's ConPTY advertised mode
+  // 9001 at spawn, so a Windows shell pane starts latched and Escape is
+  // never written as a bare ESC to the armed PTY.
+  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty, { latchKey: sessionId, latched: isWin });
   attachClipboardCopyHandler(terminal, handleWin32Key);
   attachImagePasteHandler(terminal, element, writeToPty);
 

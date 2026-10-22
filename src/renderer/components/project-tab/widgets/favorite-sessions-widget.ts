@@ -2,6 +2,7 @@ import type { ArchivedSession } from '../../../../shared/types.js';
 import { appState } from '../../../state.js';
 import { getProviderDisplayName } from '../../../provider-availability.js';
 import type { WidgetFactory } from './widget-host.js';
+import { formatRelativeDate } from '../../../../shared/text-utils.js';
 
 export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
   const root = document.createElement('div');
@@ -113,17 +114,3 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
     },
   };
 };
-
-function formatRelativeDate(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const diffMs = Date.now() - then;
-  const min = Math.floor(diffMs / 60_000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 7) return `${day}d ago`;
-  return new Date(iso).toLocaleDateString();
-}

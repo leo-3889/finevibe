@@ -18,7 +18,7 @@ vi.mock('../codex-session-watcher', () => ({
   registerPendingCodexSession: vi.fn(),
   unregisterCodexSession: vi.fn(),
 }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 
 import * as fs from 'fs';
 import * as path from 'path';
