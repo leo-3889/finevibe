@@ -233,8 +233,11 @@ function boardChangeKey(board: BoardData): string {
     // S4-02: title/prompt/notes render INTO the card; the key used to omit
     // them, so renaming a task (the modal writes them) kept the key equal
     // and the early return showed the stale title until an unrelated
-    // change happened to move a card.
-    .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}`)
+    // change happened to move a card. sessionId/cliSessionId drive the
+    // run/resume glyph and gate the live status/metrics rows — a run or
+    // resume (board-session-sync writes them) is invisible until the key
+    // sees them.
+    .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}:${tk.sessionId ?? ''}:${tk.cliSessionId ?? ''}`)
     .join(',');
   const filters = `${getSearchQuery()}\u0000${[...getActiveTagFilters()].sort().join('+')}`;
   return `${cols}\u0001${tags}\u0001${tasks}\u0001${filters}\u0001${appState.preferences.boardCardMetrics ?? true}`;

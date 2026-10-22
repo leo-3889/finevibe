@@ -636,6 +636,13 @@ function trimWindow(st: TimelineRenderState, startIdx: number): boolean {
     }
   }
   st.startIdx = startIdx;
+  // S4-01: keep firstWindowTs in sync with the moved window head — the append
+  // bail check compares events[startIdx].timestamp against it, so a stale
+  // render-time value made every post-trim append look like a cap shift: the
+  // exact 500-row rebuild per 200 ms tick PA-14 was raised for. Degenerate
+  // startIdx past the array keeps a value the bail check rejects (undefined
+  // !== ts) — the safe full rebuild.
+  st.firstWindowTs = st.events[startIdx]?.timestamp ?? st.events[st.events.length - 1]?.timestamp ?? st.firstWindowTs;
   if (st.banner) st.banner.textContent = `${startIdx} earlier events not shown`;
   return true;
 }

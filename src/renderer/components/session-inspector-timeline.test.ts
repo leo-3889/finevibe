@@ -637,4 +637,35 @@ describe('PA-14 append-only reconcile', () => {
     events.push(ev('tool_use', 2000));
     expect(appendTimelineEvents(container)).toBe(false);
   });
+
+  // S4-01: trimWindow used to move startIdx without re-anchoring
+  // firstWindowTs, so the first trim turned every later append into a
+  // "cap shift" bail — a full 500-row rebuild on the next 200 ms tick,
+  // the exact pathology PA-14 exists to prevent.
+  it('keeps appending incrementally after the 500-row window trims', () => {
+    const events = Array.from({ length: 501 }, (_, i) =>
+      ev('tool_use', 1000 + i, { tool_name: 'Bash' }),
+    );
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const c = container as unknown as FakeElement;
+    // 501 events, 500-row window: the banner appears, row 0 is not rendered.
+    expect(c.querySelector('.inspector-load-more')).not.toBeNull();
+    expect(c.querySelectorAll('.inspector-timeline-row')).toHaveLength(500);
+
+    events.push(ev('tool_use', 1600, { tool_name: 'Read' }));
+    expect(appendTimelineEvents(container)).toBe(true); // trims the head row
+    expect(c.querySelectorAll('.inspector-timeline-row')).toHaveLength(500);
+
+    const rowsAfterTrim = c.querySelectorAll('.inspector-timeline-row');
+    events.push(ev('tool_use', 1700, { tool_name: 'Write' }));
+    // Pre-fix this returned false: startIdx had moved past the stale
+    // firstWindowTs, so the append looked like an in-place cap shift.
+    expect(appendTimelineEvents(container)).toBe(true);
+    const rowsAfterSecond = c.querySelectorAll('.inspector-timeline-row');
+    expect(rowsAfterSecond).toHaveLength(500);
+    // Row identity preserved across trim+append — incremental, no wipe.
+    expect(rowsAfterSecond[0]).toBe(rowsAfterTrim[1]);
+  });
 });
