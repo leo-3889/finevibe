@@ -11,7 +11,7 @@ function fixture() {
   return { modes, write, press };
 }
 
-describe('Win32 terminal cursor input', () => {
+describe('Win32 terminal key input', () => {
   it.each([['ArrowUp', 38, 72], ['ArrowDown', 40, 80], ['ArrowLeft', 37, 75], ['ArrowRight', 39, 77]])('encodes %s only when the CLI enables mode 9001', (name, vk, scan) => {
     const f = fixture();
     expect(f.press(name as string)).toBeUndefined();
@@ -31,5 +31,18 @@ describe('Win32 terminal cursor input', () => {
     expect(f.write).toHaveBeenCalledTimes(1);
     expect(f.press('a')).toBeUndefined();
     expect(f.press('ArrowUp', { isComposing: true })).toBeUndefined();
+  });
+  it('encodes Escape as a non-enhanced INPUT_RECORD with UnicodeChar 0x1b, only under mode 9001', () => {
+    const f = fixture();
+    expect(f.press('Escape')).toBeUndefined();
+    expect(f.write).not.toHaveBeenCalled();
+    f.modes.get('h')!([9001]);
+    expect(f.press('Escape')).toBe(false);
+    expect(f.write).toHaveBeenCalledWith('\x1b[27;1;27;1;0;1_');
+    f.press('Escape', { ctrlKey: true });
+    expect(f.write).toHaveBeenLastCalledWith('\x1b[27;1;27;1;8;1_');
+    expect(f.press('Escape', { type: 'keyup' })).toBe(false);
+    f.modes.get('l')!([9001]);
+    expect(f.press('Escape')).toBeUndefined();
   });
 });

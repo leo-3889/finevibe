@@ -1,6 +1,6 @@
 # Session lifecycle
 
-Terminal keyboard input tracks the CLI's DEC private mode 9001 requests. While Win32 input mode is enabled, cursor/navigation keys are sent as Windows key records, preserving modifiers; this avoids ConPTY turning OMP arrow sequences into literal prompt characters. When disabled, xterm handles the keys normally. `win32-terminal-keys.ts` owns this adapter. Select-only settings dialogs take keyboard focus from the terminal when opened.
+Terminal keyboard input tracks the CLI's DEC private mode 9001 requests. While Win32 input mode is enabled, cursor/navigation keys and Escape are sent as Windows key records, preserving modifiers; this avoids ConPTY turning OMP arrow sequences into literal prompt characters and swallowing bare ESC (Escape-to-close in TUI menus like `/model`). The adapter is wired into every PTY-backed and guest pane: session terminals, the project shell terminal, and read-write remote panes (whose host ConPTY emits mode 9001 through the relayed output). When disabled, xterm handles the keys normally. `win32-terminal-keys.ts` owns this adapter. Select-only settings dialogs take keyboard focus from the terminal when opened.
 
 Hook inspector event ingestion is incremental: each turn reads at most 64 KiB, preserves partial JSONL records and UTF-8 bytes, and schedules further backlog reads. Individual records over 64 KiB are skipped. Renderer retention is bounded by both 2,000 events and 2 Mi characters per session. Closing a session cancels pending ingestion continuations and releases its reader state.
 

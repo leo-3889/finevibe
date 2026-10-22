@@ -10,6 +10,19 @@ class FakeTerminal {
   rows = 30;
   options: Record<string, unknown>;
   private keyHandler: ((e: KeyboardEvent) => boolean) | null = null;
+  // win32-input-mode detection captures the `?9001h/l` CSI handlers here so a
+  // test can flip mode 9001 on the pane's terminal, as node-pty's startup
+  // request does on a real Windows ConPTY.
+  csiHandlers = new Map<string, (params: number[]) => boolean>();
+  parser = {
+    registerCsiHandler: (id: { final: string }, cb: (params: number[]) => boolean) => {
+      this.csiHandlers.set(id.final, cb);
+      return { dispose() {} };
+    },
+  };
+  enableWin32Mode(on: boolean): void {
+    this.csiHandlers.get(on ? 'h' : 'l')!([9001]);
+  }
   private _selection = '';
 
   constructor(options: Record<string, unknown> = {}) {
@@ -59,7 +72,7 @@ vi.mock('../state.js', () => ({
 vi.mock('./terminal-pane.js', () => ({ fitAllVisible: vi.fn() }));
 vi.mock('./search-bar.js', () => ({ destroySearchBar: vi.fn(), hideSearchBar: vi.fn() }));
 vi.mock('../shortcuts.js', () => ({
-  shortcutManager: { getKeys: vi.fn(() => []) },
+  shortcutManager: { getKeys: vi.fn(() => []), matchEvent: vi.fn(() => false), matchesAnyShortcut: vi.fn(() => false) },
   displayKeys: vi.fn(() => ''),
 }));
 
@@ -168,6 +181,30 @@ describe('project-terminal Ctrl+Shift+C clipboard copy', () => {
     const result = term.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
     expect(result).toBe(false);
+  });
+
+  it('routes Escape through the win32 INPUT_RECORD encoder when mode 9001 is on', async () => {
+    const instance = await setupTerminal();
+    const term = instance!.terminal as unknown as FakeTerminal;
+
+    // node-pty's startup request enables win32-input-mode on the shell pane.
+    term.enableWin32Mode(true);
+    const result = term.simulateKey({ key: 'Escape', type: 'keydown', preventDefault: vi.fn() });
+
+    // A bare ESC is swallowed by ConPTY's parser under mode 9001, so the pane
+    // writes the spec #4999 INPUT_RECORD to the shell PTY and suppresses xterm.
+    expect(mockPtyWrite).toHaveBeenCalledWith(instance!.sessionId, '\x1b[27;1;27;1;0;1_');
+    expect(result).toBe(false);
+  });
+
+  it('leaves Escape to xterm when mode 9001 is off', async () => {
+    const instance = await setupTerminal();
+    const term = instance!.terminal as unknown as FakeTerminal;
+
+    const result = term.simulateKey({ key: 'Escape', type: 'keydown' });
+
+    expect(mockPtyWrite).not.toHaveBeenCalled();
+    expect(result).toBe(true);
   });
 });
 

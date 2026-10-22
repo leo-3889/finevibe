@@ -7,6 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { appState } from '../state.js';
 import { attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
+import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
 
 interface RemoteTerminalInstance {
@@ -87,6 +88,13 @@ export function createRemoteTerminalPane(
     terminal.onData((data) => {
       onInput(data);
     });
+    // The guest pane renders the host's PTY output, so the host's ConPTY
+    // win32-input-mode (?9001h) arrives here through writeRemoteData; while it
+    // is on, a bare ESC forwarded to the host stalls in ConPTY's parser and VT
+    // arrows split into text. Encode the affected keys as INPUT_RECORDs.
+    // macOS/Linux never emit mode 9001, so the handler stays inert there.
+    const handleWin32Key = attachWin32TerminalKeys(terminal, onInput);
+    terminal.attachCustomKeyEventHandler((e) => handleWin32Key(e) ?? true);
   }
 
   const instance: RemoteTerminalInstance = {

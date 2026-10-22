@@ -1,7 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+type CsiHandler = (params: number[]) => boolean;
+type KeyHandler = (event: KeyboardEvent) => boolean | undefined;
+
 class FakeTerminal {
   options: Record<string, unknown>;
+
+  /** Captured DEC-private-mode handlers, keyed by CSI final byte (`?9001h/l`). */
+  csiHandlers = new Map<string, CsiHandler>();
+
+  customKeyHandler?: KeyHandler;
+
+  parser = {
+    registerCsiHandler: (id: { final: string }, handler: CsiHandler) => {
+      this.csiHandlers.set(id.final, handler);
+      return { dispose(): void {} };
+    },
+  };
 
   constructor(options: Record<string, unknown> = {}) {
     this.options = options;
@@ -13,13 +28,16 @@ class FakeTerminal {
   open(): void {}
   write(): void {}
   dispose(): void {}
+  attachCustomKeyEventHandler(handler: KeyHandler): void {
+    this.customKeyHandler = handler;
+  }
 }
 
 vi.mock('@xterm/xterm', () => ({ Terminal: FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
-    onContextLoss = (_: () => void) => ({ dispose() {} });
+    onContextLoss = () => ({ dispose() {} });
     dispose() {}
   },
 }));
@@ -237,5 +255,59 @@ describe('remote pane context menu', () => {
     const write = mockShowContextMenu.mock.calls[0][3] as (data: string) => void;
     write('rm -rf /\r');
     expect(onInput).not.toHaveBeenCalled();
+  });
+});
+
+describe('remote pane win32-input-mode keys', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.stubGlobal('document', new FakeDocument());
+  });
+
+  function press(terminal: FakeTerminal, name: string, extra: Record<string, unknown> = {}) {
+    return terminal.customKeyHandler?.({
+      key: name,
+      type: 'keydown',
+      preventDefault: vi.fn(),
+      ...extra,
+    } as unknown as KeyboardEvent);
+  }
+
+  it('forwards Escape as an INPUT_RECORD while the host PTY has mode 9001 on', async () => {
+    const { createRemoteTerminalPane, getRemoteTerminalInstance, _resetForTesting } = await import('./remote-terminal-pane.js');
+    _resetForTesting();
+    const onInput = vi.fn();
+    createRemoteTerminalPane('remote-win32', 'readwrite', 80, 24, onInput);
+    const terminal = getRemoteTerminalInstance('remote-win32')!.terminal as unknown as FakeTerminal;
+
+    // Mode off: every key is left to xterm (true = not suppressed).
+    expect(press(terminal, 'Escape')).toBe(true);
+    expect(onInput).not.toHaveBeenCalled();
+
+    // The host's ConPTY requests win32-input-mode; its ?9001h reaches this
+    // parser through writeRemoteData.
+    expect(terminal.csiHandlers.get('h')!([9001, 1004])).toBe(false);
+
+    expect(press(terminal, 'Escape')).toBe(false);
+    expect(onInput).toHaveBeenCalledWith('\x1b[27;1;27;1;0;1_');
+
+    // Non-target keys still pass through; the host PTY receives the plain text.
+    expect(press(terminal, 'a')).toBe(true);
+    expect(onInput).toHaveBeenCalledTimes(1);
+
+    terminal.csiHandlers.get('l')!([9001]);
+    expect(press(terminal, 'Escape')).toBe(true);
+    expect(onInput).toHaveBeenCalledTimes(1);
+  });
+
+  it('read-only panes attach no custom key handler', async () => {
+    const { createRemoteTerminalPane, getRemoteTerminalInstance, _resetForTesting } = await import('./remote-terminal-pane.js');
+    _resetForTesting();
+    const onInput = vi.fn();
+    createRemoteTerminalPane('remote-win32-ro', 'readonly', 80, 24, onInput);
+    const terminal = getRemoteTerminalInstance('remote-win32-ro')!.terminal as unknown as FakeTerminal;
+
+    expect(terminal.customKeyHandler).toBeUndefined();
   });
 });

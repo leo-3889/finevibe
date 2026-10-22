@@ -7,6 +7,7 @@ import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
+import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
 import { esc } from '../dom-utils.js';
 
 interface ShellTerminalInstance {
@@ -87,7 +88,8 @@ function createShell(projectId: string): ShellTerminalInstance {
   const sessionId = `shell-${projectId}-${shellId}`;
 
   const writeToPty = (data: string) => window.finevibe.pty.write(sessionId, data);
-  attachClipboardCopyHandler(terminal, undefined);
+  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty);
+  attachClipboardCopyHandler(terminal, handleWin32Key);
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: ShellTerminalInstance = {
@@ -306,6 +308,7 @@ function renderSidebar(projectId: string): void {
   }
   sidebarEl.classList.remove('hidden');
   const activeId = activeShellByProject.get(projectId);
+  // pi-lens-ignore: no-html-label-for
   sidebarEl.innerHTML = list.map(s => `
     <div class="terminal-list-item${s.id === activeId ? ' active' : ''}" data-shell-id="${esc(s.id)}">
       <span class="terminal-list-item-name">${esc(s.label)}</span>
