@@ -109,3 +109,41 @@ describe('mcp-inspector lifecycle', () => {
     expect(getInspectorInstance('s1')?.connected).toBe(true);
   });
 });
+
+describe('mcp-inspector refreshLists (UI3-8)', () => {
+  // The module-level `instances` map survives the beforeEach DOM reset, so this
+  // suite uses its own session id: the tests above leave a connected 's1' behind.
+  it('a pane destroyed while the lists load is never rendered into', async () => {
+    createInspectorPane('s-refresh');
+    const pane = getInspectorInstance('s-refresh')!.element;
+    document.body.appendChild(pane);
+    (pane.querySelector('.mcp-url-input') as HTMLInputElement).value = 'http://localhost:3000/mcp';
+
+    const connect = defer();
+    const lists = [defer(), defer(), defer()];
+    mcp.connect.mockReturnValue(connect.promise);
+    mcp.listTools.mockReturnValue(lists[0].promise);
+    mcp.listResources.mockReturnValue(lists[1].promise);
+    mcp.listPrompts.mockReturnValue(lists[2].promise);
+
+    (pane.querySelector('.mcp-connect-btn') as HTMLButtonElement).click();
+    connect.resolve({ success: true });
+    await vi.waitFor(() => expect(mcp.listTools).toHaveBeenCalledWith('s-refresh'));
+
+    const content = pane.querySelector('.mcp-inspector-content') as HTMLElement;
+    destroyInspectorPane('s-refresh');
+    const htmlAtDestroy = content.innerHTML;
+
+    for (const l of lists) l.resolve({ success: true, data: [{ name: 'echo' }] });
+    await vi.waitFor(() => expect(mcp.disconnect).toHaveBeenCalledWith('s-refresh'));
+    await flush();
+
+    // UI3-8: refreshLists used to write the dead pane's content and nav counts,
+    // and doConnect then re-enabled the destroyed pane's Connect button.
+    expect(content.innerHTML).toBe(htmlAtDestroy);
+    expect(content.querySelector('.mcp-card')).toBeNull();
+    expect(Array.from(pane.querySelectorAll('.mcp-nav-count')).map(c => c.textContent))
+      .toEqual(['0', '0', '0']);
+    expect((pane.querySelector('.mcp-connect-btn') as HTMLButtonElement).disabled).toBe(true);
+  });
+});

@@ -12,6 +12,9 @@ interface FileViewerInstance {
   worktreePath?: string;
   resolvedPath: string | null;
   loaded: boolean;
+  // Per-instance so concurrent pane loads don't discard each other; a
+  // superseded reload of the SAME pane is still dropped.
+  loadGeneration: number;
 }
 
 const instances = new Map<string, FileViewerInstance>();
@@ -93,8 +96,6 @@ function resolveFilePath(instance: FileViewerInstance): string {
     : `${basePath}/${instance.filePath}`;
 }
 
-let loadGeneration = 0;
-
 async function loadDiff(instance: FileViewerInstance, sessionId: string): Promise<void> {
   if (instance.loaded) return;
 
@@ -115,16 +116,16 @@ async function loadDiff(instance: FileViewerInstance, sessionId: string): Promis
     body.appendChild(loading);
   }
 
-  const gen = ++loadGeneration;
+  const gen = ++instance.loadGeneration;
 
   try {
     const diff = await window.finevibe.git.getDiff(instance.worktreePath ?? project.path, instance.filePath, instance.area);
-    if (gen !== loadGeneration) return; // superseded by a newer load
+    if (gen !== instance.loadGeneration) return; // superseded by a newer load
     body.innerHTML = '';
     body.appendChild(parseDiffLines(diff));
     instance.loaded = true;
   } catch {
-    if (gen !== loadGeneration) return;
+    if (gen !== instance.loadGeneration) return;
     body.innerHTML = '';
     const err = document.createElement('div');
     err.className = 'file-viewer-content';
@@ -176,7 +177,7 @@ export function createFileViewerPane(sessionId: string, filePath: string, area: 
   body.className = 'file-viewer-body';
   el.appendChild(body);
 
-  const instance: FileViewerInstance = { element: el, filePath, area, worktreePath, resolvedPath: null, loaded: false };
+  const instance: FileViewerInstance = { element: el, filePath, area, worktreePath, resolvedPath: null, loaded: false, loadGeneration: 0 };
   instances.set(sessionId, instance);
 }
 

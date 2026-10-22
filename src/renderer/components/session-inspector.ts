@@ -5,7 +5,7 @@ import {
 } from '../session-inspector-state.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { inspectorState } from './session-inspector-state-ui.js';
-import { renderTimeline, appendTimelineEvents } from './session-inspector-timeline.js';
+import { renderTimeline, appendTimelineEvents, disposeTimelineRenderState } from './session-inspector-timeline.js';
 import { renderCosts, renderTools, renderContext } from './session-inspector-views.js';
 import { canInspectSession, resetUIState } from './session-inspector-utils.js';
 
@@ -53,6 +53,9 @@ export function closeInspector(): void {
   container.classList.remove('inspector-open');
   inspectorState.inspectorPanel.remove();
   inspectorState.inspectorPanel = null;
+  // The timeline module caches its render state (container, list, rows, event
+  // closures) for the append path; the panel is gone now, so drop it.
+  disposeTimelineRenderState();
   inspectorState.inspectedSessionId = null;
 
   // Dynamic import to avoid circular dependency (split-layout imports from session-inspector)

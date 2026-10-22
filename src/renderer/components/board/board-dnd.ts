@@ -18,7 +18,17 @@ export function initBoardDnd(): void {
   document.addEventListener('pointerdown', onPointerDown, true);
   document.addEventListener('pointermove', onPointerMove, true);
   document.addEventListener('pointerup', onPointerUp, true);
+  // A cancelled gesture (touch-scroll takeover, gesture zoom, window blur) never
+  // fires pointerup: without this the ghost stays on body and the NEXT pointerup
+  // anywhere commits a phantom moveTask against the stale target.
+  document.addEventListener('pointercancel', onPointerCancel, true);
   initialized = true;
+}
+
+// An aborted gesture is not a drop: cancel silently, without the drag-end
+// callbacks (same shape as the non-drag branch of onPointerUp).
+function onPointerCancel(): void {
+  cancelDrag();
 }
 
 export function isDragActive(): boolean {

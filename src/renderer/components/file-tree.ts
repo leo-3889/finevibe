@@ -318,6 +318,9 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
         renderChildren(projectId, entry.path, depth + 1, subContainer);
       } else {
         unwatchSubtree(projectId, entry.path);
+        // A load still in flight for the folder being collapsed must not paint
+        // into the emptied subcontainer: ghost rows under a closed chevron.
+        invalidateRender(subContainer);
         subContainer.innerHTML = '';
       }
     });
@@ -362,6 +365,34 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
   return [row];
 }
 
+// One pass per container wins. renderChildren (open / expand, full rebuild) and
+// reconcileChildren (watcher flush) start overlapping: their loadEntries awaits
+// resolve in arbitrary order, and a superseded run that paints last re-inserts
+// rows the newer run already deleted — ghost rows — or re-paints a folder from a
+// listing taken before a cache invalidation. Whichever pass starts last owns the
+// container; every pass re-checks ownership after its await.
+const renderGeneration = new WeakMap<HTMLElement, number>();
+
+/** Claim the container for a new pass; returns the pass's generation token. */
+function beginRender(container: HTMLElement): number {
+  const gen = (renderGeneration.get(container) ?? 0) + 1;
+  renderGeneration.set(container, gen);
+  return gen;
+}
+
+/** Drop a pending pass without starting one (collapse, subtree teardown). */
+function invalidateRender(container: HTMLElement): void {
+  renderGeneration.set(container, (renderGeneration.get(container) ?? 0) + 1);
+}
+
+/** False once a newer pass claimed the container. Ownership is generation-only
+ * on purpose: a tree is routinely rendered into a container that is not in the
+ * document yet (panes are built, then attached), so an `isConnected` check
+ * would silently drop those first renders. */
+function ownsRender(container: HTMLElement, gen: number): boolean {
+  return renderGeneration.get(container) === gen;
+}
+
 /** Full (re)build of a folder's children. Used for initial render and expand. */
 async function renderChildren(
   projectId: string,
@@ -372,7 +403,9 @@ async function renderChildren(
   container.dataset.folderPath = folderPath;
   container.dataset.depth = String(depth);
   watchFolder(projectId, folderPath);
+  const gen = beginRender(container);
   const entries = await loadEntries(folderPath);
+  if (!ownsRender(container, gen)) return;
   container.innerHTML = '';
 
   if (entries.length === 0) {
@@ -398,7 +431,9 @@ async function reconcileChildren(
   depth: number,
   container: HTMLElement
 ): Promise<void> {
+  const gen = beginRender(container);
   const entries = await loadEntries(folderPath);
+  if (!ownsRender(container, gen)) return;
   const newByPath = new Map(entries.map((e) => [e.path, e] as const));
 
   // Index the rows currently rendered in this container (rows only; their

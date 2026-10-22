@@ -9,7 +9,7 @@ import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from
 import { addMcpServer, removeMcpServer, isManagedMcpConfigDir } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { fileURLToPath } from 'node:url';
-import { loadState, saveState, getKnownProjectPaths, PersistedState } from './store';
+import { loadState, saveState, saveStateSync, getKnownProjectPaths, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
@@ -293,21 +293,40 @@ async function walkProjectFiles(root: string): Promise<string[]> {
 const enumerateCache = new Map<string, { at: number; files: string[] }>();
 const enumerateInFlight = new Map<string, Promise<string[]>>();
 const ENUMERATE_TTL_MS = 30_000;
+// Clearing the cache does not reach an enumeration already walking the tree,
+// so a plain `enumerateCache.clear()` on git:changed left two holes: new
+// callers were still handed the superseded in-flight walk, and that walk's late
+// result repopulated the cache — the invalidation was silently undone and the
+// pre-change listing was served for a whole TTL (Quick Open blind to files git
+// just added, for 30 s). One generation counter closes both: a run captures the
+// generation it started in and a superseded run neither publishes to the cache
+// nor owns the in-flight slot any more.
+let enumerateGeneration = 0;
+
+function invalidateEnumerations(): void {
+  enumerateGeneration++;
+  enumerateCache.clear();
+  enumerateInFlight.clear();
+}
 
 async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
   const hit = enumerateCache.get(resolvedCwd);
   if (hit && Date.now() - hit.at < ENUMERATE_TTL_MS) return hit.files;
   const pending = enumerateInFlight.get(resolvedCwd);
   if (pending) return pending;
-  const work = (async () => {
+  const gen = enumerateGeneration;
+  const run = async (): Promise<string[]> => {
     try {
       const files = await enumerateProjectFiles(resolvedCwd);
-      enumerateCache.set(resolvedCwd, { at: Date.now(), files });
+      if (gen === enumerateGeneration) enumerateCache.set(resolvedCwd, { at: Date.now(), files });
       return files;
     } finally {
-      enumerateInFlight.delete(resolvedCwd);
+      // Only the run that still owns the slot clears it; an invalidation may
+      // have handed this cwd to a newer enumeration already.
+      if (enumerateInFlight.get(resolvedCwd) === work) enumerateInFlight.delete(resolvedCwd);
     }
-  })();
+  };
+  const work = run();
   enumerateInFlight.set(resolvedCwd, work);
   return work;
 }
@@ -317,8 +336,7 @@ async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
 
 /** @internal Test-only: drop every cached/in-flight enumeration. */
 export function _resetEnumerateCacheForTesting(): void {
-  enumerateCache.clear();
-  enumerateInFlight.clear();
+  invalidateEnumerations();
 }
 
 let hookWatcherStarted = false;
@@ -483,7 +501,7 @@ async function removeAgentFromProvider(p: CliProvider, slug: string): Promise<Ag
 export function registerIpcHandlers(): void {
   // PA-07: invalidate the Quick Open enumeration cache on the same debounced
   // git:changed signal the renderer receives.
-  onGitChanged(() => enumerateCache.clear());
+  onGitChanged(invalidateEnumerations);
   ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
@@ -875,6 +893,15 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('store:save', (_event, state: PersistedState) => {
     invalidateCanonicalPathIfRootsChanged(state); saveState(state);
+  });
+
+  // S1-03: synchronous quit flush. The renderer's beforeunload needs the
+  // write on disk before the window tears down; store:save's async write can
+  // lose that race. Same verifier as store:save (a payload inventing a root
+  // must not widen the gate), then the fully synchronous store write.
+  ipcMain.on('store:save-sync', (event, state: PersistedState) => {
+    invalidateCanonicalPathIfRootsChanged(state); saveStateSync(state);
+    event.returnValue = true;
   });
 
   // Synchronous startup channel: the renderer applies theme/zoom before its

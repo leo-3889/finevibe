@@ -102,6 +102,33 @@ describe('board-dnd: addDragEndCallback', () => {
     expect(document.querySelectorAll('.board-drop-target')).toHaveLength(0);
   });
 
+  it('pointercancel aborts the drag: no ghost, no callbacks, no phantom move on the next pointerup', async () => {
+    const { initBoardDnd, isDragActive, addDragEndCallback } = await import('./board-dnd.js');
+    initBoardDnd();
+    const ended = vi.fn();
+    addDragEndCallback(ended);
+    const card = document.querySelector('.board-card[data-task-id="t1"]')!;
+    fire('pointerdown', card, 10, 10);
+    fire('pointermove', card, 100, 100);
+    expect(document.querySelector('.board-card-ghost')).not.toBeNull();
+    expect(isDragActive()).toBe(true);
+
+    // The browser takes the gesture over (touch scroll / zoom / window blur):
+    // no pointerup ever reaches us.
+    fire('pointercancel', card, 100, 100);
+
+    expect(document.querySelector('.board-card-ghost')).toBeNull();
+    expect(isDragActive()).toBe(false);
+    expect(document.querySelectorAll('.board-drop-target')).toHaveLength(0);
+    expect(ended).not.toHaveBeenCalled();
+
+    // UI3-7: the trailing pointerup used to commit a moveTask for t1 against
+    // the stale activeDropTarget.
+    fire('pointerup', document.body, 50, 10);
+    expect(mockMoveTask).not.toHaveBeenCalled();
+    expect(ended).not.toHaveBeenCalled();
+  });
+
   it('unsubscribe removes only that callback and double-unsubscribe is a no-op', async () => {
     const { addDragEndCallback, initBoardDnd } = await import('./board-dnd.js');
     initBoardDnd();
@@ -127,7 +154,7 @@ describe('board-dnd: initBoardDnd idempotency', () => {
     initBoardDnd();
     initBoardDnd();
 
-    for (const type of ['pointerdown', 'pointermove', 'pointerup']) {
+    for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
       const calls = spy.mock.calls.filter((c) => c[0] === type);
       expect(calls).toHaveLength(1);
       expect(calls[0][2]).toBe(true); // capture phase

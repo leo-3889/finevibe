@@ -128,6 +128,7 @@ vi.mock('./providers/registry', () => ({
 vi.mock('./store', () => ({
   loadState: vi.fn(() => ({ projects: [], preferences: {} })),
   saveState: vi.fn(),
+  saveStateSync: vi.fn(),
   getKnownProjectPaths: () => knownPaths,
 }));
 
@@ -372,6 +373,40 @@ describe('fs:listFiles enumeration cache (PA-07)', () => {
     const files = await list(root);
     expect(new Set(files)).toEqual(new Set(['a.ts', path.join('sub', 'b.ts')]));
   });
+
+  it('a git:changed invalidation drops the enumeration already in flight (UI3-11)', async () => {
+    // Park enumeration #1: its git spawn never calls back, so the tree is
+    // "being walked" while the repo changes underneath it.
+    let releaseStale: (() => void) | null = null;
+    mockGitCloneSpawn.mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null, stdout: unknown) => void;
+      releaseStale = () => cb(null, { stdout: 'a.ts\ngone.ts\n' });
+    }) as never);
+
+    const stale = list(root, 'a'); // enumeration #1 — parked mid-walk
+    await Promise.resolve();
+
+    // The repo changes; the debounced git:changed signal invalidates.
+    stubGitLsFiles('a.ts\nb.ts\n');
+    (await gitChangedListener())();
+
+    // The invalidation must drop the parked walk as well: a new caller starts a
+    // fresh enumeration instead of being handed the superseded one.
+    expect(await list(root, 'b')).toEqual(['b.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(2);
+
+    // #1 lands late, carrying the pre-change listing.
+    releaseStale!();
+    expect(await stale).toEqual(['a.ts']);
+
+    // Its cache write must be dropped too: the cache keeps the fresh listing, so
+    // 'gone' matches nothing with no third spawn. Clearing only the Map let the
+    // late write repopulate it, undoing the invalidation for a whole TTL.
+    stubGitLsFiles('a.ts\nb.ts\ngone.ts\n');
+    expect(await list(root, 'gone')).toEqual([]);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(2);
+    expect(await list(root, 'b')).toEqual(['b.ts']);
+  });
 });
 
 // PA-24: the stats widget rendered this every poll; the JSON file used to be
@@ -542,6 +577,24 @@ describe('store:save cannot widen the root set', () => {
     const poison = { projects: [{ id: 'x', path: 'C:\\' }], preferences: {} };
     handlers.get('store:save')!({}, poison);
     expect(vi.mocked(store.saveState)).toHaveBeenCalledWith(poison);
+    expect(knownPaths).not.toContain('C:\\');
+    await expect(handlers.get('fs:readFile')!({}, 'C:\\')).resolves.toEqual({ ok: false, reason: 'error' });
+  });
+});
+
+// S1-03: the sync quit flush must carry the SAME verifier as store:save —
+// a payload inventing a root may not widen the gate through the new channel,
+// and it must reach saveStateSync (the synchronous writer), not saveState.
+describe('store:save-sync (S1-03)', () => {
+  it('routes through the store verifier into saveStateSync and answers the sync send', async () => {
+    const store = await import('./store');
+    knownPaths.length = 0;
+    const poison = { projects: [{ id: 'x', path: 'C:\\' }], preferences: {} };
+    const event = { returnValue: false as unknown };
+    handlers.get('store:save-sync')!(event, poison);
+    expect(vi.mocked(store.saveStateSync)).toHaveBeenCalledWith(poison);
+    expect(vi.mocked(store.saveState)).not.toHaveBeenCalled();
+    expect(event.returnValue).toBe(true);
     expect(knownPaths).not.toContain('C:\\');
     await expect(handlers.get('fs:readFile')!({}, 'C:\\')).resolves.toEqual({ ok: false, reason: 'error' });
   });

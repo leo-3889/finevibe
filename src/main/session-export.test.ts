@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
-import { PassThrough } from 'stream';
+import { PassThrough, Writable } from 'stream';
 import os from 'os';
 import path from 'path';
 import JSZip from 'jszip';
@@ -11,6 +11,26 @@ vi.mock('electron', () => ({
   dialog: { showSaveDialog: (...a: unknown[]) => showSaveDialog(...a) },
   BrowserWindow: { getAllWindows: () => [] },
 }));
+
+// UI3-9: `fs.createWriteStream` is the write-side failure seam. The module
+// under test imports it directly and the ESM namespace is not configurable
+// (vi.spyOn throws), so this partial mock routes the call through a
+// per-test override — default null keeps every other test on the real
+// stream.
+const fsOverrides = vi.hoisted(() => ({
+  createWriteStream: null as null | ((filePath: string) => import('stream').Writable),
+}));
+
+vi.mock('fs', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('fs')>();
+  return {
+    ...mod,
+    createWriteStream: (filePath: string, ...rest: unknown[]) =>
+      fsOverrides.createWriteStream
+        ? fsOverrides.createWriteStream(filePath)
+        : (mod.createWriteStream as (p: string, ...r: unknown[]) => unknown)(filePath, ...rest),
+  };
+});
 
 const launchSessionDir = vi.fn((p: string, id: string) => `${p}-launch-${id}`);
 vi.mock('./launch-session-dir', () => ({
@@ -214,6 +234,56 @@ describe('exportSessionArchive() zip', () => {
       await expect(fs.access(out)).rejects.toThrow();
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  // UI3-9: the write-side mirror of the source-side test above. On a
+  // destination error (disk full), `finished(out)` rejects while the zip
+  // generator is still piped and paused. Its reference used to die with the
+  // promise executor, so the catch could not destroy it: the generator kept
+  // its source streams alive and the transcript fd stayed open — on Windows
+  // that blocks deleting/renaming the provider's transcript, the exact class
+  // of bug the production comment documents for `out`.
+  it('destroys the zip generator when the destination write fails', async () => {
+    const transcript = path.join(tmp, 't.jsonl');
+    await fs.writeFile(transcript, 'A\nB');
+    getTranscriptPath.mockReturnValue(transcript);
+    const out = path.join(tmp, 'out.zip');
+    showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });
+
+    const boom = new Error('ENOSPC: no space left on device');
+    let destroyCount = 0;
+    let generator: PassThrough | undefined;
+    const genSpy = vi.spyOn(JSZip.prototype, 'generateNodeStream').mockImplementation(() => {
+      const s = new PassThrough();
+      const orig = s.destroy.bind(s);
+      s.destroy = ((err?: Error | null) => {
+        destroyCount++;
+        return orig(err);
+      }) as typeof s.destroy;
+      generator = s;
+      // Chunks FIRST: a real disk-full failure lands after the zip header
+      // has been piped into the destination, like the source-error test.
+      queueMicrotask(() => s.write(Buffer.from('PK\u0003\u0004partial')));
+      return s as unknown as NodeJS.ReadableStream;
+    });
+    fsOverrides.createWriteStream = () =>
+      new Writable({ write(_chunk, _enc, cb) { cb(boom); } });
+    try {
+      await expect(exportSessionArchive(win, params())).rejects.toThrow(boom);
+      // (b) the generator is destroyed — with the pre-fix code this stays 0
+      // and the transcript fd leaks. Destroying the generator is the
+      // contract that releases the streams it consumes (transcript +
+      // sidecars); the mocked PassThrough is not the real consumer, so the
+      // transcript stream's own destroy() is not observable through it.
+      expect(generator).toBeDefined();
+      expect(destroyCount).toBe(1);
+      // (a) no half-written archive left behind (unlink ran; with the
+      // write stream mocked no real file ever exists).
+      await expect(fs.access(out)).rejects.toThrow();
+    } finally {
+      genSpy.mockRestore();
+      fsOverrides.createWriteStream = null;
     }
   });
 });

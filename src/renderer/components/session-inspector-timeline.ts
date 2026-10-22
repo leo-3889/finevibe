@@ -118,6 +118,17 @@ interface TimelineRenderState {
 
 let renderState: TimelineRenderState | null = null;
 
+/**
+ * The panel is removed from the DOM and dropped by `closeInspector()`, but this
+ * module keeps the render state: the detached container, its list, up to 500
+ * rows and the closures over the session's events stayed reachable forever, and
+ * the auto-scroll frames scheduled by the last render still ran against that
+ * detached tree. The inspector's close path calls this.
+ */
+export function disposeTimelineRenderState(): void {
+  renderState = null;
+}
+
 interface TimelineCtx {
   events: InspectorEvent[];
   sessionStart: number;
@@ -382,16 +393,20 @@ function buildTimelineRenderers(ctx: TimelineCtx) {
     row.appendChild(durationEl);
     row.appendChild(costEl);
 
-    // Expandable tool input
+    // Expandable tool input. The key carries the event index (UI3-6): two
+    // parallel tool calls share a millisecond timestamp, type and tool_name,
+    // and a colliding key in the shared expandedRows set expands/collapses
+    // the twins together. Indices stay stable across re-renders (PA-14: the
+    // timeline grows append-only).
     if (ev.tool_input) {
-      makeExpandable(row, `${ev.timestamp}:${ev.type}:${ev.tool_name || ''}`, '.inspector-tool-detail',
+      makeExpandable(row, `${i}:${ev.timestamp}:${ev.type}:${ev.tool_name || ''}`, '.inspector-tool-detail',
         () => createToolDetailEl(ev.tool_input!, mcpTool?.rawToolName));
     }
 
     // Expandable agent detail (for unmatched agent events only)
     if (isAgentEvent(ev)) {
       const duration = ev.type === 'subagent_stop' ? findAgentDuration(events, i) : null;
-      makeExpandable(row, `${ev.timestamp}:${ev.type}:${ev.agent_id || ''}`, '.inspector-agent-detail',
+      makeExpandable(row, `${i}:${ev.timestamp}:${ev.type}:${ev.agent_id || ''}`, '.inspector-agent-detail',
         () => createAgentDetailEl(ev, duration));
     }
 
@@ -415,7 +430,7 @@ export function renderTimeline(container: HTMLElement): void {
   const events = getEvents(inspectorState.inspectedSessionId!);
   if (events.length === 0) {
     renderState = null;
-    // pi-lens-ignore: xss-innerhtml — fully static markup, no interpolated data
+    // pi-lens-ignore: no-inner-html — fully static markup, no interpolated data
     container.innerHTML = `<div class="inspector-empty">${emptyMessage('No events yet')}</div>`;
     return;
   }
@@ -470,6 +485,8 @@ export function renderTimeline(container: HTMLElement): void {
 
   if (inspectorState.autoScroll) {
     requestAnimationFrame(() => {
+      // The panel can be closed between the schedule and the frame.
+      if (!container.isConnected) return;
       inspectorState.programmaticScroll = true;
       container.scrollTop = container.scrollHeight;
       inspectorState.programmaticScroll = false;
@@ -585,6 +602,7 @@ export function appendTimelineEvents(container: HTMLElement): boolean {
 
   if (inspectorState.autoScroll) {
     requestAnimationFrame(() => {
+      if (!st.container.isConnected) return;
       inspectorState.programmaticScroll = true;
       st.container.scrollTop = st.container.scrollHeight;
       inspectorState.programmaticScroll = false;

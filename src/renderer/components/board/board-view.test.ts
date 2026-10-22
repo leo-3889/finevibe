@@ -29,6 +29,14 @@ vi.mock('../../session-context.js', () => ({
   getContextSeverity: () => '',
 }));
 
+// UI3-10: only addTag is stubbed — the change-key tests above rely on the real
+// board-state (addTask/updateTask/board-changed), so the rest is spread through.
+const mockAddTag = vi.hoisted(() => vi.fn());
+vi.mock('../../board-state.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../board-state.js')>();
+  return { ...actual, addTag: mockAddTag };
+});
+
 import { appState, _resetForTesting } from '../../state.js';
 import { addTask, updateTask } from '../../board-state.js';
 import { initBoard, renderBoard } from './board-view.js';
@@ -94,5 +102,67 @@ describe('board-view change key (S4-02)', () => {
     updateTask(task.id, { sessionId: undefined });
     updateTask(task.id, { cliSessionId: 'cli-1' });
     expect(container.querySelector('.card-run-btn')!.textContent).toBe('\u21BB');
+  });
+});
+
+describe('board-view inline tag input (UI3-10)', () => {
+  // Nothing clears mocks in this file and the hoisted addTag spy outlives the
+  // tests above — count commits per test.
+  beforeEach(() => mockAddTag.mockClear());
+
+  // The "+" button only renders when the board has tags, so seed one.
+  function openTagInput(): { container: HTMLElement; input: HTMLInputElement } {
+    const container = setupKanban();
+    appState.activeProject!.board!.tags = [{ name: 'existing', color: 'blue' }];
+    initBoard();
+    renderBoard();
+    (container.querySelector('.board-tag-row-add') as HTMLButtonElement).click();
+    return { container, input: container.querySelector('.board-tag-row-input') as HTMLInputElement };
+  }
+
+  function key(input: HTMLInputElement, keyName: string): void {
+    input.dispatchEvent(new window.KeyboardEvent('keydown', { key: keyName, bubbles: true, cancelable: true }));
+  }
+
+  // jsdom does not fire blur when a focused element is removed; a browser does,
+  // and that blur is the whole UI3-10 bug — dispatch it the way the browser does.
+  function blur(input: HTMLInputElement): void {
+    input.dispatchEvent(new window.Event('blur'));
+  }
+
+  it('Escape discards the half-typed tag instead of committing it', () => {
+    const { container, input } = openTagInput();
+    input.value = 'half';
+
+    key(input, 'Escape');
+    blur(input);
+
+    expect(mockAddTag).not.toHaveBeenCalled();
+    expect(container.querySelector('.board-tag-row-input')).toBeNull();
+  });
+
+  it('Enter commits the tag exactly once', () => {
+    const { container, input } = openTagInput();
+    input.value = 'full';
+
+    key(input, 'Enter');
+    blur(input);
+
+    expect(mockAddTag).toHaveBeenCalledTimes(1);
+    expect(mockAddTag).toHaveBeenCalledWith('full');
+    expect(container.querySelector('.board-tag-row-input')).toBeNull();
+  });
+
+  it('a board-changed rebuild wipes the row without committing what was typed', () => {
+    const { container, input } = openTagInput();
+    input.value = 'typing';
+
+    // A real board change: the board-changed subscription calls renderBoard,
+    // whose renderTagRow() clears the row under the focused input.
+    addTask({ title: 'T', prompt: 'p', columnId: 'col-b' });
+    blur(input);
+
+    expect(mockAddTag).not.toHaveBeenCalled();
+    expect(container.querySelector('.board-tag-row-input')).toBeNull();
   });
 });

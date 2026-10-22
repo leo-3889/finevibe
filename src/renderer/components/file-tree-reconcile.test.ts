@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import type { FsChange } from '../../shared/types';
 
 vi.mock('../state.js', () => ({
@@ -178,6 +179,42 @@ describe('file tree reconciliation', () => {
     expect(isExpanded('p1', '/proj/src')).toBe(false);
   });
 
+  it('does not re-insert a deleted row when a stale reconcile run lands last', async () => {
+    dirContents.set('/proj', [entry('a.ts', '/proj', false), entry('b.ts', '/proj', false)]);
+    const container = document.createElement('div');
+    renderFileTree({ id: 'p1', path: '/proj' } as never, container);
+    await settle();
+    expect(rows(container)).toEqual(['/proj/a.ts', '/proj/b.ts']);
+
+    // Stall the next listDir('/proj'): run 1 (burst 1) captures it and parks on
+    // the pre-deletion snapshot while run 2 (burst 2) reads fresh state.
+    const listDir = (globalThis as unknown as { finevibe: { fs: { listDir: Mock } } }).finevibe.fs.listDir;
+    let staleResolve: ((entries: DirEntry[]) => void) | null = null;
+    let projCalls = 0;
+    listDir.mockImplementation((dir: string) => {
+      if (dir === '/proj' && projCalls++ === 0) {
+        return new Promise<DirEntry[]>((res) => { staleResolve = res; });
+      }
+      return Promise.resolve(dirContents.get(dir) ?? []);
+    });
+
+    emit([{ path: '/proj/new.ts', dir: '/proj', type: 'add' }]);
+    await settle(); // burst 1 → run 1 starts and stalls inside loadEntries
+
+    // b.ts is deleted on disk before burst 2: run 2 reads fresh state and
+    // removes its row.
+    dirContents.set('/proj', [entry('a.ts', '/proj', false)]);
+    emit([{ path: '/proj/b.ts', dir: '/proj', type: 'unlink' }]);
+    await settle();
+    expect(rows(container)).toEqual(['/proj/a.ts']);
+
+    // The stale run 1 resolves last with its pre-deletion snapshot; its
+    // insertion pass must not resurrect b.ts as a ghost row.
+    staleResolve!([entry('a.ts', '/proj', false), entry('b.ts', '/proj', false)]);
+    await settle();
+    expect(rows(container)).toEqual(['/proj/a.ts']);
+  });
+
   it('re-reads the root listing from disk when the panel re-renders', async () => {
     // Gap 1: the root cache survives the whole session, so a missed watcher
     // event at the project root was never manually recoverable.
@@ -254,6 +291,39 @@ describe('file tree reconciliation', () => {
     // (guarded in loadEntries), so it is silently dropped.
     resolveStale([entry('a.ts', '/proj/src', false)]);
     await settle();
+  });
+
+  it('a superseded full rebuild must not repaint over the newer rebuild', async () => {
+    dirContents.set('/proj', [entry('a.ts', '/proj', false)]);
+    const container = document.createElement('div');
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container);
+    await settle();
+    expect(rows(container)).toEqual(['/proj/a.ts']);
+
+    // Pass 1 (a panel re-render) stalls inside loadEntries holding an older
+    // listing; pass 2 (another re-render) reads fresh state and paints.
+    const listDir = vi.mocked(window.finevibe.fs.listDir);
+    const baseImpl = listDir.getMockImplementation()!;
+    let resolveStale: (entries: DirEntry[]) => void = () => {};
+    listDir.mockImplementationOnce((dir: string) =>
+      dir === '/proj'
+        ? new Promise<DirEntry[]>((res) => { resolveStale = res; })
+        : baseImpl(dir),
+    );
+
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container); // pass 1 — stalls
+    await settle();
+
+    dirContents.set('/proj', [entry('a.ts', '/proj', false), entry('b.ts', '/proj', false)]);
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container); // pass 2 — fresh read
+    await settle();
+    expect(rows(container)).toEqual(['/proj/a.ts', '/proj/b.ts']);
+
+    // Pass 1 lands last with its older listing: without the per-container
+    // generation it clears the container and repaints one stale row.
+    resolveStale([entry('a.ts', '/proj', false)]);
+    await settle();
+    expect(rows(container)).toEqual(['/proj/a.ts', '/proj/b.ts']);
   });
 });
 

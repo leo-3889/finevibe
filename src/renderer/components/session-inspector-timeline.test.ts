@@ -24,7 +24,7 @@ vi.mock('./session-inspector-state-ui.js', () => ({
 }));
 
 import { getEvents } from '../session-inspector-state.js';
-import { renderTimeline, appendTimelineEvents, buildAgentModel } from './session-inspector-timeline.js';
+import { renderTimeline, appendTimelineEvents, buildAgentModel, disposeTimelineRenderState } from './session-inspector-timeline.js';
 import { inspectorState } from './session-inspector-state-ui.js';
 import type { InspectorEvent } from '../../shared/types.js';
 
@@ -667,5 +667,79 @@ describe('PA-14 append-only reconcile', () => {
     expect(rowsAfterSecond).toHaveLength(500);
     // Row identity preserved across trim+append — incremental, no wipe.
     expect(rowsAfterSecond[0]).toBe(rowsAfterTrim[1]);
+  });
+});
+
+// UI3-6: expandable-row keys live in the shared inspectorState.expandedRows
+// set. Two parallel tool calls with the same millisecond timestamp, type and
+// tool_name used to share one key, so expanding one row auto-expanded its
+// twin on the next render (and collapsing collapsed both).
+describe('expandable row key uniqueness', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('expands only the clicked row when parallel tool calls share timestamp, type and tool_name', () => {
+    vi.mocked(getEvents).mockReturnValue([
+      ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'ls' } }),
+      ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'pwd' } }),
+    ]);
+
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const rows = (container as unknown as FakeElement).querySelectorAll('.inspector-timeline-row');
+    expect(rows).toHaveLength(2);
+
+    (rows[0] as FakeElement).listeners.get('click')?.[0]?.();
+    expect(rows[0].querySelector('.inspector-tool-detail')).not.toBeNull();
+    expect(rows[1].querySelector('.inspector-tool-detail')).toBeNull();
+
+    // The collision showed on the NEXT render: with the old
+    // timestamp:type:tool_name key, row 1 shared row 0's expanded key and
+    // rendered its detail unasked.
+    const rerendered = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(rerendered);
+    const rows2 = (rerendered as unknown as FakeElement).querySelectorAll('.inspector-timeline-row');
+    expect(rows2[0].querySelector('.inspector-tool-detail')).not.toBeNull();
+    expect(rows2[1].querySelector('.inspector-tool-detail')).toBeNull();
+
+    // Collapsing row 0 removes only its own key.
+    (rows2[0] as FakeElement).listeners.get('click')?.[0]?.();
+    expect(inspectorState.expandedRows.size).toBe(0);
+  });
+});
+
+// The timeline caches its render state at module scope for the append path.
+// closeInspector() removes the panel from the DOM; without the teardown the
+// detached container, its list, every row and the event closures stayed
+// reachable from this module forever.
+describe('render-state teardown', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('appendTimelineEvents stops reconciling after the state is disposed', () => {
+    const events = [ev('session_start', 1000)];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+
+    events.push(ev('tool_use', 2000));
+    expect(appendTimelineEvents(container)).toBe(true);
+
+    disposeTimelineRenderState();
+
+    // The append path has no state to reconcile against, so the caller takes
+    // the full-render path (which a closed panel never triggers).
+    events.push(ev('tool_use', 3000));
+    expect(appendTimelineEvents(container)).toBe(false);
   });
 });

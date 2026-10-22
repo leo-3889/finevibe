@@ -105,6 +105,8 @@ async function doConnect(
     dot.className = 'mcp-status connected';
     urlInput.disabled = true;
     await refreshLists(sessionId, instance, content);
+    // The pane can be destroyed while the lists load: its button is gone.
+    if (instances.get(sessionId) !== instance) return;
   } else {
     dot.className = 'mcp-status disconnected';
     btn.textContent = 'Connect';
@@ -140,7 +142,8 @@ async function refreshLists(sessionId: string, instance: McpInspectorInstance, c
     window.finevibe.mcp.listResources(sessionId),
     window.finevibe.mcp.listPrompts(sessionId),
   ]);
-
+  // A pane destroyed mid-flight must not be written into (dead DOM, dead counts).
+  if (instances.get(sessionId) !== instance) return;
   instance.toolsList = tools.success ? (tools.data as unknown[]) : [];
   instance.resourcesList = resources.success ? (resources.data as unknown[]) : [];
   instance.promptsList = prompts.success ? (prompts.data as unknown[]) : [];

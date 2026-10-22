@@ -1,5 +1,6 @@
 import { promises as fs, createReadStream, createWriteStream } from 'fs';
 import { finished } from 'stream/promises';
+import type { Readable } from 'stream';
 import path from 'path';
 import JSZip from 'jszip';
 import { dialog, BrowserWindow } from 'electron';
@@ -137,11 +138,15 @@ export async function exportSessionArchive(
   // the zip stream: src/main installs no uncaughtException handler, so it is a
   // crash, and this promise never settles.
   const out = createWriteStream(filePath);
+  // Hoisted so the catch below can reach it: on a write-side failure the
+  // promise rejects while the generator is still piped and paused, and the
+  // executor's local reference is gone with it.
+  let zipStream: Readable | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
-      const stream = zip.generateNodeStream({ type: 'nodebuffer', streamFiles: true, compression: 'DEFLATE', compressionOptions: { level: 6 } });
-      stream.on('error', reject);
-      stream.pipe(out);
+      zipStream = zip.generateNodeStream({ type: 'nodebuffer', streamFiles: true, compression: 'DEFLATE', compressionOptions: { level: 6 } }) as Readable;
+      zipStream.on('error', reject);
+      zipStream.pipe(out);
       finished(out).then(resolve, reject);
     });
   } catch (err) {
@@ -149,7 +154,11 @@ export async function exportSessionArchive(
     // The fd MUST be closed before the unlink: `pipe()` leaves the
     // destination open when the SOURCE errors, and Windows refuses unlink()
     // on a file with an open handle (EPERM) — the partial archive survived
-    // the cleanup on exactly the platform this IDE ships to.
+    // the cleanup on exactly the platform this IDE ships to. The same
+    // Windows-open-handle rule runs the other way on a WRITE-side failure:
+    // the generator — and through it the transcript fd it is reading — must
+    // be destroyed here too, or the provider's transcript stays locked.
+    zipStream?.destroy();
     out.destroy();
     await finished(out).catch(() => {});
     await fs.unlink(filePath).catch(() => {});

@@ -8,6 +8,8 @@ let resultsList: HTMLElement | null = null;
 let activeIndex = 0;
 let results: string[] = [];
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+// Request token: only the newest search may paint (see searchFiles).
+let latestSearchToken = 0;
 
 function parseQuery(raw: string): { fileQuery: string; lineNumber?: number } {
   const m = /^(.*):(\d+)$/.exec(raw);
@@ -55,11 +57,18 @@ async function searchFiles(): Promise<void> {
   if (!project || !input) return;
 
   const { fileQuery } = parseQuery(input.value);
+  const token = ++latestSearchToken;
+  let files: string[];
   try {
-    results = await window.finevibe.fs.listFiles(project.path, fileQuery);
+    files = await window.finevibe.fs.listFiles(project.path, fileQuery);
   } catch {
-    results = [];
+    files = [];
   }
+  // A stale listFiles response that lands last must not overwrite the newest
+  // query's results — the visible list would be the old files and Enter would
+  // open the wrong one.
+  if (token !== latestSearchToken) return;
+  results = files;
   activeIndex = 0;
   renderResults();
 }
@@ -158,6 +167,9 @@ export function showQuickOpen(): void {
   createOverlay();
   if (!overlay || !input) return;
 
+  // Drop any search still in flight from a previous session of the overlay, so
+  // its response cannot paint into the freshly opened one.
+  latestSearchToken++;
   overlay.style.display = 'flex';
   input.value = '';
   results = [];
@@ -173,6 +185,7 @@ function hideQuickOpen(): void {
   if (overlay) {
     overlay.style.display = 'none';
   }
+  latestSearchToken++;
   if (debounceTimer) {
     clearTimeout(debounceTimer);
     debounceTimer = null;

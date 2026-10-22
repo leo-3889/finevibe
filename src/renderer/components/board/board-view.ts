@@ -382,7 +382,15 @@ function showInlineTagInput(container: HTMLElement): void {
   input.placeholder = t('board.tagInputPlaceholder');
   input.maxLength = 30;
 
+  // Removing a focused input fires blur, and that blur is the whole UI3-10 bug:
+  // Escape used to commit the half-typed tag, Enter committed twice through its
+  // own follow-up blur, and a board-changed rebuild (innerHTML wipe) committed
+  // whatever was typed. committed covers the two key handlers; isConnected covers
+  // the rebuild, whose removal nobody flagged.
+  let committed = false;
+
   const commit = () => {
+    committed = true;
     const name = input.value.trim();
     if (name) addTag(name);
     input.remove();
@@ -390,9 +398,9 @@ function showInlineTagInput(container: HTMLElement): void {
 
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') input.remove();
+    if (e.key === 'Escape') { committed = true; input.remove(); }
   });
-  input.addEventListener('blur', commit);
+  input.addEventListener('blur', () => { if (!committed && input.isConnected) commit(); });
 
   const addBtn = container.querySelector('.board-tag-row-add');
   if (addBtn) container.insertBefore(input, addBtn);
