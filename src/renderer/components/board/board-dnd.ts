@@ -80,6 +80,9 @@ function onPointerDown(e: PointerEvent): void {
 
 function onPointerMove(e: PointerEvent): void {
   if (!pointerStarted || !dragTaskId) return;
+  // CI-04 follow-up (C5G-04): only the pointer that owns the gesture may
+  // drive it; a move from a second pointer must not start or move the drag.
+  if (dragPointerId !== null && e.pointerId !== dragPointerId) return;
 
   if (!isDragging) {
     const dx = Math.abs(e.clientX - startX);
@@ -117,6 +120,9 @@ function onPointerUp(e: PointerEvent): void {
     cancelDrag();
     return;
   }
+  // C5G-04: a pointerup from a non-owning pointer (e.g. a second touch
+  // tapped over the board) must not complete the drag.
+  if (dragPointerId !== null && e.pointerId !== dragPointerId) return;
 
   // Final position update before reading the active target
   highlightNearestTarget(e.clientX, e.clientY);

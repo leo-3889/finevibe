@@ -153,6 +153,40 @@ describe('board-dnd: addDragEndCallback', () => {
     expect(ended).toHaveBeenCalledTimes(1);
   });
 
+  it('a move from a pointer other than the drag owner does not drive the drag', async () => {
+    const { initBoardDnd, isDragActive } = await import('./board-dnd.js');
+    initBoardDnd();
+    const card = document.querySelector('.board-card[data-task-id="t1"]')!;
+    fire('pointerdown', card, 10, 10, { pointerId: 1 });
+
+    // C5G-04: a second finger moving past the threshold must not start the drag.
+    fire('pointermove', card, 100, 100, { pointerId: 99 });
+    expect(isDragActive()).toBe(false);
+    expect(document.querySelector('.board-card-ghost')).toBeNull();
+
+    // The owner moving does start it.
+    fire('pointermove', card, 100, 100, { pointerId: 1 });
+    expect(isDragActive()).toBe(true);
+    expect(document.querySelector('.board-card-ghost')).not.toBeNull();
+  });
+
+  it('a pointerup from a pointer other than the drag owner does not complete the drag', async () => {
+    const { initBoardDnd, isDragActive } = await import('./board-dnd.js');
+    initBoardDnd();
+    const card = document.querySelector('.board-card[data-task-id="t1"]')!;
+    fire('pointerdown', card, 10, 10, { pointerId: 1 });
+    fire('pointermove', card, 100, 100, { pointerId: 1 });
+
+    // C5G-04: a second finger lifting over the board must not complete the
+    // first one's gesture (the CI-04 cancel filter, applied to the drop path).
+    fire('pointerup', card, 50, 10, { pointerId: 99 });
+    expect(isDragActive()).toBe(true);
+    expect(mockMoveTask).not.toHaveBeenCalled();
+
+    fire('pointerup', card, 50, 10, { pointerId: 1 });
+    expect(isDragActive()).toBe(false);
+  });
+
   it('unsubscribe removes only that callback and double-unsubscribe is a no-op', async () => {
     const { addDragEndCallback, initBoardDnd } = await import('./board-dnd.js');
     initBoardDnd();
