@@ -26,6 +26,11 @@ const CODEX_FILE_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
  */
 const MAX_TRANSCRIPT_DAY_DIRS = 400;
 
+
+/** Hard deadline for one compressed-index read (see
+ * `indexCompressedTranscript`): healthy files finish in milliseconds, so
+ * this only fires on a dead stream chain (Windows zlib-thread quirks). */
+const ZSTD_INDEX_DEADLINE_MS = 8_000;
 import type { BrowserWindow } from 'electron';
 
 const binaryCache = { path: null as string | null };
@@ -314,8 +319,19 @@ export class CodexProvider implements CliProvider {
       },
     });
     cap.on('error', () => { /* best-effort, same as the plain path */ });
+    // pipe() never ends its destination when the source self-destroys: on
+    // Node builds that emit 'error' for a truncated tail frame (Windows CI,
+    // 2026-10-22: for-await hung past every timeout) zstd dies and
+    // cap/readline would wait forever. End cap once zstd is gone.
+    zstd.on('close', () => { if (!cap.destroyed) cap.end(); });
     zstd.pipe(cap);
     const lines = readline.createInterface({ input: cap, crlfDelay: Infinity });
+    // Hard deadline for the whole chain: the last-resort guard against a
+    // zlib-thread quirk where neither 'end' nor 'close' ever arrives.
+    // Healthy files finish in milliseconds; the deadline only fires on a
+    // dead chain, keeping whatever decompressed by then.
+    const watchdog = setTimeout(() => lines.close(), ZSTD_INDEX_DEADLINE_MS);
+    watchdog.unref();
     try {
       for await (const line of lines) {
         consume(line);
@@ -324,6 +340,7 @@ export class CodexProvider implements CliProvider {
     } catch {
       // Best-effort: keep whatever was extracted before decompression failed.
     } finally {
+      clearTimeout(watchdog);
       lines.close();
       cap.destroy();
       zstd.destroy();
