@@ -277,8 +277,17 @@ describe('validateCopilotHooks', () => {
 });
 
 describe('cleanupCopilotHooks', () => {
+  // The unlink guard reads the file: only a payload still carrying our
+  // marker is ours to delete, so fixtures that expect an unlink serve the
+  // managed content.
+  const managed = JSON.stringify({
+    version: 1,
+    hooks: { sessionStart: [{ bash: `python3 capture.py ${COPILOT_HOOK_MARKER}` }] },
+  });
+  const hookFileFor = (p: string) => path.join(p, '.github', 'hooks', 'finevibe-copilot-hooks.json');
+
   it('deletes the hook file', () => {
-    mockFiles({});
+    mockFiles({ [HOOK_FILE]: managed });
     installCopilotHooks(PROJECT);
     cleanupCopilotHooks(PROJECT);
     expect(mockUnlinkSync).toHaveBeenCalledWith(HOOK_FILE);
@@ -292,8 +301,43 @@ describe('cleanupCopilotHooks', () => {
 
   it('swallows ENOENT when file is already gone', () => {
     mockUnlinkSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    mockFiles({});
+    mockFiles({ [HOOK_FILE]: managed });
     installCopilotHooks(PROJECT);
     expect(() => cleanupCopilotHooks(PROJECT)).not.toThrow();
+  });
+
+  // P2-98: hooks install per project; quit cleanup must unlink EVERY
+  // project written this session, not just the most recent.
+  it('quit cleanup unlinks every project written this session', () => {
+    const PROJECT_B = '/mock/project-b';
+    const PROJECT_C = '/mock/project-c';
+    mockFiles({
+      [HOOK_FILE]: managed,
+      [hookFileFor(PROJECT_B)]: managed,
+      [hookFileFor(PROJECT_C)]: managed,
+    });
+    installCopilotHooks(PROJECT);
+    installCopilotHooks(PROJECT_B);
+    installCopilotHooks(PROJECT_C);
+    cleanupCopilotHooks();
+    expect(mockUnlinkSync).toHaveBeenCalledWith(HOOK_FILE);
+    expect(mockUnlinkSync).toHaveBeenCalledWith(hookFileFor(PROJECT_B));
+    expect(mockUnlinkSync).toHaveBeenCalledWith(hookFileFor(PROJECT_C));
+  });
+
+  it('quit cleanup leaves a file this session never wrote', () => {
+    const PROJECT_B = '/mock/project-b';
+    mockFiles({ [HOOK_FILE]: managed, [hookFileFor(PROJECT_B)]: managed });
+    installCopilotHooks(PROJECT);
+    cleanupCopilotHooks();
+    expect(mockUnlinkSync).toHaveBeenCalledWith(HOOK_FILE);
+    expect(mockUnlinkSync).not.toHaveBeenCalledWith(hookFileFor(PROJECT_B));
+  });
+
+  it('leaves a tracked file the user replaced with their own hooks', () => {
+    mockFiles({ [HOOK_FILE]: JSON.stringify({ version: 1, hooks: { sessionStart: [{ bash: 'echo user-own-hook' }] } }) });
+    installCopilotHooks(PROJECT);
+    cleanupCopilotHooks();
+    expect(mockUnlinkSync).not.toHaveBeenCalled();
   });
 });

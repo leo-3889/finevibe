@@ -38,10 +38,16 @@ interface HookEntry {
 
 type HooksConfig = Record<string, HookEntry[]>;
 
-// The last project path we installed hooks for. reinstallSettings() and
-// validateSettings() are called without a projectPath from the IPC layer,
-// so we remember the last one here.
+// The last project path we installed hooks for. validateSettings() is still
+// called without a projectPath from some IPC paths, so we remember the last
+// one here for the read fallback. For quit cleanup, `installedHookFiles` is
+// the source of truth: hooks are installed per project, so a single "last"
+// path would strand every earlier project's hook file (P2-98).
 let lastProjectPath: string | null = null;
+
+// Every project-scope hook file we wrote this session. Quit cleanup unlinks
+// all of them, not just the most recent project.
+const installedHookFiles = new Set<string>();
 
 function hookFilePath(projectPath: string): string {
   return path.join(projectPath, '.github', 'hooks', HOOK_FILENAME);
@@ -192,6 +198,9 @@ export function installCopilotHooks(projectPath?: string): void {
   if (readFileSafe(filePath) !== serialized) {
     fs.writeFileSync(filePath, serialized);
   }
+  // Tracked for quit cleanup even when the write was skipped: the identical
+  // on-disk content IS the payload we would have written, so it is managed.
+  installedHookFiles.add(filePath);
 }
 
 // ---------------------------------------------------------------------------
@@ -229,17 +238,33 @@ export function validateCopilotHooks(projectPath?: string): SettingsValidationRe
 // Cleanup
 // ---------------------------------------------------------------------------
 
+function isManagedHookFile(filePath: string): boolean {
+  const raw = readJsonSafe(filePath);
+  const hooks = (raw?.hooks ?? {}) as HooksConfig;
+  // Same marker test the validation path uses: a file at our path whose
+  // content was replaced with a user's own hooks is theirs, not ours to
+  // unlink.
+  return Object.values(hooks).some((entries) => entries?.some(isIdeHook) ?? false);
+}
+
 export function cleanupCopilotHooks(projectPath?: string): void {
-  const target = projectPath ?? lastProjectPath;
-  if (!target) return;
-  try {
-    fs.unlinkSync(hookFilePath(target));
-  } catch {
-    // already gone
+  // P2-98: quit cleanup (no argument) unlinks EVERY project file written
+  // this session — hooks are installed per project, so cleaning only the
+  // most recent path strands the file in every other repo.
+  const targets = projectPath ? [hookFilePath(projectPath)] : [...installedHookFiles];
+  for (const filePath of targets) {
+    installedHookFiles.delete(filePath);
+    if (!isManagedHookFile(filePath)) continue;
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // already gone
+    }
   }
 }
 
 /** @internal Test-only: reset module state */
 export function _resetForTesting(): void {
   lastProjectPath = null;
+  installedHookFiles.clear();
 }

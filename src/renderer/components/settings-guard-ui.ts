@@ -41,7 +41,9 @@ export function initSettingsGuard(): void {
           btn.textContent = 'Fixing\u2026';
           // P2-127: repair the config dir the banner was computed from —
           // for a profile session that is the profile dir, not ~/.claude.
-          const result = await window.finevibe.settings.reinstall(undefined, data.configDir);
+          // P2-55: and the project the banner was computed from — Copilot
+          // hooks are project-scoped, the user scope is not the broken file.
+          const result = await window.finevibe.settings.reinstall(undefined, data.configDir, data.projectPath);
           if (result.success) {
             removeAlertBanner();
           } else {

@@ -84,6 +84,49 @@ function ensureCodexHooksFeatureFlag(): void {
   fs.writeFileSync(CONFIG_TOML_PATH, lines.join('\n'));
 }
 
+// Inverse of ensureCodexHooksFeatureFlag: `installCodexHooks` turns the
+// feature on, so `cleanupCodexHooks` must turn it off — with Vibeyard's
+// hooks stripped, a lingering `codex_hooks = true` makes every remaining
+// user hooks.json entry fire on each Codex run outside the app, and the
+// user has no in-app way to switch the feature back off.
+function removeCodexHooksFeatureFlag(): void {
+  const content = readFileSafe(CONFIG_TOML_PATH);
+  if (!content) return;
+
+  const lines = content.split('\n');
+  let featuresSectionIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === '[features]') {
+      featuresSectionIdx = i;
+      break;
+    }
+  }
+  if (featuresSectionIdx === -1) return;
+
+  let nextSectionIdx = lines.length;
+  for (let i = featuresSectionIdx + 1; i < lines.length; i++) {
+    if (/^\[.+\]$/.test(lines[i].trim())) {
+      nextSectionIdx = i;
+      break;
+    }
+  }
+
+  const sectionBody = lines
+    .slice(featuresSectionIdx + 1, nextSectionIdx)
+    .filter((line) => !/^codex_hooks\s*=/.test(line.trim()));
+  // Keep the header only while the section still holds real content
+  // (keys or comments — comments are the user's, never stripped). When
+  // codex_hooks was the section's only entry, drop the empty header too.
+  const hasContent = sectionBody.some((line) => line.trim() !== '');
+
+  const out = [
+    ...lines.slice(0, featuresSectionIdx),
+    ...(hasContent ? [lines[featuresSectionIdx], ...sectionBody] : []),
+    ...lines.slice(nextSectionIdx),
+  ];
+  fs.writeFileSync(CONFIG_TOML_PATH, out.join('\n'));
+}
+
 // ---------------------------------------------------------------------------
 // Hook installation
 // ---------------------------------------------------------------------------
@@ -213,6 +256,10 @@ export function validateCodexHooks(): SettingsValidationResult {
 // ---------------------------------------------------------------------------
 
 export function cleanupCodexHooks(): void {
+  // Strip the feature flag first: it lives in config.toml and must be
+  // removed even when hooks.json is already gone (P2-61).
+  removeCodexHooksFeatureFlag();
+
   const raw = readJsonSafe(HOOKS_JSON_PATH);
   if (!raw) return;
 

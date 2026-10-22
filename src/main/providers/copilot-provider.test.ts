@@ -275,6 +275,14 @@ describe('hooks integration', () => {
     provider.reinstallSettings();
     expect(mockInstallCopilotHooks).toHaveBeenCalled();
   });
+
+  // P2-55: the banner is validated against the session's project — the
+  // Fix Settings CTA must repair THAT project, not the user-scope /
+  // last-installed fallback.
+  it('reinstallSettings repairs the banner project', () => {
+    provider.reinstallSettings(undefined, '/some/project');
+    expect(mockInstallCopilotHooks).toHaveBeenCalledWith('/some/project');
+  });
 });
 
 describe('agent install/remove', () => {

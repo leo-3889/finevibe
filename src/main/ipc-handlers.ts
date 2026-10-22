@@ -729,6 +729,10 @@ export function registerIpcHandlers(): void {
           // session's tree) — carry it so the Fix Settings CTA repairs it,
           // not the default ~/.claude the session never reads.
           configDir,
+          // P2-55/P2-86: the validation was computed against THIS project
+          // (Copilot hooks are per-project) — the Fix Settings CTA must
+          // repair and re-validate this project, not the user scope.
+          projectPath: cwd,
           foreignStatusLineCommand: validation.foreignStatusLineCommand,
         });
       }
@@ -2158,24 +2162,32 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('agentmemory:start', () => ensureAgentmemoryRunning());
   ipcMain.handle('agentmemory:log', () => readAgentmemoryLog());
 
-  ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string) => {
+  ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string, projectPath?: string) => {
     // P2-127: configDir is the dir the warning banner was computed from —
     // "Fix Settings" must repair THAT dir, since a profiled CLI never reads
     // ~/.claude. Renderer-supplied, and this writes settings.json into it:
     // same managed-profile gate as pty:create (P1-15).
+    // P2-55: projectPath is the session cwd the banner was validated
+    // against — Copilot's hooks are project-scoped, so the repair must
+    // target THAT project, not the user-scope / last-installed one.
     if (configDir && !isManagedMcpConfigDir(configDir)) {
       return { success: false, error: `Refused: ${configDir} is not a managed profile directory.` };
     }
     try {
       const provider = getProvider(providerId);
-      provider.reinstallSettings(configDir);
+      provider.reinstallSettings(configDir, projectPath);
       return { success: true };
     } catch (err) {
       return { success: false, error: String(err) };
     }
   });
-  ipcMain.handle('settings:validate', (_event, providerId: ProviderId = 'claude'): SettingsValidationResult => {
-    return getProvider(providerId).validateSettings();
+  // P2-86: scoped like the post-spawn validation (pty:create passes
+  // (cwd, configDir) deliberately — Copilot's hooks are per-project): the
+  // renderer passes the project its banner/CTA was computed from so a
+  // broken project-scoped config is not reported `complete` from the
+  // user-global file. No args = user-scope check (Preferences > Setup).
+  ipcMain.handle('settings:validate', (_event, providerId: ProviderId = 'claude', projectPath?: string, configDir?: string): SettingsValidationResult => {
+    return getProvider(providerId).validateSettings(projectPath, configDir);
   });
 
   // P1-14: for a profile session the warning banner is the single consent

@@ -60,8 +60,11 @@ export interface CliProvider {
    * (P2-127): a profiled Claude session reads its pinned profile dir, not
    * ~/.claude, so the repair MUST target that dir when one is given.
    * Providers whose settings tree is not relocatable ignore it.
+   * `projectPath` is the session cwd the banner was validated against
+   * (P2-55/P2-86): Copilot's hooks live per project, so its repair MUST
+   * target that project when one is given. Other providers ignore it.
    */
-  reinstallSettings(configDir?: string): void;
+  reinstallSettings(configDir?: string, projectPath?: string): void;
   parseCostFromOutput?(rawText: string): { totalCostUsd: number } | null;
   /** Return the absolute path to the source transcript file for a prior session, if any. */
   getTranscriptPath?(cliSessionId: string, projectPath: string, configDir?: string, sessionDir?: string): string | null;

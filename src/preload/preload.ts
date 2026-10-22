@@ -155,8 +155,8 @@ export interface FineVibeApi {
     onWarning(callback: (data: SettingsWarningData) => void): () => void;
     onConflictDialog(callback: (data: StatusLineConflictData) => void): () => void;
     respondConflictDialog(choice: 'replace' | 'keep'): void;
-    reinstall(providerId?: ProviderId, configDir?: string): Promise<{ success: boolean; error?: string }>;
-    validate(providerId?: ProviderId): Promise<SettingsValidationResult>;
+    reinstall(providerId?: ProviderId, configDir?: string, projectPath?: string): Promise<{ success: boolean; error?: string }>;
+    validate(providerId?: ProviderId, projectPath?: string, configDir?: string): Promise<SettingsValidationResult>;
     declineConflict(configDir?: string, foreignCommand?: string | null): void;
   };
   clipboard: {
@@ -361,8 +361,8 @@ const api: FineVibeApi = {
     onWarning: (cb) => onChannel('settings:warning', (data) => cb(data as SettingsWarningData)),
     onConflictDialog: (cb) => onChannel('settings:showConflictDialog', (data) => cb(data as StatusLineConflictData)),
     respondConflictDialog: (choice) => ipcRenderer.send('settings:conflictDialogResponse', choice),
-    reinstall: (providerId, configDir) => ipcRenderer.invoke('settings:reinstall', providerId || 'claude', configDir),
-    validate: (providerId) => ipcRenderer.invoke('settings:validate', providerId || 'claude'),
+    reinstall: (providerId, configDir, projectPath) => ipcRenderer.invoke('settings:reinstall', providerId || 'claude', configDir, projectPath),
+    validate: (providerId, projectPath, configDir) => ipcRenderer.invoke('settings:validate', providerId || 'claude', projectPath, configDir),
     declineConflict: (configDir, foreignCommand) => ipcRenderer.send('settings:declineStatusLine', configDir, foreignCommand),
   },
   clipboard: {

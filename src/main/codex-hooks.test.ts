@@ -391,4 +391,67 @@ describe('cleanupCodexHooks', () => {
     expect(() => cleanupCodexHooks()).not.toThrow();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
   });
+
+  // P2-61: cleanup is the inverse of install — installCodexHooks writes
+  // `codex_hooks = true` into config.toml, and cleanup must strip it,
+  // otherwise the user's remaining hooks.json entries keep firing on every
+  // Codex run outside Vibeyard with no in-app way to turn the feature off.
+  const finevibeHooks = JSON.stringify({
+    hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: `echo ${CODEX_HOOK_MARKER}` }] }] },
+  });
+
+  function tomlWrite(): string | undefined {
+    const call = mockWriteFileSync.mock.calls.find(c => String(c[0]) === CONFIG_TOML);
+    return call ? String(call[1]) : undefined;
+  }
+
+  it('strips codex_hooks from config.toml, keeping other keys, comments and sections', () => {
+    mockFiles({
+      [CONFIG_TOML]: 'model = "o3"\n[features]\ncodex_hooks = true\n# keep me\nshell = "pwsh"\n[profiles]\nx = 1\n',
+      [HOOKS_JSON]: finevibeHooks,
+    });
+    cleanupCodexHooks();
+    const content = tomlWrite();
+    expect(content).toBeDefined();
+    expect(content).not.toContain('codex_hooks');
+    expect(content).toContain('[features]');
+    expect(content).toContain('# keep me');
+    expect(content).toContain('shell = "pwsh"');
+    expect(content).toContain('model = "o3"');
+    expect(content).toContain('[profiles]');
+  });
+
+  it('drops the [features] header when codex_hooks was its only entry', () => {
+    mockFiles({
+      [CONFIG_TOML]: '[features]\ncodex_hooks = true\n[other]\nx = 1\n',
+      [HOOKS_JSON]: finevibeHooks,
+    });
+    cleanupCodexHooks();
+    expect(tomlWrite()).toBe('[other]\nx = 1\n');
+  });
+
+  it('strips the flag from a CRLF config keeping the line endings', () => {
+    mockFiles({
+      [CONFIG_TOML]: '[features]\r\ncodex_hooks = true\r\nshell = "pwsh"\r\n',
+      [HOOKS_JSON]: finevibeHooks,
+    });
+    cleanupCodexHooks();
+    expect(tomlWrite()).toBe('[features]\r\nshell = "pwsh"\r\n');
+  });
+
+  it('strips the flag even when hooks.json is already gone', () => {
+    mockFiles({ [CONFIG_TOML]: '[features]\ncodex_hooks = true\n' });
+    cleanupCodexHooks();
+    expect(tomlWrite()).toBe('');
+    expect(mockWriteFileSync.mock.calls.filter(c => String(c[0]) === HOOKS_JSON)).toHaveLength(0);
+  });
+
+  it('leaves config.toml untouched when the flag was never set', () => {
+    mockFiles({
+      [CONFIG_TOML]: 'model = "o3"\n',
+      [HOOKS_JSON]: finevibeHooks,
+    });
+    cleanupCodexHooks();
+    expect(tomlWrite()).toBeUndefined();
+  });
 });
