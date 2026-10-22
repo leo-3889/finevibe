@@ -5,6 +5,12 @@ import { isWin } from '../platform';
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
   statSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  // getTranscriptPath walks ~/.gemini/tmp through these (P1-21/P2-54 tests).
+  readdirSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  readFileSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  openSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  readSync: vi.fn(),
+  closeSync: vi.fn(),
 }));
 
 vi.mock('os', () => ({
@@ -288,5 +294,114 @@ describe('other methods', () => {
     const win = { id: 1 } as any;
     provider.startConfigWatcher(win, '/project');
     expect(mockStartConfigWatcher).toHaveBeenCalledWith(win, '/project', 'gemini');
+  });
+});
+
+describe('getTranscriptPath', () => {
+  const TMP_ROOT = path.join('/mock/home', '.gemini', 'tmp');
+  const REQUESTED = '0f8e2f6a-1e2c-4a44-9b3f-2a1d0c9b8a77';
+  // Same first 8 chars as REQUESTED — the only identity a filename encodes.
+  const FOREIGN = '0f8e2f6a-99ff-4a44-9b3f-2a1d0c9b8a77';
+  const mockReaddirSync = vi.mocked<(p: string) => string[]>(fs.readdirSync);
+  const mockReadFileSync = vi.mocked<(p: string, enc: string) => string>(fs.readFileSync);
+  const mockOpenSync = vi.mocked<(p: string, f: string) => number>(fs.openSync);
+  const mockReadSync = vi.mocked<(fd: number, buf: Buffer, off: number, len: number, pos: number) => number>(fs.readSync);
+
+  /**
+   * Fake `~/.gemini/tmp`: project key dirs with a `.project_root` (Gemini keys
+   * them by the REAL cwd it ran under) and chats dirs of transcript files with
+   * mtimes. A file with a `head` is readable; one without throws on open.
+   * `readHeadSync` goes through openSync/readSync, so heads are served by fd.
+   */
+  function mockGeminiTree(opts: {
+    projects: Array<{ key: string; root: string }>;
+    chats: Record<string, Array<{ file: string; mtime: number; head?: string }>>;
+  }): void {
+    const heads = new Map<string, string>();
+    for (const [key, files] of Object.entries(opts.chats)) {
+      for (const f of files) {
+        if (f.head !== undefined) heads.set(path.join(TMP_ROOT, key, 'chats', f.file), f.head);
+      }
+    }
+    const fdToPath = new Map<number, string>();
+    let nextFd = 100;
+    mockExistsSync.mockReturnValue(true);
+    mockReaddirSync.mockImplementation((p: string) => {
+      if (p === TMP_ROOT) return opts.projects.map((x) => x.key);
+      for (const [key, files] of Object.entries(opts.chats)) {
+        if (p === path.join(TMP_ROOT, key, 'chats')) return files.map((f) => f.file);
+      }
+      return [];
+    });
+    mockReadFileSync.mockImplementation((p: string) => {
+      for (const x of opts.projects) {
+        if (p === path.join(TMP_ROOT, x.key, '.project_root')) return x.root;
+      }
+      throw new Error('ENOENT');
+    });
+    mockStatSync.mockImplementation((p: string) => {
+      for (const [key, files] of Object.entries(opts.chats)) {
+        for (const f of files) {
+          if (p === path.join(TMP_ROOT, key, 'chats', f.file)) return { mtimeMs: f.mtime } as fs.Stats;
+        }
+      }
+      throw new Error('ENOENT');
+    });
+    mockOpenSync.mockImplementation((p: string) => {
+      if (!heads.has(p)) throw new Error('EACCES: unreadable transcript');
+      const fd = nextFd++;
+      fdToPath.set(fd, p);
+      return fd;
+    });
+    mockReadSync.mockImplementation((fd: number, buffer: Buffer, offset: number, length: number) => {
+      const head = heads.get(fdToPath.get(fd) as string) ?? '';
+      const n = Math.min(Buffer.byteLength(head), length);
+      buffer.write(head, offset, n);
+      return n;
+    });
+  }
+
+  it('returns the transcript whose head records the full session id', () => {
+    const file = 'session-2026-10-20T10-00-0f8e2f6a.json';
+    mockGeminiTree({
+      projects: [{ key: 'proj', root: '/real/project' }],
+      chats: { proj: [{ file, mtime: 2000, head: JSON.stringify({ sessionId: REQUESTED }) }] },
+    });
+    expect(provider.getTranscriptPath(REQUESTED, '/real/project'))
+      .toBe(path.join(TMP_ROOT, 'proj', 'chats', file));
+  });
+
+  it('never returns the newest prefix-match when no file verifies the full id (P1-21)', () => {
+    mockGeminiTree({
+      projects: [{ key: 'proj', root: '/real/project' }],
+      chats: { proj: [
+        { file: 'session-2026-10-20T10-00-0f8e2f6a.json', mtime: 3000, head: JSON.stringify({ sessionId: FOREIGN }) },
+        { file: 'session-2026-10-19T09-00-0f8e2f6a.json', mtime: 2000 }, // head unreadable
+      ] },
+    });
+    expect(provider.getTranscriptPath(REQUESTED, '/real/project')).toBeNull();
+  });
+
+  it('does not cross-attach the indexed foreign transcript of the real-cwd project to an overridden-cwd session (P2-54)', () => {
+    // Gemini keys the chats dir by the REAL cwd it ran under. This tab launched
+    // its CLI with an overridden cwd, so its transcript lives under a project
+    // key that never matches the project path; the indexed dir of the real
+    // project holds only a FOREIGN session sharing the 8-char filename prefix —
+    // the newest-mtime entry, exactly what the removed fallback returned.
+    mockGeminiTree({
+      projects: [{ key: 'real-proj', root: '/real/project' }],
+      chats: { 'real-proj': [
+        { file: 'session-2026-10-20T10-00-0f8e2f6a.json', mtime: 5000, head: JSON.stringify({ sessionId: FOREIGN }) },
+      ] },
+    });
+    expect(provider.getTranscriptPath(REQUESTED, '/real/project')).toBeNull();
+  });
+
+  it('returns null when no file matches the 8-char prefix', () => {
+    mockGeminiTree({
+      projects: [{ key: 'proj', root: '/real/project' }],
+      chats: { proj: [{ file: 'session-2026-10-20T10-00-deadbeef.json', mtime: 1, head: '{}' }] },
+    });
+    expect(provider.getTranscriptPath(REQUESTED, '/real/project')).toBeNull();
   });
 });
