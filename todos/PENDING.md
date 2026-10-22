@@ -23,14 +23,16 @@ P2-72, P2-74, P2-75, P2-86, P2-98 · P3-4.
 ## 2. Plan remainders (sources in `archives/`)
 
 - [ ] **Codex plan mode** (`archives/ask-ai-plan-mode-provider-support-plan.md` §Phase 2) — blocked: needs `codex --help` probe on an installed binary (not present on this machine); `planModeArg` deliberately unset (`codex-provider.ts:68-77`). Fallback scope: `/plan` PTY-input (`planModeStartupInput`) as its own plan.
-- [ ] **Ask-AI per-provider runtime smoke** (`archives/ask-ai-focus-setting-plan.md`) — shipped behavior verified by unit tests; live multi-provider runtime rows never executed on a packaged app.
-- [ ] **Clipboard per-OS runtime acceptance** (`archives/clipboard-paste-latency-plan.md` §8) — blocked: needs macOS + Linux(X11/Wayland) machines. Rows: P0 baselines, P4 <50 ms screenshot-paste, P5 ≥5× pty:data reduction, Finder/Nautilus copies, middle-click, Wayland denial (`docs/performance.md:190,206`).
+- [x] **Ask-AI focus runtime smoke** (`archives/ask-ai-focus-setting-plan.md`) — DONE 2026-10-22 on the live app (Windows, omp provider, CDP-driven): prefs UI→state.json round-trip both values; `stay` = selection→Ask-AI bubble→Send keeps focus on the FILE tab through spawn→working→title-adoption→completed, background tab glyph `waiting→completed`, transcript answers (`SMOKE-AI-OK` on disk); `switch` = new tab activates (old behavior). Multi-provider matrix (claude/codex/gemini CLI rows) never run — low value, unit tests cover the decision fn.
+- [ ] **Clipboard per-OS runtime acceptance** (`archives/clipboard-paste-latency-plan.md` §8) — checklist DELIVERED: [`clipboard-acceptance-checklist.md`](clipboard-acceptance-checklist.md) (24 runnable rows: P0 baselines, P4 <50 ms screenshot-paste, P5 ≥5×, Finder/Nautilus/Explorer copies, middle-click, Wayland denial; Windows rows pre-filled from the 2026-10-21 measurements). Execution still needs macOS + Linux(X11/Wayland) machines + a packaged Windows build (`docs/performance.md:190,206`).
 
 ## 3. Decisions / release gates
 
 - [x] **userData migration for the vibeyard→finevibe rename** — SHIPPED: `src/main/userdata-migration.ts` (copy-only, dest-wins, stale-partition purge, locked-file retry, `.finevibe-migrated` marker) wired first in `startMainProcess`; 7 tests; `AUDIT_STATUS.md` gate row rewritten; FEATURES §20 row. Remaining: packaged-installer E2E of the copy (build-host gated, §3 next row).
-- [ ] **S1–S6 packaged live-run protocol** (`docs/performance.md:218`) — never run; packaged build blocked on this host (node-pty rebuild needs the absent VS C++ toolchain; winCodeSign needs symlink privilege — `AUDIT_STATUS.md:173`). Includes PO-06 live watcher cost and the migration E2E above.
 - [ ] **Release prep decisions** — version bump (`0.3.9-dev` → ?), tag/push (`rebuild` → `fork/main` fast-forwards per AUDIT_STATUS push-state row; needs owner approval), `FINEVIBE_RELEASE_REPO` set in the release workflow (`publish.repo` now `leo-3889/finevibe` in package.json), CHANGELOG via workflow (F64).
+
+- [x] **S1–S6 run-sheet + CI packaging route** — DELIVERED: [`packaged-gates-runsheet.md`](packaged-gates-runsheet.md) + `release.yml` `artifacts_only` dispatch mode (`a19ad4d`) — artifact matrix from any ref with zero tag/push/publish, gh download + sha256 capture, S1–S6 / migration M1–M8 / PO-06 procedures, result log. Execution needs second hosts (owner trigger).
+- [x] **S1–S6 packaged live-run protocol** (`docs/performance.md:218`) — never run; packaged build blocked on this host (node-pty rebuild needs the absent VS C++ toolchain; winCodeSign needs symlink privilege — `AUDIT_STATUS.md:173`). Includes PO-06 live watcher cost and the migration E2E above. Route delivered — see row above; execution pending owner CI trigger.
 
 ## 4. By-design dispositions (no action)
 

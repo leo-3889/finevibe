@@ -101,7 +101,7 @@ version `0.3.9-dev`; a `-dev` suffix normalizes to `~dev` inside the deb
 control metadata, packaging.md §Artifact matrix):
 
 | Artifact set | Files |
-|---|---|
+| --- | --- |
 | `windows` | `FineVibe-Setup-0.3.9-dev.exe` (NSIS), `FineVibe-0.3.9-dev.exe` (portable), `FineVibe-0.3.9-dev-win-x64.zip`, `latest.yml`, `.blockmap` |
 | `linux` | `FineVibe-0.3.9-dev-linux-amd64.deb`, `FineVibe-0.3.9-dev-linux-amd64.AppImage`, `latest-linux.yml`, `.blockmap` |
 | `macos` | dmg + zip for **arm64 and x64** (electron-builder default names, no `mac.artifactName` override), `latest-mac.yml`, `.blockmap` |
@@ -252,7 +252,7 @@ gi -R $ad,$h0 | Get-FileHash | Export-Csv legacy-before.csv
 - [ ] Verify each contract row:
 
 | # | Check | Command / evidence | Expected |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | M1 | copy-only | `gi -R $ad,$h0 \| Get-FileHash` re-export, diff vs `legacy-before.csv` | legacy trees byte-identical, nothing deleted |
 | M2 | dest wins | `gc "$env:USERPROFILE\.finevibe\state.json"` | `{"projects":["new"]}` (legacy content NOT copied over it; marker shows `skipped=1` for it) |
 | M3 | home copy | `gc "$env:USERPROFILE\.finevibe\profiles\work\mcp.json"` | copied verbatim |
@@ -321,7 +321,7 @@ Measure (Windows rows; Linux/macOS equivalents noted):
 ## 6. Where to record results
 
 | Result | Raw data | Status rows to flip (owned by the coordinator) |
-|---|---|---|
+| --- | --- | --- |
 | S1–S6 | `bench/memory/<date>/` CSVs + heap snapshots (protocol requirement, performance.md:210) | [docs/performance.md](../docs/performance.md) :218 "Still needed: run the measurement protocol above (S1–S6) in a packaged app…" → replace with the dated outcome; coverage row :190 for the per-OS clipboard tables; protocol pass-criteria paragraph :210 gets a "measured" note |
 | Migration E2E | this sheet's M1–M8 table + `migration.log`, `SHA256SUMS-gate.txt` | [docs/AUDIT_STATUS.md](../docs/AUDIT_STATUS.md) :183 row ends "Remaining live check: the packaged-installer E2E of the copy (build-host gated…)" → dated outcome; `todos/PENDING.md` §3 row "S1–S6 packaged live-run protocol" |
 | PO-06 | this sheet's size-sweep table + CSVs | add **live-app rows** to the docs/performance.md measurement table (:114-119; those rows are harness floors) and retire the caveat at :126-129 "**PO-06 stays open**"; close AUDIT_STATUS open item 4 (:120) |
@@ -333,5 +333,5 @@ outcome in this sheet's log below and hand the coordinator the run id + date.
 ## Result log
 
 | run id | ref / sha | host (OS build) | artifact set + sha256 (short) | S1 | S2 | S3 | S4 | S5 | S6 | M1–M8 | PO-06 | notes |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 |  |  |  |  |  |  |  |  |  |  |  |  |  |
