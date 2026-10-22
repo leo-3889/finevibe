@@ -163,18 +163,25 @@ describe('startShare', () => {
     expect(connectedCb).toHaveBeenCalled();
   });
 
-  it('chunks scrollback when it exceeds CHUNK_SIZE', async () => {
-    serializeReturn.value = 'x'.repeat(64 * 1024 + 10);
-    const handle = startShare('s1', 'readonly', '0123456789abcdef0123456789abcdef');
+  it('chunks scrollback by serialized byte size over the send budget (C3RP-04)', async () => {
+    // 250 KB of ASCII exceeds the 200 KB serialized budget; the old
+    // 64 KiB UTF-16-unit chunking let ESC-dense JSON blow past the
+    // ~256 KB Chromium SCTP message cap.
+    serializeReturn.value = 'x'.repeat(250 * 1024);
+    startShare('s1', 'readonly', '0123456789abcdef0123456789abcdef');
     lastDc!.onopen?.();
     deliver({ type: 'auth-response', response: 'expected-response' });
     await new Promise((r) => setTimeout(r, 0));
     const initMsg = sentMessages.find((s) => (s.msg as { type: string }).type === 'init');
     expect(initMsg).toBeDefined();
-    // init message should have empty scrollback; data messages carry chunks
+    // init message carries no scrollback; data messages chunk under budget
     expect((initMsg!.msg as { scrollback: string }).scrollback).toBe('');
     const dataMsgs = sentMessages.filter((s) => (s.msg as { type: string }).type === 'data');
     expect(dataMsgs.length).toBe(2);
+    const encoder = new TextEncoder();
+    for (const d of dataMsgs) {
+      expect(encoder.encode(JSON.stringify(d.msg)).length).toBeLessThanOrEqual(200 * 1024);
+    }
   });
 
   it('fires authFailed and stops on wrong response', async () => {
@@ -487,6 +494,18 @@ describe('native resource teardown', () => {
     onIce?.();
     expect(dc.close).toHaveBeenCalledTimes(1);
     expect(pc.close).toHaveBeenCalledTimes(1);
+    expect(onDisc).toHaveBeenCalledTimes(1);
+    expect(isSharing('s1')).toBe(false);
+  });
+
+  it('stopShare fires the disconnect notification (C3RP-02)', () => {
+    // Pre-fix the detached onclose made every stopShare-reached teardown
+    // silent: the share badge claimed a live viewer forever.
+    const handle = startShare('s1', 'readonly', KEY);
+    const onDisc = vi.fn();
+    handle.onDisconnected(onDisc);
+    lastDc!.onopen?.();
+    stopShare('s1');
     expect(onDisc).toHaveBeenCalledTimes(1);
     expect(isSharing('s1')).toBe(false);
   });

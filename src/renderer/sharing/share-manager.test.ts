@@ -24,6 +24,7 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
     __fireInit: ((d: unknown) => void) | null;
     __fireDisconnect: (() => void) | null;
     __fireData: ((p: string) => void) | null;
+    __fireResize: ((cols: number, rows: number) => void) | null;
   };
   const joinShareMock = vi.fn(() => {
     const handle: FakeJoinHandleT = {
@@ -36,7 +37,9 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
       onData: vi.fn((cb: (p: string) => void) => {
         handle.__fireData = cb;
       }),
-      onResize: vi.fn(),
+      onResize: vi.fn((cb: (cols: number, rows: number) => void) => {
+        handle.__fireResize = cb;
+      }),
       onDisconnected: vi.fn((cb: () => void) => {
         handle.__fireDisconnect = cb;
       }),
@@ -45,6 +48,7 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
       __fireInit: null,
       __fireDisconnect: null,
       __fireData: null,
+      __fireResize: null,
     };
     lastJoinHandleRef.current = handle;
     return { guestId: 'guest-1', handle };
@@ -60,6 +64,7 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
   const remoteTerm = {
     createRemoteTerminalPane: vi.fn(),
     writeRemoteData: vi.fn(),
+    resizeRemoteTerminal: vi.fn(),
     showRemoteEndOverlay: vi.fn(),
     destroyRemoteTerminal: vi.fn(),
   };
@@ -302,6 +307,19 @@ describe('joinRemoteSession', () => {
     expect(remoteTerm.writeRemoteData).toHaveBeenCalledWith('local-uuid', 'chunk');
   });
 
+  it('resizes the guest pane when the host resizes (S3-02 resize leg)', async () => {
+    await joinRemoteSession('p1', 'offer', '1234');
+    lastJoinHandle().__fireInit!({
+      scrollback: '',
+      mode: 'readonly',
+      cols: 80,
+      rows: 24,
+      sessionName: 'remote-name',
+    });
+    lastJoinHandle().__fireResize!(120, 40);
+    expect(remoteTerm.resizeRemoteTerminal).toHaveBeenCalledWith('local-uuid', 120, 40);
+  });
+
   it('shows end overlay when disconnect fires after init', async () => {
     await joinRemoteSession('p1', 'offer', '1234');
     lastJoinHandle().__fireInit!({
@@ -348,6 +366,7 @@ describe('joinRemoteSession failure handling', () => {
       __fireInit: null as ((d: unknown) => void) | null,
       __fireDisconnect: null as (() => void) | null,
       __fireData: null as ((p: string) => void) | null,
+      __fireResize: null as ((cols: number, rows: number) => void) | null,
     };
     return handle;
   }

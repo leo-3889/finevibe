@@ -21,14 +21,69 @@ interface HostPeer {
   missedPongs: number;
   serializeAddon: SerializeAddon;
   tornDown: boolean;
+  disconnectedCbs: EventCallback[];
+  disconnectFired: boolean;
+  // C3RP-03: payloads queued behind a saturated SCTP send buffer.
+  pending: string[];
+  pendingBytes: number;
 }
 
 const hostPeers = new Map<string, HostPeer>();
 
 const KEEPALIVE_INTERVAL = 30_000;
 const MAX_MISSED_PONGS = 3;
-const CHUNK_SIZE = 64 * 1024;
+// C3RP-04: CHUNK_SIZE counted UTF-16 units, but SCTP messages are capped
+// (~256 KB in Chromium) and JSON-serialised ESC-dense output inflates
+// (~6 bytes per escape). Chunk by serialised UTF-8 bytes under a
+// conservative budget instead.
+const MAX_SEND_BYTES = 200 * 1024;
+// Envelope of {"type":"data","payload":"..."} — a round overhead allowance
+// so the byte budget never has to mirror JSON escaping exactly.
+const DATA_ENVELOPE_BYTES = 64;
+const DATA_CHUNK_BUDGET = MAX_SEND_BYTES - DATA_ENVELOPE_BYTES;
+// C3RP-03: stop draining the pending queue while the SCTP send buffer is
+// above this mark; 'bufferedamountlow' (threshold set at channel creation)
+// resumes it.
+const MAX_BUFFERED_BYTES = 1024 * 1024;
+// Backlog ceiling for readonly shares: a readonly viewer that cannot keep
+// up drops its oldest output rather than growing the queue without bound.
+const MAX_PENDING_BYTES = 4 * 1024 * 1024;
 const AUTH_TIMEOUT = 10_000;
+
+const utf8Encoder = new TextEncoder();
+
+function utf8ByteLength(s: string): number {
+  return utf8Encoder.encode(s).length;
+}
+
+// Split a payload into pieces whose UTF-8 byte size stays under `budget`,
+// never cutting a surrogate pair in half.
+function chunkByUtf8Bytes(payload: string, budget: number): string[] {
+  const chunks: string[] = [];
+  let start = 0;
+  let bytes = 0;
+  for (let i = 0; i < payload.length; i++) {
+    const code = payload.charCodeAt(i);
+    const isPair =
+      code >= 0xd800 && code <= 0xdbff &&
+      i + 1 < payload.length &&
+      payload.charCodeAt(i + 1) >= 0xdc00 && payload.charCodeAt(i + 1) <= 0xdfff;
+    let size: number;
+    if (isPair) size = 4;
+    else if (code <= 0x7f) size = 1;
+    else if (code <= 0x7ff) size = 2;
+    else size = 3;
+    if (bytes + size > budget) {
+      chunks.push(payload.slice(start, i));
+      start = i;
+      bytes = 0;
+    }
+    if (isPair) i++;
+    bytes += size;
+  }
+  if (start < payload.length) chunks.push(payload.slice(start));
+  return chunks;
+}
 
 type EventCallback = () => void;
 
@@ -39,6 +94,50 @@ export interface ShareHandle {
   onConnected(cb: EventCallback): void;
   onDisconnected(cb: EventCallback): void;
   onAuthFailed(cb: (reason: string) => void): void;
+}
+
+// C3RP-03: enqueue a data payload as byte-budget pieces (C3RP-04 chunking),
+// coalesced at drain time. A readonly viewer that cannot keep up sheds its
+// oldest output past MAX_PENDING_BYTES; readwrite keeps stream ordering.
+function queueData(peer: HostPeer, payload: string): void {
+  for (const piece of chunkByUtf8Bytes(payload, DATA_CHUNK_BUDGET)) {
+    peer.pending.push(piece);
+    peer.pendingBytes += utf8ByteLength(piece);
+  }
+  if (peer.mode === 'readonly') {
+    while (peer.pendingBytes > MAX_PENDING_BYTES && peer.pending.length > 1) {
+      peer.pendingBytes -= utf8ByteLength(peer.pending.shift()!);
+    }
+  }
+}
+
+// Flush queued pieces: coalesce into as few messages as the byte budget
+// allows, stop while the SCTP send buffer sits above MAX_BUFFERED_BYTES
+// (resumed by 'bufferedamountlow'). Returns false only when the channel
+// can no longer take messages at all.
+function drainPending(peer: HostPeer): boolean {
+  const dc = peer.dc;
+  while (peer.pending.length > 0) {
+    if (dc.readyState !== 'open') return false;
+    if (dc.bufferedAmount > MAX_BUFFERED_BYTES) return true;
+    let take = 0;
+    let bytes = 0;
+    while (take < peer.pending.length) {
+      const size = utf8ByteLength(peer.pending[take]);
+      if (take > 0 && bytes + size > DATA_CHUNK_BUDGET) break;
+      bytes += size;
+      take++;
+    }
+    const payload = peer.pending.slice(0, take).join('');
+    peer.pending.splice(0, take);
+    peer.pendingBytes -= bytes;
+    try {
+      sendMessage(dc, { type: 'data', payload });
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function startShare(sessionId: string, mode: ShareMode, passphrase: string): ShareHandle {
@@ -53,12 +152,12 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
   instance.terminal.loadAddon(serializeAddon);
 
   const connectedCbs: EventCallback[] = [];
-  const disconnectedCbs: EventCallback[] = [];
   const authFailedCbs: ((reason: string) => void)[] = [];
-  let disconnectFired = false;
 
   const pc = new RTCPeerConnection(ICE_CONFIG);
   const dc = pc.createDataChannel('terminal', { ordered: true });
+  // C3RP-03: low-water mark that re-arms drainPending (see below).
+  dc.bufferedAmountLowThreshold = MAX_BUFFERED_BYTES;
 
   const hostPeer: HostPeer = {
     sessionId,
@@ -74,11 +173,18 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
     missedPongs: 0,
     serializeAddon,
     tornDown: false,
+    disconnectedCbs: [],
+    disconnectFired: false,
+    pending: [],
+    pendingBytes: 0,
   };
 
   hostPeers.set(sessionId, hostPeer);
+  dc.onbufferedamountlow = () => drainPending(hostPeer);
 
-  const sendInitAndStartKeepalive = (): void => {
+  // Returns false when the data channel rejects the session frames: the
+  // caller must then not mark the peer connected (C3RP-04).
+  const sendInitAndStartKeepalive = (): boolean => {
     const scrollback = serializeAddon.serialize();
     const { cols, rows } = instance.terminal;
     const sessionName = instance.sessionId;
@@ -92,14 +198,20 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
       sessionName,
     };
 
-    if (scrollback.length > CHUNK_SIZE) {
-      sendMessage(dc, initMsg);
-      for (let i = 0; i < scrollback.length; i += CHUNK_SIZE) {
-        sendMessage(dc, { type: 'data', payload: scrollback.slice(i, i + CHUNK_SIZE) });
-      }
-    } else {
+    const initOverheadBytes = utf8ByteLength(JSON.stringify(initMsg));
+    if (utf8ByteLength(scrollback) + initOverheadBytes <= MAX_SEND_BYTES) {
       initMsg.scrollback = scrollback;
+    }
+    try {
       sendMessage(dc, initMsg);
+    } catch {
+      return false;
+    }
+    if (initMsg.scrollback === '' && scrollback.length > 0) {
+      // Chunked scrollback rides the same pending/backpressure path as
+      // live output (C3RP-03).
+      queueData(hostPeer, scrollback);
+      if (!drainPending(hostPeer)) return false;
     }
 
     hostPeer.keepaliveTimer = setInterval(() => {
@@ -113,7 +225,8 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
     }, KEEPALIVE_INTERVAL);
 
     for (const cb of connectedCbs) cb();
-  }
+    return true;
+  };
 
   dc.onopen = () => {
     if (hostPeers.get(sessionId) !== hostPeer) return;
@@ -149,15 +262,29 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
         }
         if (expected === msg.response) {
           hostPeer.authState = 'verified';
-          hostPeer.connected = true;
-          sendMessage(dc, { type: 'auth-result', ok: true });
-          sendInitAndStartKeepalive();
+          try {
+            sendMessage(dc, { type: 'auth-result', ok: true });
+          } catch {
+            teardown(hostPeer);
+            return;
+          }
+          // C3RP-04: only mark connected once the session frames made it
+          // out — a throwing dc.send must not leave a "connected" peer
+          // with no keepalive whose every PTY chunk then throws.
+          if (sendInitAndStartKeepalive()) {
+            hostPeer.connected = true;
+          } else {
+            teardown(hostPeer);
+          }
         } else {
           sendMessage(dc, { type: 'auth-result', ok: false, reason: 'Passphrase mismatch' });
           for (const cb of authFailedCbs) cb('Passphrase mismatch');
           stopShare(sessionId);
         }
-      });
+      })
+        // C3RP-05: a rejected challenge computation must not leave the
+        // peer hanging in 'pending' with an open PC.
+        .catch(() => teardown(hostPeer));
       return;
     }
 
@@ -173,11 +300,8 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
 
   const handleDisconnect = () => {
     if (hostPeers.get(sessionId) !== hostPeer) return;
-    if (disconnectFired) return;
-    disconnectFired = true;
-    hostPeer.connected = false;
+    // C3RP-02: teardown owns the single disconnect notification.
     teardown(hostPeer);
-    for (const cb of disconnectedCbs) cb();
   };
 
   dc.onclose = handleDisconnect;
@@ -206,7 +330,7 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
       connectedCbs.push(cb);
     },
     onDisconnected(cb: EventCallback): void {
-      disconnectedCbs.push(cb);
+      hostPeer.disconnectedCbs.push(cb);
     },
     onAuthFailed(cb: (reason: string) => void): void {
       authFailedCbs.push(cb);
@@ -227,7 +351,10 @@ export function stopShare(sessionId: string): void {
 export function broadcastData(sessionId: string, data: string): void {
   const hostPeer = hostPeers.get(sessionId);
   if (!hostPeer?.connected || hostPeer.authState !== 'verified') return;
-  sendMessage(hostPeer.dc, { type: 'data', payload: data });
+  // C3RP-03: coalesced pending queue with SCTP backpressure, not an
+  // unbounded dc.send per PTY chunk.
+  queueData(hostPeer, data);
+  drainPending(hostPeer);
 }
 
 export function broadcastResize(sessionId: string, cols: number, rows: number): void {
@@ -267,6 +394,7 @@ function teardown(peer: HostPeer): void {
   peer.dc.onclose = null;
   peer.dc.onopen = null;
   peer.dc.onmessage = null;
+  peer.dc.onbufferedamountlow = null;
   peer.pc.oniceconnectionstatechange = null;
 
   if (peer.keepaliveTimer) {
@@ -278,12 +406,24 @@ function teardown(peer: HostPeer): void {
     peer.authTimeout = null;
   }
   peer.serializeAddon.dispose();
+  peer.pending = [];
+  peer.pendingBytes = 0;
 
   try { peer.dc.close(); } catch { /* ignore */ }
   try { peer.pc.close(); } catch { /* ignore */ }
 
   if (hostPeers.get(peer.sessionId) === peer) {
     hostPeers.delete(peer.sessionId);
+    peer.connected = false;
+    // C3RP-02: every terminal path (keepalive dead-peer, auth failure/
+    // timeout, explicit stop, replacement) ends here, so the single
+    // disconnect notification lives here — detached-close handlers used
+    // to make stopShare-reached teardowns silent, pinning the share badge
+    // and the share-manager handle on a dead viewer forever.
+    if (!peer.disconnectFired) {
+      peer.disconnectFired = true;
+      for (const cb of peer.disconnectedCbs) cb();
+    }
   }
 }
 

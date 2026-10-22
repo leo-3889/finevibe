@@ -102,6 +102,11 @@ export function forwardResize(sessionId: string, cols: number, rows: number): vo
 
 // --- Guest side ---
 
+// C3RP-06: pendingJoinHandles had no join-wide timeout. A host that
+// accepts the answer but never sends init (dead mid-handshake, wedged
+// renderer) pinned the handle — and its RTCPeerConnection — forever.
+const JOIN_INIT_TIMEOUT = 30_000;
+
 export async function joinRemoteSession(projectId: string, offer: string, passphrase: string, onConnected?: () => void): Promise<{ answer: string }> {
   const { handle } = joinShare(offer, passphrase);
   // Register synchronously: getAnswer() can reject (wrong key, malformed
@@ -109,10 +114,16 @@ export async function joinRemoteSession(projectId: string, offer: string, passph
   // by disconnect/cleanup on that path — one leaked PC per failed join
   // otherwise, until a renderer reload.
   pendingJoinHandles.add(handle);
+  const joinTimeout = setTimeout(() => {
+    if (!pendingJoinHandles.has(handle)) return;
+    pendingJoinHandles.delete(handle);
+    try { handle.disconnect(); } catch { /* peer already torn down */ }
+  }, JOIN_INIT_TIMEOUT);
   let answer: string;
   try {
     answer = await handle.getAnswer();
   } catch (err) {
+    clearTimeout(joinTimeout);
     pendingJoinHandles.delete(handle);
     try { handle.disconnect(); } catch { /* peer already torn down */ }
     throw err;
@@ -123,6 +134,7 @@ export async function joinRemoteSession(projectId: string, offer: string, passph
   handle.onInit((initData: InitData) => {
     if (!pendingJoinHandles.has(handle)) return;
     pendingJoinHandles.delete(handle);
+    clearTimeout(joinTimeout);
 
     const localSessionId = crypto.randomUUID();
     guestHandles.set(localSessionId, handle);
