@@ -1,6 +1,6 @@
 import { appState } from '../state.js';
 import { createModalShell, createModalButton } from './modal-shell.js';
-import { pushModal } from './modal-manager.js';
+import { pushModal, modalStackDepth } from './modal-manager.js';
 import { ModalCloser } from './modal-close.js';
 import { t } from '../i18n.js';
 import type { PreferencesContext, Section, SectionController } from './preferences/section.js';
@@ -157,6 +157,10 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
     // centralized modal manager (capture phase) so it works over a focused
     // terminal and never leaks to the PTY.
     if (activeRecorder) return;
+    // Enter must only confirm the top dialog: a nested Add-profile / Rename /
+    // Delete dialog from modal.ts has its own Enter handler, and confirming
+    // Preferences underneath it closes the modal the nested dialog lives in.
+    if (modalStackDepth() > 1) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       handleConfirm();

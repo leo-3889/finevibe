@@ -12,6 +12,23 @@ const MAX_CACHE_ENTRIES = 500;
 // bytes than this character count; this still bounds retained payload size.
 const MAX_CACHE_CHARS = 8 * 1024 * 1024;
 
+// UI2-8: a prune sweeps the provider's whole derived-index directory (one
+// readdir plus an unlink per vanished source). Every search pass ends with
+// one, so a query burst paid a full sweep per keystroke. The index only gains
+// garbage when transcripts disappear, so one sweep per provider per interval
+// is enough; the gate is claimed per provider, so a shared budget cannot let
+// one chatty provider starve the others.
+const PRUNE_MIN_INTERVAL_MS = 30_000;
+const lastPruneAt = new Map<string, number>();
+
+/** Claim this provider's prune slot; false while the last sweep is still fresh. */
+function claimPruneSlot(providerId: string, now: number): boolean {
+  const last = lastPruneAt.get(providerId);
+  if (last !== undefined && now - last < PRUNE_MIN_INTERVAL_MS) return false;
+  lastPruneAt.set(providerId, now);
+  return true;
+}
+
 interface CacheEntry {
   text: string;
   textLower: string;
@@ -38,6 +55,7 @@ export function _resetForTesting(): void {
   activeReads = 0;
   drainReadQueue();
   inFlight.clear();
+  lastPruneAt.clear();
 }
 
 let activeReads = 0;
@@ -306,7 +324,7 @@ async function searchOneProvider(provider: CliProvider, query: string, signal?: 
   for (const root of discovery.incompleteRoots) {
     console.warn(`[session-search] transcript discovery incomplete for ${provider.meta.id} (${root}); keeping the derived index`);
   }
-  if (!signal?.aborted && discovery.complete) {
+  if (!signal?.aborted && discovery.complete && claimPruneSlot(provider.meta.id, Date.now())) {
     await pruneSearchIndex(provider.meta.id, descriptors.map(d => d.transcriptPath));
   }
   return [...best.values()];

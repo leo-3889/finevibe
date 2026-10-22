@@ -1,7 +1,7 @@
 import { appState } from '../state.js';
 import { createModalShell, createModalButton } from './modal-shell.js';
 import { pushModal } from './modal-manager.js';
-import { ModalCloser, enterCloseKeydown } from './modal-close.js';
+import { ModalCloser } from './modal-close.js';
 
 interface ReleaseNotes {
   date: string;
@@ -90,16 +90,14 @@ function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
 
   const close = () => closer.close(overlay);
 
-  const handleKeydown = enterCloseKeydown(close);
-
-  const unregisterEsc = pushModal({ onEscape: close });
+  // UI2-9: ENTER is dismissed through the manager's top-of-stack routing, so a
+  // dialog stacked under this one is no longer closed by the same keypress.
+  const unregisterModal = pushModal({ onEscape: close, onEnter: close });
   confirmBtn.addEventListener('click', close);
-  document.addEventListener('keydown', handleKeydown);
 
   closer.setCleanup(() => {
-    unregisterEsc();
+    unregisterModal();
     confirmBtn.removeEventListener('click', close);
-    document.removeEventListener('keydown', handleKeydown);
   });
 }
 

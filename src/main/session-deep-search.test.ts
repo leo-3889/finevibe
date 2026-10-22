@@ -353,6 +353,47 @@ describe('searchSessions()', () => {
     expect(pruneSearchIndex).toHaveBeenCalledWith('claude', ['/a']);
   });
 
+  // UI2-8: the prune is a full readdir of the provider's derived-index dir plus
+  // an unlink per vanished source, and every search pass used to end with one —
+  // a query burst (one pass per keystroke) paid a full sweep per keystroke.
+  it('rate-limits pruning to one sweep per provider per interval', async () => {
+    providersForTest.push(fakeProvider({
+      id: 'claude',
+      descriptors: [{ cliSessionId: 'a', transcriptPath: '/a' }],
+      index: { '/a': { text: 'complete body content', cwd: '' } },
+    }));
+    providersForTest.push(fakeProvider({
+      id: 'codex',
+      descriptors: [{ cliSessionId: 'b', transcriptPath: '/b' }],
+      index: { '/b': { text: 'complete body content', cwd: '' } },
+    }));
+    mockStat.mockResolvedValue(makeStat(1));
+
+    let now = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      await searchSessions('complete body');
+      expect(pruneSearchIndex).toHaveBeenCalledTimes(2); // one sweep per provider
+
+      // A burst inside the window prunes nothing: the corpus has not changed.
+      await searchSessions('complete body');
+      await searchSessions('complete body');
+      expect(pruneSearchIndex).toHaveBeenCalledTimes(2);
+
+      // The budget is per provider and per window: 29 s is still throttled...
+      now += 29_000;
+      await searchSessions('complete body');
+      expect(pruneSearchIndex).toHaveBeenCalledTimes(2);
+
+      // ...and once each provider's 30 s window closes, both sweep again.
+      now += 1_000;
+      await searchSessions('complete body');
+      expect(pruneSearchIndex).toHaveBeenCalledTimes(4);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('drops zero-score sessions', async () => {
     providersForTest.push(fakeProvider({
       id: 'claude',

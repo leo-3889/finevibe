@@ -120,4 +120,25 @@ describe('chrome-import-modal', () => {
     deferred.resolve({ ok: true, cookieCount: 5, skippedV11: 0, errors: [] });
     await flush();
   });
+
+  // UI2-6: open() awaits the Chrome profile scan mid-build, so a second click
+  // during the scan used to build the modal a second time on the cached shell
+  // node, leaving the first run's select + subscriptions orphaned.
+  it('single-flights a second open while the profile scan is pending', async () => {
+    const selectFactory = vi.mocked((await import('./custom-select.js')).createCustomSelect);
+    const scan = Promise.withResolvers<{ id: string; displayName: string }[]>();
+    listProfiles.mockReturnValue(scan.promise);
+
+    const { showChromeImportModal } = await import('./chrome-import-modal.js');
+    const first = showChromeImportModal();
+    const second = showChromeImportModal(); // clicked again while the scan runs
+    scan.resolve([{ id: 'Default', displayName: 'Default' }]);
+    await Promise.all([first, second]);
+
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(selectFactory).toHaveBeenCalledTimes(1);
+    const overlay = document.getElementById(OVERLAY_ID)!;
+    expect(overlay.style.display).toBe('flex');
+    expect(overlay.querySelectorAll('.chrome-import-profile-slot > div')).toHaveLength(1);
+  });
 });

@@ -37,6 +37,11 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
   let lastAvailableKey: string | null = null;
   let unsubConfigChanged: (() => void) | null = null;
   let destroyed = false;
+  // UI2-10: per-instance generation token (top-files-widget.ts pattern). The
+  // availability load and the config IPC can resolve out of order — provider
+  // switch, config-changed event, tab re-render — and a stale response must
+  // not overwrite the newer DOM.
+  let renderToken = 0;
 
   const getActiveProviderId = (): ProviderId => {
     const available = getAvailableProviderMetas().map(p => p.id);
@@ -157,7 +162,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
       empty.textContent = 'None configured';
       sectionBody.appendChild(empty);
     } else {
-      items.forEach(el => sectionBody.appendChild(el));
+      for (const el of items) sectionBody.appendChild(el);
     }
 
     section.appendChild(sectionHeader);
@@ -205,11 +210,12 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
 
   const refresh = async () => {
     if (destroyed) return;
+    const token = ++renderToken;
 
     if (!getProviderAvailabilitySnapshot()) {
       await loadProviderAvailability();
     }
-    if (destroyed) return;
+    if (destroyed || token !== renderToken) return;
 
     buildToolbarSelect();
 
@@ -231,7 +237,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
       body.innerHTML = '';
       return;
     }
-    if (destroyed) return;
+    if (destroyed || token !== renderToken) return;
 
     body.innerHTML = '';
 
@@ -274,6 +280,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
     element: root,
     destroy() {
       destroyed = true;
+      renderToken++;
       destroyProviderSelect();
       unsubConfigChanged?.();
       unsubConfigChanged = null;

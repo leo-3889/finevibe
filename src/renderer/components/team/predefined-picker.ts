@@ -18,11 +18,22 @@ interface DialogState {
   allSuggestions: TeamMember[];
   query: string;
   activeDomain: DomainFilter;
+  /** UI2-11: set once the dialog is disposed; late timers/IPC must not write into it. */
+  disposed: boolean;
 }
 
+/** The mounted picker's dispose fn, or null when no picker is open (UI2-11). */
+let activeDispose: (() => void) | null = null;
+
 export async function showPredefinedPicker(): Promise<void> {
-  const state = buildDialog();
+  // The overlay is appended fresh on every open, so a double open used to
+  // stack two pickers: the first kept the ESC binding, kept its search timer
+  // armed against detached DOM, and stayed invisible behind the second.
+  if (activeDispose) return;
+
+  const { state, dispose } = buildDialog();
   document.body.appendChild(state.overlay);
+  activeDispose = dispose;
 
   const cache = appState.team.predefinedCache;
   if (cache && isCacheFresh(cache)) {
@@ -33,7 +44,7 @@ export async function showPredefinedPicker(): Promise<void> {
   }
 }
 
-function buildDialog(): DialogState {
+function buildDialog(): { state: DialogState; dispose: () => void } {
   const overlay = document.createElement('div');
   overlay.className = 'team-picker-overlay';
 
@@ -121,6 +132,7 @@ function buildDialog(): DialogState {
     allSuggestions: [],
     query: '',
     activeDomain: 'all',
+    disposed: false,
   };
   updateFooterCount(state);
 
@@ -138,14 +150,19 @@ function buildDialog(): DialogState {
   });
 
   const dispose = (): void => {
+    // UI2-11: the debounce timer outlives the dialog otherwise — it fires 150 ms
+    // later against detached DOM and keeps the disposed generation alive.
+    if (debounceTimer) clearTimeout(debounceTimer);
+    state.disposed = true;
     teardownDismiss();
     overlay.remove();
+    if (activeDispose === dispose) activeDispose = null;
   };
   const teardownDismiss = bindModalDismiss({ overlay, onClose: dispose });
   closeBtn.addEventListener('click', dispose);
   doneBtn.addEventListener('click', dispose);
 
-  return state;
+  return { state, dispose };
 }
 
 function selectDomain(state: DialogState, filter: DomainFilter): void {
@@ -184,6 +201,7 @@ function updateFooterCount(state: DialogState): void {
 }
 
 function rerender(state: DialogState): void {
+  if (state.disposed) return; // UI2-11: a late fetch/timer result must not rebuild a closed picker
   state.list.innerHTML = '';
   if (state.allSuggestions.length === 0) {
     state.status.textContent = t('team.picker.empty');

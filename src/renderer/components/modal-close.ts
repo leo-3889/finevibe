@@ -1,8 +1,11 @@
 // PA-34: the app's modal dialogs (board-help, whats-new, star-prompt,
-// preferences, agentmemory-console) each carried the same module-level
-// `let cleanupFn` ritual — a close() that hid the overlay and ran the open
-// dialog's cleanup exactly once — and, for the info dialogs, an Enter-closes
-// keydown handler.
+// preferences) each carried the same module-level `let cleanupFn` ritual — a
+// close() that hid the overlay and ran the open dialog's cleanup exactly once.
+//
+// ENTER-to-close is NOT part of this module (UI2-9): a per-dialog
+// document-level keydown listener closed every stacked dialog at once, so it
+// now routes through modal-manager's single capture-phase listener as
+// `pushModal({ onEscape, onEnter })` — top-of-stack only, like ESC.
 
 /**
  * Per-dialog close state. One instance per dialog module: pushModal is a
@@ -27,14 +30,4 @@ export class ModalCloser {
     overlay.style.display = 'none';
     this.reset();
   }
-}
-
-/** Shared dialog keydown: Enter confirms/closes. */
-export function enterCloseKeydown(close: () => void): (e: KeyboardEvent) => void {
-  return (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      close();
-    }
-  };
 }
