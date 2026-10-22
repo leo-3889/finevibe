@@ -4,6 +4,13 @@ import { execFileSync } from 'child_process';
 import { chromeUserDataDir, localStatePath } from './paths';
 
 let cachedKey: Buffer | null = null;
+/**
+ * C3M-04: first legacy-DPAPI row failure, cached so the spawn is capped at
+ * one per import (mirrors the P2-48 bounded-lookup contract): the failing
+ * row throws (the caller maps it to keyError), every remaining legacy row
+ * rethrows the cached reason without touching PowerShell.
+ */
+let legacyKeyError: string | null = null;
 
 /** Bounded so a hung PowerShell spawn cannot block the import. */
 const DPAPI_TIMEOUT_MS = 15_000;
@@ -70,7 +77,13 @@ export function decryptValue(encrypted: Buffer): Buffer | null {
   if (version === 'v11') return null;
   if (version === 'plain') return Buffer.from(encrypted);
   if (version === 'legacy') {
-    return dpapiUnprotect(encrypted.toString('base64'));
+    if (legacyKeyError) throw new Error(legacyKeyError);
+    try {
+      return dpapiUnprotect(encrypted.toString('base64'));
+    } catch (err) {
+      legacyKeyError = `legacy DPAPI decrypt failed: ${(err as Error).message}`;
+      throw err;
+    }
   }
   // v10: [3-byte prefix][12-byte IV][ciphertext][16-byte auth tag]
   const key = getMasterKey();
@@ -85,4 +98,5 @@ export function decryptValue(encrypted: Buffer): Buffer | null {
 
 export function _resetCache(): void {
   cachedKey = null;
+  legacyKeyError = null;
 }

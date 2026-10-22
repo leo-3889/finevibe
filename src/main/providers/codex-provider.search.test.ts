@@ -22,7 +22,7 @@ vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExis
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Readable } from 'stream';
+import { Readable, PassThrough } from 'stream';
 import { CodexProvider } from './codex-provider';
 
 const mockReaddir = vi.mocked(fs.promises.readdir);
@@ -151,6 +151,28 @@ describe('CodexProvider .jsonl.zst transcripts', () => {
     expect(p).toBe(path.join('/mock/home/.codex/sessions', '2026', '10', '10', `rollout-2026-10-10T22-12-14-${UUID}.jsonl.zst`));
   });
 
+  it('getTranscriptPath walks at most the newest 400 day dirs (C3M-03)', () => {
+    // The tree grows for the user's lifetime; an id past the newest 400
+    // day dirs is outside the resume window worth a full-tree walk.
+    const readdirSync = vi.mocked<(p: string) => string[]>(fs.readdirSync);
+    const days = Array.from({ length: 401 }, (_, i) => String(i + 1).padStart(3, '0'));
+    const target = `rollout-2026-01-01T00-00-00-${UUID}.jsonl`;
+    const tree = (hitDay: string) => (p: string) => {
+      const s = String(p).replace(/\\/g, '/');
+      if (s.endsWith('.codex/sessions')) return ['2026'];   // years
+      if (s.endsWith('/2026')) return ['01'];                // months
+      if (s.endsWith('2026/01')) return days;                // 401 day dirs
+      return s.endsWith(`/${hitDay}`) ? [target] : [];       // files
+    };
+    // Descending walk: 401 → 001. The file in the 401st day dir is unseen.
+    readdirSync.mockImplementation(tree('001'));
+    expect(new CodexProvider().getTranscriptPath(UUID, '/proj')).toBeNull();
+    // The 400th walked day dir is the cap's last stop — still found.
+    readdirSync.mockImplementation(tree('002'));
+    expect(new CodexProvider().getTranscriptPath(UUID, '/proj'))
+      .toBe(path.join('/mock/home/.codex/sessions', '2026', '01', '002', target));
+  });
+
   it('indexTranscript decompresses zst and extracts cwd + user text', async () => {
     const jsonl = makeJsonl([
       { type: 'session_meta', payload: { cwd: 'C:\\repo', id: UUID } },
@@ -188,5 +210,40 @@ describe('CodexProvider .jsonl.zst transcripts', () => {
     const r = await new CodexProvider().indexTranscript(`/p/rollout-x-${UUID}.jsonl.zst`);
     // Best-effort: at least the head frame's content is indexed; no throw.
     expect(r.text).toContain('first frame survives');
+  });
+
+  it('stops the decompressed read once the text budget is full (C3M-01)', async () => {
+    // ~100 KiB of user text: the 50 KiB budget fills early and the for-await
+    // must BREAK. The stream never ends, so the old drain-to-end loop hangs.
+    const user = (t: string) =>
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: t }] } });
+    const jsonl = Array.from({ length: 800 }, (_, i) => user(`prompt ${i} ${'x'.repeat(100)}`)).join('\n');
+    const compressed = zlib.zstdCompressSync(Buffer.from(jsonl, 'utf-8'));
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: compressed.length } as fs.Stats);
+    const open = new PassThrough();
+    vi.mocked(fs.createReadStream).mockReturnValueOnce(open as unknown as fs.ReadStream);
+
+    const run = new CodexProvider().indexTranscript('/p/rollout-long.jsonl.zst');
+    open.write(compressed);
+    const r = await run;
+    expect(r.text.length).toBeLessThanOrEqual(50 * 1024);
+    expect(r.text).toContain('prompt 0');
+  });
+
+  it('destroys the decompression chain past the plain-path byte end (C3M-01)', async () => {
+    // Decompression bomb: ~9.5 MiB of high-ratio JSON with NO user text, so
+    // nothing fills the char budget — only the decompressed-byte cap can
+    // stop the chain, and the prompt parked past 8 MiB must not be indexed.
+    const filler = JSON.stringify({
+      type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'a'.repeat(2000) }] },
+    });
+    const lines: string[] = [];
+    let bytes = 0;
+    while (bytes < 9.5 * 1024 * 1024) { lines.push(filler); bytes += filler.length + 1; }
+    lines.push(JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'beyond the cap' }] } }));
+    mockIndexFileZst(lines.join('\n'));
+
+    const r = await new CodexProvider().indexTranscript('/p/rollout-bomb.jsonl.zst');
+    expect(r.text).not.toContain('beyond the cap');
   });
 });

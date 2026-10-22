@@ -247,7 +247,14 @@ function rewatch(sessionId: string, e: TranscriptSyncEntry): void {
   }
   if (!e.transcriptPath) return;
   try {
-    const watcher = fs.watch(e.transcriptPath, () => scheduleSync(sessionId, e));
+    const watcher = fs.watch(e.transcriptPath, () => {
+      // C3R-03: a watch event is positive liveness evidence — the file
+      // exists, is written, and the watch works. Lift the C2M-05 read-backoff
+      // window so the gate only paces pure-tick retries.
+      e.nextReadAt = 0;
+      e.readFailures = 0;
+      scheduleSync(sessionId, e);
+    });
     watcher.on('error', () => {
       // The file vanished / watch broke — drop it; the poll re-resolves.
       try { watcher.close(); } catch { /* already closed */ }

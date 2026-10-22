@@ -9,7 +9,7 @@ import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from '
 import { getGeminiConfig } from '../gemini-config';
 import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks, SESSION_ID_VAR } from '../gemini-hooks';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
-import { MAX_INDEX_FILE_BYTES, IndexTextBudget, TranscriptDiscoveryScan, readdirForDiscovery, isMissingRootError } from './transcript-utils';
+import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, TranscriptDiscoveryScan, readdirForDiscovery, isMissingRootError } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 import { sameCwd } from './pi-compatible-transcripts';
 import type { BrowserWindow } from 'electron';
@@ -57,6 +57,10 @@ async function readSessionId(transcriptPath: string, size: number): Promise<stri
   const id = raw.match(SESSION_ID_RE)?.[1];
   if (id) return id;
   if (size <= DISCOVERY_HEADER_BYTES) return parseSessionId(raw);
+  // C3M-06: the fallback materializes the WHOLE file. Cap it at the index
+  // byte ceiling: a file above it is indexed to empty text, so discovery
+  // would read up to 64 MiB for a descriptor the indexer cannot serve.
+  if (size > MAX_INDEX_BYTES) return null;
   raw = await fs.promises.readFile(transcriptPath, 'utf-8');
   const full = raw.match(SESSION_ID_RE)?.[1];
   if (full) return full;
@@ -288,6 +292,9 @@ export class GeminiProvider implements CliProvider {
       return { text: '', cwd: '' };
     }
     if (size > MAX_INDEX_FILE_BYTES) return { text: '', cwd: '' };
+    // C3M-06: the JSON path parses the whole file at once; keep the parse
+    // under the index byte ceiling — above it, index to empty text.
+    if (size > MAX_INDEX_BYTES) return { text: '', cwd: '' };
     let parsed: { messages?: Array<{ type?: string; content?: unknown }> };
     try {
       parsed = JSON.parse(await fs.promises.readFile(transcriptPath, 'utf-8'));

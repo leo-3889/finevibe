@@ -220,7 +220,10 @@ export class ClaudeProvider implements CliProvider {
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
       for await (const line of lines) {
-        if (!line.trim() || budget.full) continue;
+        if (!line.trim()) continue;
+        // C3M-07: terminate the read once the budget is spent — `continue`
+        // kept streaming (and reading) to the byte end for nothing.
+        if (budget.full) break;
         try {
           const entry = JSON.parse(line);
           if (!cwd && entry.cwd) cwd = entry.cwd;

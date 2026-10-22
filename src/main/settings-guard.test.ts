@@ -62,6 +62,7 @@ import { EventEmitter } from 'node:events';
 import {
   isFineVibeStatusLine, shouldWarnStatusLine, guardedInstall,
   guardedProfileInstall, reinstallSettings, consentDirKey, resetProfileInstallMemo,
+  recordDirConsent,
 } from './settings-guard';
 import * as fs from 'fs';
 import { installStatusLine } from './claude-cli';
@@ -326,5 +327,54 @@ describe('reinstallSettings(configDir) (P2-127)', () => {
         preferences: { statusLineConsent: 'granted', statusLineConsentCommand: null },
       }),
     );
+  });
+});
+
+// C3M-05: the by-dir consent map grew unbounded and kept records for
+// deleted profile dirs forever — recordDirConsent is its only write site,
+// so pruning + FIFO cap live there.
+describe('recordDirConsent map hygiene (C3M-05)', () => {
+  const PROFILE_DIR = path.join('/home/test', '.claude-profiles', 'work');
+  const KEY = consentDirKey(PROFILE_DIR);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(loadState).mockReturnValue({ preferences: {} } as never);
+  });
+
+  function savedByDir(): Record<string, unknown> {
+    const state = vi.mocked(saveState).mock.calls[0][0] as {
+      preferences: { statusLineConsentByDir: Record<string, unknown> };
+    };
+    return state.preferences.statusLineConsentByDir;
+  }
+
+  it('drops records whose config dir no longer exists', () => {
+    vi.mocked(loadState).mockReturnValue({
+      preferences: { statusLineConsentByDir: { '/gone/profile': { consent: 'declined', command: null } } },
+    } as never);
+    vi.mocked(fs.existsSync).mockImplementation((p) => String(p) !== '/gone/profile');
+
+    recordDirConsent(PROFILE_DIR, 'granted', null);
+
+    expect(savedByDir()).toEqual({ [KEY]: { consent: 'granted', command: null } });
+  });
+
+  it('caps the map at 200 records, dropping the oldest entries first', () => {
+    const byDir: Record<string, { consent: 'declined'; command: null }> = {};
+    for (let i = 0; i < 250; i++) byDir[`/dir/${i}`] = { consent: 'declined', command: null };
+    vi.mocked(loadState).mockReturnValue({ preferences: { statusLineConsentByDir: byDir } } as never);
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+
+    recordDirConsent(PROFILE_DIR, 'granted', 'cmd');
+
+    const keys = Object.keys(savedByDir());
+    expect(keys).toHaveLength(200);
+    // Insertion order is FIFO: the 51 oldest records are gone, the fresh
+    // key lands at the tail.
+    expect(keys).not.toContain('/dir/0');
+    expect(keys).not.toContain('/dir/50');
+    expect(keys).toContain('/dir/51');
+    expect(keys).toContain(KEY);
   });
 });

@@ -2,11 +2,24 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execFile } from 'child_process';
 import type { ReadinessCheck } from '../../shared/types';
-import { countFileLines, getTrackedFiles, computeCategoryScore } from './utils';
+import { countFileLines, getTrackedFiles, computeCategoryScore, MAX_TRACKED_FILES } from './utils';
 
-vi.mock('child_process');
+// Explicit factory: the automock carries execFile's util.promisify.custom
+// symbol, whose closure calls the REAL git — the mocked implementation
+// below would never run. Re-attach the custom promisify so the promisified
+// call resolves with `{ stdout, stderr }` exactly like the real one.
+vi.mock('child_process', () => {
+  const execFile = vi.fn();
+  (execFile as unknown as Record<symbol, unknown>)[Symbol.for('nodejs.util.promisify.custom')] =
+    (...args: unknown[]) =>
+      new Promise((resolve, reject) => {
+        execFile(...args, (err: Error | null, stdout: string, stderr: string) =>
+          err ? reject(err) : resolve({ stdout, stderr }));
+      });
+  return { execFile };
+});
 
 describe('countFileLines', () => {
   let tmpDir: string;
@@ -58,26 +71,43 @@ describe('countFileLines', () => {
 
 describe('getTrackedFiles', () => {
   function mockLsFiles(stdout: string): void {
-    vi.mocked(execSync).mockReturnValue(stdout);
+    vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null, stdout: string, stderr: string) => void;
+      cb(null, stdout, '');
+    }) as never);
   }
 
-  it('disables git path quoting so non-ASCII directories stay matchable', () => {
+  it('disables git path quoting so non-ASCII directories stay matchable', async () => {
     mockLsFiles('packages/café/AGENTS.md\n');
 
-    expect(getTrackedFiles('/repo')).toEqual(['packages/café/AGENTS.md']);
-    expect(vi.mocked(execSync).mock.calls[0][0]).toContain('core.quotePath=false');
+    expect(await getTrackedFiles('/repo')).toEqual(['packages/café/AGENTS.md']);
+    const [cmd, args, opts] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[], { maxBuffer: number }];
+    expect(cmd).toBe('git');
+    expect(args).toContain('core.quotePath=false');
+    // C3M-02: the 1 MiB child_process default ENOBUFS'd on huge repos and
+    // the catch turned it into a silent [] — the buffer must be generous.
+    expect(opts.maxBuffer).toBeGreaterThan(1024 * 1024);
   });
 
-  it('dedupes unmerged paths, which git lists once per index stage', () => {
+  it('dedupes unmerged paths, which git lists once per index stage', async () => {
     mockLsFiles('pkg/AGENTS.md\npkg/AGENTS.md\npkg/AGENTS.md\nREADME.md\n');
 
-    expect(getTrackedFiles('/repo')).toEqual(['pkg/AGENTS.md', 'README.md']);
+    expect(await getTrackedFiles('/repo')).toEqual(['pkg/AGENTS.md', 'README.md']);
   });
 
-  it('returns an empty list outside a git repo', () => {
-    vi.mocked(execSync).mockImplementation(() => { throw new Error('not a git repository'); });
+  it('returns an empty list outside a git repo', async () => {
+    vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null, stdout: string, stderr: string) => void;
+      cb(new Error('not a git repository'), '', '');
+    }) as never);
 
-    expect(getTrackedFiles('/repo')).toEqual([]);
+    expect(await getTrackedFiles('/repo')).toEqual([]);
+  });
+
+  it('caps the list at MAX_TRACKED_FILES (C3M-02)', async () => {
+    mockLsFiles(Array.from({ length: MAX_TRACKED_FILES + 10 }, (_, i) => `f${i}.md`).join('\n'));
+
+    expect(await getTrackedFiles('/repo')).toHaveLength(MAX_TRACKED_FILES);
   });
 });
 

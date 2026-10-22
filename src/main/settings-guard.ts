@@ -143,7 +143,14 @@ export function getDirConsent(
   return { consent: record?.consent, command: record?.command };
 }
 
-/** Persist a consent decision for a config dir (global fields for the default dir). */
+/** C3M-05: cap on per-dir consent records (mirrors the C2R-17 cap idiom). */
+const MAX_CONSENT_DIR_RECORDS = 200;
+/**
+ * Persist a consent decision for a config dir (global fields for the default
+ * dir). The per-dir map is pruned of records whose dir no longer exists —
+ * a deleted profile's record can never be read again — and capped FIFO at
+ * MAX_CONSENT_DIR_RECORDS, oldest first (C3M-05).
+ */
 export function recordDirConsent(
   configDir: string | undefined,
   consent: 'granted' | 'declined',
@@ -154,8 +161,18 @@ export function recordDirConsent(
     state.preferences.statusLineConsent = consent;
     state.preferences.statusLineConsentCommand = command;
   } else {
-    const byDir = { ...state.preferences.statusLineConsentByDir };
-    byDir[consentDirKey(configDir!)] = { consent, command };
+    const key = consentDirKey(configDir!);
+    const byDir: NonNullable<Preferences['statusLineConsentByDir']> = {};
+    for (const [dir, record] of Object.entries(state.preferences.statusLineConsentByDir ?? {})) {
+      // recordDirConsent is the map's only write site, so this is where
+      // pruning lives; the key being written survives unconditionally.
+      if (dir !== key && fs.existsSync(dir)) byDir[dir] = record;
+    }
+    byDir[key] = { consent, command };
+    while (Object.keys(byDir).length > MAX_CONSENT_DIR_RECORDS) {
+      const oldest = Object.keys(byDir)[0]!;
+      delete byDir[oldest];
+    }
     state.preferences.statusLineConsentByDir = byDir;
   }
   saveState(state);

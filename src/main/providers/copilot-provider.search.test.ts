@@ -17,7 +17,7 @@ vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExis
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Readable } from 'stream';
+import { Readable, PassThrough } from 'stream';
 import { CopilotProvider } from './copilot-provider';
 
 const mockReadFile = vi.mocked(fs.promises.readFile);
@@ -100,5 +100,22 @@ describe('CopilotProvider.indexTranscript()', () => {
     mockIndexFile(jsonl);
     const r = await new CopilotProvider().indexTranscript('/p');
     expect(r.text).toContain('good prompt');
+  });
+
+  it('terminates the read loop when the budget fills (C3M-07)', async () => {
+    // ~100 KiB of user text fills the 50 KiB budget mid-stream. The input
+    // NEVER ends: the old `if (budget.full) continue` loop would await the
+    // stream to its end and hang; the break resolves the call.
+    const jsonl = Array.from({ length: 800 }, (_, i) =>
+      JSON.stringify({ type: 'user.message', data: { content: `prompt ${i} ${'x'.repeat(100)}` } })).join('\n');
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: 10 * 1024 * 1024 } as fs.Stats);
+    const open = new PassThrough();
+    vi.mocked(fs.createReadStream).mockReturnValueOnce(open as unknown as fs.ReadStream);
+
+    const run = new CopilotProvider().indexTranscript('/p');
+    open.write(jsonl);
+    const r = await run;
+    expect(r.text.length).toBeLessThanOrEqual(50 * 1024);
+    expect(r.text).toContain('prompt 0');
   });
 });

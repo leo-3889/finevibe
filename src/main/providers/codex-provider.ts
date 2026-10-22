@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as readline from 'readline';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import { Transform } from 'stream';
 import * as os from 'os';
 import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
@@ -16,6 +17,14 @@ import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfig
 import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, TranscriptDiscoveryScan, readdirForDiscovery } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 const CODEX_FILE_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/i;
+
+/**
+ * C3M-03: how many day dirs the getTranscriptPath lookup may walk, newest
+ * first. Mirrors the rollout watcher's bounded scan: a resume target lives
+ * in recent history; an id older than the newest 400 day dirs is not worth
+ * walking a tree that grows for the user's lifetime.
+ */
+const MAX_TRANSCRIPT_DAY_DIRS = 400;
 
 import type { BrowserWindow } from 'electron';
 
@@ -197,12 +206,15 @@ export class CodexProvider implements CliProvider {
       const root = path.join(os.homedir(), '.codex', 'sessions');
       const suffix = `-${cliSessionId}.jsonl`;
       // sessions are partitioned as YYYY/MM/DD/rollout-<ts>-<id>.jsonl[.zst].
-      // Walk newest-first and return on first match.
+      // Walk newest-first, capped at MAX_TRANSCRIPT_DAY_DIRS day dirs, and
+      // return on first match.
+      let dayDirs = 0;
       for (const year of descSortedReaddir(root)) {
         const yearDir = path.join(root, year);
         for (const month of descSortedReaddir(yearDir)) {
           const monthDir = path.join(yearDir, month);
           for (const day of descSortedReaddir(monthDir)) {
+            if (++dayDirs > MAX_TRANSCRIPT_DAY_DIRS) return null;
             const dayDir = path.join(monthDir, day);
             for (const file of descSortedReaddir(dayDir)) {
               if (file.endsWith(suffix) || file.endsWith(`${suffix}.zst`)) return path.join(dayDir, file);
@@ -258,7 +270,10 @@ export class CodexProvider implements CliProvider {
     const input = fs.createReadStream(transcriptPath, { end: MAX_INDEX_BYTES - 1 });
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
-      for await (const line of lines) consume(line);
+      for await (const line of lines) {
+        consume(line);
+        if (budget.full) break;
+      }
     } catch {
       // Best-effort: keep whatever was extracted before the stream failed.
     } finally {
@@ -281,13 +296,36 @@ export class CodexProvider implements CliProvider {
     input.pipe(zstd);
     input.on('error', () => { /* best-effort, same as the plain path */ });
     zstd.on('error', () => { /* truncated tail frame: keep the decompressed head */ });
-    const lines = readline.createInterface({ input: zstd, crlfDelay: Infinity });
+    // The read cap bounds COMPRESSED bytes; a high-ratio `.zst` expands far
+    // past it. Count decompressed bytes and destroy the chain once past the
+    // same end bound the plain path applies (C3M-01).
+    let decompressed = 0;
+    const cap = new Transform({
+      transform(chunk: Buffer, _encoding: BufferEncoding, callback: (err?: Error | null, data?: Buffer) => void) {
+        decompressed += chunk.length;
+        if (decompressed > MAX_INDEX_BYTES) {
+          // Destroy WITH an error: a bare destroy() inside transform() leaves
+          // readline's async iterator unsettled (the chain never closes). The
+          // error lands in the best-effort catch below.
+          this.destroy(new Error('index byte cap'));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    cap.on('error', () => { /* best-effort, same as the plain path */ });
+    zstd.pipe(cap);
+    const lines = readline.createInterface({ input: cap, crlfDelay: Infinity });
     try {
-      for await (const line of lines) consume(line);
+      for await (const line of lines) {
+        consume(line);
+        if (budget.full) break;
+      }
     } catch {
       // Best-effort: keep whatever was extracted before decompression failed.
     } finally {
       lines.close();
+      cap.destroy();
       zstd.destroy();
       input.destroy();
     }

@@ -71,6 +71,28 @@ describe('GeminiProvider.discoverTranscripts()', () => {
     expect(complete).toBe(false);
     expect(incompleteRoots).toEqual([path.join('/mock/home', '.gemini', 'tmp')]);
   });
+
+  it('skips transcripts above the index byte cap whose id is not in the header (C3M-06)', async () => {
+    mockReaddir
+      .mockResolvedValueOnce(['proj'] as any) // tmp/
+      .mockResolvedValueOnce(['session-2026-01-01T00-00-aaaaaaaa.json'] as any); // chats/
+    mockReadFile.mockResolvedValueOnce('/repo\n' as any); // .project_root
+    vi.mocked(fs.promises.stat).mockResolvedValue({ size: 9 * 1024 * 1024 } as fs.Stats);
+    const read = vi.fn(async (buf: Buffer, offset: number) => {
+      buf.write('{}', offset);
+      return { bytesRead: 2, buffer: buf };
+    });
+    vi.mocked(fs.promises.open).mockResolvedValue({ read, close: vi.fn(async () => {}) } as any);
+
+    const { descriptors: out, complete } = await new GeminiProvider().discoverTranscripts();
+    expect(complete).toBe(true);
+    expect(out).toEqual([]);
+    // The bounded 64 KiB header read ran; the unbounded full-file fallback
+    // was skipped — the indexer would only return empty text for this file.
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(mockReadFile).toHaveBeenCalledTimes(1);
+    expect(mockReadFile.mock.calls[0][0]).toContain('.project_root');
+  });
 });
 
 describe('GeminiProvider.discoverTranscripts() read bounds', () => {
@@ -207,5 +229,15 @@ describe('GeminiProvider.indexTranscript()', () => {
     vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: 9 } as fs.Stats);
     mockReadFile.mockResolvedValueOnce('{not json' as any);
     expect(await new GeminiProvider().indexTranscript('/p')).toEqual({ text: '', cwd: '' });
+  });
+});
+
+describe('GeminiProvider.indexTranscript() byte cap (C3M-06)', () => {
+  it('indexes to empty text above MAX_INDEX_BYTES without reading the file', async () => {
+    // MAX_INDEX_FILE_BYTES (64 MiB) admits the file, but the JSON path
+    // parses the WHOLE file at once: the 8 MiB index ceiling must stop it.
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: 8 * 1024 * 1024 + 1 } as fs.Stats);
+    expect(await new GeminiProvider().indexTranscript('/p')).toEqual({ text: '', cwd: '' });
+    expect(mockReadFile).not.toHaveBeenCalled();
   });
 });

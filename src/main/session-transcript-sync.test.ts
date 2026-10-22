@@ -383,6 +383,36 @@ describe('fs.watch fast path', () => {
     unregisterTranscriptSync('ui-1');
     expect(watchRecs[0].closed).toBe(true);
   });
+
+  // C3R-03: a watch event is positive liveness evidence — the file exists
+  // and is being written. It must lift the C2M-05 read-backoff window, which
+  // exists only to pace pure-tick retries.
+  it('a watch event lifts the read-backoff window', () => {
+    const status = { value: 'working' as CliSessionStatus };
+    provider = {
+      meta: { capabilities: { selfTitles: true, polledStatus: true } },
+      getTranscriptPath: vi.fn(() => '/t.jsonl'),
+      // Every title read throws: each clean tick arms/extends the backoff.
+      readSessionTitle: vi.fn(() => {
+        throw new Error('transcript mid-write');
+      }),
+      readSessionStatus: vi.fn(() => status.value),
+    } as unknown as CliProvider;
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000); // t=2000: read fails → readFailures 1, gate 4000
+    status.value = 'completed';
+    vi.advanceTimersByTime(2000); // t=4000: gate open → status read, read fails → gate 8000
+    expect(mockWriteStatus).toHaveBeenCalledTimes(2);
+    status.value = 'idle';
+    vi.advanceTimersByTime(2000); // t=6000: inside the window — tick is gated
+    expect(mockWriteStatus).toHaveBeenCalledTimes(2); // no third read
+
+    writeTranscript();
+    watchRecs[0].fire();
+    vi.advanceTimersByTime(150); // DEBOUNCE_MS
+    expect(mockWriteStatus).toHaveBeenCalledTimes(3); // watch event read through
+    expect(mockWriteStatus).toHaveBeenLastCalledWith('ui-1', 'idle');
+  });
 });
 
 describe('/clear re-adoption (re-registering the same UI session)', () => {
