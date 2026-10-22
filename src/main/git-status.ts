@@ -277,6 +277,25 @@ export function gitUnstageFile(cwd: string, filePath: string): Promise<void> {
   return execGit(cwd, ['reset', 'HEAD', '--', filePath]);
 }
 
+/** Deepest-existing-ancestor realpath of `p` with the non-existent tail
+ * appended (p must already be absolute). Falls back to `p` verbatim when
+ * nothing on the chain resolves. */
+function canonicalExisting(p: string): string {
+  const tail: string[] = [];
+  let cur = p;
+  for (;;) {
+    try {
+      const base = fs.realpathSync(cur);
+      return tail.length === 0 ? base : path.join(base, ...tail.reverse());
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return p;
+      tail.push(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
 /** P1-17: the untracked branch is a real recursive delete, so every
  * discard proves its bounds before anything is removed: the cwd is inside
  * a git WORKING TREE (`rev-parse --show-toplevel` — a watched CLI config
@@ -291,9 +310,18 @@ export async function gitDiscardFile(cwd: string, filePath: string, area: GitFil
   }
   const toplevel = (await execGitWithOutput(cwd, ['rev-parse', '--show-toplevel'])).trim();
   if (toplevel === '') throw new Error('Not inside a git working tree');
+  // Canonical spelling on BOTH sides: git resolves --show-toplevel through
+  // symlinks and Windows 8.3 conversions, so the raw cwd/path spellings can
+  // disagree with git's for the SAME tree (CI runner temp dirs do exactly
+  // this) — a string compare would then read a legit child as "outside the
+  // repository root". Resolve each side to its deepest existing ancestor
+  // (the target itself may not exist yet on the tracked-restore branch) and
+  // compare canonical spellings. Escapes through symlinked ancestors become
+  // real '..' segments here, so the guard gets STRICTER, never laxer.
+  // `target` keeps the caller spelling: it is the rm() operand.
   const target = path.join(cwd, filePath);
-  const treeRoot = path.resolve(toplevel);
-  const rel = path.relative(treeRoot, target);
+  const treeRoot = canonicalExisting(path.resolve(toplevel));
+  const rel = path.relative(treeRoot, canonicalExisting(path.resolve(target)));
   if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     throw new Error(`Refusing to discard ${JSON.stringify(filePath)}: at or outside the repository root`);
   }
