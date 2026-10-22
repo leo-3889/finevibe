@@ -17,6 +17,7 @@ import {
   readLaunchSessionMeta,
   readLaunchSessionMetaCached,
   pruneLaunchSessionDirs,
+  protectLaunchSessionDir,
   listLaunchSessionDirs,
   LAUNCH_SESSION_RETENTION_MS,
   _setPruneScanLimitForTesting,
@@ -25,6 +26,9 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const OLD = Date.now() - 45 * DAY_MS;
 const RECENT = Date.now() - 2 * DAY_MS;
+// P1-16: a session resumed after 31 days idle — past the 30-day window, so
+// every timestamp in its dir reads as expired.
+const RESUMED = Date.now() - 31 * DAY_MS;
 
 let base: string;
 
@@ -50,6 +54,17 @@ function makeDir(
   const m = opts.dirMtime ?? Math.max(opts.createdAt ?? 0, ...opts.transcripts ?? [0]);
   fs.utimesSync(dir, new Date(m), new Date(m));
   return dir;
+}
+
+/**
+ * P2-74: a dir link inside the swept base, on every platform. Windows real
+ * symlinks need Developer Mode/admin, so the guard runs there with a
+ * junction — the reparse point Windows users actually create, and the one
+ * libuv reports as a symlink (lstat → isSymbolicLink), i.e. the guard
+ * branch sees the same shape on win32 that CI exercises on linux.
+ */
+function linkDir(link: string, target: string): void {
+  fs.symlinkSync(target, link, isWin ? 'junction' : 'dir');
 }
 
 beforeAll(() => {
@@ -131,7 +146,23 @@ describe('pruneLaunchSessionDirs()', () => {
     expect(fs.existsSync(fresh)).toBe(true);
   });
 
-  it.runIf(!isWin)('skips a symlinked dir instead of following and deleting through it', () => {
+  it('P1-16: skips a protected dir past the window — the resume target', () => {
+    // Fail-before: the sweep had no exclusion for the dir a resume points
+    // at, so a session restored after 31 d idle (every timestamp past the
+    // 30-day window; its transcript lives ONLY in this dir) was deleted by
+    // the sweep its own launch scheduled. protectLaunchSessionDir() now
+    // registers it at launch/resume and the sweep skips it — while
+    // unprotected expired dirs are still collected.
+    const resumed = makeDir('resumed', { createdAt: RESUMED, transcripts: [RESUMED], dirMtime: RESUMED });
+    const control = makeDir('dead', { createdAt: RESUMED, dirMtime: RESUMED });
+    protectLaunchSessionDir(resumed);
+    expect(pruneLaunchSessionDirs(base, Date.now())).toBe(1);
+    expect(fs.existsSync(resumed)).toBe(true);
+    expect(fs.existsSync(path.join(resumed, 'resumed.jsonl'))).toBe(true);
+    expect(fs.existsSync(control)).toBe(false);
+  });
+
+  it('skips a symlinked dir instead of following and deleting through it', () => {
     const target = path.join(userData.path, 'symlink-target');
     fs.mkdirSync(target, { recursive: true });
     const inside = path.join(target, 'precious.jsonl');
@@ -139,7 +170,7 @@ describe('pruneLaunchSessionDirs()', () => {
     fs.utimesSync(target, new Date(OLD), new Date(OLD));
     fs.utimesSync(inside, new Date(OLD), new Date(OLD));
 
-    fs.symlinkSync(target, path.join(base, 'linked'), 'dir');
+    linkDir(path.join(base, 'linked'), target);
     expect(pruneLaunchSessionDirs(base, Date.now())).toBe(0);
     expect(fs.existsSync(inside)).toBe(true);
     expect(fs.existsSync(path.join(base, 'linked'))).toBe(true);
@@ -181,7 +212,7 @@ describe('pruneLaunchSessionDirs() scan bound (P2-57)', () => {
     expect(fs.readdirSync(base)).toEqual(['a-young']);
   });
 
-  it.runIf(!isWin)('sorts with lstat only: the oldest entry may be a symlink and is never followed', () => {
+  it('sorts with lstat only: the oldest entry may be a symlink and is never followed', () => {
     // The symlink is the oldest entry and sorts first in raw readdir order;
     // the sort must lstat (not stat) it, park it behind the real dirs, and
     // the bounded scan must delete the two expired dirs without touching it.
@@ -191,7 +222,7 @@ describe('pruneLaunchSessionDirs() scan bound (P2-57)', () => {
     const inside = path.join(target, 'precious.jsonl');
     fs.writeFileSync(inside, 'user data');
     fs.utimesSync(target, new Date(OLD - 10 * DAY_MS), new Date(OLD - 10 * DAY_MS));
-    fs.symlinkSync(target, path.join(base, 'a-linked'), 'dir');
+    linkDir(path.join(base, 'a-linked'), target);
     const dead1 = makeDir('b-dead-1', { dirMtime: OLD });
     const dead2 = makeDir('b-dead-2', { dirMtime: OLD - DAY_MS });
     const live = makeDir('c-live', { createdAt: RECENT, transcripts: [RECENT] });
@@ -306,6 +337,41 @@ describe('ensureLaunchSessionDir() retention hook', () => {
     expect(fs.existsSync(dead)).toBe(true);
     expect(fs.existsSync(path.join(base, 'tab-2'))).toBe(true);
   });
+
+  it('P1-16: a resumed launch protects its pre-existing expired dir from the sweep it schedules', async () => {
+    // Fail-before: the resume calls ensureLaunchSessionDir() with the
+    // session's pre-existing dir; every timestamp in it is past the window,
+    // and the deferred sweep this call schedules deleted it (the transcript
+    // jsonl is the session's only copy) before the provider's sidecar
+    // rewrite could land. The target is now protected synchronously,
+    // before the sweep is scheduled, so it survives.
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.mkdirSync(base, { recursive: true });
+    const resumeDir = makeDir('resumed-tab', { createdAt: RESUMED, transcripts: [RESUMED], dirMtime: RESUMED });
+    const transcript = path.join(resumeDir, 'resumed-tab.jsonl');
+    ensureLaunchSessionDir(resumeDir);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fs.existsSync(transcript)).toBe(true);
+    expect(fs.existsSync(resumeDir)).toBe(true);
+  });
+
+  it('P1-16: a restore burst protects a resumed tab from the sweep the first launch scheduled', async () => {
+    // App restore: tab A (fresh) launches first and arms the one-shot sweep
+    // of the base; tab B resumes after 31 d idle, before the sweep runs.
+    // Fail-before: the sweep deleted B's expired dir with its transcript.
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.mkdirSync(base, { recursive: true });
+    ensureLaunchSessionDir(path.join(base, 'tab-a-new'));
+    const bDir = makeDir('tab-b-resume', { createdAt: RESUMED, transcripts: [RESUMED], dirMtime: RESUMED });
+    ensureLaunchSessionDir(bDir);
+    const dead = makeDir('dead', { createdAt: OLD, dirMtime: OLD });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fs.existsSync(bDir)).toBe(true);
+    expect(fs.existsSync(path.join(bDir, 'tab-b-resume.jsonl'))).toBe(true);
+    expect(fs.existsSync(path.join(base, 'tab-a-new'))).toBe(true);
+    expect(fs.existsSync(dead)).toBe(false);
+  });
+
 });
 
 describe('LAUNCH_SESSION_RETENTION_MS', () => {

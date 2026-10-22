@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
+import { isWin } from './platform';
 import { loadState } from './store';
 
 /**
@@ -18,6 +19,16 @@ import { loadState } from './store';
  * the same directory and finds its own transcripts there. A sidecar
  * (`.finevibe.json`) records the launch's profile/cwd so global session
  * search can surface these transcripts with the right profile.
+ *
+ * Retention: dirs under a base are swept by pruneLaunchSessionDirs() —
+ * at most once per base per process, deferred off the spawn path — when
+ * EVERY timestamp they expose (sidecar `createdAt`, newest transcript,
+ * dir mtime) is older than LAUNCH_SESSION_RETENTION_MS. The sweep NEVER
+ * deletes a dir registered with protectLaunchSessionDir(): a resumed
+ * tab's dir is pre-existing and fully expired (its transcript lives in
+ * the 30-60-day window), so without that exclusion the sweep scheduled
+ * by the launch which resumes the tab deletes the transcript's only
+ * copy (these dirs never enter the CLI store; docs/session-lifecycle.md).
  *
  * Legacy transcripts (default agent dir, profile trees, external CLI runs)
  * stay exactly where they are — nothing is moved or deleted; discovery
@@ -87,11 +98,37 @@ export function _setPruneScanLimitForTesting(limit: number | null): void {
 /** Bases already swept this process — pruning runs at most once per base. */
 const prunedBases = new Set<string>();
 
+/**
+ * P1-16: per-launch dirs the sweep must never delete. Every Pi/OMP launch
+ * registers its target dir here via ensureLaunchSessionDir BEFORE the sweep
+ * it schedules can run; for a resume the target is the session's
+ * pre-existing dir, whose transcript is the only copy. Protection lives for
+ * the process — the sweep runs at most once per base per process, so one
+ * registration per launch is enough.
+ */
+const protectedLaunchDirs = new Set<string>();
+
+/** Sweep-identity key: absolute, case-folded on Windows (case-insensitive FS). */
+function launchDirKey(dir: string): string {
+  const resolved = path.resolve(dir);
+  return isWin ? resolved.toLowerCase() : resolved;
+}
+
+/** Exclude a per-launch dir from the retention sweep for this process. */
+export function protectLaunchSessionDir(dir: string): void {
+  protectedLaunchDirs.add(launchDirKey(dir));
+}
+
 /** Create the per-launch dir (and its base) so the CLI never races us. */
 export function ensureLaunchSessionDir(sessionDir: string): void {
   // Called on every Pi/OMP start/resume, strictly before the CLI is spawned,
   // so the first call is the earliest hook that is guaranteed to run in a
   // process that launches these CLIs.
+  // P1-16: protect the target BEFORE the sweep is scheduled. On a resume
+  // this dir is pre-existing and past the retention window; the sweep this
+  // call defers to the next macrotask used to delete it — and with it the
+  // resumed session's only transcript copy.
+  protectLaunchSessionDir(sessionDir);
   pruneLaunchSessionDirsOnce(path.dirname(sessionDir));
   try {
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -159,6 +196,9 @@ export function pruneLaunchSessionDirs(base: string, now = Date.now()): number {
       continue;
     }
     if (!dirStat.isDirectory()) continue;
+    // P1-16: the dir of a live (or just-resumed) launch is never expired —
+    // its launch, not its mtimes, owns it.
+    if (protectedLaunchDirs.has(launchDirKey(dir))) continue;
     const created = Date.parse(readLaunchSessionMeta(dir)?.createdAt ?? '');
     const newest = newestTranscriptMtime(dir);
     // 0 = "no transcripts" sentinel from newestTranscriptMtime(); a real mtime
