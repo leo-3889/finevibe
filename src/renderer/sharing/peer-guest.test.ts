@@ -314,13 +314,41 @@ describe('joinShare', () => {
       expect(lastPc!.close).toHaveBeenCalledTimes(1);
     });
 
-    it('ICE disconnected closes both the peer connection and the data channel', () => {
-      joinShare('offer-code', '0123456789abcdef0123456789abcdef');
-      const dc = attachChannel();
-      (lastPc as unknown as { iceConnectionState: RTCIceConnectionState }).iceConnectionState = 'disconnected';
-      lastPc!.oniceconnectionstatechange?.();
-      expect(dc.close).toHaveBeenCalledTimes(1);
-      expect(lastPc!.close).toHaveBeenCalledTimes(1);
+    it('ICE disconnected tears down only after the C5R-02 grace expires', () => {
+      vi.useFakeTimers();
+      try {
+        joinShare('offer-code', '0123456789abcdef0123456789abcdef');
+        const dc = attachChannel();
+        deliver(dc, { type: 'auth-result', ok: true });
+        (lastPc as unknown as { iceConnectionState: RTCIceConnectionState }).iceConnectionState = 'disconnected';
+        lastPc!.oniceconnectionstatechange?.();
+        // Chromium self-recovers from transient ICE disconnects — no teardown yet.
+        expect(dc.close).not.toHaveBeenCalled();
+        expect(lastPc!.close).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(15_000);
+        expect(dc.close).toHaveBeenCalledTimes(1);
+        expect(lastPc!.close).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('ICE recovery within the grace window keeps the join alive (C5R-02)', () => {
+      vi.useFakeTimers();
+      try {
+        joinShare('offer-code', '0123456789abcdef0123456789abcdef');
+        const dc = attachChannel();
+        deliver(dc, { type: 'auth-result', ok: true });
+        (lastPc as unknown as { iceConnectionState: RTCIceConnectionState }).iceConnectionState = 'disconnected';
+        lastPc!.oniceconnectionstatechange?.();
+        (lastPc as unknown as { iceConnectionState: RTCIceConnectionState }).iceConnectionState = 'completed';
+        lastPc!.oniceconnectionstatechange?.();
+        vi.advanceTimersByTime(60_000);
+        expect(dc.close).not.toHaveBeenCalled();
+        expect(lastPc!.close).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('host-side data-channel close closes the peer connection', () => {

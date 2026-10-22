@@ -34,6 +34,8 @@ interface GuestPeer {
   connected: boolean;
   authenticated: boolean;
   authTimeout: ReturnType<typeof setTimeout> | null;
+  // C5R-02: grace window after a transient ICE 'disconnected' (see ICE_GRACE).
+  iceGraceTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const guestPeers = new Map<string, GuestPeer>();
@@ -45,6 +47,11 @@ let guestIdCounter = 0;
 // so an abandoned join would keep a live RTCPeerConnection and a
 // pendingJoinHandles entry until app quit.
 const AUTH_TIMEOUT = 10_000;
+// Host parity (peer-host.ts ICE_GRACE): a bare ICE 'disconnected' is
+// transient in Chromium and self-recovers in seconds; tearing down on the
+// first one permanently killed live authenticated joins. 'failed' is
+// terminal and tears down immediately.
+const ICE_GRACE = 15_000;
 
 export function joinShare(offer: string, passphrase: string): { guestId: string; handle: JoinHandle } {
   const keyError = validateShareKey(passphrase);
@@ -68,6 +75,7 @@ export function joinShare(offer: string, passphrase: string): { guestId: string;
     connected: false,
     authenticated: false,
     authTimeout: null,
+    iceGraceTimer: null,
   };
 
   guestPeers.set(guestId, guestPeer);
@@ -170,8 +178,22 @@ export function joinShare(offer: string, passphrase: string): { guestId: string;
   };
 
   pc.oniceconnectionstatechange = () => {
-    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+    if (pc.iceConnectionState === 'failed') {
       handleDisconnect();
+    } else if (pc.iceConnectionState === 'disconnected') {
+      // C5R-02: give Chromium's ICE self-recovery the grace window; if no
+      // 'connected'/'completed' arrives before it expires, the host is gone.
+      if (!guestPeer.iceGraceTimer) {
+        guestPeer.iceGraceTimer = setTimeout(() => {
+          guestPeer.iceGraceTimer = null;
+          handleDisconnect();
+        }, ICE_GRACE);
+      }
+    } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      if (guestPeer.iceGraceTimer) {
+        clearTimeout(guestPeer.iceGraceTimer);
+        guestPeer.iceGraceTimer = null;
+      }
     }
   };
 
@@ -221,6 +243,10 @@ function disconnectGuest(guestId: string): void {
   if (guestPeer.authTimeout) {
     clearTimeout(guestPeer.authTimeout);
     guestPeer.authTimeout = null;
+  }
+  if (guestPeer.iceGraceTimer) {
+    clearTimeout(guestPeer.iceGraceTimer);
+    guestPeer.iceGraceTimer = null;
   }
   if (guestPeer.dc) guestPeer.dc.close();
   guestPeer.pc.close();

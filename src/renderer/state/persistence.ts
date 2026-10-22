@@ -49,6 +49,12 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
   // One clock for the whole hydrate: every project shares the PA-31 cutoff.
   const now = Date.now();
   for (const project of state.projects) {
+    // C5R-01: remote-terminal tabs exist only inside a live share — the pane
+    // instance is created by share-manager and split-layout skips creating
+    // one for this type at hydration, so a resurrected session renders a
+    // blank dead-end tab on every restart. Drop it at load; rejoining a
+    // share goes through a fresh connection code.
+    project.sessions = project.sessions.filter((s) => s.type !== 'remote-terminal');
     for (const session of project.sessions) {
       if (session.cost) restoreCost(session.id, session.cost);
       if (session.contextWindow) restoreContext(session.id, session.contextWindow);

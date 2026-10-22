@@ -359,19 +359,49 @@ describe('ICE disconnect', () => {
 describe('native resource teardown', () => {
   const KEY = '0123456789abcdef0123456789abcdef';
 
-  it('closes both natives and fires one notification on ICE disconnected', () => {
+  it('tears down ICE disconnected only after the C5R-02 grace expires', async () => {
+    vi.useFakeTimers();
     const handle = startShare('s1', 'readonly', KEY);
     const onDisc = vi.fn();
     handle.onDisconnected(onDisc);
     const dc = lastDc!;
     const pc = lastPc!;
     lastDc!.onopen?.();
+    deliver({ type: 'auth-response', response: 'expected-response' });
+    await vi.advanceTimersByTimeAsync(0); // complete the auth handshake
     pc.iceConnectionState = 'disconnected';
     pc.oniceconnectionstatechange?.();
+    // Chromium self-recovers from transient ICE disconnects — no teardown yet.
+    expect(dc.close).not.toHaveBeenCalled();
+    expect(pc.close).not.toHaveBeenCalled();
+    expect(onDisc).not.toHaveBeenCalled();
+    expect(isSharing('s1')).toBe(true);
+    vi.advanceTimersByTime(15_000);
     expect(dc.close).toHaveBeenCalledTimes(1);
     expect(pc.close).toHaveBeenCalledTimes(1);
     expect(onDisc).toHaveBeenCalledTimes(1);
     expect(isSharing('s1')).toBe(false);
+  });
+
+  it('ICE recovery within the grace window keeps the share alive (C5R-02)', async () => {
+    vi.useFakeTimers();
+    const handle = startShare('s1', 'readonly', KEY);
+    const onDisc = vi.fn();
+    handle.onDisconnected(onDisc);
+    const dc = lastDc!;
+    const pc = lastPc!;
+    lastDc!.onopen?.();
+    deliver({ type: 'auth-response', response: 'expected-response' });
+    await vi.advanceTimersByTimeAsync(0);
+    pc.iceConnectionState = 'disconnected';
+    pc.oniceconnectionstatechange?.();
+    pc.iceConnectionState = 'connected';
+    pc.oniceconnectionstatechange?.();
+    vi.advanceTimersByTime(60_000);
+    expect(dc.close).not.toHaveBeenCalled();
+    expect(pc.close).not.toHaveBeenCalled();
+    expect(onDisc).not.toHaveBeenCalled();
+    expect(isSharing('s1')).toBe(true);
   });
 
   it('closes both natives and fires one notification on ICE failed', () => {

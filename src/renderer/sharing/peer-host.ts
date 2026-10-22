@@ -17,6 +17,8 @@ interface HostPeer {
   authState: 'none' | 'pending' | 'verified';
   authChallenge: Uint8Array<ArrayBuffer> | null;
   authTimeout: ReturnType<typeof setTimeout> | null;
+  // C5R-02: grace window after a transient ICE 'disconnected' (see ICE_GRACE).
+  iceGraceTimer: ReturnType<typeof setTimeout> | null;
   keepaliveTimer: ReturnType<typeof setInterval> | null;
   missedPongs: number;
   serializeAddon: SerializeAddon;
@@ -49,6 +51,12 @@ const MAX_BUFFERED_BYTES = 1024 * 1024;
 // up drops its oldest output rather than growing the queue without bound.
 const MAX_PENDING_BYTES = 4 * 1024 * 1024;
 const AUTH_TIMEOUT = 10_000;
+// C5R-02: a bare ICE 'disconnected' is transient in Chromium — ICE restarts
+// and network path changes self-recover within seconds. Tearing down on the
+// first one permanently killed live authenticated shares, so arm a grace
+// timer and tear down only if the connection does not come back. 'failed'
+// is terminal and tears down immediately.
+const ICE_GRACE = 15_000;
 
 const utf8Encoder = new TextEncoder();
 
@@ -170,6 +178,7 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
     authChallenge: null,
     authTimeout: null,
     keepaliveTimer: null,
+    iceGraceTimer: null,
     missedPongs: 0,
     serializeAddon,
     tornDown: false,
@@ -307,8 +316,22 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
   dc.onclose = handleDisconnect;
 
   pc.oniceconnectionstatechange = () => {
-    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+    if (pc.iceConnectionState === 'failed') {
       handleDisconnect();
+    } else if (pc.iceConnectionState === 'disconnected') {
+      // C5R-02: give Chromium's ICE self-recovery the grace window; if no
+      // 'connected'/'completed' arrives before it expires, the peer is gone.
+      if (!hostPeer.iceGraceTimer) {
+        hostPeer.iceGraceTimer = setTimeout(() => {
+          hostPeer.iceGraceTimer = null;
+          handleDisconnect();
+        }, ICE_GRACE);
+      }
+    } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      if (hostPeer.iceGraceTimer) {
+        clearTimeout(hostPeer.iceGraceTimer);
+        hostPeer.iceGraceTimer = null;
+      }
     }
   };
 
@@ -404,6 +427,10 @@ function teardown(peer: HostPeer): void {
   if (peer.authTimeout) {
     clearTimeout(peer.authTimeout);
     peer.authTimeout = null;
+  }
+  if (peer.iceGraceTimer) {
+    clearTimeout(peer.iceGraceTimer);
+    peer.iceGraceTimer = null;
   }
   peer.serializeAddon.dispose();
   peer.pending = [];

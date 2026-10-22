@@ -172,6 +172,37 @@ describe('hydrateLoadedState active rows', () => {
   });
 });
 
+describe('hydrateLoadedState remote-terminal drop (C5R-01)', () => {
+  // Remote-terminal pane instances are created by share-manager only during
+  // a live share (split-layout skips the type at hydration), so a
+  // resurrected session is a blank dead-end tab on every restart.
+  it('drops remote-terminal sessions from the hydrated tab list', () => {
+    const state = baseState({});
+    state.projects[0].sessions.push({
+      id: 'r1', name: 'Remote', type: 'remote-terminal', cliSessionId: null, createdAt: '0',
+    });
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].sessions.map((s) => s.id)).toEqual(['s1']);
+  });
+
+  it('finalizes active history rows whose dropped tab was remote-terminal', () => {
+    const state = baseState({});
+    state.projects[0].sessions.push({
+      id: 'r1', name: 'Remote', type: 'remote-terminal', cliSessionId: null, createdAt: '0',
+    });
+    state.projects[0].sessionHistory = [
+      { id: 'h1', name: 'R', providerId: 'claude', cliSessionId: null, createdAt: '0', state: 'active', liveSessionId: 'r1' },
+    ];
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].sessionHistory![0].state).toBe('closed');
+    expect(state.projects[0].sessionHistory![0].closedAt).toBeTruthy();
+  });
+});
+
 describe('hydrateLoadedState githubLastSeen age prune (PA-31)', () => {
   // Fixed clock so the 90-day cutoff is deterministic.
   const NOW = Date.parse('2026-10-22T00:00:00.000Z');
