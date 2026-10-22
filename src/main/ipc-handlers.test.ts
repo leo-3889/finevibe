@@ -757,7 +757,7 @@ describe('fs:listDirs home gate (P1-19)', () => {
     // mockImplementationOnce: the shared in-flight confirm opens exactly one
     // dialog, and the default Cancel answer survives for later tests.
     vi.mocked(dialog.showMessageBox).mockImplementationOnce(
-      () => new Promise<{ response: number }>((resolve) => { release = resolve; }),
+      () => new Promise<Electron.MessageBoxReturnValue>((resolve) => { release = resolve as (v: { response: number }) => void; }),
     );
     const first = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
     const second = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
@@ -895,7 +895,7 @@ describe('session transcript channels: configDir boundary gate (P2-113)', () => 
 // config-reading channel enforces (managed profile dir, known project).
 describe('provider:getConfig path gates (SEC-03)', () => {
   beforeEach(() => {
-    provider.getConfig = vi.fn(async () => ({ servers: ['s'] }));
+    provider.getConfig = vi.fn(async () => ({ servers: ['s'] })) as unknown as typeof provider.getConfig;
   });
 
   it('rejects an unallowlisted configDir before the provider is consulted', async () => {
@@ -2257,7 +2257,7 @@ describe('fs:topFilesByTokens result cache (C2M-03)', () => {
     // vitest's `fs` namespace carries no FileHandle export; take the
     // prototype off a real handle (the spy is prototype-wide, as needed).
     const probe = await fs.promises.open(path.join(dir, 'a.ts'), 'r');
-    const readSpy = vi.spyOn(Object.getPrototypeOf(probe) as Record<string, unknown>, 'read');
+    const readSpy = vi.spyOn(Object.getPrototypeOf(probe) as Record<string, (...args: any[]) => any>, 'read');
     await probe.close();
     const size = 1024 * 1024 + 4096;
     fs.writeFileSync(path.join(dir, 'big.ts'), 'a'.repeat(size));
