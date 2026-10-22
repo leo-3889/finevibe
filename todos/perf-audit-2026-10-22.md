@@ -27,7 +27,10 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | S5-01 | P2 | settings-guard git:changed | every watcher event re-validates + writes state.json (burst amplification) | FIXED | 300 ms burst + 5 s trailing debounce (08aa404) |
 | S3-05 | P2 | sidebar session-added/removed | full render wipes Files panel + file-tree cache per tab open/close | AGENT | TabBarSidebarSlice |
 | S3-06 | P2 | state batchRemoveSessions | deferRender honored only by split-layout; Close All = 2N full rebuilds | AGENT | TabBarSidebarSlice |
-| S3-08 | P2 | terminal-pane destroyTerminal | search bar DOM + subscription retained per closed searched tab | PARENT | after RendererP1Fixes lands (file owned) |
+| S3-08 | P2 | terminal-pane destroyTerminal | search bar DOM + subscription retained per closed searched tab | FIXED | destroySearchBar first (0147167) |
+| S4-01 | P1 | session-inspector event handler | 2000-cap array rotation forces the 500-row full rebuild every 200 ms tick on long agent sessions | FIXED (bounded) | full-rebuild fallback floored at 2 s with self-re-arming retry (0147167); rotation-aware append left as the deeper fix |
+| S4-02 | P2 | board-view boardChangeKey | key omitted title/prompt/notes — renames never re-rendered cards | FIXED | FNV-1a text digest in the key (0147167) |
+| S3-02-host | P2 | terminal-pane fitTerminal | host resize never forwarded to guests (onResize hook dead) | FIXED | forwardResize on every real resize (0147167) |
 | S4-04 | P2 | ipc-handlers fs:listDirs | out-of-home path types fire modal confirm dialog per keystroke prefix | PARENT | after IpcAsyncFixes lands (file owned) |
 | PA-07+ | P3 | ipc-handlers enumerateCache | global git:changed invalidation + stale in-flight writeback (no generation) | PARENT | after IpcAsyncFixes lands |
 | SR2-a | P2 | tab-bar/index.ts | add/close double strip rebuild (session-added + structural kind) | AGENT | TabBarSidebarSlice |
@@ -37,7 +40,7 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | SR2-e | P3 | tab-list/sidebar rename | events during open rename dropped, dead tab clickable | AGENT | TabBarSidebarSlice |
 | SR2-f | P3 | sidebar+tab-bar | duplicate document dismissers run twice | AGENT | TabBarSidebarSlice |
 | scout2-P2 | P2 | profiles.ts | home ROOT accepted as profile configDir (CLI writes into ~) | FIXED | reject homeRel === '' (33839b7) |
-| S1-07/S1-08 | P2 | pi/codex session watchers | 2 s poll cadence, sync listing reads | ACCEPTED | pi: per-tick cost = cached statSync per watched dir (mtimes cache, documented poll = correctness guarantee); codex: CodexWatchLinux agent verdict pending |
+| S1-07/S1-08 | P2 | pi/codex session watchers | 2 s poll cadence, sync listing reads | ACCEPTED | both watchers: per-tick cost bounded (cached statSync per watched dir; codex day-dirs mtime-skipped; 1 s min-spacing floor); poll is the documented correctness guarantee |
 
 ## Gate
 
