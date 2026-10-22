@@ -67,6 +67,7 @@ vi.mock('./session-inspector-timeline.js', () => ({
 // mocks (hoisted above these imports) must be installed first.
 const { initSessionInspector, openInspector, closeInspector } = await import('./session-inspector.js');
 const { renderTimeline } = await import('./session-inspector-timeline.js');
+const { inspectorState } = await import('./session-inspector-state-ui.js');
 
 beforeEach(() => {
   closeInspector();
@@ -104,5 +105,34 @@ describe('session-inspector auto-follow (CI-05)', () => {
     harness.project.activeSessionId = 's2';
     harness.emit('session-changed');
     expect(renderTimeline).toHaveBeenCalledTimes(1);
+  });
+});
+
+// C3R-03: arm-on-entry. A second pointerdown while a drag is live used to
+// arm another pointer-capture/click pair on the handle.
+describe('session-inspector resize (C3R-03)', () => {
+  const pointerEvent = (type: string, id: number, clientX = 100): PointerEvent => {
+    const e = new Event(type) as PointerEvent;
+    Object.assign(e, { pointerId: id, clientX });
+    return e;
+  };
+
+  it('ignores a second pointerdown while a drag is live', () => {
+    Element.prototype.setPointerCapture = vi.fn();
+    Element.prototype.releasePointerCapture = vi.fn();
+    const handle = document.querySelector('.inspector-resize-handle') as HTMLElement;
+
+    handle.dispatchEvent(pointerEvent('pointerdown', 1));
+    expect(inspectorState.resizing).toBe(true);
+
+    handle.dispatchEvent(pointerEvent('pointerdown', 2)); // mid-drag: ignored
+    expect(Element.prototype.setPointerCapture).toHaveBeenCalledTimes(1);
+
+    handle.dispatchEvent(pointerEvent('pointerup', 1));
+    expect(inspectorState.resizing).toBe(false);
+
+    handle.dispatchEvent(pointerEvent('pointerdown', 3)); // fresh drag arms
+    expect(Element.prototype.setPointerCapture).toHaveBeenCalledTimes(2);
+    handle.dispatchEvent(pointerEvent('pointerup', 3));
   });
 });

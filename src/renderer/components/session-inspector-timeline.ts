@@ -527,15 +527,10 @@ export function appendTimelineEvents(container: HTMLElement): boolean {
   // no append can express it. Identity, not timestamp — same-ms boundary
   // events used to pass the timestamp check, so a rotated array "appended"
   // successfully onto rows whose indices had all moved.
-  if (events[st.startIdx] !== st.firstWindowEvent) {
-    // CI-15: rotation invalidates the positional expandable-row keys — they
-    // described rows by position, and the events that held those positions
-    // are gone from the window. Agent-group keys are id-keyed and survive.
-    for (const key of inspectorState.expandedRows) {
-      if (!key.startsWith('agent-group:')) inspectorState.expandedRows.delete(key);
-    }
-    return false;
-  }
+  // C3R-02: the CI-15 prune loop lived here. C2R-02 made the expandable-row
+  // keys seq-prefixed, so they identify their own event across the rotation —
+  // deleting them on every rotation collapsed valid expansions.
+  if (events[st.startIdx] !== st.firstWindowEvent) return false;
 
   const startIdx = Math.max(0, events.length - 500);
   if (startIdx > st.startIdx && !trimWindow(st, startIdx)) return false;

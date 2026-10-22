@@ -296,6 +296,17 @@ describe('event sizing gate (C2R-04)', () => {
     stringify.mockRestore();
   });
 
+  // C3R-01: the gate used to be global — an open inspector on s1 made every
+  // background session pay the full serialization.
+  it('estimates background sessions while the inspector inspects another', () => {
+    inspectorState.inspectorPanel = {} as HTMLElement;
+    inspectorState.inspectedSessionId = 's1';
+    const stringify = vi.spyOn(JSON, 'stringify');
+    addEvents('s2', [makeEvent({ type: 'tool_use', timestamp: 1 })]);
+    expect(stringify).not.toHaveBeenCalled();
+    stringify.mockRestore();
+  });
+
   it('still drops a single event over the per-event cap by estimate', () => {
     addEvents('s1', [makeEvent({ type: 'tool_use', timestamp: 1, tool_name: 'x'.repeat(120 * 1024) })]);
     expect(getEvents('s1')).toHaveLength(0);

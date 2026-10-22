@@ -46,8 +46,10 @@ export function addEvents(sessionId: string, events: InspectorEvent[]): void {
   const existing = sessionEvents.get(sessionId) ?? [];
   const sizes = eventSizes.get(sessionId) ?? [];
   let total = sizes.reduce((sum, size) => sum + size, 0);
-  // C2R-04: exact byte count only while the inspector is showing the events.
-  const exact = inspectorState.inspectorPanel !== null && inspectorState.inspectedSessionId !== null;
+  // C2R-04: exact byte count only for the session the inspector is showing.
+  // C3R-01: the gate was global — opening the inspector on one session made
+  // every background session pay the full serialization.
+  const exact = inspectorState.inspectedSessionId === sessionId;
   for (const event of events) {
     // C2R-02: stamp the rotation-proof identity before the array stores it.
     event.seq ??= ++seqCounter;

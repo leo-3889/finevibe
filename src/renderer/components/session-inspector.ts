@@ -317,7 +317,11 @@ function renderActiveTab(): void {
 // resized the inspector), and every later mousedown stacked another pair.
 // Pointer events with capture on the handle ALWAYS deliver
 // pointerup/pointercancel, wherever the button is released.
+// C3R-03: arm-on-entry guard (the project-terminal idiom). A second
+// pointerdown while a drag is live — a stray touch, a double press — would
+// stack another pointermove/pointerup pair on the handle.
 function startResize(e: PointerEvent): void {
+  if (inspectorState.resizing) return;
   e.preventDefault();
   inspectorState.resizing = true;
   const handle = e.currentTarget as HTMLElement;

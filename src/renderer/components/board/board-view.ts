@@ -260,6 +260,18 @@ export function resetBoardView(): void {
   lastBoardKey = '';
 }
 
+/**
+ * C3R-04: conditional form for pane teardown. The singleton lives in the
+ * pane it was last rendered into; destroying a BACKGROUND project's pane
+ * must not drop the reference the visible board still uses (a global reset
+ * there left the visible pane with a live element and a `null` singleton,
+ * freezing the board until an unrelated full reset). Clears the singleton
+ * only when `paneEl` actually owns it.
+ */
+export function resetBoardViewIf(paneEl: HTMLElement): void {
+  if (boardEl && paneEl.contains(boardEl)) resetBoardView();
+}
+
 function activeKanbanContainer(): HTMLElement | null {
   const project = appState.activeProject;
   if (!project) return null;

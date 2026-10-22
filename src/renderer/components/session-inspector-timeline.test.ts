@@ -774,26 +774,26 @@ describe('cap rotation guard (CI-03)', () => {
     expect(appendTimelineEvents(container)).toBe(false);
   });
 
-  // CI-15: the rotation invalidates every positional expandable-row key; the
-  // rows those keys described are gone from the window, so the stale keys
-  // would expand whatever event slid into their old index.
-  it('drops the positional expanded-row keys on a rotation, keeping agent-group keys', () => {
+  // C3R-02: the CI-15 prune loop deleted every non-agent-group key on a
+  // rotation. C2R-02 keys are seq-prefixed, so they keep identifying their
+  // own event across the shift — the prune only collapsed valid expansions.
+  it('keeps the expandable-row keys across a rotation', () => {
     const events = [
-      ev('tool_use', 1000, { tool_name: 'A' }),
-      ev('tool_use', 1000, { tool_name: 'B' }),
+      ev('tool_use', 1000, { tool_name: 'A', seq: 1 }),
+      ev('tool_use', 1000, { tool_name: 'B', seq: 2 }),
     ];
     vi.mocked(getEvents).mockReturnValue(events);
     const container = new FakeElement('div') as unknown as HTMLElement;
     renderTimeline(container);
 
-    inspectorState.expandedRows.add('0:1000:tool_use:A');
+    inspectorState.expandedRows.add('1:1000:tool_use:A');
     inspectorState.expandedRows.add('agent-group:A');
 
     events.shift();
-    events.push(ev('tool_use', 1000, { tool_name: 'C' }));
+    events.push(ev('tool_use', 1000, { tool_name: 'C', seq: 3 }));
     expect(appendTimelineEvents(container)).toBe(false);
 
-    expect(inspectorState.expandedRows.has('0:1000:tool_use:A')).toBe(false);
+    expect(inspectorState.expandedRows.has('1:1000:tool_use:A')).toBe(true);
     expect(inspectorState.expandedRows.has('agent-group:A')).toBe(true);
   });
 });

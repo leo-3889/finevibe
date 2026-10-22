@@ -39,7 +39,7 @@ vi.mock('../../board-state.js', async (importOriginal) => {
 
 import { appState, _resetForTesting } from '../../state.js';
 import { addTask, updateTask } from '../../board-state.js';
-import { initBoard, renderBoard, resetBoardView } from './board-view.js';
+import { initBoard, renderBoard, resetBoardView, resetBoardViewIf } from './board-view.js';
 import { instances as kanbanInstances } from '../kanban/instance.js';
 
 function setupKanban(): HTMLElement {
@@ -183,6 +183,54 @@ describe('board-view singleton reset (C2R-16)', () => {
     kanbanInstances.clear();
     document.body.innerHTML = '';
     resetBoardView();
+
+    const next = document.createElement('div');
+    document.body.appendChild(next);
+    kanbanInstances.set('kb-1', {
+      sessionId: 'kb-1',
+      projectId: appState.activeProject!.id,
+      element: next,
+      destroy: () => {},
+    });
+    renderBoard();
+
+    const rebuilt = next.querySelector('.board-card');
+    expect(rebuilt).not.toBeNull();
+    expect(rebuilt).not.toBe(card);
+  });
+});
+
+describe('board-view conditional reset (C3R-04)', () => {
+  it('leaves the singleton intact when a non-owning pane is destroyed', () => {
+    const container = setupKanban();
+    addTask({ title: 'T', prompt: 'p', columnId: 'col-a' });
+    initBoard();
+    renderBoard();
+    const card = container.querySelector('.board-card');
+    expect(card).not.toBeNull();
+
+    // destroyKanbanPane() of a BACKGROUND project's pane: its element never
+    // owned the board, so the visible pane's singleton must survive.
+    const foreign = document.createElement('div');
+    document.body.appendChild(foreign);
+    resetBoardViewIf(foreign);
+
+    renderBoard();
+    expect(container.querySelector('.board-card')).toBe(card);
+  });
+
+  it('clears the singleton when the owning pane is destroyed', () => {
+    const container = setupKanban();
+    addTask({ title: 'T', prompt: 'p', columnId: 'col-a' });
+    initBoard();
+    renderBoard();
+    const card = container.querySelector('.board-card');
+    expect(card).not.toBeNull();
+
+    // instance.destroy() detaches the pane element (board subtree travels
+    // with it), then destroyKanbanPane resets through the conditional form.
+    container.remove();
+    resetBoardViewIf(container);
 
     const next = document.createElement('div');
     document.body.appendChild(next);
