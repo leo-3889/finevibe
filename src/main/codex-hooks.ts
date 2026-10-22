@@ -134,7 +134,30 @@ function removeCodexHooksFeatureFlag(): void {
 export function installCodexHooks(): void {
   ensureCodexHooksFeatureFlag();
 
-  const raw = readJsonSafe(HOOKS_JSON_PATH) ?? {};
+  // P2-60/P1-18: `readJsonSafe` answers `null` for a missing, truncated and
+  // unparseable hooks.json alike, and the write below persists what it reads
+  // — collapsing a corrupt file into `{}` deletes every user-authored Codex
+  // hook and every other top-level key, with nothing to recover them.
+  // Mirror of the guard gemini-hooks.ts carries: only a missing file starts
+  // fresh; a corrupt one aborts, leaving the file untouched, and validation
+  // honestly reports the hooks as not installed.
+  let raw: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(HOOKS_JSON_PATH, 'utf-8'));
+    // `[1,2]`, `"x"`, `null`: the write below spreads this into an object,
+    // the same silent loss — treat a non-object as corrupt.
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('not a JSON object');
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      raw = {};
+    } else {
+      console.warn(`codex: ${HOOKS_JSON_PATH} is not valid JSON; hooks not installed over a corrupt config`);
+      return;
+    }
+  }
   const existingHooks: HooksConfig = (raw.hooks ?? {}) as HooksConfig;
   const cleaned = cleanHooks(existingHooks, CODEX_HOOK_MARKER);
 

@@ -21,9 +21,16 @@ const CANDIDATE_HOOK_EVENTS = [
  * the currently-installed Claude CLI version actually supports. Events that
  * the CLI does not support are dropped so the guard does not flag them as
  * "missing" and trigger a reinstall loop.
+ *
+ * Returns null when the expected set is UNKNOWN. An empty supported set is
+ * the version probe's "undetectable" signal (P2-53), not a CLI that supports
+ * no hook events; a caller that read it as "expect nothing" graded a
+ * settings.json whose FineVibe hooks had just been stripped as `complete`
+ * (P1-13).
  */
-function getExpectedHookEvents(): string[] {
+function getExpectedHookEvents(): string[] | null {
   const supported = getSupportedHookEvents();
+  if (supported.size === 0) return null;
   return CANDIDATE_HOOK_EVENTS.filter(e => supported.has(e));
 }
 
@@ -60,10 +67,17 @@ export function validateSettings(configDir?: string): SettingsValidationResult {
     }
   }
 
+  // P1-13 fail-closed: with the version undetected there is no expected set
+  // to prove 'complete' against (the old `found === expected.length` compare
+  // was `0 === 0`), so the state reports 'missing' with every candidate event
+  // unverified. Consumers key the repair off `hooks !== 'complete'` — the
+  // per-session banner's "Fix Settings" CTA (settings-guard-ui), the
+  // preferences setup checklist — so the user gets the fix, which re-probes.
+  const detailEvents = expectedHookEvents ?? CANDIDATE_HOOK_EVENTS;
   let hooks: SettingsValidationResult['hooks'] = 'missing';
-  const hookDetails: Record<string, boolean> = Object.fromEntries(expectedHookEvents.map(e => [e, false]));
+  const hookDetails: Record<string, boolean> = Object.fromEntries(detailEvents.map(e => [e, false]));
   const existingHooks = settings.hooks as Record<string, Array<{ hooks?: Array<{ command?: string }> }>> | undefined;
-  if (existingHooks) {
+  if (expectedHookEvents && existingHooks) {
     let found = 0;
     for (const event of expectedHookEvents) {
       const matchers = existingHooks[event];

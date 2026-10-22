@@ -32,21 +32,26 @@ vi.mock('fs', () => ({
 // persisted state and the Claude settings reader (the reader returns a
 // foreign statusLine, forcing the consent path); settings-guard's own logic
 // stays real. vi.hoisted so the lazy factories can close over these.
-const { FOREIGN_STATUSLINE, installHooksOnly, installStatusLine: mockInstallStatusLine } = vi.hoisted(() => ({
+const { FOREIGN_STATUSLINE, installHooksOnly, installStatusLine: mockInstallStatusLine, supportedHookEvents } = vi.hoisted(() => ({
   FOREIGN_STATUSLINE: '/usr/bin/foreign-statusline.sh',
   installHooksOnly: vi.fn(),
   installStatusLine: vi.fn(),
+  // P1-13: validateSettings' expected set comes from here, so the
+  // version-unknown case is programmed by returning the empty set (the probe's
+  // "undetectable" signal) — a fixed arrow function could not express it.
+  supportedHookEvents: vi.fn(() =>
+    new Set([
+      'SessionStart', 'UserPromptSubmit', 'PostToolUse',
+      'PostToolUseFailure', 'Stop', 'StopFailure', 'PermissionRequest',
+    ]),
+  ),
 }));
 
 vi.mock('./claude-cli', () => ({
   HOOK_MARKER: '# finevibe-hook',
   installHooksOnly,
   installStatusLine: mockInstallStatusLine,
-  getSupportedHookEvents: () =>
-    new Set([
-      'SessionStart', 'UserPromptSubmit', 'PostToolUse',
-      'PostToolUseFailure', 'Stop', 'StopFailure', 'PermissionRequest',
-    ]),
+  getSupportedHookEvents: supportedHookEvents,
 }));
 
 vi.mock('./store', () => ({
@@ -62,7 +67,7 @@ import { EventEmitter } from 'node:events';
 import {
   isFineVibeStatusLine, shouldWarnStatusLine, guardedInstall,
   guardedProfileInstall, reinstallSettings, consentDirKey, resetProfileInstallMemo,
-  recordDirConsent,
+  recordDirConsent, validateSettings,
 } from './settings-guard';
 import * as fs from 'fs';
 import { installStatusLine } from './claude-cli';
@@ -376,5 +381,72 @@ describe('recordDirConsent map hygiene (C3M-05)', () => {
     expect(keys).not.toContain('/dir/50');
     expect(keys).toContain('/dir/51');
     expect(keys).toContain(KEY);
+  });
+});
+
+// P1-13: when `claude --version` fails (a 3 s timeout during a heavy launch,
+// an unrecognized build) the supported-event set collapses to empty. Pre-fix
+// the guard compared `found === expectedHookEvents.length` — `0 === 0` — and
+// reported `hooks: 'complete'` for a settings.json whose FineVibe hooks the
+// same empty set had just stripped: no banner, no "Fix Settings", zero status
+// events for every Claude session. It now fails closed to 'missing', the one
+// state every consumer already keys the repair off (`hooks !== 'complete'` in
+// settings-guard-ui.ts, setup-checks.ts and the per-spawn warning in
+// ipc-handlers.ts).
+describe('validateSettings with an undetectable CLI version (P1-13)', () => {
+  const ALL_EVENTS = [
+    'SessionStart', 'UserPromptSubmit', 'PostToolUse',
+    'PostToolUseFailure', 'Stop', 'StopFailure', 'PermissionRequest',
+  ];
+
+  function settingsWithHooks(events: string[]): Record<string, unknown> {
+    return {
+      statusLine: { type: 'command', command: STATUSLINE_SCRIPT },
+      hooks: Object.fromEntries(events.map(e => [e, [{
+        matcher: '',
+        hooks: [{ type: 'command', command: `echo ${e}:working # finevibe-hook` }],
+      }]])),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(readJsonSafe).mockReturnValue(settingsWithHooks(ALL_EVENTS));
+  });
+
+  afterEach(() => {
+    // The hoisted default (full support) must survive the empty-set case.
+    supportedHookEvents.mockImplementation(() => new Set(ALL_EVENTS));
+  });
+
+  it('reports the hooks missing — never complete — when the probe failed', () => {
+    supportedHookEvents.mockReturnValue(new Set<string>());
+
+    const result = validateSettings();
+
+    // Fail-before: a settings.json holding every FineVibe hook graded
+    // 'complete' here, so the banner never rendered.
+    expect(result.hooks).toBe('missing');
+    // Every candidate event is listed as unverified, so the preferences
+    // checklist still names what could not be confirmed.
+    expect(result.hookDetails).toEqual(Object.fromEntries(ALL_EVENTS.map(e => [e, false])));
+    // Only the hook set is undecidable; the statusLine is plain file state.
+    expect(result.statusLine).toBe('finevibe');
+  });
+
+  it('still reports complete for a full install once the version is known', () => {
+    const result = validateSettings();
+    expect(result.hooks).toBe('complete');
+    expect(Object.values(result.hookDetails).every(Boolean)).toBe(true);
+  });
+
+  it('reports partial when a known version has only some events installed', () => {
+    vi.mocked(readJsonSafe).mockReturnValue(settingsWithHooks(['Stop']));
+
+    const result = validateSettings();
+
+    expect(result.hooks).toBe('partial');
+    expect(result.hookDetails.Stop).toBe(true);
+    expect(result.hookDetails.SessionStart).toBe(false);
   });
 });
