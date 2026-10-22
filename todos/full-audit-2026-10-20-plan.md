@@ -31,6 +31,8 @@ Rules: waves in order (A → F), each wave exits on a green `gate.sh 3`; one com
 
 Parent-side items needing your word: **(i)** delete the stray `dev/null` file (P2-1, 12 KB — the tsc JS of `codex-provider.test.ts`, the product of a `> dev\null` redirect); **(ii)** keep or delete `dev/audit/` (the four scanners above — they are the audit's tooling and this plan depends on them); **(iii)** branch pruning (P1-4): 24 merged `audit/*` + `w/*` branches, patch bundle before deletion; **(iv)** fork identity (P1-7 + P2-13): `bin/vibeyard.js`, `auto-updater.ts`, `team-config.ts` and `personas/` default to the **upstream** repo while README ships FineVibe branding — pick upstream / fork / configurable feed, and note P2-77 pins the upstream feed in two tests.
 
+Decided (2026-10-21): **(ii)** `dev/audit/` **kept** — `gate.sh` + `pointer-check.js` (the gate chain: gate.sh calls the pointer scan), the two §0 scanners, and `normalize-eol.js` (the repo is LF blobs + `core.autocrlf=false`, so the CRLF repair utility stays live). The three wave specs (C/D/E) were deleted — their waves are closed and nothing references them. `dev/` is gitignored (local sandbox); `dev/perf/` stays tracked by exception.
+
 ## 2. Wave A — 4 rows
 
 **A — gates (3).** Nothing after A has trustworthy CI evidence. P1-6 = the vitest console-stub flake that makes `npm test` exit 1 with every test green; P1-5 = renderer types are checked by no build/CI step (esbuild strips them; `tsconfig.renderer.json` is a manual command); P2-12 = coverage excludes the four highest-risk modules. Exit: `gate.sh 3` green three times with the renderer typecheck wired in.
