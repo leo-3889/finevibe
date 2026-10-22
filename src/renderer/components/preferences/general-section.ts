@@ -85,21 +85,21 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       let snapshot = getProviderAvailabilitySnapshot();
       if (snapshot) {
         const options = buildProviderOptions(snapshot.providers);
-        providerSelect = createCustomSelect('pref-default-provider', options, currentDefault);
+        providerSelect = createCustomSelect('pref-default-provider', options, currentDefault, () => renderPlanModeRow());
         fixSelectWidthToLongestOption(providerSelect, options);
       } else {
-        providerSelect = createCustomSelect('pref-default-provider', [{ value: currentDefault, label: t('general.loading') }], currentDefault);
+        providerSelect = createCustomSelect('pref-default-provider', [{ value: currentDefault, label: t('general.loading') }], currentDefault, () => renderPlanModeRow());
         loadProviderAvailability().then(() => {
           if (!ctx.isActiveSection('general')) return;
           snapshot = getProviderAvailabilitySnapshot();
           if (snapshot) {
             if (providerSelect) providerSelect.destroy();
             const options = buildProviderOptions(snapshot.providers);
-            providerSelect = createCustomSelect('pref-default-provider', options, currentDefault);
+            providerSelect = createCustomSelect('pref-default-provider', options, currentDefault, () => renderPlanModeRow());
             fixSelectWidthToLongestOption(providerSelect, options);
             providerRow.querySelector('.custom-select')?.remove();
             providerRow.appendChild(providerSelect.element);
-            renderPlanModeRows();
+            renderPlanModeRow();
           }
         });
       }
@@ -108,47 +108,50 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       providerRow.appendChild(providerSelect.element);
       container.appendChild(providerRow);
 
-      renderPlanModeRows();
+      // The plan-mode section only steers the tool that the quick-send paths
+      // resolve from `defaultProvider` (Ask AI / Inspect / Draw / Flow "Send to
+      // AI", Kanban create, New-session modal seed), so the page shows a single
+      // checkbox for the currently selected default coding tool — re-rendered
+      // when the dropdown changes. An unsupported selected tool renders
+      // disabled + tooltip. Rows persist on change (like the per-provider
+      // default profiles), not on Save.
+      const planModeSection = document.createElement('div');
+      container.appendChild(planModeSection);
+      renderPlanModeRow();
 
-      // Per-provider plan-mode defaults drive the checkbox-less quick-send
-      // paths (Ask AI / Inspect / Draw / Flow "Send to AI", Kanban create)
-      // and seed the New Session modal's plan-mode row. Unsupported
-      // providers render disabled + tooltip, so this page doubles as the
-      // plan-mode support matrix. Rows persist on change (like the
-      // per-provider default profiles), not on Save.
-      function renderPlanModeRows(): void {
+      function renderPlanModeRow(): void {
+        planModeSection.innerHTML = '';
         const metas = getProviderAvailabilitySnapshot()?.providers ?? [];
-        if (metas.length === 0) return;
+        const meta = metas.find(m => m.id === providerSelect?.getValue());
+        if (!meta) return;
         const heading = document.createElement('div');
         heading.className = 'preferences-subheading';
         heading.textContent = t('general.planModeHeading');
-        container.appendChild(heading);
-        for (const meta of metas) {
-          const providerId = meta.id as ProviderId;
-          const supported = isPlanModeSupported(providerId);
-          const row = document.createElement('div');
-          row.className = 'modal-toggle-field';
-          if (!supported) {
-            row.classList.add('disabled');
-            row.title = t('tab.newSessionModal.planModeUnsupportedTooltip');
-          }
-          const label = document.createElement('label');
-          label.htmlFor = `pref-plan-mode-${providerId}`;
-          label.textContent = meta.displayName;
-          const checkbox = document.createElement('input');
-          checkbox.type = 'checkbox';
-          checkbox.id = `pref-plan-mode-${providerId}`;
-          checkbox.checked = resolvePlanModePreference(appState.preferences, providerId);
-          checkbox.disabled = !supported;
-          checkbox.addEventListener('change', () => {
-            const map: Partial<Record<ProviderId, boolean>> = { ...appState.preferences.planModeDefaults };
-            map[providerId] = checkbox.checked;
-            appState.setPreference('planModeDefaults', map);
-          });
-          row.appendChild(label);
-          row.appendChild(checkbox);
-          container.appendChild(row);
+        planModeSection.appendChild(heading);
+        const providerId = meta.id as ProviderId;
+        const supported = isPlanModeSupported(providerId);
+        const row = document.createElement('div');
+        row.className = 'modal-toggle-field';
+        if (!supported) {
+          row.classList.add('disabled');
+          row.title = t('tab.newSessionModal.planModeUnsupportedTooltip');
         }
+        const label = document.createElement('label');
+        label.htmlFor = `pref-plan-mode-${providerId}`;
+        label.textContent = meta.displayName;
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `pref-plan-mode-${providerId}`;
+        checkbox.checked = resolvePlanModePreference(appState.preferences, providerId);
+        checkbox.disabled = !supported;
+        checkbox.addEventListener('change', () => {
+          const map: Partial<Record<ProviderId, boolean>> = { ...appState.preferences.planModeDefaults };
+          map[providerId] = checkbox.checked;
+          appState.setPreference('planModeDefaults', map);
+        });
+        row.appendChild(label);
+        row.appendChild(checkbox);
+        planModeSection.appendChild(row);
       }
 
       const sound = toggleRow('pref-sound-on-waiting', t('general.playSoundWhenSessionFinishes'), appState.preferences.soundOnSessionWaiting);

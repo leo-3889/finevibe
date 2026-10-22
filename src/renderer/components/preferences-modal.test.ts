@@ -366,22 +366,26 @@ describe('General section plan-mode defaults', () => {
     });
   });
 
-  it('renders one row per provider, disables the unsupported one, and persists toggles immediately', async () => {
+  it('renders only the selected default tool row, persists toggles immediately, and re-renders on tool change', async () => {
     const { showPreferencesModal } = await import('./preferences-modal.js');
 
     showPreferencesModal();
     selectPreferencesSection('general');
 
     const claude = getElement('pref-plan-mode-claude');
-    const pi = getElement('pref-plan-mode-pi');
     expect(claude.type).toBe('checkbox');
     expect(claude.checked).toBe(true);
     expect(claude.disabled).toBe(false);
-    expect(pi.disabled).toBe(true);
-    expect(pi.closest('.modal-toggle-field').title).toBe('Provider does not support plan mode');
+    expect(findById(docBody, 'pref-plan-mode-pi')).toBeNull();
 
     claude.checked = false;
     claude.dispatchEvent({ type: 'change' });
     expect(mockState.setPreference).toHaveBeenCalledWith('planModeDefaults', { claude: false });
+
+    selectState.instances.get('pref-default-provider')!.setValue('pi');
+    expect(findById(docBody, 'pref-plan-mode-claude')).toBeNull();
+    const pi = getElement('pref-plan-mode-pi');
+    expect(pi.disabled).toBe(true);
+    expect(pi.closest('.modal-toggle-field').title).toBe('Provider does not support plan mode');
   });
 });
