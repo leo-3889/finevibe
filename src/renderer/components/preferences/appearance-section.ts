@@ -5,7 +5,7 @@ import { t } from '../../i18n.js';
 import type { PreferencesContext, SectionController } from './section.js';
 import { toggleRow } from './shared.js';
 
-import type { SidebarViews } from '../../../shared/types.js';
+import type { Preferences, SidebarViews } from '../../../shared/types.js';
 
 export function createAppearanceSection(ctx: PreferencesContext): SectionController {
   let themeSelect: CustomSelectInstance | null = null;
@@ -88,19 +88,24 @@ export function createAppearanceSection(ctx: PreferencesContext): SectionControl
     },
 
     save() {
-      if (themeSelect) appState.setPreference('theme', themeSelect.getValue() as 'dark' | 'light');
+      // One batched write (C3RP-11): per-key setPreference would persist +
+      // emit 'preferences-changed' once per key, re-theming every terminal
+      // each time.
+      const patch: Partial<Preferences> = {};
+      if (themeSelect) patch.theme = themeSelect.getValue() as 'dark' | 'light';
       if (sidebarCheckboxes) {
-        appState.setPreference('sidebarViews', {
+        patch.sidebarViews = {
           gitPanel: sidebarCheckboxes.gitPanel.checked,
           sessionHistory: sidebarCheckboxes.sessionHistory.checked,
           discussions: sidebarCheckboxes.discussions.checked,
           fileTree: sidebarCheckboxes.fileTree.checked,
           activeSessions: sidebarCheckboxes.activeSessions.checked,
-        });
+        };
       }
       if (boardCardMetricsCheckbox && boardCardMetricsCheckbox.checked !== (appState.preferences.boardCardMetrics ?? true)) {
-        appState.setPreference('boardCardMetrics', boardCardMetricsCheckbox.checked);
+        patch.boardCardMetrics = boardCardMetricsCheckbox.checked;
       }
+      appState.setPreferences(patch);
     },
 
     onLeave() {

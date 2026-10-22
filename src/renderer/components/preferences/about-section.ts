@@ -3,12 +3,21 @@ import { t } from '../../i18n.js';
 import type { SectionController } from './section.js';
 import { toggleRow } from './shared.js';
 
-const GITHUB_URL = 'https://github.com/leo-3889/vibeyard';
-const ISSUES_URL = 'https://github.com/leo-3889/vibeyard/issues';
+// C4S-10: the fork's public repo is leo-3889/finevibe (git remote `fork`).
+const GITHUB_URL = 'https://github.com/leo-3889/finevibe';
+const ISSUES_URL = 'https://github.com/leo-3889/finevibe/issues';
 
 export function createAboutSection(): SectionController {
   let debugModeCheckbox: HTMLInputElement | null = null;
-
+  // C4S-04: the check-Now listener pair + its 5 s timeout live on the
+  // controller so closing the modal (or switching sections) mid-check
+  // unregisters them — pairs left behind run stale callbacks on the next
+  // background `update:available`.
+  let pendingUpdateCleanup: (() => void) | null = null;
+  const clearUpdateCheck = () => {
+    pendingUpdateCleanup?.();
+    pendingUpdateCleanup = null;
+  };
   return {
     render(container) {
       const aboutDiv = document.createElement('div');
@@ -39,24 +48,27 @@ export function createAboutSection(): SectionController {
           // Every terminal branch unregisters the whole listener pair — a
           // pair left behind makes the next `update:available` event run
           // stale callbacks from this, already-finished check.
+          clearUpdateCheck();
+          const cleanup = () => {
+            clearTimeout(timeout);
+            unsub();
+            unsubErr();
+            pendingUpdateCleanup = null;
+          };
+          pendingUpdateCleanup = cleanup;
           const timeout = setTimeout(() => {
             updateStatus.textContent = t('about.upToDate');
             updateBtn.disabled = false;
-            unsub();
-            unsubErr();
+            cleanup();
           }, 5000);
           const unsub = window.finevibe.update.onAvailable((info) => {
-            clearTimeout(timeout);
             updateStatus.textContent = t('about.updateAvailable', { version: info.version });
-            unsub();
-            unsubErr();
+            cleanup();
           });
           const unsubErr = window.finevibe.update.onError(() => {
-            clearTimeout(timeout);
             updateStatus.textContent = t('about.updateFailed');
             updateBtn.disabled = false;
-            unsub();
-            unsubErr();
+            cleanup();
           });
         }).catch(() => {
           updateStatus.textContent = t('about.updateFailed');
@@ -120,6 +132,14 @@ export function createAboutSection(): SectionController {
         appState.setPreference('debugMode', debugModeCheckbox.checked);
         window.finevibe.menu.rebuild(debugModeCheckbox.checked);
       }
+    },
+
+    onLeave() {
+      clearUpdateCheck();
+    },
+
+    destroy() {
+      clearUpdateCheck();
     },
   };
 }

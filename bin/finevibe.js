@@ -57,6 +57,13 @@ function getInstalledVersion() {
   }
 }
 
+// C4S-11: a half-open TCP connection (proxy dies mid-handshake, Wi-Fi drop)
+// made https.get wait forever — the launcher hung with no progress and the
+// DOWNLOAD_ATTEMPTS retry / fail-closed paths never fired. Destroy the
+// socket after 30 s of inactivity so the request rejects and the caller
+// sees a real error.
+const SOCKET_TIMEOUT_MS = 30_000;
+
 function followRedirects(url, maxRedirects = 10, headers = {}) {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) {
@@ -66,7 +73,7 @@ function followRedirects(url, maxRedirects = 10, headers = {}) {
     if (!url.startsWith('https://')) {
       return reject(new Error(`Refusing non-HTTPS download URL: ${url}`));
     }
-    https.get(url, { headers: { 'User-Agent': 'finevibe-cli', ...headers } }, (res) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'finevibe-cli', ...headers } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         let nextUrl;
@@ -79,7 +86,14 @@ function followRedirects(url, maxRedirects = 10, headers = {}) {
       } else {
         resolve(res);
       }
-    }).on('error', reject);
+    });
+    // The timer rides the response socket too: a stall mid-download (the
+    // piped body shares this socket) destroys it and surfaces as res
+    // 'error', which download() already turns into cleanup + reject.
+    req.setTimeout(SOCKET_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Socket idle for ${SOCKET_TIMEOUT_MS / 1000}s: ${url}`));
+    });
+    req.on('error', reject);
   });
 }
 
@@ -303,7 +317,9 @@ Any other arguments are forwarded to the FineVibe app.`);
   }
 
   if (!isMac && !isWin && process.platform !== 'linux') {
-    console.error(`Unsupported platform ${process.platform}. Download from: ${RELEASES_URL ?? 'https://github.com/leo-3889/vibeyard/releases'}`);
+    // C4S-10: never hardcode a repo URL — the feed is exactly RELEASES_URL
+    // (P1-7 fork policy); with no feed configured, point at the env var.
+    console.error(`Unsupported platform ${process.platform}. Download from: ${RELEASES_URL ?? 'the GitHub releases of the repository set in FINEVIBE_RELEASE_REPO (see README.md)'}`);
     process.exit(1);
   }
   if (process.platform === 'linux' && process.arch !== 'x64') {

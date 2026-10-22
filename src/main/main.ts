@@ -30,10 +30,31 @@ let mainWindow: BrowserWindow | null = null;
 // requestSingleInstanceLock gate at the END of this module calls it for
 // the winner alone. The loser quits without constructing anything.
 
+// C4S-07: close-confirmation watchdog. before-quit preventDefaults until the
+// renderer answers 'app:confirmClose'; a hung renderer would keep the quit
+// prevented forever. After 15 s of silence the main process takes the same
+// path as the renderer's 'app:closeConfirmed' reply.
+const CLOSE_CONFIRM_WATCHDOG_MS = 15_000;
+let closeConfirmTimer: NodeJS.Timeout | null = null;
+
+function clearCloseConfirmWatchdog(): void {
+  if (closeConfirmTimer) {
+    clearTimeout(closeConfirmTimer);
+    closeConfirmTimer = null;
+  }
+}
+
 function requestConfirmClose(): void {
   const win = BrowserWindow.getAllWindows()[0];
   if (win && !win.isDestroyed()) {
     win.webContents.send('app:confirmClose');
+    clearCloseConfirmWatchdog();
+    closeConfirmTimer = setTimeout(() => {
+      closeConfirmTimer = null;
+      if (isCloseConfirmed()) return; // guarded once — a real reply won
+      setCloseConfirmed(true);
+      app.quit();
+    }, CLOSE_CONFIRM_WATCHDOG_MS);
   } else {
     setCloseConfirmed(true);
     app.quit();
@@ -87,7 +108,15 @@ function createWindow(): void {
   });
 
   const indexPath = path.join(__dirname, '..', '..', 'renderer', 'index.html');
-  mainWindow.loadFile(indexPath);
+  const loadRenderer = (): void => { mainWindow?.loadFile(indexPath); };
+  loadRenderer();
+
+  // C4S-08: a renderer-process death (crash, OOM, GPU-loss kill) used to
+  // leave a dead frame until the user restarted. Reload the same entry on
+  // any non-clean exit.
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason !== 'clean-exit' && mainWindow && !mainWindow.isDestroyed()) loadRenderer();
+  });
 
   // Open external links in default browser instead of inside the app
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -184,6 +213,8 @@ function claimWindowsIdentity(): void {
 }
 
 function startMainProcess(): void {
+  // C4S-06: updater disposer (startup timeout + 4 h interval); quit runs it.
+  let disposeAutoUpdater: (() => void) | null = null;
   // First: the identity must be stamped on the process before the first
   // window (taskbar button) exists. See claimWindowsIdentity above.
   claimWindowsIdentity();
@@ -259,7 +290,7 @@ function startMainProcess(): void {
     // unregistered, and turned any installHooks throw into an unhandled
     // rejection (Electron: crash dialog). They gate on nothing: register
     // them the moment the window exists.
-    initAutoUpdater();
+    disposeAutoUpdater = initAutoUpdater();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -395,12 +426,17 @@ function startMainProcess(): void {
     );
   });
 
+  // C4S-07: a confirmed reply from the renderer disarms the watchdog.
+  ipcMain.on('app:closeConfirmed', clearCloseConfirmWatchdog);
+
   app.on('before-quit', (event) => {
+    clearCloseConfirmWatchdog();
     if (!isCloseConfirmed()) {
       event.preventDefault();
       requestConfirmClose();
       return;
     }
+    disposeAutoUpdater?.();
     flushState();
     const win = BrowserWindow.getAllWindows()[0];
     if (win && !win.isDestroyed()) {

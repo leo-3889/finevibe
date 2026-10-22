@@ -174,7 +174,7 @@ describe('saveState', () => {
 
     expect(mockMkdirSync).toHaveBeenCalledWith(
       expect.stringContaining('.finevibe'),
-      { recursive: true },
+      { recursive: true, mode: 0o700 }, // C4S-12: state dir is private
     );
   });
 

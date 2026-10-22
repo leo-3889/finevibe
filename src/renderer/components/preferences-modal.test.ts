@@ -287,7 +287,8 @@ describe('showPreferencesModal theme preference', () => {
 
     click(getElement('preferences-confirm'));
 
-    expect(mockState.setPreference).toHaveBeenCalledWith('theme', 'light');
+    // C4S-01: appearance save() batches through setPreferences (one emit).
+    expect(mockState.setPreferences).toHaveBeenCalledWith(expect.objectContaining({ theme: 'light' }));
   });
 
   it('restores the original theme on cancel', async () => {

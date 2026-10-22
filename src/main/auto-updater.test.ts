@@ -54,6 +54,13 @@ describe('auto-updater', () => {
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
   });
 
+  it('disposer clears the startup delay and the 4 h interval (C4S-06)', () => {
+    const dispose = initAutoUpdater();
+    dispose();
+    vi.advanceTimersByTime(10_000 + 4 * 60 * 60 * 1000);
+    expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
   it('checkForUpdates delegates to autoUpdater', () => {
     checkForUpdates();
     expect(autoUpdater.checkForUpdates).toHaveBeenCalled();

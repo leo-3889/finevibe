@@ -39,8 +39,8 @@ function resolveReleaseRepo(): string | null {
   return RELEASE_REPO_PATTERN.test(value) ? value : null;
 }
 
- export function initAutoUpdater(): void {
-   if (!app.isPackaged) return;
+export function initAutoUpdater(): () => void {
+  if (!app.isPackaged) return () => {};
  
   const releaseRepo = resolveReleaseRepo();
   if (!releaseRepo) {
@@ -49,7 +49,7 @@ function resolveReleaseRepo(): string | null {
       'is not a valid "owner/repo" — auto-update disabled (a fork build never ' +
       'self-updates from the upstream release feed).',
     );
-    return;
+    return () => {};
   }
 
    autoUpdater.autoDownload = true;
@@ -74,7 +74,13 @@ function resolveReleaseRepo(): string | null {
     sendToRenderer('update:error', { message: err?.message ?? 'Unknown error' });
   });
 
-  // Check after startup delay, then periodically
-  setTimeout(checkForUpdates, STARTUP_DELAY_MS);
-  setInterval(checkForUpdates, CHECK_INTERVAL_MS);
+  // Check after startup delay, then periodically. C4S-06: the handles are
+  // returned as a disposer so before-quit can stop the 4 h poll and the
+  // 10 s startup check (a check firing mid-quit races the teardown).
+  const startupTimer = setTimeout(checkForUpdates, STARTUP_DELAY_MS);
+  const interval = setInterval(checkForUpdates, CHECK_INTERVAL_MS);
+  return () => {
+    clearTimeout(startupTimer);
+    clearInterval(interval);
+  };
 }

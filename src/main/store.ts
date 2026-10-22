@@ -404,8 +404,17 @@ function writeFully(fd: number, payload: Buffer): void {
 
 function writeStateAtomically(state: PersistedState): void {
   try {
-    if (!fs.existsSync(STATE_DIR)) {
-      fs.mkdirSync(STATE_DIR, { recursive: true });
+    if (fs.existsSync(STATE_DIR)) {
+      // C4S-12: state.json carries secrets, and its PARENT must be private
+      // too. Older builds created the dir with the 0755 default and mkdir
+      // never repairs an existing dir's mode — enforce 0700 on it as well.
+      // Both are no-ops for ACL purposes on Windows (harmless), and the
+      // stat guard keeps the hot persist path free of redundant chmods.
+      try {
+        if ((fs.statSync(STATE_DIR).mode & 0o777) !== 0o700) fs.chmodSync(STATE_DIR, 0o700);
+      } catch { /* best-effort: never block persistence */ }
+    } else {
+      fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
     }
     const tmpFile = `${STATE_FILE}.tmp`;
     // fsync before rename: a crash between rename and data flush used to

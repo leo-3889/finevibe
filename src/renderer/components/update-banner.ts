@@ -1,3 +1,5 @@
+import { t } from '../i18n.js';
+
 export function initUpdateBanner(): void {
   const mainArea = document.getElementById('main-area');
   if (!mainArea) return;
@@ -33,9 +35,13 @@ export function initUpdateBanner(): void {
   }
 
   let latestVersion = '';
+  // C4S-05: a mid-download `update:error` must surface — without this the
+  // banner sits on the last "Downloading… 42%" forever.
+  let downloading = false;
 
   window.finevibe.update.onAvailable((info) => {
     latestVersion = info.version;
+    downloading = true;
     show(`Downloading update v${info.version}...`);
   });
 
@@ -45,6 +51,7 @@ export function initUpdateBanner(): void {
   });
 
   window.finevibe.update.onDownloaded((info) => {
+    downloading = false;
     show(`Update v${info.version} ready.`, {
       label: 'Restart',
       action: () => window.finevibe.update.install(),
@@ -52,6 +59,11 @@ export function initUpdateBanner(): void {
   });
 
   window.finevibe.update.onError(() => {
-    // Silently ignore update failures
+    // Check failures stay silent (the About pane reports them); a failure
+    // DURING a download replaces the stalled progress banner, then clears.
+    if (!downloading) return;
+    downloading = false;
+    latestVersion = '';
+    show(t('update.downloadFailed'), undefined, 5000);
   });
 }

@@ -203,19 +203,38 @@ describe('notification-desktop', () => {
   });
 
   it('should close the previous banner before posting a new one for the same session', () => {
+    // C4S-09 spacing is wall-clock per session: step past 30 s so the
+    // replacement edge is allowed to notify.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      initSession('bg-session');
+      setHookStatus('bg-session', 'working');
+      setHookStatus('bg-session', 'completed');
+      setHookStatus('bg-session', 'working');
+      nowSpy.mockReturnValue(1_000_000 + 31_000);
+      setHookStatus('bg-session', 'completed');
+
+      expect(notificationInstances).toHaveLength(2);
+      // The stale banner is dismissed before the replacement is constructed, so
+      // the user is never left with an inert notification to click.
+      expect(notificationEvents).toEqual(['create:0', 'close:0', 'create:1']);
+
+      notificationInstances[1].onclick!();
+      expect(mockAppState.setActiveSession).toHaveBeenLastCalledWith('proj-1', 'bg-session');
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('should suppress a second notification within the 30 s per-session spacing (C4S-09)', () => {
     initSession('bg-session');
     setHookStatus('bg-session', 'working');
     setHookStatus('bg-session', 'completed');
     setHookStatus('bg-session', 'working');
-    setHookStatus('bg-session', 'completed');
+    setHookStatus('bg-session', 'input');
 
-    expect(notificationInstances).toHaveLength(2);
-    // The stale banner is dismissed before the replacement is constructed, so
-    // the user is never left with an inert notification to click.
-    expect(notificationEvents).toEqual(['create:0', 'close:0', 'create:1']);
-
-    notificationInstances[1].onclick!();
-    expect(mockAppState.setActiveSession).toHaveBeenLastCalledWith('proj-1', 'bg-session');
+    // Flapping status edges inside the window notify once, not twice.
+    expect(notificationInstances).toHaveLength(1);
   });
 
   it('should route clicks to the correct session id when two sessions share a name', () => {

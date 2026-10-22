@@ -1,6 +1,10 @@
 import { appState } from './state.js';
 import { onChange, type SessionStatus } from './session-activity.js';
 
+// C4S-09: per-session minimum spacing. A flapping status edge (working →
+// waiting → working …) used to stack a fresh OS banner every 2 s transition.
+const MIN_NOTIFY_INTERVAL_MS = 30_000;
+const lastNotifiedAt = new Map<string, number>();
 const previousStatus = new Map<string, SessionStatus>();
 
 // Retain live notifications so their onclick closures aren't garbage-collected
@@ -73,6 +77,10 @@ export function initNotificationDesktop(): void {
     if (status !== 'waiting' && status !== 'completed' && status !== 'input') return;
     if (document.hasFocus() && sessionId === appState.activeProject?.activeSessionId) return;
 
+    const now = Date.now();
+    const last = lastNotifiedAt.get(sessionId);
+    if (last !== undefined && now - last < MIN_NOTIFY_INTERVAL_MS) return;
+    lastNotifiedAt.set(sessionId, now);
     showNotification(sessionId, status);
   });
 
@@ -80,6 +88,7 @@ export function initNotificationDesktop(): void {
     const sessionId = (data as { sessionId: string })?.sessionId;
     if (sessionId) {
       previousStatus.delete(sessionId);
+      lastNotifiedAt.delete(sessionId);
       dismiss(sessionId);
     }
   });
@@ -88,4 +97,5 @@ export function initNotificationDesktop(): void {
 export function _resetForTesting(): void {
   previousStatus.clear();
   activeNotifications.clear();
+  lastNotifiedAt.clear();
 }

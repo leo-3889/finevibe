@@ -370,7 +370,8 @@
       "confirmEdit": "保存",
       "nameRequired": "名称不能为空",
       "roleRequired": "角色不能为空",
-      "systemPromptRequired": "系统提示不能为空"
+      "systemPromptRequired": "系统提示不能为空",
+      "systemPromptTooLong": "系统提示过长（最多 {limit}）"
     },
     "picker": {
       "title": "浏览团队成员",
@@ -411,6 +412,10 @@
     "editLayoutButton": "编辑布局",
     "editLayoutTooltip": "切换拖动与调整大小",
     "doneEditingButton": "完成编辑",
+    "github": {
+      "markAllRead": "将本项目中所有 GitHub 条目标记为已读",
+      "markAllReadTooltip": "将本项目中所有未读的 GitHub 条目标记为已读——包括拉取请求和议题，以及另一个 GitHub 小组件中的列表。"
+    },
     "sessionsSettings": {
       "title": "会话设置",
       "limitLabel": "最近会话上限",
@@ -594,6 +599,9 @@
     "communitySuffix": "——如果觉得有用，请给我们点个 Star！",
     "debugModeLabel": "调试模式",
     "versionLoaded": "版本：{ver}"
+  },
+  "update": {
+    "downloadFailed": "更新下载失败"
   },
   "agentmemory": {
     "autoStart": "启动应用时自动启动智能体记忆引擎",

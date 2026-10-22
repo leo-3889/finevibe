@@ -370,7 +370,8 @@
       "confirmEdit": "Save",
       "nameRequired": "Name is required",
       "roleRequired": "Role is required",
-      "systemPromptRequired": "System prompt is required"
+      "systemPromptRequired": "System prompt is required",
+      "systemPromptTooLong": "System prompt is too long (max {limit})"
     },
     "picker": {
       "title": "Browse team members",
@@ -411,6 +412,10 @@
     "editLayoutButton": "Edit layout",
     "editLayoutTooltip": "Toggle drag and resize",
     "doneEditingButton": "Done editing",
+    "github": {
+      "markAllRead": "Mark all GitHub items in this project read",
+      "markAllReadTooltip": "Marks every unread GitHub item in this project as read — pull requests and issues, including the other GitHub widget's list."
+    },
     "sessionsSettings": {
       "title": "Sessions Settings",
       "limitLabel": "Max recent sessions",
@@ -594,6 +599,9 @@
     "communitySuffix": " — and if you find it useful, give it a star!",
     "debugModeLabel": "Debug Mode",
     "versionLoaded": "Version: {ver}"
+  },
+  "update": {
+    "downloadFailed": "Update download failed"
   },
   "agentmemory": {
     "autoStart": "Start agent memory engine on launch",

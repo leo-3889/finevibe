@@ -132,7 +132,7 @@ Generated from a full audit of `src/` and `bin/` on 2026-10-18; update it when a
 | Provider-tools widget | Per-provider inventory of MCP servers / agents / skills / commands (user+project scope badges), profile select, "add MCP" modal, opens file readers for definitions. | `components/project-tab/widgets/provider-tools-widget.ts`, `components/mcp-add-modal.ts`, `components/mcp-inspector.ts` | `components/mcp-inspector.test.ts`; widget/add-modal UNTESTED | MCP inspector tabs tools/resources/prompts; schema form renders JSON schema (`mcp-schema-form.ts`). |
 | Sessions / favorites / usage / top-files widgets | Recent sessions list (opens history dialog), favorited (bookmarked) sessions, usage stats chart, top-files list; each configurable via settings modal. | `widgets/{sessions-widget,sessions-dialog,sessions-settings-modal,favorite-sessions-widget,usage-stats-widget,top-files-widget,top-files-settings-modal}.ts` + types files | `github-widgets.test.ts` covers GitHub pair; rest UNTESTED | Config persisted per widget via `host.setConfig` (remounts widget). |
 | Readiness widget | Project readiness score/checks (from `ReadinessResult` stored by `setProjectReadiness`). | `widgets/readiness-widget.ts`, `state/insights-state.ts` | `state/insights-state.test.ts` | Readiness history cap 30. |
-| GitHub widgets | PRs/issues lists with unread state (`setGithubItemSeen`, bulk), fetch via `github-fetcher`/`github-unread`. | `widgets/github-widgets.ts`, `github-types.ts`, `github-settings-modal.ts`, `github-unread.ts` | `components/project-tab/widgets/github-widgets.test.ts`, `github-unread.test.ts` | Seen timestamps per item persisted. |
+| GitHub widgets | PRs/issues lists with unread state (`setGithubItemSeen`, bulk), fetch via `github-fetcher`/`github-unread`; "Mark all GitHub items in this project read" clears the shared per-project set (both widgets' lists); an exhaustive listing (items under the fetch cap) prunes stored unread ids for items that left the list; repo detection (positive + negative cache) re-arms on the project's `git:changed` signal. | `widgets/github-widgets.ts`, `github-types.ts`, `github-settings-modal.ts`, `github-unread.ts` | `components/project-tab/widgets/github-widgets.test.ts`, `github-unread.test.ts` | Seen timestamps per item persisted; poll `max(60 s, refreshSeconds)`; visibility refresh throttled to 1 per `30 s` per widget (`VISIBILITY_REFRESH_MIN_MS`); gh rate-limit/auth failures double the cadence, cap `MAX_POLL_BACKOFF_MS=30 min`, reset on success. |
 
 ## 12. Cost / context indicators (status rail)
 
@@ -386,14 +386,15 @@ Main→renderer push channels (for reference): `pty:data`, `pty:exit`, `settings
 - File preview 2000 lines / 128 Ki chars, JS string length (`file-preview.ts:1-2`).
 - Git panel max 100 files (`components/git-panel.ts:8`).
 - Debug events max 500 (`components/debug-panel.ts:13`).
-- GitHub member cache TTL 1 h (`components/team/github-fetcher.ts:11`).
-- Discussions poll 1 h (`discussions-badge.ts:9`).
+- GitHub member cache TTL 1 h, every contents/download fetch `AbortSignal.timeout(15 000)` (`components/team/github-fetcher.ts:11,15`).
+- Discussions poll 1 h, one feed fetch in flight at a time (`discussions-badge.ts:9,18`).
+- GitHub widgets: poll `max(60 s, refreshSeconds)`, gh-failure backoff ×2 cap 30 min, visibility refresh ≥30 s apart (`widgets/github-widgets.ts:17,22`).
 - PBKDF2 100 000 iters; 16-B salt/12-B IV (`sharing/share-crypto.ts:11-13`).
 - DnD drag threshold 5 px (`components/board/board-dnd.ts:8`).
 - Star prompt threshold 10 sessions (`components/star-prompt-dialog.ts:6`).
 - Big-initial-context threshold 15 % (`insights/big-initial-context.ts:4`).
 - Default context window 200 000 tokens (`session-context.ts:10`).
-- Locales: en 568 keys / 21 namespaces; zh-CN 568 keys / 21 namespaces (full parity — no keys unique to either locale; zh-CN falls back to English on any future gap).
+- Locales: en 571 keys / 21 namespaces; zh-CN 571 keys / 21 namespaces (full parity — no keys unique to either locale; zh-CN falls back to English on any future gap).
 - Board default columns 4 (Backlog/Ready/Running/Done), tag colors fixed 8 (`state/persistence.ts:11`, `board-state.ts:209`).
 - One terminal instance per session id; one shell terminal per project; one preferences modal; one alert banner; one context menu at a time.
 
