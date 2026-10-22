@@ -80,7 +80,9 @@ vi.mock('electron', () => {
 });
 
 vi.mock('./ipc-handlers', () => ({ registerIpcHandlers: vi.fn(), resetHookWatcher: vi.fn() }));
-vi.mock('./pty-manager', () => ({ killAllPtys: vi.fn() }));
+// main.ts imports both members it calls at boot (killAllPtys on quit, and
+// the C2M-02 PATH prewarm), so the factory must carry both names.
+vi.mock('./pty-manager', () => ({ killAllPtys: vi.fn(), getFullPathAsync: vi.fn(async () => '/usr/bin') }));
 vi.mock('./store', () => ({
   flushState: vi.fn(),
   // Same as main-single-instance.test.ts: keep the agentmemoryAutoStart gate

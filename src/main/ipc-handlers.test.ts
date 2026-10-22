@@ -194,6 +194,7 @@ import { cleanupSessionStatus } from './hook-status';
 import { analyzeReadiness } from './readiness/analyzer';
 import { detectRepo } from './github-cli';
 import { buildFineVibeIgnoreMatcher } from './finevibeignore';
+import { estimateTokens } from '../shared/token-estimate';
 
 import { getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 function makeProvider(): CliProvider {
@@ -599,6 +600,17 @@ describe('store:save-sync (S1-03)', () => {
     expect(knownPaths).not.toContain('C:\\');
     await expect(handlers.get('fs:readFile')!({}, 'C:\\')).resolves.toEqual({ ok: false, reason: 'error' });
   });
+
+  // SEC-02: the channel is an `ipcMain.on` (sendSync) body, so a throw is a
+  // fatal main-process exception, not a rejected invoke. The wrap answers the
+  // renderer's best-effort quit flush with `false` and main keeps running.
+  it('answers false without throwing when the sync write fails', async () => {
+    const store = await import('./store');
+    vi.mocked(store.saveStateSync).mockImplementationOnce(() => { throw new Error('ENOSPC'); });
+    const event = { returnValue: undefined as unknown };
+    expect(() => handlers.get('store:save-sync')!(event, { projects: [], preferences: {} })).not.toThrow();
+    expect(event.returnValue).toBe(false);
+  });
 });
 
 describe('readiness/github git-executing handlers share the root gate', () => {
@@ -735,6 +747,57 @@ describe('fs:listDirs home gate (P1-19)', () => {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });
+
+  // C2M-10 + CI-09: the debounced keystroke burst fires concurrent listDirs
+  // for one directory while the first confirm is still open, and every
+  // caller used to stack its own native modal on top of it. One dialog,
+  // answered by every waiter.
+  it('shares one in-flight confirm across concurrent requests for the same dir', async () => {
+    let release!: (value: { response: number }) => void;
+    // mockImplementationOnce: the shared in-flight confirm opens exactly one
+    // dialog, and the default Cancel answer survives for later tests.
+    vi.mocked(dialog.showMessageBox).mockImplementationOnce(
+      () => new Promise<{ response: number }>((resolve) => { release = resolve; }),
+    );
+    const first = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
+    const second = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
+    const third = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
+    release({ response: 1 });
+    const [a, b, c] = await Promise.all([first, second, third]);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    expect(a).toEqual(b);
+    expect(b).toEqual(c);
+    expect(a.length).toBeGreaterThan(0);
+  });
+
+  // SEC-05: the enumeration follows the canonical target, so the dialog must
+  // name that target — a link spelled `~/safe-dir` pointing at a directory
+  // outside home must not be confirmed on the link's friendly name.
+  it('names the canonical target in the confirm, not the link spelling', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-consent-'));
+    try {
+      // The tree lives under the real tmpdir, i.e. INSIDE the real home, so
+      // point home (the suite's os.homedir override) at a sibling: the link
+      // is then home-outside and the confirm fires.
+      const fakeHome = path.join(root, 'home');
+      fs.mkdirSync(fakeHome);
+      osHomeOverride.value = fakeHome;
+      const target = path.join(root, 'real-target');
+      fs.mkdirSync(target);
+      const link = path.join(root, 'friendly-name');
+      fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+      await handlers.get('fs:listDirs')!({}, link);
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+      const args = vi.mocked(dialog.showMessageBox).mock.calls[0] as unknown as unknown[];
+      const options = args[args.length - 1] as { message: string };
+      // The listing walks the canonical target; the dialog must name it.
+      expect(options.message).toContain(fs.realpathSync(target));
+      expect(options.message).not.toContain('friendly-name');
+    } finally {
+      osHomeOverride.value = '';
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('fs:isDirectory home gate (P2-38)', () => {
@@ -802,6 +865,47 @@ describe('session transcript channels: configDir boundary gate (P2-113)', () => 
     await expect(
       handlers.get('session:exportArchive')!({}, 'claude', 'cli-1', '/proj', '/foreign/dir', {} as never, 'zip'),
     ).rejects.toThrow('Not a managed profile config dir');
+  });
+});
+
+// SEC-03: provider:getConfig took both paths from the renderer verbatim and
+// handed them to provider.getConfig — the same two gates every other
+// config-reading channel enforces (managed profile dir, known project).
+describe('provider:getConfig path gates (SEC-03)', () => {
+  beforeEach(() => {
+    provider.getConfig = vi.fn(async () => ({ servers: ['s'] }));
+  });
+
+  it('rejects an unallowlisted configDir before the provider is consulted', async () => {
+    knownPaths.push('/proj');
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    await expect(handlers.get('provider:getConfig')!({}, 'claude', '/proj', '/foreign/dir'))
+      .rejects.toThrow('Not a managed profile config dir');
+    expect(provider.getConfig).not.toHaveBeenCalled();
+  });
+
+  it('rejects a projectPath outside the known projects', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-getconfig-'));
+    try {
+      knownPaths.length = 0;
+      await expect(handlers.get('provider:getConfig')!({}, 'claude', root))
+        .rejects.toThrow(/not within a known project/);
+      expect(provider.getConfig).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes the legit active project plus a pinned profile dir through', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-getconfig-'));
+    try {
+      knownPaths.push(root);
+      await expect(handlers.get('provider:getConfig')!({}, 'pi', root, '/profiles/work'))
+        .resolves.toEqual({ servers: ['s'] });
+      expect(provider.getConfig).toHaveBeenCalledWith(root, '/profiles/work');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 describe('pty:create provider hooks', () => {
@@ -993,6 +1097,33 @@ describe('pty:data coalescing (P5)', () => {
     const sends = fakeWin.webContents.send.mock.calls as unknown as Array<[string, string, string]>;
     expect(sends.filter((c) => c[0] === 'pty:data').map((c) => [c[1], c[2]]))
       .toEqual([['ui-1', 'a'], ['ui-2', 'b']]);
+  });
+
+  // C2M-04: a re-spawn under the SAME sessionId (tab restore over a live id,
+  // pty-manager's replace) registers a new outbox. The replaced process's
+  // exit used to flush-and-delete by session id, so the new pane lost its
+  // exit flush and the renderer tore the pane down before its last data.
+  it('a re-spawn keeps its own outbox when the replaced process exits', async () => {
+    await create('ui-1', null);
+    await create('ui-1', null);
+    const oldPush = mockSpawnPty.mock.calls[0][9] as (d: string) => void;
+    const newPush = mockSpawnPty.mock.calls[1][9] as (d: string) => void;
+    const oldExit = mockSpawnPty.mock.calls[0][10] as ExitCallback;
+    const newExit = mockSpawnPty.mock.calls[1][10] as ExitCallback;
+
+    oldPush('old words');
+    oldExit(0);
+    // The guard leaves the superseded sink alone, so its own window still
+    // ships its buffer — the guard loses nothing.
+    vi.advanceTimersByTime(4);
+    expect(dataSends()).toEqual(['old words']);
+    fakeWin.webContents.send.mockClear();
+
+    newPush('new words');
+    newExit(0);
+    const channels = (fakeWin.webContents.send.mock.calls as unknown as Array<[string]>).map((c) => c[0]);
+    expect(channels).toEqual(['pty:data', 'pty:exit']);
+    expect(dataSends()).toEqual(['new words']);
   });
 });
 
@@ -2012,6 +2143,94 @@ describe('fs:topFilesByTokens shared walk (UI3-11)', () => {
       fs.rmSync(dir, { recursive: true, force: true });
       const i = knownPaths.indexOf(dir);
       if (i >= 0) knownPaths.splice(i, 1);
+    }
+  });
+});
+
+// C2M-03: the shared walk deduped CONCURRENT mounts only — every mount after
+// a walk settled re-scanned the whole tree (the stats widget polls). The
+// settled result is now cached per cwd on the enumeration's contract: TTL,
+// cleared by git:changed.
+describe('fs:topFilesByTokens result cache (C2M-03)', () => {
+  let dir: string;
+  let openSpy: ReturnType<typeof vi.spyOn>;
+
+  async function gitChangedListener(): Promise<() => void> {
+    const gitWatcher = await import('./git-watcher');
+    const subscribed = vi.mocked(gitWatcher.onGitChanged).mock.calls;
+    expect(subscribed.length).toBeGreaterThan(0);
+    return subscribed[subscribed.length - 1][0] as () => void;
+  }
+
+  beforeEach(() => {
+    vi.mocked(buildFineVibeIgnoreMatcher).mockReturnValue(() => false);
+    // Real temp tree, so reject git: the walk fallback does the enumerating.
+    vi.mocked(mockGitCloneSpawn).mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null) => void;
+      cb(new Error('not a git repository'));
+    }) as never);
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-topfiles-cache-'));
+    for (const n of ['a.ts', 'b.ts', 'c.ts']) fs.writeFileSync(path.join(dir, n), 'word '.repeat(10));
+    knownPaths.push(dir);
+    // The cache is module state (the enumerate suite resets it the same way).
+    _resetEnumerateCacheForTesting();
+    openSpy = vi.spyOn(fs.promises, 'open');
+  });
+  afterEach(() => {
+    openSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+    const i = knownPaths.indexOf(dir);
+    if (i >= 0) knownPaths.splice(i, 1);
+  });
+
+  const scan = (): Promise<Record<string, unknown>> =>
+    handlers.get('fs:topFilesByTokens')!({}, dir, 10) as Promise<Record<string, unknown>>;
+
+  it('serves a repeat scan from the cache without re-reading any file', async () => {
+    expect((await scan()).files).toHaveLength(3);
+    expect(openSpy).toHaveBeenCalledTimes(3);
+
+    openSpy.mockClear();
+    const again = await scan();
+    expect(again.files).toHaveLength(3);
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
+  it('re-scans after the git:changed invalidation the renderer also receives', async () => {
+    expect((await scan()).files).toHaveLength(3);
+
+    (await gitChangedListener())();
+    openSpy.mockClear();
+    fs.writeFileSync(path.join(dir, 'd.ts'), 'word '.repeat(10));
+    const rescan = await scan();
+    expect(openSpy).toHaveBeenCalledTimes(4);
+    expect(rescan.files).toHaveLength(4);
+  });
+
+  // C2M-05: the scan allocated and read every file IN FULL (Buffer.alloc of
+  // the size gate, 16-way) to compute a heuristic token estimate. The read is
+  // now one 1 MiB head sample, scaled back up to the file's size.
+  it('reads one 1 MiB head sample and scales the estimate to the file size', async () => {
+    vi.mocked(estimateTokens).mockImplementation((text: string) => text.length);
+    // vitest's `fs` namespace carries no FileHandle export; take the
+    // prototype off a real handle (the spy is prototype-wide, as needed).
+    const probe = await fs.promises.open(path.join(dir, 'a.ts'), 'r');
+    const readSpy = vi.spyOn(Object.getPrototypeOf(probe) as Record<string, unknown>, 'read');
+    await probe.close();
+    const size = 1024 * 1024 + 4096;
+    fs.writeFileSync(path.join(dir, 'big.ts'), 'a'.repeat(size));
+    try {
+      const res = await scan();
+      const lengths = readSpy.mock.calls.map((c) => (c as unknown as [unknown, number, number])[2]);
+      expect(Math.max(...lengths)).toBe(1024 * 1024);
+      const big = (res.files as Array<{ path: string; tokens: number; size: number }>)
+        .find((f) => f.path === 'big.ts');
+      // head-sample estimate × (size / readBytes) = the full-file estimate
+      expect(big?.tokens).toBe(size);
+      expect(big?.size).toBe(size);
+    } finally {
+      readSpy.mockRestore();
+      vi.mocked(estimateTokens).mockReset();
     }
   });
 });

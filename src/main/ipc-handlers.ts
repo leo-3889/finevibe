@@ -197,12 +197,15 @@ function isAllowedEnumeratePath(resolvedPath: string): boolean {
 }
 
 /** Confirm flow for home-outside enumeration, mirroring confirmRemoteHost in
- * mcp-ipc-handlers: Cancel is the default and the deny answer. */
-async function confirmHomeOutsideListing(dir: string): Promise<boolean> {
+ * mcp-ipc-handlers: Cancel is the default and the deny answer.
+ * SEC-05: `canonicalDir` is the CANONICAL path, never the renderer's
+ * spelling - the enumeration walks the canonical target, so the dialog must
+ * name the real directory, not a friendly link that points somewhere else. */
+async function confirmHomeOutsideListing(canonicalDir: string): Promise<boolean> {
   const options: Electron.MessageBoxOptions = {
     type: 'warning',
     title: 'Browse outside home?',
-    message: `List directories in ${dir}?`,
+    message: `List directories in ${canonicalDir}?`,
     detail: 'This location is outside your home directory and known projects. Only continue for directories you trust.',
     buttons: ['Cancel', 'Confirm'],
     defaultId: 0,
@@ -219,12 +222,24 @@ async function confirmHomeOutsideListing(dir: string): Promise<boolean> {
 // canonical directory for the session: enumeration asks at most once per
 // dir, and a Cancel keeps denying every repeat on that dir.
 const outsideHomeConsent = new Map<string, boolean>();
+// C2M-10 + CI-09: the answer cache only closes the SEQUENTIAL repeat. The
+// keystroke burst fires concurrent fs:listDirs for one dir while the first
+// dialog is still open (the debounce's trailing timer runs during typing),
+// and every concurrent caller stacked its own native modal on top. Sharing
+// the in-flight confirmation is one dialog per dir, answered by all waiters.
+const outsideHomeConsentInFlight = new Map<string, Promise<boolean>>();
 
 async function confirmHomeOutsideListingOnce(dir: string): Promise<boolean> {
   const key = canonicalPath(dir);
   const cached = outsideHomeConsent.get(key);
   if (cached !== undefined) return cached;
-  const answer = await confirmHomeOutsideListing(dir);
+  const pending = outsideHomeConsentInFlight.get(key);
+  if (pending) return pending;
+  // SEC-05: the dialog is shown for the canonical key - the path the
+  // enumeration will actually walk.
+  const run = confirmHomeOutsideListing(key).finally(() => { outsideHomeConsentInFlight.delete(key); });
+  outsideHomeConsentInFlight.set(key, run);
+  const answer = await run;
   outsideHomeConsent.set(key, answer);
   return answer;
 }
@@ -232,7 +247,14 @@ async function confirmHomeOutsideListingOnce(dir: string): Promise<boolean> {
 /** @internal Test-only: drop cached home-outside consent answers. */
 export function _resetHomeOutsideConsentForTesting(): void {
   outsideHomeConsent.clear();
+  outsideHomeConsentInFlight.clear();
 }
+
+/** C2M-08: both enumeration branches cap identically. The git branch used to
+ * return the WHOLE `git ls-files` output (a monorepo is routinely 100k+
+ * entries - payload and every downstream filter paid for it) while the
+ * non-git fallback walk stopped at 5000. */
+const MAX_PROJECT_FILES = 5000;
 
 /**
  * Enumerate files in a project root. Prefers `git ls-files` (respects .gitignore);
@@ -248,7 +270,8 @@ async function enumerateProjectFiles(resolvedCwd: string): Promise<string[]> {
       ['ls-files', '--cached', '--others', '--exclude-standard'],
       { cwd: resolvedCwd, encoding: 'utf-8', timeout: 5000 },
     );
-    return stdout.split('\n').filter(Boolean);
+    // C2M-08: same cap as the fallback walk; git's own order is kept.
+    return stdout.split('\n').filter(Boolean).slice(0, MAX_PROJECT_FILES);
   } catch {
     return walkProjectFiles(resolvedCwd);
   }
@@ -264,13 +287,12 @@ async function walkProjectFiles(root: string): Promise<string[]> {
   const files: string[] = [];
   const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '__pycache__']);
   const MAX_DEPTH = 5;
-  const MAX_FILES = 5000;
   async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > MAX_DEPTH || files.length >= MAX_FILES) return;
+    if (depth > MAX_DEPTH || files.length >= MAX_PROJECT_FILES) return;
     let entries: fs.Dirent[];
     try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
-      if (files.length >= MAX_FILES) return;
+      if (files.length >= MAX_PROJECT_FILES) return;
       if (IGNORE.has(entry.name) || entry.name.startsWith('.')) continue;
       const rel = path.relative(root, path.join(dir, entry.name));
       if (entry.isDirectory()) {
@@ -307,6 +329,9 @@ function invalidateEnumerations(): void {
   enumerateGeneration++;
   enumerateCache.clear();
   enumerateInFlight.clear();
+  // C2M-03: the top-files result is derived from the listing, so a
+  // working-tree change invalidates the token scan's cache with it.
+  topFilesCache.clear();
 }
 
 async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
@@ -337,6 +362,19 @@ async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
 // cwd now share a single walk; the shared result is fully sorted, callers
 // slice to their own limit.
 const topFilesScans = new Map<string, Promise<{ files: TopFile[]; scanned: number; skipped: number }>>();
+
+// C2M-03: the settled scan, cached per cwd with the enumeration TTL: the
+// shared walk deduped only CONCURRENT mounts, so a polling widget re-walked
+// the tree on every mount after the first. CI-08: a walk superseded by
+// invalidateEnumerations() never publishes here (see scanTopFiles).
+const topFilesCache = new Map<string, { at: number; files: TopFile[]; scanned: number; skipped: number }>();
+const TOP_FILES_TTL_MS = ENUMERATE_TTL_MS;
+
+// C2M-05: the head sample a token estimate is computed from. Mirrors the
+// per-file read budget docs/performance.md gives the other scan paths: the
+// 10 MiB size gate never bounded the ALLOCATION, so a large repo's scan read
+// (and allocated) every file in full, 16-way concurrent.
+const TOKEN_SCAN_READ_BYTES = 1024 * 1024;
 
 // The debounced working-tree/branch-change signal from git-watcher is
 // subscribed in registerIpcHandlers (tests re-register and capture it).
@@ -571,6 +609,10 @@ export function registerIpcHandlers(): void {
     }
 
     const launchStartedAt = Date.now();
+    // C2M-04: the sink is created here - its `flush` is bound to the outbox
+    // THIS launch registered, so an old process's exit callback can't tear
+    // down the outbox a re-spawn under the same sessionId just installed.
+    const dataSink = ptyDataSink(() => win, sessionId);
     try {
       await spawnPty(
         sessionId,
@@ -582,9 +624,9 @@ export function registerIpcHandlers(): void {
         initialPrompt,
         systemPrompt,
         envVars,
-        ptyDataSink(() => win, sessionId),
+        dataSink,
         (exitCode, signal, pid, spawnRejectedReason) => {
-          flushPtyData(sessionId);
+          dataSink.flush();
           if (spawnRejectedReason) {
             // The launch was rejected before a PTY existed, so this is not a
             // process exit: the pane already carries the actionable reason
@@ -706,12 +748,13 @@ export function registerIpcHandlers(): void {
       win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
       return;
     }
+    const dataSink = ptyDataSink(() => BrowserWindow.getAllWindows()[0], sessionId);
     spawnShellPty(
       sessionId,
       cwd,
-      ptyDataSink(() => BrowserWindow.getAllWindows()[0], sessionId),
+      dataSink,
       (exitCode, signal) => {
-        flushPtyData(sessionId);
+        dataSink.flush();
         const w = BrowserWindow.getAllWindows()[0];
         if (w && !w.isDestroyed()) {
           w.webContents.send('pty:exit', sessionId, exitCode, signal);
@@ -740,7 +783,11 @@ export function registerIpcHandlers(): void {
     flush(): void;
   }>();
 
-  function ptyDataSink(getWindow: () => BrowserWindow | undefined, sessionId: string): (data: string) => void {
+  /** The coalescing sink: callable as node-pty's data callback, with the
+   *  exit-time flush bound to the outbox THIS sink registered (C2M-04). */
+  type PtyDataSink = ((data: string) => void) & { flush(): void };
+
+  function ptyDataSink(getWindow: () => BrowserWindow | undefined, sessionId: string): PtyDataSink {
     const outbox = {
       parts: [] as string[],
       bytes: 0,
@@ -756,7 +803,7 @@ export function registerIpcHandlers(): void {
       },
     };
     ptyOutboxes.set(sessionId, outbox);
-    return (data: string) => {
+    const sink = ((data: string) => {
       outbox.parts.push(data);
       outbox.bytes += data.length;
       if (outbox.bytes >= PTY_COALESCE_MAX_BYTES) {
@@ -764,15 +811,19 @@ export function registerIpcHandlers(): void {
         return;
       }
       if (outbox.timer === null) outbox.timer = setTimeout(() => outbox.flush(), PTY_COALESCE_WINDOW_MS);
+    }) as PtyDataSink;
+    // C2M-04: the flush belongs to the SINK, not to the session id. A
+    // re-spawn under the same sessionId installs a new outbox, and the OLD
+    // process's exit callback used to delete it - the re-spawned pane lost
+    // its coalescer and its exit flush. Only the outbox's owner flushes.
+    sink.flush = () => {
+      if (ptyOutboxes.get(sessionId) !== outbox) return;
+      ptyOutboxes.delete(sessionId);
+      outbox.flush();
     };
+    return sink;
   }
 
-  function flushPtyData(sessionId: string): void {
-    const outbox = ptyOutboxes.get(sessionId);
-    if (!outbox) return;
-    ptyOutboxes.delete(sessionId);
-    outbox.flush();
-  }
 
   ipcMain.on('pty:write', safeOn('pty:write', (_event, sessionId: string, data: string) => {
     writePty(sessionId, data);
@@ -906,10 +957,14 @@ export function registerIpcHandlers(): void {
   // write on disk before the window tears down; store:save's async write can
   // lose that race. Same verifier as store:save (a payload inventing a root
   // must not widen the gate), then the fully synchronous store write.
-  ipcMain.on('store:save-sync', (event, state: PersistedState) => {
+  // SEC-02: an `on` body - a payload the verifier/writer rejects (poisoned
+  // state, full disk) must not escape as a fatal main-process exception
+  // (P2-108). It is a sendSync, so the throw answers `false`: the renderer's
+  // best-effort quit flush reports the miss instead of dying with it.
+  ipcMain.on('store:save-sync', safeOn('store:save-sync', (event, state: PersistedState) => {
     invalidateCanonicalPathIfRootsChanged(state); saveStateSync(state);
     event.returnValue = true;
-  });
+  }, () => false));
 
   // Synchronous startup channel: the renderer applies theme/zoom before its
   // first paint, before the async store:load resolves. Served from the
@@ -1306,6 +1361,13 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     'provider:getConfig',
     async (_event, providerId: ProviderId, projectPath: string, configDir?: string) => {
+      // SEC-03: both paths are renderer-supplied and reach provider config
+      // reads - the gates every other config-reading channel enforces: the
+      // configDir must be a managed profile dir (P2-113) and the project
+      // must be a known project. Legit callers pass the active project plus
+      // a pinned profile dir.
+      if (configDir && !isManagedMcpConfigDir(configDir)) throw new Error('Not a managed profile config dir');
+      if (!isWithinKnownProject(path.resolve(projectPath))) throw new Error('Path is not within a known project');
       const provider = getProvider(providerId);
       // configDir is the project's pinned profile dir. Providers whose config
       // lives in a relocated agent tree (Pi's mcp.json) must read from it —
@@ -1799,6 +1861,12 @@ export function registerIpcHandlers(): void {
         return { ok: false };
       }
       const clampedLimit = Math.max(1, Math.min(100, Math.floor(limit) || 10));
+      // C2M-03: TTL cache, same contract as the enumeration above - a
+      // polling widget reads a sorted list instead of re-walking the tree.
+      const hit = topFilesCache.get(resolvedCwd);
+      if (hit && Date.now() - hit.at < TOP_FILES_TTL_MS) {
+        return { ok: true, files: hit.files.slice(0, clampedLimit), scanned: hit.scanned, skipped: hit.skipped };
+      }
       // UI3-11: one shared walk per cwd — concurrent widget mounts coalesce.
       let scan = topFilesScans.get(resolvedCwd);
       if (!scan) {
@@ -1814,6 +1882,10 @@ export function registerIpcHandlers(): void {
   });
 
   async function scanTopFiles(resolvedCwd: string): Promise<{ files: TopFile[]; scanned: number; skipped: number }> {
+    // CI-08: same generation contract as getCachedProjectFiles - a scan that
+    // started before a git:changed invalidation still answers its own caller,
+    // but it is superseded and never repopulates the cleared cache.
+    const gen = enumerateGeneration;
     const isIgnored = buildFineVibeIgnoreMatcher(resolvedCwd);
     const relFiles = (await getCachedProjectFiles(resolvedCwd)).filter((rel) => !isIgnored(rel));
       const results: TopFile[] = [];
@@ -1833,15 +1905,24 @@ export function registerIpcHandlers(): void {
           const stat = await handle.stat();
           if (!stat.isFile() || stat.size > TOKEN_COUNT_MAX_CHARS) { skipped++; return; }
 
-          const buf = Buffer.alloc(stat.size);
-          if (stat.size > 0) {
-            await handle.read(buf, 0, stat.size, 0);
+          // C2M-05: bound the READ, not just the file. The token estimate is
+          // a heuristic, so one 1 MiB head sample is enough; a larger file
+          // scales the estimate by size/readBytes. Files ≤ 1 MiB read in
+          // full - byte-identical to the old full slurp.
+          const readLen = Math.min(stat.size, TOKEN_SCAN_READ_BYTES);
+          const buf = Buffer.alloc(readLen);
+          let readBytes = 0;
+          if (readLen > 0) {
+            ({ bytesRead: readBytes } = await handle.read(buf, 0, readLen, 0));
           }
-          if (isBinaryBuffer(buf.subarray(0, Math.min(stat.size, BINARY_SNIFF_BYTES)))) {
+          if (isBinaryBuffer(buf.subarray(0, Math.min(readBytes, BINARY_SNIFF_BYTES)))) {
             skipped++;
             return;
           }
-          const tokens = estimateTokens(buf.toString('utf-8'));
+          let tokens = estimateTokens(buf.subarray(0, readBytes).toString('utf-8'));
+          if (readBytes > 0 && readBytes < stat.size) {
+            tokens = Math.round(tokens * (stat.size / readBytes));
+          }
           results.push({ path: rel, tokens, size: stat.size });
           scanned++;
         } finally {
@@ -1861,7 +1942,11 @@ export function registerIpcHandlers(): void {
     await Promise.all(workers);
 
     results.sort((a, b) => b.tokens - a.tokens);
-    return { files: results, scanned, skipped };
+    const result = { files: results, scanned, skipped };
+    if (gen === enumerateGeneration) {
+      topFilesCache.set(resolvedCwd, { at: Date.now(), ...result });
+    }
+    return result;
   }
 
   ipcMain.handle('fs:exists', (_event, filePath: string): boolean => {

@@ -52,6 +52,13 @@ async function confirmRemoteHost(host: string): Promise<boolean> {
 }
 
 export function registerMcpHandlers(): void {
+  // CI-14: a slow connect (stdio server spawn, remote confirm dialog) can
+  // complete AFTER its pane was destroyed - destroyInspectorPane's
+  // mcp:disconnect then tears down a connection that does not exist yet and
+  // the late connect registers an orphaned transport (server process) keyed
+  // by the session id. mcp:disconnect marks the id while it runs; a connect
+  // that lands against a live tombstone closes what it just created.
+  const disconnecting = new Set<string>();
   // Errors go back as McpResult.error: the renderer's doConnect renders
   // result.error and a rejected invoke would leave the pane stuck on
   // "Connecting...", so the result channel is the surfacing mechanism here.
@@ -69,11 +76,22 @@ export function registerMcpHandlers(): void {
         return { success: false, error: `Connection to ${host} cancelled` };
       }
     }
-    return mcpClient.connect(id, url);
+    const result = await mcpClient.connect(id, url);
+    if (disconnecting.has(id)) {
+      await mcpClient.disconnect(id);
+      return { success: false, error: 'Connection closed: the pane was destroyed while connecting' };
+    }
+    return result;
   });
 
-  ipcMain.handle('mcp:disconnect', (_event, id: string) =>
-    mcpClient.disconnect(id));
+  ipcMain.handle('mcp:disconnect', async (_event, id: string) => {
+    disconnecting.add(id);
+    try {
+      return await mcpClient.disconnect(id);
+    } finally {
+      disconnecting.delete(id);
+    }
+  });
 
   ipcMain.handle('mcp:listTools', (_event, id: string) =>
     mcpClient.listTools(id));

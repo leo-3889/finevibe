@@ -127,14 +127,22 @@ async function acquireRead(signal?: AbortSignal): Promise<void> {
 async function getCachedIndex(provider: CliProvider, transcriptPath: string, signal?: AbortSignal, version?: StatVersion): Promise<CacheEntry> {
   const key = `${provider.meta.id}:${transcriptPath}`;
   const pending = inFlight.get(key);
-  if (pending) return pending;
+  // C2M-06: co-waiters race THEIR OWN signal - the shared work below is
+  // abort-free, so an unrelated search cancelling can never reject this one.
+  if (pending) return raceAbort(pending, signal);
+  // C2M-06: the shared work used to be built with the FIRST caller's
+  // signal: that caller aborting (previous search superseded, window closed)
+  // rejected the promise every co-waiter from a DIFFERENT, live search was
+  // awaiting, silently dropping the transcript from their pass. The work
+  // runs signal-less; the creator's abort detaches its own await, the read
+  // completes for the cache and every remaining waiter.
   const work = (async () => {
-    await acquireRead(signal);
-    try { return await readIndex(provider, transcriptPath, signal, version); }
+    await acquireRead();
+    try { return await readIndex(provider, transcriptPath, undefined, version); }
     finally { releasePermit(); }
   })();
   inFlight.set(key, work);
-  try { return await work; } finally { if (inFlight.get(key) === work) inFlight.delete(key); }
+  try { return await raceAbort(work, signal); } finally { if (inFlight.get(key) === work) inFlight.delete(key); }
 }
 
 /** The (mtime,size,ctime) tuple a CacheEntry validates against. */

@@ -4,7 +4,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
 import { sweepImportTempDirs } from './chrome-import/copy';
-import { killAllPtys } from './pty-manager';
+import { killAllPtys, getFullPathAsync } from './pty-manager';
 import { flushState, loadState } from './store';
 import { createAppMenu } from './menu';
 import { restartAndResync } from './hook-status';
@@ -226,15 +226,24 @@ function startMainProcess(): void {
     // format guard as `session:release` (ipc-handlers.ts) — the shared
     // default partition (every other browser tab, the imported Chrome jar)
     // is not clearable from the renderer.
+    // C2M-09 (SEC-02 class): main.ts registers no safeOn — the wrapper lives
+    // in ipc-handlers.ts — so the P2-108 rule applies inline: an `ipcMain.on`
+    // body that throws is a fatal main-process exception that kills every
+    // live PTY and window. A partition whose storage is locked (Windows
+    // EBUSY) must degrade to a logged warning.
     ipcMain.on('browser:clearIsolatedStorage', (_event, sessionId: unknown) => {
-      if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return;
-      const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
-      // Existence guard: releasing/clearing a session that never browsed in
-      // isolation must not materialise a partition via fromPartition().
-      if (!fs.existsSync(partDir)) return;
-      session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
-        .clearStorageData()
-        .catch((err) => console.warn('clearStorageData failed:', err));
+      try {
+        if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return;
+        const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
+        // Existence guard: releasing/clearing a session that never browsed in
+        // isolation must not materialise a partition via fromPartition().
+        if (!fs.existsSync(partDir)) return;
+        session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
+          .clearStorageData()
+          .catch((err) => console.warn('clearStorageData failed:', err));
+      } catch (err) {
+        console.warn('browser:clearIsolatedStorage failed:', err);
+      }
     });
     registerIpcHandlers();
     const state = loadState();
@@ -282,11 +291,23 @@ function startMainProcess(): void {
     // Providers without the async probe (tests, future registrations) fall
     // back to the sync one.
     const providers = getAllProviders();
-    const availability = await Promise.all(providers.map(p => (
-      p.validatePrerequisitesAsync
-        ? p.validatePrerequisitesAsync()
-        : Promise.resolve(p.validatePrerequisites())
-    )));
+    // C2M-02: PA-01 moved the probes off the sync path, but the first PTY
+    // SPAWN still paid getFullPath() synchronously — POSIX:
+    // `execSync($SHELL -ilc …)`, 0.2-1.5 s on nvm/p10k setups; Windows: two
+    // `reg query` execSyncs — blocking main for the duration of every
+    // window's paint and every other PTY's traffic. Warm the cache the spawn
+    // reads, in parallel with the probes. The probes reach the same cache
+    // through resolve-binary's freshness gate; this prewarm does not depend
+    // on provider coverage. getFullPathAsync never rejects (every probe
+    // failure composes a fallback PATH), so it cannot fail the boot chain.
+    const [availability] = await Promise.all([
+      Promise.all(providers.map(p => (
+        p.validatePrerequisitesAsync
+          ? p.validatePrerequisitesAsync()
+          : Promise.resolve(p.validatePrerequisites())
+      ))),
+      getFullPathAsync(),
+    ]);
     const missing = providers.filter((_, i) => !availability[i]);
     for (const p of missing) {
       console.warn(`Provider "${p.meta.displayName}" not available`);

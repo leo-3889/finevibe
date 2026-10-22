@@ -19,6 +19,10 @@ vi.mock('electron', () => ({
 // stream.
 const fsOverrides = vi.hoisted(() => ({
   createWriteStream: null as null | ((filePath: string) => import('stream').Writable),
+  // CI-02: the source-side seam. The export's transcript/sidecar handles must
+  // be observable spy targets, and the ESM namespace is not configurable
+  // (vi.spyOn throws), so they route through the same per-test override.
+  createReadStream: null as null | ((filePath: string) => import('stream').Readable),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -29,6 +33,10 @@ vi.mock('fs', async (importOriginal) => {
       fsOverrides.createWriteStream
         ? fsOverrides.createWriteStream(filePath)
         : (mod.createWriteStream as (p: string, ...r: unknown[]) => unknown)(filePath, ...rest),
+    createReadStream: (filePath: string, ...rest: unknown[]) =>
+      fsOverrides.createReadStream
+        ? fsOverrides.createReadStream(filePath)
+        : (mod.createReadStream as (p: string, ...r: unknown[]) => unknown)(filePath, ...rest),
   };
 });
 
@@ -267,6 +275,18 @@ describe('exportSessionArchive() zip', () => {
       queueMicrotask(() => s.write(Buffer.from('PK\u0003\u0004partial')));
       return s as unknown as NodeJS.ReadableStream;
     });
+    // CI-02: the source stream owns the transcript fd. Destroying the
+    // generator (UI3-9 above) does NOT reach it — JSZip's
+    // NodejsStreamInputAdapter only binds listeners — so the export has to
+    // destroy every source explicitly.
+    let sourceDestroyCount = 0;
+    const transcriptSource = new PassThrough();
+    const origSourceDestroy = transcriptSource.destroy.bind(transcriptSource);
+    transcriptSource.destroy = ((err?: Error | null) => {
+      sourceDestroyCount++;
+      return origSourceDestroy(err);
+    }) as typeof transcriptSource.destroy;
+    fsOverrides.createReadStream = () => transcriptSource;
     fsOverrides.createWriteStream = () =>
       new Writable({ write(_chunk, _enc, cb) { cb(boom); } });
     try {
@@ -278,12 +298,17 @@ describe('exportSessionArchive() zip', () => {
       // transcript stream's own destroy() is not observable through it.
       expect(generator).toBeDefined();
       expect(destroyCount).toBe(1);
+      // (c, CI-02) the source stream is destroyed as well. With the pre-fix
+      // catch this stays 0 and the provider's transcript fd stays open — on
+      // Windows that locks the file for delete/rename for the app's lifetime.
+      expect(sourceDestroyCount).toBe(1);
       // (a) no half-written archive left behind (unlink ran; with the
       // write stream mocked no real file ever exists).
       await expect(fs.access(out)).rejects.toThrow();
     } finally {
       genSpy.mockRestore();
       fsOverrides.createWriteStream = null;
+      fsOverrides.createReadStream = null;
     }
   });
 });

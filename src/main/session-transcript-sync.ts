@@ -74,6 +74,16 @@ interface TranscriptSyncEntry {
   nextResolveAt: number;
   /** Backoff log is once-per-entry, not once-per-tick. */
   backoffLogged: boolean;
+  /** C2M-05: consecutive READ-deferred rounds (resolve failures have their
+   * own counter above). A transcript that is permanently unreadable (Codex
+   * compaction renames .jsonl to .jsonl.zst under a live tab — every
+   * provider reader throws) used to re-open/read/throw every 2 s tick for
+   * the tab's lifetime: the (mtime,size) tuple is deliberately not recorded
+   * on a deferred round, so nothing gated the retry. Same doubling as
+   * RESOLVE_BACKOFF_*; reset by the first clean round. */
+  readFailures: number;
+  /** Timestamp before which the read block is skipped (C2M-05). */
+  nextReadAt: number;
   /**
    * `(mtimeMs,size)` of the transcript as of the last successful read pair.
    * An unchanged tuple on the next tick means the CLI wrote nothing, so both
@@ -161,6 +171,8 @@ export function registerTranscriptSync(
     resolveFailures: 0,
     nextResolveAt: 0,
     backoffLogged: false,
+    readFailures: 0,
+    nextReadAt: 0,
     lastStatMtimeMs: null,
     lastStatSize: null,
     watcher: null,
@@ -314,6 +326,11 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
     if (stat === null) return; // vanished between resolve and stat — next tick
   }
   if (!e.transcriptPath) return;
+  // C2M-05: a failed read round arms the same doubling backoff the
+  // resolution path uses. The stat above is the only per-tick cost inside
+  // the window; a file that becomes readable AND changes re-arms the
+  // (mtime,size) gate, so the clean path pays nothing.
+  if (e.nextReadAt > Date.now()) return;
 
   // Unchanged `(mtimeMs,size)` means the CLI appended nothing since the last
   // completed read pair: the 8 KiB title head and the 16 KiB status tail
@@ -368,6 +385,14 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
   if (!deferred) {
     e.lastStatMtimeMs = stat.mtimeMs;
     e.lastStatSize = stat.size;
+    e.readFailures = 0;
+    e.nextReadAt = 0;
+  } else if (e.nextReadAt <= Date.now()) {
+    e.readFailures += 1;
+    e.nextReadAt = Date.now() + Math.min(
+      RESOLVE_BACKOFF_BASE_MS * 2 ** (e.readFailures - 1),
+      RESOLVE_BACKOFF_CAP_MS
+    );
   }
 }
 
