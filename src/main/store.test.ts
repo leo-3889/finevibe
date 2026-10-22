@@ -183,7 +183,7 @@ describe('saveState', () => {
     const withConsent = {
       ...DEFAULT_STATE,
       preferences: {
-        ...DEFAULT_STATE.preferences,
+        ...DEFAULT_STATE.preferences!,
         statusLineConsent: 'declined' as const,
         statusLineConsentCommand: 'foreign-cmd',
         statusLineConsentByDir: { '/x': { consent: 'granted' as const, command: 'c' } },

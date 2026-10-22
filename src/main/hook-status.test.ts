@@ -60,14 +60,14 @@ function killWatcher(): void {
 }
 
 /** fs.watch stand-in: captures the change callback and the 'error' handler. */
-function watchImpl(_path: unknown, cb: (t: string, f: string | null) => void): unknown {
+function watchImpl(_path: unknown, cb: (t: string, f: string | null) => void): fs.FSWatcher {
   watchCallback = cb;
   return {
     close: mockClose,
     on: (event: string, handler: (err: unknown) => void) => {
       if (event === 'error') watchErrorHandler = handler;
     },
-  };
+  } as unknown as fs.FSWatcher;
 }
 
 const mockSend = vi.fn();
@@ -87,7 +87,7 @@ beforeEach(() => {
   vi.mocked(fs.promises.stat).mockRejectedValue(new Error('ENOENT') as any);
   vi.mocked(fs.unlinkSync).mockImplementation(vi.fn() as any);
   vi.mocked(fs.rmdirSync).mockImplementation(vi.fn() as any);
-  vi.mocked(fs.watch).mockImplementation(watchImpl);
+  vi.mocked(fs.watch).mockImplementation(watchImpl as any);
 
   watchCallback = null;
   watchErrorHandler = null;
@@ -102,7 +102,7 @@ beforeEach(() => {
   watchCallback = null;
   watchErrorHandler = null;
 
-  vi.mocked(fs.watch).mockImplementation(watchImpl);
+  vi.mocked(fs.watch).mockImplementation(watchImpl as any);
 });
 
 afterEach(() => {

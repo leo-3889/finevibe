@@ -267,7 +267,7 @@ describe('exportSessionArchive() zip', () => {
       const orig = s.destroy.bind(s);
       s.destroy = ((err?: Error | null) => {
         destroyCount++;
-        return orig(err);
+        return orig(err ?? undefined);
       }) as typeof s.destroy;
       generator = s;
       // Chunks FIRST: a real disk-full failure lands after the zip header
@@ -284,7 +284,7 @@ describe('exportSessionArchive() zip', () => {
     const origSourceDestroy = transcriptSource.destroy.bind(transcriptSource);
     transcriptSource.destroy = ((err?: Error | null) => {
       sourceDestroyCount++;
-      return origSourceDestroy(err);
+      return origSourceDestroy(err ?? undefined);
     }) as typeof transcriptSource.destroy;
     fsOverrides.createReadStream = () => transcriptSource;
     fsOverrides.createWriteStream = () =>

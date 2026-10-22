@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 import * as path from 'path';
 import { isWin } from '../platform';
 
@@ -56,7 +56,7 @@ import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks } from '../
 import { invalidateBinaryCache } from './resolve-binary';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
-const mockStatSync = vi.mocked(fs.statSync);
+const mockStatSync = vi.mocked(fs.statSync as (p: string) => fs.Stats);
 const mockExecSync = vi.mocked(execSync);
 const fileStat = { isFile: () => true } as fs.Stats;
 const mockGetGeminiConfig = vi.mocked(getGeminiConfig);
@@ -302,8 +302,11 @@ describe('getTranscriptPath', () => {
   const REQUESTED = '0f8e2f6a-1e2c-4a44-9b3f-2a1d0c9b8a77';
   // Same first 8 chars as REQUESTED — the only identity a filename encodes.
   const FOREIGN = '0f8e2f6a-99ff-4a44-9b3f-2a1d0c9b8a77';
-  const mockReaddirSync = vi.mocked<(p: string) => string[]>(fs.readdirSync);
-  const mockReadFileSync = vi.mocked<(p: string, enc: string) => string>(fs.readFileSync);
+  // vi.mocked's overload set cannot bind fs.readdirSync's 6 overloads to
+  // the single shape these tests mock; the mock IS the function object, so
+  // the cast is exact.
+  const mockReaddirSync = fs.readdirSync as unknown as Mock<(p: string) => string[]>;
+  const mockReadFileSync = fs.readFileSync as unknown as Mock<(p: string, enc: string) => string>;
   const mockOpenSync = vi.mocked<(p: string, f: string) => number>(fs.openSync);
   const mockReadSync = vi.mocked<(fd: number, buf: Buffer, off: number, len: number, pos: number) => number>(fs.readSync);
 
