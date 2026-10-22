@@ -28,7 +28,7 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | S3-05 | P2 | sidebar session-added/removed | full render wipes Files panel + file-tree cache per tab open/close | AGENT | TabBarSidebarSlice |
 | S3-06 | P2 | state batchRemoveSessions | deferRender honored only by split-layout; Close All = 2N full rebuilds | AGENT | TabBarSidebarSlice |
 | S3-08 | P2 | terminal-pane destroyTerminal | search bar DOM + subscription retained per closed searched tab | FIXED | destroySearchBar first (0147167) |
-| S4-01 | P1 | session-inspector event handler | 2000-cap array rotation forces the 500-row full rebuild every 200 ms tick on long agent sessions | FIXED (bounded) | full-rebuild fallback floored at 2 s with self-re-arming retry (0147167); rotation-aware append left as the deeper fix |
+| S4-01 | P1 | session-inspector event handler | 2000-cap rotation + post-trim window mismatch force 500-row full rebuild every 200 ms tick on streaming sessions | FIXED | trimWindow re-anchors firstWindowTs (append stays incremental, 94a7cfa + test) + full-rebuild fallback floored 2 s with retry (0147167) |
 | S4-02 | P2 | board-view boardChangeKey | key omitted title/prompt/notes — renames never re-rendered cards | FIXED | FNV-1a text digest in the key (0147167) |
 | S3-02-host | P2 | terminal-pane fitTerminal | host resize never forwarded to guests (onResize hook dead) | FIXED | forwardResize on every real resize (0147167) |
 | S4-04 | P2 | ipc-handlers fs:listDirs | out-of-home path types fire modal confirm dialog per keystroke prefix | PARENT | after IpcAsyncFixes lands (file owned) |
@@ -55,7 +55,7 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | UI3-11 | P2 | ipc-handlers fs:topFilesByTokens | no dedup/abort; stacked full repo scans | PARENT | after IpcAsyncFixes lands |
 | UI3-12 | P2 | board tag input | Escape (blur) commits the half-typed tag | AGENT | ScoutUI3Fixes (committed flag) |
 | UI2-1 | P1 | ipc-handlers fs:listDirs + sidebar | per-keystroke sync readdir + uncoalesced native out-of-home confirm modal (== S4-04; sidebar debounce delegated SR2-c) | PARENT | async readdir + memoized per-(window,dir) confirm, after IpcAsyncFixes |
-| UI2-2 | P2 | inspector trimWindow | startIdx advanced without re-baselining firstWindowTs -> append bails after first trim, ~2.5 full rebuilds/s steady state | QUEUED | one-line rebase + append-after-trim test (after ScoutUI3Fixes, same file) |
+| UI2-2 | P2 | inspector trimWindow | startIdx advanced without re-baselining firstWindowTs -> append bails after first trim, ~2.5 full rebuilds/s steady state | FIXED | same fix as S4-01 (94a7cfa, append-after-trim test) |
 | UI2-3 | P2 | github-unread + docs | pruneGithubLastSeen doc row fabricated (module absent); bulk-mark re-juvenates all items -> githubLastSeen unbounded | QUEUED | write-site cap + updated_at stamp + doc row fix (state.ts after TabBarSidebarSlice) |
 | UI2-6 | P2 | chrome-import-modal | cleanupFn wired after await -> double-open leaks subscriptions | QUEUED | follow-up slice |
 | UI2-8 | P3 | session-deep-search | pruneSearchIndex full readdir per query burst | QUEUED | rate-limit 30 s/provider |
