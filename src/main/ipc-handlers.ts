@@ -20,7 +20,7 @@ import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
 import { probeAgentmemory, ensureAgentmemoryRunning, readAgentmemoryLog } from './agentmemory-manager';
 import { createAppMenu } from './menu';
-import { getProvider, getAllProviderMetas, getAllProviders } from './providers/registry';
+import { getProvider, getAllProviderMetas, getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
 import type { CliProvider } from './providers/provider';
 import { buildHandoffPrompt } from './providers/resume-handoff';
@@ -105,10 +105,21 @@ function requireGitFilePath(channel: string, root: string, filePath: string): st
   }
   return filePath;
 }
-
 function isWithin(root: string, target: string): boolean {
   const relative = path.relative(root, target);
-  return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+/** Map an exit + transcript crash reason to the renderer's exitReason
+ *  (crash reason wins over the exit code; undefined = clean exit). */
+function describePtyExit(
+  reason: SessionExitReason | null,
+  exitCode: number,
+  signal: number | undefined,
+): string | undefined {
+  if (reason && reason.kind !== 'normal' && reason.reason !== 'dispose') return reason.reason;
+  if (exitCode !== 0) return `exited with code ${exitCode}${signal ? ` (signal ${signal})` : ''}`;
+  if (signal) return `exited with signal ${signal}`;
+  return undefined;
 }
 
 /**
@@ -200,6 +211,27 @@ async function confirmHomeOutsideListing(dir: string): Promise<boolean> {
   const win = BrowserWindow.getFocusedWindow();
   const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
   return response === 1;
+}
+
+// S4-04: the sidebar's Add-Project path input fires fs:listDirs per
+// keystroke; a home-outside root like C:\dev\repos\app popped one native
+// dialog per typed prefix (C:\, C:\dev\, ...). The answer is cached per
+// canonical directory for the session: enumeration asks at most once per
+// dir, and a Cancel keeps denying every repeat on that dir.
+const outsideHomeConsent = new Map<string, boolean>();
+
+async function confirmHomeOutsideListingOnce(dir: string): Promise<boolean> {
+  const key = canonicalPath(dir);
+  const cached = outsideHomeConsent.get(key);
+  if (cached !== undefined) return cached;
+  const answer = await confirmHomeOutsideListing(dir);
+  outsideHomeConsent.set(key, answer);
+  return answer;
+}
+
+/** @internal Test-only: drop cached home-outside consent answers. */
+export function _resetHomeOutsideConsentForTesting(): void {
+  outsideHomeConsent.clear();
 }
 
 /**
@@ -479,7 +511,7 @@ export function registerIpcHandlers(): void {
     // a blank pane.
     const rejectLaunch = (message: string): void => {
       console.warn(`pty:create blocked: ${message}`);
-      win.webContents.send('pty:data', sessionId, '\r\n\x1b[31m' + message + '\x1b[0m\r\n');
+      win.webContents.send('pty:data', sessionId, `\r\n\x1b[31m${message}\x1b[0m\r\n`);
       win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
     };
     if (!isWithinKnownProject(path.resolve(cwd))) {
@@ -493,9 +525,7 @@ export function registerIpcHandlers(): void {
 
     // Providers without a hook system that reports the CLI session id
     // discover it from on-disk artifacts after spawn (codex: history.jsonl,
-    if (!cliSessionId) {
-      provider.onSessionStarted?.(sessionId, cwd, win, configDir);
-    } else {
+    if (cliSessionId) {
       // The session already knows its cli id, so discovery never runs —
       // start mirroring the CLI's own title / derived status from the
       // known conversation. The sync derives what to poll from the
@@ -511,6 +541,8 @@ export function registerIpcHandlers(): void {
       // transcript under a new id in the launch's own dir — is
       // re-adopted instead of the tab freezing on the pre-clear file.
       provider.onSessionResumed?.(sessionId, cwd, win, configDir, cliSessionId);
+    } else {
+      provider.onSessionStarted?.(sessionId, cwd, win, configDir);
     }
 
     const launchStartedAt = Date.now();
@@ -548,31 +580,38 @@ export function registerIpcHandlers(): void {
           // reaches this handler, regardless of which PTY exits first.
           // The session is about to be destroyed — read the CLI's own crash
           // reason from the transcript before the sync entry is torn down.
+          // S2-03: the transcript path is consumed ONLY by
+          // readSessionExitReason below (and the omp log line). Providers
+          // without it paid the path resolution on every exit for a
+          // discarded value — for codex that is a fully synchronous 4-level
+          // readdir+sort walk of ~/.codex/sessions (every year/month/day
+          // dir, no date pruning), growing with the user's whole codex
+          // history; gemini reads .project_root of every ~/.gemini/tmp key
+          // dir. Gate the whole resolution on the consumer.
           let reason: SessionExitReason | null = null;
-          let transcriptPath = getSyncedTranscriptPath(sessionId);
-          if (!transcriptPath && cliSessionId) {
-            try {
-              transcriptPath = provider.getTranscriptPath?.(cliSessionId, cwd, configDir, resolveLaunchSessionDir(providerId, sessionId)) ?? null;
-            } catch {
-              transcriptPath = null;
+          let transcriptPath: string | null = null;
+          if (provider.readSessionExitReason) {
+            transcriptPath = getSyncedTranscriptPath(sessionId);
+            if (!transcriptPath && cliSessionId) {
+              try {
+                transcriptPath = provider.getTranscriptPath?.(cliSessionId, cwd, configDir, resolveLaunchSessionDir(providerId, sessionId)) ?? null;
+              } catch {
+                transcriptPath = null;
+              }
             }
-          }
-          if (transcriptPath && provider.readSessionExitReason) {
-            try {
-              reason = provider.readSessionExitReason(transcriptPath);
-            } catch {
-              reason = null;
+            if (transcriptPath) {
+              try {
+                reason = provider.readSessionExitReason(transcriptPath);
+              } catch {
+                reason = null;
+              }
             }
           }
           if (reason?.timestamp) {
             const markerTime = Date.parse(reason.timestamp);
             if (!Number.isFinite(markerTime) || markerTime < launchStartedAt) reason = null;
           }
-          const exitReason = reason && reason.kind !== 'normal' && reason.reason !== 'dispose'
-            ? reason.reason
-            : exitCode !== 0
-              ? `exited with code ${exitCode}${signal ? ` (signal ${signal})` : ''}`
-              : signal ? `exited with signal ${signal}` : undefined;
+          const exitReason = describePtyExit(reason, exitCode, signal);
           if (providerId === 'omp') {
             console.info('[omp-session-exit]', JSON.stringify({ at: new Date().toISOString(), sessionId, pid, exitCode, signal, exitReason, transcriptFound: !!transcriptPath }));
           }
@@ -746,14 +785,23 @@ export function registerIpcHandlers(): void {
       // pre-project picker starts in home. Enumeration outside home +
       // known roots exists only for the directory picker, so it needs the
       // explicit confirm an MCP remote-host connect gets; Cancel = empty.
-      if (!isAllowedEnumeratePath(expanded) && !(await confirmHomeOutsideListing(expanded))) return [];
-      const entries = fs.readdirSync(expanded, { withFileTypes: true });
+      // S4-04: the confirm answer is cached per directory — the sidebar
+      // fires this channel per keystroke, and every home-outside prefix
+      // used to pop its own native dialog.
+      if (!isAllowedEnumeratePath(expanded) && !(await confirmHomeOutsideListingOnce(expanded))) return [];
+      // S4-04: async body (mirrors fs:listDir's PA-24 fix) — readdirSync
+      // plus a localeCompare sort over every joined path blocked main on
+      // each keystroke. Names are filtered to the prefix, sorted, sliced
+      // to 20, and only the slice is joined; the payload stays the same
+      // sorted string[] of full paths the sidebar renders.
+      const entries = await fs.promises.readdir(expanded, { withFileTypes: true });
       const lowerPrefix = prefix?.toLowerCase();
       return entries
         .filter(e => e.isDirectory() && !e.name.startsWith('.') && (!lowerPrefix || e.name.toLowerCase().startsWith(lowerPrefix)))
-        .map(e => path.join(expanded, e.name))
+        .map(e => e.name)
         .sort((a, b) => a.localeCompare(b))
-        .slice(0, 20);
+        .slice(0, 20)
+        .map(name => path.join(expanded, name));
     } catch {
       return [];
     }
@@ -1326,9 +1374,13 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('provider:checkBinary', (_event, providerId: ProviderId = 'claude') => {
+  ipcMain.handle('provider:checkBinary', async (_event, providerId: ProviderId = 'claude') => {
     const provider = getProvider(providerId);
-    return provider.validatePrerequisites();
+    // S4-03: async twin (Wave E) — the sync probe chain (`where` 3 s,
+    // `npm prefix -g` 5 s per missing binary) blocked main; Preferences→
+    // Setup fires this for all six providers per section mount. The
+    // probe caches (in-process + disk) keep repeats on the hot path.
+    return await (provider.validatePrerequisitesAsync?.() ?? provider.validatePrerequisites());
   });
 
   ipcMain.handle('provider:installAgent', async (_event, slug: string, content: string, configDir?: string) => {
@@ -1340,7 +1392,16 @@ export function registerIpcHandlers(): void {
       throw new Error(`Not a managed profile config dir: ${JSON.stringify(pinnedDir)}`);
     }
     const stamped = stampAgentMarker(slug, content);
-    const targets = getAllProviders().filter((p) => p.installAgent && p.validatePrerequisites());
+    // S4-03: async twin availability filter — the sync predicate ran the
+    // probe chain for every provider on main. Response shape unchanged:
+    // one entry per available provider, install order preserved.
+    const candidates = getAllProviders().filter((p) => p.installAgent);
+    const availability = await Promise.all(candidates.map((p) => (
+      p.validatePrerequisitesAsync
+        ? p.validatePrerequisitesAsync()
+        : Promise.resolve(p.validatePrerequisites())
+    )));
+    const targets = candidates.filter((_, i) => availability[i]);
     return Promise.all(targets.map(async (p) => {
       try {
         // A profile config dir is a Claude CLAUDE_CONFIG_DIR tree; other
@@ -1920,9 +1981,16 @@ export function registerIpcHandlers(): void {
   // Both run git in the renderer-named cwd (`git ls-files` for the readiness
   // scan, `git remote get-url` for the repo detect), so both take the same
   // root gate as the 13 git:* handlers: a known project or a watched worktree.
-  ipcMain.handle('readiness:analyze', (_event, projectPath: string, excludedProviders?: ProviderId[]) =>
-    analyzeReadiness(requireGitRoot('readiness:analyze', projectPath), excludedProviders)
-  );
+  ipcMain.handle('readiness:analyze', async (_event, projectPath: string, excludedProviders?: ProviderId[]) => {
+    const root = requireGitRoot('readiness:analyze', projectPath);
+    // S4-03: warm the registry availability cache with the async probe
+    // twin. analyzeReadiness() reads availability through the sync
+    // getAvailableProviderIds(); warming first makes that a cache hit, so
+    // the first scan no longer runs the six sync probe chains on main.
+    // Response shape is the same ReadinessResult promise.
+    await getAvailableProviderIdsAsync();
+    return analyzeReadiness(root, excludedProviders);
+  });
 
   ipcMain.handle('github:isAvailable', () => isGhAvailable());
   ipcMain.handle('github:detectRepo', (_event, projectPath: string) =>

@@ -32,6 +32,7 @@ const mockSpawnPty = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise
 const mockRegisterSync = vi.hoisted(() => vi.fn());
 const mockUnregisterSync = vi.hoisted(() => vi.fn(() => { calls.push('unregister'); }));
 const mockGetProvider = vi.hoisted(() => vi.fn());
+const mockGetAvailableAsync = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const mockGetSyncedPath = vi.hoisted(() => vi.fn((): string | null => null));
 const mockRegisterSession = vi.hoisted(() => vi.fn());
 
@@ -121,6 +122,7 @@ vi.mock('./providers/registry', () => ({
   getProvider: mockGetProvider,
   getAllProviderMetas: vi.fn(),
   getAllProviders: vi.fn(),
+  getAvailableProviderIdsAsync: mockGetAvailableAsync,
 }));
 
 vi.mock('./store', () => ({
@@ -183,15 +185,15 @@ vi.mock('./profiles', autoStub);
 vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
 
-import { registerIpcHandlers, _resetEnumerateCacheForTesting } from './ipc-handlers';
+import { registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting } from './ipc-handlers';
 import { isManagedMcpConfigDir } from './claude-cli';
 import { loadState } from './store';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { cleanupSessionStatus } from './hook-status';
 import { analyzeReadiness } from './readiness/analyzer';
 import { detectRepo } from './github-cli';
-import { getAllProviders } from './providers/registry';
 
+import { getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 function makeProvider(): CliProvider {
   return {
     // hookStatus off keeps the post-spawn settings-warning block out of the way.
@@ -240,6 +242,8 @@ function exitCallback(): ExitCallback {
 beforeEach(() => {
   vi.clearAllMocks();
   calls.length = 0;
+  // The home-outside consent Map is module state; each test starts fresh.
+  _resetHomeOutsideConsentForTesting();
   handlers.clear();
   knownPaths.length = 0;
   provider = makeProvider();
@@ -554,10 +558,10 @@ describe('readiness/github git-executing handlers share the root gate', () => {
       const outside = path.join(root, 'invented');
       fs.mkdirSync(outside);
 
-      expect(() => handlers.get('readiness:analyze')!({}, outside))
-        .toThrow(/not within a known project/);
-      expect(() => handlers.get('github:detectRepo')!({}, outside))
-        .toThrow(/not within a known project/);
+      // S4-03: readiness:analyze is async now — the gate throw lands on
+      // the invoke promise, the renderer-visible rejection over IPC.
+      await expect(handlers.get('readiness:analyze')!({}, outside))
+        .rejects.toThrow(/not within a known project/);
       expect(vi.mocked(analyzeReadiness)).not.toHaveBeenCalled();
       expect(vi.mocked(detectRepo)).not.toHaveBeenCalled();
     } finally {
@@ -579,6 +583,21 @@ describe('readiness/github git-executing handlers share the root gate', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('probes provider availability through the async twin before the analyzer (S4-03)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
+    try {
+      knownPaths.push(root);
+      const order: string[] = [];
+      vi.mocked(getAvailableProviderIdsAsync).mockImplementationOnce(async () => { order.push('probe'); return []; });
+      vi.mocked(analyzeReadiness).mockImplementationOnce(async () => { order.push('analyze'); return {} as never; });
+      await handlers.get('readiness:analyze')!({}, root);
+      expect(order).toEqual(['probe', 'analyze']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
 });
 
 const OUTSIDE_HOME = process.platform === 'win32' ? 'C:\\Windows' : '/etc';
@@ -1822,5 +1841,85 @@ describe('fs:cloneRepo gates', () => {
     mockGitCloneSpawn.mockImplementationOnce((_cmd: string, _args: unknown, _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
     const res = await handlers.get('fs:cloneRepo')!({}, 'git@github.com:owner/repo.git', path.join(os.homedir(), 'repo'));
     expect(res).toEqual({ ok: true });
+  });
+});
+
+// S4-04: the sidebar's Add-Project path input fires fs:listDirs per
+// keystroke; the handler must stay cheap (async readdir, sort only the
+// prefix-matched slice, join only the 20-slice) and prompt home-outside
+// consent at most once per directory.
+describe('fs:listDirs keystroke path (S4-04)', () => {
+  it('returns the first 20 directories in name order, prefix-filtered, with no confirm inside home', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-listdirs-'));
+    try {
+      const names: string[] = [];
+      for (let i = 1; i <= 25; i++) names.push(`p${String(i).padStart(2, '0')}`);
+      names.push('beta', '.hidden');
+      for (const n of names) fs.mkdirSync(path.join(homeDir, n));
+      fs.writeFileSync(path.join(homeDir, 'afile.txt'), 'x');
+
+      const dirs = (await handlers.get('fs:listDirs')!({}, homeDir)) as string[];
+      // localeCompare order: 'beta' collates before 'p01', so the 20-slice
+      // is beta + p01..p18 — the full dir list sorted, sliced, joined.
+      expect(dirs).toEqual(
+        names.filter(n => !n.startsWith('.')).sort((a, b) => a.localeCompare(b)).slice(0, 20).map(n => path.join(homeDir, n))
+      );
+      const beta = (await handlers.get('fs:listDirs')!({}, homeDir, 'be')) as string[];
+      expect(beta).toEqual([path.join(homeDir, 'beta')]);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('asks home-outside consent at most once per directory — repeats never re-prompt', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    const first = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
+    const second = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
+    expect(first.length).toBeGreaterThan(0);
+    expect(second).toEqual(first);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches a Cancel too: every repeat on the declined directory returns empty with no new dialog', async () => {
+    // dialog.showMessageBox resolves response 0 (Cancel) by default.
+    await expect(handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)).resolves.toEqual([]);
+    await expect(handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)).resolves.toEqual([]);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+});
+
+// S4-03: Preferences→Setup fires provider:checkBinary for all six providers
+// per section mount, installAgent filters targets, and readiness:analyze
+// probes availability — all must ride the async probe twin (Wave E), not the
+// sync `where`/`npm prefix -g` chain, and keep their response shapes.
+describe('provider binary probes are async (S4-03)', () => {
+  it('provider:checkBinary uses the async probe twin when the provider has one', async () => {
+    const asyncProbe = vi.fn(async () => true);
+    provider.validatePrerequisites = vi.fn(() => { throw new Error('sync probe on the IPC hot path'); });
+    provider.validatePrerequisitesAsync = asyncProbe;
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi')).resolves.toBe(true);
+    expect(asyncProbe).toHaveBeenCalledTimes(1);
+    expect(provider.validatePrerequisites).not.toHaveBeenCalled();
+  });
+
+  it('provider:checkBinary falls back to the sync probe for providers without the twin', async () => {
+    provider.validatePrerequisites = vi.fn(() => false);
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi')).resolves.toBe(false);
+    expect(provider.validatePrerequisites).toHaveBeenCalledTimes(1);
+  });
+
+  it('provider:installAgent filters targets with the async twin, preserving the response shape', async () => {
+    const asyncProbe = vi.fn(async () => true);
+    const fake = {
+      meta: { id: 'claude' },
+      validatePrerequisites: () => { throw new Error('sync probe on the IPC hot path'); },
+      validatePrerequisitesAsync: asyncProbe,
+      installAgent: vi.fn(async () => ({ filePath: '/tmp/claude/agents/auditor.md' })),
+    };
+    vi.mocked(getAllProviders).mockReturnValue([fake] as never);
+    const results = await handlers.get('provider:installAgent')!({}, 'auditor', 'body') as Array<Record<string, unknown>>;
+    expect(results).toEqual([{ providerId: 'claude', ok: true, filePath: '/tmp/claude/agents/auditor.md' }]);
+    expect(asyncProbe).toHaveBeenCalledTimes(1);
   });
 });
