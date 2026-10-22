@@ -291,7 +291,7 @@ describe('addSession profile pinning', () => {
 });
 
 describe('removeProfile reference cleanup', () => {
-  it('protects sessions and history, then clears other references once those are gone', async () => {
+  it('deletes the profile and clears every reference, live and archived (P3-4)', async () => {
     const project = addProject();
     const profile = await appState.addProfile({ name: 'Work', providerId: 'claude' });
     appState.setProjectDefaultProfile(project.id, profile.id);
@@ -305,19 +305,28 @@ describe('removeProfile reference cleanup', () => {
 
     appState.removeProfile(profile.id);
 
-    expect(appState.isProfileInUse(profile.id)).toBe(true);
-    expect(appState.getProfile(profile.id)).toBeDefined();
-    expect(session.profileId).toBe(profile.id);
-    expect(project.sessionHistory![0].profileId).toBe(profile.id);
-
-    project.sessions = [];
-    project.sessionHistory = [];
-    appState.removeProfile(profile.id);
-
+    // Deletion completes — no early return, so every cleanup loop runs.
     expect(appState.getProfile(profile.id)).toBeUndefined();
+    // The live session falls back to the provider default (profileId cleared)…
+    expect(session.profileId).toBeUndefined();
+    // …and the archived history row drops the id.
+    expect(project.sessionHistory![0].profileId).toBeUndefined();
     expect(project.defaultProfileId).toBeUndefined();
     expect(appState.preferences.defaultProfiles?.claude).toBeUndefined();
     expect(task.profileId).toBeUndefined();
+  });
+
+  it('isProfileInUse ignores archived rows so a history-only reference stays deletable (P3-4)', async () => {
+    const project = addProject();
+    const profile = await appState.addProfile({ name: 'Work', providerId: 'claude' });
+    project.sessionHistory = [{ id: 'a', name: 'old', providerId: 'claude', cliSessionId: 'c', createdAt: '0', closedAt: '0', profileId: profile.id, cost: null }];
+
+    // UI delete-button gate: history rows must not disable it.
+    expect(appState.isProfileInUse(profile.id)).toBe(false);
+
+    appState.addSession(project.id, 'S', undefined, 'claude', profile.id);
+    // A live session is the only thing that marks the profile in use.
+    expect(appState.isProfileInUse(profile.id)).toBe(true);
   });
 });
 
