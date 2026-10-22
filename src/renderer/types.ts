@@ -142,8 +142,8 @@ export interface FinevibeApi {
     onWarning(callback: (data: SettingsWarningData) => void): () => void;
     onConflictDialog(callback: (data: StatusLineConflictData) => void): () => void;
     respondConflictDialog(choice: 'replace' | 'keep'): void;
-    reinstall(providerId?: ProviderId, configDir?: string): Promise<{ success: boolean; error?: string }>;
-    validate(providerId?: ProviderId): Promise<SettingsValidationResult>;
+    reinstall(providerId?: ProviderId, configDir?: string, projectPath?: string): Promise<{ success: boolean; error?: string }>;
+    validate(providerId?: ProviderId, projectPath?: string, configDir?: string): Promise<SettingsValidationResult>;
     declineConflict(configDir?: string, foreignCommand?: string | null): void;
   };
   stats: {

@@ -557,6 +557,10 @@ export interface SettingsWarningData {
   /** P2-127: the profile config dir the validation was computed from;
    * undefined = the default ~/.claude. The Fix Settings CTA repairs THIS dir. */
   configDir?: string;
+  /** P2-55/P2-86: the project cwd the validation was computed from;
+   * Copilot's hooks are project-scoped, so the Fix Settings CTA repairs
+   * THIS project (and settings:validate re-checks it), not the user scope. */
+  projectPath?: string;
   /** The foreign statusLine command, present when statusLine === 'foreign'
    * (P1-14: the banner's dismissal records a Keep bound to this command). */
   foreignStatusLineCommand?: string;

@@ -1784,7 +1784,7 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
         sessionId: 'ui-1',
         statusLine: 'foreign',
         configDir: '/profiles/work',
-        foreignStatusLineCommand: '/usr/bin/other-statusline',
+        projectPath: '/proj',
       }),
     );
   });
@@ -1796,7 +1796,7 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
 
   it('settings:reinstall repairs the profile dir the banner was computed from', async () => {
     await handlers.get('settings:reinstall')!({}, 'claude', '/profiles/work');
-    expect(provider.reinstallSettings).toHaveBeenCalledWith('/profiles/work');
+    expect(provider.reinstallSettings).toHaveBeenCalledWith('/profiles/work', undefined);
   });
 
   it('settings:reinstall refuses a configDir outside the managed-profile allowlist', async () => {
@@ -1808,7 +1808,27 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
 
   it('settings:reinstall without a configDir keeps repairing the default dir', async () => {
     await handlers.get('settings:reinstall')!({}, 'claude');
-    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined);
+    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  // P2-55: Copilot's hooks are project-scoped — the CTA must repair the
+  // project the banner was validated against, not the user scope.
+  it('settings:reinstall threads the banner project to project-scoped providers', async () => {
+    await handlers.get('settings:reinstall')!({}, 'copilot', undefined, '/proj');
+    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined, '/proj');
+  });
+
+  // P2-86: settings:validate must dispatch scoped like the post-spawn
+  // validation (pty:create passes (cwd, configDir)); the unscoped dispatch
+  // read the user-global file and reported a broken project as `complete`.
+  it('settings:validate scopes to the project and dir it was given', async () => {
+    await handlers.get('settings:validate')!({}, 'copilot', '/proj', '/profiles/work');
+    expect(provider.validateSettings).toHaveBeenCalledWith('/proj', '/profiles/work');
+  });
+
+  it('settings:validate without scope keeps the user-scope check', async () => {
+    await handlers.get('settings:validate')!({}, 'copilot');
+    expect(provider.validateSettings).toHaveBeenCalledWith(undefined, undefined);
   });
 
   it('settings:declineStatusLine records the per-dir Keep and gates unmanaged dirs', () => {
