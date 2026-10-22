@@ -277,23 +277,36 @@ export function gitUnstageFile(cwd: string, filePath: string): Promise<void> {
   return execGit(cwd, ['reset', 'HEAD', '--', filePath]);
 }
 
-/** Deepest-existing-ancestor realpath of `p` with the non-existent tail
- * appended (p must already be absolute). Falls back to `p` verbatim when
- * nothing on the chain resolves. */
-function canonicalExisting(p: string): string {
-  const tail: string[] = [];
-  let cur = p;
-  for (;;) {
-    try {
-      const base = fs.realpathSync(cur);
-      return tail.length === 0 ? base : path.join(base, ...tail.reverse());
-    } catch {
-      const parent = path.dirname(cur);
-      if (parent === cur) return p;
-      tail.push(path.basename(cur));
-      cur = parent;
-    }
+/** Canonical spelling for the root guard's path compare: the deepest
+ * existing-ancestor realpath with the non-existent tail appended
+ * (`canonicalPath`'s chain), plus — on win32 — expansion of 8.3 short
+ * segments (C:\RUNNER~1\TEMP ≠ C:\runneradmin\TEMP for `path.relative`).
+ * GitHub Windows runners set TEMP to the short form, git echoes it, and a
+ * string compare then reads a legit child as "outside the repository
+ * root". GetLongPathName (via PowerShell) expands each component; the
+ * probe is best-effort and cached per path — any failure falls back to
+ * the canonical-chain spelling, so the guard never gets laxer. */
+const longNameByPath = new Map<string, string>();
+const LONG_NAME_CACHE_MAX = 64;
+function win32LongPath(p: string): string {
+  const hit = longNameByPath.get(p);
+  if (hit !== undefined) return hit;
+  let out = p;
+  try {
+    out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `[System.IO.Path]::GetLongPathName([string]::Copy('${p.replace(/'/g, "''")}'))`],
+      { timeout: 5000, encoding: 'utf8' }).trim() || p;
+  } catch { /* keep the canonical-chain spelling */ }
+  longNameByPath.set(p, out);
+  if (longNameByPath.size > LONG_NAME_CACHE_MAX) {
+    const oldest = longNameByPath.keys().next().value;
+    if (oldest !== undefined) longNameByPath.delete(oldest);
   }
+  return out;
+}
+function canonicalExisting(p: string): string {
+  const base = canonicalPath(p);
+  return process.platform === 'win32' ? win32LongPath(base) : base;
 }
 
 /** P1-17: the untracked branch is a real recursive delete, so every
