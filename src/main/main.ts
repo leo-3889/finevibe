@@ -16,7 +16,7 @@ import { stopConfigWatcher } from './config-watcher';
 import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
-import { isMac } from './platform';
+import { isMac, isWin } from './platform';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
 import { isHttpUrl } from '../shared/url';
@@ -168,7 +168,25 @@ function createWindow(): void {
   });
 }
 
+// Windows app identity. Without an explicit AppUserModelID the process
+// registers as "Electron", so the taskbar group, Alt+Tab entry, Start-menu
+// shortcut and toast notifications all attribute FineVibe to Electron. The
+// id must match package.json "build".appId: the NSIS installer stamps that
+// same AUMID on its shortcuts, so setting it unconditionally on win32 is
+// consistent with the packaged install, and it also covers dev runs and the
+// portable exe (which carry no installer metadata at all). Hoisted out of
+// startMainProcess so the boot body stays linear; the win32 gate lives here.
+function claimWindowsIdentity(): void {
+  if (isWin) {
+    app.setAppUserModelId('com.finevibe.app');
+  }
+}
+
 function startMainProcess(): void {
+  // First: the identity must be stamped on the process before the first
+  // window (taskbar button) exists. See claimWindowsIdentity above.
+  claimWindowsIdentity();
+
   // Winner-only: a relaunch while the app runs focuses the existing
   // window, so launching again behaves like "focus FineVibe".
   app.on('second-instance', () => {
@@ -324,8 +342,8 @@ function startMainProcess(): void {
 // startMainProcess(): no window, no IPC, no browser/webview stack, no
 // lifecycle handlers. The winner runs the full boot. (Gate is smoke-tested
 // in main-single-instance.test.ts via mocked electron.)
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-} else {
+if (app.requestSingleInstanceLock()) {
   startMainProcess();
+} else {
+  app.quit();
 }
