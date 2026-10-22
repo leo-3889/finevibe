@@ -174,3 +174,23 @@ Wave E doc separation → the Finevibe rename. Spec:
 - **Artifact names** in the wave rows are the program's labels; where a landed name differs on today's tree the tree is authoritative (the renderer state slices, for example, live under `src/renderer/state/`).
 - **Evidence disposition.** The agent workspace that held the per-finding evidence — `2026-10-19-cleanup.md` (findings W1-01…W1-25: 24 findings, 4 P1 / 12 P2 / 8 P3, with W1-16 inventory-only), `2026-10-19-architecture.md` (W3-01…W3-15), `2026-10-19-merge-map.md`, the W2 measurement harnesses and the coordinator's run-state file — was dissolved on 2026-10-21; that evidence no longer exists. The findings stay closed per the commits named in this file. The surviving durable records are this section, the W2 baseline snapshot in [performance](performance.md), the build-host requirement in [packaging](packaging.md), and the plan linked above.
 - **Housekeeping the run-state file left open.** `%APPDATA%` smoke directories `Finevibe-e2e-backup` / `Finevibe-e2e-backup(2)` from the rename E2E (user data untouched: the real userData dir is intact and the real state migrated on first launch of the renamed app); the optional `-Archives` pass of the program's cleanup script; the Wave M branch/stash list is DONE (26 branches deleted, 0 stashes, worktrees reduced to main + baseline, fork GitHub branches kept to `main` plus the PR #167 head with stale tips archived as local `fork-archive/*`).
+
+## Status 2026-10-22 (Wave F: post-Wave-E re-audit, in flight)
+
+Loop re-run on the `b4c0721` tree: 5 read-only scouts (startup/main, watchers,
+renderer core, UI, tab-bar/sidebar supplement) → parent verification → 4 fix
+agents + parent fixes → integration gate. Findings ledger with per-row
+dispositions (FIXED / AGENT / PARENT / ACCEPTED):
+[Wave F ledger](../todos/perf-audit-2026-10-22.md).
+
+- **Closed parent-side (2026-10-22):** consent-key dual-writer race (graft at
+  both store writers + fresh post-modal snapshot), beforeunload flush loss
+  (sync flush path), spawn-path sync PATH probes, launch-arg log leak,
+  spawn-path retention prune (deferred, bound 200), git poll key (session
+  component dropped), git poll visibility gate, settings-guard revalidation
+  burst, git-watcher superseded-walk leak, PTY exit payload race, home-root
+  profile-dir containment hole.
+- **Open:** agent slices (codex watcher cadence, renderer P1s, async IPC
+  probes, tab-bar/sidebar batch slice) merge through the integration gate;
+  parent-side remainder: S3-08 search-bar teardown, S4-04 out-of-home
+  listing consent, enumerate-cache generation, store:saveSync wiring.
