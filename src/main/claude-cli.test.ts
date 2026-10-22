@@ -42,7 +42,12 @@ vi.mock('./hook-commands', () => ({
   // real session-var/marker arguments through to stopStatusCmd.
   stopStatusCmd: vi.fn((v: string, marker: string) => `stop-writer ${v} ${marker}`),
   captureSessionIdCmd: vi.fn((_v: string, marker: string) => `capture-sessionid .sessionid ${marker}`),
-  captureToolFailureCmd: vi.fn((_v: string, marker: string) => `capture-toolfailure .toolfailure ${marker}`),
+  // P2-72: the stub renders its arguments verbatim and contains none of the
+  // real generator's output tokens — assertions below pass only when
+  // claude-cli.ts feeds the real session-var/marker arguments through, so a
+  // dropped argument breaks the suite (the old stub baked in '.toolfailure'
+  // and the assertions checked for that baked-in literal).
+  captureToolFailureCmd: vi.fn((v: string, marker: string) => `capture-toolfailure ${v} ${marker}`),
   wrapPythonHookCmd: vi.fn((_name: string, _code: string, marker: string) => `capture-event .events ${marker}`),
 }));
 
@@ -59,7 +64,7 @@ vi.mock('./store', () => ({
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { addMcpServer, getClaudeConfig, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
+import { addMcpServer, getClaudeConfig, getSupportedHookEvents, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
 import { installEventScript, stopStatusCmd } from './hook-commands';
 import { getClaudeVersion } from './providers/claude-version';
 
@@ -75,7 +80,7 @@ const mockOpenSync = vi.mocked(fs.openSync);
 const mockWriteSync = vi.mocked(fs.writeSync);
 const mockFsyncSync = vi.mocked(fs.fsyncSync);
 const mockCloseSync = vi.mocked(fs.closeSync);
-const mockRenameSync = vi.mocked(fs.renameSync);
+const mockRenameSync = vi.mocked(fs.renameSync) as unknown as Mock<(from: string, to: string) => void>;
 
 // writeSettings() lands payloads through openSync/writeSync/renameSync, not
 // writeFileSync. Settings payloads in write order — each settings.json write
@@ -84,16 +89,40 @@ function settingsWrites(): string[] {
   return mockWriteSync.mock.calls.map((c) => String(c[1]));
 }
 
+// writeJsonAtomically lands payloads through openSync/writeSync on a sibling
+// .tmp, then renameSync onto the target (P2-18): final-target path -> payload.
+// Temp writes with no rename (an aborted install) are intentionally invisible
+// here — the target file is what the user's CLI reads.
+function atomicWrites(): Map<string, string> {
+  const openTmps = mockOpenSync.mock.calls.map((c) => String(c[0]));
+  const payloads = mockWriteSync.mock.calls.map((c) => String(c[1]));
+  const payloadByTmp = new Map<string, string>();
+  for (const [i, tmp] of openTmps.entries()) {
+    payloadByTmp.set(tmp.replaceAll('\\', '/'), (payloadByTmp.get(tmp.replaceAll('\\', '/')) ?? '') + (payloads[i] ?? ''));
+  }
+  const out = new Map<string, string>();
+  for (const [, dest] of mockRenameSync.mock.calls) {
+    const target = String(dest);
+    out.set(n(target), payloadByTmp.get(n(target + '.tmp')) ?? '');
+  }
+  return out;
+}
+
 // Normalize paths for cross-platform comparison
 const n = (p: string) => p.replace(/\\/g, '/');
+
+// Real fs throws ENOENT as `Error` with `.code === 'ENOENT'`; the strict
+// config reader (P1-18) tells a missing file (code check) from a corrupt one,
+// so every mock "missing file" throw must carry the code like the platform.
+const enoent = () => Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
 
 beforeEach(() => {
   vi.clearAllMocks();
   storeProfiles.length = 0;
   storeProjects.length = 0;
   // Default: all reads/dirs fail (empty state)
-  mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
-  mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT'); });
+  mockReadFileSync.mockImplementation(() => { throw enoent(); });
+  mockReaddirSync.mockImplementation(() => { throw enoent(); });
 });
 
 describe('getClaudeConfig', () => {
@@ -109,7 +138,7 @@ describe('getClaudeConfig', () => {
           mcpServers: { myServer: { url: 'http://localhost:3000' } },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -125,7 +154,7 @@ describe('getClaudeConfig', () => {
           mcpServers: { projServer: { command: 'npx server' } },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -143,7 +172,7 @@ describe('getClaudeConfig', () => {
       if (p === '/project/.claude/settings.json') {
         return JSON.stringify({ mcpServers: { shared: { url: 'project-url' } } });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -157,13 +186,13 @@ describe('getClaudeConfig', () => {
       if (n(String(dirPath)) === '/mock/home/.claude/agents') {
         return ['my-agent.md'] as unknown as fs.Dirent[];
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
     mockReadFileSync.mockImplementation((filePath) => {
       if (n(String(filePath)) === '/mock/home/.claude/agents/my-agent.md') {
         return '---\nname: MyAgent\nmodel: opus\n---\nContent';
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -178,14 +207,14 @@ describe('getClaudeConfig', () => {
       if (p === '/mock/home/.claude/agents' || p === '/project/.claude/agents') {
         return ['agent.md'] as unknown as fs.Dirent[];
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
     mockReadFileSync.mockImplementation((filePath) => {
       const p = n(String(filePath));
       if (p.endsWith('agent.md')) {
         return '---\nname: SameAgent\nmodel: sonnet\n---\n';
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -197,7 +226,7 @@ describe('getClaudeConfig', () => {
       if (n(String(dirPath)) === '/mock/home/.claude/commands') {
         return ['commit.md', 'review.md'] as unknown as fs.Dirent[];
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
     mockReadFileSync.mockImplementation((filePath) => {
       if (n(String(filePath)) === '/mock/home/.claude/commands/commit.md') {
@@ -206,7 +235,7 @@ describe('getClaudeConfig', () => {
       if (n(String(filePath)) === '/mock/home/.claude/commands/review.md') {
         return 'No frontmatter here';
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -221,13 +250,13 @@ describe('getClaudeConfig', () => {
       if (n(String(dirPath)) === '/project/.claude/commands') {
         return ['deploy.md'] as unknown as fs.Dirent[];
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
     mockReadFileSync.mockImplementation((filePath) => {
       if (n(String(filePath)) === '/project/.claude/commands/deploy.md') {
         return '---\ndescription: Deploy the app\n---\n';
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -245,7 +274,7 @@ describe('getClaudeConfig', () => {
       if (p === '/project/.claude/commands') {
         return ['shared.md'] as unknown as fs.Dirent[];
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
     mockReadFileSync.mockImplementation((filePath) => {
       const p = n(String(filePath));
@@ -255,7 +284,7 @@ describe('getClaudeConfig', () => {
       if (p === '/project/.claude/commands/shared.md') {
         return '---\ndescription: Project version\n---\n';
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -271,7 +300,7 @@ describe('getClaudeConfig', () => {
           mcpServers: { globalServer: { url: 'http://global:3000' } },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -291,7 +320,7 @@ describe('getClaudeConfig', () => {
           },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -308,7 +337,7 @@ describe('getClaudeConfig', () => {
           mcpServers: { managedServer: { url: 'http://managed:3000' } },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -333,13 +362,13 @@ describe('getClaudeConfig', () => {
       if (p === '/mock/plugins/my-plugin/agents/agent.md') {
         return '---\nname: PluginAgent\nmodel: sonnet\n---\n';
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
     mockReaddirSync.mockImplementation((dirPath) => {
       if (n(String(dirPath)) === '/mock/plugins/my-plugin/agents') {
         return ['agent.md'] as unknown as fs.Dirent[];
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -361,7 +390,7 @@ describe('getClaudeConfig', () => {
           },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -381,7 +410,7 @@ describe('getClaudeConfig', () => {
           },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -393,13 +422,13 @@ describe('getClaudeConfig', () => {
       if (n(String(dirPath)) === '/mock/home/.claude/skills') {
         return ['my-skill'] as unknown as fs.Dirent[];
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
     mockReadFileSync.mockImplementation((filePath) => {
       if (n(String(filePath)) === '/mock/home/.claude/skills/my-skill/SKILL.md') {
         return '---\nname: MySkill\ndescription: Does stuff\n---\n';
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project');
@@ -434,6 +463,61 @@ describe('install into a profile config dir', () => {
   it('defaults to ~/.claude when no config dir is given', () => {
     installHooksOnly();
     expect(n(String(mockRenameSync.mock.calls[0][1]))).toBe('/mock/home/.claude/settings.json');
+  });
+});
+
+// P1-13: an undetectable CLI version — `claude --version` exceeds its 3 s
+// budget during a heavy launch, or the build prints no semver — yields the
+// empty supported-event set. Pre-fix, installHooksOnly wrote that empty set:
+// prepareSettings had already stripped every '# finevibe-hook' command out of
+// settings.json and the event loops added none back, so one slow probe
+// silently deleted the user's installed hooks. Fail closed: with no event
+// known to be supported, settings.json is not touched at all.
+describe('install with an undetectable CLI version (P1-13)', () => {
+  const EXISTING_HOOKS = {
+    Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'echo Stop:completed # finevibe-hook' }] }],
+  };
+
+  beforeEach(() => {
+    vi.mocked(getClaudeVersion).mockReturnValue(null);
+    mockReadFileSync.mockImplementation((filePath) => {
+      if (n(String(filePath)) === '/mock/home/.claude/settings.json') {
+        return JSON.stringify({ hooks: EXISTING_HOOKS });
+      }
+      throw enoent();
+    });
+  });
+
+  afterEach(() => {
+    // The suite-wide default answers every probe with a newest-version build.
+    vi.mocked(getClaudeVersion).mockReturnValue('999.999.999');
+  });
+
+  it('supports no hook event when the version is null (gate contract)', () => {
+    // The empty set is claude-hook-versions.ts's documented safe baseline for
+    // an undetectable CLI. It is what makes the write path destructive, so the
+    // installers must never write hooks from it.
+    expect(getSupportedHookEvents().size).toBe(0);
+  });
+
+  it('installHooksOnly leaves settings.json completely untouched', () => {
+    installHooksOnly();
+
+    // Fail-before: the write landed with `hooks: {}` — the user's markers
+    // stripped, nothing installed to replace them.
+    expect(mockWriteSync).not.toHaveBeenCalled();
+    expect(mockRenameSync).not.toHaveBeenCalled();
+  });
+
+  it('installHooks preserves the existing hooks verbatim; only statusLine lands', () => {
+    installHooks();
+
+    // installHooksOnly wrote nothing, so installStatusLine's write is the only
+    // payload — and it re-read the file, keeping the hooks key byte-equal.
+    expect(settingsWrites()).toHaveLength(1);
+    const written = JSON.parse(settingsWrites()[0]!);
+    expect(written.hooks).toEqual(EXISTING_HOOKS);
+    expect(written.statusLine.type).toBe('command');
   });
 });
 
@@ -488,7 +572,7 @@ function hookCommandsFor(written: any, event: string): string[] {
 
 describe('installHooks', () => {
   it('writes hooks to settings.json', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -522,7 +606,7 @@ describe('installHooks', () => {
           },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     installHooks();
@@ -549,7 +633,7 @@ describe('installHooks', () => {
           },
         });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     installHooks();
@@ -565,7 +649,7 @@ describe('installHooks', () => {
   });
 
   it('installs all 25 hook events (7 core + 18 inspector-only)', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -627,7 +711,7 @@ describe('installHooks', () => {
   // subagents. When SubagentStart is supported we route Stop through the
   // subagent-aware writer instead of the naive echo-Stop:completed command.
   it('uses the subagent-aware Stop writer when SubagentStart is supported', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -651,7 +735,7 @@ describe('installHooks', () => {
   it('falls back to the echo Stop writer when SubagentStart is unsupported', () => {
     // 2.0.42 supports Stop (min 1.0.38) but not SubagentStart (min 2.0.43).
     vi.mocked(getClaudeVersion).mockReturnValueOnce('2.0.42');
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -664,7 +748,7 @@ describe('installHooks', () => {
   });
 
   it('injects the in-flight subagent counter only into the relevant event scripts', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -691,24 +775,26 @@ describe('installHooks', () => {
   });
 
   it('wires tool-failure capture onto PostToolUseFailure and nowhere else', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
     const written = JSON.parse(settingsWrites()[0]);
     const commandsFor = (event: string) => hookCommandsFor(written, event);
 
-    expect(commandsFor('PostToolUseFailure').some((c: string) => c.includes('.toolfailure'))).toBe(true);
+    // The exact emitted command: session-var + marker, as the cleanup and
+    // the hook runtime key off them.
+    expect(commandsFor('PostToolUseFailure')).toContain('capture-toolfailure CLAUDE_IDE_SESSION_ID # finevibe-hook');
     for (const event of Object.keys(written.hooks)) {
       if (event === 'PostToolUseFailure') continue;
-      expect(commandsFor(event).some((c: string) => c.includes('.toolfailure'))).toBe(false);
+      expect(commandsFor(event).some((c: string) => c.includes('capture-toolfailure'))).toBe(false);
     }
   });
 
   it('omits PostToolUseFailure on a CLI older than its minimum version', () => {
     // 2.1.118 supports PermissionDenied (2.1.89) but not PostToolUseFailure (2.1.119).
     vi.mocked(getClaudeVersion).mockReturnValueOnce('2.1.118');
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -718,7 +804,7 @@ describe('installHooks', () => {
   });
 
   it('requests a longer timeout only for SessionEnd, whose default budget is 1.5s', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -733,7 +819,7 @@ describe('installHooks', () => {
   });
 
   it('captures only real hook-payload fields into inspector events', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -766,7 +852,7 @@ describe('installHooks', () => {
   // successful tool call. The only PostToolUse-derived signal left is a Read
   // truncated by the token cap, which is a success, not a failure.
   it('derives a .toolfailure from PostToolUse only for a token-capped Read', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -783,7 +869,7 @@ describe('installHooks', () => {
   // create the worktree itself and print the path. Installing an observer hook
   // breaks worktree creation. See issue #110.
   it('does not install a WorktreeCreate hook', () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     installHooks();
 
@@ -806,14 +892,13 @@ describe('removeMcpServer writable-path allowlist', () => {
       if (n(String(p)).toLowerCase().endsWith('/.claude.json')) {
         return JSON.stringify({ mcpServers: { leak: { command: 'x' } } });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     removeMcpServer('leak', '/Mock/Home/.claude.json', 'user');
 
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
-    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe('/Mock/Home/.claude.json');
-    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).mcpServers).toEqual({});
+    expect([...atomicWrites().keys()]).toEqual(['/Mock/Home/.claude.json']);
+    expect(JSON.parse(atomicWrites().get('/Mock/Home/.claude.json')!).mcpServers).toEqual({});
   });
 
   it('refuses a write target that is not a known MCP config file', () => {
@@ -821,7 +906,7 @@ describe('removeMcpServer writable-path allowlist', () => {
 
     expect(() => removeMcpServer('x', '/mock/home/.ssh/authorized_keys', 'user'))
       .toThrow(/Not a writable MCP config path/);
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(atomicWrites().size).toBe(0);
   });
 });
 
@@ -837,7 +922,7 @@ describe('profile-scoped MCP config', () => {
   const profileConfig = (servers: Record<string, unknown>) => {
     mockReadFileSync.mockImplementation((p: fs.PathLike) => {
       if (n(String(p)) === n(profileClaudeJson)) return JSON.stringify({ mcpServers: servers });
-      throw new Error('ENOENT');
+      throw enoent();
     });
   };
 
@@ -849,9 +934,8 @@ describe('profile-scoped MCP config', () => {
   it('addMcpServer with a config dir writes the profile store, not ~/.claude.json', () => {
     addMcpServer('github', { command: 'npx', args: ['-y', 'srv'] }, 'user', undefined, profileDir);
 
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
-    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe(n(profileClaudeJson));
-    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).mcpServers).toEqual({
+    expect([...atomicWrites().keys()]).toEqual([n(profileClaudeJson)]);
+    expect(JSON.parse(atomicWrites().get(n(profileClaudeJson))!).mcpServers).toEqual({
       github: { command: 'npx', args: ['-y', 'srv'] },
     });
   });
@@ -859,8 +943,7 @@ describe('profile-scoped MCP config', () => {
   it('addMcpServer without a config dir keeps writing ~/.claude.json', () => {
     addMcpServer('github', { url: 'http://x' }, 'user');
 
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
-    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe('/mock/home/.claude.json');
+    expect([...atomicWrites().keys()]).toEqual(['/mock/home/.claude.json']);
   });
 
   it('addMcpServer refuses a config dir the store never handed out', () => {
@@ -869,7 +952,7 @@ describe('profile-scoped MCP config', () => {
     // the one directory whose contents other daemons act on.
     expect(() => addMcpServer('x', { url: 'http://x' }, 'user', undefined, path.join('/mock/home', '.ssh')))
       .toThrow(/Not a writable MCP config path/);
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(atomicWrites().size).toBe(0);
   });
 
   it('addMcpServer accepts a config dir below a known project', () => {
@@ -877,13 +960,11 @@ describe('profile-scoped MCP config', () => {
     // project; the gate is the store's dir list, not the managed root.
     storeProjects.push('/project');
     const insideProject = path.join('/project', '.finevibe-config');
-    mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockReadFileSync.mockImplementation(() => { throw enoent(); });
 
     addMcpServer('github', { url: 'http://x' }, 'user', undefined, insideProject);
 
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
-    expect(n(String(mockWriteFileSync.mock.calls[0][0])))
-      .toBe(n(path.join(insideProject, '.claude.json')));
+    expect([...atomicWrites().keys()]).toEqual([n(path.join(insideProject, '.claude.json'))]);
   });
 
   it('addMcpServer accepts the profile dir spelled with other casing', () => {
@@ -893,9 +974,7 @@ describe('profile-scoped MCP config', () => {
 
     addMcpServer('github', { url: 'http://x' }, 'user', undefined, n(profileDir).toUpperCase());
 
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
-    expect(n(String(mockWriteFileSync.mock.calls[0][0])).toLowerCase())
-      .toBe(n(profileClaudeJson).toLowerCase());
+    expect([...atomicWrites().keys()].map((k) => k.toLowerCase())).toEqual([n(profileClaudeJson).toLowerCase()]);
   });
 
   it('getClaudeConfig lists the profile store and not the default account\'s', async () => {
@@ -903,7 +982,7 @@ describe('profile-scoped MCP config', () => {
       const key = n(String(p));
       if (key === n(profileClaudeJson)) return JSON.stringify({ mcpServers: { profileServer: { url: 'profile-url' } } });
       if (key === '/mock/home/.claude.json') return JSON.stringify({ mcpServers: { defaultServer: { url: 'default-url' } } });
-      throw new Error('ENOENT');
+      throw enoent();
     });
 
     const config = await getClaudeConfig('/project', profileDir);
@@ -917,9 +996,8 @@ describe('profile-scoped MCP config', () => {
 
     removeMcpServer('zap', profileClaudeJson, 'user', undefined, profileDir);
 
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
-    expect(n(String(mockWriteFileSync.mock.calls[0][0]))).toBe(n(profileClaudeJson));
-    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).mcpServers).toEqual({
+    expect([...atomicWrites().keys()]).toEqual([n(profileClaudeJson)]);
+    expect(JSON.parse(atomicWrites().get(n(profileClaudeJson))!).mcpServers).toEqual({
       keep: { command: 'k' },
     });
   });
@@ -937,15 +1015,14 @@ describe('profile-scoped MCP config', () => {
       if (n(String(p)).toLowerCase() === n(profileClaudeJson).toLowerCase()) {
         return JSON.stringify({ mcpServers: { keep: { command: 'k' }, zap: { command: 'z' } } });
       }
-      throw new Error('ENOENT');
+      throw enoent();
     });
     const echoed = n(profileClaudeJson).toUpperCase();
 
     removeMcpServer('zap', echoed, 'user', undefined, profileDir);
 
-    expect(mockWriteFileSync).toHaveBeenCalledOnce();
-    expect(String(mockWriteFileSync.mock.calls[0][0])).toBe(echoed);
-    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0][1])).mcpServers).toEqual({
+    expect([...atomicWrites().keys()].map((k) => k.toLowerCase())).toEqual([n(echoed).toLowerCase()]);
+    expect(JSON.parse([...atomicWrites().values()][0]).mcpServers).toEqual({
       keep: { command: 'k' },
     });
   });
@@ -957,6 +1034,6 @@ describe('profile-scoped MCP config', () => {
 
     expect(() => removeMcpServer('zap', profileClaudeJson, 'user'))
       .toThrow(/Not a writable MCP config path/);
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(atomicWrites().size).toBe(0);
   });
 });

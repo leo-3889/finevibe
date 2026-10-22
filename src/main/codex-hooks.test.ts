@@ -41,12 +41,59 @@ function mockFiles(rawFiles: Record<string, string>): void {
   mockReadFileSync.mockImplementation((p: any) => {
     const content = files[n(String(p))];
     if (content !== undefined) return content;
-    throw new Error('ENOENT');
+    // Real fs carries `.code`; the strict installer read (P2-60) tells a
+    // missing file (ENOENT) from a corrupt one, so mocks must match.
+    throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
   });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+// P2-60: a truncated/corrupt hooks.json used to be collapsed to `{}` by
+// `readJsonSafe(...) ?? {}` and the install persisted that: every user-authored
+// Codex hook and every other top-level key gone. The guard (mirror of
+// gemini-hooks) aborts the install and leaves the file untouched.
+describe('install over a corrupt hooks.json (P2-60)', () => {
+  const TOML = '[features]\ncodex_hooks = true\n';
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  afterEach(() => warn.mockClear());
+
+  it('syntax-broken hooks.json: no write to hooks.json, warning logged', () => {
+    mockFiles({ [CONFIG_TOML]: TOML, [HOOKS_JSON]: '{"hooks": {"Stop": [' });
+    installCodexHooks();
+    expect(mockWriteFileSync.mock.calls.some((c) => n(String(c[0])) === n(HOOKS_JSON))).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not valid JSON'));
+  });
+
+  it('non-object hooks.json is corrupt too (the collapse ran through the spread)', () => {
+    mockFiles({ [CONFIG_TOML]: TOML, [HOOKS_JSON]: '[1,2]' });
+    installCodexHooks();
+    expect(mockWriteFileSync.mock.calls.some((c) => n(String(c[0])) === n(HOOKS_JSON))).toBe(false);
+  });
+
+  it('a missing hooks.json still installs fresh (ENOENT is not corruption)', () => {
+    mockFiles({ [CONFIG_TOML]: TOML });
+    installCodexHooks();
+    expect(mockWriteFileSync.mock.calls.some((c) => n(String(c[0])) === n(HOOKS_JSON))).toBe(true);
+  });
+
+  it('user keys outside hooks survive an install over a valid file', () => {
+    mockFiles({
+      [CONFIG_TOML]: TOML,
+      // No marker on the user command: cleanHooks must keep it (only our own
+      // marked commands are ever stripped).
+      [HOOKS_JSON]: JSON.stringify({ model: 'gpt-x', hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'python user_hook.py' }] }] } }),
+    });
+    installCodexHooks();
+    const call = mockWriteFileSync.mock.calls.find((c) => n(String(c[0])) === n(HOOKS_JSON))!;
+    const written = JSON.parse(String(call[1]));
+    expect(written.model).toBe('gpt-x');
+    const stopCommands = written.hooks.Stop.flatMap((m: { hooks: { command: string }[] }) => m.hooks.map((h: { command: string }) => h.command));
+    expect(stopCommands).toContain('python user_hook.py');
+  });
 });
 
 describe('ensureCodexHooksFeatureFlag (via installCodexHooks)', () => {
