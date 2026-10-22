@@ -41,9 +41,6 @@ export function initKeybindings(): void {
   window.finevibe.menu.onNewProject(promptNewProject);
   window.finevibe.menu.onNewSession(quickNewSession);
   window.finevibe.menu.onToggleSplit(() => appState.toggleSwarm());
-  window.finevibe.menu.onNextSession(() => appState.cycleSession(1));
-  window.finevibe.menu.onPrevSession(() => appState.cycleSession(-1));
-  window.finevibe.menu.onGotoSession((index) => appState.gotoSession(index));
   window.finevibe.menu.onToggleDebug(toggleDebugPanel);
   window.finevibe.menu.onToggleInspector(toggleInspector);
   window.finevibe.menu.onCloseSession(handleCloseSession);

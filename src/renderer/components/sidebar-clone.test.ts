@@ -63,7 +63,7 @@ vi.mock('../provider-availability.js', () => ({
   getProviderDisplayName: vi.fn((id: string) => id),
 }));
 vi.mock('./preferences-modal.js', () => ({ showPreferencesModal: vi.fn() }));
-vi.mock('./file-tree.js', () => ({ renderFileTree: vi.fn(), clearProjectState: vi.fn(), closeFileTree: vi.fn() }));
+vi.mock('./file-tree.js', () => ({ renderFileTree: vi.fn(), clearProjectState: vi.fn(), closeFileTree: vi.fn(), FILE_MANAGER: 'Files' }));
 vi.mock('./session-history.js', () => ({ renderSessionHistory: vi.fn(), closeSessionHistory: vi.fn(), clearProjectState: vi.fn() }));
 vi.mock('./hover-card.js', () => ({ attachHoverCard: vi.fn() }));
 vi.mock('./git-panel.js', () => ({ mountGitPanel: vi.fn(), closeGitPanel: vi.fn() }));

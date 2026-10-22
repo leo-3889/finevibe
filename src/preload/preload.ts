@@ -173,9 +173,6 @@ export interface FineVibeApi {
     onNewProject(callback: () => void): () => void;
     onNewSession(callback: () => void): () => void;
     onToggleSplit(callback: () => void): () => void;
-    onNextSession(callback: () => void): () => void;
-    onPrevSession(callback: () => void): () => void;
-    onGotoSession(callback: (index: number) => void): () => void;
     onToggleDebug(callback: () => void): () => void;
     onToggleInspector(callback: () => void): () => void;
     onCloseSession(callback: () => void): () => void;
@@ -382,9 +379,6 @@ const api: FineVibeApi = {
     onNewProject: (cb) => onChannel('menu:new-project', cb),
     onNewSession: (cb) => onChannel('menu:new-session', cb),
     onToggleSplit: (cb) => onChannel('menu:toggle-split', cb),
-    onNextSession: (cb) => onChannel('menu:next-session', cb),
-    onPrevSession: (cb) => onChannel('menu:prev-session', cb),
-    onGotoSession: (cb) => onChannel('menu:goto-session', (index) => cb(index as number)),
     onToggleDebug: (cb) => onChannel('menu:toggle-debug', cb),
     onToggleInspector: (cb) => onChannel('menu:toggle-inspector', cb),
     onCloseSession: (cb) => onChannel('menu:close-session', cb),
