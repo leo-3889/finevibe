@@ -10,6 +10,7 @@ import {
   clearSession,
   _resetForTesting,
 } from './session-inspector-state.js';
+import { inspectorState } from './components/session-inspector-state-ui.js';
 
 function makeEvent(partial: Partial<InspectorEvent> & { type: InspectorEvent['type'] }): InspectorEvent {
   return {
@@ -240,4 +241,63 @@ it('bounds retained inspector payloads as well as event count', () => {
   clearSession('large');
   addEvents('large', [makeEvent({type: 'user_prompt'})]);
   expect(getEvents('large')).toHaveLength(1);
+});
+
+// C2R-02: the retention array rotates in place at the 2000-event cap, so the
+// timeline needs an identity that survives the shift: a monotonic seq stamped
+// at ingestion.
+describe('ingestion seq (C2R-02)', () => {
+  beforeEach(() => {
+    _resetForTesting();
+  });
+
+  it('stamps a monotonic seq and keeps a supplied one', () => {
+    addEvents('s1', [
+      makeEvent({ type: 'user_prompt', timestamp: 1 }),
+      makeEvent({ type: 'tool_use', timestamp: 2, seq: 99 }),
+    ]);
+    addEvents('s1', [makeEvent({ type: 'stop', timestamp: 3 })]);
+    const events = getEvents('s1');
+    expect(events.map((e) => e.seq)).toEqual([1, 99, 2]);
+  });
+
+  it('carries each surviving seq through the cap rotation', () => {
+    addEvents('s1', Array.from({ length: 2000 }, (_, i) => makeEvent({ type: 'tool_use', timestamp: i })));
+    const before = getEvents('s1').slice(1).map((e) => e.seq);
+    addEvents('s1', [makeEvent({ type: 'tool_use', timestamp: 9999 })]);
+    const survivors = getEvents('s1').slice(0, 1999).map((e) => e.seq);
+    expect(survivors).toEqual(before);
+  });
+});
+
+// C2R-04: exact sizing serialized every ingested event for the app's whole
+// lifetime, in a renderer whose inspector is closed most of the time. The caps
+// are byte bounds, so the closed path uses the stringify-free estimate.
+describe('event sizing gate (C2R-04)', () => {
+  beforeEach(() => {
+    _resetForTesting();
+    inspectorState.inspectorPanel = null;
+    inspectorState.inspectedSessionId = null;
+  });
+
+  it('sizes events without serializing them while the inspector is closed', () => {
+    const stringify = vi.spyOn(JSON, 'stringify');
+    addEvents('s1', [makeEvent({ type: 'tool_use', timestamp: 1, tool_name: 'Bash' })]);
+    expect(stringify).not.toHaveBeenCalled();
+    stringify.mockRestore();
+  });
+
+  it('uses the exact serialization while the inspector is open', () => {
+    inspectorState.inspectorPanel = {} as HTMLElement;
+    inspectorState.inspectedSessionId = 's1';
+    const stringify = vi.spyOn(JSON, 'stringify');
+    addEvents('s1', [makeEvent({ type: 'tool_use', timestamp: 1 })]);
+    expect(stringify).toHaveBeenCalledTimes(1);
+    stringify.mockRestore();
+  });
+
+  it('still drops a single event over the per-event cap by estimate', () => {
+    addEvents('s1', [makeEvent({ type: 'tool_use', timestamp: 1, tool_name: 'x'.repeat(120 * 1024) })]);
+    expect(getEvents('s1')).toHaveLength(0);
+  });
 });

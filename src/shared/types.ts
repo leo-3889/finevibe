@@ -727,6 +727,13 @@ export interface InspectorEvent {
   /** Elicitation discriminator: 'form' | 'url'. */
   mode?: string;
   action?: string;
+  /**
+   * C2R-02: monotonic ingestion id, stamped by session-inspector-state's
+   * addEvents. The retention array rotates in place at the 2000-event cap,
+   * so an array index is not a stable identity; the timeline's expandable
+   * row keys and its rotation guard use this instead.
+   */
+  seq?: number;
 }
 
 export interface ToolUsageStats {

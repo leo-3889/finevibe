@@ -80,12 +80,16 @@ async function detectSessionWorktree(sessionId: string): Promise<void> {
   const project = appState.activeProject;
   if (!project) return;
 
+  // C2R-06: the cached worktree list is the local, cheap bail — a plain repo
+  // (no worktree cache yet, or a single worktree) is the overwhelming
+  // majority of sessions, and the old order paid a getCwd IPC round trip per
+  // event before discarding the result.
+  const worktrees = worktreeCache.get(project.id);
+  if (!worktrees || worktrees.length <= 1) return;
+
   try {
     const cwd = await window.finevibe.pty.getCwd(sessionId);
     if (!cwd) return;
-
-    const worktrees = worktreeCache.get(project.id);
-    if (!worktrees || worktrees.length <= 1) return;
 
     // Find which worktree the cwd falls under (longest path match)
     let bestMatch = '';
@@ -287,31 +291,47 @@ export function startPolling(): void {
   appState.on('project-removed', (data) => {
     const projectId = typeof data === 'string' ? data : undefined;
     if (projectId) {
-      cache.delete(projectId);
+      // C2R-05: poll() writes two keys — the plain projectId (the legacy
+      // accessor) and the composite `${projectId}:${gitPath}`. Deleting only
+      // the plain key leaked one composite entry per worktree ever polled.
+      for (const key of cache.keys()) {
+        if (key === projectId || key.startsWith(`${projectId}:`)) cache.delete(key);
+      }
       worktreeCache.delete(projectId);
     }
   });
 
   // Detect worktree on session change
-  appState.on('session-changed', () => {
-    const activeSession = appState.activeSession;
-    if (activeSession && activeSession.type !== 'diff-viewer' && activeSession.type !== 'file-reader' && activeSession.type !== 'mcp-inspector') {
-      detectSessionWorktree(activeSession.id);
-    }
-    // Clear manual override on session switch so auto-detection takes effect
+  appState.on('session-changed', (data) => {
+    // C2R-03: a manual worktree choice is a user decision, and only an actual
+    // activation invalidates it. Auto-title and CLI-id adoption fan out as
+    // 'metadata' and used to wipe the override on every one of them, snapping
+    // the panel back to the auto-detected worktree. Payload-less events keep
+    // the defensive full path.
+    const payload = data as { kind?: string } | null | undefined;
     const project = appState.activeProject;
-    if (project) {
+    if (project && (!payload?.kind || payload.kind === 'activate')) {
       manualOverride.delete(project.id);
     }
     // PA-10: every tab click / adoption used to fan out into 2–4 IPCs + git
     // spawns. Coalesce a burst into one trailing poll, and drop it when the
     // (project, worktree, session) triple is what the last fetch already read.
+    // C2R-06: the worktree detection rides the same trailing edge, so a burst
+    // of clicks detects once, for the FINAL active session.
     if (sessionPollTimer) clearTimeout(sessionPollTimer);
     sessionPollTimer = setTimeout(() => {
       sessionPollTimer = null;
-      const key = sessionPollKey();
-      if (key && key === lastFetchKey) return;
-      poll();
+      void (async () => {
+        const activeSession = appState.activeSession;
+        if (activeSession && activeSession.type !== 'diff-viewer' && activeSession.type !== 'file-reader' && activeSession.type !== 'mcp-inspector') {
+          await detectSessionWorktree(activeSession.id);
+        }
+        // The detection can move the active worktree, so the poll key is only
+        // trustworthy once it has settled.
+        const key = sessionPollKey();
+        if (key && key === lastFetchKey) return;
+        poll();
+      })();
     }, SESSION_POLL_DEBOUNCE_MS);
   });
   // Poll when a session transitions from working → waiting/completed

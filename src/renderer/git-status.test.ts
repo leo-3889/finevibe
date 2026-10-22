@@ -55,7 +55,16 @@ vi.mock('./session-activity.js', () => ({
 }));
 
 import { appState, _resetForTesting as resetState } from './state';
-import { startPolling, stopPolling, _resetForTesting as resetGit } from './git-status';
+import {
+  startPolling,
+  stopPolling,
+  setActiveWorktree,
+  getActiveGitPath,
+  getGitStatus,
+  onChange,
+  refreshGitStatus,
+  _resetForTesting as resetGit,
+} from './git-status';
 
 const layout = { mode: 'tabs' as const, splitPanes: [], splitDirection: 'horizontal' as const };
 
@@ -240,5 +249,124 @@ describe('git-status session-changed debounce + key gate (PA-10)', () => {
     // click always differed from lastFetchKey and re-spawned git.
     await new Promise((r) => setTimeout(r, 420));
     expect(mockGetStatus).not.toHaveBeenCalled();
+  });
+});
+
+// C2R-03 / C2R-05 / C2R-06: the session-changed fan-out carries a kind
+// (state.ts SessionChangedPayload); the git panel must react to an actual
+// activation, not to every title/CLI-id adoption, must drop every cache key
+// of a removed project (plain + composite), and must detect the worktree once
+// per burst for the FINAL session.
+describe('git-status session-changed payload gating (C2R-03)', () => {
+  function loadTwoSessions() {
+    mockLoad.mockResolvedValue(persisted(
+      [{
+        id: 'p1', name: 'p1', path: '/proj', activeSessionId: 's1',
+        sessions: [
+          { id: 's1', name: 'S1', providerId: 'claude', cliSessionId: null },
+          { id: 's2', name: 'S2', providerId: 'claude', cliSessionId: null },
+        ],
+        layout,
+      }],
+      'p1',
+    ));
+  }
+
+  it('keeps a manual worktree override across a metadata adoption and drops it on activation', async () => {
+    loadTwoSessions();
+    startPolling();
+    await appState.load();
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'));
+
+    setActiveWorktree('p1', '/wt-b');
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/wt-b'));
+    expect(getActiveGitPath('p1')).toBe('/wt-b');
+
+    // CLI-id adoption: kind 'metadata'. The override is a user choice, so an
+    // auto-title / cli-id adoption must NOT snap the panel back to the
+    // auto-detected worktree (pre-fix it deleted on every fan-out).
+    appState.updateSessionCliId('p1', 's1', 'cli-1');
+    await new Promise((r) => setTimeout(r, 420));
+    expect(getActiveGitPath('p1')).toBe('/wt-b');
+
+    // A real activation is a session switch: auto-detection takes over again.
+    appState.setActiveSession('p1', 's2');
+    await new Promise((r) => setTimeout(r, 420));
+    expect(getActiveGitPath('p1')).toBe('/proj');
+  });
+});
+
+describe('git-status project-removed cache prune (C2R-05)', () => {
+  const projectP1 = () => ({
+    id: 'p1', name: 'p1', path: '/proj', activeSessionId: 's1',
+    sessions: [{ id: 's1', name: 'S1', providerId: 'claude', cliSessionId: null }],
+    layout,
+  });
+
+  it('drops the composite worktree cache keys, not just the plain one', async () => {
+    // Two worktrees so the manual override survives refreshWorktrees' cleanup
+    // and the poll really runs under the composite `p1:/wt-b` key.
+    mockGetWorktrees.mockResolvedValue([
+      { path: '/proj', branch: 'main', isMain: true },
+      { path: '/wt-b', branch: 'feature', isMain: false },
+    ]);
+    mockLoad.mockResolvedValue(persisted([projectP1()], 'p1'));
+    startPolling();
+    await appState.load();
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'));
+
+    // Polls cache under BOTH keys: the plain projectId and `${projectId}:${gitPath}`.
+    setActiveWorktree('p1', '/wt-b');
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/wt-b'));
+
+    const seen = vi.fn();
+    onChange(seen);
+
+    appState.removeProject('p1');
+    expect(getGitStatus('p1')).toBeNull();
+
+    // Re-open the SAME project id (persisted ids survive a reload) on the same
+    // worktree with an identical status. The listeners must fire again: that
+    // only happens when no cache entry survived the removal. Pre-fix the
+    // composite `p1:/wt-b` entry leaked, its JSON compared equal, and the
+    // project came back with a silently dead git badge.
+    mockLoad.mockResolvedValue(persisted([projectP1()], 'p1'));
+    await appState.load();
+
+    await vi.waitFor(() => expect(seen).toHaveBeenCalledWith('p1', cleanStatus));
+    expect(mockGetStatus).toHaveBeenLastCalledWith('/wt-b');
+  });
+});
+
+describe('git-status worktree detection cost (C2R-06)', () => {
+  const getCwd = vi.fn(async () => '/wt-b');
+
+  beforeEach(() => {
+    (window.finevibe as unknown as { pty: { getCwd: typeof getCwd } }).pty = { getCwd };
+    getCwd.mockClear();
+  });
+
+  it('does not pay a getCwd IPC when the project has no extra worktrees', async () => {
+    mockLoad.mockResolvedValue(persisted(
+      [{
+        id: 'p1', name: 'p1', path: '/proj', activeSessionId: 's1',
+        sessions: [{ id: 's1', name: 'S1', providerId: 'claude', cliSessionId: null }],
+        layout,
+      }],
+      'p1',
+    ));
+    mockGetWorktrees.mockResolvedValue([{ path: '/proj', branch: 'main', isMain: true }]);
+    startPolling();
+    await appState.load();
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'));
+    getCwd.mockClear();
+
+    // Poll pass (detectSessionWorktree) + a session-changed burst: with a
+    // single worktree the cached list is the local bail, so no IPC at all.
+    appState.setActiveSession('p1', 's1');
+    await new Promise((r) => setTimeout(r, 420));
+    refreshGitStatus();
+    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledTimes(2));
+    expect(getCwd).not.toHaveBeenCalled();
   });
 });

@@ -743,3 +743,99 @@ describe('render-state teardown', () => {
     expect(appendTimelineEvents(container)).toBe(false);
   });
 });
+
+// CI-03: the cap-shift guard compared the window head's TIMESTAMP. Two events
+// in the same millisecond at the window head made a rotated array look
+// unchanged, so the append reported success onto rows whose indices had all
+// moved — a frozen timeline on a streaming session.
+describe('cap rotation guard (CI-03)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('bails when the cap rotates the array under a same-millisecond head', () => {
+    const events = [
+      ev('tool_use', 1000, { tool_name: 'A' }),
+      ev('tool_use', 1000, { tool_name: 'B' }),
+    ];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+
+    events.shift(); // cap rotation: same length, same head timestamp
+    events.push(ev('tool_use', 1000, { tool_name: 'C' }));
+
+    expect(appendTimelineEvents(container)).toBe(false);
+  });
+
+  // CI-15: the rotation invalidates every positional expandable-row key; the
+  // rows those keys described are gone from the window, so the stale keys
+  // would expand whatever event slid into their old index.
+  it('drops the positional expanded-row keys on a rotation, keeping agent-group keys', () => {
+    const events = [
+      ev('tool_use', 1000, { tool_name: 'A' }),
+      ev('tool_use', 1000, { tool_name: 'B' }),
+    ];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+
+    inspectorState.expandedRows.add('0:1000:tool_use:A');
+    inspectorState.expandedRows.add('agent-group:A');
+
+    events.shift();
+    events.push(ev('tool_use', 1000, { tool_name: 'C' }));
+    expect(appendTimelineEvents(container)).toBe(false);
+
+    expect(inspectorState.expandedRows.has('0:1000:tool_use:A')).toBe(false);
+    expect(inspectorState.expandedRows.has('agent-group:A')).toBe(true);
+  });
+});
+
+// C2R-02: the expandable-row key carried the ARRAY INDEX. After a rotation the
+// same key describes a different event, so an expansion silently jumped to the
+// neighbour that slid into the freed slot. The key now carries the ingestion
+// seq stamped by addEvents, which survives the in-place shift.
+describe('expandable row keys across a rotation (C2R-02)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('keeps an expansion on its own event after the head rotates away', () => {
+    const a = ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'ls' }, seq: 1 });
+    const b = ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'pwd' }, seq: 2 });
+    vi.mocked(getEvents).mockReturnValue([a, b]);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+
+    const rows = (container as unknown as FakeElement).querySelectorAll('.inspector-timeline-row');
+    (rows[0] as FakeElement).listeners.get('click')?.[0]?.();
+    expect(rows[0].querySelector('.inspector-tool-detail')).not.toBeNull();
+    expect(inspectorState.expandedRows.has('1:1000:pre_tool_use:Bash')).toBe(true);
+
+    // `a` rotates out; `b` takes index 0 and a fresh event index 1.
+    vi.mocked(getEvents).mockReturnValue([
+      b,
+      ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'id' }, seq: 3 }),
+    ]);
+    const rerendered = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(rerendered);
+    const rows2 = (rerendered as unknown as FakeElement).querySelectorAll('.inspector-timeline-row');
+
+    // With the index-form key, index 0 (`b`) inherited `a`'s expansion.
+    expect(rows2[0].querySelector('.inspector-tool-detail')).toBeNull();
+    expect(rows2[1].querySelector('.inspector-tool-detail')).toBeNull();
+  });
+});

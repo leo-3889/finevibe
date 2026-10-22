@@ -1,4 +1,5 @@
 import type { InspectorEvent, ToolUsageStats, ContextDataPoint } from '../shared/types';
+import { inspectorState } from './components/session-inspector-state-ui.js';
 
 type ChangeCallback = (sessionId: string) => void;
 
@@ -12,12 +13,45 @@ const listeners: ChangeCallback[] = [];
 // Cached cost deltas, invalidated when events change
 const costDeltaCache = new Map<string, { length: number; deltas: { index: number; delta: number }[] }>();
 
+// C2R-02: monotonic ingestion id. addEvents() rotates the retention array in
+// place at MAX_EVENTS, so an event's array index is not a stable identity —
+// the timeline's rotation guard and its expandable-row keys need one that
+// survives the shift.
+let seqCounter = 0;
+
+/**
+ * C2R-04: exact sizing used to run `JSON.stringify(event).length` on every
+ * ingested event for the app's whole lifetime, allocating a full
+ * serialization the closed inspector never shows. The caps are byte BOUNDS,
+ * so while the inspector is closed the size comes from a stringify-free
+ * length walk over the same fields (conservative: every string pays quotes
+ * plus a key name, every object pays braces); the open inspector keeps the
+ * exact serialization its displayed numbers are derived from.
+ */
+function estimateEventSize(value: unknown, depth = 0): number {
+  if (typeof value === 'string') return value.length + 16;
+  if (value === null || value === undefined) return 8;
+  if (typeof value === 'number' || typeof value === 'boolean') return 20;
+  if (depth >= 3) return 16;
+  let size = 8;
+  if (Array.isArray(value)) {
+    for (const item of value) size += estimateEventSize(item, depth + 1);
+  } else {
+    for (const [key, item] of Object.entries(value)) size += key.length + estimateEventSize(item, depth + 1);
+  }
+  return size;
+}
+
 export function addEvents(sessionId: string, events: InspectorEvent[]): void {
   const existing = sessionEvents.get(sessionId) ?? [];
   const sizes = eventSizes.get(sessionId) ?? [];
   let total = sizes.reduce((sum, size) => sum + size, 0);
+  // C2R-04: exact byte count only while the inspector is showing the events.
+  const exact = inspectorState.inspectorPanel !== null && inspectorState.inspectedSessionId !== null;
   for (const event of events) {
-    const size = JSON.stringify(event).length;
+    // C2R-02: stamp the rotation-proof identity before the array stores it.
+    event.seq ??= ++seqCounter;
+    const size = exact ? JSON.stringify(event).length : estimateEventSize(event);
     if (size > MAX_EVENT_CHARS) continue;
     while (existing.length && (existing.length >= MAX_EVENTS || total + size > MAX_SESSION_CHARS)) {
       existing.shift(); total -= sizes.shift()!;
@@ -129,4 +163,5 @@ export function _resetForTesting(): void {
   eventSizes.clear();
   costDeltaCache.clear();
   listeners.length = 0;
+  seqCounter = 0;
 }

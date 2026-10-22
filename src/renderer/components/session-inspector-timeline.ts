@@ -108,8 +108,14 @@ interface TimelineRenderState {
   /** events.length at the last render/append. */
   renderedCount: number;
   startIdx: number;
-  /** events[startIdx].timestamp — detects the 2000-event cap's in-place shift. */
-  firstWindowTs: number;
+  /**
+   * CI-03: the window head's object identity — detects the 2000-event cap's
+   * in-place shift. A timestamp is not an identity: the cap rotates on any
+   * millisecond, so a same-ms boundary event passed the old equality check
+   * and the append silently reported success onto rows whose indices had all
+   * moved — a frozen timeline.
+   */
+  firstWindowEvent: InspectorEvent | undefined;
   banner: HTMLElement | null;
   top: TopEntry[];
   groups: Map<string, AgentGroupRender>;
@@ -393,20 +399,24 @@ function buildTimelineRenderers(ctx: TimelineCtx) {
     row.appendChild(durationEl);
     row.appendChild(costEl);
 
-    // Expandable tool input. The key carries the event index (UI3-6): two
-    // parallel tool calls share a millisecond timestamp, type and tool_name,
-    // and a colliding key in the shared expandedRows set expands/collapses
-    // the twins together. Indices stay stable across re-renders (PA-14: the
-    // timeline grows append-only).
+    // Expandable tool input. The key carries the ingestion seq (UI3-6 keeps
+    // the timestamp + type in it so parallel tool calls in the same
+    // millisecond stay distinct; C2R-02 replaces the array index with `seq`):
+    // the 2000-event cap rotates the array in place, so an index-based key
+    // silently re-points at a different event after every rotation — the
+    // detail jumps rows, and the expansion is lost. `seq` survives the shift;
+    // the index is only the fallback for events that never passed through
+    // addEvents (the seq is stamped at ingestion).
+    const rowKey = `${ev.seq ?? i}:${ev.timestamp}:${ev.type}`;
     if (ev.tool_input) {
-      makeExpandable(row, `${i}:${ev.timestamp}:${ev.type}:${ev.tool_name || ''}`, '.inspector-tool-detail',
+      makeExpandable(row, `${rowKey}:${ev.tool_name || ''}`, '.inspector-tool-detail',
         () => createToolDetailEl(ev.tool_input!, mcpTool?.rawToolName));
     }
 
     // Expandable agent detail (for unmatched agent events only)
     if (isAgentEvent(ev)) {
       const duration = ev.type === 'subagent_stop' ? findAgentDuration(events, i) : null;
-      makeExpandable(row, `${i}:${ev.timestamp}:${ev.type}:${ev.agent_id || ''}`, '.inspector-agent-detail',
+      makeExpandable(row, `${rowKey}:${ev.agent_id || ''}`, '.inspector-agent-detail',
         () => createAgentDetailEl(ev, duration));
     }
 
@@ -460,7 +470,7 @@ export function renderTimeline(container: HTMLElement): void {
     events,
     renderedCount: events.length,
     startIdx,
-    firstWindowTs: events[startIdx].timestamp,
+    firstWindowEvent: events[startIdx],
     banner,
     top: [],
     groups: new Map(),
@@ -513,8 +523,19 @@ export function appendTimelineEvents(container: HTMLElement): boolean {
   const events = getEvents(sessionId);
   if (events !== st.events) return false; // cleared/recreated (e.g. /clear)
   if (events.length < st.renderedCount) return false;
-  // The 2000-event cap shifts the array in place: every index moved, no append can express it.
-  if (events[st.startIdx]?.timestamp !== st.firstWindowTs) return false;
+  // CI-03: the 2000-event cap shifts the array in place: every index moved,
+  // no append can express it. Identity, not timestamp — same-ms boundary
+  // events used to pass the timestamp check, so a rotated array "appended"
+  // successfully onto rows whose indices had all moved.
+  if (events[st.startIdx] !== st.firstWindowEvent) {
+    // CI-15: rotation invalidates the positional expandable-row keys — they
+    // described rows by position, and the events that held those positions
+    // are gone from the window. Agent-group keys are id-keyed and survive.
+    for (const key of inspectorState.expandedRows) {
+      if (!key.startsWith('agent-group:')) inspectorState.expandedRows.delete(key);
+    }
+    return false;
+  }
 
   const startIdx = Math.max(0, events.length - 500);
   if (startIdx > st.startIdx && !trimWindow(st, startIdx)) return false;
@@ -654,13 +675,13 @@ function trimWindow(st: TimelineRenderState, startIdx: number): boolean {
     }
   }
   st.startIdx = startIdx;
-  // S4-01: keep firstWindowTs in sync with the moved window head — the append
-  // bail check compares events[startIdx].timestamp against it, so a stale
+  // S4-01: keep the window-head anchor in sync with the moved window — the
+  // append bail check compares events[startIdx] against it, so a stale
   // render-time value made every post-trim append look like a cap shift: the
-  // exact 500-row rebuild per 200 ms tick PA-14 was raised for. Degenerate
-  // startIdx past the array keeps a value the bail check rejects (undefined
-  // !== ts) — the safe full rebuild.
-  st.firstWindowTs = st.events[startIdx]?.timestamp ?? st.events[st.events.length - 1]?.timestamp ?? st.firstWindowTs;
+  // exact 500-row rebuild per 200 ms tick PA-14 was raised for. A degenerate
+  // startIdx past the array keeps the previous object, which the identity
+  // check rejects (undefined !== object) — the safe full rebuild.
+  st.firstWindowEvent = st.events[startIdx] ?? st.firstWindowEvent;
   if (st.banner) st.banner.textContent = `${startIdx} earlier events not shown`;
   return true;
 }

@@ -256,7 +256,7 @@ async function loadEntries(folderPath: string): Promise<DirEntry[]> {
 
 function makeRow(depth: number, entry: DirEntry, projectId: string): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'file-tree-row' + (entry.isDirectory ? ' is-dir' : ' is-file');
+  row.className = `file-tree-row${entry.isDirectory ? ' is-dir' : ' is-file'}`;
   row.style.paddingLeft = `${20 + depth * 14}px`;
   row.title = entry.path;
 
@@ -320,7 +320,14 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
         unwatchSubtree(projectId, entry.path);
         // A load still in flight for the folder being collapsed must not paint
         // into the emptied subcontainer: ghost rows under a closed chevron.
+        // CI-17: the render generation is per-container, and every expanded
+        // descendant has its OWN pending pass — invalidating only this
+        // container let a deep descendant's in-flight listing paint into its
+        // now-detached node (ghost rows that survived the collapse).
         invalidateRender(subContainer);
+        for (const el of subContainer.querySelectorAll('.file-tree-children')) {
+          invalidateRender(el as HTMLElement);
+        }
         subContainer.innerHTML = '';
       }
     });
@@ -549,7 +556,13 @@ function fileTypeLabel(name: string): string {
 }
 
 /** Name of the OS file manager, used in the reveal menu labels. Exported for tests. */
-export const FILE_MANAGER = isMac ? 'Finder' : isWin ? 'File Explorer' : 'File Manager';
+function osFileManager(): string {
+  if (isMac) return 'Finder';
+  if (isWin) return 'File Explorer';
+  return 'File Manager';
+}
+
+export const FILE_MANAGER = osFileManager();
 
 /**
  * A folder opens in the file manager showing its own contents; a file is

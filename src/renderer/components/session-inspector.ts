@@ -9,6 +9,14 @@ import { renderTimeline, appendTimelineEvents, disposeTimelineRenderState } from
 import { renderCosts, renderTools, renderContext } from './session-inspector-views.js';
 import { canInspectSession, resetUIState } from './session-inspector-utils.js';
 
+// CI-16: the full-rebuild floor's retry timer, module-scoped so
+// closeInspector() can reach it. A retry armed while the panel was open used
+// to survive the close and fire renderActiveTab() against the torn-down
+// panel, keeping the panel, its rows and the session's event array alive for
+// its remaining window. Cleared in closeInspector, like
+// inspectorState.updateTimer.
+let fullRenderRetry: ReturnType<typeof setTimeout> | null = null;
+
 export function isInspectorOpen(): boolean {
   return inspectorState.inspectorPanel !== null && inspectorState.inspectedSessionId !== null;
 }
@@ -48,6 +56,11 @@ export function closeInspector(): void {
     clearTimeout(inspectorState.updateTimer);
     inspectorState.updateTimer = null;
   }
+  // CI-16: a pending full-rebuild retry must not outlive the panel it renders.
+  if (fullRenderRetry) {
+    clearTimeout(fullRenderRetry);
+    fullRenderRetry = null;
+  }
 
   const container = document.getElementById('terminal-container')!;
   container.classList.remove('inspector-open');
@@ -77,7 +90,12 @@ export function toggleInspector(): void {
 
 export function initSessionInspector(): void {
   // Auto-follow active session
-  appState.on('session-changed', () => {
+  appState.on('session-changed', (data) => {
+    // S3-06 convention: a batch close (Close All) emits one deferred event
+    // per session plus one payload-less trailing kick. Full-panel consumers
+    // follow the kick only — with the inspector open on a closing tab, the
+    // per-session events used to mean one full renderActiveTab per tab.
+    if ((data as { deferRender?: boolean } | null | undefined)?.deferRender) return;
     const project = appState.activeProject;
     const activeSession = project?.activeSessionId
       ? project.sessions.find(s => s.id === project.activeSessionId)
@@ -149,9 +167,7 @@ export function initSessionInspector(): void {
   // the inspector is open, i.e. exactly on long-running agent sessions.
   // Append stays 200 ms; the full-rebuild fallback is floored at 2 s so
   // the storm is bounded, and the pending timer keeps the view converging.
-  type TimerHandle = ReturnType<typeof setTimeout>;
   let lastFullRenderAt = 0;
-  let fullRenderRetry: TimerHandle | null = null;
   onInspectorChange((sessionId) => {
     if (sessionId !== inspectorState.inspectedSessionId) return;
     if (inspectorState.updateTimer) clearTimeout(inspectorState.updateTimer);
@@ -197,7 +213,7 @@ function createPanel(): HTMLElement {
   // Resize handle
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'inspector-resize-handle';
-  resizeHandle.addEventListener('mousedown', startResize);
+  resizeHandle.addEventListener('pointerdown', startResize);
   panel.appendChild(resizeHandle);
 
   // Header
@@ -293,27 +309,45 @@ function renderActiveTab(): void {
   }
 }
 
-function startResize(e: MouseEvent): void {
+// C2R-01: the same failure mode S3-01 fixed on the terminal panel. The old
+// document mousemove/mouseup pair was removed only inside onMouseUp, and
+// releasing the button outside the window — the normal way to overshoot a
+// panel drag — never delivers mouseup to the renderer: `resizing` stayed
+// true, the pair leaked for the renderer's life (every mouse move app-wide
+// resized the inspector), and every later mousedown stacked another pair.
+// Pointer events with capture on the handle ALWAYS deliver
+// pointerup/pointercancel, wherever the button is released.
+function startResize(e: PointerEvent): void {
   e.preventDefault();
   inspectorState.resizing = true;
+  const handle = e.currentTarget as HTMLElement;
   const startX = e.clientX;
   const container = document.getElementById('terminal-container')!;
   const startWidth = inspectorState.inspectorPanel?.offsetWidth ?? 350;
+  handle.setPointerCapture(e.pointerId);
 
-  const onMouseMove = (e: MouseEvent) => {
+  const onPointerMove = (ev: PointerEvent) => {
     if (!inspectorState.resizing) return;
-    const diff = startX - e.clientX;
+    const diff = startX - ev.clientX;
     const newWidth = Math.min(Math.max(startWidth + diff, 250), 800);
     container.style.setProperty('--inspector-width', `${newWidth}px`);
   };
 
-  const onMouseUp = () => {
+  const endDrag = (ev: PointerEvent) => {
+    if (!inspectorState.resizing) return;
     inspectorState.resizing = false;
-    document.removeEventListener('mousemove', onMouseMove);
-    document.removeEventListener('mouseup', onMouseUp);
+    try {
+      handle.releasePointerCapture(ev.pointerId);
+    } catch {
+      // Capture was already gone (pointercancel after window loss).
+    }
+    handle.removeEventListener('pointermove', onPointerMove);
+    handle.removeEventListener('pointerup', endDrag);
+    handle.removeEventListener('pointercancel', endDrag);
     requestAnimationFrame(() => fitAllVisible());
   };
 
-  document.addEventListener('mousemove', onMouseMove);
-  document.addEventListener('mouseup', onMouseUp);
+  handle.addEventListener('pointermove', onPointerMove);
+  handle.addEventListener('pointerup', endDrag);
+  handle.addEventListener('pointercancel', endDrag);
 }
