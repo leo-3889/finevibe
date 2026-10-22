@@ -200,10 +200,16 @@ jobs:
         # the single `publish` job below uploads every artifact.
         # electron-builder still writes latest-mac.yml into dist/, so the
         # auto-updater feed survives the publish job's aggregate upload.
+        # artifacts_only: no Apple secrets exist for gate builds, so build
+        # UNSIGNED (CSC_IDENTITY_AUTO_DISCOVERY=false); release mode keeps
+        # default discovery and fails loudly when the identity is missing.
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.artifacts_only && 'false' || 'true' }}
         run: npm run build && npm run icons
           && npx electron-builder --publish never --arm64 --x64
 
       - name: Verify code signatures
+        if: inputs.artifacts_only != true
         # P1-9: strict deep verification of both built bundles; a broken or
         # tampered signature fails the release here, not on a user's Mac.
         run: |
