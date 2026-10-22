@@ -59,6 +59,8 @@ export interface FineVibeApi {
   store: {
     load(): Promise<unknown>;
     save(state: unknown): Promise<void>;
+    /** Quit-path synchronous flush (sendSync; true only when main wrote the state). */
+    saveSync(state: unknown): boolean;
     startupPrefs(): StartupPrefs;
   };
   profiles: {
