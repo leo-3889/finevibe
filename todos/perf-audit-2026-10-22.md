@@ -190,3 +190,47 @@ Scouts: C3RegressionSweep (cycle-2 commits 2439f85..dc7c645), C3MainPeriphery (p
 - totals: 65 findings this cycle (4 scouts + 5 leftovers) — 61 FIXED, 4 VERIFIED-ABSENT (phantom claims caught by verify-before-fix discipline)
 - process: pi-lens auto-gates replayed stale pre-edit captures throughout the cycle; triaged by fresh LSP probes per slice instead of chasing the gate; sidebar xss-innerhtml history dispositions (esc()'d static templates) committed with slice B
 - open by design: UI3-3 ring/epoch deep fix (unchanged); S1-07/S1-08 accepted (unchanged)
+
+## Cycle 4 (2026-10-22 ~13:40 UTC, 3 scouts @ HEAD c62d821)
+
+Scouts: C4Github (github module main+renderer), C4Team (team/swarm surface), C4Shell (app shell, updater, launcher, notifications). 28 findings: 5 P2, 23 P3. Ids: github keeps C4G-*, team renumbered C4TM-*/C4T-01, shell renumbered C4S-* (all three scouts emitted C4G).
+
+| id | sev | file | mechanism | verdict | fix |
+| --- | --- | --- | --- | --- | --- |
+| C4G-01 | P2 | github-unread.ts:23 | unread ids never pruned when items vanish (merged/closed upstream, state=open poll) → project-tab dot lit forever | FIXED | slice G: prune on exhaustive fetch |
+| C4G-02 | P2 | github-widgets.ts:269 | every widget self-registers visibilitychange → window-show fans out (tabs×2) gh-CLI spawns, unthrottled | FIXED | slice G: 30 s staleness gate |
+| C4G-03 | P3 | github-widgets.ts:42 | PRs-widget 'Mark all read' clears shared project set incl. issues, stamps unseen items seen | FIXED | slice G: honest relabel + locales |
+| C4G-04 | P3 | github-cli.ts:98 + widget poll | opaque gh errors, fixed 60 s cadence on rate-limit/auth (secondary search limit 30/min) | FIXED | slice G: classify + exp backoff cap 30 min |
+| C4G-05 | P3 | github-widgets.ts:58 | detectAttempted/resolvedRepo never invalidated on remote add/repoint (tab lifetime) | FIXED | slice G: clear on git:changed |
+| C4G-07 | P3 | discussions-badge.ts:51 | no inFlight on hourly poll; hide/show stacking fetches | FIXED | slice G: inFlight flag |
+| C4G-08 | P3 | team/github-fetcher.ts:16 | fetches without timeout; hung loadInFlight promise = picker 'Loading…' forever | FIXED | slice G: AbortSignal.timeout(15 s) |
+| C4TM-01 | P2 | team/predefined-picker.ts:51/395 | hand-rolled overlays never take focus → keystrokes + Enter fall through to the live PTY (CI-18 class) | FIXED | slice T: capture/restore focus + search autofocus |
+| C4TM-02 | P3 | team/chat-control.ts:43 | un-latched Chat button → double-click spawns two member sessions | FIXED | slice T: SR2-b latch |
+| C4TM-03 | P3 | state.ts:780 addTeamMember | upstream frontmatter id collision unguarded → delete one persona removes both | FIXED | slice T: unique-suffix on add |
+| C4TM-04 | P3 | predefined-picker.ts:196 | success path writes post-dispose (CI-11 residue) | FIXED | slice T: disposed guard |
+| C4TM-05 | P3 | tab-group-state.ts:199 | normalizeTabGroups never trims to TAB_GROUP_MAX_MEMBERS → oversized persisted group blocks all merges silently | FIXED | slice T: trim in normalize |
+| C4TM-06 | P3 | member-modal.ts:82 → spawn argv | systemPrompt uncapped → E2BIG spawn death for every provider launch of that persona | FIXED | slice T: 64 KiB cap, modal hard error |
+| C4TM-07 | P3 | state.ts:830 setTeamPredefinedCache | full suggestion corpus (prompt bodies) persisted into state.json forever, re-stringified per persist | FIXED | slice T: 24 h eviction + 200 cap |
+| C4TM-08 | P3 | state.ts:834 | dead notifyTeamChanged public API | FIXED | slice T: delete |
+| C4T-01 | P3 | team-state.ts:141 | session ordinal counts live sessions → reused numbers, duplicate tab labels | FIXED | slice T: max-suffix +1 |
+| C4S-01 | P3 | appearance-section.ts:91 | save() up to 3 setPreference emits (C3RP-11 class, section missed) | FIXED | slice S: setPreferences batch |
+| C4S-02 | P2 | menu.ts:95 | debug role:'toggleDevTools' claims Ctrl+Shift+I → session-inspector shortcut dead on win/linux | FIXED | slice S: accelerator:'' |
+| C4S-03 | P3 | menu.ts:98 | Ctrl+Alt+R reload accelerator steals AltGr+R on non-US layouts | FIXED | slice S: Ctrl+Shift+F5 |
+| C4S-04 | P3 | about-section.ts:38 | per-click updater listener pairs survive modal close → stale callbacks + listener growth | FIXED | slice S: destroy-time unsub |
+| C4S-05 | P3 | update-banner.ts:54 | download failure while 'Downloading…' → banner pinned until next 4 h check | FIXED | slice S: error state + locale key |
+| C4S-06 | P3 | auto-updater.ts:79 | 4 h interval + 10 s timeout never cleared; checks fire mid-teardown (quit-confirm hang, macOS) | FIXED | slice S: disposer in before-quit |
+| C4S-07 | P2 | main.ts:399 | close-confirm has no watchdog: hung renderer → quit preventDefault'ed forever; kill orphans PTYs, skips flushState | FIXED | slice S: 15 s watchdog → direct teardown path |
+| C4S-08 | P3 | main.ts:61 | no render-process-gone handler: crashed renderer = blank window, no recovery outside debug mode | FIXED | slice S: reload on non-clean gone |
+| C4S-09 | P3 | notification-desktop.ts:72 (+sound:48) | status-edge notifications unsuppressed: flapping CLI = banner+chime per edge, unbounded Notification Center | FIXED | slice S: 30 s per-session spacing |
+| C4S-10 | P3 | bin/finevibe.js:306 + about-section.ts:6 | hardcoded vibeyard URLs (renamed repo; launcher message advertises the P1-7-banned default feed) | FIXED | slice S: derive from RELEASES_URL / finevibe URLs |
+| C4S-11 | P3 | bin/finevibe.js:69 | https.get without socket timeout: stalled connection hangs launcher forever, retries unreachable | FIXED | slice S: setTimeout(30 s, destroy) |
+| C4S-12 | P3 | store.ts:408 | STATE_DIR created 0755 while payload files are 0600 (P2-101) | FIXED | slice S: mode 0o700 |
+
+### Cycle 4 gate
+
+- vitest: full suite green at integration - 213 files / 3280 passed, 4 skipped (was 211/3241; +2 suites, +39 tests)
+- tsc (main + preload + renderer): 0 errors; git diff --check clean
+- commits: 8e87ae9 (github) -> 65590ba (team) -> 64e3be7 (shell/updater/launcher) + this ledger commit
+- totals: 28 findings (5 P2, 23 P3), all FIXED; no phantom claims this cycle
+- open by design: UI3-3 ring/epoch deep fix (unchanged); S1-07/S1-08 accepted (unchanged)
+- pi-lens auto-gates: recurring snapshots replayed stale pre-cycle captures all cycle (e.g. file-viewer L445 on a 255-line file, pre-C3L-05 lines); triaged once at HEAD by grep evidence (static skeletons / esc()d templates), single disposition recorded; not chased per-gate
