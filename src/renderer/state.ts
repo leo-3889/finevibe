@@ -3,6 +3,7 @@ import type { SessionRecord, ProjectRecord, Preferences, PersistedState, Archive
 import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
+import { basename } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
 import {
   archiveSession as archiveSessionPure,
@@ -389,6 +390,23 @@ class AppState {
       this.persistTimer = null;
     }
     this.writeStateNow();
+  }
+
+  /**
+   * S1-03: the beforeunload flush. store:save's async write can lose the
+   * race with process exit; saveSync blocks this renderer until main has
+   * written state.json synchronously (store.saveStateSync), so the window
+   * can only tear down after the write is on disk.
+   */
+  flushPersistSync(): void {
+    this.persistFrameToken++;
+    this.persistFrameScheduled = false;
+    if (this.persistTimer !== null) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.lastPersistAt = Date.now();
+    window.finevibe.store.saveSync(serializeForSave(this.state));
   }
 
   /**

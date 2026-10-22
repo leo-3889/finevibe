@@ -271,6 +271,9 @@ const api: FineVibeApi = {
   store: {
     load: () => ipcRenderer.invoke('store:load'),
     save: (state) => ipcRenderer.invoke('store:save', state),
+    // S1-03: beforeunload flush must reach disk before the window tears
+    // down — sendSync blocks the renderer until the write is on disk.
+    saveSync: (state) => ipcRenderer.sendSync('store:save-sync', state) === true,
     // Sync round-trip: the renderer needs theme/zoom before its first paint,
     // which is earlier than any invoke promise can resolve.
     startupPrefs: () => ipcRenderer.sendSync('store:startup-prefs'),

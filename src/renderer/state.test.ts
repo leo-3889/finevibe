@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockLoad = vi.fn();
 const mockSave = vi.fn();
+const mockSaveSync = vi.fn(() => true);
 
 vi.stubGlobal('window', {
   finevibe: {
-    store: { load: mockLoad, save: mockSave },
+    store: { load: mockLoad, save: mockSave, saveSync: mockSaveSync },
     session: {
       transcriptExists: vi.fn(async () => true),
     },
@@ -1237,5 +1238,34 @@ describe('githubLastSeen cap (UI2-3)', () => {
     mockSave.mockClear();
     appState.setGithubItemsSeenBulk(project.id, { 'bulk-249': '2026-02-01T00:00:09Z' });
     expect(mockSave).not.toHaveBeenCalled();
+  });
+});
+
+describe('flushPersist synchronous flush (S1-03)', () => {
+  it('writes over the sync channel, not the async save, and drops armed timers', () => {
+    const project = addProject();
+    appState.addSession(project.id, 'S1');
+    mockSave.mockClear();
+    mockSaveSync.mockClear();
+
+    appState.flushPersistSync();
+
+    expect(mockSaveSync).toHaveBeenCalledTimes(1);
+    expect(mockSave).not.toHaveBeenCalled();
+    const written = mockSaveSync.mock.calls[0][0] as { projects: { name: string }[] };
+    expect(written.projects[0].name).toBe('Test');
+  });
+
+  it('a mutation after the flush is not swallowed by the dropped trailing save', () => {
+    const project = addProject();
+    appState.addSession(project.id, 'S1'); // arms the trailing window
+    appState.flushPersistSync();
+    mockSaveSync.mockClear();
+
+    appState.renameProject(project.id, 'Renamed');
+    appState.flushPersistSync();
+
+    expect(mockSaveSync).toHaveBeenCalledTimes(1);
+    expect((mockSaveSync.mock.calls[0][0] as { projects: { name: string }[] }).projects[0].name).toBe('Renamed');
   });
 });

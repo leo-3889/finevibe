@@ -329,7 +329,10 @@ async function main(): Promise<void> {
 // renderer-only unloads (reload): on the app.quit() path this listener runs
 // AFTER main's before-quit flushState(), and the quit-path guarantee is
 // main writing the last state payload it received — not this IPC.
-window.addEventListener('beforeunload', () => appState.flushPersist());
+// S1-03: the write must be ON DISK before this renderer dies — flushPersist
+// (async store:save) loses the race with process exit. flushPersistSync
+// blocks on a synchronous main-side write.
+window.addEventListener('beforeunload', () => appState.flushPersistSync());
 
   // Re-derive titles for sessions restored from a previous run (see
   // collectRestoredSelfTitlingSessions). Main mirrors each tab's title from

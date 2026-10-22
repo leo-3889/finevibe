@@ -53,6 +53,8 @@ export interface FinevibeApi {
   store: {
     load(): Promise<unknown>;
     save(state: unknown): Promise<void>;
+    /** S1-03: synchronous quit flush (blocks the renderer until the write lands). */
+    saveSync(state: unknown): boolean;
     startupPrefs(): StartupPrefs;
   };
   profiles: {
