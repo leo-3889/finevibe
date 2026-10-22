@@ -21,6 +21,7 @@ import { isMac, isWin } from './platform';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
 import { isHttpUrl } from '../shared/url';
+import { migrateLegacyUserData } from './userdata-migration';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -218,6 +219,35 @@ function startMainProcess(): void {
   // First: the identity must be stamped on the process before the first
   // window (taskbar button) exists. See claimWindowsIdentity above.
   claimWindowsIdentity();
+
+  // Release gate (AUDIT_STATUS "Rename on the CURRENT tree"): the
+  // vibeyard -> finevibe cutover (4fc533c) renamed BOTH user-data trees -
+  // the store tree (`~/.vibeyard` -> `~/.finevibe`, store.ts) and Electron
+  // userData (`%APPDATA%/Vibeyard|vibeyard` -> the finevibe dir). Without a
+  // migration an install updating across the cutover boots into empty dirs
+  // and loses projects, history, cookies and caches. Copy-only (the legacy
+  // trees are never deleted), destination wins on conflicts, stale
+  // `vibeyard-browser-iso-*` partitions are purged, not copied, per-file
+  // failures (a legacy instance holding a lock) are logged and retried at
+  // the next launch. Winner-only, ahead of anything that reads userData.
+  try {
+    const { home, appData } = migrateLegacyUserData({
+      homedir: app.getPath('home'),
+      appDataDir: app.getPath('appData'),
+      userDataDir: app.getPath('userData'),
+    });
+    const touched = home.copied + appData.copied + home.errors.length + appData.errors.length;
+    if (touched > 0) {
+      console.log(
+        `[userdata-migration] home ${home.copied} copied / ${home.skipped} kept` +
+          (home.errors.length ? ` / ${home.errors.length} FAILED` : '') +
+          `; userData ${appData.copied} copied / ${appData.skipped} kept / ${appData.purged} stale partitions purged` +
+          (appData.errors.length ? ` / ${appData.errors.length} FAILED` : ''),
+      );
+    }
+  } catch (error) {
+    console.error('[userdata-migration] failed; legacy data left untouched', error);
+  }
 
   // Winner-only: a relaunch while the app runs focuses the existing
   // window, so launching again behaves like "focus FineVibe".
