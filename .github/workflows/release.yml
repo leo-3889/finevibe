@@ -206,9 +206,9 @@ jobs:
         # and fails loudly when the identity is missing).
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.artifacts_only && 'false' || 'true' }}
+          DEBUG: ${{ inputs.artifacts_only && 'electron-builder' || '' }}
         run: npm run build && npm run icons
-          && npx electron-builder --publish never --arm64 --x64
-          ${{ inputs.artifacts_only && '-c.mac.notarize=false' || '' }}
+          && npx electron-builder --publish never --arm64 --x64 ${{ inputs.artifacts_only && '-c.mac.notarize=false' || '' }}
 
       - name: Verify code signatures
         if: inputs.artifacts_only != true
