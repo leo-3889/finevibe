@@ -41,6 +41,10 @@ export default defineConfig({
       include: [
         'src/main/**/*.ts',
         'src/preload/**/*.ts',
+        // P2-12: the renderer component tree is the highest-risk unmeasured
+        // surface (board/pane/modal state); widen the map even where tests
+        // are thin — the report is expected to be noisy.
+        'src/renderer/components/**',
       ],
       exclude: [
         'src/main/mcp-ipc-handlers.ts',
