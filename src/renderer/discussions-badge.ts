@@ -14,12 +14,16 @@ let newCount = 0;
 let latestTimestamp: string | null = null;
 const pollTimer: IntervalHandle = { id: null };
 const listeners: ChangeCallback[] = [];
+// C3RP-09: a feed fetch slower than the poll interval must not overlap itself.
+let inFlight = false;
 
 function notify(): void {
   for (const cb of listeners) cb();
 }
 
 async function poll(): Promise<void> {
+  if (inFlight) return;
+  inFlight = true;
   try {
     const res = await fetch(FEED_URL);
     if (!res.ok) return;
@@ -45,6 +49,8 @@ async function poll(): Promise<void> {
     if (newCount !== prevCount) notify();
   } catch {
     // Silently skip — network errors, rate limits, etc.
+  } finally {
+    inFlight = false;
   }
 }
 
@@ -95,5 +101,6 @@ export function _resetForTesting(): void {
   newCount = 0;
   latestTimestamp = null;
   stopInterval(pollTimer);
+  inFlight = false;
   listeners.length = 0;
 }

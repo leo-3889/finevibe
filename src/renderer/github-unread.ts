@@ -18,11 +18,13 @@ export function makeItemId(repo: string, number: number): string {
 /**
  * Compare a fetched GitHub item against the project's lastSeen timestamps and
  * mark it unread if it has been updated since (or never seen). Pass a list of
- * items belonging to a single repo. Returns true if the unread set changed.
+ * items belonging to a single repo. `exhaustive` means the listing is the
+ * whole truth for that repo (fewer items than the fetch cap), which lets ids
+ * left behind by vanished items be pruned (C4G-01). Returns true when the
+ * unread set changed.
  */
-export function ingestItems(projectId: string, repo: string, items: GithubItem[]): boolean {
+export function ingestItems(projectId: string, repo: string, items: GithubItem[], exhaustive = false): boolean {
   const set = unreadByProject.get(projectId) ?? new Set<string>();
-  const before = set.size;
   let added = 0;
 
   for (const item of items) {
@@ -37,7 +39,23 @@ export function ingestItems(projectId: string, repo: string, items: GithubItem[]
     }
   }
 
-  if (added > 0 || set.size !== before) {
+  // C4G-01: an exhaustive listing is the whole truth for this repo, so stored
+  // ids for items that have since dropped out of it (merged/closed under
+  // state=open) are pruned. Without this the tab dot stayed lit forever on an
+  // item the widget can no longer render, and the id leaked per item.
+  let pruned = 0;
+  if (exhaustive) {
+    const prefix = `${repo}#`;
+    const live = new Set(items.map((item) => makeItemId(repo, item.number)));
+    for (const id of set) {
+      if (id.startsWith(prefix) && !live.has(id)) {
+        set.delete(id);
+        pruned++;
+      }
+    }
+  }
+
+  if (added > 0 || pruned > 0) {
     unreadByProject.set(projectId, set);
     notify();
     return true;

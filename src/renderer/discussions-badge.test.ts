@@ -202,4 +202,26 @@ describe('discussions-badge', () => {
 
     expect(getNewCount()).toBe(0);
   });
+
+  // C3RP-09: a feed fetch slower than the poll interval used to overlap itself.
+  it('does not start a poll while one is in flight', async () => {
+    let release: (res: unknown) => void = () => {};
+    mockFetch.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+
+    init();
+    for (const cb of appStateListeners.get('state-loaded') ?? []) cb();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(3_600_000); // next tick with the first fetch parked
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    release({ ok: true, text: () => Promise.resolve(buildAtomFeed(['2026-04-12T10:00:00Z'])) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getNewCount()).toBe(1);
+
+    // The gate disarms in the finally: the following tick polls again.
+    vi.advanceTimersByTime(3_600_000);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
 });

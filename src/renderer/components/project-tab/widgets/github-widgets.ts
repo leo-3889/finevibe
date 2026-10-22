@@ -1,6 +1,8 @@
 import { appState } from '../../../state.js';
 import { esc } from '../../../dom-utils.js';
 import { ingestItems, isUnread, makeItemId, markRead, markAllReadInProject } from '../../../github-unread.js';
+import { t } from '../../../i18n.js';
+import { GITHUB_MAX_PER_PAGE } from '../../../../shared/constants.js';
 import type { GithubItem, ProviderId } from '../../../../shared/types.js';
 import type { WidgetFactory, WidgetHost, WidgetInstance } from './widget-host.js';
 import { DEFAULT_GITHUB_CONFIG, type GithubConfig } from './github-types.js';
@@ -10,6 +12,14 @@ import { getAvailableProviderMetas } from '../../../provider-availability.js';
 import { showContextMenu } from '../../board/board-context-menu.js';
 
 type ListKind = 'prs' | 'issues';
+
+// C4G-02: a window-show younger than this is covered by the interval poll.
+const VISIBILITY_REFRESH_MIN_MS = 30_000;
+// C4G-04 (C2M-05 shape): gh failures that mean "stop hammering" — rate limits
+// and auth. Matches what `gh api` writes to stderr (`gh: ... (HTTP 403)`,
+// `rate limit`, `not logged in`, `gh auth login`), not transient listing noise.
+const GH_BACKOFF_RE = /rate limit|403|auth|gh: |not logged in/i;
+const MAX_POLL_BACKOFF_MS = 30 * 60_000;
 
 function timeAgo(iso: string): string {
   const then = new Date(iso).getTime();
@@ -38,8 +48,11 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
 
   const markAllBtn = document.createElement('button');
   markAllBtn.className = 'widget-github-mark-all';
-  markAllBtn.textContent = 'Mark all read';
-  markAllBtn.title = 'Mark all visible items as read';
+  // C4G-03: `markAllReadInProject` clears the shared per-project set, so this
+  // button also marks the sibling widget's list read — the old 'visible items'
+  // label promised less than it did.
+  markAllBtn.textContent = t('projectTab.github.markAllRead');
+  markAllBtn.title = t('projectTab.github.markAllReadTooltip');
   markAllBtn.addEventListener('click', () => {
     markAllReadInProject(host.projectId);
     render();
@@ -62,6 +75,15 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   let pollHandle: number | null = null;
   let destroyed = false;
   let refreshGeneration = 0;
+  // C4G-02: per-widget throttle for the visibilitychange refresh — every widget
+  // in every window used to spawn a `gh` run on every window-show.
+  let lastRefreshAt = 0;
+  // C4G-04: the widget's own poll cadence and the backoff window armed by a
+  // gh failure. `nextPollAt` gates the interval tick; success clears it.
+  let pollIntervalMs = Math.max(60_000, getConfig().refreshSeconds * 1000);
+  let backoffMs = 0;
+  let nextPollAt = 0;
+
   const projectId = host.projectId;
 
   function getConfig(): GithubConfig {
@@ -205,8 +227,17 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     for (const item of items) body.appendChild(renderRow(item));
   }
 
+  // C4G-04: double the widget's cadence per consecutive gh failure, capped, so
+  // a rate-limited or logged-out widget stops re-spawning `gh` every tick.
+  function armBackoff(errorText: string): void {
+    if (!GH_BACKOFF_RE.test(errorText)) return;
+    backoffMs = Math.min(backoffMs > 0 ? backoffMs * 2 : pollIntervalMs * 2, MAX_POLL_BACKOFF_MS);
+    nextPollAt = Date.now() + backoffMs;
+  }
+
   async function refresh(): Promise<void> {
     if (destroyed) return;
+    lastRefreshAt = Date.now();
     const generation = ++refreshGeneration;
     loading = true;
     lastError = null;
@@ -237,13 +268,19 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
 
     if (!result.ok) {
       lastError = result.error ?? 'Failed to fetch from GitHub.';
+      armBackoff(lastError);
       loading = false;
       render();
       return;
     }
 
     items = result.items ?? [];
-    ingestItems(projectId, repo, items);
+    // The listing is the whole truth for this repo when it came back under the
+    // cap the CLI asked GitHub for — let the unread store drop stale ids.
+    const effectiveMax = Math.min(Math.max(cfg.max, 1), GITHUB_MAX_PER_PAGE);
+    ingestItems(projectId, repo, items, items.length < effectiveMax);
+    backoffMs = 0;
+    nextPollAt = 0;
     loading = false;
     render();
   }
@@ -251,12 +288,14 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   function startPolling(): void {
     if (destroyed) return;
     stopPolling();
-    const cfg = getConfig();
-    const intervalMs = Math.max(60_000, cfg.refreshSeconds * 1000);
+    pollIntervalMs = Math.max(60_000, getConfig().refreshSeconds * 1000);
     pollHandle = window.setInterval(() => {
       if (document.hidden) return;
+      // C4G-04: inside an armed window the tick is a no-op, so the effective
+      // cadence is the doubled window rounded up to the tick grid.
+      if (Date.now() < nextPollAt) return;
       void refresh();
-    }, intervalMs);
+    }, pollIntervalMs);
   }
 
   function stopPolling(): void {
@@ -267,7 +306,10 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   }
 
   const onVisibility = () => {
-    if (!document.hidden) void refresh();
+    if (document.hidden) return;
+    // C4G-02: at most one visibility refresh per widget per window.
+    if (Date.now() - lastRefreshAt < VISIBILITY_REFRESH_MIN_MS) return;
+    void refresh();
   };
   document.addEventListener('visibilitychange', onVisibility);
 
@@ -281,6 +323,15 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     return off;
   })();
 
+  // C4G-05: the repo caches lived for the widget's lifetime, so a remote added,
+  // changed, or removed after the first detect left the widget on the old repo
+  // (or pinned to the C3RP-15 negative cache). `git:changed` is the debounced
+  // per-project signal git-status.ts already subscribes to.
+  const unwatchGitChanged = window.finevibe.git?.onChanged?.(() => {
+    resolvedRepo = null;
+    detectAttempted = false;
+  });
+
   void refresh().then(() => startPolling());
 
   return {
@@ -290,6 +341,7 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
       stopPolling();
       document.removeEventListener('visibilitychange', onVisibility);
       unsubUnread();
+      unwatchGitChanged?.();
     },
     refresh() {
       void refresh();
