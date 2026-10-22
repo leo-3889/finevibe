@@ -1205,3 +1205,37 @@ describe('archive gate transcript flags (PA-25)', () => {
     expect(probeSync).not.toHaveBeenCalled();
   });
 });
+
+describe('githubLastSeen cap (UI2-3)', () => {
+  it('keeps only the newest 200 entries when a single item is stamped past the cap', () => {
+    const project = addProject();
+    const seen: Record<string, string> = {};
+    for (let i = 0; i < 200; i++) seen[`old-${i}`] = `2026-01-01T00:00:${String(i % 60).padStart(2, '0')}Z`;
+    project.githubLastSeen = seen;
+
+    appState.setGithubItemSeen(project.id, 'new-1', '2026-06-01T00:00:00Z');
+
+    const ids = Object.keys(project.githubLastSeen!);
+    expect(ids).toHaveLength(200);
+    expect(project.githubLastSeen!['new-1']).toBe('2026-06-01T00:00:00Z');
+    // The 199 newest olds survive; exactly the oldest (2026-01-01T00:00:00Z) is evicted.
+    expect(ids.filter((id) => id.startsWith('old-'))).toHaveLength(199);
+    expect(project.githubLastSeen!['old-0']).toBeUndefined();
+  });
+
+  it('caps bulk stamps and skips persist when nothing changed', () => {
+    const project = addProject();
+    const entries: Record<string, string> = {};
+    for (let i = 0; i < 250; i++) entries[`bulk-${i}`] = `2026-02-01T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`;
+
+    appState.setGithubItemsSeenBulk(project.id, entries);
+    expect(Object.keys(project.githubLastSeen!)).toHaveLength(200);
+    // Newest bulk entries (13:00+) survive; the 50 oldest are gone.
+    expect(project.githubLastSeen!['bulk-249']).toBeDefined();
+    expect(project.githubLastSeen!['bulk-0']).toBeUndefined();
+
+    mockSave.mockClear();
+    appState.setGithubItemsSeenBulk(project.id, { 'bulk-249': '2026-02-01T00:00:09Z' });
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+});

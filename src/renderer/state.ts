@@ -2,7 +2,7 @@ import type { FinevibeApi } from './types.js';
 import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout, SidebarViews } from '../shared/types.js';
 import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
-import { basename } from '../shared/platform.js';
+import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { isCliSession } from './session-utils.js';
 import {
   archiveSession as archiveSessionPure,
@@ -1503,6 +1503,7 @@ class AppState {
     if (!project) return;
     if (!project.githubLastSeen) project.githubLastSeen = {};
     project.githubLastSeen[itemId] = isoTimestamp;
+    pruneGithubLastSeen(project.githubLastSeen);
     this.persist();
     this.emit('github-unread-changed', projectId);
   }
@@ -1519,6 +1520,7 @@ class AppState {
       }
     }
     if (!changed) return;
+    pruneGithubLastSeen(project.githubLastSeen);
     this.persist();
     this.emit('github-unread-changed', projectId);
   }
