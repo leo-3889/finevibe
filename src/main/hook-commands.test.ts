@@ -11,15 +11,46 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { stopStatusCmd, installHookScripts, STOP_STALE_MS } from './hook-commands';
 import { STATUS_DIR } from './hook-status';
-import { pythonBin, isWin } from './platform';
+import { pythonBin, isWin, setPythonBin } from './platform';
 
 // `fs` is mocked module-wide above; the executed-script suite below needs the
 // real thing to stage a temp dir and read back what the hook wrote.
 const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
 
-// Resolved at collection time so describe.runIf can see it — a CI image without
-// a usable python should skip these, not fail them.
-const pythonAvailable = spawnSync(pythonBin, ['-c', 'pass']).status === 0;
+// P2-75: probe interpreters the way the app does, not just the module-load
+// `pythonBin` binding: on Windows the bare `python` alias can be the Store
+// stub (exits 9009) while the `py -3` launcher works — exactly the bug class
+// this file's header comment documents — and the old gate spawned only
+// `pythonBin`, so the behaviour suite skipped there and reported green.
+// Candidates mirror prerequisites.checkPythonAvailable() (win: python alias,
+// then py -3 launcher) and platform.ts's module-load probe (POSIX: python3,
+// /usr/bin/python3, python). The winner is pinned with setPythonBin so the
+// hook-command construction tests assert against the same live binding the
+// app embeds in hooks. Resolved at collection time so describe.runIf sees it.
+interface ResolvedPython { cmd: string; args: string[] }
+function resolvePython(): ResolvedPython | null {
+  const candidates: [string, string[]][] = isWin
+    ? [['python', []], ['py', ['-3']]]
+    : [['python3', []], ['/usr/bin/python3', []], ['python', []]];
+  for (const [cmd, args] of candidates) {
+    if (spawnSync(cmd, [...args, '-c', 'pass'], { timeout: 3000, windowsHide: true }).status === 0) {
+      setPythonBin([cmd, ...args].join(' '));
+      return { cmd, args };
+    }
+  }
+  return null;
+}
+const python = resolvePython();
+if (!python) {
+  // Loud skip (P2-75): this is the ONLY skip left — a machine with NO usable
+  // interpreter at all, where the app's own python hooks cannot run either.
+  // CI win32/linux runners always have python, so the gate there is always green-by-execution.
+  console.warn(
+    '[hook-commands.test] SKIPPING stop_status_writer.py behaviour suite: no usable python ' +
+    '(probed python, py -3, python3, /usr/bin/python3). The load-bearing completion-detection ' +
+    'table (P2-75) is NOT verified on this machine.',
+  );
+}
 
 const HOOK_MARKER = '# finevibe-hook';
 
@@ -284,7 +315,7 @@ describe('stopStatusCmd', () => {
     expect(STOP_STALE_MS).toBe(600000);
   });
 
-  // The pythonAvailable gate above (and the behaviour suite below) only skips
+  // The resolvePython() probe above (and the behaviour suite below) only skips
   // EXECUTING the script. These construction assertions run on every machine:
   // the interpreter-pinning/quoting/argv-order contract is what the statusCmd
   // bug class violated, so it must never be environment-optional.
@@ -346,8 +377,11 @@ describe('installHookScripts', () => {
 // detection, and asserting on its source text can't tell a correct branch from
 // a typo'd one. Run the real script the way Claude Code does: payload on stdin,
 // assert the .status file it leaves behind.
-describe.runIf(pythonAvailable)('stop_status_writer.py behaviour', () => {
+// Runs on every machine with any usable interpreter (see resolvePython above);
+// the loud console.warn fires when even that fails (P2-75).
+describe.runIf(python !== null)('stop_status_writer.py behaviour', () => {
   const SID = 'finevibe-test-session';
+  const py = python!; // narrowed by runIf; assertion is compile-time only
   let dir: string;
   let script: string;
 
@@ -373,7 +407,7 @@ describe.runIf(pythonAvailable)('stop_status_writer.py behaviour', () => {
     const statusPath = path.join(dir, `${SID}.status`);
     realFs.rmSync(statusPath, { force: true });
 
-    const res = spawnSync(pythonBin, [script, 'CLAUDE_IDE_SESSION_ID', dir, String(STOP_STALE_MS)], {
+    const res = spawnSync(py.cmd, [...py.args, script, 'CLAUDE_IDE_SESSION_ID', dir, String(STOP_STALE_MS)], {
       input: JSON.stringify(payload),
       env: { ...process.env, CLAUDE_IDE_SESSION_ID: SID },
       encoding: 'utf8',
@@ -453,7 +487,7 @@ describe.runIf(pythonAvailable)('stop_status_writer.py behaviour', () => {
     const statusPath = path.join(dir, `${SID}.status`);
     realFs.rmSync(statusPath, { force: true });
     realFs.rmSync(path.join(dir, `${SID}.subagents`), { force: true });
-    const res = spawnSync(pythonBin, [script, 'CLAUDE_IDE_SESSION_ID', dir, String(STOP_STALE_MS)], {
+    const res = spawnSync(py.cmd, [...py.args, script, 'CLAUDE_IDE_SESSION_ID', dir, String(STOP_STALE_MS)], {
       input: 'not json at all',
       env: { ...process.env, CLAUDE_IDE_SESSION_ID: SID },
       encoding: 'utf8',
