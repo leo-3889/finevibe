@@ -8,6 +8,16 @@ on:
         required: true
         default: 'patch'
         type: string
+      artifacts_only:
+        description: 'Build the artifact matrix from "ref"; no bump, tag, push, or publish'
+        required: false
+        default: false
+        type: boolean
+      ref:
+        description: 'Ref to build when artifacts_only is checked (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+        type: string
 
 permissions:
   contents: write
@@ -17,9 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.get-tag.outputs.tag }}
+      ref: ${{ inputs.artifacts_only && inputs.ref || steps.get-tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.artifacts_only && inputs.ref || '' }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -32,9 +44,11 @@ jobs:
         run: npm ci
 
       - name: Install Claude Code CLI
+        if: inputs.artifacts_only != true
         run: npm install -g @anthropic-ai/claude-code
 
       - name: Configure git identity
+        if: inputs.artifacts_only != true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -43,6 +57,7 @@ jobs:
         run: npm test
 
       - name: Bump version
+        if: inputs.artifacts_only != true
         # P2-4: the dispatch input reaches the shell only through the env
         # context — it is never interpolated into the script text. The pattern
         # check rejects anything that is not a bump keyword or an explicit
@@ -68,6 +83,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog via Claude Code
+        if: inputs.artifacts_only != true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_KEY }}
         run: |
@@ -108,38 +124,46 @@ jobs:
           PROMPT
 
       - name: Verify changelog
+        if: inputs.artifacts_only != true
         run: grep -q '## \[${{ steps.version.outputs.version }}\]' CHANGELOG.md
 
       - name: Extract release notes
+        if: inputs.artifacts_only != true
         run: |
           awk '/^## \[${{ steps.version.outputs.version }}\]/{found=1; next} /^## \[/{if(found) exit} found' CHANGELOG.md > RELEASE_NOTES.md
           echo "Extracted release notes:"
           cat RELEASE_NOTES.md
 
       - name: Upload release notes
+        if: inputs.artifacts_only != true
         uses: actions/upload-artifact@v4
         with:
           name: release-notes
           path: RELEASE_NOTES.md
 
       - name: Commit release
+        if: inputs.artifacts_only != true
         run: |
           git add package.json package-lock.json CHANGELOG.md
           git commit -m "release: v${{ steps.version.outputs.version }}"
 
       - name: Create annotated tag
+        if: inputs.artifacts_only != true
         run: git tag -a "v${{ steps.version.outputs.version }}" -m "v${{ steps.version.outputs.version }}"
 
       - name: Get tag name
+        if: inputs.artifacts_only != true
         id: get-tag
         run: |
           TAG=$(git describe --tags --abbrev=0)
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Verify tag exists
+        if: inputs.artifacts_only != true
         run: git rev-parse "${{ steps.get-tag.outputs.tag }}" > /dev/null
 
       - name: Push commit and tag
+        if: inputs.artifacts_only != true
         run: |
           git push origin main
           git push origin "${{ steps.get-tag.outputs.tag }}"
@@ -158,7 +182,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -210,7 +234,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -259,7 +283,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -382,6 +406,7 @@ jobs:
   # binaries (P1-9), and creates the release exactly once.
   publish:
     needs: [prepare, build, build-linux, build-windows]
+    if: inputs.artifacts_only != true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -436,6 +461,7 @@ jobs:
 
   publish-npm:
     needs: [prepare, build, build-linux, build-windows]
+    if: inputs.artifacts_only != true
     runs-on: ubuntu-latest
     # P2-6: npm provenance mints a signed attestation from the runner's
     # OIDC identity — the registry publishes who built the tarball, so
