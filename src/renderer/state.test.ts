@@ -1269,3 +1269,49 @@ describe('flushPersist synchronous flush (S1-03)', () => {
     expect((mockSaveSync.mock.calls[0][0] as { projects: { name: string }[] }).projects[0].name).toBe('Renamed');
   });
 });
+
+describe('removeProfile reference cleanup (P3-4)', () => {
+  // Regression: the old `if (this.isProfileInUse(id)) return` guard was true
+  // for archived history rows too, so the session/history cleanup loops below
+  // it were dead code and a history-referenced profile was permanently
+  // undeletable (delete button disabled, removeProfile a no-op).
+  function seedProfile(id: string) {
+    appState.profiles.push({ id, name: `P ${id}`, providerId: 'claude', configDir: `/cfg/${id}`, managed: true, createdAt: 0 });
+  }
+  const historyRow = (profileId: string) =>
+    [{ id: 'h1', name: 'old', providerId: 'claude' as const, cliSessionId: 'c', createdAt: '0', closedAt: '0', profileId, cost: null }];
+
+  it('deletes a profile referenced only by archived history and drops the row profileId', () => {
+    const project = addProject();
+    seedProfile('prof-1');
+    project.sessionHistory = historyRow('prof-1');
+
+    appState.removeProfile('prof-1');
+
+    expect(appState.getProfile('prof-1')).toBeUndefined();
+    expect(project.sessionHistory![0].profileId).toBeUndefined();
+  });
+
+  it('deletes a profile referenced by a live session; the session falls back to the provider default', () => {
+    const project = addProject();
+    seedProfile('prof-1');
+    const session = appState.addSession(project.id, 'S', undefined, 'claude', 'prof-1')!;
+    project.defaultProfileId = 'prof-1';
+
+    appState.removeProfile('prof-1');
+
+    expect(appState.getProfile('prof-1')).toBeUndefined();
+    expect(session.profileId).toBeUndefined();
+    expect(project.defaultProfileId).toBeUndefined();
+  });
+
+  it('isProfileInUse counts live sessions only — the UI delete gate stays usable for history-only profiles', () => {
+    const project = addProject();
+    seedProfile('prof-1');
+    project.sessionHistory = historyRow('prof-1');
+    expect(appState.isProfileInUse('prof-1')).toBe(false);
+
+    appState.addSession(project.id, 'S', undefined, 'claude', 'prof-1');
+    expect(appState.isProfileInUse('prof-1')).toBe(true);
+  });
+});
