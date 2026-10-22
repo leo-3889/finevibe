@@ -118,6 +118,12 @@ describe('CodexProvider .jsonl.zst transcripts', () => {
   // every modern install.
   const zlib = require('zlib') as typeof import('zlib');
 
+  // First zstd call in a fresh fork lazily loads Node's zstd binding; on a
+  // cold CI runner that cost ate the 15s testTimeout of the first zstd test
+  // (2026-10-22, Windows, `truncated zstd tail frame` timed out). Pay it at
+  // collection time, outside any test's budget.
+  zlib.zstdCompressSync(Buffer.from('warm'));
+
   function mockIndexFileZst(jsonl: string): void {
     const compressed = zlib.zstdCompressSync(Buffer.from(jsonl, 'utf-8'));
     vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: compressed.length } as fs.Stats);
