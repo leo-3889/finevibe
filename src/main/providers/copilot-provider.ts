@@ -3,11 +3,11 @@ import * as readline from 'readline';
 import * as path from 'path';
 import * as os from 'os';
 import type { BrowserWindow } from 'electron';
-import type { CliProvider, TranscriptDescriptor, TranscriptDiscovery } from './provider';
+import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
-import { resolveBinary, validateBinaryExists } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { getCopilotConfig, AGENT_EXT } from '../copilot-config';
 import { installCopilotHooks, validateCopilotHooks, cleanupCopilotHooks, SESSION_ID_VAR } from '../copilot-hooks';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
@@ -55,6 +55,11 @@ export class CopilotProvider implements CliProvider {
 
   validatePrerequisites(): boolean {
     return validateBinaryExists('copilot');
+  }
+
+  // PA-01: async twin so boot can probe every provider concurrently.
+  validatePrerequisitesAsync(): Promise<boolean> {
+    return validateBinaryExistsAsync('copilot');
   }
 
   buildEnv(sessionId: string, baseEnv: Record<string, string>, _opts?: { configDir?: string }): Record<string, string> {
@@ -182,7 +187,10 @@ export class CopilotProvider implements CliProvider {
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
       for await (const line of lines) {
-        if (!line.trim() || budget.full) continue;
+        if (!line.trim()) continue;
+        // C3M-07: terminate the read once the budget is spent — `continue`
+        // kept streaming (and reading) to the byte end for nothing.
+        if (budget.full) break;
         try {
           const entry = JSON.parse(line);
           if (entry.type !== 'user.message') continue;

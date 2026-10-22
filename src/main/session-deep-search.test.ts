@@ -353,6 +353,47 @@ describe('searchSessions()', () => {
     expect(pruneSearchIndex).toHaveBeenCalledWith('claude', ['/a']);
   });
 
+  // UI2-8: the prune is a full readdir of the provider's derived-index dir plus
+  // an unlink per vanished source, and every search pass used to end with one —
+  // a query burst (one pass per keystroke) paid a full sweep per keystroke.
+  it('rate-limits pruning to one sweep per provider per interval', async () => {
+    providersForTest.push(fakeProvider({
+      id: 'claude',
+      descriptors: [{ cliSessionId: 'a', transcriptPath: '/a' }],
+      index: { '/a': { text: 'complete body content', cwd: '' } },
+    }));
+    providersForTest.push(fakeProvider({
+      id: 'codex',
+      descriptors: [{ cliSessionId: 'b', transcriptPath: '/b' }],
+      index: { '/b': { text: 'complete body content', cwd: '' } },
+    }));
+    mockStat.mockResolvedValue(makeStat(1));
+
+    let now = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      await searchSessions('complete body');
+      expect(pruneSearchIndex).toHaveBeenCalledTimes(2); // one sweep per provider
+
+      // A burst inside the window prunes nothing: the corpus has not changed.
+      await searchSessions('complete body');
+      await searchSessions('complete body');
+      expect(pruneSearchIndex).toHaveBeenCalledTimes(2);
+
+      // The budget is per provider and per window: 29 s is still throttled...
+      now += 29_000;
+      await searchSessions('complete body');
+      expect(pruneSearchIndex).toHaveBeenCalledTimes(2);
+
+      // ...and once each provider's 30 s window closes, both sweep again.
+      now += 1_000;
+      await searchSessions('complete body');
+      expect(pruneSearchIndex).toHaveBeenCalledTimes(4);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('drops zero-score sessions', async () => {
     providersForTest.push(fakeProvider({
       id: 'claude',
@@ -444,4 +485,60 @@ it('does not reparse unchanged transcripts when the corpus exceeds the memory ca
   _resetForTesting();
   await searchSessions('match');
   expect(provider.indexTranscript).toHaveBeenCalledTimes(1000);
+});
+
+it('skips transcripts whose stat failed, without queueing them behind the read gate (PA-18)', async () => {
+  // The batched preflight swallows the ENOENT: the dead path never reaches
+  // the gate, the live one indexes normally.
+  providersForTest.push(fakeProvider({
+    id: 'claude',
+    descriptors: [
+      { cliSessionId: 'dead', transcriptPath: '/dead' },
+      { cliSessionId: 'ok', transcriptPath: '/ok' },
+    ],
+    index: { '/ok': { text: 'find me here', cwd: '' } },
+  }));
+  mockStat.mockImplementation((async (p: unknown) => {
+    if (String(p) === '/dead') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return makeStat(1);
+  }) as typeof fs.promises.stat);
+  const results = await searchSessions('find me');
+  expect(results.map(r => r.cliSessionId)).toEqual(['ok']);
+});
+
+it('starts provider discovery concurrently (PA-18)', async () => {
+  // A parks in discovery until B has been discovered: a serial provider loop
+  // deadlocks this test; the shared read gate (not serialization) bounds IO.
+  let bDiscovered = false;
+  let releaseA!: () => void;
+  const aGate = new Promise<void>((resolve) => { releaseA = resolve; });
+
+  const providerA = fakeProvider({
+    id: 'claude',
+    descriptors: [{ cliSessionId: 'a', transcriptPath: '/a' }],
+    index: { '/a': { text: 'find me alpha', cwd: '' } },
+  });
+  const realDiscoverA = providerA.discoverTranscripts!;
+  providerA.discoverTranscripts = async (signal?: AbortSignal) => {
+    await aGate;
+    return realDiscoverA.call(providerA, signal);
+  };
+  const providerB = fakeProvider({
+    id: 'codex',
+    descriptors: [{ cliSessionId: 'b', transcriptPath: '/b' }],
+    index: { '/b': { text: 'find me beta', cwd: '' } },
+  });
+  const realDiscoverB = providerB.discoverTranscripts!;
+  providerB.discoverTranscripts = async (signal?: AbortSignal) => {
+    bDiscovered = true;
+    return realDiscoverB.call(providerB, signal);
+  };
+  providersForTest.push(providerA, providerB);
+  mockStat.mockResolvedValue(makeStat(1));
+
+  const search = searchSessions('find me');
+  await waitFor(() => bDiscovered, 'provider B discovery starts while provider A discovery is parked');
+  releaseA();
+  const results = await search;
+  expect(results.map(r => r.providerId)).toEqual(['claude', 'codex']);
 });

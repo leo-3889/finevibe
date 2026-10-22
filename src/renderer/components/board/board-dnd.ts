@@ -7,6 +7,9 @@ let startX = 0;
 let startY = 0;
 const DRAG_THRESHOLD = 5;
 let pointerStarted = false;
+// The pointer that owns the gesture; a cancel from any other pointer (a second
+// touch) must not end it (CI-04).
+let dragPointerId: number | null = null;
 const dragEndCallbacks = new Set<() => void>();
 let activeDropTarget: HTMLElement | null = null;
 let cachedTargets: { el: HTMLElement; left: number; right: number; centerY: number }[] = [];
@@ -18,7 +21,32 @@ export function initBoardDnd(): void {
   document.addEventListener('pointerdown', onPointerDown, true);
   document.addEventListener('pointermove', onPointerMove, true);
   document.addEventListener('pointerup', onPointerUp, true);
+  // A cancelled gesture (touch-scroll takeover, gesture zoom, window blur) never
+  // fires pointerup: without this the ghost stays on body and the NEXT pointerup
+  // anywhere commits a phantom moveTask against the stale target.
+  document.addEventListener('pointercancel', onPointerCancel, true);
   initialized = true;
+}
+
+/**
+ * End the gesture and flush the drag-end callbacks. CI-04: a cancelled gesture
+ * (touch-scroll takeover, gesture zoom, window blur) is not a drop, but the
+ * renders the drag deferred MUST still land — `pointercancel` used to skip the
+ * flush, leaving the board showing its pre-drag columns indefinitely.
+ */
+function finish(): void {
+  cancelDrag();
+  for (const cb of dragEndCallbacks) cb();
+}
+
+function onPointerCancel(e: PointerEvent): void {
+  // Nothing was in flight: keep the silent teardown of the non-drag branch.
+  if (!isDragging && !pointerStarted) {
+    cancelDrag();
+    return;
+  }
+  if (dragPointerId !== null && e.pointerId !== dragPointerId) return;
+  finish();
 }
 
 export function isDragActive(): boolean {
@@ -44,6 +72,7 @@ function onPointerDown(e: PointerEvent): void {
   startX = e.clientX;
   startY = e.clientY;
   pointerStarted = true;
+  dragPointerId = e.pointerId ?? null;
 
   // Prevent the browser from stealing the gesture (text selection, etc.)
   e.preventDefault();
@@ -51,6 +80,9 @@ function onPointerDown(e: PointerEvent): void {
 
 function onPointerMove(e: PointerEvent): void {
   if (!pointerStarted || !dragTaskId) return;
+  // CI-04 follow-up (C5G-04): only the pointer that owns the gesture may
+  // drive it; a move from a second pointer must not start or move the drag.
+  if (dragPointerId !== null && e.pointerId !== dragPointerId) return;
 
   if (!isDragging) {
     const dx = Math.abs(e.clientX - startX);
@@ -88,6 +120,9 @@ function onPointerUp(e: PointerEvent): void {
     cancelDrag();
     return;
   }
+  // C5G-04: a pointerup from a non-owning pointer (e.g. a second touch
+  // tapped over the board) must not complete the drag.
+  if (dragPointerId !== null && e.pointerId !== dragPointerId) return;
 
   // Final position update before reading the active target
   highlightNearestTarget(e.clientX, e.clientY);
@@ -98,8 +133,7 @@ function onPointerUp(e: PointerEvent): void {
     moveTask(dragTaskId, columnId, order);
   }
 
-  cancelDrag();
-  for (const cb of dragEndCallbacks) cb();
+  finish();
 }
 
 function cancelDrag(): void {
@@ -117,6 +151,7 @@ function cancelDrag(): void {
   pointerStarted = false;
   activeDropTarget = null;
   currentScope = null;
+  dragPointerId = null;
 }
 
 /**

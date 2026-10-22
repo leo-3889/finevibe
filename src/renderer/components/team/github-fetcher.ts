@@ -9,11 +9,15 @@ interface GithubContentEntry {
 }
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
+// C4G-08: a hung request (proxy stall, dead CDN socket) used to pin the
+// picker's loadInFlight forever, so the predefined-members list could never be
+// retried. Every fetch here now carries its own deadline.
+const FETCH_TIMEOUT_MS = 15_000;
 
 export async function fetchPredefinedMembers(): Promise<TeamMember[]> {
   const apiUrl = buildContentsApiUrl();
   const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
-  const listResp = await fetch(apiUrl, { headers });
+  const listResp = await fetch(apiUrl, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!listResp.ok) {
     throw new Error(`GitHub API returned ${listResp.status}: ${await listResp.text().catch(() => '')}`);
   }
@@ -24,7 +28,7 @@ export async function fetchPredefinedMembers(): Promise<TeamMember[]> {
     mdEntries.map(async (entry): Promise<TeamMember | null> => {
       if (!entry.download_url) return null;
       try {
-        const resp = await fetch(entry.download_url);
+        const resp = await fetch(entry.download_url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
         if (!resp.ok) return null;
         const raw = await resp.text();
         return memberFromMarkdown(raw, {

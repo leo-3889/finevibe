@@ -7,6 +7,6 @@
 // implements exactly the preload-bridge surface state.ts touches (store, session).
 (window as unknown as { finevibe: unknown }).finevibe = {
   store: { load: () => {}, save: () => {} },
-  session: { transcriptExistsSync: () => false },
+  session: {},
 };
 document.body.innerHTML = '<div id="terminal-container"></div>';

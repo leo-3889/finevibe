@@ -8,7 +8,7 @@ vi.mock('fs', () => ({
 }));
 vi.mock('os', () => ({ homedir: () => '/mock/home', tmpdir: () => '/mock/tmp' }));
 vi.mock('../pty-manager', () => ({ getFullPath: () => '/usr/local/bin:/usr/bin' }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: vi.fn(), validateBinaryExists: vi.fn() }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: vi.fn(), validateBinaryExists: vi.fn(), validateBinaryExistsAsync: vi.fn(async () => true) }));
 vi.mock('../pi-session-watcher', () => ({
   startPiSessionWatcher: vi.fn(),
   registerPendingPiSession: vi.fn(),

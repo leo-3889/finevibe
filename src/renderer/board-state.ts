@@ -1,6 +1,14 @@
 import { appState } from './state.js';
 import type { BoardTask, BoardColumn, BoardData, ColumnBehavior, TagDefinition } from '../shared/types.js';
 
+// C5G-08: growth caps for persisted board data. Entries are written to the
+// project board in the state store, so an unbounded board bloats every save;
+// the add paths refuse (undefined) past the cap. Limits are code constants,
+// not Preferences (docs/FEATURES.md Appendix A).
+export const MAX_BOARD_COLUMNS = 50;
+export const MAX_BOARD_TASKS = 2000;
+export const MAX_BOARD_TAGS = 100;
+
 export function getBoard(projectId?: string): BoardData | undefined {
   return (projectId ? appState.projects.find(p => p.id === projectId) : appState.activeProject)?.board;
 }
@@ -34,6 +42,8 @@ export function getTaskByCliSessionId(cliSessionId: string): BoardTask | undefin
 export function addTask(partial: Partial<BoardTask>): BoardTask | undefined {
   const board = getBoard();
   if (!board) return undefined;
+  // C5G-08: refuse past the persisted-task cap.
+  if (board.tasks.length >= MAX_BOARD_TASKS) return undefined;
 
   const columnId = partial.columnId ?? getColumnByBehavior('inbox')?.id ?? board.columns[0]?.id;
   if (!columnId) return undefined;
@@ -131,6 +141,8 @@ export function moveTask(taskId: string, toColumnId: string, toOrder: number, pr
 export function addColumn(title: string, afterColumnId?: string): BoardColumn | undefined {
   const board = getBoard();
   if (!board) return undefined;
+  // C5G-08: refuse past the persisted-column cap.
+  if (board.columns.length >= MAX_BOARD_COLUMNS) return undefined;
 
   let insertOrder: number;
   if (afterColumnId) {
@@ -215,6 +227,10 @@ export function addTag(name: string, color?: string): TagDefinition | undefined 
 
   const normalized = name.toLowerCase().trim();
   if (board.tags.some(t => t.name === normalized)) return board.tags.find(t => t.name === normalized);
+
+  // C5G-08: refuse new tags past the cap; a duplicate of an existing tag is
+  // always allowed (resolved above) and does not grow the list.
+  if (board.tags.length >= MAX_BOARD_TAGS) return undefined;
 
   const tagColor = color ?? TAG_COLORS[board.tags.length % TAG_COLORS.length];
   const tag: TagDefinition = { name: normalized, color: tagColor };

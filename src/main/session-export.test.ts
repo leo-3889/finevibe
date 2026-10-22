@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
-import { PassThrough } from 'stream';
+import { PassThrough, Writable } from 'stream';
 import os from 'os';
 import path from 'path';
 import JSZip from 'jszip';
@@ -11,6 +11,34 @@ vi.mock('electron', () => ({
   dialog: { showSaveDialog: (...a: unknown[]) => showSaveDialog(...a) },
   BrowserWindow: { getAllWindows: () => [] },
 }));
+
+// UI3-9: `fs.createWriteStream` is the write-side failure seam. The module
+// under test imports it directly and the ESM namespace is not configurable
+// (vi.spyOn throws), so this partial mock routes the call through a
+// per-test override — default null keeps every other test on the real
+// stream.
+const fsOverrides = vi.hoisted(() => ({
+  createWriteStream: null as null | ((filePath: string) => import('stream').Writable),
+  // CI-02: the source-side seam. The export's transcript/sidecar handles must
+  // be observable spy targets, and the ESM namespace is not configurable
+  // (vi.spyOn throws), so they route through the same per-test override.
+  createReadStream: null as null | ((filePath: string) => import('stream').Readable),
+}));
+
+vi.mock('fs', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('fs')>();
+  return {
+    ...mod,
+    createWriteStream: (filePath: string, ...rest: unknown[]) =>
+      fsOverrides.createWriteStream
+        ? fsOverrides.createWriteStream(filePath)
+        : (mod.createWriteStream as (p: string, ...r: unknown[]) => unknown)(filePath, ...rest),
+    createReadStream: (filePath: string, ...rest: unknown[]) =>
+      fsOverrides.createReadStream
+        ? fsOverrides.createReadStream(filePath)
+        : (mod.createReadStream as (p: string, ...r: unknown[]) => unknown)(filePath, ...rest),
+  };
+});
 
 const launchSessionDir = vi.fn((p: string, id: string) => `${p}-launch-${id}`);
 vi.mock('./launch-session-dir', () => ({
@@ -110,6 +138,52 @@ describe('exportSessionArchive() zip', () => {
     expect(zip.file('sidecars/ui-1.events')).toBeNull();
   });
 
+  // PA-20: every sidecar suffix was `fs.readFile`-buffered whole during the
+  // zip (.events is uncapped on disk) while the transcript beside it
+  // streamed. Every transcript/sidecar entry must reach JSZip as a
+  // Readable — never a Buffer — and the bytes must still round-trip.
+  it('streams transcript and sidecars into the zip as Readables, never Buffers', async () => {
+    const transcript = path.join(tmp, 't.jsonl');
+    await fs.writeFile(transcript, 'A\nB');
+    await fs.writeFile(path.join(statusDir, 'ui-1.events'), 'E1\nE2');
+    getTranscriptPath.mockReturnValue(transcript);
+    const out = path.join(tmp, 'stream.zip');
+    showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });
+
+    const entries: Array<[string, unknown]> = [];
+    const realFile = JSZip.prototype.file;
+    const spy = vi.spyOn(JSZip.prototype, 'file').mockImplementation(function (
+      this: JSZip,
+      ...args: unknown[]
+    ) {
+      entries.push([args[0] as string, args[1]]);
+      return (realFile as (...a: unknown[]) => JSZip).apply(this, args);
+    } as never);
+    try {
+      await exportSessionArchive(win, params({
+        providerId: 'pi',
+        meta: meta({ providerId: 'pi', liveSessionId: 'ui-1' }),
+      }));
+    } finally {
+      spy.mockRestore();
+    }
+
+    const streamed = entries.filter(
+      ([name]) => name.startsWith('transcript/') || name.startsWith('sidecars/'),
+    );
+    expect(streamed.map(([name]) => name)).toEqual(
+      expect.arrayContaining(['transcript/t.jsonl', 'sidecars/ui-1.events']),
+    );
+    for (const [, data] of streamed) {
+      expect(Buffer.isBuffer(data)).toBe(false);
+      expect(typeof (data as { pipe?: unknown }).pipe).toBe('function');
+    }
+    // The streamed bytes round-trip through generateNodeStream(streamFiles).
+    const zip = await JSZip.loadAsync(await fs.readFile(out));
+    expect(await zip.file('sidecars/ui-1.events')!.async('string')).toBe('E1\nE2');
+    expect(await zip.file('transcript/t.jsonl')!.async('string')).toBe('A\nB');
+  });
+
   it('meta-only zip when no transcript resolves', async () => {
     getTranscriptPath.mockReturnValue(null);
     const out = path.join(tmp, 'out.zip');
@@ -168,6 +242,73 @@ describe('exportSessionArchive() zip', () => {
       await expect(fs.access(out)).rejects.toThrow();
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  // UI3-9: the write-side mirror of the source-side test above. On a
+  // destination error (disk full), `finished(out)` rejects while the zip
+  // generator is still piped and paused. Its reference used to die with the
+  // promise executor, so the catch could not destroy it: the generator kept
+  // its source streams alive and the transcript fd stayed open — on Windows
+  // that blocks deleting/renaming the provider's transcript, the exact class
+  // of bug the production comment documents for `out`.
+  it('destroys the zip generator when the destination write fails', async () => {
+    const transcript = path.join(tmp, 't.jsonl');
+    await fs.writeFile(transcript, 'A\nB');
+    getTranscriptPath.mockReturnValue(transcript);
+    const out = path.join(tmp, 'out.zip');
+    showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });
+
+    const boom = new Error('ENOSPC: no space left on device');
+    let destroyCount = 0;
+    let generator: PassThrough | undefined;
+    const genSpy = vi.spyOn(JSZip.prototype, 'generateNodeStream').mockImplementation(() => {
+      const s = new PassThrough();
+      const orig = s.destroy.bind(s);
+      s.destroy = ((err?: Error | null) => {
+        destroyCount++;
+        return orig(err);
+      }) as typeof s.destroy;
+      generator = s;
+      // Chunks FIRST: a real disk-full failure lands after the zip header
+      // has been piped into the destination, like the source-error test.
+      queueMicrotask(() => s.write(Buffer.from('PK\u0003\u0004partial')));
+      return s as unknown as NodeJS.ReadableStream;
+    });
+    // CI-02: the source stream owns the transcript fd. Destroying the
+    // generator (UI3-9 above) does NOT reach it — JSZip's
+    // NodejsStreamInputAdapter only binds listeners — so the export has to
+    // destroy every source explicitly.
+    let sourceDestroyCount = 0;
+    const transcriptSource = new PassThrough();
+    const origSourceDestroy = transcriptSource.destroy.bind(transcriptSource);
+    transcriptSource.destroy = ((err?: Error | null) => {
+      sourceDestroyCount++;
+      return origSourceDestroy(err);
+    }) as typeof transcriptSource.destroy;
+    fsOverrides.createReadStream = () => transcriptSource;
+    fsOverrides.createWriteStream = () =>
+      new Writable({ write(_chunk, _enc, cb) { cb(boom); } });
+    try {
+      await expect(exportSessionArchive(win, params())).rejects.toThrow(boom);
+      // (b) the generator is destroyed — with the pre-fix code this stays 0
+      // and the transcript fd leaks. Destroying the generator is the
+      // contract that releases the streams it consumes (transcript +
+      // sidecars); the mocked PassThrough is not the real consumer, so the
+      // transcript stream's own destroy() is not observable through it.
+      expect(generator).toBeDefined();
+      expect(destroyCount).toBe(1);
+      // (c, CI-02) the source stream is destroyed as well. With the pre-fix
+      // catch this stays 0 and the provider's transcript fd stays open — on
+      // Windows that locks the file for delete/rename for the app's lifetime.
+      expect(sourceDestroyCount).toBe(1);
+      // (a) no half-written archive left behind (unlink ran; with the
+      // write stream mocked no real file ever exists).
+      await expect(fs.access(out)).rejects.toThrow();
+    } finally {
+      genSpy.mockRestore();
+      fsOverrides.createWriteStream = null;
+      fsOverrides.createReadStream = null;
     }
   });
 });

@@ -45,22 +45,16 @@ function getKey(): Buffer {
 
 export function decryptValue(encrypted: Buffer): Buffer {
   if (encrypted.length === 0) return Buffer.alloc(0);
+  let payload = encrypted;
   if (encrypted[0] === 0x76 && (encrypted[1] === 0x31) && (encrypted[2] === 0x30 || encrypted[2] === 0x31)) {
     // v10 or v11 (gnome-keyring marker); both use the same scheme on Linux.
-    encrypted = encrypted.subarray(3);
+    payload = encrypted.subarray(3);
   } else {
     return Buffer.from(encrypted);
   }
   const key = getKey();
   const decipher = crypto.createDecipheriv('aes-128-cbc', key, IV);
-  return Buffer.concat([decipher.update(encrypted), decipher.final()]);
-}
-
-export function stripDomainHash(plaintext: Buffer, hasDomainHash: boolean): string {
-  if (hasDomainHash && plaintext.length >= 32) {
-    return plaintext.subarray(32).toString('utf-8');
-  }
-  return plaintext.toString('utf-8');
+  return Buffer.concat([decipher.update(payload), decipher.final()]);
 }
 
 /** Why the keyring passphrase lookup fell back to the default password, if it did. */

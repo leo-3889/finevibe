@@ -12,7 +12,7 @@ import { installStatusLineScript, cleanupAll as cleanupHookStatus } from '../hoo
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { getClaudeConfig, isManagedMcpConfigDir } from '../claude-cli';
 import { guardedInstall, validateSettings, reinstallSettings } from '../settings-guard';
-import { resolveBinary, validateBinaryExists } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE, collectProfileRoots, TranscriptDiscoveryScan, readdirForDiscovery } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 
@@ -80,6 +80,11 @@ export class ClaudeProvider implements CliProvider {
 
   validatePrerequisites(): boolean {
     return validateBinaryExists('claude');
+  }
+
+  // PA-01: async twin so boot can probe every provider concurrently.
+  validatePrerequisitesAsync(): Promise<boolean> {
+    return validateBinaryExistsAsync('claude');
   }
 
   buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
@@ -215,7 +220,10 @@ export class ClaudeProvider implements CliProvider {
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
       for await (const line of lines) {
-        if (!line.trim() || budget.full) continue;
+        if (!line.trim()) continue;
+        // C3M-07: terminate the read once the budget is spent — `continue`
+        // kept streaming (and reading) to the byte end for nothing.
+        if (budget.full) break;
         try {
           const entry = JSON.parse(line);
           if (!cwd && entry.cwd) cwd = entry.cwd;
@@ -225,8 +233,13 @@ export class ClaudeProvider implements CliProvider {
           if (typeof c === 'string') {
             text = c;
           } else if (Array.isArray(c)) {
+            // S2-01: only text blocks carry text. Claude records tool
+            // results as user messages whose content arrays hold
+            // tool_result blocks; indexing `${block.text}` unguarded wrote
+            // the literal "undefined" into the persistent search index on
+            // virtually every turn (and burned the 50 KiB budget on it).
             for (const block of c) {
-              if (block.type === 'text') text += block.text + '\n';
+              if (block?.type === 'text' && typeof block.text === 'string') text += `${block.text}\n`;
             }
           }
           if (text) budget.push(text);
@@ -263,10 +276,11 @@ export class ClaudeProvider implements CliProvider {
 
   parseCostFromOutput(rawText: string): { totalCostUsd: number } | null {
     const COST_RE = /\$(\d+\.\d{2,})/g;
-    let match: RegExpExecArray | null;
+    let match: RegExpExecArray | null = COST_RE.exec(rawText);
     let lastCost: string | null = null;
-    while ((match = COST_RE.exec(rawText)) !== null) {
+    while (match !== null) {
       lastCost = match[0];
+      match = COST_RE.exec(rawText);
     }
     if (lastCost) {
       return { totalCostUsd: parseFloat(lastCost.replace('$', '')) };

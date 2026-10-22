@@ -8,6 +8,7 @@ import { appState } from '../state.js';
 import {
   createRemoteTerminalPane,
   writeRemoteData,
+  resizeRemoteTerminal,
   showRemoteEndOverlay,
   destroyRemoteTerminal,
 } from '../components/remote-terminal-pane.js';
@@ -20,12 +21,23 @@ const pendingJoinHandles = new Set<JoinHandle>();
 type ShareChangeListener = () => void;
 const shareChangeListeners: ShareChangeListener[] = [];
 
-export function onShareChange(cb: ShareChangeListener): void {
+/**
+ * PA-32: push-only arrays had no public unsubscribe (the audit's
+ * "latent growth" row). Returning a dispose closure is the pattern
+ * `appState.on` already uses; call sites that ignore it keep working.
+ */
+export function onShareChange(cb: ShareChangeListener): () => void {
   shareChangeListeners.push(cb);
+  return () => {
+    const i = shareChangeListeners.indexOf(cb);
+    if (i !== -1) shareChangeListeners.splice(i, 1);
+  };
 }
 
 function notifyShareChange(): void {
-  for (const cb of shareChangeListeners) cb();
+  // Snapshot: a listener that unsubscribes during notification must not
+  // make the splice shift entries past an un-notified neighbour.
+  for (const cb of [...shareChangeListeners]) cb();
 }
 
 // --- Host side ---
@@ -90,17 +102,28 @@ export function forwardResize(sessionId: string, cols: number, rows: number): vo
 
 // --- Guest side ---
 
-export async function joinRemoteSession(projectId: string, offer: string, passphrase: string, onConnected?: () => void): Promise<{ answer: string }> {
+// C3RP-06: pendingJoinHandles had no join-wide timeout. A host that
+// accepts the answer but never sends init (dead mid-handshake, wedged
+// renderer) pinned the handle — and its RTCPeerConnection — forever.
+const JOIN_INIT_TIMEOUT = 30_000;
+
+export async function joinRemoteSession(projectId: string, offer: string, passphrase: string, onConnected?: () => void, onFailed?: (reason: 'auth-failed' | 'ended', detail?: string) => void): Promise<{ answer: string }> {
   const { handle } = joinShare(offer, passphrase);
   // Register synchronously: getAnswer() can reject (wrong key, malformed
   // SDP), and the RTCPeerConnection joinShare created must stay reachable
   // by disconnect/cleanup on that path — one leaked PC per failed join
   // otherwise, until a renderer reload.
   pendingJoinHandles.add(handle);
+  const joinTimeout = setTimeout(() => {
+    if (!pendingJoinHandles.has(handle)) return;
+    pendingJoinHandles.delete(handle);
+    try { handle.disconnect(); } catch { /* peer already torn down */ }
+  }, JOIN_INIT_TIMEOUT);
   let answer: string;
   try {
     answer = await handle.getAnswer();
   } catch (err) {
+    clearTimeout(joinTimeout);
     pendingJoinHandles.delete(handle);
     try { handle.disconnect(); } catch { /* peer already torn down */ }
     throw err;
@@ -111,6 +134,7 @@ export async function joinRemoteSession(projectId: string, offer: string, passph
   handle.onInit((initData: InitData) => {
     if (!pendingJoinHandles.has(handle)) return;
     pendingJoinHandles.delete(handle);
+    clearTimeout(joinTimeout);
 
     const localSessionId = crypto.randomUUID();
     guestHandles.set(localSessionId, handle);
@@ -140,6 +164,14 @@ export async function joinRemoteSession(projectId: string, offer: string, passph
       writeRemoteData(localSessionId, payload);
     });
 
+    // S3-02: the resize leg existed end to end (protocol, host sender,
+    // guest API, forwardResize) but nothing connected it: the pane stayed
+    // frozen at join-time geometry, so host resizes re-wrapped every
+    // incoming line and garbled full-screen TUIs for the guest.
+    handle.onResize((cols: number, rows: number) => {
+      resizeRemoteTerminal(localSessionId, cols, rows);
+    });
+
     const cleanup = () => {
       if (!guestHandles.has(localSessionId)) return;
       showRemoteEndOverlay(localSessionId);
@@ -152,6 +184,20 @@ export async function joinRemoteSession(projectId: string, offer: string, passph
   handle.onDisconnected(() => {
     pendingJoinHandles.delete(handle);
   });
+
+  // C5R-03: with the answer in the host's hands the dialog waited blind:
+  // a rejected answer (auth-result ok:false) and a host `end` mid-wait
+  // were swallowed, stranding the dialog on "The session will appear
+  // once they connect." Host twin: share-dialog wires onAuthFailed to
+  // its status line; here the note goes through the dialog's callback.
+  const failJoin = (reason: 'auth-failed' | 'ended', detail?: string) => {
+    if (!pendingJoinHandles.delete(handle)) return; // init (or a timeout) won the race
+    clearTimeout(joinTimeout);
+    try { handle.disconnect(); } catch { /* peer already torn down */ }
+    onFailed?.(reason, detail);
+  };
+  handle.onAuthFailed((detail: string) => failJoin('auth-failed', detail));
+  handle.onEnd(() => failJoin('ended'));
 
   return { answer };
 }

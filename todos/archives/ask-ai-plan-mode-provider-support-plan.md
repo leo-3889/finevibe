@@ -1,6 +1,8 @@
 # Ask AI "Plan mode" tickbox — per-provider support plan
 
-Status: planned, not implemented.
+Status: shipped — Phase 1 truthfulness via de83f5d/180fc83 (superseded by the plan-mode
+detail page), OMP flag + matrix via c0d3b8a (items 47-49), verified in-tree 2026-10-22.
+Remaining: Codex startup-flag probe + runtime smoke → see [`../PENDING.md`](../PENDING.md) §3. Archived.
 Date: 2026-10-20.
 Scope: make the "Plan mode" checkbox truthful on every surface that shows it, and extend real
 plan-mode support to Codex and Oh my Pi where the CLI allows it. Pi stays unsupported by design.

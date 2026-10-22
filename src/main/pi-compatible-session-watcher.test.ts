@@ -541,3 +541,132 @@ describe('dir watcher error resilience (P1-11)', () => {
     }
   });
 });
+
+// PA-03 / PA-04 / PA-05: the 2 s tick used to re-read the header
+// (open + 8 KiB + JSON.parse) of every transcript a tab owns, and one rename
+// in one tab's dir re-scanned every tab's dir. Header reads are counted
+// through `openedFiles`, dir visits through `readdirCounts`.
+describe('scan cost (PA-03 / PA-04 / PA-05)', () => {
+  it('reads zero headers per adopted tab on the idle 2s tick (PA-03)', () => {
+    setDir(DIR_A, []);
+    start();
+    watcher.registerPending('ui-a', '/proj', undefined, { sessionDir: DIR_A });
+
+    const fileA = transcript(1_000, 'cli-a');
+    setDir(DIR_A, [fileA]);
+    mockFilesByHeader({ [fileA]: header('cli-a', '/proj') });
+    vi.advanceTimersByTime(2_000);
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-a', 'cli-a');
+
+    const opensAfterAdoption = openedFiles.length; // the one adoption read
+    // Three idle polls; the dir mtime keeps moving so the listing cache is
+    // invalidated and the scan really walks the dir again each tick.
+    for (let i = 0; i < 3; i += 1) {
+      setDir(DIR_A, [fileA], 10_000 + i);
+      vi.advanceTimersByTime(2_000);
+    }
+
+    expect(openedFiles.length).toBe(opensAfterAdoption);
+  });
+
+  it('adopts a known-id launch without reading any header (PA-03)', () => {
+    setDir(DIR_A, []);
+    start();
+    // Pi fresh launches pass the id up-front; the dir is exclusive, so the
+    // first post-registration file is this session's — no header read needed.
+    watcher.registerPending('ui-a', '/proj', undefined, { sessionDir: DIR_A, knownCliId: 'cli-a' });
+    mockFilesByHeader({}); // no header is served: a read would miss
+    // The transcript lands AFTER registration: registerPending baselines the
+    // dir's current contents (PA-05), so a pre-registration file belongs to
+    // a previous launch and is correctly never adopted.
+    const fileA = transcript(1_000, 'cli-a');
+    setDir(DIR_A, [fileA]);
+
+    vi.advanceTimersByTime(2_000);
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-a', 'cli-a');
+    expect(mockOpenSync).not.toHaveBeenCalled();
+  });
+
+  it('re-baselines the generation on /clear so superseded files are never read again (PA-05)', () => {
+    setDir(DIR_A, []);
+    start();
+    watcher.registerPending('ui-a', '/proj', undefined, { sessionDir: DIR_A, knownCliId: 'cli-a' });
+    const files: string[] = [];
+    const lines: Record<string, string> = {};
+    const clear = (id: string, ageMs: number): void => {
+      const file = transcript(ageMs, id);
+      files.push(file);
+      lines[file] = header(id, '/proj');
+      setDir(DIR_A, [...files]);
+      mockFilesByHeader(lines);
+      vi.advanceTimersByTime(2_000);
+    };
+
+    clear('cli-a', 5_000);
+    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-a', 'cli-a');
+    clear('cli-a2', 3_000);
+    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-a', 'cli-a2');
+    clear('cli-a3', 1_000);
+    expect(mockWriteCliSessionId).toHaveBeenLastCalledWith('ui-a', 'cli-a3');
+    mockWriteCliSessionId.mockClear();
+
+    const opensAfterClears = openedFiles.length;
+    // Three idle ticks over three coexisting files. Pre-fix this read k+1=3
+    // headers per tick (the generation gate never excludes post-registration
+    // files), so a 10-clear tab cost 11 reads per tab per tick.
+    for (let i = 0; i < 3; i += 1) {
+      setDir(DIR_A, [...files], 20_000 + i);
+      vi.advanceTimersByTime(2_000);
+    }
+
+    expect(openedFiles.length).toBe(opensAfterClears);
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+  });
+
+  it('event scans touch only the dirty dir; the poll stays a full sweep (PA-04)', () => {
+    setDir(DIR_A, []);
+    setDir(DIR_B, []);
+    start();
+    watcher.registerPending('ui-a', '/proj', undefined, { sessionDir: DIR_A });
+    watcher.registerPending('ui-b', '/proj', undefined, { sessionDir: DIR_B });
+    mockWriteCliSessionId.mockClear();
+
+    // B's transcript lands, then A's watcher fires the coalesced scan.
+    const fileB = transcript(1_000, 'cli-b');
+    setDir(DIR_B, [fileB]);
+    mockFilesByHeader({ [fileB]: header('cli-b', '/proj') });
+    const aBefore = readdirCounts.get(DIR_A) ?? 0;
+    const bBefore = readdirCounts.get(DIR_B) ?? 0;
+
+    watchEventFor(DIR_A)('rename');
+    vi.advanceTimersByTime(250); // SCAN_DEBOUNCE_MS
+
+    // One dir visited — A's, the one that dirtied. Pre-fix: both (200 tabs at
+    // a measured 613 ms per event tick).
+    expect((readdirCounts.get(DIR_A) ?? 0) - aBefore).toBe(1);
+    expect((readdirCounts.get(DIR_B) ?? 0) - bBefore).toBe(0);
+    expect(mockWriteCliSessionId).not.toHaveBeenCalled();
+
+    // The 2s poll is the backbone: the full sweep adopts B.
+    vi.advanceTimersByTime(2_000);
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-b', 'cli-b');
+  });
+
+  it('an event that names no dir (pure change) still runs the full sweep (PA-04)', () => {
+    setDir(DIR_A, []);
+    setDir(DIR_B, []);
+    start();
+    watcher.registerPending('ui-a', '/proj', undefined, { sessionDir: DIR_A });
+    watcher.registerPending('ui-b', '/proj', undefined, { sessionDir: DIR_B });
+
+    const fileB = transcript(1_000, 'cli-b');
+    setDir(DIR_B, [fileB]);
+    mockFilesByHeader({ [fileB]: header('cli-b', '/proj') });
+
+    watchEventFor(DIR_A)('change');
+    vi.advanceTimersByTime(250);
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-b', 'cli-b');
+  });
+});

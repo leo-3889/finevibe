@@ -6,6 +6,7 @@ import { fetchPredefinedMembers, isCacheFresh } from './github-fetcher.js';
 import { filterMembers, type DomainFilter } from './predefined-filter.js';
 import { bindModalDismiss } from '../modal-manager.js';
 import { t } from '../../i18n.js';
+import { initials } from './initials.js';
 
 interface DialogState {
   overlay: HTMLDivElement;
@@ -17,11 +18,45 @@ interface DialogState {
   allSuggestions: TeamMember[];
   query: string;
   activeDomain: DomainFilter;
+  /** UI2-11: set once the dialog is disposed; late timers/IPC must not write into it. */
+  disposed: boolean;
+}
+
+/** The mounted picker's dispose fn, or null when no picker is open (UI2-11). */
+let activeDispose: (() => void) | null = null;
+
+// CI-11: opens share one in-flight fetch — the dedupe `showPredefinedPicker`'s
+// fresh-cache check gives completed fetches, applied to the run itself: a picker
+// opened (or re-opened after a dispose) while a GitHub fetch is still running
+// used to fire a second round-trip and let both responses race into
+// `setTeamPredefinedCache`. Every waiter settles on the same promise.
+let loadInFlight: Promise<TeamMember[]> | null = null;
+
+function fetchPredefinedShared(): Promise<TeamMember[]> {
+  if (loadInFlight) return loadInFlight;
+  const pending = fetchPredefinedMembers().finally(() => {
+    if (loadInFlight === pending) loadInFlight = null;
+  });
+  loadInFlight = pending;
+  return pending;
 }
 
 export async function showPredefinedPicker(): Promise<void> {
-  const state = buildDialog();
+  // The overlay is appended fresh on every open, so a double open used to
+  // stack two pickers: the first kept the ESC binding, kept its search timer
+  // armed against detached DOM, and stayed invisible behind the second.
+  if (activeDispose) return;
+
+  const { state, dispose } = buildDialog();
   document.body.appendChild(state.overlay);
+  activeDispose = dispose;
+
+  // CI-18: the hand-rolled overlay never took focus, so every keystroke —
+  // Enter above all — fell through to the PTY behind the picker and
+  // submitted a prompt. Take it on mount: the overlay box (tabindex -1)
+  // first, then the search input as the autofocus target.
+  state.overlay.focus();
+  state.searchInput.focus();
 
   const cache = appState.team.predefinedCache;
   if (cache && isCacheFresh(cache)) {
@@ -32,9 +67,13 @@ export async function showPredefinedPicker(): Promise<void> {
   }
 }
 
-function buildDialog(): DialogState {
+function buildDialog(): { state: DialogState; dispose: () => void } {
   const overlay = document.createElement('div');
   overlay.className = 'team-picker-overlay';
+  overlay.tabIndex = -1;
+  // CI-18: remember the opener so dispose can hand focus back to it.
+  const active = document.activeElement as HTMLElement | null;
+  const opener = active && active.isConnected && !overlay.contains(active) ? active : null;
 
   const dialog = document.createElement('div');
   dialog.className = 'team-picker-dialog';
@@ -120,6 +159,7 @@ function buildDialog(): DialogState {
     allSuggestions: [],
     query: '',
     activeDomain: 'all',
+    disposed: false,
   };
   updateFooterCount(state);
 
@@ -137,14 +177,21 @@ function buildDialog(): DialogState {
   });
 
   const dispose = (): void => {
+    // UI2-11: the debounce timer outlives the dialog otherwise — it fires 150 ms
+    // later against detached DOM and keeps the disposed generation alive.
+    if (debounceTimer) clearTimeout(debounceTimer);
+    state.disposed = true;
     teardownDismiss();
     overlay.remove();
+    if (activeDispose === dispose) activeDispose = null;
+    // CI-18: give the opener its focus back, never a node removed while open.
+    if (opener && opener.isConnected) opener.focus();
   };
   const teardownDismiss = bindModalDismiss({ overlay, onClose: dispose });
   closeBtn.addEventListener('click', dispose);
   doneBtn.addEventListener('click', dispose);
 
-  return state;
+  return { state, dispose };
 }
 
 function selectDomain(state: DialogState, filter: DomainFilter): void {
@@ -158,11 +205,18 @@ async function load(state: DialogState): Promise<void> {
   state.status.textContent = t('team.picker.loading');
   state.list.innerHTML = '';
   try {
-    const suggestions = await fetchPredefinedMembers();
+    const suggestions = await fetchPredefinedShared();
     appState.setTeamPredefinedCache(suggestions);
+    // CI-11: the success path writes after a dispose too — the shared-cache
+    // write above stays valid for the next open, the dead dialog must not
+    // be repopulated.
+    if (state.disposed) return;
     state.allSuggestions = suggestions;
     rerender(state);
   } catch (err) {
+    // CI-11: the fetch outlives the dialog — a dismiss (or a newer picker)
+    // during the load leaves no status line to write the error into.
+    if (state.disposed) return;
     state.status.textContent = t('team.picker.loadError', { err: err instanceof Error ? err.message : String(err) });
   }
 }
@@ -183,6 +237,7 @@ function updateFooterCount(state: DialogState): void {
 }
 
 function rerender(state: DialogState): void {
+  if (state.disposed) return; // UI2-11: a late fetch/timer result must not rebuild a closed picker
   state.list.innerHTML = '';
   if (state.allSuggestions.length === 0) {
     state.status.textContent = t('team.picker.empty');
@@ -282,7 +337,9 @@ function buildCard(state: DialogState, member: TeamMember, isInstalled: boolean)
   addBtn.className = 'btn-primary team-picker-card-add';
   applyAddState(addBtn, isInstalled, t('team.picker.addToTeam'), t('team.picker.added'));
   const onAdd = (): void => {
-    addMember(member);
+    // C4TM-06: an oversize suggestion prompt is rejected by the state (spawn
+    // E2BIG cap) — only mark the card added when the member really landed.
+    if (!addMember(member)) return;
     applyAddState(addBtn, true, t('team.picker.addToTeam'), t('team.picker.added'));
     updateFooterCount(state);
   };
@@ -309,6 +366,10 @@ function buildCard(state: DialogState, member: TeamMember, isInstalled: boolean)
 function showMemberDetail(member: TeamMember, onAdd: () => void, isInstalled: boolean): void {
   const overlay = document.createElement('div');
   overlay.className = 'team-picker-detail-overlay';
+  overlay.tabIndex = -1;
+  // CI-18: the nested detail overlay takes focus exactly like the picker.
+  const active = document.activeElement as HTMLElement | null;
+  const opener = active && active.isConnected ? active : null;
 
   const dialog = document.createElement('div');
   dialog.className = 'team-picker-detail-dialog';
@@ -355,10 +416,13 @@ function showMemberDetail(member: TeamMember, onAdd: () => void, isInstalled: bo
   dialog.appendChild(footer);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  overlay.focus();
 
   const dispose = (): void => {
     teardownDismiss();
     overlay.remove();
+    // CI-18: focus returns to the card the detail was opened from.
+    if (opener && opener.isConnected) opener.focus();
   };
   const teardownDismiss = bindModalDismiss({ overlay, onClose: dispose });
   backBtn.addEventListener('click', dispose);
@@ -382,8 +446,8 @@ function buildNameRole(member: TeamMember): HTMLElement {
   return wrap;
 }
 
-function addMember(member: TeamMember): void {
-  appState.addTeamMember({
+function addMember(member: TeamMember): TeamMember | undefined {
+  return appState.addTeamMember({
     id: member.id,
     name: member.name,
     role: member.role,
@@ -400,13 +464,4 @@ function applyAddState(btn: HTMLButtonElement, isInstalled: boolean, addLabel: s
   btn.textContent = isInstalled
     ? t('team.picker.addedGlyph', { label: addedLabel })
     : t('team.picker.addGlyph', { label: addLabel });
-}
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? '')
-    .join('') || '?';
 }

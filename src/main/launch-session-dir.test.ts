@@ -14,6 +14,8 @@ import {
   launchSessionDir,
   ensureLaunchSessionDir,
   writeLaunchSessionMeta,
+  readLaunchSessionMeta,
+  readLaunchSessionMetaCached,
   pruneLaunchSessionDirs,
   listLaunchSessionDirs,
   LAUNCH_SESSION_RETENTION_MS,
@@ -72,6 +74,18 @@ describe('launchSessionBaseDir/launchSessionDir', () => {
     expect(path.basename(dir)).toBe('sess_1-2_x');
     // A hostile id is sanitized, never a path escape.
     expect(launchSessionDir('pi', '../../evil').startsWith(launchSessionBaseDir('pi'))).toBe(true);
+  });
+
+  it('S1-10: ids that collapse to the same sanitized spelling keep distinct dirs', () => {
+    const a = launchSessionDir('pi', 'a:b');
+    const b = launchSessionDir('pi', 'a/b');
+    expect(a).not.toBe(b);
+    for (const dir of [a, b]) {
+      expect(path.dirname(dir)).toBe(launchSessionBaseDir('pi'));
+      expect(path.basename(dir).startsWith('a_b-')).toBe(true);
+    }
+    // Deterministic: the same raw id always maps to the same dir.
+    expect(launchSessionDir('pi', 'a:b')).toBe(a);
   });
 });
 
@@ -191,49 +205,104 @@ describe('pruneLaunchSessionDirs() scan bound (P2-57)', () => {
 });
 
 describe('listLaunchSessionDirs()', () => {
-  it('lists dirs with recent activity', () => {
+  const dirsOf = (entries: Array<{ dir: string; mtimeMs: number }>) => entries.map(e => e.dir);
+
+  it('lists dirs with recent activity', async () => {
     const live = makeDir('live', { createdAt: RECENT, transcripts: [RECENT] });
-    expect(listLaunchSessionDirs(base)).toEqual([live]);
+    const entries = await listLaunchSessionDirs(base);
+    expect(dirsOf(entries)).toEqual([live]);
+    // PA-19: the lstat mtime the retention gate paid for rides along — it is
+    // the meta cache key, so the sidecar read needs no second stat.
+    expect(entries[0].mtimeMs).toBeCloseTo(fs.lstatSync(live).mtimeMs, 0);
   });
 
-  it('drops dirs whose activity is entirely outside the retention window', () => {
+  it('drops dirs whose activity is entirely outside the retention window', async () => {
     makeDir('dead', { createdAt: OLD, transcripts: [OLD], dirMtime: OLD });
     const live = makeDir('live', { createdAt: OLD, transcripts: [RECENT], dirMtime: OLD });
     // The dir mtime is old (coarse filesystem, restored backup): the newest
     // transcript mtime keeps the dir visible to search.
-    expect(listLaunchSessionDirs(base)).toEqual([live]);
+    expect(dirsOf(await listLaunchSessionDirs(base))).toEqual([live]);
   });
 
-  it('returns nothing for a base that does not exist', () => {
-    expect(listLaunchSessionDirs(path.join(base, 'missing'))).toEqual([]);
+  it('returns nothing for a base that does not exist', async () => {
+    expect(await listLaunchSessionDirs(path.join(base, 'missing'))).toEqual([]);
   });
 
-  it('skips files and symlinks in the base dir', () => {
+  it('skips files and symlinks in the base dir', async () => {
     const live = makeDir('live', { createdAt: RECENT, transcripts: [RECENT] });
     fs.writeFileSync(path.join(base, 'stray.jsonl'), 'x');
-    expect(listLaunchSessionDirs(base)).toEqual([live]);
+    expect(dirsOf(await listLaunchSessionDirs(base))).toEqual([live]);
+  });
+});
+
+describe('readLaunchSessionMetaCached()', () => {
+  it('reads the sidecar once per dir mtime (PA-19)', async () => {
+    const dir = makeDir('live', { createdAt: RECENT, transcripts: [RECENT] });
+    const dirMtime = fs.lstatSync(dir).mtimeMs;
+    const readSpy = vi.spyOn(fs.promises, 'readFile');
+    try {
+      const sidecarOnly = (call: unknown[]) => String(call[0]).endsWith('.finevibe.json');
+      const first = await readLaunchSessionMetaCached(dir, dirMtime);
+      expect(first?.cwd).toBe('/proj');
+      expect(readSpy.mock.calls.filter(sidecarOnly)).toHaveLength(1);
+
+      // Same dir mtime: served from the cache, no second read.
+      const second = await readLaunchSessionMetaCached(dir, dirMtime);
+      expect(second).toEqual(first);
+      expect(readSpy.mock.calls.filter(sidecarOnly)).toHaveLength(1);
+
+      // A write into the dir bumps its mtime (the sidecar is written once at
+      // launch; any later touch is conservative invalidation): re-read.
+      writeLaunchSessionMeta(dir, { providerId: 'pi', cwd: '/other', createdAt: new Date(RECENT).toISOString() });
+      // Force a strictly-newer dir mtime: on a fast filesystem the write can
+      // land inside the same timestamp granularity, making the cache key
+      // identical and the invalidation assertion a coin flip.
+      const bump = new Date(dirMtime + 5000);
+      fs.utimesSync(dir, bump, bump);
+      const moved = fs.lstatSync(dir).mtimeMs;
+      expect(moved).toBeGreaterThan(dirMtime);
+      const third = await readLaunchSessionMetaCached(dir, moved);
+      expect(third?.cwd).toBe('/other');
+      expect(readSpy.mock.calls.filter(sidecarOnly)).toHaveLength(2);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('mirrors readLaunchSessionMeta on a missing sidecar', async () => {
+    const legacy = makeDir('legacy', { transcripts: [RECENT] });
+    expect(await readLaunchSessionMetaCached(legacy, fs.lstatSync(legacy).mtimeMs)).toBeNull();
+    expect(readLaunchSessionMeta(legacy)).toBeNull();
   });
 });
 
 describe('ensureLaunchSessionDir() retention hook', () => {
-  it('prunes expired dirs on the first launch of a base, before the spawn', () => {
+  it('S2-04/scout-2: prunes on the next macrotask, never on the spawn path', async () => {
     fs.rmSync(base, { recursive: true, force: true });
     fs.mkdirSync(base, { recursive: true });
     const dead = makeDir('dead', { createdAt: OLD, dirMtime: OLD });
     const sessionDir = path.join(base, 'new-tab');
     ensureLaunchSessionDir(sessionDir);
+    // The spawn path must return synchronously WITHOUT the sweep: the dir
+    // is created, the expired dir is still there.
+    expect(fs.existsSync(sessionDir)).toBe(true);
+    expect(fs.existsSync(dead)).toBe(true);
+    // The deferred sweep removes it on the next macrotask.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(fs.existsSync(dead)).toBe(false);
     expect(fs.existsSync(sessionDir)).toBe(true);
   });
 
-  it('runs the sweep at most once per base per process', () => {
+  it('runs the sweep at most once per base per process', async () => {
     fs.rmSync(base, { recursive: true, force: true });
     fs.mkdirSync(base, { recursive: true });
     ensureLaunchSessionDir(path.join(base, 'tab-1'));
+    await new Promise((resolve) => setImmediate(resolve)); // sweep consumed
     // Created after the sweep (e.g. by an external writer): the guard means a
     // second launch must not pay for the scan again.
     const dead = makeDir('late-dead', { createdAt: OLD, dirMtime: OLD });
     ensureLaunchSessionDir(path.join(base, 'tab-2'));
+    await new Promise((resolve) => setImmediate(resolve));
     expect(fs.existsSync(dead)).toBe(true);
     expect(fs.existsSync(path.join(base, 'tab-2'))).toBe(true);
   });

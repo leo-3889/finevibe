@@ -1,5 +1,6 @@
 import { Terminal } from '@xterm/xterm';
-import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
+import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
+import { isWin } from '../platform.js';
 import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -11,9 +12,12 @@ import { removeSession as removeContextSession, getContext, getContextSeverity, 
 import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
+import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
+import { forwardResize } from '../sharing/share-manager.js';
+import { destroySearchBar } from './search-bar.js';
 
 interface TerminalInstance {
   terminal: Terminal;
@@ -96,6 +100,7 @@ export function createTerminalPane(
     theme: getTerminalTheme(appState.preferences.theme ?? 'dark'),
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
+    scrollback: TERMINAL_SCROLLBACK,
     cursorBlink: true,
     allowProposedApi: true,
     linkHandler: {
@@ -120,7 +125,10 @@ export function createTerminalPane(
   }));
 
   const writeToPty = (data: string) => window.finevibe.pty.write(sessionId, data);
-  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty);
+  // Local Windows PTY: ConPTY advertises win32-input-mode (`?9001h`) as the
+  // first output bytes at spawn, before this parser exists — latch it at
+  // creation so Escape never goes out as a bare ESC to the armed ConPTY.
+  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty, { latchKey: sessionId, latched: isWin });
 
   // Send CSI u encoding for Shift+Enter so Claude CLI treats it as newline
   attachClipboardCopyHandler(terminal, (e) => {
@@ -384,6 +392,11 @@ export function fitTerminal(sessionId: string): void {
     if (size === instance.lastSize) return;
     instance.lastSize = size;
     window.finevibe.pty.resize(sessionId, cols, rows);
+    // S3-02 host side: the pane resize leg ended at the local PTY — remote
+    // guests were laid out to a geometry the host no longer has (the
+    // share-manager onResize hook existed, nothing called it).
+    // broadcastResize is a no-op for sessions that are not shared.
+    forwardResize(sessionId, cols, rows);
   } catch {
     // Element not yet visible
   }
@@ -444,11 +457,23 @@ export function destroyTerminal(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
 
+  // S3-08: Cmd+F registers a bar keyed by session id (searchBars map,
+  // search-bar.ts) holding DOM + xterm search backend + live results
+  // subscription; session ids are fresh UUIDs, so a bar left behind here is
+  // retained for the renderer's whole lifetime — per CLOSED TAB. Every
+  // other pane owner (closeShell, destroyAllShells) calls destroySearchBar;
+  // this pane was the outlier. Run it before dispose(): clearing
+  // decorations touches the live terminal.
+  destroySearchBar(sessionId);
   clearPendingPromptTimer(instance);
   window.finevibe.pty.kill(sessionId);
   instance.terminal.dispose();
   instance.element.remove();
   instances.delete(sessionId);
+  // C2R-13: the win32-input-mode latch is keyed by this session id (attach
+  // site line ~131); ids are fresh UUIDs, so the latch must die with the
+  // pane or the set grows one string per closed Windows PTY.
+  unlatchWin32Key(sessionId);
   // A destroyed pane must not stay "focused": the rail and the keyboard
   // routing read this id to decide where a paste/keystroke belongs.
   if (focusedSessionId === sessionId) focusedSessionId = null;
@@ -581,7 +606,7 @@ export function updateContextDisplay(sessionId: string, info: ContextWindowInfo)
 
   // Context-fill state drives the meter hue (iris → amber → red) on the whole bar.
   const severity = getContextSeverity(pct);
-  const state = severity === 'critical' ? 'crit' : severity === 'warning' ? 'warn' : 'ok';
+  const state = ({ critical: 'crit', warning: 'warn' } as Record<string, string>)[severity] ?? 'ok';
   const bar = instance.element.querySelector('.session-status-bar') as HTMLElement | null;
   if (bar) bar.dataset.state = state;
 

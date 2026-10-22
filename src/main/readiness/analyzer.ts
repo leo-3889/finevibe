@@ -38,7 +38,7 @@ export async function analyzeReadiness(projectPath: string, excludedProviders?: 
   );
 
   const ctx: AnalysisContext = {
-    trackedFiles: getTrackedFiles(projectPath),
+    trackedFiles: await getTrackedFiles(projectPath),
     isIgnored: buildFineVibeIgnoreMatcher(projectPath),
   };
 

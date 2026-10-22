@@ -106,10 +106,15 @@ export function provisionProfileDir(
   // traversals and link spellings cannot escape it.
   const homeRoot = canonicalDir(os.homedir());
   const homeRel = path.relative(homeRoot, target);
-  if (homeRel !== '' && (homeRel === '..' || homeRel.startsWith('..' + path.sep) || path.isAbsolute(homeRel))) {
+  // P2-39 + scout-2: target === the home ROOT is rejected too — the CLI
+  // then writes settings.json/.credentials.json/projects directly into
+  // the home root, and store.ts:245 deliberately refuses to gate the app's
+  // own fs:* IPC on the home root, so that polluted tree is the one place
+  // the containment guards do not cover.
+  if (homeRel === '' || homeRel === '..' || homeRel.startsWith(`..${path.sep}`) || path.isAbsolute(homeRel)) {
     throw new Error(
-      `Profile path ${dir} is outside your home directory. ` +
-      `Choose a directory under ${os.homedir()} — each profile's config dir must live in your user tree.`
+      `Profile path ${dir} ${homeRel === '' ? 'is your home directory itself' : 'is outside your home directory'}. ` +
+      `Choose a dedicated directory under ${os.homedir()} — each profile's config dir must live in your user tree.`
     );
   }
   const collision = existingProfiles.find(

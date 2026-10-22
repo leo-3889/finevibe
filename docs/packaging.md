@@ -108,3 +108,21 @@ previously packaged app on the packaging machine (evidence row in
 verification on a host that has both prerequisites, or on the CI `windows-2022` runner
 (`build-windows` in `release.yml`); read a toolchain or symlink error on a bare box as a
 host problem, never as a regression in the tree under test.
+
+### Icon-stamped Windows builds without Developer Mode
+
+On a host with neither the C++ toolchain nor symlink privilege,
+`npm run dist:win:local` produces a full installer whose app exe carries the
+FineVibe identity: the electron-builder dir phase runs with both host-workaround
+flags, `scripts/edit-win-exe.mjs` then stamps the icon and version resources into
+`dist/win-unpacked/FineVibe.exe` using the `rcedit` npm package (the rcedit
+binary ships inside the package, so no `winCodeSign` 7z extraction and no
+symlink privilege are needed), and electron-builder repacks the stamped
+directory with `--prepackaged dist/win-unpacked` into the NSIS Setup and the zip.
+`VersionInfo` of `FineVibe.exe` then reports `ProductName=FineVibe` with a
+4-part `FileVersion`, and the file icon is the FineVibe tile. The Setup.exe's
+own installer-stub icon stays the default NSIS icon — editing that stub hits
+the same symlink blocker — and releases remain the CI `windows-2022` path,
+which embeds every icon through the full flow. See the
+[windows-packaging skill](../.claude/skills/windows-packaging/SKILL.md) for the
+blocker table and verification steps.

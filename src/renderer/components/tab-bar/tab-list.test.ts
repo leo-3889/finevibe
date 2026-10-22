@@ -30,6 +30,7 @@ vi.mock('../../provider-availability.js', () => ({
   hasMultipleAvailableProviders: () => false,
   getCachedProviderMetas: () => [],
   getProviderCapabilities: () => ({}),
+  getProviderAvailabilitySnapshot: () => null,
 }));
 vi.mock('../../session-close.js', () => ({
   closeSessionWithConfirm: vi.fn(),
@@ -47,9 +48,13 @@ vi.mock('../session-inspector.js', () => ({
   getInspectedSessionId: () => null,
   closeInspector: vi.fn(),
 }));
-vi.mock('../resume-with-provider-menu.js', () => ({ buildResumeWithProviderItems: () => [] }));
+vi.mock('../../session-unread.js', () => ({
+  isUnread: vi.fn(() => false),
+}));
 
-const { render, updateTabStatus } = await import('./tab-list.js');
+
+const { render, updateTabStatus, handleSessionChanged, patchUnread } = await import('./tab-list.js');
+const { isUnread } = await import('../../session-unread.js');
 const { setActiveContextMenu, getActiveContextMenu } = await import('./menu.js');
 const { _resetForTesting } = await import('./tab-scroll.js');
 const { t } = await import('../../i18n.js');
@@ -92,7 +97,7 @@ beforeEach(() => {
   _resetForTesting();
   tabListEl.innerHTML = '';
   stripScroll = 0;
-  document.body.querySelectorAll('.tab-context-menu').forEach((m) => m.remove());
+  for (const m of document.body.querySelectorAll('.tab-context-menu')) m.remove();
   setActiveContextMenu(null);
   activeProject = project('p1', [cliSession('s1', 'alpha')]);
 });
@@ -167,6 +172,54 @@ describe('shared context-menu singleton (P2-107, tab side)', () => {
     const menus = document.querySelectorAll('.tab-context-menu');
     expect(menus).toHaveLength(1);
     expect(getActiveContextMenu()).toBe(menus[0]);
+  });
+});
+
+describe('rename-time structural events (SR2-e)', () => {
+  it('replays the banked strip rebuild when the rename commits', () => {
+    render();
+    const tab = tabListEl.querySelector('.tab-item')!;
+    tab.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    // Close s1 while the rename input owns the strip: the event is banked,
+    // not dropped — the input survives the chatty render().
+    (activeProject as { sessions: unknown[] }).sessions = [];
+    handleSessionChanged({ sessionId: 's1', kind: 'remove' });
+    const input = tabListEl.querySelector('.tab-name input') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(1);
+
+    input.value = 'renamed';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(renameSession).toHaveBeenCalledWith('p1', 's1', 'renamed', true);
+    // The banked rebuild replayed: the strip mirrors the (now empty) model,
+    // so the closed session is no longer a clickable ghost tab.
+    expect(tabListEl.querySelector('.tab-item')).toBeNull();
+  });
+
+  it('replays the banked rebuild when the rename cancels', () => {
+    render();
+    const tab = tabListEl.querySelector('.tab-item')!;
+    tab.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    (activeProject as { sessions: unknown[] }).sessions = [];
+    handleSessionChanged({ sessionId: 's1', kind: 'remove' });
+    const input = tabListEl.querySelector('.tab-name input') as HTMLInputElement;
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(tabListEl.querySelector('.tab-item')).toBeNull();
+  });
+
+  it('skips renders for deferred (batch-close) events and rebuilds on the kick', () => {
+    activeProject = project('p1', [cliSession('s1', 'alpha'), cliSession('s2', 'beta')]);
+    render();
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(2);
+
+    handleSessionChanged({ sessionId: 's1', kind: 'remove', deferRender: true });
+    // Deferred: the strip keeps the stale tab until the batch's kick.
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(2);
+
+    (activeProject as { sessions: unknown[] }).sessions = [cliSession('s2', 'beta')];
+    handleSessionChanged({ sessionId: 's1', kind: 'remove' });
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(1);
   });
 });
 
@@ -319,5 +372,99 @@ describe('tab groups', () => {
     updateTabStatus('s2', 'working');
     const dot = tabListEl.querySelector('.tab-group .tab-item[data-session-id="s2"] .tab-status') as HTMLElement;
     expect(dot.className).toContain('working');
+  });
+});
+
+describe('session-changed patching (PA-12)', () => {
+  beforeEach(() => {
+    activeProject = project('p1', [cliSession('s1', 'alpha'), cliSession('s2', 'beta')]);
+    render();
+  });
+
+  it('metadata change patches the tab in place — no strip rebuild', () => {
+    const tab1 = tabListEl.querySelector<HTMLElement>('[data-session-id="s1"]')!;
+    const tab2 = tabListEl.querySelector<HTMLElement>('[data-session-id="s2"]')!;
+    const s1 = (activeProject as unknown as { sessions: { name: string; cliSessionId: string | null }[] }).sessions[0];
+    s1.name = 'renamed';
+    s1.cliSessionId = 'cli-adopted';
+
+    handleSessionChanged({ sessionId: 's1', kind: 'metadata' });
+
+    expect(tabListEl.querySelector('[data-session-id="s1"]')).toBe(tab1);
+    expect(tabListEl.querySelector('[data-session-id="s2"]')).toBe(tab2);
+    expect(tab1.querySelector('.tab-name')!.textContent).toBe('renamed');
+    expect(tab1.dataset.cliSessionId).toBe('cli-adopted');
+    expect(tab1.dataset.tabName).toBe('renamed');
+  });
+
+  it('payload-less session-changed keeps the full rebuild', () => {
+    const tab1 = tabListEl.querySelector('[data-session-id="s1"]');
+    handleSessionChanged();
+    expect(tabListEl.querySelector('[data-session-id="s1"]')).not.toBe(tab1);
+  });
+
+  it('add / remove / reorder kinds keep the full rebuild', () => {
+    const tab1 = tabListEl.querySelector('[data-session-id="s1"]');
+    for (const kind of ['add', 'remove', 'reorder']) {
+      handleSessionChanged({ sessionId: 's1', kind });
+      expect(tabListEl.querySelector('[data-session-id="s1"]')).not.toBe(tab1);
+    }
+  });
+
+  it('activate moves .active and the unread mask without rebuilding tabs', () => {
+    vi.mocked(isUnread).mockImplementation((id: string) => id === 's2');
+    render(); // re-render with s2 unread
+    const tab1 = tabListEl.querySelector<HTMLElement>('[data-session-id="s1"]')!;
+    const tab2 = tabListEl.querySelector<HTMLElement>('[data-session-id="s2"]')!;
+    expect(tab1.classList.contains('active')).toBe(true);
+    expect(tab2.classList.contains('unread')).toBe(true);
+
+    (activeProject as { activeSessionId: string | null }).activeSessionId = 's2';
+    handleSessionChanged({ sessionId: 's2', kind: 'activate' });
+
+    expect(tabListEl.querySelector('[data-session-id="s1"]')).toBe(tab1);
+    expect(tabListEl.querySelector('[data-session-id="s2"]')).toBe(tab2);
+    expect(tab1.classList.contains('active')).toBe(false);
+    expect(tab2.classList.contains('active')).toBe(true);
+    expect(tab2.classList.contains('unread')).toBe(false); // active tab masks unread
+  });
+
+  it('metadata that changed group membership falls back to a full render', () => {
+    const tab1 = tabListEl.querySelector('[data-session-id="s1"]');
+    (activeProject as { tabGroups?: unknown[] }).tabGroups = [tabGroup('g1', 'Work', ['s1', 's2'])];
+
+    handleSessionChanged({ sessionId: 's1', kind: 'metadata' });
+
+    // Structural change → rebuild: the group wrapper now exists.
+    expect(tabListEl.querySelector('[data-session-id="s1"]')).not.toBe(tab1);
+    expect(tabListEl.querySelector('.tab-group')).not.toBeNull();
+  });
+
+  it('metadata for a session of another project triggers the safe rebuild', () => {
+    const tab1 = tabListEl.querySelector('[data-session-id="s1"]');
+    handleSessionChanged({ sessionId: 'zz', kind: 'metadata' });
+    expect(tabListEl.querySelector('[data-session-id="s1"]')).not.toBe(tab1);
+  });
+});
+
+describe('patchUnread (PA-11)', () => {
+  it('flips unread classes in place and reports success', () => {
+    activeProject = project('p1', [cliSession('s1', 'alpha'), cliSession('s2', 'beta')]);
+    vi.mocked(isUnread).mockImplementation((id: string) => id === 's2');
+    render();
+    const tab2 = tabListEl.querySelector<HTMLElement>('[data-session-id="s2"]')!;
+    expect(tab2.classList.contains('unread')).toBe(true);
+
+    vi.mocked(isUnread).mockReturnValue(false);
+    expect(patchUnread()).toBe(true);
+    expect(tabListEl.querySelector('[data-session-id="s2"]')).toBe(tab2);
+    expect(tab2.classList.contains('unread')).toBe(false);
+  });
+
+  it('reports failure when the strip no longer mirrors the model', () => {
+    activeProject = project('p1', [cliSession('s1', 'alpha')]);
+    render();
+    (activeProject as { sessions: unknown[] }).sessions.push(cliSession('s2', 'beta'));
+    expect(patchUnread()).toBe(false);
   });
 });

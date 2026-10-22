@@ -8,7 +8,7 @@ import { onShareChange } from '../../sharing/share-manager.js';
 import { loadProviderAvailability, hasMultipleAvailableProviders } from '../../provider-availability.js';
 import { getActiveContextMenu, hideTabContextMenu } from './menu.js';
 import { gitStatusEl, tabListEl } from './dom.js';
-import { render, updateTabStatus } from './tab-list.js';
+import { render, updateTabStatus, handleSessionChanged, patchUnread } from './tab-list.js';
 import { clearTabScrollState } from './tab-scroll.js';
 import { initTabArrows, syncTabArrows } from './tab-arrows.js';
 import { renderGitStatus, showBranchContextMenu } from './git-status-bar.js';
@@ -22,7 +22,9 @@ const btnMore = document.getElementById('btn-more')!;
 const btnToggleTerminal = document.getElementById('btn-toggle-terminal')!;
 
 export function initTabBar(): void {
+  // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
   btnToggleTerminal.innerHTML = ICON_TERMINAL;
+  // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
   btnMore.innerHTML = ICON_MENU;
   // Browser button keeps its CSS-drawn .toolbar-icon-browser glyph from index.html.
 
@@ -65,18 +67,28 @@ export function initTabBar(): void {
   }).catch(() => {});
 
   appState.on('state-loaded', render);
+  // SR2-a: add/close reach the strip through `session-changed` (kind
+  // add/remove → handleSessionChanged) below. The old session-added /
+  // session-removed subscriptions double-routed every add/close into two
+  // full strip rebuilds; split-layout and sidebar own their own
+  // subscriptions to those events.
   appState.on('project-changed', render);
-  appState.on('session-added', render);
-  appState.on('session-removed', render);
   appState.on('project-removed', (id) => { if (typeof id === 'string') clearTabScrollState(id); });
-  appState.on('session-changed', render);
-  appState.on('layout-changed', render);
+  appState.on('session-changed', handleSessionChanged);
+  // C2R-12: the strip renders no layout state (only session-menu's swarm
+  // entry reads layout.mode, at open time), so layout toggles never needed a
+  // rebuild — split-layout owns `layout-changed` and renders the panes.
   onShareChange(render);
 
   onStatusChange(updateTabStatus);
 
-  onUnreadChange(render);
-  onGithubUnreadChange(render);
+  // PA-11: flip the tab dots in place; full strip render only if the strip
+  // no longer mirrors the model (session-unread already coalesces per frame).
+  onUnreadChange(() => { if (!patchUnread()) render(); });
+  // C2R-08: github notifications only move the project-tab dots, which
+  // patchUnread already recomputes (hasGithubUnread); the full strip rebuild
+  // per notify was pure waste.
+  onGithubUnreadChange(() => { if (!patchUnread()) render(); });
 
   onGitStatusChange((projectId) => {
     if (projectId === appState.activeProjectId) renderGitStatus();

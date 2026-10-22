@@ -62,6 +62,24 @@ export function getAvailableProviderIds(): ProviderId[] {
   return availabilityCache;
 }
 
+/** S4-03: async twin of getAvailableProviderIds — same process cache, probed
+ * with the async binary probe (validatePrerequisitesAsync → disk-tier cache
+ * + spawn stages off the main thread). Consumers that run the sync getter
+ * afterwards (analyzeReadiness) hit this cache, so warming costs no extra
+ * probes. Providers without the twin keep the sync probe, mirroring main.ts. */
+export async function getAvailableProviderIdsAsync(): Promise<ProviderId[]> {
+  if (!availabilityCache) {
+    const providers = getAllProviders();
+    const availability = await Promise.all(providers.map(p => (
+      p.validatePrerequisitesAsync
+        ? p.validatePrerequisitesAsync()
+        : Promise.resolve(p.validatePrerequisites())
+    )));
+    availabilityCache = providers.filter((_, i) => availability[i]).map(p => p.meta.id);
+  }
+  return availabilityCache;
+}
+
 /** Explicit invalidation hook for the cached availability probes. */
 export function invalidateAvailabilityCache(): void {
   availabilityCache = null;

@@ -162,7 +162,17 @@ export function initSplitLayout(): void {
   appState.on('project-changed', renderLayout);
   appState.on('session-added', onSessionAdded);
   appState.on('session-removed', onSessionRemoved);
-  appState.on('session-changed', renderLayout);
+  // PA-13: metadata-only session-changed (title / CLI-id adoption) changes no
+  // layout — a full pass costs the session loop + 9 hideAll sweeps + fitAllVisible
+  // for nothing, N times per resume storm. Payload-less stays on the full path.
+  appState.on('session-changed', (data?: unknown) => {
+    const payload = data as { kind?: string; deferRender?: boolean } | undefined;
+    if (payload?.kind === 'metadata') return;
+    // S3-06: batch closes (removeAllSessions et al.) mark every per-session
+    // event `deferRender`; the batch's trailing kick renders the layout once.
+    if (payload?.deferRender) return;
+    renderLayout();
+  });
   appState.on('layout-changed', renderLayout);
 
   onUnreadChange(() => {
@@ -192,7 +202,14 @@ export function initSplitLayout(): void {
 
 function onSessionAdded(data: unknown): void {
   const { projectId, session } = data as { projectId: string; session: { id: string; type?: string; cliSessionId: string | null; providerId?: string; args?: string; envVars?: string; profileId?: string; cwd?: string; diffFilePath?: string; diffArea?: string; worktreePath?: string; fileReaderPath?: string; fileReaderLine?: number; browserTabUrl?: string } };
-  const project = appState.activeProject;
+  // C2R-09: every branch below builds from `project` (path, id, config dir),
+  // so reading it off appState.activeProject put a background add — board
+  // run-task, team, plan sessions — on the WRONG cwd. The payload project owns
+  // the session: the pane is created for it and stays unattached until
+  // renderLayout shows that project (the lazy loop skips sessions that already
+  // carry an instance), which keeps the eager spawn + the pending-prompt
+  // hand-off this handler also performs.
+  const project = appState.projects.find((p) => p.id === projectId) ?? appState.activeProject;
   if (!project) return;
 
   if (session.type === 'file-reader') {
@@ -573,6 +590,7 @@ function showEmptyState(project: ProjectRecord | undefined): void {
 
     const cta = document.createElement('button');
     cta.className = 'btn-primary empty-state-cta';
+    // pi-lens-ignore: no-inner-html
     cta.innerHTML = `${plusIcon}<span>Start a session</span>`;
     cta.addEventListener('click', () => quickNewSession());
 

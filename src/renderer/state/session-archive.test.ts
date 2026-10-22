@@ -9,7 +9,7 @@ vi.stubGlobal('crypto', {
   randomUUID: () => `uuid-${++uuidCounter}`,
 });
 import { archiveSession, archiveSessionOnCreate, buildResumedSession, buildResumedSessionFromCliId, findCreateEntry, syncCreateEntryCliId } from './session-archive';
-import type { ProjectRecord, SessionRecord } from '../../shared/types';
+import type { ArchivedSession, ProjectRecord, SessionRecord } from '../../shared/types';
 
 beforeEach(() => {
   uuidCounter = 0;
@@ -200,6 +200,9 @@ describe('history-on-create', () => {
 
   it('the cap never prunes a running row', () => {
     const project = makeProject();
+    // PA-06: the exemption now follows the live tab — an 'active' row is
+    // exempt only while a session with its liveSessionId exists.
+    project.sessions = [makeSession({ id: 'other-tab' })];
     const history = Array.from({ length: 499 }, (_, i) => ({
       id: `c${i}`,
       name: 'closed',
@@ -222,5 +225,70 @@ describe('history-on-create', () => {
     archiveSession(project, makeSession({ cliSessionId: 'cli-1' }), { finalize: true });
     expect(project.sessionHistory!.length).toBeLessThanOrEqual(500);
     expect(project.sessionHistory!.some((a) => a.state === 'active')).toBe(true);
+  });
+});
+
+describe('history cap exemptions (PA-06)', () => {
+  const makeClosedRow = (id: string, overrides: Partial<ArchivedSession> = {}): ArchivedSession => ({
+    id,
+    name: 'row',
+    providerId: 'claude',
+    cliSessionId: id,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    closedAt: '2026-01-01T00:00:00.000Z',
+    cost: null,
+    ...overrides,
+  });
+  const makeActiveRow = (id: string, liveSessionId: string): ArchivedSession => ({
+    id,
+    name: 'live',
+    providerId: 'claude',
+    cliSessionId: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    state: 'active',
+    liveSessionId,
+    cost: null,
+  });
+
+  it('bounds a history of only bookmarked rows (previously unbounded)', () => {
+    const project = makeProject();
+    project.sessionHistory = Array.from({ length: 501 }, (_, i) =>
+      makeClosedRow(`b${i}`, { bookmarked: true }),
+    );
+    archiveSession(project, makeSession({ cliSessionId: 'cli-new' }));
+    // 502 rows, cap 500 → 2 dropped. Only the newest 50 bookmarks are exempt,
+    // so the old "bookmarked survives forever" immunity is gone.
+    expect(project.sessionHistory!.length).toBe(500);
+  });
+
+  it('keeps the newest 50 bookmarks; the 51st-newest is prunable', () => {
+    const project = makeProject();
+    const plain = Array.from({ length: 500 }, (_, i) => makeClosedRow(`c${i}`));
+    const marks = Array.from({ length: 51 }, (_, i) => makeClosedRow(`b${i}`, { bookmarked: true }));
+    // Newest-last: b50 is the newest bookmark, b0 the 51st-newest.
+    project.sessionHistory = [...plain, ...marks];
+    archiveSession(project, makeSession({ cliSessionId: 'cli-new' }));
+    const ids = new Set(project.sessionHistory!.map((a) => a.id));
+    expect(project.sessionHistory!.length).toBe(500);
+    for (let i = 1; i <= 50; i++) expect(ids.has(`b${i}`)).toBe(true);
+    expect(ids.has('b0')).toBe(false);
+  });
+
+  it('prunes a crash-orphanned active row and never prunes a live-tab row', () => {
+    const project = makeProject();
+    project.sessions = [makeSession({ id: 'live-tab' })];
+    project.sessionHistory = [
+      // Oldest row is an orphan: its liveSessionId has no entry in sessions.
+      makeActiveRow('act-ghost', 'ghost-tab'),
+      makeActiveRow('act-live', 'live-tab'),
+      ...Array.from({ length: 498 }, (_, i) => makeClosedRow(`c${i}`)),
+    ];
+    archiveSession(project, makeSession({ cliSessionId: 'cli-new' }));
+    // 501 rows → 1 dropped: the orphan lost its exemption, so it is the oldest
+    // non-exempt row; the row with a live tab is exempt.
+    const ids = new Set(project.sessionHistory!.map((a) => a.id));
+    expect(project.sessionHistory!.length).toBe(500);
+    expect(ids.has('act-ghost')).toBe(false);
+    expect(ids.has('act-live')).toBe(true);
   });
 });

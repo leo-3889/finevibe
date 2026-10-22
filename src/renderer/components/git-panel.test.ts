@@ -8,6 +8,7 @@ vi.mock('../state.js', () => ({ appState: { on: vi.fn(), activeProjectId: null, 
 vi.mock('../git-status.js', () => ({
   onChange: vi.fn(),
   gitChangeCount: vi.fn(),
+  gitStatusErrored: vi.fn(),
   getActiveGitPath: vi.fn(),
   getWorktrees: vi.fn(),
   setActiveWorktree: vi.fn(),
@@ -27,6 +28,7 @@ import { appState } from '../state.js';
 import {
   onChange as onGitStatusChange,
   gitChangeCount,
+  gitStatusErrored,
   getActiveGitPath,
   getWorktrees,
 } from '../git-status.js';
@@ -93,6 +95,7 @@ beforeEach(() => {
   (window as unknown as { finevibe: unknown }).finevibe = { git: { getFiles } };
   setActiveProject('p1');
   vi.mocked(gitChangeCount).mockReturnValue(2);
+  vi.mocked(gitStatusErrored).mockReturnValue(false);
   vi.mocked(getActiveGitPath).mockReturnValue('/repo');
   vi.mocked(getWorktrees).mockReturnValue(null);
 });
@@ -194,6 +197,66 @@ describe('git-panel mount/refresh loads — cold-load vs refresh', () => {
     d.resolve(FILES_A);
     await d.promise;
     expect(container.textContent).toContain('a.ts');
+  });
+});
+
+describe('git-panel load generation — stale response guard', () => {
+  it('drops a slow previous-project response that resolves after the new project loaded', async () => {
+    const container = makeContainer();
+    const slowA = deferred<GitFileEntry[]>();
+    getFiles.mockReturnValueOnce(slowA.promise);
+    mountGitPanel(project, container);
+
+    // Switch to project B while repoA's getFiles is still in flight.
+    setActiveProject('p2');
+    vi.mocked(getActiveGitPath).mockReturnValue('/repoB');
+    const fastB = deferred<GitFileEntry[]>();
+    getFiles.mockReturnValueOnce(fastB.promise);
+    mountGitPanel({ id: 'p2' } as never, container);
+
+    // B resolves first, then the slow A response lands.
+    fastB.resolve(FILES_B);
+    await fastB.promise;
+    slowA.resolve(FILES_A);
+    await slowA.promise;
+
+    // Pre-fix, the stale A payload repainted B's rows (lastFilesKey bleed).
+    expect(container.textContent).toContain('b.ts');
+    expect(container.textContent).not.toContain('a.ts');
+  });
+
+  it('drops an in-flight load when the switched-to project has no changes', async () => {
+    const container = makeContainer();
+    const inflight = deferred<GitFileEntry[]>();
+    getFiles.mockReturnValueOnce(inflight.promise);
+    mountGitPanel(project, container);
+
+    setActiveProject('p2');
+    vi.mocked(gitChangeCount).mockReturnValue(0);
+    mountGitPanel({ id: 'p2' } as never, container);
+    expect(container.textContent).toContain('No uncommitted changes');
+
+    inflight.resolve(FILES_A);
+    await inflight.promise;
+
+    expect(container.textContent).not.toContain('a.ts');
+    expect(container.textContent).toContain('No uncommitted changes');
+  });
+
+  it('drops an in-flight load after the panel is closed', async () => {
+    const container = makeContainer();
+    const inflight = deferred<GitFileEntry[]>();
+    getFiles.mockReturnValueOnce(inflight.promise);
+    mountGitPanel(project, container);
+    const mount = container.querySelector('.git-panel-mount')!;
+
+    closeGitPanel();
+    inflight.resolve(FILES_A);
+    await inflight.promise;
+
+    // The detached node keeps its loader; the abandoned response never painted.
+    expect(hasLoader(mount)).toBe(true);
+    expect(mount.textContent).not.toContain('a.ts');
   });
 });
 

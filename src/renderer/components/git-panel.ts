@@ -1,5 +1,5 @@
 import { appState, ProjectRecord } from '../state.js';
-import { onChange as onGitStatusChange, gitChangeCount, getActiveGitPath, getWorktrees, setActiveWorktree, onWorktreeChange } from '../git-status.js';
+import { onChange as onGitStatusChange, gitChangeCount, gitStatusErrored, getActiveGitPath, getWorktrees, setActiveWorktree, onWorktreeChange } from '../git-status.js';
 import { onChange as onStatusChange } from '../session-activity.js';
 import { showFileViewer } from './file-viewer.js';
 import { areaLabel } from '../dom-utils.js';
@@ -11,6 +11,12 @@ let lastCountKey = '';
 let lastFilesKey = '';
 // git path whose changes are currently rendered — drives the cold-load loader
 let displayedGitPath: string | null = null;
+// Ownership token for the panel's async loads (file-tree's renderGeneration
+// idiom): every getFiles request stamps the current generation, and a response
+// whose stamp is stale — a slower load of the PREVIOUS project/worktree that
+// resolves after a newer one claimed the panel — is dropped with no state
+// write, so it can never repaint the new panel.
+let loadGeneration = 0;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let activeContextMenu: HTMLElement | null = null;
 
@@ -53,6 +59,21 @@ function afterAction(): void {
   scheduleRefresh();
 }
 
+// C5G-03: stage/unstage/discard awaited the git IPC uncaught, so a rejected
+// IPC surfaced as an unhandled rejection — no user feedback — and afterAction()
+// never ran. Surface the failure (git-status-bar's catch-and-show idiom,
+// adapted to alert — these handlers have no open modal) and refresh only on
+// success.
+async function runGitAction(action: () => Promise<unknown>, failureMessage: string): Promise<void> {
+  try {
+    await action();
+  } catch (err) {
+    window.alert(`${failureMessage}: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  afterAction();
+}
+
 function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPath: string): void {
   hideGitContextMenu();
 
@@ -63,8 +84,7 @@ function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPa
 
   if (entry.area === 'staged') {
     menu.appendChild(createMenuItem('Unstage', async () => {
-      await window.finevibe.git.unstageFile(gitPath, entry.path);
-      afterAction();
+      await runGitAction(() => window.finevibe.git.unstageFile(gitPath, entry.path), 'Failed to unstage');
     }));
   } else {
     menu.appendChild(createMenuItem('Stage', async () => {
@@ -204,6 +224,7 @@ export function mountGitPanel(project: ProjectRecord, container: HTMLElement): v
 /** Detach the panel and stop background reloads (the tab was closed). */
 export function closeGitPanel(): void {
   mountedProjectId = null;
+  loadGeneration++;
   if (gitPanelEl) gitPanelEl.remove();
 }
 
@@ -232,8 +253,19 @@ function refreshMounted(): void {
     gitPanelEl.appendChild(body);
   }
 
+  if (gitStatusErrored(project.id)) {
+    // C5G-05: an oversized `git status` (ENOBUFS) yields no counts — showing
+    // "No uncommitted changes" hides real changes behind a clean-tree lie.
+    loadGeneration++;
+    body.innerHTML = '<div class="config-empty">Too many changes to list — open a terminal to inspect</div>';
+    lastFilesKey = '';
+    displayedGitPath = null;
+    return;
+  }
+
   const total = gitChangeCount(project.id);
   if (total === null || total === 0) {
+    loadGeneration++;
     body.innerHTML = '<div class="config-empty">No uncommitted changes</div>';
     lastFilesKey = '';
     displayedGitPath = null;
@@ -244,6 +276,7 @@ function refreshMounted(): void {
 }
 
 async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
+  const gen = ++loadGeneration;
   // Show a loader on cold load only — first ever, or when switching to a
   // different project/worktree (stale rows from the previous path are still
   // showing). Background refreshes of the same path stay silent.
@@ -256,11 +289,16 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
   try {
     files = await window.finevibe.git.getFiles(gitPath) as GitFileEntry[];
   } catch {
+    if (gen !== loadGeneration) return;
     body.innerHTML = '';
     lastFilesKey = '';
     displayedGitPath = null;
     return;
   }
+
+  // A newer load claimed the panel while this one was in flight — drop it
+  // without touching lastFilesKey/displayedGitPath or the DOM.
+  if (gen !== loadGeneration) return;
 
   // Skip DOM rebuild if file list hasn't changed
   const filesKey = JSON.stringify(files);
@@ -327,8 +365,7 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
           }));
         }
         actions.appendChild(createActionButton('Stage', '+', async () => {
-          await window.finevibe.git.stageFile(gitPath, entry.path);
-          afterAction();
+          await runGitAction(() => window.finevibe.git.stageFile(gitPath, entry.path), 'Failed to stage');
         }));
       }
 
@@ -390,6 +427,7 @@ export function initGitPanel(): void {
 
 // --- Test-only state reset ---
 export function _resetForTesting(): void {
+  loadGeneration++;
   lastCountKey = '';
   lastFilesKey = '';
   displayedGitPath = null;

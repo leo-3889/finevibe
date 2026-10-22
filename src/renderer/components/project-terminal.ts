@@ -3,10 +3,13 @@ import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { appState } from '../state.js';
+import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
+import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
+import { isWin } from '../platform.js';
 import { esc } from '../dom-utils.js';
 
 interface ShellTerminalInstance {
@@ -73,6 +76,7 @@ function createShell(projectId: string): ShellTerminalInstance {
     theme: getTerminalTheme(appState.preferences.theme ?? 'dark'),
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
+    scrollback: TERMINAL_SCROLLBACK,
     cursorBlink: true,
     allowProposedApi: true,
   });
@@ -87,7 +91,11 @@ function createShell(projectId: string): ShellTerminalInstance {
   const sessionId = `shell-${projectId}-${shellId}`;
 
   const writeToPty = (data: string) => window.finevibe.pty.write(sessionId, data);
-  attachClipboardCopyHandler(terminal, undefined);
+  // Same contract as session terminals: the shell's ConPTY advertised mode
+  // 9001 at spawn, so a Windows shell pane starts latched and Escape is
+  // never written as a bare ESC to the armed PTY.
+  const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty, { latchKey: sessionId, latched: isWin });
+  attachClipboardCopyHandler(terminal, handleWin32Key);
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: ShellTerminalInstance = {
@@ -275,6 +283,8 @@ function closeShell(projectId: string, shellId: string): void {
   destroySearchBar(instance.sessionId);
   window.finevibe.pty.kill(instance.sessionId);
   instance.terminal.dispose();
+  // C2R-13: the PTY dies here, so its mode-9001 latch entry dies with it.
+  unlatchWin32Key(instance.sessionId);
   instance.element.remove();
   list.splice(idx, 1);
 
@@ -306,6 +316,7 @@ function renderSidebar(projectId: string): void {
   }
   sidebarEl.classList.remove('hidden');
   const activeId = activeShellByProject.get(projectId);
+  // pi-lens-ignore: no-html-label-for, slop, xss-innerhtml, no-inner-html, xss-risk
   sidebarEl.innerHTML = list.map(s => `
     <div class="terminal-list-item${s.id === activeId ? ' active' : ''}" data-shell-id="${esc(s.id)}">
       <span class="terminal-list-item-name">${esc(s.label)}</span>
@@ -313,7 +324,7 @@ function renderSidebar(projectId: string): void {
     </div>
   `).join('');
 
-  sidebarEl.querySelectorAll<HTMLElement>('.terminal-list-item').forEach(el => {
+  for (const el of sidebarEl.querySelectorAll<HTMLElement>('.terminal-list-item')) {
     const shellId = el.dataset.shellId!;
     el.addEventListener('click', (e) => {
       const target = e.target as HTMLElement;
@@ -327,7 +338,7 @@ function renderSidebar(projectId: string): void {
         closeShell(projectId, shellId);
       });
     }
-  });
+  }
 }
 
 function fitActiveShell(): void {
@@ -395,10 +406,35 @@ function destroyAllShells(projectId: string): void {
     destroySearchBar(instance.sessionId);
     window.finevibe.pty.kill(instance.sessionId);
     instance.terminal.dispose();
+    // C2R-13: see closeShell — every killed PTY releases its latch entry.
+    unlatchWin32Key(instance.sessionId);
     instance.element.remove();
   }
   shells.delete(projectId);
   activeShellByProject.delete(projectId);
+}
+
+// C5R-05: every shell pins a PTY + ConPTY + xterm pane and '+ New Terminal'
+// was uncapped, so a key-mash runaway grew them without bound. Exited shells
+// count too: their pane, exit overlay and sidebar label all stay alive.
+const MAX_SHELLS_PER_PROJECT = 50;
+let newTerminalBtn: HTMLElement | null = null;
+let shellLimitNoteTimer: ReturnType<typeof setTimeout> | 0 = 0;
+
+// The file's only chrome-level feedback channel is the button label/title
+// (the exit overlay is pane-scoped): swap the '+' to the live count and the
+// title to the note, restore after a beat. Re-entrant clicks reuse one timer.
+function showShellLimitNote(projectId: string): void {
+  if (!newTerminalBtn) return;
+  const count = getShellsFor(projectId).length;
+  clearTimeout(shellLimitNoteTimer);
+  newTerminalBtn.textContent = String(count);
+  newTerminalBtn.title = `Terminal limit reached (${MAX_SHELLS_PER_PROJECT} per project)`;
+  shellLimitNoteTimer = setTimeout(() => {
+    if (!newTerminalBtn) return;
+    newTerminalBtn.textContent = '+';
+    newTerminalBtn.title = 'New Terminal';
+  }, 1500);
 }
 
 export function initProjectTerminal(): void {
@@ -408,6 +444,7 @@ export function initProjectTerminal(): void {
   resizeHandleEl = document.getElementById('project-terminal-resize-handle')!;
   const closeBtn = document.getElementById('btn-close-terminal')!;
   const newBtn = document.getElementById('btn-new-terminal')!;
+  newTerminalBtn = newBtn;
   const toggleBtn = document.getElementById('btn-toggle-terminal')!;
 
   closeBtn.addEventListener('click', () => {
@@ -418,6 +455,12 @@ export function initProjectTerminal(): void {
   newBtn.addEventListener('click', () => {
     const project = appState.activeProject;
     if (!project) return;
+    // C5R-05: count live + exited shells — exited panes keep their PTY
+    // bookkeeping, overlay and sidebar label until closed.
+    if (getShellsFor(project.id).length >= MAX_SHELLS_PER_PROJECT) {
+      showShellLimitNote(project.id);
+      return;
+    }
     activateAndRefresh(createShell(project.id));
   });
 
@@ -430,41 +473,72 @@ export function initProjectTerminal(): void {
   let dragging = false;
   let startY = 0;
   let startHeight = 0;
-
-  resizeHandleEl.addEventListener('mousedown', (e) => {
+  // S3-01: pointer events with implicit capture on the handle. The old
+  // document mousemove/mouseup pair was removed only inside onMouseUp —
+  // releasing the button outside the window (the normal way to overshoot
+  // a panel drag) never delivers mouseup to the renderer: dragging
+  // stayed true, the pair leaked for the renderer's life (every mouse
+  // move app-wide then ran a full fit sweep at mousemove rate), the body
+  // cursor/userSelect lock stayed applied, and every later mousedown
+  // stacked another pair. pointerup/pointercancel on a captured pointer
+  // are ALWAYS delivered, wherever the button is released.
+  resizeHandleEl.addEventListener('pointerdown', (e) => {
     dragging = true;
     startY = e.clientY;
     startHeight = panelEl.offsetHeight;
     resizeHandleEl.classList.add('active');
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
+    resizeHandleEl.setPointerCapture(e.pointerId);
     e.preventDefault();
-
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!dragging) return;
-      const delta = startY - ev.clientY;
-      const newHeight = Math.max(80, Math.min(startHeight + delta, window.innerHeight - 150));
-      panelEl.style.height = `${newHeight}px`;
-      fitActiveShell();
-      fitAllVisible();
-    };
-
-    const onMouseUp = () => {
-      dragging = false;
-      resizeHandleEl.classList.remove('active');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      const height = panelEl.offsetHeight;
-      appState.setTerminalPanelHeight(height);
-      fitActiveShell();
-      fitAllVisible();
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
   });
+
+  // C2R-18: the height write stays synchronous (the drag must follow the
+  // pointer), the fits do not. fitActiveShell()+fitAllVisible() ran at
+  // pointermove rate: a forced layout plus an xterm reflow of every visible
+  // pane per move, on top of the ResizeObserver's own callback. One scheduled
+  // frame per burst (split-layout's resize idiom); endDrag fits the settled
+  // height and cancels a frame that has not run yet.
+  let fitFrame = 0;
+  const scheduleFits = (): void => {
+    if (fitFrame) return;
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = 0;
+      fitActiveShell();
+      fitAllVisible();
+    });
+  };
+
+  resizeHandleEl.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const delta = startY - ev.clientY;
+    const newHeight = Math.max(80, Math.min(startHeight + delta, window.innerHeight - 150));
+    panelEl.style.height = `${newHeight}px`;
+    scheduleFits();
+  });
+
+  const endDrag = (ev: PointerEvent): void => {
+    if (!dragging) return;
+    dragging = false;
+    try {
+      resizeHandleEl.releasePointerCapture(ev.pointerId);
+    } catch {
+      // Capture was already gone (pointercancel after window loss).
+    }
+    resizeHandleEl.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    if (fitFrame) {
+      cancelAnimationFrame(fitFrame);
+      fitFrame = 0;
+    }
+    const height = panelEl.offsetHeight;
+    appState.setTerminalPanelHeight(height);
+    fitActiveShell();
+    fitAllVisible();
+  };
+  resizeHandleEl.addEventListener('pointerup', endDrag);
+  resizeHandleEl.addEventListener('pointercancel', endDrag);
 
   // React to project changes
   appState.on('project-changed', () => {

@@ -2,9 +2,16 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { GitWorktree, GitFileEntry } from '../shared/types';
+import { canonicalPath } from './fs-utils';
+import { isMac } from './platform';
 
 export type { GitWorktree, GitFileEntry } from '../shared/types';
 
+
+// C5G-05: mirror C3M-02 — the 1 MiB child_process default ENOBUFS'd on huge
+// repos (`git status` porcelain over tens of thousands of paths). Generous
+// bound so a big working tree reads fully instead of collapsing to NOT_A_REPO.
+const GIT_STATUS_MAX_BUFFER = 8 * 1024 * 1024;
 export interface GitStatus {
   isGitRepo: boolean;
   branch: string | null;
@@ -14,6 +21,8 @@ export interface GitStatus {
   modified: number;
   untracked: number;
   conflicted: number;
+  /** C5G-05: listing exceeded maxBuffer (ENOBUFS) - tree is huge, counts unusable. */
+  errored?: boolean;
 }
 
 const NOT_A_REPO: GitStatus = {
@@ -32,9 +41,18 @@ export function getGitStatus(cwd: string): Promise<GitStatus> {
     execFile(
       'git',
       ['status', '--porcelain=v2', '--branch', '--untracked-files=all'],
-      { cwd, timeout: 5000 },
+      { cwd, timeout: 5000, maxBuffer: GIT_STATUS_MAX_BUFFER },
       (err, stdout) => {
         if (err) {
+          // C5G-05: a porcelain listing past maxBuffer dies with ENOBUFS, not a
+          // "not a repo" error. Reporting NOT_A_REPO made a huge repo read as a
+          // clean tree — the bar vanished and the panel showed "No changes".
+          // Flag it distinctly so the renderer surfaces a message; `isGitRepo`
+          // stays true so the bar doesn't disappear on an oversized repo.
+          if ((err as NodeJS.ErrnoException).code === 'ENOBUFS') {
+            resolve({ ...NOT_A_REPO, isGitRepo: true, errored: true });
+            return;
+          }
           resolve(NOT_A_REPO);
           return;
         }
@@ -135,7 +153,7 @@ export function getGitFiles(cwd: string): Promise<GitFileEntry[]> {
     execFile(
       'git',
       ['status', '--porcelain=v2', '-z', '--untracked-files=all'],
-      { cwd, timeout: 5000, maxBuffer: 1024 * 1024 },
+      { cwd, timeout: 5000, maxBuffer: GIT_STATUS_MAX_BUFFER },
       (err, stdout) => {
         if (err) {
           resolve([]);
@@ -334,6 +352,9 @@ export function getGitWorktrees(cwd: string): Promise<GitWorktree[]> {
           }
 
           if (path) {
+            // C5G-10: macOS lsof returns symlink-resolved cwd (/private/tmp...);
+            // canonicalize both sides so the renderer's prefix match hits /tmp worktrees.
+            if (isMac) path = canonicalPath(path);
             worktrees.push({ path, head, branch, isBare });
           }
         }

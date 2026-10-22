@@ -7,8 +7,8 @@ import { showConfirmModal } from '../modal.js';
 import { showContextMenu } from './board-context-menu.js';
 import { showBoardHelpDialog } from './board-help-dialog.js';
 import { t } from '../../i18n.js';
-import { instances as kanbanInstances } from '../kanban/instance.js';
-import type { BoardColumn, TagDefinition, BoardData } from '../../../shared/types.js';
+import { instances as kanbanInstances, getKanbanProjectIdForElement } from '../kanban/instance.js';
+import type { TagDefinition, BoardData } from '../../../shared/types.js';
 import {
   setSearchQuery, getSearchQuery, toggleTagFilter, isTagFilterActive,
   hasActiveFilters, getFilteredTasks, onFilterChange, getActiveTagFilters,
@@ -21,15 +21,30 @@ import { statusLabel, updateMetricsRow } from './board-card.js';
 const svgIcon = (inner: string): string =>
   `<svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
 
-let boardEl: HTMLElement | null = null;
+// C5G-07: one board view per visible kanban pane, keyed by the pane element.
+// The singleton this replaces was re-parented by renderBoard() into the ACTIVE
+// pane, so any board-changed event moved the tree out of the other visible
+// pane. Each pane owns its root and its own change key, so a mutation
+// refreshes every visible pane (C3R-04 fixed teardown ownership, not dual
+// visibility).
+interface BoardViewInstance {
+  root: HTMLElement;
+  projectId: string;
+  // Cheap change key for this instance's last full column rebuild: task ids +
+  // column + order + assignee + tags, column titles, tag row, and the active
+  // filter — everything a rebuild can show. board-changed fires on any board
+  // mutation, including ones that change nothing visible, so an unchanged key
+  // skips the innerHTML wipe and the full card rebuild.
+  lastKey: string;
+}
+
+const viewInstances = new Map<HTMLElement, BoardViewInstance>();
+
+// Search query and tag filters stay module-global on purpose (board-filter.ts):
+// filter state is shared, so one search box / tag filter set drives every
+// visible pane.
 let pendingRender = false;
 let offDragEnd: (() => void) | null = null;
-// Cheap change key for the last full column rebuild: task ids + column +
-// order + assignee + tags, column titles, tag row, and the active filter —
-// everything a rebuild can show. board-changed fires on any board mutation,
-// including ones that change nothing visible, so an unchanged key skips the
-// innerHTML wipe and full card rebuild.
-let lastBoardKey = '';
 
 function isKanbanActive(): boolean {
   const project = appState.activeProject;
@@ -53,24 +68,31 @@ export function initBoard(): void {
     if (isKanbanActive()) renderBoard();
   });
   onStatusChange((sessionId, status) => {
-    if (!boardEl) return;
-    const dot = boardEl.querySelector(
-      `.card-status-dot[data-session-id="${sessionId}"]`,
-    ) as HTMLElement | null;
-    if (!dot) return;
-    dot.className = `card-status-dot ${status}`;
-    dot.textContent = STATUS_GLYPH[status];
-    const labelNode = dot.parentElement?.lastChild;
-    if (labelNode && labelNode.nodeType === Node.TEXT_NODE) {
-      labelNode.textContent = statusLabel(status);
+    // C5G-07: a session card lives in exactly one pane's root (session ids are
+    // global), so patch the first root that has it.
+    for (const { root } of viewInstances.values()) {
+      const dot = root.querySelector(
+        `.card-status-dot[data-session-id="${sessionId}"]`,
+      ) as HTMLElement | null;
+      if (!dot) continue;
+      dot.className = `card-status-dot ${status}`;
+      dot.textContent = STATUS_GLYPH[status];
+      const labelNode = dot.parentElement?.lastChild;
+      if (labelNode && labelNode.nodeType === Node.TEXT_NODE) {
+        labelNode.textContent = statusLabel(status);
+      }
+      return;
     }
   });
   const refreshMetrics = (sessionId: string): void => {
-    if (!boardEl) return;
-    const row = boardEl.querySelector(
-      `.board-card-metrics[data-session-id="${sessionId}"]`,
-    ) as HTMLElement | null;
-    if (row) updateMetricsRow(row, getCost(sessionId), getContext(sessionId));
+    for (const { root } of viewInstances.values()) {
+      const row = root.querySelector(
+        `.board-card-metrics[data-session-id="${sessionId}"]`,
+      ) as HTMLElement | null;
+      if (!row) continue;
+      updateMetricsRow(row, getCost(sessionId), getContext(sessionId));
+      return;
+    }
   };
   onCostChange(refreshMetrics);
   onContextChange(refreshMetrics);
@@ -146,7 +168,6 @@ export function createBoardView(): HTMLElement {
 
   const tagRow = document.createElement('div');
   tagRow.className = 'board-tag-row';
-  tagRow.id = 'board-tag-row';
 
   const columnsContainer = document.createElement('div');
   columnsContainer.className = 'board-columns';
@@ -159,38 +180,58 @@ export function createBoardView(): HTMLElement {
 }
 
 export function renderBoard(target?: HTMLElement): void {
-  if (isDragActive() || boardEl?.querySelector('.column-title-input')) {
+  if (target) {
+    renderPaneBoard(target);
+    return;
+  }
+  // Mutation path (dnd commit, inline rename, card/column/modal/context-menu
+  // writes, board-changed): every pane that has a board refreshes, plus the
+  // active pane so an untargeted first render still lands. The singleton used
+  // to move the tree into the active pane and blank the other visible one.
+  const panes = new Set<HTMLElement>(viewInstances.keys());
+  const active = activeKanbanContainer();
+  if (active) panes.add(active);
+  for (const pane of panes) renderPaneBoard(pane);
+}
+
+function renderPaneBoard(pane: HTMLElement): void {
+  // A drag in flight, or an inline column rename open in ANY pane: rebuilding
+  // the trees wipes the gesture / the renamer. Flush at drag end.
+  if (isDragActive() || hasInlineRename()) {
     pendingRender = true;
     return;
   }
   pendingRender = false;
 
-  const board = getBoard();
+  const projectId = getKanbanProjectIdForElement(pane);
+  if (!projectId) {
+    console.warn('[kanban] renderBoard called for a pane with no kanban instance');
+    return;
+  }
+  const board = getBoard(projectId);
   if (!board) {
-    console.warn('[kanban] renderBoard called with no active project board');
+    console.warn(`[kanban] renderBoard called with no board for project ${projectId}`);
     return;
   }
 
-  const container = target ?? activeKanbanContainer();
-  if (!container) return;
-
-  if (!boardEl) {
-    boardEl = createBoardView();
+  let instance = viewInstances.get(pane);
+  if (!instance) {
+    const root = createBoardView();
+    pane.appendChild(root);
+    instance = { root, projectId, lastKey: '' };
+    viewInstances.set(pane, instance);
   }
-
-  if (!container.contains(boardEl)) {
-    container.appendChild(boardEl);
-  }
-  boardEl.style.display = '';
+  instance.projectId = projectId;
+  instance.root.style.display = '';
 
   const key = boardChangeKey(board);
-  if (key === lastBoardKey) return;
-  lastBoardKey = key;
+  if (key === instance.lastKey) return;
+  instance.lastKey = key;
 
-  const columnsContainer = boardEl.querySelector('.board-columns')!;
+  const columnsContainer = instance.root.querySelector('.board-columns')!;
   columnsContainer.innerHTML = '';
 
-  const tagRow = boardEl.querySelector('#board-tag-row') as HTMLElement;
+  const tagRow = instance.root.querySelector('.board-tag-row') as HTMLElement;
   if (tagRow) renderTagRow(tagRow, board);
 
   const sortedColumns = [...board.columns].sort((a, b) => a.order - b.order);
@@ -208,7 +249,26 @@ export function renderBoard(target?: HTMLElement): void {
   initBoardDnd();
 }
 
-function boardChangeKey(board: BoardData): string {
+function hasInlineRename(): boolean {
+  for (const { root } of viewInstances.values()) {
+    if (root.querySelector('.column-title-input')) return true;
+  }
+  return false;
+}
+
+// FNV-1a, 32 bit. Cheap full-text digest for the change key: prompt/notes
+// are unbounded (a task prompt is a whole instruction), so slicing them
+// would re-introduce the staleness the key exists to prevent (S4-02).
+function textHash(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+export function boardChangeKey(board: BoardData): string {
   const cols = [...board.columns]
     .sort((a, b) => a.order - b.order)
     .map((c) => `${c.id}:${c.order}:${c.title}:${c.behavior}:${c.color ?? ''}:${c.locked ? 1 : 0}`)
@@ -218,16 +278,50 @@ function boardChangeKey(board: BoardData): string {
     : '';
   const tasks = [...board.tasks]
     .sort((a, b) => a.order - b.order)
-    .map((tk) => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}`)
+    // S4-02: title/prompt/notes render INTO the card; the key used to omit
+    // them, so renaming a task (the modal writes them) kept the key equal
+    // and the early return showed the stale title until an unrelated
+    // change happened to move a card. sessionId/cliSessionId drive the
+    // run/resume glyph and gate the live status/metrics rows — a run or
+    // resume (board-session-sync writes them) is invisible until the key
+    // sees them.
+    .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}:${tk.sessionId ?? ''}:${tk.cliSessionId ?? ''}`)
     .join(',');
   const filters = `${getSearchQuery()}\u0000${[...getActiveTagFilters()].sort().join('+')}`;
   return `${cols}\u0001${tags}\u0001${tasks}\u0001${filters}\u0001${appState.preferences.boardCardMetrics ?? true}`;
 }
 
 export function hideBoardView(): void {
-  if (boardEl) {
-    boardEl.style.display = 'none';
+  for (const { root } of viewInstances.values()) {
+    root.style.display = 'none';
   }
+}
+
+/**
+ * C2R-16: drop every pane instance, so the per-tick status/cost/context
+ * patches above stop scanning — and retaining — detached trees. renderBoard()
+ * rebuilds on demand (exported key: C2R-15, reused by the project-tab kanban
+ * widget). Full reset for tests and global teardown; pane teardown uses
+ * resetBoardViewIf().
+ */
+export function resetBoardView(): void {
+  for (const { root } of viewInstances.values()) {
+    root.remove();
+  }
+  viewInstances.clear();
+}
+
+/**
+ * C3R-04 + C5G-07: per-pane teardown. Destroying a pane drops exactly that
+ * pane's instance and root; a surviving pane keeps its own live tree, so a
+ * background project's teardown can neither freeze the visible board (the
+ * global reset's bug) nor steal its element (the singleton's bug).
+ */
+export function resetBoardViewIf(paneEl: HTMLElement): void {
+  const instance = viewInstances.get(paneEl);
+  if (!instance) return;
+  instance.root.remove();
+  viewInstances.delete(paneEl);
 }
 
 function activeKanbanContainer(): HTMLElement | null {
@@ -363,7 +457,15 @@ function showInlineTagInput(container: HTMLElement): void {
   input.placeholder = t('board.tagInputPlaceholder');
   input.maxLength = 30;
 
+  // Removing a focused input fires blur, and that blur is the whole UI3-10 bug:
+  // Escape used to commit the half-typed tag, Enter committed twice through its
+  // own follow-up blur, and a board-changed rebuild (innerHTML wipe) committed
+  // whatever was typed. committed covers the two key handlers; isConnected covers
+  // the rebuild, whose removal nobody flagged.
+  let committed = false;
+
   const commit = () => {
+    committed = true;
     const name = input.value.trim();
     if (name) addTag(name);
     input.remove();
@@ -371,9 +473,9 @@ function showInlineTagInput(container: HTMLElement): void {
 
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') input.remove();
+    if (e.key === 'Escape') { committed = true; input.remove(); }
   });
-  input.addEventListener('blur', commit);
+  input.addEventListener('blur', () => { if (!committed && input.isConnected) commit(); });
 
   const addBtn = container.querySelector('.board-tag-row-add');
   if (addBtn) container.insertBefore(input, addBtn);

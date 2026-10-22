@@ -61,8 +61,10 @@ vi.mock('./fs-utils', () => ({
 import { EventEmitter } from 'node:events';
 import {
   isFineVibeStatusLine, shouldWarnStatusLine, guardedInstall,
-  guardedProfileInstall, reinstallSettings, consentDirKey,
+  guardedProfileInstall, reinstallSettings, consentDirKey, resetProfileInstallMemo,
+  recordDirConsent,
 } from './settings-guard';
+import * as fs from 'fs';
 import { installStatusLine } from './claude-cli';
 import { saveState, loadState } from './store';
 import { readJsonSafe } from './fs-utils';
@@ -187,7 +189,7 @@ describe('guardedInstall window lifecycle', () => {
     expect(installStatusLine).not.toHaveBeenCalled();
   });
 
-  it('treats closing the consent dialog as declined: no install, declined saved', async () => {
+  it('S1-04: closing the window mid-dialog is a dismissal — no install and NO recorded decision', async () => {
     const win = loadingWin();
     win.webContents.isLoading = () => false;
     const done = guardedInstall(win);
@@ -197,14 +199,12 @@ describe('guardedInstall window lifecycle', () => {
     );
     win.emit('closed');
     await done;
-    // 'keep' on close maps to declined and skips installStatusLine.
+    // The old code resolved 'keep' on close and persisted declined +
+    // the foreign command, silently retiring both prompt surfaces for a
+    // decision the user never made. A dismissal records nothing, so the
+    // next launch re-prompts.
     expect(installStatusLine).not.toHaveBeenCalled();
-    expect(saveState).toHaveBeenCalledTimes(1);
-    expect(saveState).toHaveBeenCalledWith(
-      expect.objectContaining({
-        preferences: { statusLineConsent: 'declined', statusLineConsentCommand: FOREIGN_STATUSLINE },
-      }),
-    );
+    expect(saveState).not.toHaveBeenCalled();
   });
 });
 
@@ -221,6 +221,8 @@ describe('guardedProfileInstall (P1-14)', () => {
     vi.clearAllMocks();
     vi.mocked(readJsonSafe).mockReturnValue({ statusLine: { command: FOREIGN_STATUSLINE } });
     vi.mocked(loadState).mockReturnValue({ preferences: {} } as never);
+    // PA-26: the per-spawn memo is module state; each case must start cold.
+    resetProfileInstallMemo();
   });
 
   it('honors a prior Keep for this dir: hooks install, statusLine untouched, no new record', () => {
@@ -274,6 +276,23 @@ describe('guardedProfileInstall (P1-14)', () => {
       }),
     );
   });
+
+  it('PA-26: a second spawn on an unchanged settings.json is a memo hit; an mtime change re-validates', () => {
+    const stat = vi.mocked(fs.statSync);
+    stat.mockReturnValue({ mtimeMs: 111 } as fs.Stats);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledTimes(1);
+
+    // Same mtime = nothing touched settings.json: the full validate +
+    // install (the per-spawn cost PA-26 removes) must not run again.
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledTimes(1);
+
+    // settings.json rewritten (user/CLI edit, "Fix Settings") → re-validate.
+    stat.mockReturnValue({ mtimeMs: 222 } as fs.Stats);
+    guardedProfileInstall(PROFILE_DIR);
+    expect(installHooksOnly).toHaveBeenCalledTimes(2);
+  });
 });
 
 // P2-127: the banner is computed from the profiled session's config dir, so
@@ -308,5 +327,54 @@ describe('reinstallSettings(configDir) (P2-127)', () => {
         preferences: { statusLineConsent: 'granted', statusLineConsentCommand: null },
       }),
     );
+  });
+});
+
+// C3M-05: the by-dir consent map grew unbounded and kept records for
+// deleted profile dirs forever — recordDirConsent is its only write site,
+// so pruning + FIFO cap live there.
+describe('recordDirConsent map hygiene (C3M-05)', () => {
+  const PROFILE_DIR = path.join('/home/test', '.claude-profiles', 'work');
+  const KEY = consentDirKey(PROFILE_DIR);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(loadState).mockReturnValue({ preferences: {} } as never);
+  });
+
+  function savedByDir(): Record<string, unknown> {
+    const state = vi.mocked(saveState).mock.calls[0][0] as {
+      preferences: { statusLineConsentByDir: Record<string, unknown> };
+    };
+    return state.preferences.statusLineConsentByDir;
+  }
+
+  it('drops records whose config dir no longer exists', () => {
+    vi.mocked(loadState).mockReturnValue({
+      preferences: { statusLineConsentByDir: { '/gone/profile': { consent: 'declined', command: null } } },
+    } as never);
+    vi.mocked(fs.existsSync).mockImplementation((p) => String(p) !== '/gone/profile');
+
+    recordDirConsent(PROFILE_DIR, 'granted', null);
+
+    expect(savedByDir()).toEqual({ [KEY]: { consent: 'granted', command: null } });
+  });
+
+  it('caps the map at 200 records, dropping the oldest entries first', () => {
+    const byDir: Record<string, { consent: 'declined'; command: null }> = {};
+    for (let i = 0; i < 250; i++) byDir[`/dir/${i}`] = { consent: 'declined', command: null };
+    vi.mocked(loadState).mockReturnValue({ preferences: { statusLineConsentByDir: byDir } } as never);
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+
+    recordDirConsent(PROFILE_DIR, 'granted', 'cmd');
+
+    const keys = Object.keys(savedByDir());
+    expect(keys).toHaveLength(200);
+    // Insertion order is FIFO: the 51 oldest records are gone, the fresh
+    // key lands at the tail.
+    expect(keys).not.toContain('/dir/0');
+    expect(keys).not.toContain('/dir/50');
+    expect(keys).toContain('/dir/51');
+    expect(keys).toContain(KEY);
   });
 });

@@ -11,6 +11,10 @@ export interface GitStatus {
   modified: number;
   untracked: number;
   conflicted: number;
+  // C5G-05: `git status` output exceeded maxBuffer (ENOBUFS). The counts are
+  // unavailable, not zero — a huge repo, not a clean tree. The renderer must
+  // surface a message instead of the 'No changes' empty state / vanishing bar.
+  errored?: boolean;
 }
 
 type GitStatusCallback = (projectId: string, status: GitStatus) => void;
@@ -34,6 +38,26 @@ const sessionWorktreeMap = new Map<string, string>();
 const manualOverride = new Map<string, string>();
 let worktreePollCounter = 0;
 let unwatchGitChanged: (() => void) | null = null;
+// PA-10: session-changed fires on every tab click / title / CLI-id adoption.
+// Trailing-debounce the session-driven poll and skip it when the
+// (project, worktree, session) key is unchanged from the last fetch — an
+// adoption touches no git state at all.
+const SESSION_POLL_DEBOUNCE_MS = 300;
+let sessionPollTimer: ReturnType<typeof setTimeout> | null = null;
+let lastFetchKey = '';
+
+/** (project, worktree) identity of what a poll() would fetch.
+ *  S3-04: the session id used to be part of the key — and the trigger
+ *  PA-10 names (a tab click) changes exactly that component, so the
+ *  dedupe guard never fired for clicks and every click paid a git
+ *  status spawn (+ getCwd, + getWorktrees every 3rd pass). Git status is
+ *  a pure function of (project, worktree): worktree switches change
+ *  gitPath (detectSessionWorktree), so they still poll. */
+function sessionPollKey(): string {
+  const project = appState.activeProject;
+  if (!project) return '';
+  return `${project.id}|${getActiveGitPath(project.id)}`;
+}
 
 async function refreshWorktrees(projectId: string, projectPath: string): Promise<void> {
   try {
@@ -60,17 +84,21 @@ async function detectSessionWorktree(sessionId: string): Promise<void> {
   const project = appState.activeProject;
   if (!project) return;
 
+  // C2R-06: the cached worktree list is the local, cheap bail — a plain repo
+  // (no worktree cache yet, or a single worktree) is the overwhelming
+  // majority of sessions, and the old order paid a getCwd IPC round trip per
+  // event before discarding the result.
+  const worktrees = worktreeCache.get(project.id);
+  if (!worktrees || worktrees.length <= 1) return;
+
   try {
     const cwd = await window.finevibe.pty.getCwd(sessionId);
     if (!cwd) return;
 
-    const worktrees = worktreeCache.get(project.id);
-    if (!worktrees || worktrees.length <= 1) return;
-
     // Find which worktree the cwd falls under (longest path match)
     let bestMatch = '';
     for (const wt of worktrees) {
-      if ((cwd === wt.path || cwd.startsWith(wt.path + '/')) && wt.path.length > bestMatch.length) {
+      if ((cwd === wt.path || cwd.startsWith(`${wt.path}/`)) && wt.path.length > bestMatch.length) {
         bestMatch = wt.path;
       }
     }
@@ -89,6 +117,13 @@ async function detectSessionWorktree(sessionId: string): Promise<void> {
 
 async function poll(): Promise<void> {
   if (!appState.activeProject) return;
+  // S3-07: the 60 s interval was the only gated entry point — the main-side
+  // git push (the dominant source while agents edit files) and the
+  // working->waiting status transitions called poll() from a hidden window,
+  // spawning `git status` indefinitely. visibilitychange already runs
+  // startInterval() -> poll() on the return to visible, so dropping the
+  // hidden pass loses nothing.
+  if (document.hidden) return;
   // A poll is already running. Flag a re-poll so it picks up the latest active
   // project when it finishes, instead of dropping this request on the floor.
   if (polling) {
@@ -119,7 +154,13 @@ async function poll(): Promise<void> {
       }
 
       // Query git status using the resolved worktree path
+      // PA-10: record what this fetch covered, so the session-changed
+      // debounce can skip a poll that would ask for the same thing.
       const gitPath = getActiveGitPath(project.id);
+      // S3-04: same (project, worktree) key as sessionPollKey() — the
+      // session component here made the skip guard un-hittable on tab
+      // clicks (the click changes the session, so old key != new key).
+      lastFetchKey = `${project.id}|${gitPath}`;
       const status = await window.finevibe.git.getStatus(gitPath) as GitStatus;
       const cacheKey = `${project.id}:${gitPath}`;
       const prev = cache.get(cacheKey);
@@ -147,6 +188,13 @@ export function gitChangeCount(projectId: string): number | null {
   const status = getGitStatus(projectId);
   if (!status || !status.isGitRepo) return null;
   return status.staged + status.modified + status.untracked + status.conflicted;
+}
+
+/** True when the last poll of this project died on an oversized `git status`
+ *  (C5G-05): the counts are unknown, not zero. Lets the panel/bar show a
+ *  message instead of a misleading empty state. */
+export function gitStatusErrored(projectId: string): boolean {
+  return getGitStatus(projectId)?.errored === true;
 }
 
 export function getWorktrees(projectId: string): GitWorktree[] | null {
@@ -254,25 +302,53 @@ export function startPolling(): void {
   appState.on('project-removed', (data) => {
     const projectId = typeof data === 'string' ? data : undefined;
     if (projectId) {
-      cache.delete(projectId);
+      // C2R-05: poll() writes two keys — the plain projectId (the legacy
+      // accessor) and the composite `${projectId}:${gitPath}`. Deleting only
+      // the plain key leaked one composite entry per worktree ever polled.
+      for (const key of cache.keys()) {
+        if (key === projectId || key.startsWith(`${projectId}:`)) cache.delete(key);
+      }
       worktreeCache.delete(projectId);
+      // C5G-02: manualOverride is keyed by projectId (setActiveWorktree) and
+      // used to survive removal — one stale entry per project ever opened, for
+      // the app's lifetime.
+      manualOverride.delete(projectId);
     }
   });
 
   // Detect worktree on session change
-  appState.on('session-changed', () => {
-    const activeSession = appState.activeSession;
-    if (activeSession && activeSession.type !== 'diff-viewer' && activeSession.type !== 'file-reader' && activeSession.type !== 'mcp-inspector') {
-      detectSessionWorktree(activeSession.id);
-    }
-    // Clear manual override on session switch so auto-detection takes effect
+  appState.on('session-changed', (data) => {
+    // C2R-03: a manual worktree choice is a user decision, and only an actual
+    // activation invalidates it. Auto-title and CLI-id adoption fan out as
+    // 'metadata' and used to wipe the override on every one of them, snapping
+    // the panel back to the auto-detected worktree. Payload-less events keep
+    // the defensive full path.
+    const payload = data as { kind?: string } | null | undefined;
     const project = appState.activeProject;
-    if (project) {
+    if (project && (!payload?.kind || payload.kind === 'activate')) {
       manualOverride.delete(project.id);
     }
-    poll();
+    // PA-10: every tab click / adoption used to fan out into 2–4 IPCs + git
+    // spawns. Coalesce a burst into one trailing poll, and drop it when the
+    // (project, worktree, session) triple is what the last fetch already read.
+    // C2R-06: the worktree detection rides the same trailing edge, so a burst
+    // of clicks detects once, for the FINAL active session.
+    if (sessionPollTimer) clearTimeout(sessionPollTimer);
+    sessionPollTimer = setTimeout(() => {
+      sessionPollTimer = null;
+      void (async () => {
+        const activeSession = appState.activeSession;
+        if (activeSession && activeSession.type !== 'diff-viewer' && activeSession.type !== 'file-reader' && activeSession.type !== 'mcp-inspector') {
+          await detectSessionWorktree(activeSession.id);
+        }
+        // The detection can move the active worktree, so the poll key is only
+        // trustworthy once it has settled.
+        const key = sessionPollKey();
+        if (key && key === lastFetchKey) return;
+        poll();
+      })();
+    }, SESSION_POLL_DEBOUNCE_MS);
   });
-
   // Poll when a session transitions from working → waiting/completed
   onStatusChange((_sessionId, status) => {
     if (status === 'waiting' || status === 'completed') {
@@ -301,4 +377,7 @@ export function _resetForTesting(): void {
   manualOverride.clear();
   listeners.length = 0;
   worktreeChangeListeners.length = 0;
+  if (sessionPollTimer) clearTimeout(sessionPollTimer);
+  sessionPollTimer = null;
+  lastFetchKey = '';
 }

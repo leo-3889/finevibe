@@ -4,7 +4,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
 import { sweepImportTempDirs } from './chrome-import/copy';
-import { killAllPtys } from './pty-manager';
+import { killAllPtys, getFullPathAsync } from './pty-manager';
 import { flushState, loadState } from './store';
 import { createAppMenu } from './menu';
 import { restartAndResync } from './hook-status';
@@ -16,10 +16,12 @@ import { stopConfigWatcher } from './config-watcher';
 import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
-import { isMac } from './platform';
+import { configureProbeCacheDir } from './providers/resolve-binary';
+import { isMac, isWin } from './platform';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
 import { isHttpUrl } from '../shared/url';
+import { migrateLegacyUserData } from './userdata-migration';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -29,10 +31,31 @@ let mainWindow: BrowserWindow | null = null;
 // requestSingleInstanceLock gate at the END of this module calls it for
 // the winner alone. The loser quits without constructing anything.
 
+// C4S-07: close-confirmation watchdog. before-quit preventDefaults until the
+// renderer answers 'app:confirmClose'; a hung renderer would keep the quit
+// prevented forever. After 15 s of silence the main process takes the same
+// path as the renderer's 'app:closeConfirmed' reply.
+const CLOSE_CONFIRM_WATCHDOG_MS = 15_000;
+let closeConfirmTimer: NodeJS.Timeout | null = null;
+
+function clearCloseConfirmWatchdog(): void {
+  if (closeConfirmTimer) {
+    clearTimeout(closeConfirmTimer);
+    closeConfirmTimer = null;
+  }
+}
+
 function requestConfirmClose(): void {
   const win = BrowserWindow.getAllWindows()[0];
   if (win && !win.isDestroyed()) {
     win.webContents.send('app:confirmClose');
+    clearCloseConfirmWatchdog();
+    closeConfirmTimer = setTimeout(() => {
+      closeConfirmTimer = null;
+      if (isCloseConfirmed()) return; // guarded once — a real reply won
+      setCloseConfirmed(true);
+      app.quit();
+    }, CLOSE_CONFIRM_WATCHDOG_MS);
   } else {
     setCloseConfirmed(true);
     app.quit();
@@ -86,7 +109,15 @@ function createWindow(): void {
   });
 
   const indexPath = path.join(__dirname, '..', '..', 'renderer', 'index.html');
-  mainWindow.loadFile(indexPath);
+  const loadRenderer = (): void => { mainWindow?.loadFile(indexPath); };
+  loadRenderer();
+
+  // C4S-08: a renderer-process death (crash, OOM, GPU-loss kill) used to
+  // leave a dead frame until the user restarted. Reload the same entry on
+  // any non-clean exit.
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason !== 'clean-exit' && mainWindow && !mainWindow.isDestroyed()) loadRenderer();
+  });
 
   // Open external links in default browser instead of inside the app
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -168,7 +199,56 @@ function createWindow(): void {
   });
 }
 
+// Windows app identity. Without an explicit AppUserModelID the process
+// registers as "Electron", so the taskbar group, Alt+Tab entry, Start-menu
+// shortcut and toast notifications all attribute FineVibe to Electron. The
+// id must match package.json "build".appId: the NSIS installer stamps that
+// same AUMID on its shortcuts, so setting it unconditionally on win32 is
+// consistent with the packaged install, and it also covers dev runs and the
+// portable exe (which carry no installer metadata at all). Hoisted out of
+// startMainProcess so the boot body stays linear; the win32 gate lives here.
+function claimWindowsIdentity(): void {
+  if (isWin) {
+    app.setAppUserModelId('com.finevibe.app');
+  }
+}
+
 function startMainProcess(): void {
+  // C4S-06: updater disposer (startup timeout + 4 h interval); quit runs it.
+  let disposeAutoUpdater: (() => void) | null = null;
+  // First: the identity must be stamped on the process before the first
+  // window (taskbar button) exists. See claimWindowsIdentity above.
+  claimWindowsIdentity();
+
+  // Release gate (AUDIT_STATUS "Rename on the CURRENT tree"): the
+  // vibeyard -> finevibe cutover (4fc533c) renamed BOTH user-data trees -
+  // the store tree (`~/.vibeyard` -> `~/.finevibe`, store.ts) and Electron
+  // userData (`%APPDATA%/Vibeyard|vibeyard` -> the finevibe dir). Without a
+  // migration an install updating across the cutover boots into empty dirs
+  // and loses projects, history, cookies and caches. Copy-only (the legacy
+  // trees are never deleted), destination wins on conflicts, stale
+  // `vibeyard-browser-iso-*` partitions are purged, not copied, per-file
+  // failures (a legacy instance holding a lock) are logged and retried at
+  // the next launch. Winner-only, ahead of anything that reads userData.
+  try {
+    const { home, appData } = migrateLegacyUserData({
+      homedir: app.getPath('home'),
+      appDataDir: app.getPath('appData'),
+      userDataDir: app.getPath('userData'),
+    });
+    const touched = home.copied + appData.copied + home.errors.length + appData.errors.length;
+    if (touched > 0) {
+      console.log(
+        `[userdata-migration] home ${home.copied} copied / ${home.skipped} kept` +
+          (home.errors.length ? ` / ${home.errors.length} FAILED` : '') +
+          `; userData ${appData.copied} copied / ${appData.skipped} kept / ${appData.purged} stale partitions purged` +
+          (appData.errors.length ? ` / ${appData.errors.length} FAILED` : ''),
+      );
+    }
+  } catch (error) {
+    console.error('[userdata-migration] failed; legacy data left untouched', error);
+  }
+
   // Winner-only: a relaunch while the app runs focuses the existing
   // window, so launching again behaves like "focus FineVibe".
   app.on('second-instance', () => {
@@ -192,21 +272,12 @@ function startMainProcess(): void {
     sweepImportTempDirs();
     initProviders();
 
-    const providers = getAllProviders();
-    const missing = providers.filter(p => !p.validatePrerequisites());
-    for (const p of missing) {
-      console.warn(`Provider "${p.meta.displayName}" not available`);
-    }
-    if (missing.length === providers.length) {
-      const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
-      dialog.showErrorBox(
-        'FineVibe — No CLI Provider Found',
-        `FineVibe needs at least one supported CLI provider installed to run.\n\n` +
-          `Install one of the following, then restart FineVibe:\n\n${bullets}`,
-      );
-      app.quit();
-      return;
-    }
+    // PA-01: the all-missing guard used to run BEFORE the window existed —
+    // six serial spawn-bound probes (up to 2.4 s of `which`/`npm prefix -g`
+    // spawns, W2-06) in front of the first paint. IPC/menu/window first;
+    // the probes run below, parallel, after the window is up. The window
+    // briefly flashing on the all-providers-missing path is the accepted
+    // trade for a first paint that never waits on a probe.
 
     // P2-100 companion (renderer: components/browser-tab/pane.ts isolation
     // toggle). The toggle rebuilds the pane on the SAME sessionId, so the
@@ -216,56 +287,40 @@ function startMainProcess(): void {
     // format guard as `session:release` (ipc-handlers.ts) — the shared
     // default partition (every other browser tab, the imported Chrome jar)
     // is not clearable from the renderer.
+    // C2M-09 (SEC-02 class): main.ts registers no safeOn — the wrapper lives
+    // in ipc-handlers.ts — so the P2-108 rule applies inline: an `ipcMain.on`
+    // body that throws is a fatal main-process exception that kills every
+    // live PTY and window. A partition whose storage is locked (Windows
+    // EBUSY) must degrade to a logged warning.
     ipcMain.on('browser:clearIsolatedStorage', (_event, sessionId: unknown) => {
-      if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return;
-      const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
-      // Existence guard: releasing/clearing a session that never browsed in
-      // isolation must not materialise a partition via fromPartition().
-      if (!fs.existsSync(partDir)) return;
-      session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
-        .clearStorageData()
-        .catch((err) => console.warn('clearStorageData failed:', err));
+      try {
+        if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return;
+        const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
+        // Existence guard: releasing/clearing a session that never browsed in
+        // isolation must not materialise a partition via fromPartition().
+        if (!fs.existsSync(partDir)) return;
+        session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
+          .clearStorageData()
+          .catch((err) => console.warn('clearStorageData failed:', err));
+      } catch (err) {
+        console.warn('browser:clearIsolatedStorage failed:', err);
+      }
     });
     registerIpcHandlers();
     const state = loadState();
     createAppMenu(state.preferences?.debugMode ?? false);
     createWindow();
-
-    // Warn if Python is missing on Windows (hooks depend on it)
-    const pythonWarning = checkPythonAvailable();
-    if (pythonWarning) {
-      console.warn(pythonWarning);
-      const owner = mainWindow;
-      if (owner) {
-        dialog.showMessageBox(owner, {
-          type: 'warning',
-          title: 'FineVibe — Python Not Found',
-          message: pythonWarning,
-        });
-      }
-    }
-
-    // Install hooks and status scripts for available providers (after window creation so dialogs can attach)
-    for (const provider of getAllProviders()) {
-      if (provider.validatePrerequisites()) {
-        await provider.installHooks(mainWindow);
-        provider.installStatusScripts();
-      }
-    }
-
-    initAutoUpdater();
-
-    // Model A: opportunistically ensure the shared agentmemory engine is running
-    // before any agent session spawns, so its first MCP connect hits a live
-    // daemon. Fire-and-forget: a cold boot (engine self-install) must never block
-    // startup. The daemon is shared by all agent CLIs, so it is intentionally NOT
-    // stopped on quit (see before-quit) — that would sever memory outside FineVibe.
-    if (loadState().preferences.agentmemoryAutoStart !== false) {
-      void ensureAgentmemoryRunning().then(
-        (s) => console.log(`[agentmemory] ${s.running ? `running${s.serviceVersion ? ` v${s.serviceVersion}` : ''}` : 'not running'}`),
-        (err: unknown) => console.warn('[agentmemory] ensure failed:', (err as Error).message),
-      );
-    }
+    // S1-01: the updater and the activate/resume handlers used to be
+    // registered at the very END of this chain, behind the awaited provider
+    // probe fan-out, the Python probe, the statusLine-consent modal (whose
+    // promise resolves only on a renderer click) and the installHooks
+    // fan-out (fs writes that can throw EACCES). A rejection there — or the
+    // modal simply staying open — left the updater, the macOS dock
+    // 'activate' re-create and the sleep-resume resync permanently
+    // unregistered, and turned any installHooks throw into an unhandled
+    // rejection (Electron: crash dialog). They gate on nothing: register
+    // them the moment the window exists.
+    disposeAutoUpdater = initAutoUpdater();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -284,14 +339,134 @@ function startMainProcess(): void {
         restartAndResync(win);
       }
     });
+
+
+    // PA-01: cross-launch probe cache (resolved path + availability +
+    // binary mtime, mtime-invalidated per entry) lives in userData;
+    // main.ts owns the userData wiring so resolve-binary stays
+    // electron-free.
+    configureProbeCacheDir(app.getPath('userData'));
+
+    // PA-01: probes are spawn-bound (`which`, `npm prefix -g`) — fan every
+    // provider's async probe out concurrently, off the main thread.
+    // Providers without the async probe (tests, future registrations) fall
+    // back to the sync one.
+    const providers = getAllProviders();
+    // C2M-02: PA-01 moved the probes off the sync path, but the first PTY
+    // SPAWN still paid getFullPath() synchronously — POSIX:
+    // `execSync($SHELL -ilc …)`, 0.2-1.5 s on nvm/p10k setups; Windows: two
+    // `reg query` execSyncs — blocking main for the duration of every
+    // window's paint and every other PTY's traffic. Warm the cache the spawn
+    // reads, in parallel with the probes. The probes reach the same cache
+    // through resolve-binary's freshness gate; this prewarm does not depend
+    // on provider coverage. getFullPathAsync never rejects (every probe
+    // failure composes a fallback PATH), so it cannot fail the boot chain.
+    const [availability] = await Promise.all([
+      Promise.all(providers.map(p => (
+        p.validatePrerequisitesAsync
+          ? p.validatePrerequisitesAsync()
+          : Promise.resolve(p.validatePrerequisites())
+      ))),
+      getFullPathAsync(),
+    ]);
+    const missing = providers.filter((_, i) => !availability[i]);
+    for (const p of missing) {
+      console.warn(`Provider "${p.meta.displayName}" not available`);
+    }
+    if (missing.length === providers.length) {
+      const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
+      dialog.showErrorBox(
+        'FineVibe — No CLI Provider Found',
+        `FineVibe needs at least one supported CLI provider installed to run.\n\n` +
+          `Install one of the following, then restart FineVibe:\n\n${bullets}`,
+      );
+      // PA-01: with the window up first, a bare app.quit() would land on
+      // the close-confirm gate (before-quit → app:confirmClose) and prompt
+      // "Close FineVibe?" on top of the fatal dialog. This quit IS the
+      // confirmed exit.
+      setCloseConfirmed(true);
+      app.quit();
+      return;
+    }
+
+    // PA-16: async Python probe (was 2×execSync(timeout 3000) straight
+    // after createWindow — up to 6 s of main-thread block on first paint).
+    // Awaiting it here does not block the paint — the window is up. The
+    // await exists because installHooks below bakes the live pythonBin
+    // binding into the generated hook commands, so the binding must be
+    // re-pointed (setPythonBin mutates it in place; nothing synchronous
+    // gates on it) before the installs run.
+    const pythonWarning = await checkPythonAvailable();
+    if (pythonWarning) {
+      console.warn(pythonWarning);
+      const owner = mainWindow;
+      if (owner && !owner.isDestroyed()) {
+        dialog.showMessageBox(owner, {
+          type: 'warning',
+          title: 'FineVibe — Python Not Found',
+          message: pythonWarning,
+        });
+      }
+    }
+
+    // PA-26: install hooks and status scripts for available providers
+    // (after window creation so dialogs can attach). Each provider owns a
+    // disjoint config dir (~/.claude, ~/.codex, ~/.gemini, …), so the
+    // installs are independent. S1-01: fire-and-forget with a per-provider
+    // catch — the await used to gate the updater/activate/resume
+    // registrations (now done right after createWindow) on every provider's
+    // IO AND on the statusLine-consent modal (resolved only by a renderer
+    // click), and any throw (EACCES on ~/.claude, AV lock on Windows)
+    // became an unhandled rejection. A failed install is a logged warning:
+    // the provider still runs, hooks just stay uninstalled until the next
+    // spawn/Fix Settings.
+    for (const provider of providers.filter((_, i) => availability[i])) {
+      void provider.installHooks(mainWindow)
+        .then(() => provider.installStatusScripts())
+        .catch((err: unknown) => console.warn(
+          `Provider "${provider.meta.displayName}" hook install failed:`,
+          (err as Error)?.message ?? err,
+        ));
+    }
+
+
+
+    // Model A: opportunistically ensure the shared agentmemory engine is running
+    // before any agent session spawns, so its first MCP connect hits a live
+    // daemon. Fire-and-forget: a cold boot (engine self-install) must never block
+    // startup. The daemon is shared by all agent CLIs, so it is intentionally NOT
+    // stopped on quit (see before-quit) — that would sever memory outside FineVibe.
+    if (loadState().preferences.agentmemoryAutoStart !== false) {
+      void ensureAgentmemoryRunning().then(
+        (s) => console.log(`[agentmemory] ${s.running ? `running${s.serviceVersion ? ` v${s.serviceVersion}` : ''}` : 'not running'}`),
+        (err: unknown) => console.warn('[agentmemory] ensure failed:', (err as Error).message),
+      );
+    }
+
+    })
+    // S1-01: nothing below this point may crash the app: a rejected boot
+  // chain (probe spawn failure, dialog API failure) used to surface as an
+  // unhandled rejection — Electron shows a crash dialog and exits on
+  // Node's throw-by-default policy. Log loudly; the window is already up.
+  .catch((err: unknown) => {
+    console.error('FineVibe startup failed after window creation:', err);
+    dialog.showErrorBox(
+      'FineVibe — Partial Startup Failure',
+      `Some startup steps failed. FineVibe is running, but CLI hooks may not be installed:\n\n${(err as Error)?.message ?? String(err)}`,
+    );
   });
 
+  // C4S-07: a confirmed reply from the renderer disarms the watchdog.
+  ipcMain.on('app:closeConfirmed', clearCloseConfirmWatchdog);
+
   app.on('before-quit', (event) => {
+    clearCloseConfirmWatchdog();
     if (!isCloseConfirmed()) {
       event.preventDefault();
       requestConfirmClose();
       return;
     }
+    disposeAutoUpdater?.();
     flushState();
     const win = BrowserWindow.getAllWindows()[0];
     if (win && !win.isDestroyed()) {
@@ -324,8 +499,8 @@ function startMainProcess(): void {
 // startMainProcess(): no window, no IPC, no browser/webview stack, no
 // lifecycle handlers. The winner runs the full boot. (Gate is smoke-tested
 // in main-single-instance.test.ts via mocked electron.)
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-} else {
+if (app.requestSingleInstanceLock()) {
   startMainProcess();
+} else {
+  app.quit();
 }

@@ -163,18 +163,25 @@ describe('startShare', () => {
     expect(connectedCb).toHaveBeenCalled();
   });
 
-  it('chunks scrollback when it exceeds CHUNK_SIZE', async () => {
-    serializeReturn.value = 'x'.repeat(64 * 1024 + 10);
-    const handle = startShare('s1', 'readonly', '0123456789abcdef0123456789abcdef');
+  it('chunks scrollback by serialized byte size over the send budget (C3RP-04)', async () => {
+    // 250 KB of ASCII exceeds the 200 KB serialized budget; the old
+    // 64 KiB UTF-16-unit chunking let ESC-dense JSON blow past the
+    // ~256 KB Chromium SCTP message cap.
+    serializeReturn.value = 'x'.repeat(250 * 1024);
+    startShare('s1', 'readonly', '0123456789abcdef0123456789abcdef');
     lastDc!.onopen?.();
     deliver({ type: 'auth-response', response: 'expected-response' });
     await new Promise((r) => setTimeout(r, 0));
     const initMsg = sentMessages.find((s) => (s.msg as { type: string }).type === 'init');
     expect(initMsg).toBeDefined();
-    // init message should have empty scrollback; data messages carry chunks
+    // init message carries no scrollback; data messages chunk under budget
     expect((initMsg!.msg as { scrollback: string }).scrollback).toBe('');
     const dataMsgs = sentMessages.filter((s) => (s.msg as { type: string }).type === 'data');
     expect(dataMsgs.length).toBe(2);
+    const encoder = new TextEncoder();
+    for (const d of dataMsgs) {
+      expect(encoder.encode(JSON.stringify(d.msg)).length).toBeLessThanOrEqual(200 * 1024);
+    }
   });
 
   it('fires authFailed and stops on wrong response', async () => {
@@ -223,6 +230,21 @@ describe('startShare', () => {
     await new Promise((r) => setTimeout(r, 0));
     deliver({ type: 'input', payload: 'ls' });
     expect(ptyWrite).not.toHaveBeenCalled();
+  });
+
+  // C5R-07: the guest is untrusted input; a non-string payload must be
+  // refused before pty.write, the same protocol rigor decodeConnectionCode
+  // applies on the offer/answer leg.
+  it('drops input messages whose payload is not a string', async () => {
+    startShare('s1', 'readwrite', '0123456789abcdef0123456789abcdef');
+    lastDc!.onopen?.();
+    deliver({ type: 'auth-response', response: 'expected-response' });
+    await new Promise((r) => setTimeout(r, 0));
+    deliver({ type: 'input', payload: 42 });
+    deliver({ type: 'input', payload: { cmd: 'rm' } });
+    expect(ptyWrite).not.toHaveBeenCalled();
+    deliver({ type: 'input', payload: 'ls' });
+    expect(ptyWrite).toHaveBeenCalledWith('s1', 'ls');
   });
 
   it('resets missedPongs when a pong is received', async () => {
@@ -352,19 +374,49 @@ describe('ICE disconnect', () => {
 describe('native resource teardown', () => {
   const KEY = '0123456789abcdef0123456789abcdef';
 
-  it('closes both natives and fires one notification on ICE disconnected', () => {
+  it('tears down ICE disconnected only after the C5R-02 grace expires', async () => {
+    vi.useFakeTimers();
     const handle = startShare('s1', 'readonly', KEY);
     const onDisc = vi.fn();
     handle.onDisconnected(onDisc);
     const dc = lastDc!;
     const pc = lastPc!;
     lastDc!.onopen?.();
+    deliver({ type: 'auth-response', response: 'expected-response' });
+    await vi.advanceTimersByTimeAsync(0); // complete the auth handshake
     pc.iceConnectionState = 'disconnected';
     pc.oniceconnectionstatechange?.();
+    // Chromium self-recovers from transient ICE disconnects — no teardown yet.
+    expect(dc.close).not.toHaveBeenCalled();
+    expect(pc.close).not.toHaveBeenCalled();
+    expect(onDisc).not.toHaveBeenCalled();
+    expect(isSharing('s1')).toBe(true);
+    vi.advanceTimersByTime(15_000);
     expect(dc.close).toHaveBeenCalledTimes(1);
     expect(pc.close).toHaveBeenCalledTimes(1);
     expect(onDisc).toHaveBeenCalledTimes(1);
     expect(isSharing('s1')).toBe(false);
+  });
+
+  it('ICE recovery within the grace window keeps the share alive (C5R-02)', async () => {
+    vi.useFakeTimers();
+    const handle = startShare('s1', 'readonly', KEY);
+    const onDisc = vi.fn();
+    handle.onDisconnected(onDisc);
+    const dc = lastDc!;
+    const pc = lastPc!;
+    lastDc!.onopen?.();
+    deliver({ type: 'auth-response', response: 'expected-response' });
+    await vi.advanceTimersByTimeAsync(0);
+    pc.iceConnectionState = 'disconnected';
+    pc.oniceconnectionstatechange?.();
+    pc.iceConnectionState = 'connected';
+    pc.oniceconnectionstatechange?.();
+    vi.advanceTimersByTime(60_000);
+    expect(dc.close).not.toHaveBeenCalled();
+    expect(pc.close).not.toHaveBeenCalled();
+    expect(onDisc).not.toHaveBeenCalled();
+    expect(isSharing('s1')).toBe(true);
   });
 
   it('closes both natives and fires one notification on ICE failed', () => {
@@ -487,6 +539,18 @@ describe('native resource teardown', () => {
     onIce?.();
     expect(dc.close).toHaveBeenCalledTimes(1);
     expect(pc.close).toHaveBeenCalledTimes(1);
+    expect(onDisc).toHaveBeenCalledTimes(1);
+    expect(isSharing('s1')).toBe(false);
+  });
+
+  it('stopShare fires the disconnect notification (C3RP-02)', () => {
+    // Pre-fix the detached onclose made every stopShare-reached teardown
+    // silent: the share badge claimed a live viewer forever.
+    const handle = startShare('s1', 'readonly', KEY);
+    const onDisc = vi.fn();
+    handle.onDisconnected(onDisc);
+    lastDc!.onopen?.();
+    stopShare('s1');
     expect(onDisc).toHaveBeenCalledTimes(1);
     expect(isSharing('s1')).toBe(false);
   });

@@ -13,10 +13,12 @@ vi.mock('os', () => ({
 
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 vi.mock('../pty-manager', () => ({
   getFullPath: vi.fn(() => isWin ? '/usr/local/bin;/usr/bin' : '/usr/local/bin:/usr/bin'),
+  getFullPathAsync: vi.fn(() => Promise.resolve('')),
 }));
 
 vi.mock('../hook-status', () => ({

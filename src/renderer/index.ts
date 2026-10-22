@@ -292,11 +292,7 @@ async function main(): Promise<void> {
   startGitPolling();
 
   function isMcpSession(sessionId: string): boolean {
-    for (const project of appState.projects) {
-      const session = project.sessions.find(s => s.id === sessionId);
-      if (session) return session.type === 'mcp-inspector';
-    }
-    return false;
+    return appState.findSessionWithProject(sessionId)?.session.type === 'mcp-inspector';
   }
 
   /** Desktop notification for an abnormal CLI exit, reusing the standard notification gate. */
@@ -329,7 +325,10 @@ async function main(): Promise<void> {
 // renderer-only unloads (reload): on the app.quit() path this listener runs
 // AFTER main's before-quit flushState(), and the quit-path guarantee is
 // main writing the last state payload it received — not this IPC.
-window.addEventListener('beforeunload', () => appState.flushPersist());
+// S1-03: the write must be ON DISK before this renderer dies — flushPersist
+// (async store:save) loses the race with process exit. flushPersistSync
+// blocks on a synchronous main-side write.
+window.addEventListener('beforeunload', () => appState.flushPersistSync());
 
   // Re-derive titles for sessions restored from a previous run (see
   // collectRestoredSelfTitlingSessions). Main mirrors each tab's title from
@@ -346,6 +345,14 @@ window.addEventListener('beforeunload', () => appState.flushPersist());
   appState.on('session-removed', (data) => {
     const { sessionId } = data as { sessionId: string };
     window.finevibe.session.release(sessionId);
+    // PA-35: the coalescing windows lived as long as the renderer, one
+    // entry per session id ever seen. A close with an armed trailing
+    // timer must not fire `notifyInterrupt` for a session that is gone.
+    const w = interruptWindows.get(sessionId);
+    if (w) {
+      if (w.timer !== null) clearTimeout(w.timer);
+      interruptWindows.delete(sessionId);
+    }
   });
 
   // Apply the persisted locale (OS fallback on first launch). The always-on

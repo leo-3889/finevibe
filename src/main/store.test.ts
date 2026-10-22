@@ -174,8 +174,34 @@ describe('saveState', () => {
 
     expect(mockMkdirSync).toHaveBeenCalledWith(
       expect.stringContaining('.finevibe'),
-      { recursive: true },
+      { recursive: true, mode: 0o700 }, // C4S-12: state dir is private
     );
+  });
+
+  it('grafts main-owned statusLine-consent keys onto every write (S1-02)', () => {
+    // Main records a consent decision (boot modal -> recordDirConsent).
+    const withConsent = {
+      ...DEFAULT_STATE,
+      preferences: {
+        ...DEFAULT_STATE.preferences,
+        statusLineConsent: 'declined' as const,
+        statusLineConsentCommand: 'foreign-cmd',
+        statusLineConsentByDir: { '/x': { consent: 'granted' as const, command: 'c' } },
+      },
+    };
+    saveState(withConsent);
+    vi.advanceTimersByTime(300);
+
+    // The renderer's next whole-state persist carries its BOOT-TIME prefs
+    // (consent keys absent). Before S1-02 this erased the consent on disk.
+    saveState({ ...DEFAULT_STATE });
+    vi.advanceTimersByTime(300);
+    const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(written.preferences.statusLineConsent).toBe('declined');
+    expect(written.preferences.statusLineConsentCommand).toBe('foreign-cmd');
+    expect(written.preferences.statusLineConsentByDir).toEqual({ '/x': { consent: 'granted', command: 'c' } });
+    // And a main-side read sees them too.
+    expect(loadState().preferences.statusLineConsent).toBe('declined');
   });
 });
 
@@ -330,6 +356,86 @@ describe('main-owned gate root set (P1-12)', () => {
     expect(loaded.projects.map(p => p.path)).toEqual(['/mock/home/projects/real']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(FS_ROOT));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('/mock/home/gone'));
+    warn.mockRestore();
+  });
+});
+
+// PA-08: the validated gate root set is memoized per save — an unchanged
+// project list costs zero fs calls, a grown list validates only the diff,
+// and refused paths are deliberately NOT cached (they re-validate, warn,
+// and recover on every save).
+describe('gate root memo (PA-08)', () => {
+  const projectAt = (projectPath: string): ProjectRecord => ({
+    id: `p-${projectPath}`,
+    name: 'P',
+    path: projectPath,
+    sessions: [],
+    activeSessionId: null,
+    layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+  });
+  const missing = (p: string): void => {
+    mockStatSync.mockImplementation((pathLike) => {
+      if (String(pathLike) === p) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return { isDirectory: () => true } as unknown as fs.Stats;
+    });
+  };
+
+  it('re-saving an unchanged project list performs zero stat/realpath syscalls', () => {
+    const state = {
+      ...DEFAULT_STATE,
+      projects: [projectAt('/mock/home/projects/a'), projectAt('/mock/home/projects/b')],
+    };
+    saveState(state);
+    expect(mockStatSync).toHaveBeenCalled(); // the first save validates every path
+    mockStatSync.mockClear();
+    mockRealpathSync.mockClear();
+
+    saveState(state);
+
+    expect(mockStatSync).not.toHaveBeenCalled();
+    expect(mockRealpathSync).not.toHaveBeenCalled();
+    expect(getKnownProjectPaths()).toEqual(['/mock/home/projects/a', '/mock/home/projects/b']);
+  });
+
+  it('adding one project costs exactly one stat + one realpath', () => {
+    saveState({ ...DEFAULT_STATE, projects: [projectAt('/mock/home/projects/a')] });
+    mockStatSync.mockClear();
+    mockRealpathSync.mockClear();
+
+    saveState({
+      ...DEFAULT_STATE,
+      projects: [projectAt('/mock/home/projects/a'), projectAt('/mock/home/projects/new')],
+    });
+
+    expect(mockStatSync).toHaveBeenCalledTimes(1);
+    expect(mockStatSync).toHaveBeenCalledWith('/mock/home/projects/new');
+    expect(mockRealpathSync).toHaveBeenCalledTimes(1);
+    expect(mockRealpathSync).toHaveBeenCalledWith('/mock/home/projects/new');
+    expect(getKnownProjectPaths()).toEqual(['/mock/home/projects/a', '/mock/home/projects/new']);
+  });
+
+  it('re-validates a dropped path on every save while a cached sibling costs zero syscalls', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    missing('/mock/home/gone');
+    const state = {
+      ...DEFAULT_STATE,
+      projects: [projectAt('/mock/home/projects/real'), projectAt('/mock/home/gone')],
+    };
+    saveState(state);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('/mock/home/gone'));
+    mockStatSync.mockClear();
+    mockRealpathSync.mockClear();
+
+    saveState(state);
+
+    // Failures are never cached: the refused path is statted again and
+    // warns again, so a directory that reappears recovers...
+    expect(mockStatSync).toHaveBeenCalledTimes(1);
+    expect(mockStatSync).toHaveBeenCalledWith('/mock/home/gone');
+    expect(warn).toHaveBeenCalledTimes(2);
+    // ...while the valid sibling is served from the per-path cache.
+    expect(mockRealpathSync).not.toHaveBeenCalled();
+    expect(mockStatSync.mock.calls.map((call) => String(call[0]))).not.toContain('/mock/home/projects/real');
     warn.mockRestore();
   });
 });

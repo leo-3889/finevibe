@@ -80,6 +80,12 @@ interface WatchedSession {
   adoptedFile?: string;
   adoptedCliId?: string;
   adoptedFileTs?: number | null;
+  /**
+   * Discovery generation of the adopted file. A `/clear` re-adoption
+   * re-baselines `knownGeneration` to it (PA-05), so the files a cleared tab
+   * leaves behind stop being read at all.
+   */
+  adoptedGeneration?: number;
 }
 
 interface Candidate {
@@ -87,6 +93,8 @@ interface Candidate {
   sessionId: string;
   /** ISO timestamp parsed from the filename, or null when absent/unparseable. */
   fileTs: number | null;
+  /** Discovery generation of this file in its dir's history (PA-05 gate). */
+  generation: number;
 }
 
 /**
@@ -194,9 +202,19 @@ export function createCompatibleSessionWatcher(
       return false;
     }
     rememberAssignedId(cand.sessionId);
+    // PA-05: a `/clear` re-adoption supersedes the previous transcript. The
+    // dir is exclusive to this session and the newest file wins, so every
+    // file at or below the superseded file's generation can never be adopted
+    // again — re-baseline the generation gate to it. Without this each
+    // `/clear` leaves a stale file whose header (open + 8 KiB + JSON.parse)
+    // is re-read on every later scan: k clears ⇒ k+1 header reads per tick.
+    if (p.adoptedGeneration !== undefined) {
+      p.knownGeneration = Math.max(p.knownGeneration, p.adoptedGeneration);
+    }
     p.adoptedFile = cand.file;
     p.adoptedCliId = cand.sessionId;
     p.adoptedFileTs = cand.fileTs;
+    p.adoptedGeneration = cand.generation;
     // Follow-up wiring (e.g. starting the transcript sync) must not undo an
     // adoption if the callback throws.
     try {
@@ -205,23 +223,69 @@ export function createCompatibleSessionWatcher(
     return true;
   }
 
-  function collectCandidates(dir: string, knownGeneration: number): Candidate[] {
-    const history = refreshHistory(dir);
-    const out: Candidate[] = [];
+  /**
+   * Post-registration files of one session's exclusive dir.
+   *
+   * Steady state reads ZERO headers per tab (PA-03):
+   *  - the adopted file is skipped outright — its id is already recorded as
+   *    `p.adoptedCliId` (and it is in `assignedIds`, which is what dropped it
+   *    from the candidates only AFTER the read used to);
+   *  - after a `/clear`, `adopt()` re-baselines the generation (PA-05), so the
+   *    superseded files are excluded by the gate instead of by a header read.
+   *
+   * A known-id registration whose dir holds exactly one unclaimed file needs no
+   * header either: the dir is exclusive to this launch, so that file can only
+   * be its transcript. With several files the header id is what picks the right
+   * one, so they are read — and the header read remains the only way to learn
+   * a genuinely unknown id (an OMP first write, a `/clear`'s new id).
+   */
+  function collectCandidates(p: WatchedSession): Candidate[] {
+    const history = refreshHistory(p.sessionDir);
+    const fresh: Array<{ file: string; generation: number }> = [];
     for (const full of history.current) {
-      if ((history.files.get(full) ?? 0) <= knownGeneration) continue;
-      const header = readSessionHeaderSync(full);
+      const generation = history.files.get(full) ?? 0;
+      if (generation <= p.knownGeneration) continue;
+      if (full === p.adoptedFile) continue;
+      fresh.push({ file: full, generation });
+    }
+    if (fresh.length === 0) return [];
+
+    const knownId = p.knownCliId;
+    if (
+      knownId !== undefined && p.adoptedFile === undefined &&
+      fresh.length === 1 && !assignedIds.has(knownId)
+    ) {
+      const only = fresh[0];
+      return [{
+        file: only.file,
+        sessionId: knownId,
+        fileTs: filenameTimestampMs(only.file),
+        generation: only.generation,
+      }];
+    }
+
+    const out: Candidate[] = [];
+    for (const f of fresh) {
+      const header = readSessionHeaderSync(f.file);
       if (!header || assignedIds.has(header.id)) continue;
-      out.push({ file: full, sessionId: header.id, fileTs: filenameTimestampMs(full) });
+      out.push({ file: f.file, sessionId: header.id, fileTs: filenameTimestampMs(f.file), generation: f.generation });
     }
     return out;
   }
 
-  function scanForNewSessions(): void {
+  /**
+   * One discovery pass. `dirs`, when given, restricts the sweep to the
+   * directories the watchers reported dirty (PA-04): a rename in one tab's dir
+   * used to re-scan every session's dir — an N-tab sweep per burst, while the
+   * dirty set already named the one dir that changed. The 2 s poll stays the
+   * full-sweep backbone that catches anything the events missed.
+   */
+  function scanForNewSessions(dirs?: ReadonlySet<string>): void {
     if (watchedSessions.size === 0) return;
 
     for (const [uiId, p] of watchedSessions) {
-      const candidates = collectCandidates(p.sessionDir, p.knownGeneration);
+      if (dirs && !dirs.has(p.sessionDir)) continue;
+      const candidates = collectCandidates(p);
       if (candidates.length === 0) continue;
 
       if (!p.adoptedFile) {
@@ -278,9 +342,10 @@ export function createCompatibleSessionWatcher(
         dirWatchers.delete(p.sessionDir);
       }
       histories.delete(p.sessionDir);
-      for (const dir of directoryCache.keys()) {
-        if (dir === p.sessionDir) { directoryCache.delete(dir); dirtyDirectories.delete(dir); }
-      }
+      // O(1) by key (PA-28): the old code iterated every cache entry to drop
+      // one, so unregistering one of 200 tabs scanned 200 keys.
+      directoryCache.delete(p.sessionDir);
+      dirtyDirectories.delete(p.sessionDir);
     }
   }
 
@@ -289,9 +354,9 @@ export function createCompatibleSessionWatcher(
    * sees poll-driven scans: a poll that just ran means a following burst can
    * wait out its full spacing instead of scanning again immediately.
    */
-  function runScan(): void {
+  function runScan(dirs?: ReadonlySet<string>): void {
     lastScanAt = Date.now();
-    if (watchedSessions.size > 0) scanForNewSessions();
+    if (watchedSessions.size > 0) scanForNewSessions(dirs);
   }
 
   /**
@@ -309,7 +374,13 @@ export function createCompatibleSessionWatcher(
     );
     scanTimer = setTimeout(() => {
       scanTimer = null;
-      runScan();
+      // PA-04: scan only the dirs the watchers named. An event that named
+      // nothing (a pure 'change') leaves the set empty → the full sweep runs,
+      // exactly as before. Snapshot first: dirs added while the scan ran must
+      // survive it, and readDirectory() clears each dir it re-enumerates.
+      const dirty = dirtyDirectories.size > 0 ? new Set(dirtyDirectories) : undefined;
+      runScan(dirty);
+      if (dirty) for (const dir of dirty) dirtyDirectories.delete(dir);
     }, delay);
   }
 

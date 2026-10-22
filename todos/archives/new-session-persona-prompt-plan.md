@@ -1,6 +1,6 @@
 # New Session modal — focus fix + team persona + custom prompt (plan)
 
-Status: planned, not implemented.
+Status: DONE — shipped 201a443 (items 38-40), verified in-tree 2026-10-22. Archived.
 Date: 2026-10-20.
 Scope: (1) Ask AI composer focus when the New Session modal opens from it;
 (2) a team-persona select row below Name; (3) a custom-prompt textarea row below the persona row.

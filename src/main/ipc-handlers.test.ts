@@ -32,6 +32,7 @@ const mockSpawnPty = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise
 const mockRegisterSync = vi.hoisted(() => vi.fn());
 const mockUnregisterSync = vi.hoisted(() => vi.fn(() => { calls.push('unregister'); }));
 const mockGetProvider = vi.hoisted(() => vi.fn());
+const mockGetAvailableAsync = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const mockGetSyncedPath = vi.hoisted(() => vi.fn((): string | null => null));
 const mockRegisterSession = vi.hoisted(() => vi.fn());
 
@@ -92,6 +93,15 @@ vi.mock('electron', () => ({
   utilityProcess: { fork: vi.fn(() => null as never) },
 }));
 
+// The ESM namespace of a node builtin is frozen, so `vi.spyOn(os, 'homedir')`
+// throws ("Module namespace is not configurable in ESM"). Swap in a mutable
+// binding over the real module — the repo's established 'os'-mock technique.
+const osHomeOverride = vi.hoisted(() => ({ value: '' }));
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: () => osHomeOverride.value || actual.homedir() };
+});
+
 vi.mock('./pty-manager', () => ({
   spawnPty: mockSpawnPty,
   spawnShellPty: vi.fn(),
@@ -112,11 +122,13 @@ vi.mock('./providers/registry', () => ({
   getProvider: mockGetProvider,
   getAllProviderMetas: vi.fn(),
   getAllProviders: vi.fn(),
+  getAvailableProviderIdsAsync: mockGetAvailableAsync,
 }));
 
 vi.mock('./store', () => ({
   loadState: vi.fn(() => ({ projects: [], preferences: {} })),
   saveState: vi.fn(),
+  saveStateSync: vi.fn(),
   getKnownProjectPaths: () => knownPaths,
 }));
 
@@ -174,15 +186,17 @@ vi.mock('./profiles', autoStub);
 vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
 
-import { registerIpcHandlers } from './ipc-handlers';
-import { isManagedMcpConfigDir } from './claude-cli';
+import { registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting } from './ipc-handlers';
+import { isManagedMcpConfigDir, removeMcpServer } from './claude-cli';
 import { loadState } from './store';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { cleanupSessionStatus } from './hook-status';
 import { analyzeReadiness } from './readiness/analyzer';
 import { detectRepo } from './github-cli';
-import { getAllProviders } from './providers/registry';
+import { buildFineVibeIgnoreMatcher } from './finevibeignore';
+import { estimateTokens } from '../shared/token-estimate';
 
+import { getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 function makeProvider(): CliProvider {
   return {
     // hookStatus off keeps the post-spawn settings-warning block out of the way.
@@ -231,6 +245,8 @@ function exitCallback(): ExitCallback {
 beforeEach(() => {
   vi.clearAllMocks();
   calls.length = 0;
+  // The home-outside consent Map is module state; each test starts fresh.
+  _resetHomeOutsideConsentForTesting();
   handlers.clear();
   knownPaths.length = 0;
   provider = makeProvider();
@@ -243,7 +259,7 @@ beforeEach(() => {
 });
 
 describe('project file read boundary', () => {
-  it('rejects a link inside a project whose target is outside it', () => {
+  it('rejects a link inside a project whose target is outside it', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ipc-test-'));
     try {
       const project = path.join(root, 'project');
@@ -254,13 +270,13 @@ describe('project file read boundary', () => {
       fs.symlinkSync(outside, path.join(project, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
       knownPaths.push(project);
       const read = handlers.get('fs:readFile')!;
-      expect(read({}, path.join(project, 'linked', 'secret.txt'))).toEqual({ ok: false, reason: 'error' });
+      await expect(read({}, path.join(project, 'linked', 'secret.txt'))).resolves.toEqual({ ok: false, reason: 'error' });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('rejects a text file larger than the bounded reader limit', () => {
+  it('rejects a text file larger than the bounded reader limit', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ipc-test-'));
     try {
       const large = path.join(root, 'large.txt');
@@ -268,8 +284,168 @@ describe('project file read boundary', () => {
       try { fs.ftruncateSync(fd, 8 * 1024 * 1024 + 1); } finally { fs.closeSync(fd); }
       knownPaths.push(root);
       const read = handlers.get('fs:readFile')!;
-      expect(read({}, large)).toEqual({ ok: false, reason: 'error' });
+      await expect(read({}, large)).resolves.toEqual({ ok: false, reason: 'error' });
     } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// PA-07: Quick Open enumerated the whole repo (a fresh `git ls-files` spawn)
+// per debounced keystroke. The enumeration is now cached per cwd and
+// invalidated by the git:changed signal and a TTL.
+describe('fs:listFiles enumeration cache (PA-07)', () => {
+  const list = (cwd: string, query = ''): Promise<string[]> =>
+    handlers.get('fs:listFiles')!({}, cwd, query) as Promise<string[]>;
+
+  function stubGitLsFiles(stdout: string | null) {
+    mockGitCloneSpawn.mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null, stdout: unknown, stderr?: string) => void;
+      // enumerateProjectFiles awaits promisify(execFile) over the MOCK: the
+      // vi.fn() carries no util.promisify.custom, so the generic promisify
+      // resolves the FIRST callback arg and the source destructures
+      // { stdout }. Hand it the envelope (same convention as
+      // resolve-binary.test.ts), not the raw execFile string.
+      if (stdout === null) cb(new Error('not a git repository'), '', '');
+      else cb(null, { stdout }, '');
+    }) as never);
+  }
+
+  async function gitChangedListener(): Promise<() => void> {
+    const gitWatcher = await import('./git-watcher');
+    const calls = vi.mocked(gitWatcher.onGitChanged).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return calls[calls.length - 1][0] as () => void;
+  }
+
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-enumerate-'));
+    knownPaths.push(root);
+    _resetEnumerateCacheForTesting();
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    vi.useRealTimers();
+  });
+
+  it('enumerates once per cwd across keystrokes; git:changed and the TTL invalidate', async () => {
+    vi.useFakeTimers();
+    fs.writeFileSync(path.join(root, 'a.ts'), 'a');
+    stubGitLsFiles('a.ts\n');
+    expect(await list(root, 'a')).toEqual(['a.ts']);
+
+    // A new file + new keystroke: served from the cache, NO new git spawn.
+    fs.writeFileSync(path.join(root, 'b.ts'), 'b');
+    stubGitLsFiles('a.ts\nb.ts\n');
+    expect(await list(root, 'b')).toEqual([]); // stale by design — TTL-bound:
+    // the cache still holds ['a.ts'], so 'b' matches nothing AND no new
+    // git spawn fires (the staleness proof below).
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(1);
+
+    // The git:changed signal the renderer also receives clears the cache.
+    (await gitChangedListener())();
+    expect(await list(root, 'b')).toEqual(['b.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(2);
+
+    // TTL backstop for trees the watcher never touches.
+    fs.writeFileSync(path.join(root, 'c.ts'), 'c');
+    stubGitLsFiles('a.ts\nb.ts\nc.ts\n');
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(31_000);
+    expect(await list(root, 'c')).toEqual(['c.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(3);
+  });
+
+  it('filters the cached list per query without re-enumerating', async () => {
+    stubGitLsFiles('src/alpha.ts\nsrc/beta.ts\nREADME.md\n');
+    expect(await list(root, 'beta')).toEqual(['src/beta.ts']);
+    expect(await list(root, 'src')).toEqual(['src/alpha.ts', 'src/beta.ts']);
+    expect(await list(root, '')).toEqual(['src/alpha.ts', 'src/beta.ts', 'README.md']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('walks non-git trees asynchronously (PA-07 fallback)', async () => {
+    stubGitLsFiles(null); // git ls-files fails → fallback walk
+    fs.mkdirSync(path.join(root, 'sub'));
+    fs.mkdirSync(path.join(root, 'node_modules'));
+    fs.writeFileSync(path.join(root, 'a.ts'), 'a');
+    fs.writeFileSync(path.join(root, 'sub', 'b.ts'), 'b');
+    fs.writeFileSync(path.join(root, 'node_modules', 'x.ts'), 'x');
+    const files = await list(root);
+    expect(new Set(files)).toEqual(new Set(['a.ts', path.join('sub', 'b.ts')]));
+  });
+
+  it('a git:changed invalidation drops the enumeration already in flight (UI3-11)', async () => {
+    // Park enumeration #1: its git spawn never calls back, so the tree is
+    // "being walked" while the repo changes underneath it.
+    let releaseStale: (() => void) | null = null;
+    mockGitCloneSpawn.mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null, stdout: unknown) => void;
+      releaseStale = () => cb(null, { stdout: 'a.ts\ngone.ts\n' });
+    }) as never);
+
+    const stale = list(root, 'a'); // enumeration #1 — parked mid-walk
+    await Promise.resolve();
+
+    // The repo changes; the debounced git:changed signal invalidates.
+    stubGitLsFiles('a.ts\nb.ts\n');
+    (await gitChangedListener())();
+
+    // The invalidation must drop the parked walk as well: a new caller starts a
+    // fresh enumeration instead of being handed the superseded one.
+    expect(await list(root, 'b')).toEqual(['b.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(2);
+
+    // #1 lands late, carrying the pre-change listing.
+    releaseStale!();
+    expect(await stale).toEqual(['a.ts']);
+
+    // Its cache write must be dropped too: the cache keeps the fresh listing, so
+    // 'gone' matches nothing with no third spawn. Clearing only the Map let the
+    // late write repopulate it, undoing the invalidation for a whole TTL.
+    stubGitLsFiles('a.ts\nb.ts\ngone.ts\n');
+    expect(await list(root, 'gone')).toEqual([]);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(2);
+    expect(await list(root, 'b')).toEqual(['b.ts']);
+  });
+});
+
+// PA-24: the stats widget rendered this every poll; the JSON file used to be
+// read and parsed in full each time. Memoized by (path, mtime, size).
+describe('stats:getCache memoization (PA-24)', () => {
+  it('re-parses only when the file mtime/size changes', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-statscache-'));
+    osHomeOverride.value = root;
+    try {
+      fs.mkdirSync(path.join(root, '.claude'));
+      const file = path.join(root, '.claude', 'stats-cache.json');
+      const get = () => handlers.get('stats:getCache')!({}) as Promise<unknown>;
+
+      fs.writeFileSync(file, JSON.stringify({ v: 1, pad: 'x'.repeat(64) }));
+      // NTFS records sub-ms mtime; utimesSync only accepts integer ms.
+      // Quantize the file's clock BEFORE the memo takes its first
+      // (mtime, size) snapshot, so the mtime restore below (Date-precision)
+      // lands exactly on the memo key — a sub-ms delta re-parses.
+      const q = fs.statSync(file);
+      fs.utimesSync(file, new Date(Math.floor(q.atimeMs)), new Date(Math.floor(q.mtimeMs)));
+      expect(await get()).toEqual({ v: 1, pad: 'x'.repeat(64) });
+
+      // Rewrite with identical size, restored mtime: the memo answers, no re-parse.
+      const st = fs.statSync(file);
+      fs.writeFileSync(file, JSON.stringify({ v: 2, pad: 'y'.repeat(64) }));
+      fs.utimesSync(file, new Date(st.atimeMs), new Date(st.mtimeMs));
+      expect(await get()).toEqual({ v: 1, pad: 'x'.repeat(64) });
+
+      // A real write bumps the mtime → re-read.
+      fs.utimesSync(file, new Date(st.atimeMs), new Date(st.mtimeMs + 5000));
+      expect(await get()).toEqual({ v: 2, pad: 'y'.repeat(64) });
+
+      // Unreadable file → null, memo dropped.
+      fs.rmSync(file);
+      expect(await get()).toBeNull();
+    } finally {
+      osHomeOverride.value = '';
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -404,7 +580,36 @@ describe('store:save cannot widen the root set', () => {
     handlers.get('store:save')!({}, poison);
     expect(vi.mocked(store.saveState)).toHaveBeenCalledWith(poison);
     expect(knownPaths).not.toContain('C:\\');
-    expect(handlers.get('fs:readFile')!({}, 'C:\\')).toEqual({ ok: false, reason: 'error' });
+    await expect(handlers.get('fs:readFile')!({}, 'C:\\')).resolves.toEqual({ ok: false, reason: 'error' });
+  });
+});
+
+// S1-03: the sync quit flush must carry the SAME verifier as store:save —
+// a payload inventing a root may not widen the gate through the new channel,
+// and it must reach saveStateSync (the synchronous writer), not saveState.
+describe('store:save-sync (S1-03)', () => {
+  it('routes through the store verifier into saveStateSync and answers the sync send', async () => {
+    const store = await import('./store');
+    knownPaths.length = 0;
+    const poison = { projects: [{ id: 'x', path: 'C:\\' }], preferences: {} };
+    const event = { returnValue: false as unknown };
+    handlers.get('store:save-sync')!(event, poison);
+    expect(vi.mocked(store.saveStateSync)).toHaveBeenCalledWith(poison);
+    expect(vi.mocked(store.saveState)).not.toHaveBeenCalled();
+    expect(event.returnValue).toBe(true);
+    expect(knownPaths).not.toContain('C:\\');
+    await expect(handlers.get('fs:readFile')!({}, 'C:\\')).resolves.toEqual({ ok: false, reason: 'error' });
+  });
+
+  // SEC-02: the channel is an `ipcMain.on` (sendSync) body, so a throw is a
+  // fatal main-process exception, not a rejected invoke. The wrap answers the
+  // renderer's best-effort quit flush with `false` and main keeps running.
+  it('answers false without throwing when the sync write fails', async () => {
+    const store = await import('./store');
+    vi.mocked(store.saveStateSync).mockImplementationOnce(() => { throw new Error('ENOSPC'); });
+    const event = { returnValue: undefined as unknown };
+    expect(() => handlers.get('store:save-sync')!(event, { projects: [], preferences: {} })).not.toThrow();
+    expect(event.returnValue).toBe(false);
   });
 });
 
@@ -419,10 +624,10 @@ describe('readiness/github git-executing handlers share the root gate', () => {
       const outside = path.join(root, 'invented');
       fs.mkdirSync(outside);
 
-      expect(() => handlers.get('readiness:analyze')!({}, outside))
-        .toThrow(/not within a known project/);
-      expect(() => handlers.get('github:detectRepo')!({}, outside))
-        .toThrow(/not within a known project/);
+      // S4-03: readiness:analyze is async now — the gate throw lands on
+      // the invoke promise, the renderer-visible rejection over IPC.
+      await expect(handlers.get('readiness:analyze')!({}, outside))
+        .rejects.toThrow(/not within a known project/);
       expect(vi.mocked(analyzeReadiness)).not.toHaveBeenCalled();
       expect(vi.mocked(detectRepo)).not.toHaveBeenCalled();
     } finally {
@@ -444,6 +649,21 @@ describe('readiness/github git-executing handlers share the root gate', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('probes provider availability through the async twin before the analyzer (S4-03)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-git-gate-'));
+    try {
+      knownPaths.push(root);
+      const order: string[] = [];
+      vi.mocked(getAvailableProviderIdsAsync).mockImplementationOnce(async () => { order.push('probe'); return []; });
+      vi.mocked(analyzeReadiness).mockImplementationOnce(async () => { order.push('analyze'); return {} as never; });
+      await handlers.get('readiness:analyze')!({}, root);
+      expect(order).toEqual(['probe', 'analyze']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
 });
 
 const OUTSIDE_HOME = process.platform === 'win32' ? 'C:\\Windows' : '/etc';
@@ -527,6 +747,57 @@ describe('fs:listDirs home gate (P1-19)', () => {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });
+
+  // C2M-10 + CI-09: the debounced keystroke burst fires concurrent listDirs
+  // for one directory while the first confirm is still open, and every
+  // caller used to stack its own native modal on top of it. One dialog,
+  // answered by every waiter.
+  it('shares one in-flight confirm across concurrent requests for the same dir', async () => {
+    let release!: (value: { response: number }) => void;
+    // mockImplementationOnce: the shared in-flight confirm opens exactly one
+    // dialog, and the default Cancel answer survives for later tests.
+    vi.mocked(dialog.showMessageBox).mockImplementationOnce(
+      () => new Promise<{ response: number }>((resolve) => { release = resolve; }),
+    );
+    const first = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
+    const second = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
+    const third = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
+    release({ response: 1 });
+    const [a, b, c] = await Promise.all([first, second, third]);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    expect(a).toEqual(b);
+    expect(b).toEqual(c);
+    expect(a.length).toBeGreaterThan(0);
+  });
+
+  // SEC-05: the enumeration follows the canonical target, so the dialog must
+  // name that target — a link spelled `~/safe-dir` pointing at a directory
+  // outside home must not be confirmed on the link's friendly name.
+  it('names the canonical target in the confirm, not the link spelling', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-consent-'));
+    try {
+      // The tree lives under the real tmpdir, i.e. INSIDE the real home, so
+      // point home (the suite's os.homedir override) at a sibling: the link
+      // is then home-outside and the confirm fires.
+      const fakeHome = path.join(root, 'home');
+      fs.mkdirSync(fakeHome);
+      osHomeOverride.value = fakeHome;
+      const target = path.join(root, 'real-target');
+      fs.mkdirSync(target);
+      const link = path.join(root, 'friendly-name');
+      fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+      await handlers.get('fs:listDirs')!({}, link);
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+      const args = vi.mocked(dialog.showMessageBox).mock.calls[0] as unknown as unknown[];
+      const options = args[args.length - 1] as { message: string };
+      // The listing walks the canonical target; the dialog must name it.
+      expect(options.message).toContain(fs.realpathSync(target));
+      expect(options.message).not.toContain('friendly-name');
+    } finally {
+      osHomeOverride.value = '';
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('fs:isDirectory home gate (P2-38)', () => {
@@ -562,22 +833,26 @@ describe('fs:unwatchDir gate (P2-30)', () => {
 });
 
 describe('session transcript channels: configDir boundary gate (P2-113)', () => {
-  it('denies at the boundary: an unallowlisted configDir never reaches a provider scan root', () => {
+  it('denies at the boundary: an unallowlisted configDir never reaches a provider scan root', async () => {
     provider.getTranscriptPath = vi.fn(() => null);
     vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
-    const event: { returnValue?: unknown } = {};
-    handlers.get('session:transcriptExistsSync')!(event, 'claude', 'cli-1', '/proj', '/foreign/dir', undefined);
+    // PA-25: the main-side handler is sync (ipcMain.handle wraps the return
+    // into the renderer's invoke Promise), so a direct call yields the boolean.
+    expect(
+      handlers.get('session:transcriptExists')!({}, 'claude', 'cli-1', '/proj', '/foreign/dir', undefined),
+    ).toBe(false);
     expect(provider.getTranscriptPath).not.toHaveBeenCalled();
-    expect(event.returnValue).toBe(false);
   });
-  it('passes an allowlisted configDir to the provider; null path still means absent', () => {
+  it('passes an allowlisted configDir to the provider; null path still means absent', async () => {
     provider.getTranscriptPath = vi.fn(() => null);
+    // C3A-03: the projectPath gate admits the legit active project.
+    knownPaths.push('/proj');
     vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(true);
-    const event: { returnValue?: unknown } = {};
-    handlers.get('session:transcriptExistsSync')!(event, 'claude', 'cli-1', '/proj', '/profiles/work', undefined);
+    expect(
+      handlers.get('session:transcriptExists')!({}, 'claude', 'cli-1', '/proj', '/profiles/work', undefined),
+    ).toBe(false);
     expect(isManagedMcpConfigDir).toHaveBeenCalledWith('/profiles/work');
     expect(provider.getTranscriptPath).toHaveBeenCalledWith('cli-1', '/proj', '/profiles/work', undefined);
-    expect(event.returnValue).toBe(false);
   });
   it('buildResumeWithPrompt rejects before reading any transcript', async () => {
     provider.getTranscriptPath = vi.fn(() => '/t.jsonl');
@@ -592,6 +867,67 @@ describe('session transcript channels: configDir boundary gate (P2-113)', () => 
     await expect(
       handlers.get('session:exportArchive')!({}, 'claude', 'cli-1', '/proj', '/foreign/dir', {} as never, 'zip'),
     ).rejects.toThrow('Not a managed profile config dir');
+  });
+  it('transcriptExists denies a projectPath outside the known projects', () => {
+    provider.getTranscriptPath = vi.fn(() => '/t.jsonl');
+    // C3A-03: the provider:getConfig project gate; deny, not fail-open.
+    expect(
+      handlers.get('session:transcriptExists')!({}, 'claude', 'cli-1', '/foreign/proj', undefined, undefined),
+    ).toBe(false);
+    expect(provider.getTranscriptPath).not.toHaveBeenCalled();
+  });
+  it('buildResumeWithPrompt rejects a projectPath outside the known projects', async () => {
+    provider.getTranscriptPath = vi.fn(() => '/t.jsonl');
+    await expect(
+      handlers.get('session:buildResumeWithPrompt')!({}, 'claude', 'cli-1', '/foreign/proj', 'S'),
+    ).rejects.toThrow(/not within a known project/);
+    expect(provider.getTranscriptPath).not.toHaveBeenCalled();
+  });
+  it('session:exportArchive rejects a projectPath outside the known projects', async () => {
+    await expect(
+      handlers.get('session:exportArchive')!({}, 'claude', 'cli-1', '/foreign/proj', undefined, {} as never, 'zip'),
+    ).rejects.toThrow(/not within a known project/);
+  });
+});
+
+// SEC-03: provider:getConfig took both paths from the renderer verbatim and
+// handed them to provider.getConfig — the same two gates every other
+// config-reading channel enforces (managed profile dir, known project).
+describe('provider:getConfig path gates (SEC-03)', () => {
+  beforeEach(() => {
+    provider.getConfig = vi.fn(async () => ({ servers: ['s'] }));
+  });
+
+  it('rejects an unallowlisted configDir before the provider is consulted', async () => {
+    knownPaths.push('/proj');
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    await expect(handlers.get('provider:getConfig')!({}, 'claude', '/proj', '/foreign/dir'))
+      .rejects.toThrow('Not a managed profile config dir');
+    expect(provider.getConfig).not.toHaveBeenCalled();
+  });
+
+  it('rejects a projectPath outside the known projects', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-getconfig-'));
+    try {
+      knownPaths.length = 0;
+      await expect(handlers.get('provider:getConfig')!({}, 'claude', root))
+        .rejects.toThrow(/not within a known project/);
+      expect(provider.getConfig).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes the legit active project plus a pinned profile dir through', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-getconfig-'));
+    try {
+      knownPaths.push(root);
+      await expect(handlers.get('provider:getConfig')!({}, 'pi', root, '/profiles/work'))
+        .resolves.toEqual({ servers: ['s'] });
+      expect(provider.getConfig).toHaveBeenCalledWith(root, '/profiles/work');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 describe('pty:create provider hooks', () => {
@@ -784,6 +1120,33 @@ describe('pty:data coalescing (P5)', () => {
     expect(sends.filter((c) => c[0] === 'pty:data').map((c) => [c[1], c[2]]))
       .toEqual([['ui-1', 'a'], ['ui-2', 'b']]);
   });
+
+  // C2M-04: a re-spawn under the SAME sessionId (tab restore over a live id,
+  // pty-manager's replace) registers a new outbox. The replaced process's
+  // exit used to flush-and-delete by session id, so the new pane lost its
+  // exit flush and the renderer tore the pane down before its last data.
+  it('a re-spawn keeps its own outbox when the replaced process exits', async () => {
+    await create('ui-1', null);
+    await create('ui-1', null);
+    const oldPush = mockSpawnPty.mock.calls[0][9] as (d: string) => void;
+    const newPush = mockSpawnPty.mock.calls[1][9] as (d: string) => void;
+    const oldExit = mockSpawnPty.mock.calls[0][10] as ExitCallback;
+    const newExit = mockSpawnPty.mock.calls[1][10] as ExitCallback;
+
+    oldPush('old words');
+    oldExit(0);
+    // The guard leaves the superseded sink alone, so its own window still
+    // ships its buffer — the guard loses nothing.
+    vi.advanceTimersByTime(4);
+    expect(dataSends()).toEqual(['old words']);
+    fakeWin.webContents.send.mockClear();
+
+    newPush('new words');
+    newExit(0);
+    const channels = (fakeWin.webContents.send.mock.calls as unknown as Array<[string]>).map((c) => c[0]);
+    expect(channels).toEqual(['pty:data', 'pty:exit']);
+    expect(dataSends()).toEqual(['new words']);
+  });
 });
 
 describe('pty exit teardown ordering', () => {
@@ -934,7 +1297,7 @@ it('cancels superseded IPC searches, palette cancellation and window destruction
   const third = handler({sender}, 'third');
   sender.emit('destroyed');
   expect(signals[2].aborted).toBe(true);
-  complete.forEach(resolve => resolve());
+  for (const resolve of complete) resolve();
   await Promise.all([first, second, third]);
   expect(sender.listenerCount('destroyed')).toBe(0);
 });
@@ -1685,5 +2048,257 @@ describe('fs:cloneRepo gates', () => {
     mockGitCloneSpawn.mockImplementationOnce((_cmd: string, _args: unknown, _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
     const res = await handlers.get('fs:cloneRepo')!({}, 'git@github.com:owner/repo.git', path.join(os.homedir(), 'repo'));
     expect(res).toEqual({ ok: true });
+  });
+});
+
+// S4-04: the sidebar's Add-Project path input fires fs:listDirs per
+// keystroke; the handler must stay cheap (async readdir, sort only the
+// prefix-matched slice, join only the 20-slice) and prompt home-outside
+// consent at most once per directory.
+describe('fs:listDirs keystroke path (S4-04)', () => {
+  it('returns the first 20 directories in name order, prefix-filtered, with no confirm inside home', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-listdirs-'));
+    try {
+      const names: string[] = [];
+      for (let i = 1; i <= 25; i++) names.push(`p${String(i).padStart(2, '0')}`);
+      names.push('beta', '.hidden');
+      for (const n of names) fs.mkdirSync(path.join(homeDir, n));
+      fs.writeFileSync(path.join(homeDir, 'afile.txt'), 'x');
+
+      const dirs = (await handlers.get('fs:listDirs')!({}, homeDir)) as string[];
+      // localeCompare order: 'beta' collates before 'p01', so the 20-slice
+      // is beta + p01..p18 — the full dir list sorted, sliced, joined.
+      expect(dirs).toEqual(
+        names.filter(n => !n.startsWith('.')).sort((a, b) => a.localeCompare(b)).slice(0, 20).map(n => path.join(homeDir, n))
+      );
+      const beta = (await handlers.get('fs:listDirs')!({}, homeDir, 'be')) as string[];
+      expect(beta).toEqual([path.join(homeDir, 'beta')]);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('asks home-outside consent at most once per directory — repeats never re-prompt', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    const first = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
+    const second = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
+    expect(first.length).toBeGreaterThan(0);
+    expect(second).toEqual(first);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches a Cancel too: every repeat on the declined directory returns empty with no new dialog', async () => {
+    // dialog.showMessageBox resolves response 0 (Cancel) by default.
+    await expect(handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)).resolves.toEqual([]);
+    await expect(handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)).resolves.toEqual([]);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+});
+
+// S4-03: Preferences→Setup fires provider:checkBinary for all six providers
+// per section mount, installAgent filters targets, and readiness:analyze
+// probes availability — all must ride the async probe twin (Wave E), not the
+// sync `where`/`npm prefix -g` chain, and keep their response shapes.
+describe('provider binary probes are async (S4-03)', () => {
+  it('provider:checkBinary uses the async probe twin when the provider has one', async () => {
+    const asyncProbe = vi.fn(async () => true);
+    provider.validatePrerequisites = vi.fn(() => { throw new Error('sync probe on the IPC hot path'); });
+    provider.validatePrerequisitesAsync = asyncProbe;
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi')).resolves.toBe(true);
+    expect(asyncProbe).toHaveBeenCalledTimes(1);
+    expect(provider.validatePrerequisites).not.toHaveBeenCalled();
+  });
+
+  it('provider:checkBinary falls back to the sync probe for providers without the twin', async () => {
+    provider.validatePrerequisites = vi.fn(() => false);
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi')).resolves.toBe(false);
+    expect(provider.validatePrerequisites).toHaveBeenCalledTimes(1);
+  });
+
+  it('provider:installAgent filters targets with the async twin, preserving the response shape', async () => {
+    const asyncProbe = vi.fn(async () => true);
+    const fake = {
+      meta: { id: 'claude' },
+      validatePrerequisites: () => { throw new Error('sync probe on the IPC hot path'); },
+      validatePrerequisitesAsync: asyncProbe,
+      installAgent: vi.fn(async () => ({ filePath: '/tmp/claude/agents/auditor.md' })),
+    };
+    vi.mocked(getAllProviders).mockReturnValue([fake] as never);
+    const results = await handlers.get('provider:installAgent')!({}, 'auditor', 'body') as Array<Record<string, unknown>>;
+    expect(results).toEqual([{ providerId: 'claude', ok: true, filePath: '/tmp/claude/agents/auditor.md' }]);
+    expect(asyncProbe).toHaveBeenCalledTimes(1);
+  });
+});
+
+// UI3-11: whole-repo top-files scans stacked per widget mount. Concurrent
+// scans of one cwd must share a single walk, each caller slicing to its own
+// limit from the shared sorted result.
+describe('fs:topFilesByTokens shared walk (UI3-11)', () => {
+  it('coalesces concurrent scans of one cwd into a single file walk', async () => {
+    vi.mocked(buildFineVibeIgnoreMatcher).mockReturnValue(() => false);
+    // The enumeration suite leaks its execFile stub; reject git here so the
+    // walk fallback sees the real temp tree.
+    vi.mocked(mockGitCloneSpawn).mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null) => void;
+      cb(new Error('not a git repository'));
+    }) as never);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-topfiles-'));
+    const openSpy = vi.spyOn(fs.promises, 'open');
+    try {
+      for (const n of ['a.ts', 'b.ts', 'c.ts']) fs.writeFileSync(path.join(dir, n), 'word '.repeat(10));
+      knownPaths.push(dir);
+
+      openSpy.mockClear();
+      const [r10, r2] = await Promise.all([
+        handlers.get('fs:topFilesByTokens')!({}, dir, 10),
+        handlers.get('fs:topFilesByTokens')!({}, dir, 2),
+      ]);
+
+      expect(r10, JSON.stringify(r10)).toMatchObject({ ok: true });
+      expect((r10 as { ok: boolean; files: unknown[] }).files).toHaveLength(3);
+      expect((r2 as { ok: boolean; files: unknown[] }).files).toHaveLength(2);
+      // One shared walk: each file opened once, not once per caller.
+      expect(openSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      openSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+      const i = knownPaths.indexOf(dir);
+      if (i >= 0) knownPaths.splice(i, 1);
+    }
+  });
+});
+
+// C2M-03: the shared walk deduped CONCURRENT mounts only — every mount after
+// a walk settled re-scanned the whole tree (the stats widget polls). The
+// settled result is now cached per cwd on the enumeration's contract: TTL,
+// cleared by git:changed.
+describe('fs:topFilesByTokens result cache (C2M-03)', () => {
+  let dir: string;
+  let openSpy: ReturnType<typeof vi.spyOn>;
+
+  async function gitChangedListener(): Promise<() => void> {
+    const gitWatcher = await import('./git-watcher');
+    const subscribed = vi.mocked(gitWatcher.onGitChanged).mock.calls;
+    expect(subscribed.length).toBeGreaterThan(0);
+    return subscribed[subscribed.length - 1][0] as () => void;
+  }
+
+  beforeEach(() => {
+    vi.mocked(buildFineVibeIgnoreMatcher).mockReturnValue(() => false);
+    // Real temp tree, so reject git: the walk fallback does the enumerating.
+    vi.mocked(mockGitCloneSpawn).mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null) => void;
+      cb(new Error('not a git repository'));
+    }) as never);
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-topfiles-cache-'));
+    for (const n of ['a.ts', 'b.ts', 'c.ts']) fs.writeFileSync(path.join(dir, n), 'word '.repeat(10));
+    knownPaths.push(dir);
+    // The cache is module state (the enumerate suite resets it the same way).
+    _resetEnumerateCacheForTesting();
+    openSpy = vi.spyOn(fs.promises, 'open');
+  });
+  afterEach(() => {
+    openSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+    const i = knownPaths.indexOf(dir);
+    if (i >= 0) knownPaths.splice(i, 1);
+  });
+
+  const scan = (): Promise<Record<string, unknown>> =>
+    handlers.get('fs:topFilesByTokens')!({}, dir, 10) as Promise<Record<string, unknown>>;
+
+  it('serves a repeat scan from the cache without re-reading any file', async () => {
+    expect((await scan()).files).toHaveLength(3);
+    expect(openSpy).toHaveBeenCalledTimes(3);
+
+    openSpy.mockClear();
+    const again = await scan();
+    expect(again.files).toHaveLength(3);
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
+  it('re-scans after the git:changed invalidation the renderer also receives', async () => {
+    expect((await scan()).files).toHaveLength(3);
+
+    (await gitChangedListener())();
+    openSpy.mockClear();
+    fs.writeFileSync(path.join(dir, 'd.ts'), 'word '.repeat(10));
+    const rescan = await scan();
+    expect(openSpy).toHaveBeenCalledTimes(4);
+    expect(rescan.files).toHaveLength(4);
+  });
+
+  // C2M-05: the scan allocated and read every file IN FULL (Buffer.alloc of
+  // the size gate, 16-way) to compute a heuristic token estimate. The read is
+  // now one 1 MiB head sample, scaled back up to the file's size.
+  it('reads one 1 MiB head sample and scales the estimate to the file size', async () => {
+    vi.mocked(estimateTokens).mockImplementation((text: string) => text.length);
+    // vitest's `fs` namespace carries no FileHandle export; take the
+    // prototype off a real handle (the spy is prototype-wide, as needed).
+    const probe = await fs.promises.open(path.join(dir, 'a.ts'), 'r');
+    const readSpy = vi.spyOn(Object.getPrototypeOf(probe) as Record<string, unknown>, 'read');
+    await probe.close();
+    const size = 1024 * 1024 + 4096;
+    fs.writeFileSync(path.join(dir, 'big.ts'), 'a'.repeat(size));
+    try {
+      const res = await scan();
+      const lengths = readSpy.mock.calls.map((c) => (c as unknown as [unknown, number, number])[2]);
+      expect(Math.max(...lengths)).toBe(1024 * 1024);
+      const big = (res.files as Array<{ path: string; tokens: number; size: number }>)
+        .find((f) => f.path === 'big.ts');
+      // head-sample estimate × (size / readBytes) = the full-file estimate
+      expect(big?.tokens).toBe(size);
+      expect(big?.size).toBe(size);
+    } finally {
+      readSpy.mockRestore();
+      vi.mocked(estimateTokens).mockReset();
+    }
+  });
+});
+
+// C3A-02: the config watcher reads the provider config tree under a
+// renderer-supplied projectPath — the channel takes git:watchProject's
+// PROJECT tier, so a config tree (a read-allowed dir) never starts a watcher.
+describe('config:watchProject gate (C3A-02)', () => {
+  it('never starts a watcher for a path outside the known projects', () => {
+    provider.startConfigWatcher = vi.fn();
+    handlers.get('config:watchProject')!({}, 'claude', path.join(os.homedir(), '.claude'));
+    expect(provider.startConfigWatcher).not.toHaveBeenCalled();
+  });
+  it('starts the watcher for a known project', () => {
+    provider.startConfigWatcher = vi.fn();
+    knownPaths.push('/proj');
+    handlers.get('config:watchProject')!({}, 'claude', '/proj');
+    expect(provider.startConfigWatcher).toHaveBeenCalledWith(fakeWin, path.resolve('/proj'));
+  });
+});
+
+// C3A-01: removeMcpServer's write allowlist is derived from the renderer's
+// own projectPath+configDir, so the handler gates both before the call.
+describe('mcp:removeServer path gates (C3A-01)', () => {
+  it('refuses a configDir outside the managed-profile allowlist', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    const result = await handlers.get('mcp:removeServer')!(
+      {}, 'srv', '/home/attacker/.claude/.claude.json', 'user', undefined, '/home/attacker/.claude',
+    );
+    expect(result).toMatchObject({ success: false });
+    expect(removeMcpServer).not.toHaveBeenCalled();
+  });
+  it('refuses a project scope outside the known projects', async () => {
+    knownPaths.push('/proj');
+    const result = await handlers.get('mcp:removeServer')!(
+      {}, 'srv', '/foreign/.mcp.json', 'project', '/foreign', undefined,
+    );
+    expect(result).toMatchObject({ success: false, error: 'Path is not within a known project' });
+    expect(removeMcpServer).not.toHaveBeenCalled();
+  });
+  it('passes a known project plus a managed configDir through', async () => {
+    knownPaths.push('/proj');
+    const result = await handlers.get('mcp:removeServer')!(
+      {}, 'srv', '/proj/.mcp.json', 'project', '/proj', '/profiles/work',
+    );
+    expect(result).toEqual({ success: true });
+    expect(removeMcpServer).toHaveBeenCalledWith('srv', '/proj/.mcp.json', 'project', '/proj', '/profiles/work');
   });
 });

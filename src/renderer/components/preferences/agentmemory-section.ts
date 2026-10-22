@@ -3,9 +3,7 @@ import { t } from '../../i18n.js';
 import type { PreferencesContext, SectionController } from './section.js';
 import { toggleRow } from './shared.js';
 import type { AgentmemoryStatus } from '../../../shared/types.js';
-
-/** Console (Viewer) URL; the status probe also carries it, this is the pre-probe fallback. */
-const CONSOLE_URL = 'http://localhost:3113';
+import { CONSOLE_URL, openAgentmemoryConsoleModal } from './agentmemory-console.js';
 
 /**
  * agentmemory section (Model A). A toggle controls whether FineVibe starts the
@@ -90,7 +88,11 @@ export function createAgentmemorySection(ctx: PreferencesContext): SectionContro
       consoleLink.textContent = t('agentmemory.openConsole');
       consoleLink.addEventListener('click', (e) => {
         e.preventDefault();
-        void window.finevibe.app.openExternal(CONSOLE_URL);
+        // Warn on failure (file-reader.ts precedent); the modal opens regardless.
+        window.finevibe.app
+          .openExternal(CONSOLE_URL)
+          .catch((err: unknown) => console.warn(`[agentmemory] could not open ${CONSOLE_URL}`, err));
+        openAgentmemoryConsoleModal();
       });
 
       statusRow.append(statusEl, startBtn, consoleLink);

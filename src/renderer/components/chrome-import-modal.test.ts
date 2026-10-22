@@ -49,7 +49,13 @@ beforeEach(async () => {
       run,
       onProgress: (cb: (p: unknown) => void) => {
         progressCbs.push(cb);
-        return unsub;
+        // CI-10: unsubscribe drops the listener, like the real IPC bridge, so a
+        // test can tell a detached generation's subscription from the live one.
+        return () => {
+          const i = progressCbs.indexOf(cb);
+          if (i >= 0) progressCbs.splice(i, 1);
+          unsub();
+        };
       },
       summary: vi.fn(async () => ({ cookieCount: 0, lastImportedAt: 0 })),
       clearCookies: vi.fn(async () => {}),
@@ -119,5 +125,56 @@ describe('chrome-import-modal', () => {
 
     deferred.resolve({ ok: true, cookieCount: 5, skippedV11: 0, errors: [] });
     await flush();
+  });
+
+  // UI2-6: open() awaits the Chrome profile scan mid-build, so a second click
+  // during the scan used to build the modal a second time on the cached shell
+  // node, leaving the first run's select + subscriptions orphaned.
+  it('single-flights a second open while the profile scan is pending', async () => {
+    const selectFactory = vi.mocked((await import('./custom-select.js')).createCustomSelect);
+    const scan = Promise.withResolvers<{ id: string; displayName: string }[]>();
+    listProfiles.mockReturnValue(scan.promise);
+
+    const { showChromeImportModal } = await import('./chrome-import-modal.js');
+    const first = showChromeImportModal();
+    const second = showChromeImportModal(); // clicked again while the scan runs
+    scan.resolve([{ id: 'Default', displayName: 'Default' }]);
+    await Promise.all([first, second]);
+
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(selectFactory).toHaveBeenCalledTimes(1);
+    const overlay = document.getElementById(OVERLAY_ID)!;
+    expect(overlay.style.display).toBe('flex');
+    expect(overlay.querySelectorAll('.chrome-import-profile-slot > div')).toHaveLength(1);
+  });
+
+  // CI-10: an open that replaces a LIVE generation (no dismissal in between)
+  // ran only `cleanupFn` — the old generation kept its progress subscription,
+  // never set `disposed`, and its owner's onClosed never fired.
+  it('a replacing open dismisses the previous generation completely', async () => {
+    const deferred = Promise.withResolvers<unknown>();
+    run.mockReturnValue(deferred.promise);
+    const closed: number[] = [];
+
+    const { showChromeImportModal } = await import('./chrome-import-modal.js');
+    await showChromeImportModal(() => closed.push(1));
+    const overlay = document.getElementById(OVERLAY_ID)!;
+    importButton(overlay).click();
+    await flush();
+    expect(progressCbs).toHaveLength(1);
+    const oldProgress = progressCbs[0]!;
+
+    await showChromeImportModal(); // re-open over the live modal
+    expect(document.getElementById(OVERLAY_ID)).toBe(overlay); // cached shell reused
+    expect(closed).toEqual([1]); // the superseded owner was notified
+    expect(unsub).toHaveBeenCalled();
+    // CI-10: its subscription is gone from the bridge; the only live one is the
+    // re-opened modal's own view of the abandoned run.
+    expect(progressCbs).not.toContain(oldProgress);
+    expect(progressCbs).toHaveLength(1);
+
+    deferred.resolve({ ok: true, cookieCount: 5, skippedV11: 0, errors: [] });
+    await flush();
+    expect(overlay.querySelector('.chrome-import-summary')).toBeNull();
   });
 });

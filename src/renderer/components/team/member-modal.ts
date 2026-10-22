@@ -2,6 +2,7 @@ import type { ProviderId, TeamMember } from '../../../shared/types.js';
 import { appState } from '../../state.js';
 import { getProviderCapabilities, getProviderDisplayName, getTeamCapableProviderIds, loadProviderAvailability } from '../../provider-availability.js';
 import { showModal, closeModal, setModalError, type FieldDef } from '../modal.js';
+import { MAX_SYSTEM_PROMPT_BYTES, systemPromptByteLength } from '../../state/team-state.js';
 import { t } from '../../i18n.js';
 
 export async function showTeamMemberModal(mode: 'create' | 'edit', existing?: TeamMember): Promise<void> {
@@ -80,6 +81,12 @@ export async function showTeamMemberModal(mode: 'create' | 'edit', existing?: Te
     if (!name) { setModalError('name', t('team.memberModal.nameRequired')); return; }
     if (!role) { setModalError('role', t('team.memberModal.roleRequired')); return; }
     if (!systemPrompt) { setModalError('systemPrompt', t('team.memberModal.systemPromptRequired')); return; }
+    // C4TM-06: the prompt ships to the CLI as a spawn argument — an
+    // oversized one dies in `spawn E2BIG`. Hard-reject on save.
+    if (systemPromptByteLength(systemPrompt) > MAX_SYSTEM_PROMPT_BYTES) {
+      setModalError('systemPrompt', t('team.memberModal.systemPromptTooLong', { limit: `${MAX_SYSTEM_PROMPT_BYTES / 1024} KiB` }));
+      return;
+    }
 
     const description = values.description?.trim() || undefined;
     const installAsAgent = values.installAsAgent === 'true';

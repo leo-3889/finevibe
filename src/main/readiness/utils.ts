@@ -1,8 +1,26 @@
 import * as fs from 'fs';
-import { execSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import type { ReadinessCheck } from '../../shared/types';
 
 export { readFileSafe, fileExists, dirExists, readDirSafe } from '../fs-utils';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Cap on the tracked-file list. Readiness producers scan this list, not the
+ * tree; past a few thousand files a full enumeration says nothing more about
+ * instruction/context coverage, and the producers' per-file loops grow for
+ * nothing. Mirrors the enumerateProjectFiles cap.
+ */
+export const MAX_TRACKED_FILES = 5000;
+
+/**
+ * `git ls-files` output ceiling: 5000 paths at ~260 chars each plus margin —
+ * the 1 MiB child_process default ENOBUFS'd past ~30k files, which the catch
+ * turned into a silent [] and a collapsed readiness score (C3M-02).
+ */
+const LS_FILES_MAX_BUFFER = 8 * 1024 * 1024;
 
 /**
  * Project-relative paths of every git-tracked file, forward-slash separated.
@@ -12,11 +30,19 @@ export { readFileSafe, fileExists, dirExists, readDirSafe } from '../fs-utils';
  * on a path segment. The Set dedupes unmerged paths, which `git ls-files` prints once
  * per index stage — three identical rows for one file mid-merge-conflict.
  */
-export function getTrackedFiles(projectPath: string): string[] {
+export async function getTrackedFiles(projectPath: string): Promise<string[]> {
   try {
-    const output = execSync('git -c core.quotePath=false ls-files', { cwd: projectPath, encoding: 'utf-8', timeout: 5000 });
-    return [...new Set(output.split('\n').filter(Boolean))];
+    const { stdout } = await execFileAsync('git', ['-c', 'core.quotePath=false', 'ls-files'], {
+      cwd: projectPath,
+      encoding: 'utf-8',
+      timeout: 5000,
+      maxBuffer: LS_FILES_MAX_BUFFER,
+    });
+    const files = [...new Set(stdout.split('\n').filter(Boolean))];
+    return files.length > MAX_TRACKED_FILES ? files.slice(0, MAX_TRACKED_FILES) : files;
   } catch {
+    // Non-git, git missing, timeout: the empty list is the "no evidence"
+    // shape every producer already handles.
     return [];
   }
 }

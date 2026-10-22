@@ -84,6 +84,35 @@ describe('ingestItems', () => {
     expect(ingestItems('p1', 'foo/bar', items)).toBe(true);
     expect(isUnread('p1', 'foo/bar#1')).toBe(true);
   });
+
+  // C4G-01: ids for items that dropped out of an exhaustive listing (merged /
+  // closed under state=open) used to stay unread forever, pinning the tab dot.
+  it('prunes stored ids of the repo that are absent from an exhaustive listing', () => {
+    ingestItems('p1', 'foo/bar', [fakeItem(1, '2024-01-01'), fakeItem(2, '2024-01-01')]);
+    expect(unreadCountInProject('p1')).toBe(2);
+
+    expect(ingestItems('p1', 'foo/bar', [fakeItem(2, '2024-01-01')], true)).toBe(true);
+    expect(isUnread('p1', 'foo/bar#1')).toBe(false);
+    expect(isUnread('p1', 'foo/bar#2')).toBe(true);
+  });
+
+  it('keeps stored ids when the listing is capped (not exhaustive)', () => {
+    ingestItems('p1', 'foo/bar', [fakeItem(1, '2024-01-01')]);
+    expect(ingestItems('p1', 'foo/bar', [], false)).toBe(false);
+    expect(isUnread('p1', 'foo/bar#1')).toBe(true);
+  });
+
+  it('prunes only the fetched repo prefix and notifies listeners', () => {
+    ingestItems('p1', 'foo/bar', [fakeItem(1, '2024-01-01')]);
+    ingestItems('p1', 'other/repo', [fakeItem(9, '2024-01-01')]);
+    const cb = vi.fn();
+    onChange(cb);
+
+    ingestItems('p1', 'foo/bar', [], true);
+    expect(isUnread('p1', 'foo/bar#1')).toBe(false);
+    expect(isUnread('p1', 'other/repo#9')).toBe(true);
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('hasUnreadInProject', () => {

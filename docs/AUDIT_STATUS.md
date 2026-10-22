@@ -2,6 +2,21 @@
 
 This is the current work queue for a local LLM. The work described below under "Implemented" is committed on `rebuild` (the integration branch); read the current code and diff before editing. Code and unit-test coverage do not establish behavior in a running or packaged Electron app.
 
+## Status 2026-10-22 (Wave E: 2026-10-21/22 static performance+bug audit, 35 rows closed)
+
+Committed on `rebuild` as `b4c0721` (130 files, +4452/−949). Unit-tested on this tree; **no packaged-app runtime verification**. Full finding list with mechanisms: `todos/perf-audit-2026-10-21.md` (PA-01..PA-36 + W1/W2). Contracts re-synced: [performance](performance.md) (growth table now carries per-row Wave E disposition; the false 2026-10-18 poller claim is corrected), [FEATURES](FEATURES.md) + [security boundaries](security-boundaries.md) (transcriptExistsSync channel deletion cut over).
+
+- **Startup & spawn (`7057cb9..b4c0721` slice; PA-01..PA-05, PA-18, PA-31).** Provider probes fan out after the first window; prerequisites async; spawn paths async with rejection surfaces; launch-session-dir retention + mtime-cached sidecars; store flush ordering.
+- **Watchers/transcripts (PA-02..PA-05, PA-15..PA-17, PA-26..PA-30, PA-32, PA-38..PA-40).** Pi/OMP event-driven scans with 30 s fallback + generation snapshots; git-watch cleanup covers per-session state; worktree kick on project switch; hook-status mtime sweep; provider sync paths bounded; zstd decode bounds + off-pairing full decode; Codex meta cache caps.
+- **Renderer (PA-06..PA-15, PA-25, PA-29, PA-32..PA-35).** Zero sync IPC at session close — the `session:transcriptExistsSync` channel is deleted (main handler, preload bridge, types, stubs); close consumes the prefetched `transcriptAvailable` flag. Bounded history cap (`BOOKMARK_EXEMPT = 50`, over-quota bookmarks pruned first). Badge intervals gated on visibility; frame-coalesced persist; `SCROLLBACK = 8000`; unsubscribe closures; context-menu/ModalCloser singletons.
+- **Search/export (PA-19..PA-24).** Deep-search disk index + hot tier; file-search worker path; streaming zip sidecars with half-zip unlink.
+- **Dedup (PA-34).** `hooks-utils.ts`, `modal-close.ts`, `escape-html.ts`, `team/initials.ts`, `shared/text-utils.ts`, `shared/async-utils.ts`, `chrome-import/domain-hash.ts`, `terminal-shared.ts`, `session-inspector-utils.ts`, `tab-bar/context-menu.ts` extracted; no shim re-exports.
+- **W1/W2 (21.10-wave test casualties).** win32-input-mode tests asserted disable-on-`?9001l`; the shipped latch is monotonic per PTY — tests aligned to the source contract.
+
+Gate, 2026-10-22, on `b4c0721`: `npx vitest run` → 203 files / 2,950 passed / 4 skipped / 0 errors; `npx tsc -p tsconfig.main.json --noEmit`, `tsconfig.preload.json`, `tsconfig.renderer.json` → 0 errors; `git diff --check` clean. Note: `npm install` runs `electron-builder install-app-deps`, which rebuilds `better-sqlite3` for the Electron ABI and breaks the node-ABI vitest suites; `npx prebuild-install -r node` in `node_modules/better-sqlite3` restores them.
+
+Next: Wave F re-audit of the fixed tree — complete 2026-10-22 (ledger + gate: [perf-audit-2026-10-22](../todos/perf-audit-2026-10-22.md)); the standing runtime items 4 (PO-06) and 5 (live integration) remain open.
+
 ## Status 2026-10-20 (Wave C: decode bounds, discovery completeness, prune order, render fan-out)
 
 Committed on `rebuild` as `61b86ea`, `e3311ca`, `a1c0a41`, `de70291`. Unit-tested on this tree; **no packaged-app runtime verification** — nothing below establishes behavior in a running or built app. Contracts re-synced against the committed code with `file:line` cites: [provider contracts](provider-contracts.md), [session lifecycle](session-lifecycle.md), [performance](performance.md).
@@ -151,7 +166,7 @@ Wave E doc separation → the Finevibe rename. Spec:
 - **Wave C (P1 correctness + a P2 slice).** history/file/i18n fixes, provider hook-validation sentinels, macOS PATH, IPC typed-contract refactor (VibeyardApi), store migration + store extraction, test-harness split (unit/integration projects), 10 test suites.
 - **Wave D (P2 structure).** watcher dedupe (base-watcher + attribution kernels), provider spawn kit, ipc-handlers registrar split (state + core), renderer state slices (chat / browser / workspace stores), the 561-line watcher core → kernels.
 - **Rename → Finevibe (Q1).** Full source sweep. Residue proof: only the userData-migration module and its test reference the old name — intentional, they are the migration. userData `%APPDATA%\Vibeyard|vibeyard` → Finevibe with a stale-partition purge; E2E-verified, including graceful degradation on a locked directory (observed live); launcher and updater repointed; repo surface swept.
-- **Rename on the CURRENT tree — the migration is missing.** The row above describes the program's own lineage (`f61453b`, not an ancestor of `rebuild`). The identity cutover that is on `rebuild` today is the 2026-10-21 sweep (`4fc533c`), and it carries **no userData migration**: there is no `src/main/userdata-migration.ts`, no `app.setName`, and no `app.setPath('userData')` anywhere in `src/main` (verified by `git grep`). Consequence: an install whose product identity changes from Vibeyard to FineVibe resolves a NEW empty `%APPDATA%\FineVibe` userData dir and starts with empty state — projects, session history, browser partitions and the search index stay behind in `%APPDATA%\Vibeyard`. The stale-partition purge and the locked-directory degradation E2E belong to the program's lineage, not to this tree. Treat "migrate old userData on first launch" as an open P1 release blocker for the first FineVibe installer.
+- **Rename on the CURRENT tree — migration SHIPPED (2026-10-22).** The row above describes the program's own lineage (`f61453b`, not an ancestor of `rebuild`). The identity cutover on `rebuild` (the 2026-10-21 sweep, `4fc533c`) initially carried **no userData migration** — an install crossing the cutover resolved empty dirs and left projects, history, cookies and caches in the legacy trees. The blocker is closed: `src/main/userdata-migration.ts` (+ `userdata-migration.test.ts`, 7 cases) runs first in `startMainProcess` (single-instance winner, ahead of any userData read) and copies `~/.vibeyard` → `~/.finevibe` (the store.ts STATE_DIR rename) and `%APPDATA%\Vibeyard|vibeyard` → the current userData dir. Contract: copy-only (legacy trees never deleted, rollback stays possible), destination wins on conflicts (no overwrite of newer data), stale `vibeyard-browser-iso-*` partitions purged-not-copied, symlinks never followed, per-file failures (a legacy instance holding a Chromium lock) are logged and re-attempted next launch — the `.finevibe-migrated` marker is written only on a fully clean pass. Remaining live check: the packaged-installer E2E of the copy (build-host gated, see below).
 - **FINAL GATE (coordinator-run).** vitest 194 files / 2721 passed / 6 skipped; tsc ×4 (main / preload / renderer / tests); `npm run build`; `git diff --check` — all green at `f61453b`, the integration tip (`audit-2026-10-19` = `feat/rename`). Nothing was pushed. Anchor caveat, per the SHA rule above: `f61453b` is an object in this repository but **not** an ancestor of today's `rebuild` tip — the rebuild rebase re-hashed that lineage, so cite it as the program's gate anchor, not as a `merge-base --is-ancestor` target.
 - **Release feed — corrected for the current tree.** The program recorded "rename the GitHub repo `elirantutia/vibeyard` → `finevibe` (the updater 404s until then)". Today's tree does not work that way: `src/main/auto-updater.ts:37` and `bin/finevibe.js:30` read the publishing repo ONLY from `FINEVIBE_RELEASE_REPO` and refuse a built-in default (`bin/finevibe.js:323-325`), so nothing 404s — the app and the launcher decline to update until the variable names a repo. As of 2026-10-21 `elirantutia/finevibe` does not exist (API 404) and upstream is still `elirantutia/vibeyard`; the fork's own rename to `leo-3889/finevibe` is done and its owner refs are repointed (`634e315`). The live action is: pick the publishing repo, then set `FINEVIBE_RELEASE_REPO` in the release workflow and document it for launcher users.
 - **Push state — the recorded push is stale; do not run it as written.** The run-state file closed with a pending user push (first disable GitHub's "Block command line pushes that expose your email", then `git push fork HEAD:refs/heads/main`, described as a fast-forward). Verified 2026-10-21: nothing was pushed — local `main` is `634e315`, `fork/main` is `15eac0c`, and `15eac0c` is **not** an ancestor of `main`, so that exact command is rejected as a non-fast-forward. The merge that carried the CI commit (`9b37f2e`) is reachable from `rebuild` only; `main` was reset to `feat/rename` afterwards. Today's fast-forward target is `rebuild`: `fork/main` **is** an ancestor of `rebuild` (111 commits ahead), so publishing `rebuild` onto `fork/main` fast-forwards and carries the on-demand `.deb` workflow. No push has been performed; publishing is the owner's call.
@@ -159,3 +174,31 @@ Wave E doc separation → the Finevibe rename. Spec:
 - **Artifact names** in the wave rows are the program's labels; where a landed name differs on today's tree the tree is authoritative (the renderer state slices, for example, live under `src/renderer/state/`).
 - **Evidence disposition.** The agent workspace that held the per-finding evidence — `2026-10-19-cleanup.md` (findings W1-01…W1-25: 24 findings, 4 P1 / 12 P2 / 8 P3, with W1-16 inventory-only), `2026-10-19-architecture.md` (W3-01…W3-15), `2026-10-19-merge-map.md`, the W2 measurement harnesses and the coordinator's run-state file — was dissolved on 2026-10-21; that evidence no longer exists. The findings stay closed per the commits named in this file. The surviving durable records are this section, the W2 baseline snapshot in [performance](performance.md), the build-host requirement in [packaging](packaging.md), and the plan linked above.
 - **Housekeeping the run-state file left open.** `%APPDATA%` smoke directories `Finevibe-e2e-backup` / `Finevibe-e2e-backup(2)` from the rename E2E (user data untouched: the real userData dir is intact and the real state migrated on first launch of the renamed app); the optional `-Archives` pass of the program's cleanup script; the Wave M branch/stash list is DONE (26 branches deleted, 0 stashes, worktrees reduced to main + baseline, fork GitHub branches kept to `main` plus the PR #167 head with stale tips archived as local `fork-archive/*`).
+
+## Status 2026-10-22 (Wave F: post-Wave-E re-audit, complete)
+
+Loop re-run on the `b4c0721` tree: 5 read-only scouts (startup/main, watchers,
+renderer core, UI, tab-bar/sidebar supplement) → parent verification → 4 fix
+agents + parent fixes → integration gate. Findings ledger with per-row
+dispositions (FIXED / AGENT / PARENT / ACCEPTED):
+[Wave F ledger](../todos/perf-audit-2026-10-22.md).
+
+- **Closed parent-side (2026-10-22):** consent-key dual-writer race (graft at
+  both store writers + fresh post-modal snapshot), beforeunload flush loss
+  (sync flush path), spawn-path sync PATH probes, launch-arg log leak,
+  spawn-path retention prune (deferred, bound 200), git poll key (session
+  component dropped), git poll visibility gate, settings-guard revalidation
+  burst, git-watcher superseded-walk leak, PTY exit payload race, home-root
+  profile-dir containment hole.
+- **Closed agent-side (integration commits):** S2-05 Linux non-recursive codex
+  watch (764e674); renderer P1s — trim rebase, board session key (94a7cfa),
+  terminal/inspector/pane slices (0147167); async IPC probes + keystroke-safe
+  listDirs (db59b82); tab-bar/sidebar batch slice (0a1f70a); UI2 tail — modal
+  single-flight, Enter top-of-stack, prune rate-limit, generation tokens
+  (d0c592d); UI3 slice — generation guards, teardown, dnd/modal hardening
+  (0073101); UI3-11 shared top-files walk (43fbc6b).
+- **Closed parent-side remainder:** S3-08 search-bar teardown (0147167),
+  S4-04 listing consent (db59b82), enumerate-cache generation (0073101),
+  store:saveSync wiring (7b34b9e), githubLastSeen cap (3cd11eb).
+- **Gate:** 207 files / 3169 tests green; tsc 0 errors (main+renderer).
+  Open by design: UI3-3 ring/epoch deep fix (2 s floor in place).

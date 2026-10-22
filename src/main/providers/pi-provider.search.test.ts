@@ -7,16 +7,23 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
   readdirSync: vi.fn(),
   statSync: vi.fn(),
-  // listLaunchSessionDirs() lstats entries (a symlink in the search path is
-  // never followed); a default missing from this factory makes the listing
-  // throw into its own catch and silently report no dirs.
   lstatSync: vi.fn(() => ({ isDirectory: () => true, isFile: () => true, mtimeMs: Date.now() })),
   readFileSync: vi.fn(),
   openSync: vi.fn(),
   readSync: vi.fn(),
   closeSync: vi.fn(),
   createReadStream: vi.fn(),
-  promises: { readFile: vi.fn(), readdir: vi.fn(), open: vi.fn(), stat: vi.fn() },
+  promises: {
+    readFile: vi.fn(),
+    readdir: vi.fn(),
+    open: vi.fn(),
+    stat: vi.fn(),
+    // listLaunchSessionDirs() (PA-19: async) lstats entries (a symlink in
+    // the search path is never followed); a default missing from this
+    // factory makes the listing throw into its own catch and silently
+    // report no dirs. Fresh mtime = inside the retention window.
+    lstat: vi.fn(async () => ({ isDirectory: () => true, isFile: () => true, mtimeMs: Date.now() })),
+  },
 }));
 vi.mock('os', () => ({ homedir: () => '/mock/home', tmpdir: () => '/tmp' }));
 vi.mock('electron', () => ({
@@ -25,7 +32,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => '/mock/app-path' },
 }));
 vi.mock('../pty-manager', () => ({ getFullPath: () => '' }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 
 import * as fs from 'fs';
 import { PiProvider } from './pi-provider';
@@ -46,7 +53,12 @@ const header = (id: string, cwd: string) =>
   JSON.stringify({ type: 'session', version: 3, id, timestamp: '2026-08-15T23:09:32.005Z', cwd });
 const FILE_NAME = `2026-08-15T23-09-32-005Z_${SID}.jsonl`;
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  // PA-19: the per-launch base listing goes through fs.promises.readdir;
+  // default = no dirs. Tests that scan one prepend a chain entry.
+  mockReaddir.mockResolvedValue([] as any);
+});
 
 /** Make the bounded sync header reader (openSync/readSync/closeSync) serve `firstLine`. */
 function mockSyncHeader(firstLine: string): void {
@@ -125,7 +137,7 @@ describe('PiProvider.getTranscriptPath()', () => {
 
 describe('PiProvider.discoverTranscripts()', () => {
   it('emits a descriptor per .jsonl from the session header', async () => {
-    mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
+
     mockReaddir
       .mockResolvedValueOnce(['--C--Users-me--'] as any) // sessions/
       .mockResolvedValueOnce([FILE_NAME, 'notes.txt'] as any); // project dir
@@ -140,14 +152,14 @@ describe('PiProvider.discoverTranscripts()', () => {
   });
 
   it('reports a complete empty pass when the sessions root is missing', async () => {
-    mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
+
     mockReaddir.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     expect(await new PiProvider().discoverTranscripts())
       .toEqual({ descriptors: [], complete: true, incompleteRoots: [] });
   });
 
   it('marks the pass incomplete when the sessions root readdir fails transiently (P2-70)', async () => {
-    mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
+
     mockReaddir.mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }));
 
     const { descriptors: out, complete, incompleteRoots } = await new PiProvider().discoverTranscripts();
@@ -157,7 +169,7 @@ describe('PiProvider.discoverTranscripts()', () => {
   });
 
   it('skips unreadable files', async () => {
-    mockReaddirSync.mockReturnValue([] as any); // no per-launch dirs under userData
+
     mockReaddir
       .mockResolvedValueOnce(['--C--Users-me--'] as any)
       .mockResolvedValueOnce([FILE_NAME] as any);
@@ -169,17 +181,15 @@ describe('PiProvider.discoverTranscripts()', () => {
 
   it('scans the per-launch session dirs under userData', async () => {
     const base = path.join('/mock/app-path', 'pi-sessions');
-    mockReaddirSync.mockImplementation(((p: string) => (String(p) === base ? ['sess-1'] : [])) as any);
-    // A dir with activity inside the retention window: retention-filtered dirs
-    // are not scanned by global search (see launch-session-dir.test.ts).
-    vi.mocked(fs.lstatSync).mockReturnValue(
-      { isDirectory: () => true, isFile: () => true, mtimeMs: Date.now() } as any,
-    );
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+    // A dir with activity inside the retention window (promises.lstat
+    // default): retention-filtered dirs are not scanned by global search
+    // (see launch-session-dir.test.ts).
+    vi.mocked(fs.promises.readFile).mockResolvedValue(JSON.stringify({
       providerId: 'pi', cwd: 'C:\\Users\\me', createdAt: '2026-08-15T23:09:32.005Z',
     }) as any);
     mockReaddir
       .mockResolvedValueOnce([] as any) // legacy default root — empty
+      .mockResolvedValueOnce(['sess-1'] as any) // per-launch base listing
       .mockResolvedValueOnce([FILE_NAME, 'notes.txt'] as any); // per-launch dir (flat layout)
     mockAsyncHeader(header(SID, 'C:\\Users\\me'));
 

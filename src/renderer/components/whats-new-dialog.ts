@@ -1,6 +1,7 @@
 import { appState } from '../state.js';
 import { createModalShell, createModalButton } from './modal-shell.js';
 import { pushModal } from './modal-manager.js';
+import { ModalCloser } from './modal-close.js';
 
 interface ReleaseNotes {
   date: string;
@@ -9,7 +10,7 @@ interface ReleaseNotes {
   changes: string[];
 }
 
-let cleanupFn: (() => void) | null = null;
+const closer = new ModalCloser();
 
 export function parseChangelog(markdown: string, version: string): ReleaseNotes | null {
   const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -52,8 +53,7 @@ function extractList(section: string, heading: string): string[] {
 }
 
 function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
-  cleanupFn?.();
-  cleanupFn = null;
+  closer.reset();
 
   const { overlay, titleEl, body, actions } = createModalShell({
     id: 'whats-new-overlay',
@@ -88,28 +88,17 @@ function showWhatsNewDialog(version: string, notes: ReleaseNotes): void {
   body.appendChild(container);
   overlay.style.display = '';
 
-  const close = () => {
-    overlay.style.display = 'none';
-    cleanupFn?.();
-    cleanupFn = null;
-  };
+  const close = () => closer.close(overlay);
 
-  const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      close();
-    }
-  };
-
-  const unregisterEsc = pushModal({ onEscape: close });
+  // UI2-9: ENTER is dismissed through the manager's top-of-stack routing, so a
+  // dialog stacked under this one is no longer closed by the same keypress.
+  const unregisterModal = pushModal({ onEscape: close, onEnter: close });
   confirmBtn.addEventListener('click', close);
-  document.addEventListener('keydown', handleKeydown);
 
-  cleanupFn = () => {
-    unregisterEsc();
+  closer.setCleanup(() => {
+    unregisterModal();
     confirmBtn.removeEventListener('click', close);
-    document.removeEventListener('keydown', handleKeydown);
-  };
+  });
 }
 
 function buildSection(title: string, items: string[]): HTMLElement {

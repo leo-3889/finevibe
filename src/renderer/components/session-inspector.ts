@@ -5,9 +5,17 @@ import {
 } from '../session-inspector-state.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { inspectorState } from './session-inspector-state-ui.js';
-import { resetUIState, canInspectSession } from './session-inspector-utils.js';
-import { renderTimeline } from './session-inspector-timeline.js';
+import { renderTimeline, appendTimelineEvents, disposeTimelineRenderState } from './session-inspector-timeline.js';
 import { renderCosts, renderTools, renderContext } from './session-inspector-views.js';
+import { canInspectSession, resetUIState } from './session-inspector-utils.js';
+
+// CI-16: the full-rebuild floor's retry timer, module-scoped so
+// closeInspector() can reach it. A retry armed while the panel was open used
+// to survive the close and fire renderActiveTab() against the torn-down
+// panel, keeping the panel, its rows and the session's event array alive for
+// its remaining window. Cleared in closeInspector, like
+// inspectorState.updateTimer.
+let fullRenderRetry: ReturnType<typeof setTimeout> | null = null;
 
 export function isInspectorOpen(): boolean {
   return inspectorState.inspectorPanel !== null && inspectorState.inspectedSessionId !== null;
@@ -48,11 +56,19 @@ export function closeInspector(): void {
     clearTimeout(inspectorState.updateTimer);
     inspectorState.updateTimer = null;
   }
+  // CI-16: a pending full-rebuild retry must not outlive the panel it renders.
+  if (fullRenderRetry) {
+    clearTimeout(fullRenderRetry);
+    fullRenderRetry = null;
+  }
 
   const container = document.getElementById('terminal-container')!;
   container.classList.remove('inspector-open');
   inspectorState.inspectorPanel.remove();
   inspectorState.inspectorPanel = null;
+  // The timeline module caches its render state (container, list, rows, event
+  // closures) for the append path; the panel is gone now, so drop it.
+  disposeTimelineRenderState();
   inspectorState.inspectedSessionId = null;
 
   // Dynamic import to avoid circular dependency (split-layout imports from session-inspector)
@@ -74,7 +90,12 @@ export function toggleInspector(): void {
 
 export function initSessionInspector(): void {
   // Auto-follow active session
-  appState.on('session-changed', () => {
+  appState.on('session-changed', (data) => {
+    // S3-06 convention: a batch close (Close All) emits one deferred event
+    // per session plus one payload-less trailing kick. Full-panel consumers
+    // follow the kick only — with the inspector open on a closing tab, the
+    // per-session events used to mean one full renderActiveTab per tab.
+    if ((data as { deferRender?: boolean } | null | undefined)?.deferRender) return;
     const project = appState.activeProject;
     const activeSession = project?.activeSessionId
       ? project.sessions.find(s => s.id === project.activeSessionId)
@@ -140,6 +161,13 @@ export function initSessionInspector(): void {
   });
 
   // Update inspector on new events (debounced)
+  // S4-01: a session at the 2000-event retention cap rotates the array
+  // in place, so appendTimelineEvents() must bail every tick (every
+  // index moved) — the fallback then rebuilds 500 rows every 200 ms while
+  // the inspector is open, i.e. exactly on long-running agent sessions.
+  // Append stays 200 ms; the full-rebuild fallback is floored at 2 s so
+  // the storm is bounded, and the pending timer keeps the view converging.
+  let lastFullRenderAt = 0;
   onInspectorChange((sessionId) => {
     if (sessionId !== inspectorState.inspectedSessionId) return;
     if (inspectorState.updateTimer) clearTimeout(inspectorState.updateTimer);
@@ -148,6 +176,30 @@ export function initSessionInspector(): void {
       if (sel && sel.rangeCount > 0 && !sel.isCollapsed && inspectorState.inspectorPanel?.contains(sel.anchorNode)) {
         return; // don't destroy DOM while user is selecting text
       }
+      // PA-14: streaming used to wipe + rebuild up to 500 rows every 200 ms.
+      // On the timeline tab, append just the delta rows; the full rebuild
+      // stays the fallback (tab/session switch, /clear, cap rotation, bail).
+      const content = inspectorState.inspectorPanel?.querySelector('.inspector-content') as HTMLElement | null;
+      if (inspectorState.activeTab === 'timeline' && content && appendTimelineEvents(content)) {
+        lastFullRenderAt = 0;
+        return;
+      }
+      const now = Date.now();
+      const remaining = 2000 - (now - lastFullRenderAt);
+      if (remaining > 0) {
+        // Floor respected: rebuild when it is due even if the session goes
+        // quiet (no further change events) — the view stays at most 2 s
+        // stale on a rotated (capped) event array.
+        if (fullRenderRetry === null) {
+          fullRenderRetry = setTimeout(() => {
+            fullRenderRetry = null;
+            lastFullRenderAt = Date.now();
+            renderActiveTab();
+          }, remaining);
+        }
+        return;
+      }
+      lastFullRenderAt = now;
       renderActiveTab();
     }, 200);
   });
@@ -161,7 +213,7 @@ function createPanel(): HTMLElement {
   // Resize handle
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'inspector-resize-handle';
-  resizeHandle.addEventListener('mousedown', startResize);
+  resizeHandle.addEventListener('pointerdown', startResize);
   panel.appendChild(resizeHandle);
 
   // Header
@@ -192,12 +244,12 @@ function createPanel(): HTMLElement {
   ];
   for (const tab of tabs) {
     const btn = document.createElement('button');
-    btn.className = 'inspector-tab' + (tab.id === inspectorState.activeTab ? ' active' : '');
+    btn.className = `inspector-tab${tab.id === inspectorState.activeTab ? ' active' : ''}`;
     btn.textContent = tab.label;
     btn.dataset.tab = tab.id;
     btn.addEventListener('click', () => {
       inspectorState.activeTab = tab.id;
-      tabBar.querySelectorAll('.inspector-tab').forEach(t => t.classList.remove('active'));
+      for (const t of tabBar.querySelectorAll('.inspector-tab')) t.classList.remove('active');
       btn.classList.add('active');
       renderActiveTab();
     });
@@ -257,27 +309,49 @@ function renderActiveTab(): void {
   }
 }
 
-function startResize(e: MouseEvent): void {
+// C2R-01: the same failure mode S3-01 fixed on the terminal panel. The old
+// document mousemove/mouseup pair was removed only inside onMouseUp, and
+// releasing the button outside the window — the normal way to overshoot a
+// panel drag — never delivers mouseup to the renderer: `resizing` stayed
+// true, the pair leaked for the renderer's life (every mouse move app-wide
+// resized the inspector), and every later mousedown stacked another pair.
+// Pointer events with capture on the handle ALWAYS deliver
+// pointerup/pointercancel, wherever the button is released.
+// C3R-03: arm-on-entry guard (the project-terminal idiom). A second
+// pointerdown while a drag is live — a stray touch, a double press — would
+// stack another pointermove/pointerup pair on the handle.
+function startResize(e: PointerEvent): void {
+  if (inspectorState.resizing) return;
   e.preventDefault();
   inspectorState.resizing = true;
+  const handle = e.currentTarget as HTMLElement;
   const startX = e.clientX;
   const container = document.getElementById('terminal-container')!;
   const startWidth = inspectorState.inspectorPanel?.offsetWidth ?? 350;
+  handle.setPointerCapture(e.pointerId);
 
-  const onMouseMove = (e: MouseEvent) => {
+  const onPointerMove = (ev: PointerEvent) => {
     if (!inspectorState.resizing) return;
-    const diff = startX - e.clientX;
+    const diff = startX - ev.clientX;
     const newWidth = Math.min(Math.max(startWidth + diff, 250), 800);
     container.style.setProperty('--inspector-width', `${newWidth}px`);
   };
 
-  const onMouseUp = () => {
+  const endDrag = (ev: PointerEvent) => {
+    if (!inspectorState.resizing) return;
     inspectorState.resizing = false;
-    document.removeEventListener('mousemove', onMouseMove);
-    document.removeEventListener('mouseup', onMouseUp);
+    try {
+      handle.releasePointerCapture(ev.pointerId);
+    } catch {
+      // Capture was already gone (pointercancel after window loss).
+    }
+    handle.removeEventListener('pointermove', onPointerMove);
+    handle.removeEventListener('pointerup', endDrag);
+    handle.removeEventListener('pointercancel', endDrag);
     requestAnimationFrame(() => fitAllVisible());
   };
 
-  document.addEventListener('mousemove', onMouseMove);
-  document.addEventListener('mouseup', onMouseUp);
+  handle.addEventListener('pointermove', onPointerMove);
+  handle.addEventListener('pointerup', endDrag);
+  handle.addEventListener('pointercancel', endDrag);
 }

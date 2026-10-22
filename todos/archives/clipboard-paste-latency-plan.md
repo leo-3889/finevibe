@@ -3,7 +3,8 @@
 Reported on Windows, pasting into an omp session. The plan is written for all three
 supported OSes (§3): shared fixes, platform-gated fallbacks, per-OS acceptance.
 
-Status: investigated, not implemented. No code changed.
+Status: shipped — P0 harness 2cfb68c, P1–P5 8f77536, stragglers 8687755; verified in-tree
+2026-10-22. Remaining: per-OS runtime acceptance (§8) → see [`../PENDING.md`](../PENDING.md) §3. Archived.
 Date: 2026-10-20.
 Scope: terminal copy (selection → OS clipboard) and paste (OS clipboard → PTY) in
 session panes, the project shell, and the remote pane; the omp CLI as the pasted-into

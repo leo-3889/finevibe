@@ -2,6 +2,9 @@ import type { InitialContextSnapshot, ProjectRecord, ReadinessResult, ReadinessS
 
 const SNAPSHOT_CAP = 50;
 const READINESS_HISTORY_CAP = 30;
+// C2R-17: dismissals are persisted with the project and their ids are never
+// reused, so an uncapped list grows the state file forever.
+const DISMISSED_CAP = 200;
 
 function ensureInsights(project: ProjectRecord): NonNullable<ProjectRecord['insights']> {
   if (!project.insights) project.insights = { initialContextSnapshots: [], dismissed: [] };
@@ -19,6 +22,9 @@ export function addInsightSnapshot(project: ProjectRecord, snapshot: InitialCont
 export function dismissInsight(project: ProjectRecord, insightId: string): void {
   const insights = ensureInsights(project);
   if (!insights.dismissed.includes(insightId)) insights.dismissed.push(insightId);
+  if (insights.dismissed.length > DISMISSED_CAP) {
+    insights.dismissed = insights.dismissed.slice(-DISMISSED_CAP);
+  }
 }
 
 export function isInsightDismissed(project: ProjectRecord | undefined, insightId: string): boolean {

@@ -11,6 +11,9 @@ interface FileViewerInstance {
   worktreePath?: string;
   resolvedPath: string | null;
   loaded: boolean;
+  // Per-instance so concurrent pane loads don't discard each other; a
+  // superseded reload of the SAME pane is still dropped.
+  loadGeneration: number;
 }
 
 const instances = new Map<string, FileViewerInstance>();
@@ -36,7 +39,7 @@ function flushPendingReloads(): void {
     const inst = instances.get(id);
     if (inst) {
       inst.loaded = false;
-      loadDiff(inst, id);
+      loadDiffGuarded(inst, id);
     }
   }
   // Remove listener when no longer needed
@@ -59,12 +62,6 @@ function ensureSelectionListener(): void {
   removeSelectionListener = () => document.removeEventListener('selectionchange', onSelectionChange);
 }
 
-function escapeHtml(s: string): string {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
 function parseDiffLines(diff: string): HTMLElement {
   const content = document.createElement('div');
   content.className = 'file-viewer-content';
@@ -83,7 +80,7 @@ function parseDiffLines(diff: string): HTMLElement {
       div.classList.add('context');
     }
 
-    div.innerHTML = escapeHtml(line) || '&nbsp;';
+    div.textContent = line.length > 0 ? line : '\u00a0';
     content.appendChild(div);
   }
 
@@ -97,8 +94,6 @@ function resolveFilePath(instance: FileViewerInstance): string {
     ? instance.filePath
     : `${basePath}/${instance.filePath}`;
 }
-
-let loadGeneration = 0;
 
 async function loadDiff(instance: FileViewerInstance, sessionId: string): Promise<void> {
   if (instance.loaded) return;
@@ -120,22 +115,40 @@ async function loadDiff(instance: FileViewerInstance, sessionId: string): Promis
     body.appendChild(loading);
   }
 
-  const gen = ++loadGeneration;
+  const gen = ++instance.loadGeneration;
 
   try {
     const diff = await window.finevibe.git.getDiff(instance.worktreePath ?? project.path, instance.filePath, instance.area);
-    if (gen !== loadGeneration) return; // superseded by a newer load
-    body.innerHTML = '';
+    if (gen !== instance.loadGeneration) return; // superseded by a newer load
+    body.replaceChildren();
     body.appendChild(parseDiffLines(diff));
     instance.loaded = true;
   } catch {
-    if (gen !== loadGeneration) return;
-    body.innerHTML = '';
-    const err = document.createElement('div');
-    err.className = 'file-viewer-content';
-    err.innerHTML = '<div class="diff-line context">Failed to load diff</div>';
-    body.appendChild(err);
+    if (gen !== instance.loadGeneration) return;
+    showDiffFailure(instance);
   }
+}
+
+/** The pane's failure state — one context row. Used by `loadDiff`'s catch
+ *  and by the guarded fire-and-forget entry points below. */
+function showDiffFailure(instance: FileViewerInstance): void {
+  const body = instance.element.querySelector('.file-viewer-body');
+  if (!body) return;
+  body.replaceChildren();
+  const content = document.createElement('div');
+  content.className = 'file-viewer-content';
+  const row = document.createElement('div');
+  row.className = 'diff-line context';
+  row.textContent = 'Failed to load diff';
+  content.appendChild(row);
+  body.appendChild(content);
+}
+
+/** Fire-and-forget entry: `loadDiff`'s own try/catch covers the diff IPC, but
+ *  the untracked-file `fs.exists` check rejects outside it — surface that with
+ *  the same failure state instead of dropping an unhandled rejection. */
+function loadDiffGuarded(instance: FileViewerInstance, sessionId: string): void {
+  loadDiff(instance, sessionId).catch(() => showDiffFailure(instance));
 }
 
 function ensureFileChangedListener(): void {
@@ -181,7 +194,7 @@ export function createFileViewerPane(sessionId: string, filePath: string, area: 
   body.className = 'file-viewer-body';
   el.appendChild(body);
 
-  const instance: FileViewerInstance = { element: el, filePath, area, worktreePath, resolvedPath: null, loaded: false };
+  const instance: FileViewerInstance = { element: el, filePath, area, worktreePath, resolvedPath: null, loaded: false, loadGeneration: 0 };
   instances.set(sessionId, instance);
 }
 
@@ -217,7 +230,7 @@ export function showFileViewerPane(sessionId: string, isSplit: boolean): void {
     window.finevibe.fs.watchDir(dirname(fullPath));
   }
 
-  loadDiff(instance, sessionId);
+  loadDiffGuarded(instance, sessionId);
 }
 
 export function hideAllFileViewerPanes(): void {
@@ -255,5 +268,5 @@ export function reloadFileViewer(sessionId: string): void {
     return;
   }
   instance.loaded = false;
-  loadDiff(instance, sessionId);
+  loadDiffGuarded(instance, sessionId);
 }

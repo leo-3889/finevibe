@@ -32,6 +32,7 @@ import {
   addColumn, renameColumn, deleteColumn, reorderColumns,
   addTag, removeTag, updateTagColor,
   addTagToTask, removeTagFromTask, getTagColor, getTagCount,
+  MAX_BOARD_COLUMNS, MAX_BOARD_TASKS, MAX_BOARD_TAGS,
 } from './board-state';
 
 beforeEach(() => {
@@ -435,4 +436,35 @@ describe('board-state', () => {
     });
   });
 
+
+  describe('growth caps (C5G-08)', () => {
+    it('refuses tasks past MAX_BOARD_TASKS', () => {
+      const board = getBoard()!;
+      board.tasks.push(...Array.from({ length: MAX_BOARD_TASKS }, (_, i) => ({
+        id: `t-${i}`, title: 't', prompt: '', columnId: 'col-backlog', order: i,
+        createdAt: 1, updatedAt: 1,
+      })));
+      expect(addTask({ title: 'One too many', prompt: 'p' })).toBeUndefined();
+      expect(board.tasks).toHaveLength(MAX_BOARD_TASKS);
+    });
+
+    it('refuses columns past MAX_BOARD_COLUMNS', () => {
+      const board = getBoard()!;
+      board.columns.push(...Array.from({ length: MAX_BOARD_COLUMNS - board.columns.length }, (_, i) => ({
+        id: `c-extra-${i}`, title: 'c', order: 100 + i, behavior: 'none' as const,
+      })));
+      expect(addColumn('One too many')).toBeUndefined();
+      expect(board.columns).toHaveLength(MAX_BOARD_COLUMNS);
+      // An existing column id is untouched; ordering shift never ran.
+      expect(board.columns.every(c => c.order < 100 + MAX_BOARD_COLUMNS)).toBe(true);
+    });
+
+    it('refuses new tags past MAX_BOARD_TAGS but keeps duplicates resolving', () => {
+      const board = getBoard()!;
+      board.tags = Array.from({ length: MAX_BOARD_TAGS }, (_, i) => ({ name: `tag-${i}`, color: 'blue' }));
+      expect(addTag('One too many')).toBeUndefined();
+      expect(board.tags).toHaveLength(MAX_BOARD_TAGS);
+      expect(addTag('tag-0')).toEqual({ name: 'tag-0', color: 'blue' });
+    });
+  });
 });

@@ -136,10 +136,13 @@ vi.mock('../session-unread.js', () => ({
 import './split-layout-test-dom.js';
 import { initSplitLayout } from './split-layout';
 import { appState, _resetForTesting } from '../state';
-import { hideAllPanes, destroyTerminal } from './terminal-pane.js';
+import { hideAllPanes, destroyTerminal, createTerminalPane } from './terminal-pane.js';
+import { createFileReaderPane } from './file-reader.js';
 
 const hideAllPanesMock = hideAllPanes as Mock;
 const destroyTerminalMock = destroyTerminal as Mock;
+const createTerminalPaneMock = createTerminalPane as Mock;
+const createFileReaderPaneMock = createFileReaderPane as Mock;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -163,6 +166,21 @@ describe('split-layout render coalescing (P2-28)', () => {
     expect(sessions).toHaveLength(5);
   });
 
+  it('renders once when Close All removes 3 sessions (S3-06)', () => {
+    const project = appState.addProject('Batch', '/batch');
+    for (let i = 0; i < 3; i++) appState.addSession(project.id, `S${i}`);
+
+    hideAllPanesMock.mockClear();
+    destroyTerminalMock.mockClear();
+    appState.removeAllSessions(project.id);
+
+    // Every pane is torn down…
+    expect(destroyTerminalMock).toHaveBeenCalledTimes(3);
+    // …and the batch's single trailing kick (not the 3 deferred
+    // session-removed / session-changed{remove} events) renders the layout.
+    expect(hideAllPanesMock).toHaveBeenCalledTimes(1);
+  });
+
   it('still renders per event for a single-session removal', () => {
     const project = appState.addProject('One', '/one');
     const session = appState.addSession(project.id, 'S1')!;
@@ -174,5 +192,79 @@ describe('split-layout render coalescing (P2-28)', () => {
     // session-changed render); only the project-removal batch defers.
     expect(destroyTerminalMock).toHaveBeenCalledTimes(1);
     expect(hideAllPanesMock).toHaveBeenCalled();
+  });
+});
+
+describe('split-layout metadata session-changed gate (PA-13)', () => {
+  type Emitter = { emit(event: 'session-changed', data?: unknown): void };
+  const emit = () => (appState as unknown as Emitter);
+
+  it('skips renderLayout for kind=metadata (title / CLI-id adoption)', () => {
+    const project = appState.addProject('Meta', '/meta');
+    const session = appState.addSession(project.id, 'S1')!;
+
+    hideAllPanesMock.mockClear();
+    emit().emit('session-changed', { sessionId: session.id, kind: 'metadata' });
+
+    expect(hideAllPanesMock).not.toHaveBeenCalled();
+  });
+
+  it('renders for kind=activate and for payload-less session-changed', () => {
+    const project = appState.addProject('Act', '/act');
+    const session = appState.addSession(project.id, 'S1')!;
+
+    hideAllPanesMock.mockClear();
+    emit().emit('session-changed', { sessionId: session.id, kind: 'activate' });
+    expect(hideAllPanesMock).toHaveBeenCalledTimes(1);
+
+    hideAllPanesMock.mockClear();
+    emit().emit('session-changed');
+    expect(hideAllPanesMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('split-layout session-added owner (C2R-09)', () => {
+  it('builds the terminal pane from the active project for an active-project add', () => {
+    const project = appState.addProject('Active', '/active');
+    appState.addSession(project.id, 'S1');
+
+    // onSessionAdded creates the pane, and renderLayout (the add's
+    // session-changed) walks the same session — count is not the point, the
+    // owner is: createTerminalPane(sessionId, path, …, projectId, …).
+    expect(createTerminalPaneMock).toHaveBeenCalled();
+    for (const call of createTerminalPaneMock.mock.calls) {
+      expect(call[1]).toBe('/active');
+      expect(call[6]).toBe(project.id);
+    }
+  });
+
+  it('builds a background add from the payload project, never the active one', () => {
+    const active = appState.addProject('Active', '/active');
+    const background = appState.addProject('Bg', '/bg');
+    appState.setActiveProject(active.id);
+
+    createTerminalPaneMock.mockClear();
+    appState.addSession(background.id, 'Bg session');
+
+    // The old handler read appState.activeProject, so a board run-task (or any
+    // background add) spawned on the WRONG cwd. The pane is built from the
+    // payload project and stays unattached until renderLayout shows it — the
+    // eager spawn and the pending-prompt hand-off in this handler survive.
+    expect(createTerminalPaneMock).toHaveBeenCalled();
+    for (const call of createTerminalPaneMock.mock.calls) {
+      expect(call[1]).toBe('/bg');
+      expect(call[6]).toBe(background.id);
+    }
+  });
+
+  it('still creates the file-reader pane when its payload owns the active project', () => {
+    const project = appState.addProject('Active', '/active');
+    (appState as unknown as { emit(e: string, d?: unknown): void }).emit('session-added', {
+      projectId: project.id,
+      session: { id: 'fr-1', type: 'file-reader', cliSessionId: null, fileReaderPath: '/x.ts', fileReaderLine: 3 },
+    });
+
+    expect(createFileReaderPaneMock).toHaveBeenCalledTimes(1);
+    expect(createFileReaderPaneMock.mock.calls[0]).toEqual(['fr-1', '/x.ts', 3]);
   });
 });

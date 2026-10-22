@@ -13,11 +13,11 @@ vi.mock('../copilot-hooks', () => ({
   installCopilotHooks: () => {}, validateCopilotHooks: () => ({}), cleanupCopilotHooks: () => {}, SESSION_ID_VAR: 'COPILOT_SESSION_ID',
 }));
 vi.mock('../config-watcher', () => ({ startConfigWatcher: () => {}, stopConfigWatcher: () => {} }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Readable } from 'stream';
+import { Readable, PassThrough } from 'stream';
 import { CopilotProvider } from './copilot-provider';
 
 const mockReadFile = vi.mocked(fs.promises.readFile);
@@ -43,7 +43,7 @@ describe('CopilotProvider.discoverTranscripts()', () => {
   it('uses dir name as cliSessionId and parses cwd from workspace.yaml', async () => {
     mockReaddir.mockResolvedValueOnce([dir(UUID), dir('not-a-uuid'), file('stray.txt')] as any);
     mockReadFile.mockResolvedValueOnce(
-      'id: ' + UUID + '\ncwd: /Users/me/dev/repo\nsummary_count: 0\n' as any,
+      `id: ${UUID}\ncwd: /Users/me/dev/repo\nsummary_count: 0\n` as any,
     );
 
     const { descriptors: out, complete } = await new CopilotProvider().discoverTranscripts();
@@ -96,9 +96,26 @@ describe('CopilotProvider.indexTranscript()', () => {
   });
 
   it('tolerates malformed lines', async () => {
-    const jsonl = '{broken\n' + JSON.stringify({ type: 'user.message', data: { content: 'good prompt' } });
+    const jsonl = `{broken\n${JSON.stringify({ type: 'user.message', data: { content: 'good prompt' } })}`;
     mockIndexFile(jsonl);
     const r = await new CopilotProvider().indexTranscript('/p');
     expect(r.text).toContain('good prompt');
+  });
+
+  it('terminates the read loop when the budget fills (C3M-07)', async () => {
+    // ~100 KiB of user text fills the 50 KiB budget mid-stream. The input
+    // NEVER ends: the old `if (budget.full) continue` loop would await the
+    // stream to its end and hang; the break resolves the call.
+    const jsonl = Array.from({ length: 800 }, (_, i) =>
+      JSON.stringify({ type: 'user.message', data: { content: `prompt ${i} ${'x'.repeat(100)}` } })).join('\n');
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: 10 * 1024 * 1024 } as fs.Stats);
+    const open = new PassThrough();
+    vi.mocked(fs.createReadStream).mockReturnValueOnce(open as unknown as fs.ReadStream);
+
+    const run = new CopilotProvider().indexTranscript('/p');
+    open.write(jsonl);
+    const r = await run;
+    expect(r.text.length).toBeLessThanOrEqual(50 * 1024);
+    expect(r.text).toContain('prompt 0');
   });
 });

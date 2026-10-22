@@ -13,16 +13,15 @@ vi.mock('../hook-status', () => ({ installStatusLineScript: () => {}, cleanupAll
 vi.mock('../config-watcher', () => ({ startConfigWatcher: () => {}, stopConfigWatcher: () => {} }));
 vi.mock('../claude-cli', () => ({ installHooksOnly: () => {}, installStatusLine: () => {}, getClaudeConfig: async () => ({}) }));
 vi.mock('../settings-guard', () => ({ guardedInstall: async () => {}, validateSettings: () => ({}), reinstallSettings: () => {} }));
-vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true }));
+vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 vi.mock('../store', () => ({ loadState: vi.fn(() => ({ profiles: [] })) }));
 
 import * as fs from 'fs';
-import { Readable } from 'stream';
+import { Readable, PassThrough } from 'stream';
 import * as path from 'path';
 import { ClaudeProvider } from './claude-provider';
 import { loadState } from '../store';
 
-const mockReadFile = vi.mocked(fs.promises.readFile);
 const mockReaddir = vi.mocked(fs.promises.readdir);
 const mockLoadState = vi.mocked(loadState);
 
@@ -140,6 +139,10 @@ describe('ClaudeProvider.indexTranscript()', () => {
     mockIndexFile(jsonl);
     const r = await new ClaudeProvider().indexTranscript('/p');
     expect(r.text).toContain('refactor authentication');
+    // S2-01 regression guard: an unguarded `${block.text}` indexed the
+    // literal "undefined" for every tool_use/tool_result block.
+    expect(r.text).not.toContain('undefined');
+    expect(r.text.trim().split('\n')).toEqual(['refactor authentication']);
   });
 
   it('tolerates malformed JSONL lines', async () => {
@@ -154,5 +157,22 @@ describe('ClaudeProvider.indexTranscript()', () => {
     mockIndexFile(jsonl);
     const r = await new ClaudeProvider().indexTranscript('/p');
     expect(r.text.length).toBe(50 * 1024);
+  });
+
+  it('terminates the read loop when the budget fills (C3M-07)', async () => {
+    // ~100 KiB of user text fills the 50 KiB budget mid-stream. The input
+    // NEVER ends: the old `if (budget.full) continue` loop would await the
+    // stream to its end and hang; the break resolves the call.
+    const user = (t: string) => JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: t }] } });
+    const jsonl = Array.from({ length: 800 }, (_, i) => user(`prompt ${i} ${'x'.repeat(100)}`)).join('\n');
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: 10 * 1024 * 1024 } as fs.Stats);
+    const open = new PassThrough();
+    vi.mocked(fs.createReadStream).mockReturnValueOnce(open as unknown as fs.ReadStream);
+
+    const run = new ClaudeProvider().indexTranscript('/p');
+    open.write(jsonl);
+    const r = await run;
+    expect(r.text.length).toBeLessThanOrEqual(50 * 1024);
+    expect(r.text).toContain('prompt 0');
   });
 });

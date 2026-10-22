@@ -22,6 +22,12 @@ beforeEach(() => {
   mockFs.readFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
   mockFs.readdirSync.mockImplementation(() => { throw new Error('ENOENT'); });
   mockCp.execSync.mockReturnValue('');
+  // C3M-02: getTrackedFiles is async execFile; the automock never invokes
+  // the callback, so the promisified call would hang — drive it empty.
+  mockCp.execFile.mockImplementation(((...args: unknown[]) => {
+    const cb = args[args.length - 1] as (err: Error | null, stdout: string, stderr: string) => void;
+    cb(null, '', '');
+  }) as never);
 });
 
 describe('analyzeReadiness', () => {

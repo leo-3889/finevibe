@@ -1,6 +1,10 @@
 import { appState } from './state.js';
 import { onChange, type SessionStatus } from './session-activity.js';
 
+// C4S-09: per-session minimum spacing (mirrors notification-desktop) — a
+// flapping status edge used to re-chime on every 2 s transition.
+const MIN_NOTIFY_INTERVAL_MS = 30_000;
+const lastNotifiedAt = new Map<string, number>();
 const previousStatus = new Map<string, SessionStatus>();
 let audioCtx: AudioContext | null = null;
 
@@ -46,6 +50,10 @@ export function initNotificationSound(): void {
     // Don't notify for the session the user is currently looking at
     const activeId = appState.activeProject?.activeSessionId;
     if (prev === 'working' && (status === 'waiting' || status === 'completed' || status === 'input') && appState.preferences.soundOnSessionWaiting && sessionId !== activeId) {
+      const now = Date.now();
+      const last = lastNotifiedAt.get(sessionId);
+      if (last !== undefined && now - last < MIN_NOTIFY_INTERVAL_MS) return;
+      lastNotifiedAt.set(sessionId, now);
       playNotificationSound();
     }
   });
@@ -54,6 +62,9 @@ export function initNotificationSound(): void {
   // notification-desktop); without this the map grows by one entry per session.
   appState.on('session-removed', (data) => {
     const sessionId = (data as { sessionId?: string })?.sessionId;
-    if (sessionId) previousStatus.delete(sessionId);
+    if (sessionId) {
+      previousStatus.delete(sessionId);
+      lastNotifiedAt.delete(sessionId);
+    }
   });
 }

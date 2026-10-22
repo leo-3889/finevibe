@@ -4,11 +4,11 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import type { BrowserWindow } from 'electron';
 
-const SESSIONS_ROOT = path.join(path.sep + 'mock', 'home', '.codex', 'sessions');
+const SESSIONS_ROOT = path.join(`${path.sep}mock`, 'home', '.codex', 'sessions');
 
 // The cost claims (one meta parse per file per change, not per scan) are
 // counted inside the fs mock: `zlib`'s ESM namespace cannot be spied.
-const counters = vi.hoisted(() => ({ readFileSync: 0, openSync: 0 }));
+const counters = vi.hoisted(() => ({ readFileSync: 0, openSync: 0, readdirRoot: 0 }));
 
 // Virtual filesystem: 'set(vfs, dirPath, entries)' style helpers below.
 // values: string = file content; object with mtimeMs = file with mtime.
@@ -36,6 +36,9 @@ vi.mock('fs', () => ({
     throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
   },
   readdirSync: (p: string) => {
+    // Scans are counted at the root of the tree: every sweep enumerates it
+    // exactly once (PA-22 pacing assertions).
+    if (p === SESSIONS_ROOT) counters.readdirRoot++;
     if (!vfs.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     return [...vfs.get(p)!.entries.keys()];
   },
@@ -65,12 +68,23 @@ vi.mock('fs', () => ({
   watch: vi.fn(() => ({ close: vi.fn() })),
 }));
 
-vi.mock('os', () => ({ homedir: () => path.join(path.sep + 'mock', 'home') }));
+vi.mock('os', () => ({ homedir: () => path.join(`${path.sep}mock`, 'home') }));
+
+// Mutable platform flag so tests can exercise the recursive (macOS/Windows)
+// vs non-recursive date-chain (Linux) sessions-watch branch. Getters keep
+// the live `import { isLinux }` binding in codex-session-watcher in sync
+// with reassignments (same harness as git-watcher.test.ts).
+const platform = vi.hoisted(() => ({ isLinux: false }));
+vi.mock('./platform', () => ({
+  get isLinux() { return platform.isLinux; },
+  get isMac() { return !platform.isLinux; },
+  get isWin() { return false; },
+}));
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false }] },
 }));
 vi.mock('./hook-status', () => ({
-  STATUS_DIR: path.join(path.sep + 'tmp', 'finevibe'),
+  STATUS_DIR: path.join(`${path.sep}tmp`, 'finevibe'),
   writeCliSessionId: vi.fn(),
 }));
 
@@ -116,14 +130,14 @@ function addRollout(
   opts: { cwd?: string | null; mtimeMs?: number; zst?: boolean; raw?: string } = {},
 ): string {
   const name = `rollout-2026-10-19T00-00-00-${id}.jsonl${opts.zst ? '.zst' : ''}`;
-  const meta = opts.raw !== undefined
-    ? opts.raw
-    : opts.cwd === null
-      ? 'not-json'
-      : JSON.stringify({ type: 'session_meta', payload: { id, cwd: opts.cwd } });
+  let meta: string;
+  if (opts.raw !== undefined) meta = opts.raw;
+  else if (opts.cwd === null) meta = 'not-json';
+  else meta = JSON.stringify({ type: 'session_meta', payload: { id, cwd: opts.cwd } });
+  const plain = `${meta}\n`;
   const content = opts.zst
-    ? zlib.zstdCompressSync(Buffer.from(meta + '\n', 'utf-8')).toString('latin1')
-    : meta + '\n';
+    ? zlib.zstdCompressSync(Buffer.from(plain, 'utf-8')).toString('latin1')
+    : plain;
   vfs.get(dayPath)!.entries.set(name, { content, mtimeMs: opts.mtimeMs ?? NOW });
   vfs.get(dayPath)!.mtimeMs = opts.mtimeMs ?? NOW;
   return path.join(dayPath, name);
@@ -139,7 +153,9 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   counters.readFileSync = 0;
   counters.openSync = 0;
+  counters.readdirRoot = 0;
   vi.clearAllMocks();
+  platform.isLinux = false; // default to the recursive (macOS/Windows) branch
   stopCodexSessionWatcher();
   vfs = new Map();
   vfs.set(SESSIONS_ROOT, { mtimeMs: NOW, entries: new Map() });
@@ -411,6 +427,128 @@ describe('watcher error resilience (P1-11)', () => {
     } finally {
       warn.mockRestore();
       mockWatch.mockReset(); // restores the vi.fn(() => ({ close: vi.fn() })) factory
+    }
+  });
+});
+
+// PA-22: the 500 ms watch-debounce and the 2 s poll used to be independent,
+// so a rollout being appended to cost ~3 tree walks per second. They now
+// share one 1 s floor, counted here at the root of the sessions tree (every
+// sweep enumerates it exactly once).
+describe('scan pacing (PA-22)', () => {
+  it('floors every scan at 1s across the watch debounce and the poll', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+    addRollout(day, 'codex-foreign', { cwd: '/other/project' });
+    const fireWatch = (mockWatch.mock.calls[0] as unknown as [string, unknown, () => void])[2];
+
+    const before = counters.readdirRoot;
+    // 5 s of a chatty rollout: a watch event every 100 ms, polls interleaved.
+    for (let i = 0; i < 50; i += 1) {
+      fireWatch();
+      vi.advanceTimersByTime(100);
+    }
+    const walks = counters.readdirRoot - before;
+
+    // ~1 walk per second — never starved, and never the ~12 (10 debounce
+    // windows + 2 polls) the two unthrottled paths stacked up.
+    expect(walks).toBeGreaterThanOrEqual(3);
+    expect(walks).toBeLessThanOrEqual(6);
+  });
+
+  it('still assigns a rollout on the paced watch path', () => {
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date(NOW));
+
+    // A scan (the 2 s poll) runs first, so the first watch-driven scan is
+    // deferred by the floor rather than dropped.
+    vi.advanceTimersByTime(2100);
+    addRollout(day, 'codex-new', { cwd: '/repo/alpha' });
+    const fireWatch = (mockWatch.mock.calls[0] as unknown as [string, unknown, () => void])[2];
+    fireWatch();
+    vi.advanceTimersByTime(2100);
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledWith('ui-1', 'codex-new');
+  });
+});
+
+// S2-05: Node's Linux recursive fs.watch spends one inotify watch per
+// directory (git-watcher.ts:62-65), so on Linux the sessions watcher arms
+// SESSIONS_ROOT + the current YYYY/MM/DD chain non-recursively — the 2 s
+// poll stays the correctness backbone, the watch is a latency accelerator.
+describe('Linux non-recursive sessions watch (S2-05)', () => {
+  const watchPaths = () =>
+    (mockWatch.mock.calls as unknown as [string, unknown][]).map((c) => c[0]);
+
+  function mkEmitterWatch(
+    created: (EventEmitter & { close: ReturnType<typeof vi.fn> })[],
+  ): void {
+    mockWatch.mockImplementation(() => {
+      const w = new EventEmitter() as EventEmitter & { close: ReturnType<typeof vi.fn> };
+      w.close = vi.fn();
+      created.push(w);
+      return w as unknown as fs.FSWatcher;
+    });
+  }
+
+  it('(Linux) arms root + current YYYY/MM/DD, never passes { recursive: true }', () => {
+    platform.isLinux = true;
+    startCodexSessionWatcher(fakeWin);
+    const day = mkDay(new Date());
+    const paths = watchPaths();
+    expect(paths).toContain(SESSIONS_ROOT);
+    expect(paths).toContain(path.dirname(day));
+    expect(paths).toContain(path.dirname(path.dirname(day)));
+    expect(paths).toContain(day);
+    for (const [, opts] of mockWatch.mock.calls as unknown as [string, unknown][]) {
+      expect(opts).not.toEqual({ recursive: true });
+    }
+  });
+
+  it('(Linux) stop() closes every armed watcher', () => {
+    platform.isLinux = true;
+    const created: (EventEmitter & { close: ReturnType<typeof vi.fn> })[] = [];
+    mkEmitterWatch(created);
+    try {
+      startCodexSessionWatcher(fakeWin);
+      expect(created.length).toBe(4); // root + YYYY + YYYY/MM + YYYY/MM/DD
+      stopCodexSessionWatcher();
+      for (const w of created) expect(w.close).toHaveBeenCalled();
+    } finally {
+      mockWatch.mockReset(); // restores the default vi.fn(() => ({ close })) factory
+    }
+  });
+
+  it('(Linux) date rollover arms the new day dir once and retires the stale one', () => {
+    platform.isLinux = true;
+    // The poll only scans while a tab is pending; the scan ticks are the
+    // re-arm points, so the test needs one registered session.
+    registerPendingCodexSession('ui-1', '/repo/alpha');
+    const created: (EventEmitter & { close: ReturnType<typeof vi.fn> })[] = [];
+    mkEmitterWatch(created);
+    try {
+      const staleDay = mkDay(new Date(NOW));
+      startCodexSessionWatcher(fakeWin);
+      vi.advanceTimersByTime(2100); // scan tick, same day
+      vi.setSystemTime(NOW + 24 * 3600 * 1000);
+      const newDay = mkDay(new Date(NOW + 24 * 3600 * 1000));
+      vi.advanceTimersByTime(2100); // scan tick picks up the rollover
+      vi.advanceTimersByTime(2100); // a second tick: re-arm is idempotent
+
+      const paths = watchPaths();
+      expect(paths).toContain(newDay);
+      // The same path is never armed twice: the shared root and YYYY/MM
+      // chain and the new day dir each get exactly one arm.
+      expect(paths.filter((p) => p === SESSIONS_ROOT)).toHaveLength(1);
+      expect(paths.filter((p) => p === newDay)).toHaveLength(1);
+      // The stale day dir's watcher was armed, then released on rollover.
+      expect(paths).toContain(staleDay);
+      const staleWatcher = created[paths.indexOf(staleDay)];
+      expect(staleWatcher.close).toHaveBeenCalled();
+    } finally {
+      mockWatch.mockReset();
     }
   });
 });

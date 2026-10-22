@@ -1,5 +1,6 @@
 import { promises as fs, createReadStream, createWriteStream } from 'fs';
 import { finished } from 'stream/promises';
+import type { Readable } from 'stream';
 import path from 'path';
 import JSZip from 'jszip';
 import { dialog, BrowserWindow } from 'electron';
@@ -62,7 +63,13 @@ export async function exportSessionArchive(
   win: BrowserWindow,
   params: SessionExportParams,
 ): Promise<string | null> {
-  const safeName = params.meta.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 60) || 'session';
+  // The C0 control range is stripped by a code-point compare rather than a
+  // control-character regex class: Windows refuses those characters in file
+  // names, so a session named with one would fail the write with EINVAL.
+  const safeName = [...params.meta.name]
+    .map((ch) => (ch < ' ' || /[<>:"/\\|?*]/.test(ch) ? '_' : ch))
+    .join('')
+    .slice(0, 60) || 'session';
   const shortId = (params.cliSessionId ?? 'local').slice(0, 8);
   const transcriptPath = resolveExportTranscript(
     params.providerId,
@@ -121,13 +128,20 @@ export async function exportSessionArchive(
         ? `\nResume in FineVibe: import is not wired; the entry's providerId + cliSessionId + projectPath locate the session in the provider's own storage.\n`
         : '\nNo CLI session id was known for this session: meta.json only.\n'),
   );
+  // CI-02: JSZip's NodejsStreamInputAdapter only BINDS listeners to a source
+  // stream — destroying the generator pauses the zip, it never destroys the
+  // sources. Keep the handles so the catch below can release their fds.
+  const sources: Readable[] = [];
   if (transcriptPath) {
     // Streamed, not buffered: transcripts grow unbounded and this runs in the
     // main process with live PTYs (docs/performance.md read-budget rule).
-    zip.file(`transcript/${path.basename(transcriptPath)}`, createReadStream(transcriptPath));
+    const transcriptStream = createReadStream(transcriptPath);
+    sources.push(transcriptStream);
+    zip.file(`transcript/${path.basename(transcriptPath)}`, transcriptStream);
   }
-  for (const [name, data] of await readSidecars(params.meta.liveSessionId)) {
-    zip.file(`sidecars/${name}`, data);
+  for (const [name, stream] of await openSidecarStreams(params.meta.liveSessionId)) {
+    sources.push(stream as Readable);
+    zip.file(`sidecars/${name}`, stream);
   }
 
   // `pipe()` returns the DESTINATION, so an error listener chained off it only
@@ -137,11 +151,15 @@ export async function exportSessionArchive(
   // the zip stream: src/main installs no uncaughtException handler, so it is a
   // crash, and this promise never settles.
   const out = createWriteStream(filePath);
+  // Hoisted so the catch below can reach it: on a write-side failure the
+  // promise rejects while the generator is still piped and paused, and the
+  // executor's local reference is gone with it.
+  let zipStream: Readable | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
-      const stream = zip.generateNodeStream({ type: 'nodebuffer', streamFiles: true, compression: 'DEFLATE', compressionOptions: { level: 6 } });
-      stream.on('error', reject);
-      stream.pipe(out);
+      zipStream = zip.generateNodeStream({ type: 'nodebuffer', streamFiles: true, compression: 'DEFLATE', compressionOptions: { level: 6 } }) as Readable;
+      zipStream.on('error', reject);
+      zipStream.pipe(out);
       finished(out).then(resolve, reject);
     });
   } catch (err) {
@@ -149,7 +167,14 @@ export async function exportSessionArchive(
     // The fd MUST be closed before the unlink: `pipe()` leaves the
     // destination open when the SOURCE errors, and Windows refuses unlink()
     // on a file with an open handle (EPERM) — the partial archive survived
-    // the cleanup on exactly the platform this IDE ships to.
+    // the cleanup on exactly the platform this IDE ships to. The same
+    // Windows-open-handle rule runs the other way on a WRITE-side failure:
+    // the generator must be destroyed here too. CI-02: the generator does NOT
+    // propagate that to its sources (the adapter only binds listeners), so
+    // every source stream is destroyed explicitly as well — or the provider's
+    // transcript fd stays locked for the life of the process.
+    for (const source of sources) source.destroy();
+    zipStream?.destroy();
     out.destroy();
     await finished(out).catch(() => {});
     await fs.unlink(filePath).catch(() => {});
@@ -158,22 +183,34 @@ export async function exportSessionArchive(
   return filePath;
 }
 
-/** Read `STATUS_DIR/<uiSessionId>.*` sidecars; missing files are skipped. */
-async function readSidecars(uiSessionId: string | undefined): Promise<Array<[string, Buffer]>> {
+/**
+ * Open `STATUS_DIR/<uiSessionId>.*` sidecars as read streams; missing files
+ * are skipped. PA-20: the `.events` file is uncapped on disk (the 64 KiB
+ * read budget bounds readers, not writers), so buffering all seven suffixes
+ * whole spikes main-process memory during the export; JSZip's
+ * `streamFiles: true` consumes each stream incrementally, exactly as the
+ * transcript above already does.
+ */
+async function openSidecarStreams(uiSessionId: string | undefined): Promise<Array<[string, NodeJS.ReadableStream]>> {
   if (!uiSessionId) return [];
   // The id is renderer-supplied history data: the STATUS_DIR guard rejects
   // anything that could escape the directory via `..`.
   const suffixes = ['.events', '.status', '.cost', '.name', '.sessionid', '.toolfailure', '.subagents'];
-  const out: Array<[string, Buffer]> = [];
+  const out: Array<[string, NodeJS.ReadableStream]> = [];
   for (const suffix of suffixes) {
     const filePath = statusFilePath(uiSessionId, suffix.slice(1));
     if (filePath === null) return out;
     try {
-      const data = await fs.readFile(filePath);
-      out.push([`${uiSessionId}${suffix}`, data]);
+      // Existence check only — bytes never touch memory here. Sidecars are
+      // ephemeral tmp files; absent is the common case.
+      await fs.stat(filePath);
     } catch {
-      // Sidecars are ephemeral tmp files; absent is the common case.
+      continue;
     }
+    // A file unlinked between stat and open errors the stream mid-zip; the
+    // export's stream-error path already rejects and deletes the partial
+    // archive — the same exposure the transcript stream accepts.
+    out.push([`${uiSessionId}${suffix}`, createReadStream(filePath)]);
   }
   return out;
 }

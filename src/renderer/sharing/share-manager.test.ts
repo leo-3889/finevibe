@@ -23,7 +23,9 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
     onAuthFailed: ReturnType<typeof vi.fn>;
     __fireInit: ((d: unknown) => void) | null;
     __fireDisconnect: (() => void) | null;
-    __fireData: ((p: string) => void) | null;
+    __fireResize: ((cols: number, rows: number) => void) | null;
+    __fireEnd: (() => void) | null;
+    __fireAuthFailed: ((reason: string) => void) | null;
   };
   const joinShareMock = vi.fn(() => {
     const handle: FakeJoinHandleT = {
@@ -36,15 +38,24 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
       onData: vi.fn((cb: (p: string) => void) => {
         handle.__fireData = cb;
       }),
-      onResize: vi.fn(),
+      onResize: vi.fn((cb: (cols: number, rows: number) => void) => {
+        handle.__fireResize = cb;
+      }),
       onDisconnected: vi.fn((cb: () => void) => {
         handle.__fireDisconnect = cb;
       }),
-      onEnd: vi.fn(),
-      onAuthFailed: vi.fn(),
+      onEnd: vi.fn((cb: () => void) => {
+        handle.__fireEnd = cb;
+      }),
+      onAuthFailed: vi.fn((cb: (reason: string) => void) => {
+        handle.__fireAuthFailed = cb;
+      }),
       __fireInit: null,
       __fireDisconnect: null,
       __fireData: null,
+      __fireResize: null,
+      __fireEnd: null,
+      __fireAuthFailed: null,
     };
     lastJoinHandleRef.current = handle;
     return { guestId: 'guest-1', handle };
@@ -60,6 +71,7 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
   const remoteTerm = {
     createRemoteTerminalPane: vi.fn(),
     writeRemoteData: vi.fn(),
+    resizeRemoteTerminal: vi.fn(),
     showRemoteEndOverlay: vi.fn(),
     destroyRemoteTerminal: vi.fn(),
   };
@@ -302,6 +314,19 @@ describe('joinRemoteSession', () => {
     expect(remoteTerm.writeRemoteData).toHaveBeenCalledWith('local-uuid', 'chunk');
   });
 
+  it('resizes the guest pane when the host resizes (S3-02 resize leg)', async () => {
+    await joinRemoteSession('p1', 'offer', '1234');
+    lastJoinHandle().__fireInit!({
+      scrollback: '',
+      mode: 'readonly',
+      cols: 80,
+      rows: 24,
+      sessionName: 'remote-name',
+    });
+    lastJoinHandle().__fireResize!(120, 40);
+    expect(remoteTerm.resizeRemoteTerminal).toHaveBeenCalledWith('local-uuid', 120, 40);
+  });
+
   it('shows end overlay when disconnect fires after init', async () => {
     await joinRemoteSession('p1', 'offer', '1234');
     lastJoinHandle().__fireInit!({
@@ -348,6 +373,7 @@ describe('joinRemoteSession failure handling', () => {
       __fireInit: null as ((d: unknown) => void) | null,
       __fireDisconnect: null as (() => void) | null,
       __fireData: null as ((p: string) => void) | null,
+      __fireResize: null as ((cols: number, rows: number) => void) | null,
     };
     return handle;
   }
@@ -479,5 +505,84 @@ describe('cleanupAllShares', () => {
 
     expect(hostState.stopShare).toHaveBeenCalledWith('s1');
     expect(pendingHandle.disconnect).toHaveBeenCalled();
+  });
+});
+
+// PA-32: the listener array was push-only. onShareChange now returns a
+// dispose closure (the appState.on pattern); these pin removal,
+// idempotence, and splice-safety for the neighbours.
+describe('onShareChange unsubscribe', () => {
+  it('removes the listener so later notifications skip it', () => {
+    const cb = vi.fn();
+    const off = onShareChange(cb);
+    endShare('s1');
+    expect(cb).toHaveBeenCalledTimes(1);
+    off();
+    endShare('s1');
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('is idempotent: a double unsubscribe never drops a neighbour', () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    const offA = onShareChange(a);
+    onShareChange(b);
+    offA();
+    offA(); // indexOf === -1 path: must not splice b's slot
+    endShare('s1');
+    expect(a).not.toHaveBeenCalled();
+    expect(b).toHaveBeenCalledTimes(1);
+  });
+
+  it('a listener unsubscribing during notification does not starve the next one', () => {
+    // The notify loop iterates a snapshot, so c fires even though b removes
+    // itself mid-notification and shifts the live array.
+    const c = vi.fn();
+    const offRef: { off: () => void } = { off: () => {} };
+    const b = vi.fn(() => offRef.off());
+    offRef.off = onShareChange(b);
+    onShareChange(c);
+    endShare('s1');
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(c).toHaveBeenCalledTimes(1);
+    // b is gone for the next round.
+    endShare('s1');
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(c).toHaveBeenCalledTimes(2);
+  });
+});
+
+// C5R-03: a rejected answer or a host `end` mid-wait used to be swallowed;
+// the dialog sat on "The session will appear once they connect." forever.
+describe('joinRemoteSession failure notifications', () => {
+  it('notes auth failures on a pending join and tears the handle down', async () => {
+    const onFailed = vi.fn();
+    await joinRemoteSession('p1', 'offer', '1234', undefined, onFailed);
+    const h = lastJoinHandle();
+    h.__fireAuthFailed!('Passphrase mismatch');
+    expect(onFailed).toHaveBeenCalledWith('auth-failed', 'Passphrase mismatch');
+    expect(h.disconnect).toHaveBeenCalledTimes(1);
+    // a follow-up end must not double-report
+    h.__fireEnd!();
+    expect(onFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('notes a host end on a pending join', async () => {
+    const onFailed = vi.fn();
+    await joinRemoteSession('p1', 'offer', '1234', undefined, onFailed);
+    const h = lastJoinHandle();
+    h.__fireEnd!();
+    expect(onFailed).toHaveBeenCalledWith('ended', undefined);
+    expect(h.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent once the join connected (init won the race)', async () => {
+    const onFailed = vi.fn();
+    await joinRemoteSession('p1', 'offer', '1234', undefined, onFailed);
+    const h = lastJoinHandle();
+    h.__fireInit!({ scrollback: '', mode: 'readonly', cols: 80, rows: 24, sessionName: 'x' });
+    h.__fireEnd!();
+    expect(onFailed).not.toHaveBeenCalled();
+    expect(isRemoteSession('local-uuid')).toBe(true);
   });
 });

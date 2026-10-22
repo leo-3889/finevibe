@@ -1,4 +1,5 @@
 import { appState } from './state.js';
+import { stopInterval, type IntervalHandle } from '../shared/async-utils.js';
 
 // legacy: the GitHub repo slug stays `vibeyard` — the repository is NOT renamed with the product.
 const DISCUSSIONS_BASE = 'https://github.com/leo-3889/vibeyard/discussions';
@@ -11,14 +12,18 @@ type ChangeCallback = () => void;
 
 let newCount = 0;
 let latestTimestamp: string | null = null;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+const pollTimer: IntervalHandle = { id: null };
 const listeners: ChangeCallback[] = [];
+// C3RP-09: a feed fetch slower than the poll interval must not overlap itself.
+let inFlight = false;
 
 function notify(): void {
   for (const cb of listeners) cb();
 }
 
 async function poll(): Promise<void> {
+  if (inFlight) return;
+  inFlight = true;
   try {
     const res = await fetch(FEED_URL);
     if (!res.ok) return;
@@ -44,24 +49,19 @@ async function poll(): Promise<void> {
     if (newCount !== prevCount) notify();
   } catch {
     // Silently skip — network errors, rate limits, etc.
+  } finally {
+    inFlight = false;
   }
 }
 
 function startInterval(): void {
-  if (pollTimer) return;
+  if (pollTimer.id) return;
   // A visibilitychange before load() would poll with an empty lastSeen and
   // count every entry as new; the state-loaded subscription starts it instead.
   if (!appState.loaded) return;
   if (document.hidden) return;
   poll();
-  pollTimer = setInterval(poll, POLL_INTERVAL);
-}
-
-function stopInterval(): void {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
+  pollTimer.id = setInterval(poll, POLL_INTERVAL);
 }
 
 export function init(): void {
@@ -69,7 +69,7 @@ export function init(): void {
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-      stopInterval();
+      stopInterval(pollTimer);
     } else {
       startInterval();
     }
@@ -100,6 +100,7 @@ export function onChange(callback: ChangeCallback): () => void {
 export function _resetForTesting(): void {
   newCount = 0;
   latestTimestamp = null;
-  stopInterval();
+  stopInterval(pollTimer);
+  inFlight = false;
   listeners.length = 0;
 }

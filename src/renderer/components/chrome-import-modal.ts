@@ -4,12 +4,33 @@ import { createCustomSelect, type CustomSelectInstance } from './custom-select.j
 import type { ChromeProfile, ChromeImportProgress, ChromeImportResult } from '../../shared/types.js';
 
 let cleanupFn: (() => void) | null = null;
+// CI-10: the live generation's full dismiss (disposed flag + both progress
+// subscriptions + onClosed). A re-open runs it; `cleanupFn` alone only tore the
+// DOM wiring down.
+let dismissActive: (() => void) | null = null;
 
 // Module scope: a dismissed modal detaches its import; a re-opened modal
 // must not start a second concurrent run on the same profile/partition.
 let importInFlight = false;
+// UI2-6: the open itself is async (the profile scan is awaited mid-build), so
+// the open is single-flighted: a second click while a scan runs must not
+// build the modal a second time on the cached overlay.
+let openInFlight = false;
 
-export async function showChromeImportModal(onClosed?: () => void): Promise<void> {
+export function showChromeImportModal(onClosed?: () => void): Promise<void> {
+  if (openInFlight) return Promise.resolve();
+  openInFlight = true;
+  return openChromeImportModal(onClosed).finally(() => { openInFlight = false; });
+}
+
+async function openChromeImportModal(onClosed?: () => void): Promise<void> {
+  // CI-10: a re-open dismisses the previous generation completely — its
+  // `disposed` flag, BOTH progress subscriptions and its onClosed. The old
+  // `cleanupFn?.()` alone left an in-flight import subscribed to progress
+  // events that kept writing into the shared (cached) overlay's detached DOM,
+  // and left the caller's onClosed unfired.
+  dismissActive?.();
+  dismissActive = null;
   cleanupFn?.();
   cleanupFn = null;
 
@@ -19,6 +40,9 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
   let disposed = false;
   let unsubProgress: (() => void) | null = null;
   let liveUnsub: (() => void) | null = null;
+
+  // Declared before the first await: this generation's cleanup closure reads it.
+  let select: CustomSelectInstance | null = null;
 
   const { overlay, body, actions, titleEl } = createModalShell({
     id: 'chrome-import-overlay',
@@ -67,6 +91,25 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
   actions.appendChild(cancelBtn);
   actions.appendChild(importBtn);
 
+  // UI2-6: dismissal wiring and this generation's cleanup are installed
+  // synchronously, BEFORE the profile scan's await — a dismissal during the
+  // scan tears the listeners down immediately, and the continuations below
+  // check `disposed` instead of writing into a detached modal.
+  cancelBtn.addEventListener('click', close);
+  const teardownDismiss = bindModalDismiss({ overlay, onClose: close });
+  cleanupFn = () => {
+    select?.destroy();
+    teardownDismiss();
+    liveUnsub?.();
+    liveUnsub = null;
+    // CI-10: the import's own progress subscription has to be part of the
+    // teardown, so any path that drops this generation detaches the run.
+    unsubProgress?.();
+    unsubProgress = null;
+  };
+  // Hoisted `close` below: the module-level dismiss points at this generation.
+  dismissActive = close;
+
   // Load profiles
   let profiles: ChromeProfile[] = [];
   try {
@@ -74,8 +117,7 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
   } catch (err) {
     note.textContent = `Failed to read Chrome profiles: ${(err as Error).message}`;
   }
-
-  let select: CustomSelectInstance | null = null;
+  if (disposed) return; // dismissed mid-scan: this generation is already torn down
   if (profiles.length === 0) {
     note.textContent = 'Chrome installation not found. Install Google Chrome and sign in to a profile, then try again.';
     importBtn.disabled = true;
@@ -87,9 +129,13 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
     );
     profileSlot.appendChild(select.element);
 
-    note.innerHTML =
-      'On macOS, the system may ask permission to read <strong>Chrome Safe Storage</strong> — click <em>Allow</em> when prompted. ' +
-      'On Windows, cookies encrypted with Chrome 127+ App-Bound Encryption can’t be imported and will be skipped.';
+    note.append(
+      'On macOS, the system may ask permission to read ',
+      Object.assign(document.createElement('strong'), { textContent: 'Chrome Safe Storage' }),
+      ' — click ',
+      Object.assign(document.createElement('em'), { textContent: 'Allow' }),
+      ' when prompted. On Windows, cookies encrypted with Chrome 127+ App-Bound Encryption can’t be imported and will be skipped.',
+    );
 
     importBtn.addEventListener('click', async () => {
       importBtn.disabled = true;
@@ -166,11 +212,11 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
     overlay.style.display = 'none';
     cleanupFn?.();
     cleanupFn = null;
+    // CI-10: only clear the module pointer while it is still ours — a close
+    // that races a re-open must not unregister the newer generation.
+    if (dismissActive === close) dismissActive = null;
     onClosed?.();
   }
-
-  cancelBtn.addEventListener('click', close);
-  const teardownDismiss = bindModalDismiss({ overlay, onClose: close });
 
   // P2-109: re-open while a detached import is still running — offer live
   // progress of that run, not a second concurrent import.
@@ -193,13 +239,6 @@ export async function showChromeImportModal(onClosed?: () => void): Promise<void
       }
     });
   }
-
-  cleanupFn = () => {
-    select?.destroy();
-    teardownDismiss();
-    liveUnsub?.();
-    liveUnsub = null;
-  };
 
   overlay.style.display = 'flex';
 }

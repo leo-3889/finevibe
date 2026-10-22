@@ -10,6 +10,19 @@ class FakeTerminal {
   rows = 30;
   options: Record<string, unknown>;
   private keyHandler: ((e: KeyboardEvent) => boolean) | null = null;
+  // win32-input-mode detection captures the `?9001h/l` CSI handlers here so a
+  // test can flip mode 9001 on the pane's terminal, as node-pty's startup
+  // request does on a real Windows ConPTY.
+  csiHandlers = new Map<string, (params: number[]) => boolean>();
+  parser = {
+    registerCsiHandler: (id: { final: string }, cb: (params: number[]) => boolean) => {
+      this.csiHandlers.set(id.final, cb);
+      return { dispose() {} };
+    },
+  };
+  enableWin32Mode(on: boolean): void {
+    this.csiHandlers.get(on ? 'h' : 'l')!([9001]);
+  }
   private _selection = '';
 
   constructor(options: Record<string, unknown> = {}) {
@@ -59,7 +72,7 @@ vi.mock('../state.js', () => ({
 vi.mock('./terminal-pane.js', () => ({ fitAllVisible: vi.fn() }));
 vi.mock('./search-bar.js', () => ({ destroySearchBar: vi.fn(), hideSearchBar: vi.fn() }));
 vi.mock('../shortcuts.js', () => ({
-  shortcutManager: { getKeys: vi.fn(() => []) },
+  shortcutManager: { getKeys: vi.fn(() => []), matchEvent: vi.fn(() => false), matchesAnyShortcut: vi.fn(() => false) },
   displayKeys: vi.fn(() => ''),
 }));
 
@@ -168,6 +181,30 @@ describe('project-terminal Ctrl+Shift+C clipboard copy', () => {
     const result = term.simulateKey({ ctrlKey: true, shiftKey: true, key: 'C', type: 'keydown' });
 
     expect(result).toBe(false);
+  });
+
+  it('routes Escape through the win32 INPUT_RECORD encoder when mode 9001 is on', async () => {
+    const instance = await setupTerminal();
+    const term = instance!.terminal as unknown as FakeTerminal;
+
+    // node-pty's startup request enables win32-input-mode on the shell pane.
+    term.enableWin32Mode(true);
+    const result = term.simulateKey({ key: 'Escape', type: 'keydown', preventDefault: vi.fn() });
+
+    // A bare ESC is swallowed by ConPTY's parser under mode 9001, so the pane
+    // writes the spec #4999 INPUT_RECORD to the shell PTY and suppresses xterm.
+    expect(mockPtyWrite).toHaveBeenCalledWith(instance!.sessionId, '\x1b[27;1;27;1;0;1_');
+    expect(result).toBe(false);
+  });
+
+  it('leaves Escape to xterm when mode 9001 is off', async () => {
+    const instance = await setupTerminal();
+    const term = instance!.terminal as unknown as FakeTerminal;
+
+    const result = term.simulateKey({ key: 'Escape', type: 'keydown' });
+
+    expect(mockPtyWrite).not.toHaveBeenCalled();
+    expect(result).toBe(true);
   });
 });
 
@@ -312,5 +349,72 @@ describe('project-terminal fit resize (P3-10)', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+// C5R-05: '+ New Terminal' was uncapped — every pane pins a PTY + ConPTY +
+// xterm, and exited shells (pane + overlay + label alive) count toward the
+// 50-per-project cap. Beyond it the click is refused with the note swapped
+// into the button label/title, the file's only chrome-level channel.
+describe('project-terminal shell cap (C5R-05)', () => {
+  class ChromeFakeEl extends FakeEl {
+    innerHTML = '';
+    textContent = '';
+    className = '';
+    querySelectorAll(): HTMLElement[] { return []; }
+  }
+  class ClickableFakeEl extends ChromeFakeEl {
+    listeners: Record<string, Array<() => void>> = {};
+    textContent = '+';
+    title = '';
+    addEventListener(type: string, cb: () => void): void {
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(cb);
+    }
+  }
+
+  let newBtn: ClickableFakeEl;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    newBtn = new ClickableFakeEl();
+    vi.stubGlobal('document', {
+      getElementById: (id: string) => (id === 'btn-new-terminal' ? newBtn : new ChromeFakeEl()),
+      // esc() reads innerHTML off created spans; the chrome elements need
+      // querySelectorAll/innerHTML for renderSidebar's escape+rebind path.
+      createElement: () => {
+        const el = new ChromeFakeEl();
+        el.innerHTML = '';
+        el.textContent = '';
+        el.className = '';
+        return el;
+      },
+      addEventListener: vi.fn(),
+      body: new FakeEl(),
+    });
+    vi.stubGlobal('window', {
+      finevibe: { pty: { write: mockPtyWrite, kill: vi.fn(), resize: vi.fn(), createShell: vi.fn() } },
+    });
+    vi.stubGlobal('navigator', { clipboard: { writeText: mockClipboardWrite } });
+    vi.stubGlobal('ResizeObserver', class { observe(): void {} });
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => cb());
+  });
+
+  it('refuses the 51st shell and notes the cap on the button', async () => {
+    const { appState } = await import('../state.js');
+    const { initProjectTerminal } = await import('./project-terminal.js');
+    (appState as any).activeProject = { id: 'proj1', path: '/project', terminalPanelOpen: true, terminalPanelHeight: 200, sessions: [] };
+    (appState as any).projects = [(appState as any).activeProject];
+    initProjectTerminal();
+
+    const clicks = newBtn.listeners['click'] ?? [];
+    expect(clicks.length).toBe(1);
+    for (let i = 0; i < 50; i++) clicks[0]();
+    expect(newBtn.textContent).toBe('+'); // the 50th creation is allowed
+
+    clicks[0](); // the 51st
+    expect(newBtn.textContent).toBe('50');
+    expect(String(newBtn.title)).toContain('Terminal limit reached');
   });
 });

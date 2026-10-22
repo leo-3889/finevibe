@@ -2,11 +2,16 @@ import type { ArchivedSession, ProjectRecord, ProviderId, SessionRecord } from '
 import { getCost } from '../session-cost.js';
 
 const HISTORY_CAP = 500;
+// PA-06 (docs/performance.md growth table): bookmarks and active rows were
+// exempt from the cap forever, so history grew without bound. Only the
+// newest BOOKMARK_EXEMPT bookmarks stay exempt.
+const BOOKMARK_EXEMPT = 50;
 /**
  * Record a CLI session in history the moment it is created, so the history
  * panel reflects spawns immediately (not only at close). The entry is
  * finalized by `archiveSession` (with `finalize: true`) when the session
- * closes; until then it is `state: 'active'` and exempt from the history cap.
+ * closes; until then it is `state: 'active'`, exempt from the history cap
+ * only while its tab is live (PA-06) — a crash orphan falls back under the cap.
  */
 export function archiveSessionOnCreate(project: ProjectRecord, session: SessionRecord): void {
   if (!project.sessionHistory) project.sessionHistory = [];
@@ -46,9 +51,51 @@ export function syncCreateEntryCliId(
 }
 
 /**
+ * PA-06: enforce HISTORY_CAP with bounded exemptions. Walk newest-last
+ * (highest index = newest) and exempt only: `active` rows while a live tab
+ * with that `liveSessionId` exists (crash-orphans are cap-eligible; hydrate
+ * already finalizes them — see persistence.ts), and the newest
+ * BOOKMARK_EXEMPT bookmarked rows. Then drop the oldest non-exempt rows
+ * (insertion order) until the cap is met. Survivors ≤ HISTORY_CAP plus, in
+ * the pathological case, the exemption set — every row class is bounded
+ * (bookmarks ≤ BOOKMARK_EXEMPT, active ≤ live tab count), so sessionHistory
+ * can no longer grow without limit. Rows are keyed by their unique id
+ * (hydrate dedupes ids at load, persistence.ts), so an id set is safe.
+ */
+function enforceHistoryCap(project: ProjectRecord): void {
+  const history = project.sessionHistory;
+  if (!history || history.length <= HISTORY_CAP) return;
+  const liveIds = new Set(project.sessions.map((s) => s.id));
+  const exempt = new Set<string>();
+  let bookmarksSeen = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const a = history[i];
+    if (a.state === 'active' && a.liveSessionId && liveIds.has(a.liveSessionId)) exempt.add(a.id);
+    if (a.bookmarked && bookmarksSeen < BOOKMARK_EXEMPT) { bookmarksSeen++; exempt.add(a.id); }
+  }
+  let toRemove = history.length - HISTORY_CAP;
+  // Bookmarks beyond BOOKMARK_EXEMPT lose immunity and are pruned FIRST
+  // (oldest of them), before plain rows: once the quota is exhausted,
+  // "bookmarked" must not mean "the oldest rows survive while newer plain
+  // rows die".
+  const dropIds = new Set<string>();
+  for (const a of history) {
+    if (toRemove <= 0) break;
+    if (a.bookmarked && !exempt.has(a.id)) { dropIds.add(a.id); toRemove--; }
+  }
+  project.sessionHistory = history.filter((a) => {
+    if (dropIds.has(a.id)) return false;
+    if (exempt.has(a.id)) return true;
+    if (toRemove > 0) { toRemove--; return false; }
+    return true;
+  });
+}
+
+/**
  * Archive a session into project.sessionHistory. If a prior history entry
  * shares the same cliSessionId, update it in place; otherwise push a new one.
- * Caps history at 500 entries while preserving bookmarked entries.
+ * Caps history at 500 entries; `enforceHistoryCap` keeps only a bounded set
+ * of exemptions live: the newest 50 bookmarks and rows with a live tab (PA-06).
  */
 export function archiveSession(
   project: ProjectRecord,
@@ -84,25 +131,24 @@ export function archiveSession(
     ...(opts?.exitReason && opts.exitCode !== undefined ? { exitCode: opts.exitCode } : {}),
     ...(opts?.exitReason && opts.exitSignal !== undefined ? { exitSignal: opts.exitSignal } : {}),
     ...(opts?.exitReason && opts.processId !== undefined ? { processId: opts.processId } : {}),
-    ...(opts?.transcriptAvailable !== undefined ? { transcriptAvailable: opts.transcriptAvailable } : {}),
   };
+  if (opts?.transcriptAvailable !== undefined) archived.transcriptAvailable = opts.transcriptAvailable;
 
   if (!project.sessionHistory) project.sessionHistory = [];
-
   // Close path: update in place the entry written at creation, keyed by the
   // live session id. A `/clear` archive (no `finalize`) must not touch it —
   // the tab stays live with a new conversation id.
-  const createIndex = opts?.finalize
+  let existingIndex = opts?.finalize
     ? project.sessionHistory.findIndex((a) => a.liveSessionId === session.id)
     : -1;
-  const existingIndex = createIndex !== -1
-    ? createIndex
-    : archived.cliSessionId
-      // Segment archives (e.g. `/clear`) attach to a CLOSED entry with the
-      // same id; the tab's active entry keeps living with the new id.
-      ? project.sessionHistory.findIndex((a) => a.cliSessionId === archived.cliSessionId && a.state !== 'active')
-      : -1;
-  if (existingIndex !== -1) {
+  // Segment archives (e.g. `/clear`) attach to a CLOSED entry with the
+  // same id; the tab's active entry keeps living with the new id.
+  if (existingIndex === -1 && archived.cliSessionId) {
+    existingIndex = project.sessionHistory.findIndex((a) => a.cliSessionId === archived.cliSessionId && a.state !== 'active');
+  }
+  if (existingIndex === -1) {
+    project.sessionHistory.push(archived);
+  } else {
     project.sessionHistory[existingIndex].closedAt = archived.closedAt;
     project.sessionHistory[existingIndex].state = 'closed';
     if (archived.cliSessionId) project.sessionHistory[existingIndex].cliSessionId = archived.cliSessionId;
@@ -124,19 +170,9 @@ export function archiveSession(
     if (opts?.transcriptAvailable !== undefined) {
       project.sessionHistory[existingIndex].transcriptAvailable = opts.transcriptAvailable;
     }
-  } else {
-    project.sessionHistory.push(archived);
   }
 
-  if (project.sessionHistory.length > HISTORY_CAP) {
-    let nonBookmarkedToRemove = project.sessionHistory.length - HISTORY_CAP;
-    project.sessionHistory = project.sessionHistory.filter((a) => {
-      // Never prune a session that is still live.
-      if (a.bookmarked || a.state === 'active') return true;
-      if (nonBookmarkedToRemove > 0) { nonBookmarkedToRemove--; return false; }
-      return true;
-    });
-  }
+  enforceHistoryCap(project);
 }
 
 /** Build a fresh SessionRecord that resumes a previously archived CLI session. */

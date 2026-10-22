@@ -7,6 +7,10 @@ import { attachHoverCard, hideHoverCard } from '../../hover-card.js';
 import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ReadinessResult, ReadinessEffort } from '../../../../shared/types.js';
 import type { WidgetFactory, WidgetHost, WidgetInstance } from './widget-host.js';
 
+// C3RP-14: cross-instance in-flight scans. The closure `scanning` flag dies
+// with a widget instance; remounting the same project's tab spawns a second
+// widget that would launch a parallel analyze() for the same project.
+const scansInFlight = new Set<string>();
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const GAUGE_RADIUS = 38;
 const GAUGE_CIRCUMFERENCE = 2 * Math.PI * GAUGE_RADIUS;
@@ -518,7 +522,8 @@ export const createReadinessWidget: WidgetFactory = (host: WidgetHost): WidgetIn
 
   const runScan = async (silent = false) => {
     const project = appState.projects.find(p => p.id === projectId);
-    if (!project || scanning) return;
+    if (!project || scanning || scansInFlight.has(projectId)) return;
+    scansInFlight.add(projectId);
 
     scanning = true;
     if (!silent) render();
@@ -531,6 +536,7 @@ export const createReadinessWidget: WidgetFactory = (host: WidgetHost): WidgetIn
       console.warn('Readiness scan failed:', err);
     } finally {
       scanning = false;
+      scansInFlight.delete(projectId);
       render();
     }
   };

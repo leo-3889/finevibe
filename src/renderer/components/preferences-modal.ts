@@ -1,6 +1,7 @@
 import { appState } from '../state.js';
 import { createModalShell, createModalButton } from './modal-shell.js';
-import { pushModal } from './modal-manager.js';
+import { pushModal, modalStackDepth } from './modal-manager.js';
+import { ModalCloser } from './modal-close.js';
 import { t } from '../i18n.js';
 import type { PreferencesContext, Section, SectionController } from './preferences/section.js';
 import { createGeneralSection } from './preferences/general-section.js';
@@ -13,7 +14,7 @@ import { createAgentmemorySection } from './preferences/agentmemory-section.js';
 import { createAboutSection } from './preferences/about-section.js';
 import { createHelpSection } from './preferences/help-section.js';
 
-let cleanupFn: (() => void) | null = null;
+const closer = new ModalCloser();
 
 let openModal: (() => void) | null = null;
 
@@ -35,8 +36,7 @@ export function rerenderOpenPreferencesModal(): void {
 }
 
 export function showPreferencesModal(initialSection: Section = 'general'): void {
-  cleanupFn?.();
-  cleanupFn = null;
+  closer.reset();
 
   const { overlay, body: bodyEl, actions, titleEl } = createModalShell({
     id: 'preferences-overlay',
@@ -140,11 +140,7 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
     }
   };
 
-  const close = () => {
-    overlay.style.display = 'none';
-    cleanupFn?.();
-    cleanupFn = null;
-  };
+  const close = () => closer.close(overlay);
 
   const handleConfirm = () => {
     save();
@@ -161,6 +157,10 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
     // centralized modal manager (capture phase) so it works over a focused
     // terminal and never leaks to the PTY.
     if (activeRecorder) return;
+    // Enter must only confirm the top dialog: a nested Add-profile / Rename /
+    // Delete dialog from modal.ts has its own Enter handler, and confirming
+    // Preferences underneath it closes the modal the nested dialog lives in.
+    if (modalStackDepth() > 1) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       handleConfirm();
@@ -177,7 +177,7 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
   btnCancel.addEventListener('click', handleCancel);
   document.addEventListener('keydown', handleKeydown);
 
-  cleanupFn = () => {
+  closer.setCleanup(() => {
     ctx.endRecorder();
     for (const controller of controllers.values()) {
       controller.destroy?.();
@@ -187,7 +187,7 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
     btnCancel.removeEventListener('click', handleCancel);
     document.removeEventListener('keydown', handleKeydown);
     openModal = null;
-  };
+  });
 
   openModal = () => {
     // Refresh the modal title and footer buttons (in case they were re-translated).

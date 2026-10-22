@@ -24,7 +24,7 @@ vi.mock('./session-inspector-state-ui.js', () => ({
 }));
 
 import { getEvents } from '../session-inspector-state.js';
-import { renderTimeline, buildAgentModel } from './session-inspector-timeline.js';
+import { renderTimeline, appendTimelineEvents, buildAgentModel, disposeTimelineRenderState } from './session-inspector-timeline.js';
 import { inspectorState } from './session-inspector-state-ui.js';
 import type { InspectorEvent } from '../../shared/types.js';
 
@@ -50,13 +50,22 @@ class FakeElement {
   className = '';
   classList = new FakeClassList();
   textContent = '';
-  innerHTML = '';
+  private innerHtmlValue = '';
   scrollTop = 0;
   scrollHeight = 0;
   listeners = new Map<string, Array<() => void>>();
 
   constructor(public tagName: string) {}
 
+  // Mirrors the DOM: assigning innerHTML detaches the previous children.
+  get innerHTML(): string {
+    return this.innerHtmlValue;
+  }
+  set innerHTML(value: string) {
+    for (const child of this.children) child.parentElement = null;
+    this.children.length = 0;
+    this.innerHtmlValue = value;
+  }
   appendChild(child: FakeElement): FakeElement {
     child.parentElement = this;
     this.children.push(child);
@@ -539,5 +548,294 @@ describe('renderTimeline agent grouping', () => {
     expect(inspectorState.expandedRows.has('agent-group:A')).toBe(false);
     expect(inspectorState.expandedRows.has('agent-group:B')).toBe(true);
     expect(inspectorState.autoExpandedAgentGroups.has('session-1:agent-group:B')).toBe(true);
+  });
+});
+
+describe('PA-14 append-only reconcile', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('appends rows for events that arrived since the last render, preserving row identity', () => {
+    const events = [ev('session_start', 1000), ev('tool_use', 2000, { tool_name: 'Bash' })];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const c = container as unknown as FakeElement;
+    const rowsBefore = c.querySelectorAll('.inspector-timeline-row');
+    expect(rowsBefore).toHaveLength(2);
+    const firstRow = rowsBefore[0];
+
+    events.push(ev('stop', 3000));
+    expect(appendTimelineEvents(container)).toBe(true);
+
+    const rowsAfter = c.querySelectorAll('.inspector-timeline-row');
+    expect(rowsAfter).toHaveLength(3);
+    expect(rowsAfter[0]).toBe(firstRow); // identity preserved — no wipe
+    // The old tail row had no duration (no successor at render time); the
+    // append fills in what a full rebuild would have shown.
+    expect(rowsBefore[1].querySelector('.inspector-duration')!.textContent).not.toBe('');
+  });
+
+  it('appends children to a running agent group and closes the header on stop', () => {
+    const events = [
+      ev('session_start', 1000),
+      ev('subagent_start', 2000, { agent_id: 'a1', agent_type: 'worker' }),
+    ];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const c = container as unknown as FakeElement;
+    const group = c.querySelector('.inspector-agent-group')!;
+    expect(group.classList.contains('inspector-agent-running')).toBe(true);
+
+    events.push(ev('tool_use', 3000, { agent_id: 'a1', tool_name: 'Bash' }));
+    expect(appendTimelineEvents(container)).toBe(true);
+    // header + start row + one child
+    expect(group.querySelectorAll('.inspector-timeline-row')).toHaveLength(3);
+
+    events.push(ev('subagent_stop', 4000, { agent_id: 'a1' }));
+    expect(appendTimelineEvents(container)).toBe(true);
+    expect(group.classList.contains('inspector-agent-running')).toBe(false);
+    expect(group.querySelector('.inspector-badge-agent')!.textContent).toBe('Agent');
+    // header + start + child + stop
+    expect(group.querySelectorAll('.inspector-timeline-row')).toHaveLength(4);
+  });
+
+  it('bails to a full rebuild when the event array is replaced (/clear)', () => {
+    const events = [ev('session_start', 1000)];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    vi.mocked(getEvents).mockReturnValue([ev('session_start', 5000)]);
+    expect(appendTimelineEvents(container)).toBe(false);
+  });
+
+  it('bails to a full rebuild when the event cap shifts the array in place', () => {
+    const events = [ev('session_start', 1000), ev('tool_use', 2000)];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    events.shift(); // cap rotation: same length, window head moved
+    events.push(ev('tool_use', 3000));
+    expect(appendTimelineEvents(container)).toBe(false);
+  });
+
+  it('bails after the container content was wiped (tab switch)', () => {
+    const events = [ev('session_start', 1000)];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const c = container as unknown as FakeElement;
+    c.innerHTML = ''; // stand-in for content.innerHTML = ''
+    events.push(ev('tool_use', 2000));
+    expect(appendTimelineEvents(container)).toBe(false);
+  });
+
+  // S4-01: trimWindow used to move startIdx without re-anchoring
+  // firstWindowTs, so the first trim turned every later append into a
+  // "cap shift" bail — a full 500-row rebuild on the next 200 ms tick,
+  // the exact pathology PA-14 exists to prevent.
+  it('keeps appending incrementally after the 500-row window trims', () => {
+    const events = Array.from({ length: 501 }, (_, i) =>
+      ev('tool_use', 1000 + i, { tool_name: 'Bash' }),
+    );
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const c = container as unknown as FakeElement;
+    // 501 events, 500-row window: the banner appears, row 0 is not rendered.
+    expect(c.querySelector('.inspector-load-more')).not.toBeNull();
+    expect(c.querySelectorAll('.inspector-timeline-row')).toHaveLength(500);
+
+    events.push(ev('tool_use', 1600, { tool_name: 'Read' }));
+    expect(appendTimelineEvents(container)).toBe(true); // trims the head row
+    expect(c.querySelectorAll('.inspector-timeline-row')).toHaveLength(500);
+
+    const rowsAfterTrim = c.querySelectorAll('.inspector-timeline-row');
+    events.push(ev('tool_use', 1700, { tool_name: 'Write' }));
+    // Pre-fix this returned false: startIdx had moved past the stale
+    // firstWindowTs, so the append looked like an in-place cap shift.
+    expect(appendTimelineEvents(container)).toBe(true);
+    const rowsAfterSecond = c.querySelectorAll('.inspector-timeline-row');
+    expect(rowsAfterSecond).toHaveLength(500);
+    // Row identity preserved across trim+append — incremental, no wipe.
+    expect(rowsAfterSecond[0]).toBe(rowsAfterTrim[1]);
+  });
+});
+
+// UI3-6: expandable-row keys live in the shared inspectorState.expandedRows
+// set. Two parallel tool calls with the same millisecond timestamp, type and
+// tool_name used to share one key, so expanding one row auto-expanded its
+// twin on the next render (and collapsing collapsed both).
+describe('expandable row key uniqueness', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('expands only the clicked row when parallel tool calls share timestamp, type and tool_name', () => {
+    vi.mocked(getEvents).mockReturnValue([
+      ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'ls' } }),
+      ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'pwd' } }),
+    ]);
+
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+    const rows = (container as unknown as FakeElement).querySelectorAll('.inspector-timeline-row');
+    expect(rows).toHaveLength(2);
+
+    (rows[0] as FakeElement).listeners.get('click')?.[0]?.();
+    expect(rows[0].querySelector('.inspector-tool-detail')).not.toBeNull();
+    expect(rows[1].querySelector('.inspector-tool-detail')).toBeNull();
+
+    // The collision showed on the NEXT render: with the old
+    // timestamp:type:tool_name key, row 1 shared row 0's expanded key and
+    // rendered its detail unasked.
+    const rerendered = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(rerendered);
+    const rows2 = (rerendered as unknown as FakeElement).querySelectorAll('.inspector-timeline-row');
+    expect(rows2[0].querySelector('.inspector-tool-detail')).not.toBeNull();
+    expect(rows2[1].querySelector('.inspector-tool-detail')).toBeNull();
+
+    // Collapsing row 0 removes only its own key.
+    (rows2[0] as FakeElement).listeners.get('click')?.[0]?.();
+    expect(inspectorState.expandedRows.size).toBe(0);
+  });
+});
+
+// The timeline caches its render state at module scope for the append path.
+// closeInspector() removes the panel from the DOM; without the teardown the
+// detached container, its list, every row and the event closures stayed
+// reachable from this module forever.
+describe('render-state teardown', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('appendTimelineEvents stops reconciling after the state is disposed', () => {
+    const events = [ev('session_start', 1000)];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+
+    events.push(ev('tool_use', 2000));
+    expect(appendTimelineEvents(container)).toBe(true);
+
+    disposeTimelineRenderState();
+
+    // The append path has no state to reconcile against, so the caller takes
+    // the full-render path (which a closed panel never triggers).
+    events.push(ev('tool_use', 3000));
+    expect(appendTimelineEvents(container)).toBe(false);
+  });
+});
+
+// CI-03: the cap-shift guard compared the window head's TIMESTAMP. Two events
+// in the same millisecond at the window head made a rotated array look
+// unchanged, so the append reported success onto rows whose indices had all
+// moved — a frozen timeline on a streaming session.
+describe('cap rotation guard (CI-03)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('bails when the cap rotates the array under a same-millisecond head', () => {
+    const events = [
+      ev('tool_use', 1000, { tool_name: 'A' }),
+      ev('tool_use', 1000, { tool_name: 'B' }),
+    ];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+
+    events.shift(); // cap rotation: same length, same head timestamp
+    events.push(ev('tool_use', 1000, { tool_name: 'C' }));
+
+    expect(appendTimelineEvents(container)).toBe(false);
+  });
+
+  // C3R-02: the CI-15 prune loop deleted every non-agent-group key on a
+  // rotation. C2R-02 keys are seq-prefixed, so they keep identifying their
+  // own event across the shift — the prune only collapsed valid expansions.
+  it('keeps the expandable-row keys across a rotation', () => {
+    const events = [
+      ev('tool_use', 1000, { tool_name: 'A', seq: 1 }),
+      ev('tool_use', 1000, { tool_name: 'B', seq: 2 }),
+    ];
+    vi.mocked(getEvents).mockReturnValue(events);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+
+    inspectorState.expandedRows.add('1:1000:tool_use:A');
+    inspectorState.expandedRows.add('agent-group:A');
+
+    events.shift();
+    events.push(ev('tool_use', 1000, { tool_name: 'C', seq: 3 }));
+    expect(appendTimelineEvents(container)).toBe(false);
+
+    expect(inspectorState.expandedRows.has('1:1000:tool_use:A')).toBe(true);
+    expect(inspectorState.expandedRows.has('agent-group:A')).toBe(true);
+  });
+});
+
+// C2R-02: the expandable-row key carried the ARRAY INDEX. After a rotation the
+// same key describes a different event, so an expansion silently jumped to the
+// neighbour that slid into the freed slot. The key now carries the ingestion
+// seq stamped by addEvents, which survives the in-place shift.
+describe('expandable row keys across a rotation (C2R-02)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    inspectorState.expandedRows.clear();
+    inspectorState.autoExpandedAgentGroups.clear();
+  });
+
+  it('keeps an expansion on its own event after the head rotates away', () => {
+    const a = ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'ls' }, seq: 1 });
+    const b = ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'pwd' }, seq: 2 });
+    vi.mocked(getEvents).mockReturnValue([a, b]);
+    const container = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(container);
+
+    const rows = (container as unknown as FakeElement).querySelectorAll('.inspector-timeline-row');
+    (rows[0] as FakeElement).listeners.get('click')?.[0]?.();
+    expect(rows[0].querySelector('.inspector-tool-detail')).not.toBeNull();
+    expect(inspectorState.expandedRows.has('1:1000:pre_tool_use:Bash')).toBe(true);
+
+    // `a` rotates out; `b` takes index 0 and a fresh event index 1.
+    vi.mocked(getEvents).mockReturnValue([
+      b,
+      ev('pre_tool_use', 1000, { tool_name: 'Bash', tool_input: { command: 'id' }, seq: 3 }),
+    ]);
+    const rerendered = new FakeElement('div') as unknown as HTMLElement;
+    renderTimeline(rerendered);
+    const rows2 = (rerendered as unknown as FakeElement).querySelectorAll('.inspector-timeline-row');
+
+    // With the index-form key, index 0 (`b`) inherited `a`'s expansion.
+    expect(rows2[0].querySelector('.inspector-tool-detail')).toBeNull();
+    expect(rows2[1].querySelector('.inspector-tool-detail')).toBeNull();
   });
 });

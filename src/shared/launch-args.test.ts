@@ -112,11 +112,18 @@ describe('findConflictingLaunchFlags', () => {
 });
 
 describe('findConflictingEnvKeys', () => {
-  it('matches the unsupported storage selectors case-insensitively', () => {
-    expect(findConflictingEnvKeys({ PI_CODING_AGENT_SESSION_DIR: '/x', SAFE: '1' })).toEqual(['PI_CODING_AGENT_SESSION_DIR']);
-    expect(findConflictingEnvKeys({ pi_coding_agent_session_dir: '/x' })).toEqual(['pi_coding_agent_session_dir']);
-    expect(findConflictingEnvKeys({ CODEX_HOME: '/work/codex' })).toEqual(['CODEX_HOME']);
-    expect(findConflictingEnvKeys({ codex_home: '/work/codex' })).toEqual(['codex_home']);
-    expect(findConflictingEnvKeys({ SAFE: '1' })).toEqual([]);
+  it('on Windows matches the unsupported storage selectors case-insensitively', () => {
+    expect(findConflictingEnvKeys({ PI_CODING_AGENT_SESSION_DIR: '/x', SAFE: '1' }, true)).toEqual(['PI_CODING_AGENT_SESSION_DIR']);
+    expect(findConflictingEnvKeys({ pi_coding_agent_session_dir: '/x' }, true)).toEqual(['pi_coding_agent_session_dir']);
+    expect(findConflictingEnvKeys({ CODEX_HOME: '/work/codex' }, true)).toEqual(['CODEX_HOME']);
+    expect(findConflictingEnvKeys({ codex_home: '/work/codex' }, true)).toEqual(['codex_home']);
+    expect(findConflictingEnvKeys({ SAFE: '1' }, true)).toEqual([]);
+  });
+
+  it('on POSIX matches case-sensitively — a lower-case spelling is inert there (S1-08)', () => {
+    expect(findConflictingEnvKeys({ CODEX_HOME: '/work/codex' }, false)).toEqual(['CODEX_HOME']);
+    expect(findConflictingEnvKeys({ codex_home: '/work/codex' }, false)).toEqual([]);
+    expect(findConflictingEnvKeys({ PI_CODING_AGENT_SESSION_DIR: '/x' }, false)).toEqual(['PI_CODING_AGENT_SESSION_DIR']);
+    expect(findConflictingEnvKeys({ pi_coding_agent_session_dir: '/x' }, false)).toEqual([]);
   });
 });

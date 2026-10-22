@@ -151,4 +151,51 @@ describe('modal-manager', () => {
     bindModalDismiss({ overlay, onClose: vi.fn() });
     expect(modalStackDepth()).toBe(1);
   });
+
+  // UI2-9: dialogs used to attach their own document-level ENTER listener, so
+  // one Enter closed every open dialog at once (whats-new under board-help).
+  it('routes ENTER to the top-of-stack dialog only', async () => {
+    const { pushModal } = await loadManager();
+    const onEnterBottom = vi.fn();
+    const onEnterTop = vi.fn();
+    pushModal({ onEscape: vi.fn(), onEnter: onEnterBottom });
+    pushModal({ onEscape: vi.fn(), onEnter: onEnterTop });
+
+    const e = makeEscEvent('Enter');
+    keydownHandler!(e);
+
+    expect(onEnterTop).toHaveBeenCalledTimes(1);
+    expect(onEnterBottom).not.toHaveBeenCalled();
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(e.stopImmediatePropagation).toHaveBeenCalled();
+  });
+
+  it('leaves ENTER alone when the top dialog has no ENTER binding', async () => {
+    const { pushModal } = await loadManager();
+    const onEnterBelow = vi.fn();
+    pushModal({ onEscape: vi.fn(), onEnter: onEnterBelow });
+    // The top dialog (e.g. preferences, a prompt) does not bind ENTER: the key
+    // keeps flowing to forms, palettes and the PTY.
+    pushModal({ onEscape: vi.fn() });
+
+    const e = makeEscEvent('Enter');
+    keydownHandler!(e);
+
+    expect(onEnterBelow).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(e.stopImmediatePropagation).not.toHaveBeenCalled();
+  });
+
+  it('leaves ENTER alone when no modal is open', async () => {
+    const { pushModal } = await loadManager();
+    // The manager installs its listener on the first pushModal; register and
+    // unregister so the stack is empty while the listener is live.
+    pushModal({ onEscape: vi.fn(), onEnter: vi.fn() })();
+
+    const e = makeEscEvent('Enter');
+    keydownHandler!(e);
+
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(e.stopImmediatePropagation).not.toHaveBeenCalled();
+  });
 });

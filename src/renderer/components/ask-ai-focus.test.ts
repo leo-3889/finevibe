@@ -36,6 +36,7 @@ const mockState = vi.hoisted(() => ({
   },
   on: vi.fn(() => () => {}),
   setPreference: vi.fn(),
+  setPreferences: vi.fn(),
   setLocale: vi.fn(),
 }));
 
@@ -137,6 +138,8 @@ describe('general section — Ask AI focus preference', () => {
     const { section } = renderGeneralSection();
     selectState.instances.get('pref-ask-ai-focus')!.setValue('stay');
     section.save!();
-    expect(mockState.setPreference).toHaveBeenCalledWith('askAiFocus', 'stay');
+    // C3RP-11: save() applies the whole patch through the batch mutator.
+    const patch = mockState.setPreferences.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(patch?.askAiFocus).toBe('stay');
   });
 });

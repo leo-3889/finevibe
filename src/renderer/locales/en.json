@@ -24,7 +24,8 @@
     "askAiFocusStay": "the background — keep my tab",
     "planModeHeading": "Plan mode by default for quick AI sessions",
     "defaultProjectsFolder": "Default projects folder",
-    "defaultProjectsFolderPlaceholder": "Folder new projects are created in"
+    "defaultProjectsFolderPlaceholder": "Folder new projects are created in",
+    "defaultProjectsFolderClear": "Clear"
   },
   "appearance": {
     "theme": "Theme",
@@ -369,7 +370,8 @@
       "confirmEdit": "Save",
       "nameRequired": "Name is required",
       "roleRequired": "Role is required",
-      "systemPromptRequired": "System prompt is required"
+      "systemPromptRequired": "System prompt is required",
+      "systemPromptTooLong": "System prompt is too long (max {limit})"
     },
     "picker": {
       "title": "Browse team members",
@@ -410,6 +412,10 @@
     "editLayoutButton": "Edit layout",
     "editLayoutTooltip": "Toggle drag and resize",
     "doneEditingButton": "Done editing",
+    "github": {
+      "markAllRead": "Mark all GitHub items in this project read",
+      "markAllReadTooltip": "Marks every unread GitHub item in this project as read — pull requests and issues, including the other GitHub widget's list."
+    },
     "sessionsSettings": {
       "title": "Sessions Settings",
       "limitLabel": "Max recent sessions",
@@ -594,6 +600,9 @@
     "debugModeLabel": "Debug Mode",
     "versionLoaded": "Version: {ver}"
   },
+  "update": {
+    "downloadFailed": "Update download failed"
+  },
   "agentmemory": {
     "autoStart": "Start agent memory engine on launch",
     "probing": "Checking…",
@@ -601,7 +610,11 @@
     "stopped": "Not running",
     "startButton": "Start Engine",
     "starting": "Starting…",
-    "openConsole": "Open Console"
+    "openConsole": "Open Console",
+    "consoleTitle": "Agent Memory Console",
+    "consoleEmpty": "No log output yet. Console output is captured only for engines FineVibe starts — it will show up here after the next start.",
+    "consoleWebUi": "Web UI",
+    "consoleClose": "Close"
   },
   "preferencesNav": {
     "browser": "Browser",
@@ -665,5 +678,11 @@
     "clear": "Clear",
     "eventCount": "{count} events",
     "filteredSuffix": " (filtered: {filters})"
+  },
+  "joinDialog": {
+    "join": "Join",
+    "close": "Close",
+    "authFailed": "The host rejected the response code",
+    "shareEnded": "The host ended the share."
   }
 }

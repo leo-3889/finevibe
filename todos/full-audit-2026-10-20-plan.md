@@ -1,5 +1,11 @@
 # Full project audit — consolidated remediation plan (2026-10-20)
 
+> **Status 2026-10-22 (todos audit): the Status column below is STALE.** Waves A–F shipped
+> (F61 fleet record: exit gate 191 files / 2,857 passed / 4 skipped exit 0 at 85a321d; F62
+> branch prune done, 26 branches deleted; F63 = e806e0f). Tree-true open: **P1-13, P1-16,
+> P1-18, P1-21** (+twin P2-54) · P2-18, 53, 55, 58, 60, 61, 69, 72, 74, 86, 98 · P3-4 ·
+> partials P2-11, P2-12, P2-75 · task F64. Detailed queue: [`PENDING.md`](PENDING.md) §1.
+
 Repo `vibeyard` · branch `rebuild` · HEAD `858d97c` · 469 TS files (179 colocated `*.test.ts`) · Node 24 build / Node 18+ launcher.
 Produced by 40 audit agents in five waves; every row below was re-verified in-tree by the parent at its cited lines.
 
@@ -30,6 +36,8 @@ Rules: waves in order (A → F), each wave exits on a green `gate.sh 3`; one com
 | P2-33 | P2 | D | **decided: GATE** (2026-10-20) | `fs:listDirs` (`ipc-handlers.ts:400-413`) gated to home tree + known roots (fs:listDir's gate widened to home); outside-home enumeration needs confirm · *parent + agent ResumeIpc · agent ResumeSec **(independent, security-class)*** |
 
 Parent-side items needing your word: **(i)** delete the stray `dev/null` file (P2-1, 12 KB — the tsc JS of `codex-provider.test.ts`, the product of a `> dev\null` redirect); **(ii)** keep or delete `dev/audit/` (the four scanners above — they are the audit's tooling and this plan depends on them); **(iii)** branch pruning (P1-4): 24 merged `audit/*` + `w/*` branches, patch bundle before deletion; **(iv)** fork identity (P1-7 + P2-13): `bin/vibeyard.js`, `auto-updater.ts`, `team-config.ts` and `personas/` default to the **upstream** repo while README ships FineVibe branding — pick upstream / fork / configurable feed, and note P2-77 pins the upstream feed in two tests.
+
+Decided (2026-10-21): **(ii)** `dev/audit/` **kept** — `gate.sh` + `pointer-check.js` (the gate chain: gate.sh calls the pointer scan), the two §0 scanners, and `normalize-eol.js` (the repo is LF blobs + `core.autocrlf=false`, so the CRLF repair utility stays live). The three wave specs (C/D/E) were deleted — their waves are closed and nothing references them. `dev/` is gitignored (local sandbox); `dev/perf/` stays tracked by exception.
 
 ## 2. Wave A — 4 rows
 

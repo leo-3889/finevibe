@@ -2,7 +2,11 @@ import type { ArchivedSession } from '../../../../shared/types.js';
 import { appState } from '../../../state.js';
 import { getProviderDisplayName } from '../../../provider-availability.js';
 import type { WidgetFactory } from './widget-host.js';
+import { formatRelativeDate } from '../../../../shared/text-utils.js';
 
+// C3RP-16: hard render cap, mirroring the sessions widget's recentLimit —
+// favorites grow unbounded in the archive; the dialog is the browse surface.
+const FAVORITES_RENDER_LIMIT = 50;
 export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
   const root = document.createElement('div');
   root.className = 'widget-sessions';
@@ -17,7 +21,8 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
 
     const favorites = (project?.sessionHistory ?? [])
       .filter((a) => a.bookmarked === true)
-      .sort((a, b) => (b.closedAt ?? b.createdAt).localeCompare(a.closedAt ?? a.createdAt));
+      .sort((a, b) => (b.closedAt ?? b.createdAt).localeCompare(a.closedAt ?? a.createdAt))
+      .slice(0, FAVORITES_RENDER_LIMIT);
 
     if (favorites.length === 0) {
       const empty = document.createElement('div');
@@ -99,7 +104,13 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
     return row;
   }
 
-  const offHistory = appState.on('history-changed', () => render());
+  const offHistory = appState.on('history-changed', (data) => {
+    // Payload is the owning projectId (readiness-widget idiom): a sibling
+    // project's history write must not re-render this widget.
+    const id = typeof data === 'string' ? data : undefined;
+    if (id && id !== host.projectId) return;
+    render();
+  });
 
   render();
 
@@ -113,17 +124,3 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
     },
   };
 };
-
-function formatRelativeDate(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const diffMs = Date.now() - then;
-  const min = Math.floor(diffMs / 60_000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 7) return `${day}d ago`;
-  return new Date(iso).toLocaleDateString();
-}

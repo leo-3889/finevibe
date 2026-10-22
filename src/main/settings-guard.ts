@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { homedir } from 'os';
+import * as fs from 'fs';
 import { ipcMain, BrowserWindow } from 'electron';
 import { getStatusLineScriptPath } from './hook-status';
 import { HOOK_MARKER, installHooksOnly, installStatusLine, getSupportedHookEvents } from './claude-cli';
@@ -27,6 +28,7 @@ function getExpectedHookEvents(): string[] {
 }
 
 function readClaudeSettings(configDir: string = path.join(homedir(), '.claude')): Record<string, unknown> {
+  // pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   return readJsonSafe(path.join(configDir, 'settings.json')) ?? {};
 }
 
@@ -116,6 +118,7 @@ function defaultClaudeDir(): string {
  * always maps to one record no matter how the caller spelled it.
  */
 export function consentDirKey(configDir: string): string {
+  // pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const resolved = path.resolve(configDir).split(path.sep).join('/');
   return isWin ? resolved.toLowerCase() : resolved;
 }
@@ -140,7 +143,14 @@ export function getDirConsent(
   return { consent: record?.consent, command: record?.command };
 }
 
-/** Persist a consent decision for a config dir (global fields for the default dir). */
+/** C3M-05: cap on per-dir consent records (mirrors the C2R-17 cap idiom). */
+const MAX_CONSENT_DIR_RECORDS = 200;
+/**
+ * Persist a consent decision for a config dir (global fields for the default
+ * dir). The per-dir map is pruned of records whose dir no longer exists —
+ * a deleted profile's record can never be read again — and capped FIFO at
+ * MAX_CONSENT_DIR_RECORDS, oldest first (C3M-05).
+ */
 export function recordDirConsent(
   configDir: string | undefined,
   consent: 'granted' | 'declined',
@@ -151,8 +161,18 @@ export function recordDirConsent(
     state.preferences.statusLineConsent = consent;
     state.preferences.statusLineConsentCommand = command;
   } else {
-    const byDir = { ...state.preferences.statusLineConsentByDir };
-    byDir[consentDirKey(configDir!)] = { consent, command };
+    const key = consentDirKey(configDir!);
+    const byDir: NonNullable<Preferences['statusLineConsentByDir']> = {};
+    for (const [dir, record] of Object.entries(state.preferences.statusLineConsentByDir ?? {})) {
+      // recordDirConsent is the map's only write site, so this is where
+      // pruning lives; the key being written survives unconditionally.
+      if (dir !== key && fs.existsSync(dir)) byDir[dir] = record;
+    }
+    byDir[key] = { consent, command };
+    while (Object.keys(byDir).length > MAX_CONSENT_DIR_RECORDS) {
+      const oldest = Object.keys(byDir)[0]!;
+      delete byDir[oldest];
+    }
     state.preferences.statusLineConsentByDir = byDir;
   }
   saveState(state);
@@ -232,23 +252,36 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
 
   const foreignCmd = validation.foreignStatusLineCommand ?? '(unknown)';
   const channel = 'settings:conflictDialogResponse';
-  const choice = await new Promise<'replace' | 'keep'>((resolve) => {
+  // S1-04: a window closed mid-dialog is an explicit dismissal, NOT a
+  // Keep. Resolving 'keep' here recorded `declined` + the foreign command
+  // on quit, which shouldWarnStatusLine then honors forever — the user lost
+  // both prompt surfaces for a decision they never made (directly
+  // contradicting the loading gate's rule above). Dismissal records
+  // nothing; the next launch re-prompts.
+  const choice = await new Promise<'replace' | 'keep' | 'dismissed'>((resolve) => {
     const onResponse = (_event: Electron.IpcMainEvent, c: string) => {
       win.removeListener('closed', onClose);
       resolve(c === 'replace' ? 'replace' : 'keep');
     };
     const onClose = () => {
       ipcMain.removeListener(channel, onResponse);
-      resolve('keep');
+      resolve('dismissed');
     };
     ipcMain.once(channel, onResponse);
     win.once('closed', onClose);
     win.webContents.send('settings:showConflictDialog', { foreignCommand: foreignCmd });
   });
+  if (choice === 'dismissed') return;
 
-  state.preferences.statusLineConsent = choice === 'replace' ? 'granted' : 'declined';
-  state.preferences.statusLineConsentCommand = currentForeign;
-  saveState(state);
+  // S1-02: `state` is the PRE-modal snapshot (line 181) — the modal can
+  // sit open for minutes while the renderer persists sessions/board moves.
+  // Saving the snapshot rolled all of that back. Consent keys only, on a
+  // fresh load (recordDirConsent's shape; the store graft keeps them
+  // immune to the renderer's next whole-state persist).
+  const fresh = loadState();
+  fresh.preferences.statusLineConsent = choice === 'replace' ? 'granted' : 'declined';
+  fresh.preferences.statusLineConsentCommand = currentForeign;
+  saveState(fresh);
 
   if (choice === 'replace') {
     installStatusLine();
@@ -272,8 +305,46 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
  *   onto the current foreign command, mirroring the default-dir flow);
  * - a first-run foreign statusLine gets NO install and NO recorded
  *   decision: no silent overwrite, and the banner keeps asking.
+ *
+ * PA-26 memo: the full validate (settings.json read + hook scan) + install
+ * used to run on EVERY profile-bound spawn. The on-disk outcome is stable
+ * until settings.json changes, so a successful pass is memoized per
+ * normalized dir, keyed on the POST-install settings.json mtime (null =
+ * the file did not exist): a rewritten settings.json re-validates. Consent
+ * changes are safe under the memo — the only consent='granted' writer for a
+ * profile dir is reinstallSettings(), which rewrites settings.json (mtime
+ * bump → memo miss), and declined/undecided dirs install nothing, so a
+ * memo hit replays exactly the no-op the consent state prescribes.
  */
+const profileInstallMemo = new Map<string, number | null>();
+
+/** @internal Test-only: drop the per-spawn install memo. */
+export function resetProfileInstallMemo(): void {
+  profileInstallMemo.clear();
+}
+
+// pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 export function guardedProfileInstall(configDir: string): void {
+  const settingsFile = path.join(configDir, 'settings.json');
+  const key = consentDirKey(configDir);
+  let mtimeMs: number | null;
+  try {
+    mtimeMs = fs.statSync(settingsFile).mtimeMs;
+  } catch {
+    mtimeMs = null; // no settings.json yet
+  }
+  if (profileInstallMemo.has(key) && profileInstallMemo.get(key) === mtimeMs) return;
+  guardedProfileInstallUncached(configDir);
+  // Record the POST-install mtime: the install itself (re)writes
+  // settings.json, so caching the pre-run value would invalidate the memo
+  // on the very next spawn and PA-26 would memo nothing.
+  try {
+    mtimeMs = fs.statSync(settingsFile).mtimeMs;
+  } catch { /* file removed mid-install; next spawn re-validates */ }
+  profileInstallMemo.set(key, mtimeMs);
+}
+
+function guardedProfileInstallUncached(configDir: string): void {
   const validation = validateSettings(configDir);
 
   // Always install hooks (additive, non-destructive)

@@ -1,5 +1,5 @@
 import { appState, MAX_PROJECT_NAME_LENGTH, ProjectRecord } from '../state.js';
-import { showModal, setModalError, closeModal, showConfirmDialog, FieldDef } from './modal.js';
+import { showModal, setModalError, closeModal, showConfirmDialog, FieldDef, registerModalCleanup } from './modal.js';
 import { showPreferencesModal } from './preferences-modal.js';
 import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unread.js';
 import { onChange as onActivityChange, STATUS_GLYPH } from '../session-activity.js';
@@ -95,16 +95,37 @@ export function initSidebar(): void {
     render();
   });
   appState.on('project-changed', render);
-  appState.on('session-added', render);
-  appState.on('session-removed', render);
-  appState.on('layout-changed', render);
+  // S3-05: an add/close moves one row's count pill + status dot. The old
+  // full render() rebuilt the active project's panel — wiping an open Files
+  // tree and evicting every cached directory listing (renderFileTree →
+  // refreshFolderCache). Structural events (project-*) keep the full render
+  // above.
+  appState.on('session-added', onSessionRowsChanged);
+  appState.on('session-removed', onSessionRowsChanged);
+  // C2R-12: layout mode reaches nothing in the project list, and this render
+  // is far from free — it rebuilds the active panel, wiping the Files tree and
+  // re-reading the root. split-layout owns `layout-changed`.
   // The badge tracks the project's *current* coding tool, which moves whenever
   // the active tab changes. `session-changed` deliberately does not re-render
   // the sidebar (it fires constantly), so patch the one node instead.
   appState.on('session-changed', syncProfileBadge);
+  // CI-06: the same event is the batch closes' trailing render kick; flush the
+  // row refreshes the deferred `session-removed` events skipped.
+  appState.on('session-changed', flushDeferredRows);
   appState.on('readiness-changed', render);
 
-  onUnreadChange(render);
+  // PA-11: an unread transition only flips the project name's accent class;
+  // rebuilding the list would throw away the rename input, scroll, and panel
+  // state. Full render only when the rows no longer mirror the model.
+  onUnreadChange(() => {
+    const rows = Array.from(projectListEl.querySelectorAll<HTMLElement>('.project-item[data-project-id]'));
+    if (rows.length !== appState.projects.length) { render(); return; }
+    for (const row of rows) {
+      const name = row.querySelector<HTMLElement>('.project-name');
+      if (!name) { render(); return; }
+      name.classList.toggle('unread', hasUnreadInProject(row.dataset.projectId!));
+    }
+  });
   // Keep the active project's Git tab badge in sync. Surgical when the button is
   // already present; a full render only when repo-ness first becomes known (the
   // button needs to appear/disappear).
@@ -145,8 +166,9 @@ export function initSidebar(): void {
   // visibility/label on the active card.
   appState.on('profiles-changed', render);
 
-  document.addEventListener('click', hideTabContextMenu);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTabContextMenu(); });
+  // SR2-f: the document click/Escape → hideTabContextMenu pair lives in
+  // initTabBar() (tab-bar/index.ts), which the renderer always runs
+  // alongside this one; the duplicate pair registered here double-fired.
 
   render();
 }
@@ -238,6 +260,70 @@ function syncProfileBadge(): void {
   );
 }
 
+// CI-06: batch closes (removeAllSessions / Close All) mark every per-session
+// `session-removed` `deferRender` and end with one trailing `session-changed`
+// kick. The projects the batch touched are remembered here and refreshed once
+// by that kick; the old path ran the full render() once per removal.
+const deferredRowProjects = new Set<string>();
+
+/**
+ * S3-05: surgical session-row patch. Only two nodes change when a session
+ * is added or closed in a project that already has a row: the session-count
+ * pill and (for inactive rows) the aggregate status dot — the same idiom as
+ * the syncProfileBadge/onActivityChange patches. Anything the patch cannot
+ * express (unknown project, missing row, open Sessions panel whose archive
+ * list just gained a row) falls back to the full render.
+ */
+function onSessionRowsChanged(data?: unknown): void {
+  const payload = data as { projectId?: string; deferRender?: boolean } | undefined;
+  if (payload?.deferRender) {
+    if (payload.projectId) deferredRowProjects.add(payload.projectId);
+    return;
+  }
+  const project = appState.projects.find((p) => p.id === payload?.projectId);
+  const row = project
+    ? projectListEl.querySelector<HTMLElement>(`.project-item[data-project-id="${project.id}"]`)
+    : null;
+  if (!project || !row) { render(); return; }
+  if (project.id === appState.activeProjectId && projectPanelOpen.get(project.id) === 'history') {
+    render();
+    return;
+  }
+  patchSessionRow(project, row);
+}
+
+/** The batch's trailing kick repaints every project the batch touched, once. */
+function flushDeferredRows(data?: unknown): void {
+  if ((data as { deferRender?: boolean } | undefined)?.deferRender) return;
+  if (deferredRowProjects.size === 0) return;
+  const ids = [...deferredRowProjects];
+  deferredRowProjects.clear();
+  for (const projectId of ids) onSessionRowsChanged({ projectId });
+}
+
+function patchSessionRow(project: ProjectRecord, row: HTMLElement): void {
+  const count = project.sessions.length;
+  let pill = row.querySelector<HTMLElement>('.project-session-count');
+  if (count > 0) {
+    if (!pill) {
+      pill = document.createElement('span');
+      pill.className = 'project-session-count';
+      row.insertBefore(pill, row.querySelector('.project-delete'));
+    }
+    pill.textContent = String(count);
+  } else if (pill) {
+    pill.remove();
+  }
+  // The active row leads with the avatar (no dot); inactive rows carry the
+  // aggregate dot — mirroring the onActivityChange patch's write shape.
+  const dot = row.querySelector<HTMLElement>('.project-status');
+  if (dot) {
+    const status = getProjectStatus(project);
+    dot.className = `project-status ${status}`;
+    dot.textContent = STATUS_GLYPH[status];
+  }
+}
+
 function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: RenderOpts): HTMLElement {
   const { fileTreeEnabled, historyEnabled, gitEnabled } = opts;
 
@@ -263,6 +349,7 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   // Content is filled in below from DOM nodes, never interpolated here.
   const profileBadge =
     `<span class="project-profile-badge" title="${esc(t('sidebar.profileTooltip'))}"></span>`;
+  // pi-lens-ignore: xss-innerhtml
   el.innerHTML = `
     ${lead}
     <div class="project-main">
@@ -451,6 +538,7 @@ function buildProjectActions(
 function makeActionButton(label: string, iconSvg: string, active: boolean, hint?: string): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
+  // pi-lens-ignore: xss-innerhtml
   btn.className = 'project-action-btn' + (active ? ' active' : '');
   btn.innerHTML = `<span class="action-icon" aria-hidden="true">${iconSvg}</span><span class="action-label">${esc(label)}</span>`;
   attachHoverCard(btn, hint ?? label);
@@ -520,7 +608,14 @@ export function promptNewProject(): void {
     });
   }
   showModal(t('sidebar.newProject.title'), fields, async (values) => {
+    // SR2-b: the modal's Enter keydown fires the confirm handler even with
+    // the button disabled, so a re-trigger can land between ANY of this
+    // handler's awaits (expandPath, browseDirectory, cloneRepo). The guard
+    // arms synchronously at entry — the one point before any await — and
+    // disarms in the handler's finally, covering the plain path too.
     if (cloning) return;
+    cloning = true;
+    try {
     const name = values['project-name']?.trim();
     const rawPath = values['project-path']?.trim();
     if (!rawPath) return;
@@ -554,24 +649,30 @@ export function promptNewProject(): void {
     );
 
     // Clone is the slow step: the confirm button carries the progress state
-    // and the busy guard swallows Enter/click re-triggers while it runs.
+    // while it runs (the busy guard armed at entry swallows re-triggers).
     const confirmBtn = document.getElementById('modal-confirm') as HTMLButtonElement | null;
-    if (confirmBtn) {
-      confirmBtn.textContent = t('sidebar.newProject.cloning');
-      confirmBtn.disabled = true;
-    }
-    const res = await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
-    cloning = false;
-    if (confirmBtn) {
-      confirmBtn.disabled = false;
-      confirmBtn.textContent = t('sidebar.newProject.checkoutAndCreate');
+    let res: { ok: boolean; error?: string } | undefined;
+    try {
+      if (confirmBtn) {
+        confirmBtn.textContent = t('sidebar.newProject.cloning');
+        confirmBtn.disabled = true;
+      }
+      res = await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
+    } finally {
+      if (confirmBtn) {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = t('sidebar.newProject.checkoutAndCreate');
+      }
     }
     if (!res?.ok) {
       setModalError('project-path', t('sidebar.newProject.cloneFailed') + (res?.error ? `: ${res.error}` : ''));
       return;
     }
-    closeModal();
-    appState.addProject(projectName, targetPath, values['profile'] || undefined);
+      closeModal();
+      appState.addProject(projectName, targetPath, values['profile'] || undefined);
+    } finally {
+      cloning = false;
+    }
   });
 
   // The confirm label is swapped in place while a URL owns the path field —
@@ -643,7 +744,12 @@ export function promptNewProject(): void {
       dropdown.classList.add('visible');
     };
 
-    pathInput.addEventListener('input', async () => {
+    // SR2-c: one fs.listDirs burst per ~100ms of typing, and a generation
+    // counter so a slow reply for an old prefix can never overwrite the
+    // suggestions (or the dropdown) the current prefix already earned.
+    let suggestSeq = 0;
+    let suggestTimer: ReturnType<typeof setTimeout> | null = null;
+    pathInput.addEventListener('input', () => {
       pathManuallyEdited = true;
       const value = pathInput.value;
       const checkout = detectGitCheckoutUrl(value);
@@ -652,18 +758,38 @@ export function promptNewProject(): void {
         // The URL owns the field: name from the repo, and no path
         // autocomplete — a URL's dirPart is not a filesystem path to enumerate.
         if (nameInput && !nameManuallyEdited) nameInput.value = checkout.repoName;
+        suggestSeq++;
+        if (suggestTimer !== null) { clearTimeout(suggestTimer); suggestTimer = null; }
         hideDropdown();
         return;
       }
       autoFillName(value);
       const lastSlash = lastSeparatorIndex(value);
-      if (lastSlash === -1) { hideDropdown(); return; }
+      if (lastSlash === -1) {
+        suggestSeq++;
+        if (suggestTimer !== null) { clearTimeout(suggestTimer); suggestTimer = null; }
+        hideDropdown();
+        return;
+      }
 
       const dirPart = value.substring(0, lastSlash + 1);
       const namePart = value.substring(lastSlash + 1).toLowerCase();
+      const seq = ++suggestSeq;
+      if (suggestTimer !== null) clearTimeout(suggestTimer);
+      suggestTimer = setTimeout(() => {
+        suggestTimer = null;
+        window.finevibe.fs.listDirs(dirPart, namePart || undefined)
+          .then((dirs) => { if (seq === suggestSeq) showSuggestions(dirs, dirPart); })
+          .catch(() => {});
+      }, 100);
+    });
 
-      const dirs = await window.finevibe.fs.listDirs(dirPart, namePart || undefined);
-      showSuggestions(dirs, dirPart);
+    // C2R-11: the 100 ms debounce outlives the modal otherwise, and one stale
+    // fs.listDirs reply paints a dropdown on a detached field.
+    // registerModalCleanup runs on every close funnel (Esc, Cancel, Create).
+    registerModalCleanup(() => {
+      suggestSeq++;
+      if (suggestTimer !== null) { clearTimeout(suggestTimer); suggestTimer = null; }
     });
 
     pathInput.addEventListener('keydown', (e) => {
@@ -913,6 +1039,7 @@ function renderDiscussions(): void {
   // inline badge is shown only when expanded (text visible). CSS picks one per mode.
   const dot = count > 0 ? '<span class="discussions-icon-dot"></span>' : '';
   const inlineBadge = count > 0 ? ` <span class="discussions-badge">${count}</span>` : '';
+  // pi-lens-ignore: xss-innerhtml
   sidebarDiscussionsEl.title = t('sidebar.discussions.tooltip');
   sidebarDiscussionsEl.innerHTML =
     `<span class="action-icon" aria-hidden="true">${ICON_DISCUSSIONS}${dot}</span>` +

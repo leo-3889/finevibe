@@ -14,6 +14,8 @@ export function showTopFilesSettings(
   onSave: (patch: Partial<TopFilesConfig>) => void,
 ): void {
   const shell = createModalShell({ id: 'top-files-settings-modal', title: 'Top Files Settings' });
+  shell.body.innerHTML = '';
+  shell.actions.innerHTML = '';
 
   const { limit: currentLimit } = resolveTopFilesConfig(widget.config as Partial<TopFilesConfig> | undefined);
 

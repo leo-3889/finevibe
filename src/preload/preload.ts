@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus, AgentmemoryLog } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -22,7 +22,6 @@ export interface FineVibeApi {
   session: {
     buildResumeWithPrompt(sourceProviderId: ProviderId, sourceCliSessionId: string | null, projectPath: string, sessionName: string, configDir?: string, liveSessionId?: string): Promise<string>;
     transcriptExists(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): Promise<boolean>;
-    transcriptExistsSync(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string): boolean;
     /** Save-dialog backup of one session. `zip`: meta.json + provider transcript + sidecars; `file`: the transcript verbatim. Returns the written path or null when canceled. */
     exportArchive(providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file'): Promise<string | null>;
     deepSearch(query: string): Promise<DeepSearchResult[]>;
@@ -60,6 +59,8 @@ export interface FineVibeApi {
   store: {
     load(): Promise<unknown>;
     save(state: unknown): Promise<void>;
+    /** Quit-path synchronous flush (sendSync; true only when main wrote the state). */
+    saveSync(state: unknown): boolean;
     startupPrefs(): StartupPrefs;
   };
   profiles: {
@@ -112,6 +113,8 @@ export interface FineVibeApi {
   agentmemory: {
     status(): Promise<AgentmemoryStatus>;
     start(): Promise<AgentmemoryStatus>;
+    /** Tail of the daemon console log file (see main/agentmemory-manager.ts). */
+    log(): Promise<AgentmemoryLog>;
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
@@ -170,9 +173,6 @@ export interface FineVibeApi {
     onNewProject(callback: () => void): () => void;
     onNewSession(callback: () => void): () => void;
     onToggleSplit(callback: () => void): () => void;
-    onNextSession(callback: () => void): () => void;
-    onPrevSession(callback: () => void): () => void;
-    onGotoSession(callback: (index: number) => void): () => void;
     onToggleDebug(callback: () => void): () => void;
     onToggleInspector(callback: () => void): () => void;
     onCloseSession(callback: () => void): () => void;
@@ -211,8 +211,6 @@ const api: FineVibeApi = {
       ipcRenderer.invoke('session:buildResumeWithPrompt', sourceProviderId, sourceCliSessionId, projectPath, sessionName, configDir, liveSessionId),
     transcriptExists: (providerId, cliSessionId, projectPath, configDir, liveSessionId) =>
       ipcRenderer.invoke('session:transcriptExists', providerId, cliSessionId, projectPath, configDir, liveSessionId),
-    transcriptExistsSync: (providerId, cliSessionId, projectPath, configDir, liveSessionId) =>
-      ipcRenderer.sendSync('session:transcriptExistsSync', providerId, cliSessionId, projectPath, configDir, liveSessionId),
     exportArchive: (providerId, cliSessionId, projectPath, configDir, meta, format) =>
       ipcRenderer.invoke('session:exportArchive', providerId, cliSessionId, projectPath, configDir, meta, format),
     cancelDeepSearch: () => ipcRenderer.send('session:cancelDeepSearch'),
@@ -272,6 +270,9 @@ const api: FineVibeApi = {
   store: {
     load: () => ipcRenderer.invoke('store:load'),
     save: (state) => ipcRenderer.invoke('store:save', state),
+    // S1-03: beforeunload flush must reach disk before the window tears
+    // down — sendSync blocks the renderer until the write is on disk.
+    saveSync: (state) => ipcRenderer.sendSync('store:save-sync', state) === true,
     // Sync round-trip: the renderer needs theme/zoom before its first paint,
     // which is earlier than any invoke promise can resolve.
     startupPrefs: () => ipcRenderer.sendSync('store:startup-prefs'),
@@ -316,6 +317,7 @@ const api: FineVibeApi = {
   agentmemory: {
     status: () => ipcRenderer.invoke('agentmemory:status'),
     start: () => ipcRenderer.invoke('agentmemory:start'),
+    log: () => ipcRenderer.invoke('agentmemory:log'),
   },
   browser: {
     saveScreenshot: (sessionId: string, dataUrl: string) =>
@@ -377,9 +379,6 @@ const api: FineVibeApi = {
     onNewProject: (cb) => onChannel('menu:new-project', cb),
     onNewSession: (cb) => onChannel('menu:new-session', cb),
     onToggleSplit: (cb) => onChannel('menu:toggle-split', cb),
-    onNextSession: (cb) => onChannel('menu:next-session', cb),
-    onPrevSession: (cb) => onChannel('menu:prev-session', cb),
-    onGotoSession: (cb) => onChannel('menu:goto-session', (index) => cb(index as number)),
     onToggleDebug: (cb) => onChannel('menu:toggle-debug', cb),
     onToggleInspector: (cb) => onChannel('menu:toggle-inspector', cb),
     onCloseSession: (cb) => onChannel('menu:close-session', cb),

@@ -12,6 +12,11 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
   let profileDefaultSelects: CustomSelectInstance[] = [];
   // Cached keychain-isolation status (macOS), fetched once per render and reused
   // by the Add Profile guard so it doesn't re-probe the keychain via IPC.
+  // SR2-b sibling (C3RP-10): the modal's Enter keydown re-fires the confirm
+  // handler even with the button disabled, so N re-triggers while the
+  // keychain probe / addProfile await would spawn N provisions. The guard
+  // arms synchronously at handler entry and disarms in the handler's finally.
+  let provisioningProfile = false;
   let cachedKeychainStatus: Awaited<ReturnType<typeof window.finevibe.profiles.keychainStatus>> | null = null;
 
   function render(container: HTMLElement) {
@@ -196,6 +201,9 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       { label: t('profiles.addPathLabel'), id: 'profile-path', placeholder: t('profiles.addPathPlaceholder') },
     ];
     showModal(t('profiles.addModalTitle'), fields, async (values) => {
+      if (provisioningProfile) return;
+      provisioningProfile = true;
+      try {
       const name = values['profile-name']?.trim();
       if (!name) { setModalError('profile-name', t('profiles.nameRequired')); return; }
       const providerId = (values['profile-provider'] || 'claude') as ProviderId;
@@ -218,6 +226,9 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       }
       closeModal();
       ctx.rerenderSection('profiles');
+      } finally {
+        provisioningProfile = false;
+      }
     });
   }
 

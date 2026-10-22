@@ -4,6 +4,10 @@ import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
 import { normalizeTabGroups } from './tab-group-state.js';
 
+// PA-31 (docs/performance.md growth table "age-prune"): githubLastSeen gains
+// one entry per viewed PR/issue, forever. Drop entries older than 90 days at load.
+const GITHUB_SEEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
 export function createDefaultBoard(): BoardData {
   const columns: BoardColumn[] = [
     { id: crypto.randomUUID(), title: 'Backlog', order: 0, behavior: 'inbox' },
@@ -42,7 +46,15 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
     }
     delete (state.preferences as { defaultProfileId?: string }).defaultProfileId;
   }
+  // One clock for the whole hydrate: every project shares the PA-31 cutoff.
+  const now = Date.now();
   for (const project of state.projects) {
+    // C5R-01: remote-terminal tabs exist only inside a live share — the pane
+    // instance is created by share-manager and split-layout skips creating
+    // one for this type at hydration, so a resurrected session renders a
+    // blank dead-end tab on every restart. Drop it at load; rejoining a
+    // share goes through a fresh connection code.
+    project.sessions = project.sessions.filter((s) => s.type !== 'remote-terminal');
     for (const session of project.sessions) {
       if (session.cost) restoreCost(session.id, session.cost);
       if (session.contextWindow) restoreContext(session.id, session.contextWindow);
@@ -57,10 +69,29 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
         if (!entry.state) entry.state = 'closed';
         // An 'active' entry whose live session did not survive the last quit
         // (crash / hard kill skipped removeSession): finalize it on load.
+        // PA-06: finalizing crash-orphans also makes them cap-eligible —
+        // enforceHistoryCap no longer exempts active rows without a live tab.
         if (entry.state === 'active' && !liveIds.has(entry.liveSessionId ?? '')) {
           entry.state = 'closed';
           entry.closedAt = entry.closedAt ?? new Date().toISOString();
         }
+      }
+    }
+    // PA-31: age-prune githubLastSeen (see GITHUB_SEEN_RETENTION_MS). An
+    // unparseable timestamp cannot be aged and is useless to the unread
+    // logic, so drop it too (non-string values guarded; Date.parse never throws).
+    const seen = project.githubLastSeen;
+    if (seen) {
+      const cutoff = now - GITHUB_SEEN_RETENTION_MS;
+      const drop: string[] = [];
+      for (const [key, ts] of Object.entries(seen)) {
+        const time = typeof ts === 'string' ? Date.parse(ts) : NaN;
+        if (Number.isNaN(time) || time < cutoff) drop.push(key);
+      }
+      if (drop.length) {
+        for (const key of drop) delete seen[key];
+        // Drop the empty map so serializeForSave does not write `{}` per project.
+        if (Object.keys(seen).length === 0) delete project.githubLastSeen;
       }
     }
   }
@@ -91,6 +122,15 @@ export function ensureProjectDefaults(state: PersistedState): void {
 }
 
 /**
+ * C4TM-07: the predefined-suggestion corpus (full prompt bodies, hundreds
+ * of KiB) is a picker convenience, not user data. It must not live in
+ * state.json forever: the persist path drops it once stale and caps the
+ * array. The live in-memory cache keeps its session-lifetime picker use.
+ */
+export const PREDEFINED_CACHE_PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS = 200;
+
+/**
  * Strip fields that must never reach disk:
  * - transient in-flight prompts;
  * - per-session `envVars` (P2-101): the New-session box takes raw
@@ -109,11 +149,28 @@ export function ensureProjectDefaults(state: PersistedState): void {
  * lifetime (spawn, split-layout resume wiring reads the live object).
  */
 export function serializeForSave(state: PersistedState): PersistedState {
-  return {
+  const out: PersistedState = {
     ...state,
     projects: state.projects.map((p: ProjectRecord) => ({
       ...p,
       sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, envVars, ...rest }: SessionRecord) => rest as SessionRecord),
     })),
   };
+  const cache = state.team?.predefinedCache;
+  if (cache) {
+    const team = { ...state.team! };
+    // The picker treats a cache older than its 1 h fresh window as dead, so
+    // a persisted one only ever serves the session that fetched it; 24 h is
+    // the generous outer bound. An oversized corpus is truncated to the cap.
+    if (Date.now() - cache.fetchedAt > PREDEFINED_CACHE_PERSIST_MAX_AGE_MS) {
+      delete team.predefinedCache;
+    } else if (cache.suggestions.length > PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS) {
+      team.predefinedCache = {
+        ...cache,
+        suggestions: cache.suggestions.slice(0, PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS),
+      };
+    }
+    out.team = team;
+  }
+  return out;
 }

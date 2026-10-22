@@ -16,6 +16,7 @@ const modalMock = vi.hoisted(() => {
       state.onConfirm = onConfirm;
       const body = document.getElementById('modal-body')!;
       body.innerHTML = '';
+      state.cleanups.length = 0;
       for (const f of fields) {
         const input = document.createElement('input');
         input.id = `modal-${f.id}`;
@@ -28,7 +29,14 @@ const modalMock = vi.hoisted(() => {
       confirm.disabled = false;
     }),
     setModalError: vi.fn(),
-    closeModal: vi.fn(),
+    // C2R-11: the sidebar registers a suggest-debounce teardown through
+    // registerModalCleanup; the mini-modal runs the callbacks on close, the
+    // same funnel as the real modal's cleanup().
+    cleanups: [] as Array<() => void>,
+    registerModalCleanup: vi.fn((fn: () => void) => { state.cleanups.push(fn); }),
+    closeModal: vi.fn(() => {
+      for (const fn of state.cleanups.splice(0, state.cleanups.length)) fn();
+    }),
     showConfirmDialog: vi.fn(),
   };
   return state;
@@ -39,7 +47,9 @@ vi.mock('./modal.js', () => ({
   setModalError: modalMock.setModalError,
   closeModal: modalMock.closeModal,
   showConfirmDialog: modalMock.showConfirmDialog,
+  registerModalCleanup: modalMock.registerModalCleanup,
 }));
+
 vi.mock('../provider-availability.js', () => ({
   loadProviderMetas: vi.fn(async () => {}),
   loadProviderAvailability: vi.fn(async () => {}),
@@ -53,7 +63,7 @@ vi.mock('../provider-availability.js', () => ({
   getProviderDisplayName: vi.fn((id: string) => id),
 }));
 vi.mock('./preferences-modal.js', () => ({ showPreferencesModal: vi.fn() }));
-vi.mock('./file-tree.js', () => ({ renderFileTree: vi.fn(), clearProjectState: vi.fn(), closeFileTree: vi.fn() }));
+vi.mock('./file-tree.js', () => ({ renderFileTree: vi.fn(), clearProjectState: vi.fn(), closeFileTree: vi.fn(), FILE_MANAGER: 'Files' }));
 vi.mock('./session-history.js', () => ({ renderSessionHistory: vi.fn(), closeSessionHistory: vi.fn(), clearProjectState: vi.fn() }));
 vi.mock('./hover-card.js', () => ({ attachHoverCard: vi.fn() }));
 vi.mock('./git-panel.js', () => ({ mountGitPanel: vi.fn(), closeGitPanel: vi.fn() }));
@@ -267,5 +277,130 @@ describe('Add-project checkout-and-create flow', () => {
     await modalMock.onConfirm!({ 'project-name': 'demo', 'project-path': '/home/u/gone', profile: '' });
     expect(modalMock.setModalError).toHaveBeenCalledWith('project-path', expect.stringContaining('Directory does not exist'));
     expect(addProject).not.toHaveBeenCalled();
+  });
+});
+
+describe('Add-project clone busy guard (SR2-b)', () => {
+  const values = (url: string) => ({ 'project-name': 'repo', 'project-path': url, profile: '' });
+
+  it('swallows a re-confirm while a clone is in flight', async () => {
+    // The modal's Enter keydown fires the confirm handler even with the
+    // button disabled; the `cloning` guard must be armed before the first
+    // await so the second trigger never reaches fs.cloneRepo.
+    const { promptNewProject, addProject } = await setup('/home/u/projects');
+    let resolveClone: (v: { ok: boolean }) => void = () => {};
+    fsStub.cloneRepo.mockImplementationOnce(() => new Promise((r) => { resolveClone = r; }));
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = URL_HTTPS;
+    pathInput.dispatchEvent(new Event('input'));
+    const first = modalMock.onConfirm!(values(URL_HTTPS));
+    await modalMock.onConfirm!(values(URL_HTTPS));
+    expect(fsStub.cloneRepo).toHaveBeenCalledTimes(1);
+    resolveClone({ ok: true });
+    await first;
+    expect(fsStub.cloneRepo).toHaveBeenCalledTimes(1);
+    expect(addProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('disarms after a failed clone so a retry can start', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    fsStub.cloneRepo.mockResolvedValueOnce({ ok: false, error: 'boom' });
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = URL_HTTPS;
+    pathInput.dispatchEvent(new Event('input'));
+    await modalMock.onConfirm!(values(URL_HTTPS));
+    expect(fsStub.cloneRepo).toHaveBeenCalledTimes(1);
+    await modalMock.onConfirm!(values(URL_HTTPS));
+    expect(fsStub.cloneRepo).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('session-row surgical patch (S3-05)', () => {
+  it('patches the count pill in place on close; the open Files panel survives', async () => {
+    vi.resetModules();
+    stubDom();
+    const { appState } = await import('../state.js');
+    const fileTree = await import('./file-tree.js');
+    const { initSidebar } = await import('./sidebar.js');
+    initSidebar();
+    const p = appState.addProject('P', '/p');
+    appState.setActiveProject(p.id);
+    appState.addSession(p.id, 'S1');
+    appState.addSession(p.id, 'S2');
+
+    const filesBtn = Array.from(document.querySelectorAll('.project-action-btn'))
+      .find((b) => b.querySelector('.action-label')?.textContent === 'Files') as HTMLButtonElement;
+    filesBtn.click();
+    const renderFileTreeMock = fileTree.renderFileTree as Mock;
+    expect(renderFileTreeMock).toHaveBeenCalledTimes(1);
+    const panel = document.querySelector('.project-panel-files');
+    expect(panel).not.toBeNull();
+    renderFileTreeMock.mockClear();
+
+    appState.removeSession(p.id, appState.activeProject!.sessions[1].id);
+
+    // The tree module was never re-entered: no panel wipe, no cache eviction.
+    expect(renderFileTreeMock).not.toHaveBeenCalled();
+    expect(document.querySelector('.project-panel-files')).toBe(panel);
+    // The row's pill moved 2 → 1 in place.
+    expect(document.querySelector('.project-item.active .project-session-count')!.textContent).toBe('1');
+  });
+});
+
+describe('session-row batch-close gate (CI-06)', () => {
+  it('defers the row refresh for batched removals and flushes it on the kick', async () => {
+    vi.resetModules();
+    stubDom();
+    const { appState } = await import('../state.js');
+    const { initSidebar } = await import('./sidebar.js');
+    initSidebar();
+    const p = appState.addProject('P', '/p');
+    appState.setActiveProject(p.id);
+    appState.addSession(p.id, 'S1');
+    appState.addSession(p.id, 'S2');
+
+    const row = document.querySelector('.project-item.active')!;
+    const pill = row.querySelector('.project-session-count')!;
+    expect(pill.textContent).toBe('2');
+
+    // Close All marks every per-session removal `deferRender`. The old handler
+    // ignored the flag and ran the full render() once per removal — wiping the
+    // row nodes N times for one batch.
+    appState.removeSession(p.id, appState.activeProject!.sessions[1].id, { deferRender: true });
+    expect(document.querySelector('.project-item.active')).toBe(row);
+    expect(pill.textContent).toBe('2');
+
+    // The batch's trailing kick (a session-changed without deferRender)
+    // repaints the touched project once.
+    (appState as unknown as { emit(e: string, d?: unknown): void }).emit('session-changed', {
+      sessionId: 'kick', kind: 'remove',
+    });
+    expect(document.querySelector('.project-item.active .project-session-count')!.textContent).toBe('1');
+  });
+});
+
+describe('Add-project path autocomplete teardown (C2R-11)', () => {
+  it('cancels the pending fs.listDirs burst when the modal closes', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = '/home/u/projects/de';
+
+    vi.useFakeTimers();
+    try {
+      pathInput.dispatchEvent(new Event('input'));
+      vi.advanceTimersByTime(50); // inside the 100 ms debounce window
+      expect(fsStub.listDirs).not.toHaveBeenCalled();
+
+      // Esc / Cancel / Create all funnel through closeModal; the in-flight
+      // debounce used to survive it and paint a detached dropdown.
+      modalMock.closeModal();
+      vi.advanceTimersByTime(500);
+      expect(fsStub.listDirs).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

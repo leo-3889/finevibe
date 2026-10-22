@@ -38,11 +38,27 @@ export function launchSessionBaseDir(providerId: LaunchSessionProvider): string 
  * The exclusive per-launch session dir for one UI session. Unsafe id
  * characters are sanitized (never thrown — a weird id must not break a
  * spawn); the result is always inside the provider's base dir.
+ *
+ * S1-10: a bare sanitizer collapse is not injective — 'a:b' and 'a/b'
+ * both map to 'a_b', and two concurrent sessions with colliding spellings
+ * would share one "exclusive" dir (interleaved transcripts, crossed watcher
+ * attribution, prune treating them as one). A rewritten id carries an
+ * FNV-1a hash of the raw id; app-generated uuid ids match the regex and
+ * keep their historical spelling.
  */
+function fnv1aHex(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId: string): string {
   const safe = UI_SESSION_ID_RE.test(uiSessionId)
     ? uiSessionId
-    : (uiSessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 128) || 'session');
+    : `${uiSessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 119)}-${fnv1aHex(uiSessionId)}` || 'session';
   return path.join(launchSessionBaseDir(providerId), safe);
 }
 
@@ -54,8 +70,12 @@ export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId:
  */
 export const LAUNCH_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Upper bound on dirs examined per prune pass, so startup never stalls on a huge tree. */
-const PRUNE_SCAN_LIMIT = 2_000;
+/** Upper bound on dirs examined per prune pass. scout-2: a candidate costs
+ * ~5-6 sync syscalls (lstat + sidecar read + transcript readdir + per-jsonl
+ * lstat), so the cap is sized for a bounded sweep, not the whole tree —
+ * expired dirs beyond it converge over consecutive launches (documented
+ * below). */
+const PRUNE_SCAN_LIMIT = 200;
 
 let pruneScanLimit = PRUNE_SCAN_LIMIT;
 
@@ -84,11 +104,18 @@ export function ensureLaunchSessionDir(sessionDir: string): void {
 function pruneLaunchSessionDirsOnce(base: string): void {
   if (prunedBases.has(base)) return;
   prunedBases.add(base);
-  try {
-    pruneLaunchSessionDirs(base);
-  } catch {
-    // Retention is best-effort; a failed sweep costs disk, never a launch.
-  }
+  // scout-2 P2: the prune used to run SYNCHRONOUSLY on the spawn path — at
+  // the scan bound that is thousands of sync syscalls between the user
+  // pressing Enter and the CLI spawning. Retention is best-effort and the
+  // spawn path is not; defer to the next macrotask, off the spawn, and
+  // keep the sweep bounded (PRUNE_SCAN_LIMIT).
+  setImmediate(() => {
+    try {
+      pruneLaunchSessionDirs(base);
+    } catch {
+      // Retention is best-effort; a failed sweep costs disk, never a launch.
+    }
+  });
 }
 
 /**
@@ -191,6 +218,27 @@ function newestTranscriptMtime(dir: string): number {
   return newest;
 }
 
+/** Async twin of newestTranscriptMtime() for the per-search listing (PA-19). */
+async function newestTranscriptMtimeAsync(dir: string): Promise<number> {
+  let newest = 0;
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue;
+    try {
+      const st = await fs.promises.lstat(path.join(dir, name));
+      if (st.isFile() && st.mtimeMs > newest) newest = st.mtimeMs;
+    } catch {
+      // Vanished between readdir and stat.
+    }
+  }
+  return newest;
+}
+
 export interface LaunchSessionMeta {
   providerId: LaunchSessionProvider;
   /** Project cwd the launch ran in. */
@@ -217,47 +265,108 @@ export function writeLaunchSessionMeta(sessionDir: string, meta: LaunchSessionMe
 export function readLaunchSessionMeta(sessionDir: string): LaunchSessionMeta | null {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(sessionDir, META_FILENAME), 'utf-8'));
-    if (typeof raw?.cwd !== 'string' || !raw.cwd) return null;
-    return {
-      providerId: raw.providerId === 'omp' ? 'omp' : 'pi',
-      cwd: raw.cwd,
-      configDir: typeof raw.configDir === 'string' && raw.configDir ? raw.configDir : undefined,
-      createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date(0).toISOString(),
-    };
+    return normalizeMeta(raw);
   } catch {
     return null;
   }
 }
 
+function normalizeMeta(raw: unknown): LaunchSessionMeta | null {
+  if (typeof (raw as LaunchSessionMeta)?.cwd !== 'string' || !(raw as LaunchSessionMeta).cwd) return null;
+  const r = raw as Record<string, unknown>;
+  return {
+    providerId: r.providerId === 'omp' ? 'omp' : 'pi',
+    cwd: r.cwd as string,
+    configDir: typeof r.configDir === 'string' && r.configDir ? r.configDir : undefined,
+    createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date(0).toISOString(),
+  };
+}
+
+// PA-19: the sidecar is written once at launch, but pi/OMP discovery used to
+// readFileSync it per retained dir per search. Memoize per dir keyed by the
+// dir's mtime: the listing already lstats every dir for the retention window,
+// so a re-read costs one tuple compare. Any write into the dir (sidecar,
+// transcript) bumps its mtime and conservatively invalidates the entry.
+const metaCache = new Map<string, { dirMtimeMs: number; meta: LaunchSessionMeta | null }>();
+const META_CACHE_MAX = 4000;
+
 /**
- * Per-launch session dirs under `base` that are inside the retention window.
+ * Async, memoized sidecar read for global search. `dirMtimeMs` — the lstat
+ * mtime the caller already paid for — is the cache key; stat is the fallback.
+ */
+export async function readLaunchSessionMetaCached(sessionDir: string, dirMtimeMs?: number): Promise<LaunchSessionMeta | null> {
+  let mtimeMs = dirMtimeMs;
+  if (mtimeMs === undefined) {
+    try {
+      mtimeMs = (await fs.promises.stat(sessionDir)).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+  const hit = metaCache.get(sessionDir);
+  if (hit && hit.dirMtimeMs === mtimeMs) {
+    // S1-09: re-insert on hit — the eviction below drops the oldest
+    // INSERTION, so without this the hottest dirs (recent launches,
+    // scanned by every search) are evicted first at saturation.
+    metaCache.delete(sessionDir);
+    metaCache.set(sessionDir, hit);
+    return hit.meta;
+  }
+  let meta: LaunchSessionMeta | null = null;
+  try {
+    meta = normalizeMeta(JSON.parse(await fs.promises.readFile(path.join(sessionDir, META_FILENAME), 'utf-8')));
+  } catch {
+    meta = null;
+  }
+  if (metaCache.size >= META_CACHE_MAX) {
+    const oldest = metaCache.keys().next().value;
+    if (oldest !== undefined) metaCache.delete(oldest);
+  }
+  metaCache.set(sessionDir, { dirMtimeMs: mtimeMs, meta });
+  return meta;
+}
+
+/**
+ * Per-launch session dirs under `base` that are inside the retention window,
+ * with the lstat mtime the retention gate already paid for (the meta cache
+ * key, PA-19).
  *
  * Runs on every global session search, so dirs with no recent activity are
  * filtered here by the same rule pruneLaunchSessionDirs() deletes on: their
  * transcripts are all older than the window, so search could only surface
  * entries retention is about to remove — while paying a stat per dir for
- * thousands of them.
+ * thousands of them. All fs calls are async (PA-19): the old readdirSync +
+ * lstatSync sweep blocked main for hundreds of ms per query.
  */
-export function listLaunchSessionDirs(base: string, maxAgeMs = LAUNCH_SESSION_RETENTION_MS): string[] {
+export async function listLaunchSessionDirs(base: string, maxAgeMs = LAUNCH_SESSION_RETENTION_MS): Promise<Array<{ dir: string; mtimeMs: number }>> {
   let names: string[];
   try {
-    names = fs.readdirSync(base);
+    names = await fs.promises.readdir(base);
   } catch {
     return [];
   }
   const cutoff = Date.now() - maxAgeMs;
-  const out: string[] = [];
-  for (const name of names) {
-    const dir = path.join(base, name);
-    try {
-      // lstat, not stat: a symlink in the search path is never followed.
-      const st = fs.lstatSync(dir);
-      if (!st.isDirectory()) continue;
-      if (st.mtimeMs > cutoff) out.push(dir);
-      else if (newestTranscriptMtime(dir) > cutoff) out.push(dir);
-    } catch {
-      // Vanished between readdir and stat — skip.
-    }
+  const out: Array<{ dir: string; mtimeMs: number }> = [];
+  // S1-06: PA-19 made the syscalls async but kept the loop serial — at
+  // AV-inflated stat costs a few hundred retained dirs serialized into
+  // seconds of discovery latency per debounced search. Batch them (4
+  // concurrent, the search permit-pool bound); lstat stays per-dir.
+  const BATCH = 4;
+  for (let i = 0; i < names.length; i += BATCH) {
+    const settled = await Promise.all(names.slice(i, i + BATCH).map(async (name): Promise<{ dir: string; mtimeMs: number } | null> => {
+      const dir = path.join(base, name);
+      try {
+        // lstat, not stat: a symlink in the search path is never followed.
+        const st = await fs.promises.lstat(dir);
+        if (!st.isDirectory()) return null;
+        if (st.mtimeMs > cutoff) return { dir, mtimeMs: st.mtimeMs };
+        return (await newestTranscriptMtimeAsync(dir)) > cutoff ? { dir, mtimeMs: st.mtimeMs } : null;
+      } catch {
+        // Vanished between readdir and stat — skip.
+        return null;
+      }
+    }));
+    for (const r of settled) if (r) out.push(r);
   }
   return out;
 }

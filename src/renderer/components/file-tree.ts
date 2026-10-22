@@ -15,7 +15,33 @@ export interface DirEntry {
 }
 
 const expandedFolders = new Map<string, Set<string>>();
+// PA-30 (docs/performance.md static-footprint audit): one entry list per
+// directory expanded during the session, freed only on collapse/project
+// removal. Map insertion order is the LRU order: a hit re-inserts
+// (delete+set), an insert beyond the cap evicts `keys().next()` — the
+// oldest, least-recently-touched directory listing.
+const ENTRY_CACHE_MAX_DIRS = 2000;
 const entryCache = new Map<string, DirEntry[]>();
+
+function cacheGet(folderPath: string): DirEntry[] | undefined {
+  const cached = entryCache.get(folderPath);
+  if (cached) {
+    entryCache.delete(folderPath);
+    entryCache.set(folderPath, cached);
+  }
+  return cached;
+}
+
+function cacheSet(folderPath: string, entries: DirEntry[]): void {
+  entryCache.delete(folderPath);
+  entryCache.set(folderPath, entries);
+  while (entryCache.size > ENTRY_CACHE_MAX_DIRS) {
+    const oldest = entryCache.keys().next();
+    if (oldest.done) break;
+    entryCache.delete(oldest.value);
+  }
+}
+
 const inflight = new Map<string, Promise<DirEntry[]>>();
 const watchedByProject = new Map<string, Set<string>>();
 const activeTrees = new Map<string, { project: ProjectRecord; container: HTMLElement }>();
@@ -180,6 +206,14 @@ export function closeFileTree(projectId: string): void {
   activeTrees.delete(projectId);
 }
 
+/** @internal Test-only: the LRU cache operations and cap, for the eviction gate. */
+export const _cacheForTesting = {
+  get: cacheGet,
+  set: cacheSet,
+  size: () => entryCache.size,
+  keys: () => [...entryCache.keys()],
+  max: ENTRY_CACHE_MAX_DIRS,
+};
 /** @internal Test-only: clear the module-level entry cache. */
 export function _resetForTesting(): void {
   entryCache.clear();
@@ -196,7 +230,7 @@ export function _resetForTesting(): void {
 }
 
 async function loadEntries(folderPath: string): Promise<DirEntry[]> {
-  const cached = entryCache.get(folderPath);
+  const cached = cacheGet(folderPath);
   if (cached) return cached;
   const pending = inflight.get(folderPath);
   if (pending) return pending;
@@ -205,9 +239,10 @@ async function loadEntries(folderPath: string): Promise<DirEntry[]> {
     const sorted = sortEntries(entries);
     // Only cache if this promise is still the registered inflight: if the
     // entry was evicted while the read was in flight (collapse, expand-time
-    // refresh), the result is stale and must not repopulate the cache.
+    // refresh, LRU eviction), the result is stale and must not repopulate
+    // the cache.
     if (inflight.get(folderPath) === promise) {
-      entryCache.set(folderPath, sorted);
+      cacheSet(folderPath, sorted);
       inflight.delete(folderPath);
     }
     return sorted;
@@ -221,7 +256,7 @@ async function loadEntries(folderPath: string): Promise<DirEntry[]> {
 
 function makeRow(depth: number, entry: DirEntry, projectId: string): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'file-tree-row' + (entry.isDirectory ? ' is-dir' : ' is-file');
+  row.className = `file-tree-row${entry.isDirectory ? ' is-dir' : ' is-file'}`;
   row.style.paddingLeft = `${20 + depth * 14}px`;
   row.title = entry.path;
 
@@ -283,6 +318,16 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
         renderChildren(projectId, entry.path, depth + 1, subContainer);
       } else {
         unwatchSubtree(projectId, entry.path);
+        // A load still in flight for the folder being collapsed must not paint
+        // into the emptied subcontainer: ghost rows under a closed chevron.
+        // CI-17: the render generation is per-container, and every expanded
+        // descendant has its OWN pending pass — invalidating only this
+        // container let a deep descendant's in-flight listing paint into its
+        // now-detached node (ghost rows that survived the collapse).
+        invalidateRender(subContainer);
+        for (const el of subContainer.querySelectorAll('.file-tree-children')) {
+          invalidateRender(el as HTMLElement);
+        }
         subContainer.innerHTML = '';
       }
     });
@@ -327,6 +372,34 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
   return [row];
 }
 
+// One pass per container wins. renderChildren (open / expand, full rebuild) and
+// reconcileChildren (watcher flush) start overlapping: their loadEntries awaits
+// resolve in arbitrary order, and a superseded run that paints last re-inserts
+// rows the newer run already deleted — ghost rows — or re-paints a folder from a
+// listing taken before a cache invalidation. Whichever pass starts last owns the
+// container; every pass re-checks ownership after its await.
+const renderGeneration = new WeakMap<HTMLElement, number>();
+
+/** Claim the container for a new pass; returns the pass's generation token. */
+function beginRender(container: HTMLElement): number {
+  const gen = (renderGeneration.get(container) ?? 0) + 1;
+  renderGeneration.set(container, gen);
+  return gen;
+}
+
+/** Drop a pending pass without starting one (collapse, subtree teardown). */
+function invalidateRender(container: HTMLElement): void {
+  renderGeneration.set(container, (renderGeneration.get(container) ?? 0) + 1);
+}
+
+/** False once a newer pass claimed the container. Ownership is generation-only
+ * on purpose: a tree is routinely rendered into a container that is not in the
+ * document yet (panes are built, then attached), so an `isConnected` check
+ * would silently drop those first renders. */
+function ownsRender(container: HTMLElement, gen: number): boolean {
+  return renderGeneration.get(container) === gen;
+}
+
 /** Full (re)build of a folder's children. Used for initial render and expand. */
 async function renderChildren(
   projectId: string,
@@ -337,7 +410,9 @@ async function renderChildren(
   container.dataset.folderPath = folderPath;
   container.dataset.depth = String(depth);
   watchFolder(projectId, folderPath);
+  const gen = beginRender(container);
   const entries = await loadEntries(folderPath);
+  if (!ownsRender(container, gen)) return;
   container.innerHTML = '';
 
   if (entries.length === 0) {
@@ -363,7 +438,9 @@ async function reconcileChildren(
   depth: number,
   container: HTMLElement
 ): Promise<void> {
+  const gen = beginRender(container);
   const entries = await loadEntries(folderPath);
+  if (!ownsRender(container, gen)) return;
   const newByPath = new Map(entries.map((e) => [e.path, e] as const));
 
   // Index the rows currently rendered in this container (rows only; their
@@ -479,7 +556,13 @@ function fileTypeLabel(name: string): string {
 }
 
 /** Name of the OS file manager, used in the reveal menu labels. Exported for tests. */
-export const FILE_MANAGER = isMac ? 'Finder' : isWin ? 'File Explorer' : 'File Manager';
+function osFileManager(): string {
+  if (isMac) return 'Finder';
+  if (isWin) return 'File Explorer';
+  return 'File Manager';
+}
+
+export const FILE_MANAGER = osFileManager();
 
 /**
  * A folder opens in the file manager showing its own contents; a file is

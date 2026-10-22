@@ -17,6 +17,11 @@ const forkEnv = { FINEVIBE_RELEASE_REPO: 'leo-3889/vibeyard' };
 
 type FakeResponse = PassThrough & { statusCode: number; headers: Record<string, string> };
 
+// C4S-11: followRedirects arms req.setTimeout(30 s) — fakes carry the handle.
+function fakeRequest() {
+  return { on: vi.fn(), setTimeout: vi.fn() };
+}
+
 function fakeResponse(opts: { statusCode?: number; headers?: Record<string, string> } = {}): FakeResponse {
   const res = new PassThrough() as FakeResponse;
   res.statusCode = opts.statusCode ?? 200;
@@ -90,7 +95,7 @@ function servingRelease(assets: Array<{ name: string; digest?: string }>) {
     const res = fakeResponse();
     cb(res);
     queueMicrotask(() => res.end(JSON.stringify({ assets })));
-    return { on: vi.fn() };
+    return fakeRequest();
   });
 }
 
@@ -200,7 +205,7 @@ describe('launcher followRedirects', () => {
       } else {
         cb(finalRes);
       }
-      return { on: vi.fn() };
+      return fakeRequest();
     });
     const { exports } = loadLauncher({ httpsGet });
     const res = await exports.followRedirects('https://github.com/o/r/releases/download/v1/asset.zip');
@@ -215,7 +220,7 @@ describe('launcher followRedirects', () => {
   it('rejects a redirect that downgrades to http', async () => {
     const httpsGet = vi.fn((_url: string, _opts: unknown, cb: (res: FakeResponse) => void) => {
       cb(fakeResponse({ statusCode: 302, headers: { location: 'http://evil.example/asset.zip' } }));
-      return { on: vi.fn() };
+      return fakeRequest();
     });
     const { exports } = loadLauncher({ httpsGet });
     const message = await rejectsWith(
@@ -239,7 +244,7 @@ describe('launcher getJson', () => {
       const res = fakeResponse();
       cb(res);
       queueMicrotask(() => res.end(JSON.stringify({ assets: [] })));
-      return { on: vi.fn() };
+      return fakeRequest();
     });
     const { exports } = loadLauncher({ env: forkEnv, httpsGet });
     const body = await exports.getJson(exports.RELEASE_API_URL);
@@ -302,7 +307,7 @@ describe('launcher digest verification', () => {
         const res = fakeResponse({ statusCode: 403 });
         cb(res);
         queueMicrotask(() => res.end('rate limited'));
-        return { on: vi.fn() };
+        return fakeRequest();
       }),
     });
     await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('unavailable');
@@ -316,6 +321,7 @@ describe('launcher digest verification', () => {
         on: (event: string, handler: (err: Error) => void) => {
           if (event === 'error') queueMicrotask(() => handler(new Error('ETIMEDOUT')));
         },
+        setTimeout: vi.fn(),
       })),
     });
     await expect(exports.verifyAssetDigest('/tmp/asset.tmp', asset)).resolves.toBe('unavailable');
@@ -340,7 +346,7 @@ describe('launcher download', () => {
         expect(url).toBe(`https://github.com/leo-3889/vibeyard/releases/download/v${launcherVersion}/${asset}`);
         queueMicrotask(() => res.end(content));
       }
-      return { on: vi.fn() };
+      return fakeRequest();
     });
   }
 
@@ -429,7 +435,7 @@ describe('launcher linux asset name', () => {
         else if (url === downloadUrl) res.end(content);
         else res.end('Not Found');
       });
-      return { on: vi.fn() };
+      return fakeRequest();
     });
     return { httpsGet, downloadUrl, apiUrl };
   }

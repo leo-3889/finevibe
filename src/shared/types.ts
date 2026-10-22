@@ -487,6 +487,14 @@ export interface AgentmemoryStatus {
   detail?: string;
 }
 
+/** Tail of the shared daemon's captured console output (see main/agentmemory-manager.ts). */
+export interface AgentmemoryLog {
+  /** Absolute path of the log file the tail was read from. */
+  path: string;
+  /** Last bytes of the log, UTF-8 decoded; empty when the file is missing/unreadable. */
+  content: string;
+}
+
 // --- Chrome Import ---
 
 export interface ChromeProfile {
@@ -719,6 +727,13 @@ export interface InspectorEvent {
   /** Elicitation discriminator: 'form' | 'url'. */
   mode?: string;
   action?: string;
+  /**
+   * C2R-02: monotonic ingestion id, stamped by session-inspector-state's
+   * addEvents. The retention array rotates in place at the 2000-event cap,
+   * so an array index is not a stable identity; the timeline's expandable
+   * row keys and its rotation guard use this instead.
+   */
+  seq?: number;
 }
 
 export interface ToolUsageStats {

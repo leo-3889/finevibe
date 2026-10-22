@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { STATUS_DIR } from './hook-status';
 import { statusCmd as mkStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, installEventScript, wrapPythonHookCmd, installHookScripts } from './hook-commands';
 import { readFileSafe, readJsonSafe } from './fs-utils';
+import { cleanHooks, isIdeHook, type HookHandler, type HooksConfig } from './hooks-utils';
 import type { InspectorEventType, SettingsValidationResult } from '../shared/types';
 import { pyLiteral } from '../shared/python';
 
@@ -16,22 +17,6 @@ const CONFIG_TOML_PATH = path.join(CODEX_DIR, 'config.toml');
 export const SESSION_ID_VAR = 'FINEVIBE_SESSION_ID';
 
 const EXPECTED_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'];
-
-interface HookHandler {
-  type: string;
-  command: string;
-}
-
-interface HookMatcherEntry {
-  matcher?: string;
-  hooks: HookHandler[];
-}
-
-type HooksConfig = Record<string, HookMatcherEntry[]>;
-
-function isIdeHook(h: HookHandler): boolean {
-  return h.command?.includes(CODEX_HOOK_MARKER) ?? false;
-}
 
 // ---------------------------------------------------------------------------
 // Feature flag
@@ -85,13 +70,15 @@ function ensureCodexHooksFeatureFlag(): void {
     }
   }
 
-  if (codexHooksLineIdx !== -1) {
-    lines[codexHooksLineIdx] = 'codex_hooks = true';
-  } else if (featuresSectionIdx !== -1) {
-    lines.splice(featuresSectionIdx + 1, 0, 'codex_hooks = true');
+  if (codexHooksLineIdx === -1) {
+    if (featuresSectionIdx === -1) {
+      const trailing = content.endsWith('\n') ? '' : '\n';
+      lines.push(`${trailing}[features]`, 'codex_hooks = true');
+    } else {
+      lines.splice(featuresSectionIdx + 1, 0, 'codex_hooks = true');
+    }
   } else {
-    const trailing = content.endsWith('\n') ? '' : '\n';
-    lines.push(`${trailing}[features]`, 'codex_hooks = true');
+    lines[codexHooksLineIdx] = 'codex_hooks = true';
   }
 
   fs.writeFileSync(CONFIG_TOML_PATH, lines.join('\n'));
@@ -101,28 +88,12 @@ function ensureCodexHooksFeatureFlag(): void {
 // Hook installation
 // ---------------------------------------------------------------------------
 
-function cleanHooks(existing: HooksConfig): HooksConfig {
-  const cleaned: HooksConfig = {};
-  for (const [event, matchers] of Object.entries(existing)) {
-    const filteredMatchers = matchers
-      .map((m) => ({
-        ...m,
-        hooks: (m.hooks ?? []).filter((h) => !isIdeHook(h)),
-      }))
-      .filter((m) => m.hooks.length > 0);
-    if (filteredMatchers.length > 0) {
-      cleaned[event] = filteredMatchers;
-    }
-  }
-  return cleaned;
-}
-
 export function installCodexHooks(): void {
   ensureCodexHooksFeatureFlag();
 
   const raw = readJsonSafe(HOOKS_JSON_PATH) ?? {};
   const existingHooks: HooksConfig = (raw.hooks ?? {}) as HooksConfig;
-  const cleaned = cleanHooks(existingHooks);
+  const cleaned = cleanHooks(existingHooks, CODEX_HOOK_MARKER);
 
   installHookScripts();
 
@@ -201,7 +172,7 @@ with open(os.path.join(status_dir,sid+".events"),"a") as f:
   }
 
   const output = { ...raw, hooks: cleaned };
-  fs.writeFileSync(HOOKS_JSON_PATH, JSON.stringify(output, null, 2) + '\n');
+  fs.writeFileSync(HOOKS_JSON_PATH, `${JSON.stringify(output, null, 2)}\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +193,7 @@ export function validateCodexHooks(): SettingsValidationResult {
 
   for (const event of EXPECTED_HOOK_EVENTS) {
     const matchers = existingHooks[event];
-    const installed = matchers?.some(m => m.hooks?.some(h => isIdeHook(h))) ?? false;
+    const installed = matchers?.some(m => m.hooks?.some(h => isIdeHook(h, CODEX_HOOK_MARKER))) ?? false;
     hookDetails[event] = installed;
     if (installed) found++;
   }
@@ -247,7 +218,7 @@ export function cleanupCodexHooks(): void {
 
   const config = raw as Record<string, unknown>;
   const existingHooks: HooksConfig = (config.hooks ?? {}) as HooksConfig;
-  const cleaned = cleanHooks(existingHooks);
+  const cleaned = cleanHooks(existingHooks, CODEX_HOOK_MARKER);
 
   if (Object.keys(cleaned).length === 0) {
     delete config.hooks;
@@ -255,5 +226,5 @@ export function cleanupCodexHooks(): void {
     config.hooks = cleaned;
   }
 
-  fs.writeFileSync(HOOKS_JSON_PATH, JSON.stringify(config, null, 2) + '\n');
+  fs.writeFileSync(HOOKS_JSON_PATH, `${JSON.stringify(config, null, 2)}\n`);
 }

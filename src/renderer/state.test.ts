@@ -2,11 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockLoad = vi.fn();
 const mockSave = vi.fn();
+const mockSaveSync = vi.fn(() => true);
 
 vi.stubGlobal('window', {
   finevibe: {
-    store: { load: mockLoad, save: mockSave },
-    session: { transcriptExistsSync: vi.fn().mockReturnValue(true) },
+    store: { load: mockLoad, save: mockSave, saveSync: mockSaveSync },
+    session: {
+      transcriptExists: vi.fn(async () => true),
+    },
   },
 });
 
@@ -221,6 +224,7 @@ describe('load()', () => {
 describe('persist()', () => {
   it('calls store.save after addProject', () => {
     addProject();
+    appState.flushPersist(); // PA-15: persist is frame-coalesced, not synchronous
     expect(mockSave).toHaveBeenCalled();
     const savedState = mockSave.mock.calls[0][0];
     expect(savedState.projects).toHaveLength(1);
@@ -565,6 +569,30 @@ describe('removeSession()', () => {
     expect(removedCb).toHaveBeenCalledWith({ projectId: project.id, sessionId: session.id });
     expect(changedCb).toHaveBeenCalled();
   });
+
+  it('batch close defers every per-session render and kicks exactly one', () => {
+    // S3-06 contract: consumers gate on `payload.deferRender`. A batch
+    // (Close All) must emit N deferred session-removed + N deferred
+    // session-changed{remove} and then ONE render-triggering kick — so the
+    // strip/layout rebuild once per batch, not once per closed tab.
+    const { project, sessions } = addProjectWithSessions(3);
+    let renderKicks = 0;
+    const removed: Array<Record<string, unknown>> = [];
+    appState.on('session-removed', (data) => {
+      const p = data as { sessionId: string; deferRender?: boolean };
+      removed.push(p as Record<string, unknown>);
+      if (!p.deferRender) renderKicks++;
+    });
+    appState.on('session-changed', (data) => {
+      const p = data as { kind?: string; deferRender?: boolean };
+      if ((p?.kind === 'remove' || p?.kind === 'add') && !p.deferRender) renderKicks++;
+    });
+    appState.removeAllSessions(project.id);
+    expect(removed).toHaveLength(sessions.length);
+    expect(removed.every((r) => r.deferRender === true)).toBe(true);
+    expect(renderKicks).toBe(1);
+    expect(appState.activeProject!.sessions).toHaveLength(0);
+  });
 });
 
 describe('reorderProject()', () => {
@@ -627,6 +655,7 @@ describe('preferences', () => {
   it('setPreference updates and persists', () => {
     appState.setPreference('debugMode', true);
     expect(appState.preferences.debugMode).toBe(true);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -644,6 +673,7 @@ describe('preferences', () => {
   it('setPreference stores zoomFactor', () => {
     appState.setPreference('zoomFactor', 1.5);
     expect(appState.preferences.zoomFactor).toBe(1.5);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 });
@@ -652,6 +682,7 @@ describe('setSidebarWidth()', () => {
   it('sets sidebarWidth and persists', () => {
     appState.setSidebarWidth(300);
     expect(appState.sidebarWidth).toBe(300);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 });
@@ -664,6 +695,7 @@ describe('toggleSidebar()', () => {
     appState.toggleSidebar();
     expect(appState.sidebarCollapsed).toBe(true);
     expect(cb).toHaveBeenCalledTimes(1);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -682,6 +714,7 @@ describe('setTerminalPanelOpen()', () => {
     appState.setTerminalPanelOpen(true);
     expect(appState.activeProject!.terminalPanelOpen).toBe(true);
     expect(cb).toHaveBeenCalledTimes(1);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 
@@ -697,6 +730,7 @@ describe('setTerminalPanelHeight()', () => {
     addProject();
     appState.setTerminalPanelHeight(250);
     expect(appState.activeProject!.terminalPanelHeight).toBe(250);
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 });
@@ -722,6 +756,7 @@ describe('setActiveProject()', () => {
     appState.setActiveProject(p1.id);
     expect(appState.activeProjectId).toBe(p1.id);
     expect(cb).toHaveBeenCalled();
+    appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
   });
 });
@@ -733,7 +768,11 @@ describe('updateSessionCliId()', () => {
   // of those by re-appending the terminal pane — blurring the in-pane find bar and
   // collapsing an in-progress selection.
   beforeEach(() => {
-    (window as any).finevibe.session = { transcriptExistsSync: vi.fn(() => false) };
+    (window as any).finevibe.session = {
+      // PA-25: the archive gate reads an async-prefetched flag now; a resolved
+      // `false` is what makes these sessions non-archivable.
+      transcriptExists: vi.fn(async () => false),
+    };
   });
 
   it('emits and persists the first time an id arrives', () => {
@@ -784,45 +823,106 @@ describe('updateSessionCliId()', () => {
 // --- Session History Tests ---
 
 describe('persist throttle', () => {
-  // A burst of mutations (kanban sync, session moves) serialized the whole
-  // state and cloned it over IPC per mutation. Leading edge: the first
-  // mutation saves at once; later ones coalesce into one trailing save.
-  it('coalesces a mutation burst into one trailing save', () => {
+  // PA-15: a mutation no longer serializes + structured-clones the whole state
+  // synchronously inside the interaction. persist() schedules ONE write on the
+  // coming frame (a 16 ms timer in this node-env suite; rAF in the renderer)
+  // and the leading-edge 200 ms throttle in `throttledWrite` bounds a burst to
+  // one IPC per window.
+  const FRAME_MS = 16;
+
+  it('clones once per frame: a burst writes nothing until the frame lands', () => {
     vi.useFakeTimers();
     try {
-      appState.setPreference('theme', 'light'); // leading save
+      appState.setPreference('theme', 'light');
       appState.setPreference('theme', 'dark');
       appState.setPreference('theme', 'light');
+      // Inside the interaction: zero serialization, zero IPC clones.
+      expect(mockSave).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(FRAME_MS);
+      // ONE clone for the whole burst, carrying the LATEST state.
       expect(mockSave).toHaveBeenCalledTimes(1);
+      expect(mockSave.mock.calls[0][0].preferences.theme).toBe('light');
       vi.advanceTimersByTime(250);
-      expect(mockSave).toHaveBeenCalledTimes(2);
-      expect(mockSave.mock.calls[1][0].preferences.theme).toBe('light');
+      expect(mockSave).toHaveBeenCalledTimes(1); // no phantom trailing write
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('flushPersist writes the armed trailing state and disarms the timer', () => {
+  it('clones an isolated mutation once, on the frame after the action', () => {
     vi.useFakeTimers();
     try {
-      appState.setPreference('theme', 'light'); // leading
-      appState.setPreference('theme', 'dark');  // trailing armed
-      appState.flushPersist();
+      appState.setPreference('theme', 'solo');
+      expect(mockSave).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(FRAME_MS);
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      expect(mockSave.mock.calls[0][0].preferences.theme).toBe('solo');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('S3-03: writes still reach disk while the document is hidden (no rAF starvation)', () => {
+    // The renderer's rAF path never runs for a hidden window; persist() must
+    // fall back to a timer so a minimized app keeps saving.
+    (globalThis as { document?: unknown }).document = { hidden: true };
+    vi.useFakeTimers();
+    try {
+      appState.setPreference('theme', 'hidden-run');
+      expect(mockSave).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(200);
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      expect(mockSave.mock.calls[0][0].preferences.theme).toBe('hidden-run');
+    } finally {
+      vi.useRealTimers();
+      delete (globalThis as { document?: unknown }).document;
+    }
+  });
+
+
+  it('coalesces frames inside the throttle window into one trailing save', () => {
+    vi.useFakeTimers();
+    try {
+      appState.setPreference('theme', 'a');
+      vi.advanceTimersByTime(FRAME_MS); // leading write
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      // A burst that outlives its frame: every later frame returns early
+      // because the trailing save is armed — one IPC for the whole window.
+      for (let i = 0; i < 5; i++) {
+        appState.setPreference('theme', `v${i}`);
+        vi.advanceTimersByTime(FRAME_MS);
+      }
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(200);
       expect(mockSave).toHaveBeenCalledTimes(2);
-      expect(mockSave.mock.calls[1][0].preferences.theme).toBe('dark');
-      vi.advanceTimersByTime(300);
-      expect(mockSave).toHaveBeenCalledTimes(2);
+      expect(mockSave.mock.calls[1][0].preferences.theme).toBe('v4');
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('saves immediately again once the throttle window has passed', () => {
+  it('flushPersist writes now and cancels the pending frame', () => {
+    vi.useFakeTimers();
+    try {
+      appState.setPreference('theme', 'light'); // frame scheduled
+      appState.setPreference('theme', 'dark');  // coalesced into it
+      appState.flushPersist();
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      expect(mockSave.mock.calls[0][0].preferences.theme).toBe('dark');
+      // The cancelled frame must not arm a trailing save past the quit flush.
+      vi.advanceTimersByTime(300);
+      expect(mockSave).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the leading edge again once the throttle window has passed', () => {
     vi.useFakeTimers();
     try {
       appState.setPreference('theme', 'light');
-      vi.advanceTimersByTime(250);
-      appState.setPreference('theme', 'dark'); // leading again, not trailing
+      vi.advanceTimersByTime(250); // the frame landed long ago
+      appState.setPreference('theme', 'dark');
+      vi.advanceTimersByTime(FRAME_MS);
       expect(mockSave).toHaveBeenCalledTimes(2);
       expect(mockSave.mock.calls[1][0].preferences.theme).toBe('dark');
     } finally {
@@ -833,14 +933,16 @@ describe('persist throttle', () => {
   it('arms the trailing save for the throttle window, not a clock skew', () => {
     // A backwards wall-clock jump (resume-from-suspend NTP correction,
     // restored VM snapshot) puts lastPersistAt in the future. Without the
-    // Math.max clamp in persist(), the timer arms for 200 ms + skew and the
-    // armed-timer guard drops every later mutation, leaving them memory-only.
+    // Math.max clamp in throttledWrite(), the timer arms for 200 ms + skew
+    // and the armed-timer guard drops every later write, leaving mutations
+    // memory-only for that window.
     vi.useFakeTimers();
     try {
-      appState.setPreference('theme', 'light'); // leading save → lastPersistAt = now
+      appState.setPreference('theme', 'light');
+      vi.advanceTimersByTime(FRAME_MS);         // leading write → lastPersistAt = now
       vi.setSystemTime(Date.now() - 60_000);    // clock jumps behind it
       appState.setPreference('theme', 'dark');  // trailing save must arm for ~200 ms
-      vi.advanceTimersByTime(250);
+      vi.advanceTimersByTime(FRAME_MS + 250);
       expect(mockSave).toHaveBeenCalledTimes(2);
       expect(mockSave.mock.calls[1][0].preferences.theme).toBe('dark');
     } finally {
@@ -886,7 +988,8 @@ describe('updateSessionCost()', () => {
       appState.updateSessionCost(session.id, sampleCost);
       const updated = appState.activeProject!.sessions.find(s => s.id === session.id)!;
       expect(updated.cost).toEqual(sampleCost);
-      vi.advanceTimersByTime(1000);
+      // PA-15: +16 ms for the coalescing frame (see the context test above).
+      vi.advanceTimersByTime(1016);
       expect(mockSave).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -923,7 +1026,9 @@ describe('updateSessionContext()', () => {
       appState.updateSessionContext(session.id, sampleContext);
       const updated = appState.activeProject!.sessions.find(s => s.id === session.id)!;
       expect(updated.contextWindow).toEqual(sampleContext);
-      vi.advanceTimersByTime(1000);
+      // PA-15: the persist the cost flush triggers is frame-coalesced, so the
+      // 1 s timer only schedules the write; the frame lands 16 ms later.
+      vi.advanceTimersByTime(1016);
       expect(mockSave).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -985,5 +1090,182 @@ describe('renameSession()', () => {
     appState.renameSession(project.id, overview.id, 'Custom', true);
     expect(overview.name).toBe('My Project - Overview');
     expect(overview.userRenamed).toBeUndefined();
+  });
+});
+
+// --- Cross-slice payloads (PA-25 renderer half + the session-changed contract) ---
+
+describe('session-changed payload', () => {
+  const seen: unknown[] = [];
+  beforeEach(() => {
+    seen.length = 0;
+    appState.on('session-changed', (data) => seen.push(data));
+  });
+
+  it('names the mutation class for activation, add, remove and adoption', () => {
+    const { project, sessions } = addProjectWithSessions(2);
+    expect(seen.map((p) => (p as { kind?: string })?.kind)).toEqual(['add', 'add']);
+    expect((seen[0] as { sessionId?: string })?.sessionId).toBe(sessions[0].id);
+
+    seen.length = 0;
+    appState.setActiveSession(project.id, sessions[0].id);
+    expect(seen).toEqual([{ sessionId: sessions[0].id, kind: 'activate' }]);
+
+    seen.length = 0;
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-1');
+    expect(seen).toEqual([{ sessionId: sessions[0].id, kind: 'metadata' }]);
+
+    seen.length = 0;
+    appState.renameSession(project.id, sessions[0].id, 'Title');
+    expect(seen).toEqual([{ sessionId: sessions[0].id, kind: 'metadata' }]);
+
+    seen.length = 0;
+    appState.reorderSession(project.id, sessions[0].id, 1);
+    expect(seen).toEqual([{ sessionId: sessions[0].id, kind: 'reorder' }]);
+
+    seen.length = 0;
+    appState.removeSession(project.id, sessions[1].id);
+    expect(seen).toEqual([{ sessionId: sessions[1].id, kind: 'remove' }]);
+  });
+});
+
+describe('archive gate transcript flags (PA-25)', () => {
+  // The gate used to call `session:transcriptExistsSync` on every archivable
+  // close, blocking the renderer on a main-side stat/decompress. The flag is
+  // prefetched asynchronously when a cli id is bound; the sync channel must be
+  // untouched on the close path.
+  let probe: ReturnType<typeof vi.fn>;
+  let probeSync: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    probe = vi.fn(async () => true);
+    probeSync = vi.fn(() => true);
+    (window as any).finevibe.session = {
+      transcriptExists: probe,
+      transcriptExistsSync: probeSync,
+    };
+  });
+
+  const rowFor = (projectId: string, cliSessionId: string) =>
+    appState.projects.find((p) => p.id === projectId)!.sessionHistory!.find((a) => a.cliSessionId === cliSessionId);
+
+  it('probes at cli-id bind and closes with zero sync IPC', async () => {
+    const { project, sessions } = addProjectWithSessions(1);
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-1');
+    expect(probe).toHaveBeenCalledWith('claude', 'cli-1', '/test', undefined, sessions[0].id);
+    await Promise.resolve();
+
+    appState.removeSession(project.id, sessions[0].id);
+
+    expect(probeSync).not.toHaveBeenCalled();
+    expect(rowFor(project.id, 'cli-1')?.transcriptAvailable).toBe(true);
+  });
+
+  it('archives best-effort when the flag is unknown (restored tab)', () => {
+    const { project, sessions } = addProjectWithSessions(1);
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-1');
+    (appState as any)['transcriptFlags'].clear(); // a tab restored from disk
+
+    appState.removeSession(project.id, sessions[0].id);
+
+    expect(probeSync).not.toHaveBeenCalled();
+    expect(rowFor(project.id, 'cli-1')?.transcriptAvailable).toBe(true);
+  });
+
+  it('marks the row unavailable when the probe found no transcript', async () => {
+    probe.mockImplementation(async () => false);
+    const { project, sessions } = addProjectWithSessions(1);
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-1');
+    await Promise.resolve();
+
+    appState.removeSession(project.id, sessions[0].id);
+
+    expect(probeSync).not.toHaveBeenCalled();
+    expect(rowFor(project.id, 'cli-1')?.transcriptAvailable).toBe(false);
+  });
+
+  it('probes the restored tabs after load, one at a time', async () => {
+    mockLoad.mockResolvedValue({
+      version: 1,
+      projects: [{
+        id: 'p1',
+        name: 'P',
+        path: '/test',
+        sessions: [
+          { id: 's1', name: 'S1', cliSessionId: 'cli-a', createdAt: new Date().toISOString(), providerId: 'claude' },
+          { id: 's2', name: 'S2', cliSessionId: 'cli-b', createdAt: new Date().toISOString(), providerId: 'claude' },
+        ],
+        activeSessionId: 's2',
+        layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+      }],
+      activeProjectId: 'p1',
+    });
+    await appState.load();
+    // load() fires the seed chain without awaiting it: give it the microtasks.
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(probe.mock.calls.map((c) => c[1])).toEqual(['cli-a', 'cli-b']);
+    expect(probeSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('githubLastSeen cap (UI2-3)', () => {
+  it('keeps only the newest 200 entries when a single item is stamped past the cap', () => {
+    const project = addProject();
+    const seen: Record<string, string> = {};
+    for (let i = 0; i < 200; i++) seen[`old-${i}`] = `2026-01-01T00:00:${String(i % 60).padStart(2, '0')}Z`;
+    project.githubLastSeen = seen;
+
+    appState.setGithubItemSeen(project.id, 'new-1', '2026-06-01T00:00:00Z');
+
+    const ids = Object.keys(project.githubLastSeen!);
+    expect(ids).toHaveLength(200);
+    expect(project.githubLastSeen!['new-1']).toBe('2026-06-01T00:00:00Z');
+    // The 199 newest olds survive; exactly the oldest (2026-01-01T00:00:00Z) is evicted.
+    expect(ids.filter((id) => id.startsWith('old-'))).toHaveLength(199);
+    expect(project.githubLastSeen!['old-0']).toBeUndefined();
+  });
+
+  it('caps bulk stamps and skips persist when nothing changed', () => {
+    const project = addProject();
+    const entries: Record<string, string> = {};
+    for (let i = 0; i < 250; i++) entries[`bulk-${i}`] = `2026-02-01T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`;
+
+    appState.setGithubItemsSeenBulk(project.id, entries);
+    expect(Object.keys(project.githubLastSeen!)).toHaveLength(200);
+    // Newest bulk entries (13:00+) survive; the 50 oldest are gone.
+    expect(project.githubLastSeen!['bulk-249']).toBeDefined();
+    expect(project.githubLastSeen!['bulk-0']).toBeUndefined();
+
+    mockSave.mockClear();
+    appState.setGithubItemsSeenBulk(project.id, { 'bulk-249': '2026-02-01T00:00:09Z' });
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+});
+
+describe('flushPersist synchronous flush (S1-03)', () => {
+  it('writes over the sync channel, not the async save, and drops armed timers', () => {
+    const project = addProject();
+    appState.addSession(project.id, 'S1');
+    mockSave.mockClear();
+    mockSaveSync.mockClear();
+
+    appState.flushPersistSync();
+
+    expect(mockSaveSync).toHaveBeenCalledTimes(1);
+    expect(mockSave).not.toHaveBeenCalled();
+    const written = mockSaveSync.mock.calls[0][0] as { projects: { name: string }[] };
+    expect(written.projects[0].name).toBe('Test');
+  });
+
+  it('a mutation after the flush is not swallowed by the dropped trailing save', () => {
+    const project = addProject();
+    appState.addSession(project.id, 'S1'); // arms the trailing window
+    appState.flushPersistSync();
+    mockSaveSync.mockClear();
+
+    appState.renameProject(project.id, 'Renamed');
+    appState.flushPersistSync();
+
+    expect(mockSaveSync).toHaveBeenCalledTimes(1);
+    expect((mockSaveSync.mock.calls[0][0] as { projects: { name: string }[] }).projects[0].name).toBe('Renamed');
   });
 });

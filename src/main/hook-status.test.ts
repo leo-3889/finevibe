@@ -50,6 +50,26 @@ import {
 let watchCallback: ((eventType: string, filename: string | null) => void) | null = null;
 const mockClose = vi.fn();
 
+// The 'error' handler the module registers on the fs.watch object; a test
+// fires it to simulate the watcher dying (the PA-09 cadence switch).
+let watchErrorHandler: ((err: unknown) => void) | null = null;
+function killWatcher(): void {
+  const handler = watchErrorHandler;
+  watchErrorHandler = null;
+  handler?.(new Error('EMFILE: too many open files'));
+}
+
+/** fs.watch stand-in: captures the change callback and the 'error' handler. */
+function watchImpl(_path: unknown, cb: (t: string, f: string | null) => void): unknown {
+  watchCallback = cb;
+  return {
+    close: mockClose,
+    on: (event: string, handler: (err: unknown) => void) => {
+      if (event === 'error') watchErrorHandler = handler;
+    },
+  };
+}
+
 const mockSend = vi.fn();
 function createMockWin(destroyed = false) {
   return { isDestroyed: () => destroyed, webContents: { send: mockSend } } as any;
@@ -67,12 +87,10 @@ beforeEach(() => {
   vi.mocked(fs.promises.stat).mockRejectedValue(new Error('ENOENT') as any);
   vi.mocked(fs.unlinkSync).mockImplementation(vi.fn() as any);
   vi.mocked(fs.rmdirSync).mockImplementation(vi.fn() as any);
-  vi.mocked(fs.watch).mockImplementation((_path: any, cb: any) => {
-    watchCallback = cb;
-    return { close: mockClose, on: vi.fn() } as any;
-  });
+  vi.mocked(fs.watch).mockImplementation(watchImpl);
 
   watchCallback = null;
+  watchErrorHandler = null;
   mockClose.mockClear();
   mockSend.mockClear();
 
@@ -82,11 +100,9 @@ beforeEach(() => {
   // Clear call counts after cleanup
   vi.clearAllMocks();
   watchCallback = null;
+  watchErrorHandler = null;
 
-  vi.mocked(fs.watch).mockImplementation((_path: any, cb: any) => {
-    watchCallback = cb;
-    return { close: mockClose, on: vi.fn() } as any;
-  });
+  vi.mocked(fs.watch).mockImplementation(watchImpl);
 });
 
 afterEach(() => {
@@ -587,7 +603,10 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       // First poll processes the file, but readFileSync is not mocked to
       // valid JSON yet, so the read fails and nothing reaches the window.
-      await vi.advanceTimersByTimeAsync(2000);
+      // The fs.watch is alive, so the poll runs at the 15 s watchdog cadence
+      // (PA-09) — the interval is a backstop for dropped events, not the
+      // delivery mechanism.
+      await vi.advanceTimersByTimeAsync(15_000);
       expect(mockSend).not.toHaveBeenCalled();
 
       // Now file has changed mtime
@@ -595,7 +614,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       const costData = { cost: { total: 0.5 }, context_window: {} };
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
 
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(15_000);
       expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
     });
 
@@ -608,10 +627,10 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       startWatching(win);
 
       // Seed mtimes
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(15_000);
 
       // Same mtime — no change
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(15_000);
       expect(mockSend).not.toHaveBeenCalled();
     });
 
@@ -625,7 +644,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       // status/cost/sessionid update was lost until the next change.
       vi.mocked(fs.promises.readdir).mockResolvedValue([] as any);
       startWatching(win);
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(15_000);
       expect(mockSend).not.toHaveBeenCalled();
 
       vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
@@ -633,7 +652,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       const costData = { cost: { total: 0.25 }, context_window: {} };
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
 
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(15_000);
       expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
     });
 
@@ -647,6 +666,72 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       vi.advanceTimersByTime(4000);
       expect(fs.statSync).not.toHaveBeenCalled();
+    });
+
+    it('does not touch the status dir while no session is registered (PA-09)', async () => {
+      const win = createMockWin();
+      vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
+      vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1000 } as any);
+
+      startWatching(win);
+      await vi.advanceTimersByTimeAsync(90_000); // six watchdog ticks
+
+      // handleFileChange drops every file whose id is unknown, so the sweep
+      // was pure waste: an idle app now issues zero status-dir reads.
+      expect(fs.promises.readdir).not.toHaveBeenCalled();
+      expect(fs.promises.stat).not.toHaveBeenCalled();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('polls on the watchdog cadence while the watch lives, at 2s once it dies (PA-09)', async () => {
+      const win = createMockWin();
+      registerSession('s1');
+      vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
+      vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1000 } as any);
+      const costData = { cost: { total: 0.5 }, context_window: {} };
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
+
+      startWatching(win);
+      await vi.advanceTimersByTimeAsync(2_000);
+      // fs.watch is alive and delivers these changes itself; the 2s sweep is
+      // now the 15s watchdog, so this tick must not fire.
+      expect(mockSend).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(13_000); // t=15s: the watchdog tick
+      expect(mockSend).toHaveBeenCalledTimes(1);
+
+      // The watch dies (EMFILE): the fast 2s fallback comes back.
+      killWatcher();
+      mockSend.mockClear();
+      vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 2000 } as any);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
+    });
+
+    it('forgets tracked mtimes for files that disappeared (PA-23)', async () => {
+      const win = createMockWin();
+      registerSession('s1');
+      const costData = { cost: { total: 0.5 }, context_window: {} };
+      vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
+      vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1000 } as any);
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
+
+      startWatching(win);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      mockSend.mockClear();
+
+      // The file is unlinked (release / /clear retraction) and later recreated
+      // with the SAME mtime — routine on a coarse-mtime filesystem.
+      vi.mocked(fs.promises.readdir).mockResolvedValue([] as any);
+      await vi.advanceTimersByTimeAsync(15_000); // the sweep drops the stale key
+      expect(fs.promises.stat).toHaveBeenCalledTimes(1); // nothing statted for a gone file
+
+      vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
+      vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1000 } as any);
+      await vi.advanceTimersByTimeAsync(15_000);
+      // Pre-fix the stale key suppressed this delivery: prev === mtime.
+      expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
     });
   });
 

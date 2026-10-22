@@ -30,6 +30,10 @@ export const app = {
   getName: () => 'FineVibe',
   getVersion: () => '0.0.0-test',
   on: noop,
+  // main.ts sets the Windows AppUserModelID at boot (see startMainProcess);
+  // the stub records nothing, so suites that assert on it mock 'electron'
+  // explicitly (main-app-user-model-id.test.ts).
+  setAppUserModelId: noop,
   whenReady: () => Promise.resolve(),
   quit: noop,
 };

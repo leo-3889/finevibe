@@ -7,7 +7,9 @@ import { FitAddon } from '@xterm/addon-fit';
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { appState } from '../state.js';
 import { attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
+import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
+import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 
 interface RemoteTerminalInstance {
   terminal: Terminal;
@@ -72,6 +74,7 @@ export function createRemoteTerminalPane(
     theme: getTerminalTheme(appState.preferences.theme ?? 'dark'),
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
+    scrollback: TERMINAL_SCROLLBACK,
     cursorBlink: mode === 'readwrite',
     allowProposedApi: true,
     disableStdin: mode === 'readonly',
@@ -87,6 +90,16 @@ export function createRemoteTerminalPane(
     terminal.onData((data) => {
       onInput(data);
     });
+    // The guest pane renders the host's PTY output, so the host's ConPTY
+    // win32-input-mode (?9001h) arrives here through writeRemoteData; while it
+    // is armed, a bare ESC forwarded to the host stalls in ConPTY's parser and VT
+    // arrows split into text. Encode the affected keys as INPUT_RECORDs. The
+    // host OS is unknown, so the pane latches only on a real ?9001h sighting —
+    // keyed by session id, so a guest pane re-created on a live host session
+    // starts encoded (a re-attached xterm cannot re-arm ConPTY, and the mode
+    // never comes back off). macOS/Linux hosts never emit mode 9001: inert.
+    const handleWin32Key = attachWin32TerminalKeys(terminal, onInput, { latchKey: `remote:${sessionId}` });
+    terminal.attachCustomKeyEventHandler((e) => handleWin32Key(e) ?? true);
   }
 
   const instance: RemoteTerminalInstance = {
@@ -146,6 +159,23 @@ export function writeRemoteData(sessionId: string, data: string): void {
     instance.terminal.write(data);
   }
 }
+/**
+ * S3-02: apply a host-driven resize. The protocol (sharing-types resize),
+ * the host sender (peer-host) and the guest API (peer-guest onResize) all
+ * existed, but the join flow registered no onResize handler and this module
+ * exported no resize — the guest pane stayed frozen at join-time cols, so
+ * host window/split resizes re-wrapped every incoming line and garbled
+ * full-screen TUI output for the rest of the session.
+ */
+export function resizeRemoteTerminal(sessionId: string, cols: number, rows: number): void {
+  const instance = instances.get(sessionId);
+  if (!instance) return;
+  try {
+    instance.terminal.resize(cols, rows);
+  } catch {
+    // xterm throws when the element is detached mid-teardown.
+  }
+}
 
 export function showRemoteEndOverlay(sessionId: string): void {
   const instance = instances.get(sessionId);
@@ -176,6 +206,10 @@ export function destroyRemoteTerminal(sessionId: string): void {
   if (!instance) return;
 
   instance.terminal.dispose();
+  // C2R-13: release this session's mode-9001 latch entry (the attach above keys
+  // it `remote:<sessionId>`), otherwise every shared pane viewed by this
+  // renderer leaves a permanent entry in the module-level set.
+  unlatchWin32Key(`remote:${sessionId}`);
   instance.element.remove();
   instances.delete(sessionId);
 }

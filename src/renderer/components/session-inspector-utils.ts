@@ -50,7 +50,15 @@ export function createToolInputEl(toolInput: unknown): HTMLPreElement {
   el.className = 'inspector-tool-input';
   el.addEventListener('click', (e) => e.stopPropagation());
   const text = JSON.stringify(toolInput, null, 2);
-  el.textContent = text.length > 2000 ? text.slice(0, 2000) + '\n...' : text;
+  if (text.length > 2000) {
+    // C5R-09: a slice mid astral-plane pair renders as U+FFFD; drop the
+    // dangling high surrogate, the intent chunkByUtf8Bytes documents.
+    const head = text.slice(0, 2000);
+    const cut = /[\uD800-\uDBFF]$/.test(head) ? head.slice(0, -1) : head;
+    el.textContent = `${cut}\n...`;
+  } else {
+    el.textContent = text;
+  }
   return el;
 }
 

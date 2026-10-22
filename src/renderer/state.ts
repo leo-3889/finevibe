@@ -2,6 +2,7 @@ import type { FinevibeApi } from './types.js';
 import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout, SidebarViews } from '../shared/types.js';
 import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
+import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { basename } from '../shared/platform.js';
 import { isCliSession } from './session-utils.js';
 import {
@@ -39,12 +40,14 @@ import {
   applyMemberPatch,
   buildNewMember,
   buildTeamChatSession,
+  isSystemPromptOversize,
   type TeamChatOpts,
   fireAndForgetRemoveAgent,
   reconcileAgent as reconcileAgentPure,
   removeMember,
   resolveTeamChatBackend,
   syncAgentInstall as syncAgentInstallPure,
+  uniqueMemberId,
 } from './state/team-state.js';
 import {
   browserTabNameFromUrl,
@@ -107,11 +110,42 @@ type EventType =
   | 'board-changed'
   | 'team-changed'
   | 'profiles-changed'
-  | 'overview-layout-changed'
   | 'github-unread-changed'
   | 'state-loaded';
 
 type EventCallback = (data?: unknown) => void;
+
+/** What a `session-changed` fan-out was caused by; see {@link SessionChangedPayload}. */
+export type SessionChangeKind = 'activate' | 'add' | 'remove' | 'reorder' | 'metadata';
+
+/**
+ * `session-changed` payload. The event used to be emitted payload-less, so
+ * every subscriber (tab strip, split layout, sidebar badge, git status, board
+ * sync) had to assume the whole session set had changed and rebuild
+ * everything. The payload names the mutation class and, when one session owns
+ * it, which session — a tab click no longer has to look like a tab-set
+ * rewrite. Subscribers MUST keep working when the argument is absent
+ * (defensive full path): the payload is an optimization, not a requirement.
+ * Cli-id and title adoption are `metadata`.
+ * `deferRender: true` marks an event inside a batch close: full-strip/layout
+ * consumers MUST skip their render — the batch's trailing payload-less-kick
+ * `session-changed` (no deferRender) renders once for the whole batch.
+ */
+export interface SessionChangedPayload {
+  sessionId?: string;
+  kind: SessionChangeKind;
+  deferRender?: boolean;
+}
+
+/**
+ * Run `cb` on the coming frame. `requestAnimationFrame` in the renderer; a
+ * 16 ms timer in hosts without a DOM (the node-env renderer tests), so the
+ * coalescing semantics under test are the semantics shipped.
+ */
+function scheduleFrame(cb: () => void): void {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(cb);
+  else setTimeout(cb, 16);
+}
 
 const defaultPreferences: Preferences = {
   soundOnSessionWaiting: true,
@@ -146,6 +180,23 @@ class AppState {
   /** Leading-edge persist throttle (see persist). */
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private lastPersistAt = 0;
+  /** PA-15: a write is scheduled on the coming frame; see persist(). */
+  private persistFrameScheduled = false;
+  /** Bumped by flushPersist so the cancelled frame callback cannot write later. */
+  private persistFrameToken = 0;
+  /**
+   * PA-25: transcript availability prefetched asynchronously, keyed
+   * sessionId → `providerId|cliSessionId` → exists. The archive gate used to
+   * call `session:transcriptExistsSync` — a synchronous IPC that blocked the
+   * whole renderer for a main-side stat/decompress on EVERY archivable close.
+   * The flag is filled when a cli id is bound; a missing entry (restored tab,
+   * probe still in flight) means "present", i.e. the gate degrades to
+   * best-effort archiving. That false positive is cheap and self-healing:
+   * `resumeFromHistorySafe` re-checks asynchronously and drops the row when
+   * the transcript is really gone. One entry per session: a new cli id
+   * replaces the map, so a tab that `/clear`s often cannot grow it.
+   */
+  private transcriptFlags = new Map<string, Map<string, boolean>>();
 
   private pushNav(sessionId: string | null | undefined): void {
     this.nav.push(sessionId);
@@ -194,7 +245,7 @@ class AppState {
       project.activeSessionId = id;
       this.persist();
       if (projectChanged) this.emit('project-changed');
-      this.emit('session-changed');
+      this.emitSessionChanged({ sessionId: id, kind: 'activate' });
     });
   }
 
@@ -207,7 +258,12 @@ class AppState {
   }
 
   private emit(event: EventType, data?: unknown): void {
-    this.listeners.get(event)?.forEach((cb) => cb(data));
+    for (const cb of this.listeners.get(event) ?? []) cb(data);
+  }
+
+  /** Every `session-changed` fan-out goes through here — see {@link SessionChangedPayload}. */
+  private emitSessionChanged(payload: SessionChangedPayload): void {
+    this.emit('session-changed', payload);
   }
 
   async load(): Promise<void> {
@@ -235,6 +291,12 @@ class AppState {
     }
     this.rebuildSessionIndex();
     this.emit('state-loaded');
+    // PA-25: seed the archive gate's transcript flags for the tabs restored
+    // from disk. Deliberately sequential and off the load path: the flag is
+    // only read when a tab closes, so a parallel fan-out of main-side
+    // stat/decompress probes during startup would buy nothing on the boot
+    // critical path (see PA-01).
+    void this.prefetchRestoredTranscriptFlags();
   }
 
   private persist(): void {
@@ -250,18 +312,53 @@ class AppState {
       }
       return;
     }
-    // Leading-edge throttle: the first mutation saves immediately, mutations
-    // inside the following 200 ms coalesce into one trailing save. Each
-    // persist serializes the whole state and structured-clones it over IPC;
-    // mutation bursts (kanban sync, session moves, title adoption) used to
-    // pay that cost per mutation. Leading edge means a lone mutation is
-    // never exposed to the crash window a pure trailing debounce adds.
-    // Clamped at zero: a backwards wall-clock jump (resume-from-suspend NTP
-    // correction, restored VM snapshot) makes `elapsed` negative, arming the
-    // trailing save for `PERSIST_THROTTLE_MS - elapsed` — minutes/hours —
-    // while the armed-timer guard below drops every persist, so mutations
-    // stay memory-only for that whole window. Clamping bounds the worst
-    // case to one throttle window.
+    // PA-15: schedule the write on the coming frame instead of running it
+    // inside the mutation that triggered it. Every persist serializes the
+    // whole state and structured-clones it over IPC, and the old leading edge
+    // paid that synchronously in the tab click / rename / cli-id adoption that
+    // caused it — a burst cloned per mutation, and even ONE isolated mutation
+    // cloned inside the interaction. Frame coalescing makes a burst (and an
+    // isolated mutation) clone once per frame; `throttledWrite` keeps the
+    // leading-edge 200 ms throttle, so a mutation lands at most one frame
+    // after the action instead of a full throttle window (what a pure
+    // trailing debounce would cost), and `flushPersist` — the beforeunload
+    // hook in index.ts — keeps the quit-path flush semantics.
+    if (this.persistFrameScheduled) return;
+    this.persistFrameScheduled = true;
+    const token = this.persistFrameToken;
+    const run = (): void => {
+      // flushPersist() bumped the token: this state is already on disk.
+      if (token !== this.persistFrameToken) return;
+      this.persistFrameScheduled = false;
+      this.throttledWrite();
+    };
+    // S3-03: Chromium never runs animation-frame callbacks for a hidden
+    // document — with the window minimized (the app's designed operating
+    // mode for agent swarms: git-status and the discussions badge both
+    // gate on document.hidden) the frame callback never fired, the latch
+    // above never cleared, and ZERO state writes reached disk for the
+    // whole hidden period; a crash then lost every session/rename/cost
+    // change. Timers keep running while hidden: fall back to one on the
+    // throttle window.
+    if (typeof document !== 'undefined' && document.hidden) {
+      setTimeout(run, AppState.PERSIST_THROTTLE_MS);
+    } else {
+      scheduleFrame(run);
+    }
+  }
+
+  /**
+   * The leading-edge 200 ms throttle, driven by the frame callback, by its own
+   * trailing timer, and by nothing else: `persist()` is the only caller above
+   * it, so the whole state is serialized at most once per frame.
+   * Clamped at zero: a backwards wall-clock jump (resume-from-suspend NTP
+   * correction, restored VM snapshot) makes `elapsed` negative, arming the
+   * trailing save for `PERSIST_THROTTLE_MS - elapsed` — minutes/hours —
+   * while the armed-timer guard below drops every write, so mutations stay
+   * memory-only for that whole window. Clamping bounds the worst case to one
+   * throttle window.
+   */
+  private throttledWrite(): void {
     const elapsed = Math.max(0, Date.now() - this.lastPersistAt);
     if (elapsed >= AppState.PERSIST_THROTTLE_MS && this.persistTimer === null) {
       this.writeStateNow();
@@ -280,13 +377,37 @@ class AppState {
     window.finevibe.store.save(serializeForSave(this.state));
   }
 
-  /** Drop the armed trailing save and write immediately (quit paths, tests). */
+  /**
+   * Drop the pending frame and the armed trailing save, write immediately
+   * (quit paths, tests). Cancelling the frame is what keeps the beforeunload
+   * flush the LAST write: a frame callback that fired afterwards would arm a
+   * trailing save for 200 ms past teardown.
+   */
   flushPersist(): void {
+    this.persistFrameToken++;
+    this.persistFrameScheduled = false;
     if (this.persistTimer !== null) {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
     this.writeStateNow();
+  }
+
+  /**
+   * S1-03: the beforeunload flush. store:save's async write can lose the
+   * race with process exit; saveSync blocks this renderer until main has
+   * written state.json synchronously (store.saveStateSync), so the window
+   * can only tear down after the write is on disk.
+   */
+  flushPersistSync(): void {
+    this.persistFrameToken++;
+    this.persistFrameScheduled = false;
+    if (this.persistTimer !== null) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.lastPersistAt = Date.now();
+    window.finevibe.store.saveSync(serializeForSave(this.state));
   }
 
   /**
@@ -397,7 +518,10 @@ class AppState {
     // lazy fill covers reads before `load()` (pre-hydration defaults).
     // Callers that render from this re-apply on
     // `state-loaded`/`preferences-changed`.
-    return (this.state.preferences ??= { ...defaultPreferences });
+    const prefs = this.state.preferences;
+    if (prefs) return prefs;
+    this.state.preferences = { ...defaultPreferences };
+    return this.state.preferences;
   }
 
   /** Sidebar-section lookup with the default-on fallback baked in. */
@@ -407,6 +531,21 @@ class AppState {
 
   setPreference<K extends keyof Preferences>(key: K, value: Preferences[K]): void {
     this.preferences[key] = value;
+    this.persist();
+    this.emit('preferences-changed');
+  }
+
+  /**
+   * Apply many preference keys with ONE persist + ONE 'preferences-changed'
+   * emit. The emit re-themes every live terminal (index.ts), so a settings
+   * save that touches N keys must not fire it N times.
+   */
+  setPreferences(entries: Partial<Preferences>): void {
+    const keys = Object.keys(entries) as (keyof Preferences)[];
+    if (keys.length === 0) return;
+    // Union-key per-entry assignment is untypeable; Object.assign applies
+    // exactly the Partial<Preferences> pairs entries carries.
+    Object.assign(this.preferences, entries);
     this.persist();
     this.emit('preferences-changed');
   }
@@ -449,7 +588,10 @@ class AppState {
     const sessions = project?.sessions ?? [];
 
     this.state.projects = this.state.projects.filter((p) => p.id !== id);
-    for (const s of sessions) this.sessionIndex.delete(s.id);
+    for (const s of sessions) {
+      this.sessionIndex.delete(s.id);
+      this.transcriptFlags.delete(s.id);
+    }
     if (this.state.activeProjectId === id) {
       this.state.activeProjectId = this.state.projects[0]?.id ?? null;
     }
@@ -515,7 +657,7 @@ class AppState {
       project.activeSessionId = existing.id;
       this.pushNav(existing.id);
       this.persist();
-      this.emit('session-changed');
+      this.emitSessionChanged({ sessionId: existing.id, kind: 'activate' });
     }
     return existing;
   }
@@ -534,7 +676,7 @@ class AppState {
     if (opts?.activate !== false) this.pushNav(session.id);
     this.persist();
     this.emit('session-added', { projectId, session });
-    this.emit('session-changed');
+    this.emitSessionChanged({ sessionId: session.id, kind: 'add' });
   }
 
   addDiffViewerSession(projectId: string, filePath: string, area: string, worktreePath?: string): SessionRecord | undefined {
@@ -635,10 +777,14 @@ class AppState {
     return this.team.members.find((m) => m.id === id);
   }
 
-  addTeamMember(input: Omit<TeamMember, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): TeamMember {
+  addTeamMember(input: Omit<TeamMember, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): TeamMember | undefined {
+    // C4TM-06: an oversize prompt dies in the CLI spawn (E2BIG class) — reject at the door.
+    if (isSystemPromptOversize(input.systemPrompt)) return undefined;
     const member = buildNewMember(input);
+    // C4TM-03: predefined ids arrive from upstream frontmatter (attacker-influenced);
+    // a duplicate id makes one card's delete remove both members — suffix it.
+    member.id = uniqueMemberId(this.team.members, member.id);
     this.team.members.push(member);
-    this.persist();
     this.emit('team-changed');
     if (member.installAsAgent) {
       void syncAgentInstallPure(window.finevibe.provider, this.team, member, () => this.persist());
@@ -647,6 +793,8 @@ class AppState {
   }
 
   updateTeamMember(id: string, patch: Partial<Omit<TeamMember, 'id' | 'createdAt'>>): TeamMember | undefined {
+    // C4TM-06: same spawn E2BIG cap as addTeamMember.
+    if (isSystemPromptOversize(patch.systemPrompt)) return undefined;
     const result = applyMemberPatch(this.team, id, patch);
     if (!result) return undefined;
     this.persist();
@@ -689,11 +837,6 @@ class AppState {
   setTeamPredefinedCache(suggestions: TeamMember[]): void {
     this.team.predefinedCache = { fetchedAt: Date.now(), suggestions };
     this.persist();
-  }
-
-  notifyTeamChanged(): void {
-    this.persist();
-    this.emit('team-changed');
   }
 
   // --- CLI provider profiles ---
@@ -826,7 +969,17 @@ class AppState {
     );
     if (!backend) return undefined;
 
-    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId, opts);
+    // C4T-01: derive the ordinal from the member's names across the live tabs
+    // and the state-wide session index — a live count reused closed tabs'
+    // numbers and produced a name colliding with a surviving tab.
+    const memberSessionNames = new Set<string>();
+    for (const entry of this.sessionIndex.values()) {
+      if (entry.session.teamMemberId === member.id) memberSessionNames.add(entry.session.name);
+    }
+    for (const s of project.sessions) {
+      if (s.teamMemberId === member.id) memberSessionNames.add(s.name);
+    }
+    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId, opts, memberSessionNames);
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);
     return session;
@@ -860,7 +1013,7 @@ class AppState {
       // setFileReaderLine and scrolls to the new position.
       if (activating || lineChanged) {
         this.persist();
-        this.emit('session-changed');
+        this.emitSessionChanged({ sessionId: existing.id, kind: 'activate' });
       }
       return existing;
     }
@@ -881,14 +1034,14 @@ class AppState {
     return session;
   }
 
-  removeSession(projectId: string, sessionId: string, opts?: { exitReason?: string; exitCode?: number; exitSignal?: number; processId?: number }): void {
+  removeSession(projectId: string, sessionId: string, opts?: { exitReason?: string; exitCode?: number; exitSignal?: number; processId?: number; deferRender?: boolean }): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
 
     // Archive CLI sessions before removing (cost data must be captured before session-removed triggers destroyTerminal)
     const session = project.sessions.find((s) => s.id === sessionId);
     if (session && isCliSession(session)) {
-      const transcriptAvailable = this.isArchivable(session, project);
+      const transcriptAvailable = this.isArchivable(session);
       // A creation entry exists for every live CLI session (history-on-create);
       // finalize it on close even when there is no transcript — the row then
       // carries `transcriptAvailable: false` and offers no Resume.
@@ -911,6 +1064,8 @@ class AppState {
     const closingIndex = project.sessions.findIndex((s) => s.id === sessionId);
     project.sessions = project.sessions.filter((s) => s.id !== sessionId);
     this.sessionIndex.delete(sessionId);
+    // PA-25: the prefetched transcript flag dies with the tab.
+    this.transcriptFlags.delete(sessionId);
     this.pruneNav(sessionId);
     if (project.activeSessionId === sessionId) {
       const newIndex = closingIndex > 0 ? closingIndex - 1 : 0;
@@ -924,8 +1079,11 @@ class AppState {
     // path (batch closes loop through it); a group below 2 members dissolves.
     pruneSessionFromTabGroups(project, sessionId);
     this.persist();
-    this.emit('session-removed', { projectId, sessionId });
-    this.emit('session-changed');
+    // S3-06: batch closes (removeAllSessions et al., mirroring removeProject's
+    // contract above) pass `deferRender` — consumers skip the per-event
+    // rebuild and the batch emits exactly one trailing render kick.
+    this.emit('session-removed', opts?.deferRender ? { projectId, sessionId, deferRender: true } : { projectId, sessionId });
+    this.emitSessionChanged(opts?.deferRender ? { sessionId, kind: 'remove', deferRender: true } : { sessionId, kind: 'remove' });
   }
 
   /** Resolve the config dir backing a provider profile (for transcript lookup). */
@@ -939,18 +1097,64 @@ class AppState {
    * transcript actually exists on disk. A cliSessionId alone is NOT enough — it is
    * assigned at PTY spawn (SessionStart hook) before any user interaction, so a session
    * that was never prompted has an id but no transcript and would fail to resume.
+   * PA-25: the answer is the flag prefetched at cli-id bind (see
+   * {@link transcriptFlags}). This runs on the close path, where the old
+   * `session:transcriptExistsSync` call blocked the whole renderer for a
+   * main-side stat/decompress per archived close. An unknown flag means
+   * PRESENT: archiving best-effort is the cheap direction — a Resume of a
+   * transcript that is really gone is caught by `resumeFromHistorySafe`,
+   * which re-checks asynchronously and drops the row.
    */
-  private isArchivable(session: SessionRecord, project: ProjectRecord): boolean {
+  private isArchivable(session: SessionRecord): boolean {
     if (!session.cliSessionId) return false;
     const providerId = session.providerId ?? 'claude';
-    return window.finevibe.session.transcriptExistsSync(
-      providerId,
-      session.cliSessionId,
-      project.path,
-      this.profileConfigDir(providerId, session.profileId),
-      // Pi/OMP transcripts live only in the exclusive per-launch dir.
-      session.id,
-    );
+    return this.transcriptFlags.get(session.id)?.get(`${providerId}|${session.cliSessionId}`) ?? true;
+  }
+
+  /**
+   * PA-25: ask main — asynchronously — whether this session's transcript
+   * exists, and cache the answer under the cli id it was measured for
+   * ({@link transcriptFlags}). Idempotent per (session, cli id). Called when a
+   * cli id is bound and for the tabs restored at load.
+   */
+  private prefetchTranscriptFlag(session: SessionRecord, project: ProjectRecord): Promise<void> {
+    const cliSessionId = session.cliSessionId;
+    if (!cliSessionId || !isCliSession(session)) return Promise.resolve();
+    const providerId = session.providerId ?? 'claude';
+    const key = `${providerId}|${cliSessionId}`;
+    if (this.transcriptFlags.get(session.id)?.has(key)) return Promise.resolve();
+    // One entry per session: the gate reads the CURRENT cli id only, so the id
+    // a `/clear` replaced is dropped together with its flag.
+    const flags = new Map<string, boolean>([[key, true]]);
+    this.transcriptFlags.set(session.id, flags);
+    const probe = window.finevibe.session.transcriptExists;
+    if (typeof probe !== 'function') return Promise.resolve();
+    return probe
+      .call(
+        window.finevibe.session,
+        providerId,
+        cliSessionId,
+        project.path,
+        this.profileConfigDir(providerId, session.profileId),
+        // Pi/OMP transcripts live only in the exclusive per-launch dir.
+        session.id,
+      )
+      .then((exists) => { flags.set(key, exists === true); })
+      // A failed probe keeps the optimistic default; resume re-checks.
+      .catch(() => {});
+  }
+
+  /**
+   * PA-25: seed the flags for the CLI tabs restored from disk, one probe at a
+   * time (see the call in load()).
+   */
+  private async prefetchRestoredTranscriptFlags(): Promise<void> {
+    for (const project of this.state.projects) {
+      for (const session of project.sessions) {
+        if (!session.cliSessionId) continue;
+        await this.prefetchTranscriptFlag(session, project);
+      }
+    }
   }
 
   private archiveSession(
@@ -1131,7 +1335,7 @@ class AppState {
     project.activeSessionId = sessionId;
     this.pushNav(sessionId);
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ sessionId, kind: 'activate' });
   }
 
   updateSessionCliId(projectId: string, sessionId: string, cliSessionId: string): void {
@@ -1147,7 +1351,7 @@ class AppState {
     // archive the previous session (only if its transcript exists) and reset the tab name.
     // isArchivable is checked while session.cliSessionId still holds the OLD id.
     if (session.cliSessionId) {
-      if (this.isArchivable(session, project)) {
+      if (this.isArchivable(session)) {
         this.archiveSession(project, session);
       }
       session.name = defaultSessionName(project);
@@ -1156,13 +1360,16 @@ class AppState {
     }
 
     session.cliSessionId = cliSessionId;
+    // PA-25: the archive gate for this tab must not pay a sync IPC at close,
+    // so availability is probed now, when the id is bound.
+    void this.prefetchTranscriptFlag(session, project);
     // Mirror the discovered id onto the active history entry (spawned before
     // the id existed) so the history row is resumable/live-linked immediately.
     if (this.preferences.sessionHistoryEnabled && syncCreateEntryCliId(project, sessionId, cliSessionId)) {
       this.emit('history-changed', project.id);
     }
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ sessionId, kind: 'metadata' });
   }
 
   hasSession(sessionId: string): boolean {
@@ -1222,7 +1429,7 @@ class AppState {
       }
     }
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ sessionId, kind: 'metadata' });
   }
 
   notifyBoardChanged(): void {
@@ -1250,7 +1457,7 @@ class AppState {
     project.activeSessionId = next;
     this.pushNav(next);
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ sessionId: next, kind: 'activate' });
   }
 
   gotoSession(index: number): void {
@@ -1261,7 +1468,7 @@ class AppState {
     project.activeSessionId = next;
     this.pushNav(next);
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ sessionId: next, kind: 'activate' });
   }
 
   removeAllSessions(projectId: string): void {
@@ -1284,7 +1491,13 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
     const ids = collectRemovalIds(project, mode, anchorSessionId);
-    for (const id of ids) this.removeSession(projectId, id);
+    if (ids.length === 0) return;
+    // S3-06: every per-session close defers its consumer renders (same
+    // contract removeProject uses); the single trailing `session-changed`
+    // kick below is the batch's one render — closing N tabs costs N cheap
+    // per-session teardowns + 1 render, not N rebuilds.
+    for (const id of ids) this.removeSession(projectId, id, { deferRender: true });
+    this.emitSessionChanged({ sessionId: ids[ids.length - 1], kind: 'remove' });
   }
 
   addInsightSnapshot(projectId: string, snapshot: InitialContextSnapshot): void {
@@ -1330,7 +1543,6 @@ class AppState {
     if (!project) return;
     project.overviewLayout = layout;
     this.persist();
-    this.emit('overview-layout-changed', projectId);
   }
 
   setGithubItemSeen(projectId: string, itemId: string, isoTimestamp: string): void {
@@ -1338,6 +1550,7 @@ class AppState {
     if (!project) return;
     if (!project.githubLastSeen) project.githubLastSeen = {};
     project.githubLastSeen[itemId] = isoTimestamp;
+    pruneGithubLastSeen(project.githubLastSeen);
     this.persist();
     this.emit('github-unread-changed', projectId);
   }
@@ -1354,6 +1567,7 @@ class AppState {
       }
     }
     if (!changed) return;
+    pruneGithubLastSeen(project.githubLastSeen);
     this.persist();
     this.emit('github-unread-changed', projectId);
   }
@@ -1368,7 +1582,7 @@ class AppState {
     if (!project) return;
     if (!reorderSessionInProject(project, sessionId, toIndex)) return;
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ sessionId, kind: 'reorder' });
   }
 
   /** Center-zone tab drop: group the dragged tab (or its whole group) with the target. */
@@ -1377,7 +1591,7 @@ class AppState {
     if (!project) return;
     if (!groupTabsInProject(project, draggedSessionId, targetSessionId)) return;
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ sessionId: draggedSessionId, kind: 'reorder' });
   }
 
   renameTabGroup(projectId: string, groupId: string, name: string): void {
@@ -1385,7 +1599,7 @@ class AppState {
     if (!project) return;
     if (!renameTabGroupInProject(project, groupId, name.slice(0, MAX_SESSION_NAME_LENGTH))) return;
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ kind: 'metadata' });
   }
 
   ungroupTabGroup(projectId: string, groupId: string): void {
@@ -1393,7 +1607,7 @@ class AppState {
     if (!project) return;
     if (!ungroupInProject(project, groupId)) return;
     this.persist();
-    this.emit('session-changed');
+    this.emitSessionChanged({ kind: 'metadata' });
   }
 }
 
@@ -1418,6 +1632,13 @@ export function _resetForTesting(): void {
     (appState as any)['persistTimer'] = null;
   }
   (appState as any)['lastPersistAt'] = 0;
+  // PA-15: a frame scheduled in a previous case must not write into this one.
+  (appState as any)['persistFrameToken']++;
+  (appState as any)['persistFrameScheduled'] = false;
+  (appState as any)['transcriptFlags'] = new Map();
+  // startTeamChat's ordinal scan (C4T-01) reads the whole index: a previous
+  // case's entries must not leak into this one.
+  (appState as any)['sessionIndex'] = new Map();
 }
 
 export const appState = new AppState();

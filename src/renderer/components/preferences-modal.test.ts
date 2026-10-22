@@ -21,6 +21,7 @@ const mockState = vi.hoisted(() => ({
   },
   on: vi.fn(() => () => {}),
   setPreference: vi.fn(),
+  setPreferences: vi.fn(),
   sidebarView: vi.fn((key: string) => (mockState.preferences.sidebarViews as Record<string, boolean>)[key] ?? true),
   setLocale: vi.fn(),
 }));
@@ -286,7 +287,8 @@ describe('showPreferencesModal theme preference', () => {
 
     click(getElement('preferences-confirm'));
 
-    expect(mockState.setPreference).toHaveBeenCalledWith('theme', 'light');
+    // C4S-01: appearance save() batches through setPreferences (one emit).
+    expect(mockState.setPreferences).toHaveBeenCalledWith(expect.objectContaining({ theme: 'light' }));
   });
 
   it('restores the original theme on cancel', async () => {
@@ -366,22 +368,103 @@ describe('General section plan-mode defaults', () => {
     });
   });
 
-  it('renders one row per provider, disables the unsupported one, and persists toggles immediately', async () => {
+  it('renders only the selected default tool row, persists toggles immediately, and re-renders on tool change', async () => {
     const { showPreferencesModal } = await import('./preferences-modal.js');
 
     showPreferencesModal();
     selectPreferencesSection('general');
 
     const claude = getElement('pref-plan-mode-claude');
-    const pi = getElement('pref-plan-mode-pi');
     expect(claude.type).toBe('checkbox');
     expect(claude.checked).toBe(true);
     expect(claude.disabled).toBe(false);
-    expect(pi.disabled).toBe(true);
-    expect(pi.closest('.modal-toggle-field').title).toBe('Provider does not support plan mode');
+    expect(findById(docBody, 'pref-plan-mode-pi')).toBeNull();
 
     claude.checked = false;
     claude.dispatchEvent({ type: 'change' });
     expect(mockState.setPreference).toHaveBeenCalledWith('planModeDefaults', { claude: false });
+
+    selectState.instances.get('pref-default-provider')!.setValue('pi');
+    expect(findById(docBody, 'pref-plan-mode-claude')).toBeNull();
+    const pi = getElement('pref-plan-mode-pi');
+    expect(pi.disabled).toBe(true);
+    expect(pi.closest('.modal-toggle-field').title).toBe('Provider does not support plan mode');
+  });
+});
+
+describe('Enter confirmation is stack-aware', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    selectState.reset();
+    docBody = makeElement('body');
+
+    mockState.preferences.theme = 'dark';
+
+    vi.stubGlobal('document', {
+      documentElement: { dataset: {} as Record<string, string> },
+      body: docBody,
+      getElementById(id: string) { return findById(docBody, id); },
+      createElement(tagName: string) { return makeElement(tagName); },
+      createTextNode(text: string) { return { textContent: text }; },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+
+    vi.stubGlobal('window', {
+      finevibe: {
+        provider: {
+          listProviders: vi.fn(async () => []),
+          checkBinary: vi.fn(async () => true),
+        },
+        settings: {
+          validate: vi.fn(async () => ({ statusLine: 'missing', hooks: 'missing', hookDetails: {} })),
+          reinstall: vi.fn(async () => {}),
+        },
+        menu: { rebuild: vi.fn() },
+        app: { getVersion: vi.fn(async () => '0.0.0'), openExternal: vi.fn() },
+        update: {
+          checkNow: vi.fn(async () => {}),
+          onAvailable: vi.fn(() => () => {}),
+          onError: vi.fn(() => () => {}),
+        },
+      },
+    });
+  });
+
+  it('ignores Enter while a nested dialog is stacked above preferences', async () => {
+    const { showPreferencesModal } = await import('./preferences-modal.js');
+    const { pushModal, modalStackDepth } = await import('./modal-manager.js');
+
+    showPreferencesModal();
+    const overlay = getElement('preferences-overlay');
+    expect(overlay.style.display).toBe('');
+    expect(modalStackDepth()).toBe(1);
+
+    // Every document keydown listener in play: Preferences' Enter handler plus
+    // modal-manager's capture-phase ESC listener, dispatched as a real document
+    // would deliver one keypress.
+    const keydown = ((document as any).addEventListener as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([type]: [string]) => type === 'keydown')
+      .map(([, cb]: [string, (e: Record<string, unknown>) => void]) => cb);
+    const pressEnter = () => {
+      for (const listener of keydown) listener({ key: 'Enter', preventDefault: () => {} });
+    };
+
+    // A nested Add-profile / Rename / Delete dialog from modal.ts registers its
+    // own Enter handler; Enter there must not also confirm Preferences (which
+    // would close the modal the nested dialog lives in).
+    const popNested = pushModal({ onEscape: vi.fn() });
+    expect(modalStackDepth()).toBe(2);
+
+    pressEnter();
+    expect(overlay.style.display).toBe('');
+    expect(mockState.setPreference).not.toHaveBeenCalled();
+
+    popNested();
+    expect(modalStackDepth()).toBe(1);
+
+    pressEnter();
+    expect(overlay.style.display).toBe('none');
   });
 });

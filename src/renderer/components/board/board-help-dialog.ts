@@ -1,11 +1,12 @@
 import { createModalShell, createModalButton } from '../modal-shell.js';
 import { pushModal } from '../modal-manager.js';
 import { buildSection, badge, mono } from '../help-shared.js';
+import { ModalCloser } from '../modal-close.js';
 import { createDefaultBoard } from '../../state.js';
 import { t } from '../../i18n.js';
 import type { ColumnBehavior } from '../../../shared/types.js';
 
-let cleanupFn: (() => void) | null = null;
+const closer = new ModalCloser();
 
 function behaviorDescription(behavior: ColumnBehavior): string {
   switch (behavior) {
@@ -46,8 +47,7 @@ function buildDefaultColumnsSection(): HTMLElement {
 }
 
 export function showBoardHelpDialog(): void {
-  cleanupFn?.();
-  cleanupFn = null;
+  closer.reset();
 
   const { overlay, body, actions } = createModalShell({
     id: 'board-help-overlay',
@@ -95,26 +95,15 @@ export function showBoardHelpDialog(): void {
   body.appendChild(container);
   overlay.style.display = '';
 
-  const close = () => {
-    overlay.style.display = 'none';
-    cleanupFn?.();
-    cleanupFn = null;
-  };
+  const close = () => closer.close(overlay);
 
-  const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      close();
-    }
-  };
-
-  const unregisterEsc = pushModal({ onEscape: close });
+  // UI2-9: ENTER is dismissed through the manager's top-of-stack routing, so a
+  // dialog stacked under this one is no longer closed by the same keypress.
+  const unregisterModal = pushModal({ onEscape: close, onEnter: close });
   confirmBtn.addEventListener('click', close);
-  document.addEventListener('keydown', handleKeydown);
 
-  cleanupFn = () => {
-    unregisterEsc();
+  closer.setCleanup(() => {
+    unregisterModal();
     confirmBtn.removeEventListener('click', close);
-    document.removeEventListener('keydown', handleKeydown);
-  };
+  });
 }

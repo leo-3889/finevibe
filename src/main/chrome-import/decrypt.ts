@@ -2,6 +2,7 @@ import { isMac, isWin } from '../platform';
 import * as macDecrypt from './decrypt-mac';
 import * as linuxDecrypt from './decrypt-linux';
 import * as winDecrypt from './decrypt-win';
+import { stripDomainHash } from './domain-hash';
 
 export interface DecryptResult {
   text: string | null;
@@ -29,16 +30,16 @@ export function decryptChromeValue(encrypted: Buffer, hasDomainHash: boolean): D
       if (plain === null) {
         return { text: null, skipped: null, keyError: macDecrypt.getKeyError() ?? 'macOS keychain unavailable' };
       }
-      return { text: macDecrypt.stripDomainHash(plain, hasDomainHash), skipped: null };
+      return { text: stripDomainHash(plain, hasDomainHash), skipped: null };
     }
     if (isWin) {
       const plain = winDecrypt.decryptValue(encrypted);
       if (plain === null) return { text: null, skipped: 'v11' };
-      return { text: winDecrypt.stripDomainHash(plain, hasDomainHash), skipped: null };
+      return { text: stripDomainHash(plain, hasDomainHash), skipped: null };
     }
     const plain = linuxDecrypt.decryptValue(encrypted);
     return {
-      text: linuxDecrypt.stripDomainHash(plain, hasDomainHash),
+      text: stripDomainHash(plain, hasDomainHash),
       skipped: null,
       keyError: linuxDecrypt.getKeyError() ?? undefined,
     };

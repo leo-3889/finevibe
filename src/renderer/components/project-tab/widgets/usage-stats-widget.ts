@@ -23,7 +23,7 @@ function formatDate(iso: string): string {
 }
 
 function shortDay(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00');
+  const d = new Date(`${dateStr}T00:00:00`);
   return d.toLocaleDateString(undefined, { weekday: 'short' });
 }
 
@@ -146,8 +146,13 @@ export const createUsageStatsWidget: WidgetFactory = () => {
   root.className = 'widget-usage-stats';
 
   let destroyed = false;
+  // UI2-10: per-instance generation token (top-files-widget.ts pattern) — two
+  // refreshes can resolve out of order, and an older stats payload must not
+  // overwrite the newer render.
+  let renderToken = 0;
 
   async function render(): Promise<void> {
+    const token = ++renderToken;
     root.innerHTML = '';
     renderEmpty(root, 'Loading…');
 
@@ -157,7 +162,7 @@ export const createUsageStatsWidget: WidgetFactory = () => {
     } catch {
       stats = null;
     }
-    if (destroyed) return;
+    if (destroyed || token !== renderToken) return;
 
     root.innerHTML = '';
     if (stats) {
@@ -173,6 +178,7 @@ export const createUsageStatsWidget: WidgetFactory = () => {
     element: root,
     destroy() {
       destroyed = true;
+      renderToken++;
     },
     refresh() {
       render();

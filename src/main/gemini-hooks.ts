@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { STATUS_DIR } from './hook-status';
 import { statusCmd as mkStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, installEventScript, wrapPythonHookCmd, installHookScripts } from './hook-commands';
 import { readJsonSafe } from './fs-utils';
+import { cleanHooks, isIdeHook, type HookHandler, type HooksConfig } from './hooks-utils';
 import type { InspectorEventType, SettingsValidationResult } from '../shared/types';
 import { pyLiteral } from '../shared/python';
 
@@ -16,42 +17,9 @@ export const SESSION_ID_VAR = 'FINEVIBE_SESSION_ID';
 
 const EXPECTED_HOOK_EVENTS = ['SessionStart', 'BeforeAgent', 'AfterTool', 'AfterAgent', 'SessionEnd'];
 
-interface HookHandler {
-  type: string;
-  command: string;
-  name?: string;
-}
-
-interface HookMatcherEntry {
-  matcher?: string;
-  hooks: HookHandler[];
-}
-
-type HooksConfig = Record<string, HookMatcherEntry[]>;
-
-function isIdeHook(h: HookHandler): boolean {
-  return h.command?.includes(GEMINI_HOOK_MARKER) ?? false;
-}
-
 // ---------------------------------------------------------------------------
 // Hook installation
 // ---------------------------------------------------------------------------
-
-function cleanHooks(existing: HooksConfig): HooksConfig {
-  const cleaned: HooksConfig = {};
-  for (const [event, matchers] of Object.entries(existing)) {
-    const filteredMatchers = matchers
-      .map((m) => ({
-        ...m,
-        hooks: (m.hooks ?? []).filter((h) => !isIdeHook(h)),
-      }))
-      .filter((m) => m.hooks.length > 0);
-    if (filteredMatchers.length > 0) {
-      cleaned[event] = filteredMatchers;
-    }
-  }
-  return cleaned;
-}
 
 export function installGeminiHooks(): void {
   fs.mkdirSync(GEMINI_DIR, { recursive: true });
@@ -72,7 +40,7 @@ export function installGeminiHooks(): void {
     }
   }
   const existingHooks: HooksConfig = (settings.hooks ?? {}) as HooksConfig;
-  const cleaned = cleanHooks(existingHooks);
+  const cleaned = cleanHooks(existingHooks, GEMINI_HOOK_MARKER);
 
   installHookScripts();
 
@@ -156,7 +124,7 @@ export function validateGeminiHooks(): SettingsValidationResult {
 
   for (const event of EXPECTED_HOOK_EVENTS) {
     const matchers = existingHooks[event];
-    const installed = matchers?.some(m => m.hooks?.some(h => isIdeHook(h))) ?? false;
+    const installed = matchers?.some(m => m.hooks?.some(h => isIdeHook(h, GEMINI_HOOK_MARKER))) ?? false;
     hookDetails[event] = installed;
     if (installed) found++;
   }
@@ -180,7 +148,7 @@ export function cleanupGeminiHooks(): void {
   if (!settings) return;
 
   const existingHooks: HooksConfig = (settings.hooks ?? {}) as HooksConfig;
-  const cleaned = cleanHooks(existingHooks);
+  const cleaned = cleanHooks(existingHooks, GEMINI_HOOK_MARKER);
 
   if (Object.keys(cleaned).length === 0) {
     delete (settings as Record<string, unknown>).hooks;

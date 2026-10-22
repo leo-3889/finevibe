@@ -9,6 +9,10 @@
 // Fix: a single capture-phase keydown listener on document. Capture flows
 // window -> document -> ... -> textarea, so it runs BEFORE xterm. It dismisses
 // the top-most modal and stops the event, so ESC never reaches the PTY.
+//
+// The same single listener routes ENTER (UI2-9): a dialog opts in with
+// `onEnter`, and only the top-of-stack entry is dismissed, so stacked
+// dialogs no longer close together on one keypress.
 
 export interface ModalEscapeEntry {
   /** Called when ESC dismisses this modal. */
@@ -19,12 +23,28 @@ export interface ModalEscapeEntry {
    * PTY) but onEscape is not called and the entry is not popped.
    */
   canEscape?: () => boolean;
+
+  /**
+   * UI2-9: bound ENTER. Only the top-of-stack entry is asked, so one Enter
+   * dismisses one dialog. Dialogs without an Enter binding leave the key to
+   * the app (form submits, palette commits, PTY).
+   */
+  onEnter?: () => void;
 }
 
 const stack: ModalEscapeEntry[] = [];
 let listenerInstalled = false;
 
 function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Enter') {
+    if (stack.length === 0) return;
+    const top = stack[stack.length - 1];
+    if (!top.onEnter) return; // top dialog does not bind ENTER: the key keeps flowing
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    top.onEnter();
+    return;
+  }
   if (e.key !== 'Escape') return;
   if (stack.length === 0) return; // no modal open — let ESC flow to the app/terminal
 

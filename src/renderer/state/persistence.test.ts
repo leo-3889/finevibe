@@ -1,9 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../session-cost.js', () => ({ restoreCost: vi.fn() }));
 vi.mock('../session-context.js', () => ({ restoreContext: vi.fn() }));
 
-import { serializeForSave, hydrateLoadedState } from './persistence.js';
+import { serializeForSave, hydrateLoadedState, PREDEFINED_CACHE_PERSIST_MAX_AGE_MS, PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS } from './persistence.js';
 import type { PersistedState, Preferences, SessionRecord } from '../../shared/types.js';
 
 function baseState(session: Partial<SessionRecord>): PersistedState {
@@ -68,6 +68,48 @@ describe('serializeForSave', () => {
   });
 });
 
+describe('serializeForSave predefined-cache eviction (C4TM-07)', () => {
+  const suggestions = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `s${i}`, name: `S${i}`, role: 'r', systemPrompt: 'p', source: 'custom', createdAt: 0, updatedAt: 0,
+    }));
+  function stateWithCache(fetchedAt: number, count: number): PersistedState {
+    const state = baseState({});
+    state.team = { members: [], predefinedCache: { fetchedAt, suggestions: suggestions(count) } };
+    return state;
+  }
+
+  it('drops a cache older than the persist age bound', () => {
+    const out = serializeForSave(stateWithCache(Date.now() - PREDEFINED_CACHE_PERSIST_MAX_AGE_MS - 1, 5));
+    expect(out.team?.predefinedCache).toBeUndefined();
+  });
+
+  it('keeps a fresh cache', () => {
+    const out = serializeForSave(stateWithCache(Date.now(), 5));
+    expect(out.team?.predefinedCache?.suggestions).toHaveLength(5);
+  });
+
+  it('caps a fresh oversized corpus at the persist suggestion cap', () => {
+    const out = serializeForSave(stateWithCache(Date.now(), 500));
+    expect(out.team?.predefinedCache?.suggestions).toHaveLength(PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS);
+    expect(out.team?.predefinedCache?.suggestions[0].id).toBe('s0');
+  });
+
+  it('leaves a cache-less team untouched', () => {
+    const state = baseState({});
+    state.team = { members: [] };
+    const out = serializeForSave(state);
+    expect(out.team).toEqual({ members: [] });
+    expect('predefinedCache' in (out.team ?? {})).toBe(false);
+  });
+
+  it('never mutates the in-memory state (the live cache keeps serving the picker)', () => {
+    const state = stateWithCache(Date.now() - 25 * 60 * 60 * 1000, 500);
+    serializeForSave(state);
+    expect(state.team?.predefinedCache?.suggestions).toHaveLength(500);
+  });
+});
+
 describe('hydrateLoadedState', () => {
   it('migrates the legacy global defaultProfileId to the provider global default', () => {
     const state = baseState({});
@@ -127,5 +169,91 @@ describe('hydrateLoadedState active rows', () => {
     expect(live.state).toBe('active');
     expect(orphan.state).toBe('closed');
     expect(orphan.closedAt).toBeTruthy();
+  });
+});
+
+describe('hydrateLoadedState remote-terminal drop (C5R-01)', () => {
+  // Remote-terminal pane instances are created by share-manager only during
+  // a live share (split-layout skips the type at hydration), so a
+  // resurrected session is a blank dead-end tab on every restart.
+  it('drops remote-terminal sessions from the hydrated tab list', () => {
+    const state = baseState({});
+    state.projects[0].sessions.push({
+      id: 'r1', name: 'Remote', type: 'remote-terminal', cliSessionId: null, createdAt: '0',
+    });
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].sessions.map((s) => s.id)).toEqual(['s1']);
+  });
+
+  it('finalizes active history rows whose dropped tab was remote-terminal', () => {
+    const state = baseState({});
+    state.projects[0].sessions.push({
+      id: 'r1', name: 'Remote', type: 'remote-terminal', cliSessionId: null, createdAt: '0',
+    });
+    state.projects[0].sessionHistory = [
+      { id: 'h1', name: 'R', providerId: 'claude', cliSessionId: null, createdAt: '0', state: 'active', liveSessionId: 'r1' },
+    ];
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].sessionHistory![0].state).toBe('closed');
+    expect(state.projects[0].sessionHistory![0].closedAt).toBeTruthy();
+  });
+});
+
+describe('hydrateLoadedState githubLastSeen age prune (PA-31)', () => {
+  // Fixed clock so the 90-day cutoff is deterministic.
+  const NOW = Date.parse('2026-10-22T00:00:00.000Z');
+  const iso = (daysAgo: number) => new Date(NOW - daysAgo * 86_400_000).toISOString();
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('drops entries older than 90 days and unparseable timestamps, keeps fresh ones', () => {
+    const state = baseState({});
+    state.projects[0].githubLastSeen = {
+      fresh: iso(1),
+      boundary: iso(90), // exactly at the cutoff: kept (only strictly older is dropped)
+      stale: iso(90.5),
+      garbage: 'not-a-date', // cannot be aged → dropped
+    };
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].githubLastSeen).toEqual({ fresh: iso(1), boundary: iso(90) });
+  });
+
+  it('deletes the key when every entry is dropped (no empty {} reaches disk)', () => {
+    const state = baseState({});
+    state.projects[0].githubLastSeen = { stale: iso(91), garbage: 'x' };
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect('githubLastSeen' in state.projects[0]).toBe(false);
+  });
+
+  it('keeps an all-fresh map untouched, by reference (no identity churn)', () => {
+    const state = baseState({});
+    const seen = { pr: iso(89), issue: iso(2) };
+    state.projects[0].githubLastSeen = seen;
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].githubLastSeen).toBe(seen);
+  });
+
+  it('does not create githubLastSeen for a project that has none', () => {
+    const state = baseState({});
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect('githubLastSeen' in state.projects[0]).toBe(false);
   });
 });
