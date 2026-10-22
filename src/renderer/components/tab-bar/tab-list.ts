@@ -186,7 +186,7 @@ function createGroupEl(project: ProjectRecord, group: TabGroupRecord): HTMLEleme
   // The label deliberately contains no .tab-name: that selector is the
   // rename-focus guard at split-layout.ts. The name and tooltip are esc()'d,
   // the same contract as the tab innerHTML in render().
-  // pi-lens-ignore: xss-innerhtml
+  // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
   label.innerHTML = `
     <span class="tab-group-dot" title="${esc(t('tab.group.renameTooltip'))}"></span>
     <span class="tab-group-name">${esc(group.name)}</span>
@@ -544,6 +544,12 @@ export function render(): void {
   bankScroll(tabListEl.scrollLeft);
   if (renameInputOpen()) { stripDirtyDuringRename = true; return; }
   stripDirtyDuringRename = false;
+  // C2R-10: a structural render mid-drag (unread kick, share change, …)
+  // detaches every node the drag state points at. Without the reset the
+  // group-dwell timer fires against a detached tab and draggingSessionId
+  // keeps canDropToGroup() answering for a drag that no longer exists.
+  clearGroupDwell();
+  draggingSessionId = null;
   tabListEl.innerHTML = '';
   const project = appState.activeProject;
   if (!project) {
@@ -590,7 +596,7 @@ export function render(): void {
     const namePrefix = tabNamePrefix(session);
     const shareIndicator = sharing ? `<span class="tab-share-indicator" title="${esc(t('tab.shareIndicatorTooltip'))}"></span>` : '';
     const statusDot = isSpecial ? '' : `<span class="tab-status ${status}" aria-hidden="true">${STATUS_GLYPH[status]}</span>`;
-    // pi-lens-ignore: xss-innerhtml
+    // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
     tab.innerHTML = `
       ${statusDot}
       <span class="tab-name">${namePrefix}${esc(displayName)}</span>
@@ -801,7 +807,7 @@ function patchTabMetadata(project: ProjectRecord, session: SessionRecord, tab: H
   if (tab.dataset.tabName !== displayName) {
     tab.dataset.tabName = displayName;
     const nameSpan = tab.querySelector<HTMLElement>('.tab-name');
-    // pi-lens-ignore: xss-innerhtml — prefix is static markup, name is escaped
+    // pi-lens-ignore: xss-innerhtml, slop, no-inner-html — prefix is static markup, name is escaped
     if (nameSpan) nameSpan.innerHTML = `${tabNamePrefix(session)}${esc(displayName)}`;
   }
 }

@@ -202,7 +202,14 @@ export function initSplitLayout(): void {
 
 function onSessionAdded(data: unknown): void {
   const { projectId, session } = data as { projectId: string; session: { id: string; type?: string; cliSessionId: string | null; providerId?: string; args?: string; envVars?: string; profileId?: string; cwd?: string; diffFilePath?: string; diffArea?: string; worktreePath?: string; fileReaderPath?: string; fileReaderLine?: number; browserTabUrl?: string } };
-  const project = appState.activeProject;
+  // C2R-09: every branch below builds from `project` (path, id, config dir),
+  // so reading it off appState.activeProject put a background add — board
+  // run-task, team, plan sessions — on the WRONG cwd. The payload project owns
+  // the session: the pane is created for it and stays unattached until
+  // renderLayout shows that project (the lazy loop skips sessions that already
+  // carry an instance), which keeps the eager spawn + the pending-prompt
+  // hand-off this handler also performs.
+  const project = appState.projects.find((p) => p.id === projectId) ?? appState.activeProject;
   if (!project) return;
 
   if (session.type === 'file-reader') {

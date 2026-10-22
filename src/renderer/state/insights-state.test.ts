@@ -183,6 +183,17 @@ describe('dismissInsight()', () => {
     appState.dismissInsight(project.id, 'insight-b');
     expect(project.insights!.dismissed).toEqual(['insight-a', 'insight-b']);
   });
+
+  it('caps the persisted dismissed list FIFO at 200 (C2R-17)', () => {
+    const project = addProject();
+    for (let i = 0; i < 205; i++) appState.dismissInsight(project.id, `insight-${i}`);
+    expect(project.insights!.dismissed).toHaveLength(200);
+    // FIFO: the oldest ids fall off, the newest 200 survive.
+    expect(project.insights!.dismissed[0]).toBe('insight-5');
+    expect(project.insights!.dismissed[199]).toBe('insight-204');
+    expect(appState.isInsightDismissed(project.id, 'insight-0')).toBe(false);
+    expect(appState.isInsightDismissed(project.id, 'insight-204')).toBe(true);
+  });
 });
 
 describe('isInsightDismissed()', () => {

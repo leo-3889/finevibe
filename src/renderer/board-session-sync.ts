@@ -66,11 +66,16 @@ export function initBoardSessionSync(): void {
   });
 
   appState.on('session-removed', (data) => {
-    const { projectId, sessionId } = data as { projectId: string; sessionId: string };
+    const { projectId, sessionId, deferRender } = data as { projectId: string; sessionId: string; deferRender?: boolean };
     const task = getTaskBySessionId(sessionId, projectId);
     if (task) {
       updateTask(task.id, { sessionId: undefined }, projectId);
     }
+    // C2R-14: batch closes (Close All / removeAllSessions) mark every
+    // per-session event `deferRender`. The detach above is what the event is
+    // for and stays; the full project × task scan is the N-per-batch cost, and
+    // the batch's trailing `session-changed` kick diffs the survivors once.
+    if (deferRender) return;
     fullScanSync();
   });
 

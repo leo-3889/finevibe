@@ -75,7 +75,9 @@ export function initTabBar(): void {
   appState.on('project-changed', render);
   appState.on('project-removed', (id) => { if (typeof id === 'string') clearTabScrollState(id); });
   appState.on('session-changed', handleSessionChanged);
-  appState.on('layout-changed', render);
+  // C2R-12: the strip renders no layout state (only session-menu's swarm
+  // entry reads layout.mode, at open time), so layout toggles never needed a
+  // rebuild — split-layout owns `layout-changed` and renders the panes.
   onShareChange(render);
 
   onStatusChange(updateTabStatus);
@@ -83,7 +85,10 @@ export function initTabBar(): void {
   // PA-11: flip the tab dots in place; full strip render only if the strip
   // no longer mirrors the model (session-unread already coalesces per frame).
   onUnreadChange(() => { if (!patchUnread()) render(); });
-  onGithubUnreadChange(render);
+  // C2R-08: github notifications only move the project-tab dots, which
+  // patchUnread already recomputes (hasGithubUnread); the full strip rebuild
+  // per notify was pure waste.
+  onGithubUnreadChange(() => { if (!patchUnread()) render(); });
 
   onGitStatusChange((projectId) => {
     if (projectId === appState.activeProjectId) renderGitStatus();

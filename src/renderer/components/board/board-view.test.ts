@@ -39,7 +39,7 @@ vi.mock('../../board-state.js', async (importOriginal) => {
 
 import { appState, _resetForTesting } from '../../state.js';
 import { addTask, updateTask } from '../../board-state.js';
-import { initBoard, renderBoard } from './board-view.js';
+import { initBoard, renderBoard, resetBoardView } from './board-view.js';
 import { instances as kanbanInstances } from '../kanban/instance.js';
 
 function setupKanban(): HTMLElement {
@@ -164,5 +164,38 @@ describe('board-view inline tag input (UI3-10)', () => {
 
     expect(mockAddTag).not.toHaveBeenCalled();
     expect(container.querySelector('.board-tag-row-input')).toBeNull();
+  });
+});
+
+describe('board-view singleton reset (C2R-16)', () => {
+  it('rebuilds for a new pane instead of reviving the detached tree', () => {
+    const container = setupKanban();
+    addTask({ title: 'T', prompt: 'p', columnId: 'col-a' });
+    initBoard();
+    renderBoard();
+    const card = container.querySelector('.board-card');
+    expect(card).not.toBeNull();
+
+    // The pane that owned the singleton is destroyed and the board is
+    // unchanged: without the reset both the retained element and the last
+    // change key short-circuit the next pane's render (and the per-tick
+    // status/cost patches keep scanning the detached tree meanwhile).
+    kanbanInstances.clear();
+    document.body.innerHTML = '';
+    resetBoardView();
+
+    const next = document.createElement('div');
+    document.body.appendChild(next);
+    kanbanInstances.set('kb-1', {
+      sessionId: 'kb-1',
+      projectId: appState.activeProject!.id,
+      element: next,
+      destroy: () => {},
+    });
+    renderBoard();
+
+    const rebuilt = next.querySelector('.board-card');
+    expect(rebuilt).not.toBeNull();
+    expect(rebuilt).not.toBe(card);
   });
 });

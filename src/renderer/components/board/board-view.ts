@@ -220,7 +220,7 @@ function textHash(text: string): number {
   return h >>> 0;
 }
 
-function boardChangeKey(board: BoardData): string {
+export function boardChangeKey(board: BoardData): string {
   const cols = [...board.columns]
     .sort((a, b) => a.order - b.order)
     .map((c) => `${c.id}:${c.order}:${c.title}:${c.behavior}:${c.color ?? ''}:${c.locked ? 1 : 0}`)
@@ -247,6 +247,17 @@ export function hideBoardView(): void {
   if (boardEl) {
     boardEl.style.display = 'none';
   }
+}
+
+/**
+ * C2R-16: the pane that owns the singleton is gone. Without the reset the
+ * per-tick status/cost/context patches above keep scanning — and retaining —
+ * a detached tree. renderBoard() rebuilds on demand (exported key: C2R-15,
+ * reused by the project-tab kanban widget).
+ */
+export function resetBoardView(): void {
+  boardEl = null;
+  lastBoardKey = '';
 }
 
 function activeKanbanContainer(): HTMLElement | null {

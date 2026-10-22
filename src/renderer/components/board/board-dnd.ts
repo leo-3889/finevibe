@@ -7,6 +7,9 @@ let startX = 0;
 let startY = 0;
 const DRAG_THRESHOLD = 5;
 let pointerStarted = false;
+// The pointer that owns the gesture; a cancel from any other pointer (a second
+// touch) must not end it (CI-04).
+let dragPointerId: number | null = null;
 const dragEndCallbacks = new Set<() => void>();
 let activeDropTarget: HTMLElement | null = null;
 let cachedTargets: { el: HTMLElement; left: number; right: number; centerY: number }[] = [];
@@ -25,10 +28,25 @@ export function initBoardDnd(): void {
   initialized = true;
 }
 
-// An aborted gesture is not a drop: cancel silently, without the drag-end
-// callbacks (same shape as the non-drag branch of onPointerUp).
-function onPointerCancel(): void {
+/**
+ * End the gesture and flush the drag-end callbacks. CI-04: a cancelled gesture
+ * (touch-scroll takeover, gesture zoom, window blur) is not a drop, but the
+ * renders the drag deferred MUST still land — `pointercancel` used to skip the
+ * flush, leaving the board showing its pre-drag columns indefinitely.
+ */
+function finish(): void {
   cancelDrag();
+  for (const cb of dragEndCallbacks) cb();
+}
+
+function onPointerCancel(e: PointerEvent): void {
+  // Nothing was in flight: keep the silent teardown of the non-drag branch.
+  if (!isDragging && !pointerStarted) {
+    cancelDrag();
+    return;
+  }
+  if (dragPointerId !== null && e.pointerId !== dragPointerId) return;
+  finish();
 }
 
 export function isDragActive(): boolean {
@@ -54,6 +72,7 @@ function onPointerDown(e: PointerEvent): void {
   startX = e.clientX;
   startY = e.clientY;
   pointerStarted = true;
+  dragPointerId = e.pointerId ?? null;
 
   // Prevent the browser from stealing the gesture (text selection, etc.)
   e.preventDefault();
@@ -108,8 +127,7 @@ function onPointerUp(e: PointerEvent): void {
     moveTask(dragTaskId, columnId, order);
   }
 
-  cancelDrag();
-  for (const cb of dragEndCallbacks) cb();
+  finish();
 }
 
 function cancelDrag(): void {
@@ -127,6 +145,7 @@ function cancelDrag(): void {
   pointerStarted = false;
   activeDropTarget = null;
   currentScope = null;
+  dragPointerId = null;
 }
 
 /**

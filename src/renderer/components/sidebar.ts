@@ -1,5 +1,5 @@
 import { appState, MAX_PROJECT_NAME_LENGTH, ProjectRecord } from '../state.js';
-import { showModal, setModalError, closeModal, showConfirmDialog, FieldDef } from './modal.js';
+import { showModal, setModalError, closeModal, showConfirmDialog, FieldDef, registerModalCleanup } from './modal.js';
 import { showPreferencesModal } from './preferences-modal.js';
 import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unread.js';
 import { onChange as onActivityChange, STATUS_GLYPH } from '../session-activity.js';
@@ -98,15 +98,20 @@ export function initSidebar(): void {
   // S3-05: an add/close moves one row's count pill + status dot. The old
   // full render() rebuilt the active project's panel — wiping an open Files
   // tree and evicting every cached directory listing (renderFileTree →
-  // refreshFolderCache). Structural events (project-*/layout-changed) keep
-  // the full render above.
+  // refreshFolderCache). Structural events (project-*) keep the full render
+  // above.
   appState.on('session-added', onSessionRowsChanged);
   appState.on('session-removed', onSessionRowsChanged);
-  appState.on('layout-changed', render);
+  // C2R-12: layout mode reaches nothing in the project list, and this render
+  // is far from free — it rebuilds the active panel, wiping the Files tree and
+  // re-reading the root. split-layout owns `layout-changed`.
   // The badge tracks the project's *current* coding tool, which moves whenever
   // the active tab changes. `session-changed` deliberately does not re-render
   // the sidebar (it fires constantly), so patch the one node instead.
   appState.on('session-changed', syncProfileBadge);
+  // CI-06: the same event is the batch closes' trailing render kick; flush the
+  // row refreshes the deferred `session-removed` events skipped.
+  appState.on('session-changed', flushDeferredRows);
   appState.on('readiness-changed', render);
 
   // PA-11: an unread transition only flips the project name's accent class;
@@ -255,6 +260,12 @@ function syncProfileBadge(): void {
   );
 }
 
+// CI-06: batch closes (removeAllSessions / Close All) mark every per-session
+// `session-removed` `deferRender` and end with one trailing `session-changed`
+// kick. The projects the batch touched are remembered here and refreshed once
+// by that kick; the old path ran the full render() once per removal.
+const deferredRowProjects = new Set<string>();
+
 /**
  * S3-05: surgical session-row patch. Only two nodes change when a session
  * is added or closed in a project that already has a row: the session-count
@@ -264,8 +275,12 @@ function syncProfileBadge(): void {
  * list just gained a row) falls back to the full render.
  */
 function onSessionRowsChanged(data?: unknown): void {
-  const projectId = (data as { projectId?: string } | undefined)?.projectId;
-  const project = appState.projects.find((p) => p.id === projectId);
+  const payload = data as { projectId?: string; deferRender?: boolean } | undefined;
+  if (payload?.deferRender) {
+    if (payload.projectId) deferredRowProjects.add(payload.projectId);
+    return;
+  }
+  const project = appState.projects.find((p) => p.id === payload?.projectId);
   const row = project
     ? projectListEl.querySelector<HTMLElement>(`.project-item[data-project-id="${project.id}"]`)
     : null;
@@ -275,6 +290,15 @@ function onSessionRowsChanged(data?: unknown): void {
     return;
   }
   patchSessionRow(project, row);
+}
+
+/** The batch's trailing kick repaints every project the batch touched, once. */
+function flushDeferredRows(data?: unknown): void {
+  if ((data as { deferRender?: boolean } | undefined)?.deferRender) return;
+  if (deferredRowProjects.size === 0) return;
+  const ids = [...deferredRowProjects];
+  deferredRowProjects.clear();
+  for (const projectId of ids) onSessionRowsChanged({ projectId });
 }
 
 function patchSessionRow(project: ProjectRecord, row: HTMLElement): void {
@@ -756,6 +780,14 @@ export function promptNewProject(): void {
           .then((dirs) => { if (seq === suggestSeq) showSuggestions(dirs, dirPart); })
           .catch(() => {});
       }, 100);
+    });
+
+    // C2R-11: the 100 ms debounce outlives the modal otherwise, and one stale
+    // fs.listDirs reply paints a dropdown on a detached field.
+    // registerModalCleanup runs on every close funnel (Esc, Cancel, Create).
+    registerModalCleanup(() => {
+      suggestSeq++;
+      if (suggestTimer !== null) { clearTimeout(suggestTimer); suggestTimer = null; }
     });
 
     pathInput.addEventListener('keydown', (e) => {

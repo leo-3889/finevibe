@@ -2,6 +2,7 @@ import { appState } from '../../../state.js';
 import { createColumnElement } from '../../board/board-column.js';
 import { showTaskModal } from '../../board/board-task-modal.js';
 import { addDragEndCallback, initBoardDnd, isDragActive } from '../../board/board-dnd.js';
+import { boardChangeKey } from '../../board/board-view.js';
 import { createWidgetEmpty } from './widget-empty.js';
 import type { BoardData } from '../../../../shared/types.js';
 import type { WidgetFactory } from './widget-host.js';
@@ -44,6 +45,9 @@ export const createKanbanWidget: WidgetFactory = (host) => {
   }
 
   let pendingRender = false;
+  // C2R-15: `null` so the first render always paints, including the empty
+  // states (a board-less key is '').
+  let lastKey: string | null = null;
 
   function render(): void {
     if (isDragActive()) {
@@ -53,6 +57,14 @@ export const createKanbanWidget: WidgetFactory = (host) => {
     pendingRender = false;
 
     const board = getBoardForProject();
+    // C2R-15: board-changed fires on every mutation of the project's board,
+    // including ones this widget cannot show (a prompt edit, a tag color). The
+    // full tab's change key is exactly "what a rebuild can show", so an
+    // unchanged key skips the innerHTML wipe and every column rebuild.
+    const key = board ? boardChangeKey(board) : '';
+    if (key === lastKey) return;
+    lastKey = key;
+
     body.innerHTML = '';
 
     if (!board || board.columns.length === 0) {

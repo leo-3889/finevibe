@@ -156,6 +156,42 @@ describe('board-session-sync', () => {
     appState.setActiveSession(project.id, session.id);
     expect(updateTask).not.toHaveBeenCalled();
   });
+
+  // C2R-14: the deferred per-session events of a batch close keep the detach
+  // (the event's purpose) but skip the project × task scan; the batch's
+  // trailing kick covers the survivors' CLI ids through its own diff.
+  it('skips the full scan for deferred (batch-close) removals', () => {
+    const project = appState.activeProject!;
+    const closing = appState.addSession(project.id, 'Closing')!;
+    const closingTask = addTask({ title: 'T', prompt: 'p' })!;
+    updateTask(closingTask.id, { sessionId: closing.id });
+    const survivor = appState.addSession(project.id, 'Survivor')!;
+    const survivorTask = addTask({ title: 'U', prompt: 'p' })!;
+    updateTask(survivorTask.id, { sessionId: survivor.id, cliSessionId: 'cli-stale' });
+    appState.updateSessionCliId(project.id, survivor.id, 'cli-1');
+    // The survivor's row is stale against its session, so a full scan rewrites it.
+    updateTask(survivorTask.id, { cliSessionId: 'cli-stale' });
+    (updateTask as Mock).mockClear();
+
+    appState.removeSession(project.id, closing.id, { deferRender: true });
+
+    expect(getBoard()!.tasks.find(t => t.id === closingTask.id)!.sessionId).toBeUndefined();
+    expect(getBoard()!.tasks.find(t => t.id === survivorTask.id)!.cliSessionId).toBe('cli-stale');
+  });
+
+  it('runs the full scan for a plain (non-batched) removal', () => {
+    const project = appState.activeProject!;
+    const closing = appState.addSession(project.id, 'Closing')!;
+    const survivor = appState.addSession(project.id, 'Survivor')!;
+    const survivorTask = addTask({ title: 'U', prompt: 'p' })!;
+    updateTask(survivorTask.id, { sessionId: survivor.id, cliSessionId: 'cli-stale' });
+    appState.updateSessionCliId(project.id, survivor.id, 'cli-2');
+    updateTask(survivorTask.id, { cliSessionId: 'cli-stale' });
+
+    appState.removeSession(project.id, closing.id);
+
+    expect(getBoard()!.tasks.find(t => t.id === survivorTask.id)!.cliSessionId).toBe('cli-2');
+  });
 });
 
 

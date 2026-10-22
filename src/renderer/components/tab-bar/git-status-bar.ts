@@ -225,25 +225,37 @@ async function switchBranch(gitPath: string, branchName: string): Promise<void> 
   }
 }
 
+// C2R-07: SR2-b's sibling. The confirm handler awaits the git spawn, and the
+// modal's Enter keydown re-fires it even with the button disabled, so N
+// re-fires spawn N concurrent createBranch calls. The guard arms
+// synchronously at entry (the one point before any await) and releases in a
+// finally, mirroring sidebar.ts's `cloning`.
+let creating = false;
 function promptCreateBranch(gitPath: string): void {
   showModal('Create New Branch', [
     { label: 'Branch name', id: 'branch-name', placeholder: 'feature/my-branch' },
   ], async (values) => {
-    const name = values['branch-name']?.trim();
-    if (!name) {
-      setModalError('branch-name', 'Branch name is required');
-      return;
-    }
-    if (/\s/.test(name)) {
-      setModalError('branch-name', 'Branch name cannot contain spaces');
-      return;
-    }
+    if (creating) return;
+    creating = true;
     try {
-      await window.finevibe.git.createBranch(gitPath, name);
-      closeModal();
-      refreshGitStatus();
-    } catch (err) {
-      setModalError('branch-name', err instanceof Error ? err.message : 'Failed to create branch');
+      const name = values['branch-name']?.trim();
+      if (!name) {
+        setModalError('branch-name', 'Branch name is required');
+        return;
+      }
+      if (/\s/.test(name)) {
+        setModalError('branch-name', 'Branch name cannot contain spaces');
+        return;
+      }
+      try {
+        await window.finevibe.git.createBranch(gitPath, name);
+        closeModal();
+        refreshGitStatus();
+      } catch (err) {
+        setModalError('branch-name', err instanceof Error ? err.message : 'Failed to create branch');
+      }
+    } finally {
+      creating = false;
     }
   });
 }

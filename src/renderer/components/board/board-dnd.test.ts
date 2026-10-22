@@ -39,10 +39,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function fire(type: string, target: Element, x: number, y: number): void {
-  target.dispatchEvent(
-    new window.MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y }),
-  );
+function fire(type: string, target: Element, x: number, y: number, extra: Record<string, unknown> = {}): void {
+  const ev = new window.MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+  // jsdom has no PointerEvent constructor; the module only reads pointerId,
+  // so the expando is the whole contract.
+  Object.assign(ev, extra);
+  target.dispatchEvent(ev);
 }
 
 /** Card → past the 5 px threshold → release. Returns after the drop commit. */
@@ -102,7 +104,7 @@ describe('board-dnd: addDragEndCallback', () => {
     expect(document.querySelectorAll('.board-drop-target')).toHaveLength(0);
   });
 
-  it('pointercancel aborts the drag: no ghost, no callbacks, no phantom move on the next pointerup', async () => {
+  it('pointercancel aborts the drag: no ghost, and the drag-end flush still lands', async () => {
     const { initBoardDnd, isDragActive, addDragEndCallback } = await import('./board-dnd.js');
     initBoardDnd();
     const ended = vi.fn();
@@ -120,13 +122,35 @@ describe('board-dnd: addDragEndCallback', () => {
     expect(document.querySelector('.board-card-ghost')).toBeNull();
     expect(isDragActive()).toBe(false);
     expect(document.querySelectorAll('.board-drop-target')).toHaveLength(0);
-    expect(ended).not.toHaveBeenCalled();
+    // CI-04: the cancelled gesture is not a drop, but the renders the drag
+    // deferred ride on the drag-end callbacks — skipping the flush left the
+    // board showing its pre-drag columns indefinitely.
+    expect(ended).toHaveBeenCalledTimes(1);
 
     // UI3-7: the trailing pointerup used to commit a moveTask for t1 against
-    // the stale activeDropTarget.
+    // the stale activeDropTarget; it must not re-flush either.
     fire('pointerup', document.body, 50, 10);
     expect(mockMoveTask).not.toHaveBeenCalled();
+    expect(ended).toHaveBeenCalledTimes(1);
+  });
+
+  it('a cancel from a pointer other than the drag owner leaves the drag alone', async () => {
+    const { initBoardDnd, isDragActive, addDragEndCallback } = await import('./board-dnd.js');
+    initBoardDnd();
+    const ended = vi.fn();
+    addDragEndCallback(ended);
+    const card = document.querySelector('.board-card[data-task-id="t1"]')!;
+    fire('pointerdown', card, 10, 10, { pointerId: 1 });
+    fire('pointermove', card, 100, 100, { pointerId: 1 });
+
+    // A second finger lifting/cancelling must not end the first one's gesture.
+    fire('pointercancel', card, 100, 100, { pointerId: 99 });
+    expect(isDragActive()).toBe(true);
     expect(ended).not.toHaveBeenCalled();
+
+    fire('pointercancel', card, 100, 100, { pointerId: 1 });
+    expect(isDragActive()).toBe(false);
+    expect(ended).toHaveBeenCalledTimes(1);
   });
 
   it('unsubscribe removes only that callback and double-unsubscribe is a no-op', async () => {
