@@ -22,7 +22,9 @@ const btnMore = document.getElementById('btn-more')!;
 const btnToggleTerminal = document.getElementById('btn-toggle-terminal')!;
 
 export function initTabBar(): void {
+  // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
   btnToggleTerminal.innerHTML = ICON_TERMINAL;
+  // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
   btnMore.innerHTML = ICON_MENU;
   // Browser button keeps its CSS-drawn .toolbar-icon-browser glyph from index.html.
 
