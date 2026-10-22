@@ -234,3 +234,29 @@ Scouts: C4Github (github module main+renderer), C4Team (team/swarm surface), C4S
 - totals: 28 findings (5 P2, 23 P3), all FIXED; no phantom claims this cycle
 - open by design: UI3-3 ring/epoch deep fix (unchanged); S1-07/S1-08 accepted (unchanged)
 - pi-lens auto-gates: recurring snapshots replayed stale pre-cycle captures all cycle (e.g. file-viewer L445 on a 255-line file, pre-C3L-05 lines); triaged once at HEAD by grep evidence (static skeletons / esc()d templates), single disposition recorded; not chased per-gate
+
+## Cycle 5 (2026-10-22 ~14:15 UTC, 2 scouts @ HEAD 456f525) - OPEN, next session
+
+Time-box reached (15:00 UTC): 19 findings (4 P2, 15 P3) recorded OPEN, NOT fixed. Fix order suggestion: P2s, then C5G-05/C5G-08 (unbounded), then rest.
+
+| id | sev | file:line | mechanism | verdict |
+| --- | --- | --- | --- | --- |
+| C5R-01 | P2 | split-layout.ts:327 | remote-terminal sessions persist; restored tab has no pane (instances live only during share) -> blank resurrected P2P tab every restart, no connect path, no Disconnect button | OPEN |
+| C5R-02 | P2 | peer-host.ts:309 + peer-guest.ts:172 | ICE 'disconnected' (Chromium self-recovers in seconds) tears down authenticated share permanently - no re-handshake path; host+guest both die on a NAT rebind | OPEN |
+| C5G-01 | P2 | git-panel.ts:246 | loadFiles has no generation guard - slow getFiles of previous project/worktree resolves last, paints stale repo list (display-only) | OPEN |
+| C5G-02 | P3 | git-status.ts:297 | project-removed prunes caches but not manualOverride map - one entry per removed project forever | OPEN |
+| C5G-03 | P3 | git-panel.ts:66 | stage/unstage/discard handlers uncaught async - git failure = unhandled rejection + silent stale panel (siblings alert) | OPEN |
+| C5G-04 | P3 | board-dnd.ts:115 | CI-04 pointerId filter only on cancel; move/up accept any pointer - second-finger touch commits/ghost-drags mid-gesture | OPEN |
+| C5G-05 | P3 | main/git-status.ts:35 | getGitStatus execFile no maxBuffer: porcelain >1 MiB (~20k entries, swarm untracked flood) -> NOT_A_REPO, panel says 'No changes' | OPEN |
+| C5G-06 | P3 | file-tree.ts:64 + file-watcher.ts:71 | watchFolder chokidar watches uncapped (git-watcher has MAX_WATCHES 2000) -> inotify exhaustion, errors swallowed | OPEN |
+| C5G-07 | P3 | board-view.ts:181 | boardEl singleton re-parented per renderBoard - two visible kanban panes: any board event blanks the non-active pane (C3R-04 fixed teardown, not dual visibility) | OPEN |
+| C5G-08 | P3 | board-state.ts:131 | addColumn/addTask/addTag uncapped, persisted per-project -> runaway CLI flow grows state.json unbounded (Appendix A claims caps collected) | OPEN |
+| C5G-09 | P3 | FEATURES §2 file-tree row | claims git badges + persisted expand state; code has neither (module Map, cleared on removal) | OPEN |
+| C5G-10 | P3 | pty-manager.ts:768 | getPtyCwdWindows no-op on Windows -> session worktree detection inert there (C2R-06 path); macOS symlinked-cwd prefix compare misses | OPEN |
+| C5R-03 | P3 | share-manager.ts:134 | guest join never wires onAuthFailed/onEnd (host twin wired at share-dialog.ts:258) - auth death leaves join dialog 'waiting' forever, 30 s watchdog silent | OPEN |
+| C5R-04 | P3 | agentmemory-manager.ts:157 | closeLogFd block-scoped inside try; synchronous spawn() throw leaks the log fd (async path covered) | OPEN |
+| C5R-05 | P3 | project-terminal.ts:434 | '+ New Terminal' uncapped - N shells x (PTY + xterm + 5000-line scrollback), exited kept until explicit close | OPEN |
+| C5R-06 | P3 | session-inspector-timeline.ts:586 | nested children appended to expanded running agent group without g.refresh() - 'N actions' badge + duration frozen until span close | OPEN |
+| C5R-07 | P3 | peer-host.ts:295 | guest input payload unvalidated - non-string payloads -> node-pty TypeError -> unbounded console.warn stream per frame | OPEN |
+| C5R-08 | P3 | win32-terminal-keys.ts:58 | AltGr encoded LEFT_ALT (0x2) not RIGHT_ALT_PRESSED (0x4); CAPS/NUM lock bits never reported | OPEN |
+| C5R-09 | P3 | session-inspector-utils.ts:53 | tool payload slice(0,2000) can split a surrogate pair -> U+FFFD tail (chunkByUtf8Bytes documents the correct idiom) | OPEN |
