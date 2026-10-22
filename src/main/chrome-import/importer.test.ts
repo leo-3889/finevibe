@@ -47,7 +47,20 @@ afterEach(() => {
   fs.rmSync(fixture.profileDir, { recursive: true, force: true });
 });
 
-describe('runImport', () => {
+// CI's `npm ci` builds better-sqlite3 for the Electron ABI (the app packages
+// against Electron); vitest on plain Node cannot load that binding there.
+// These tests build a real Cookies fixture, so skip the suite when the
+// binding does not load (the root hooks touch it too).
+const sqliteUsable = (() => {
+  try {
+    new Database(':memory:').close();
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.runIf(sqliteUsable)('runImport', () => {
   // P2-49: keychain denial used to yield {ok:true, cookieCount:0, errors:[]}
   // and was persisted as a completed import.
   it('reports failure with the keychain denial reason (not ok:true)', async () => {

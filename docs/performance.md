@@ -193,7 +193,7 @@ Sources: [clipboard bench](../dev/perf/clipboard-bench.js), [contention harness]
 
 ### Copy/paste plan results (P1–P5, 2026-10-21)
 
-All five phases shipped behind automated, mocked-clipboard coverage. Rows that need a real OS clipboard are marked pending; the CI matrix (`macos-latest`/`ubuntu-latest`/`windows-2022`) runs the mocked platform branches. This section supersedes one note above: `preload.ts` now forwards `FINEVIBE_CLIPBOARD_TIMING` into the sandbox at startup (P1), so the renderer gate works in the packaged app, not only under vitest.
+All five phases shipped behind automated, mocked-clipboard coverage. Rows that need a real OS clipboard are marked pending; the CI matrix (`macos-latest`/`ubuntu-latest`/`windows-2022`) runs the mocked platform branches. The Windows file-list decoder rows (`FileNameW`/`CF_HDROP` layouts in `ipc-handlers.test.ts`) are `runIf(win32)`-gated: the handler validates decoded paths with the running OS's `path.isAbsolute`, so they only execute on the Windows lane. This section supersedes one note above: `preload.ts` now forwards `FINEVIBE_CLIPBOARD_TIMING` into the sandbox at startup (P1), so the renderer gate works in the packaged app, not only under vitest.
 
 | Phase | Shipped behavior | Automated evidence |
 | --- | --- | --- |

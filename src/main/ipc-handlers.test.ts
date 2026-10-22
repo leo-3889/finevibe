@@ -1359,7 +1359,10 @@ describe('clipboard:readForPaste file lists', () => {
     return await handlers.get('clipboard:readForPaste')!({}) as never;
   }
 
-  it('reads Explorer copies from CF_HDROP with the wide flag at offset 12', async () => {
+  // The CF_HDROP/FileNameW decoders emit Windows paths and the handler's
+  // absolute-path filter is the running OS's `path.isAbsolute`, so these
+  // layouts can only validate end to end on Windows.
+  it.runIf(process.platform === 'win32')('reads Explorer copies from CF_HDROP with the wide flag at offset 12', async () => {
     // fWide lives at offset 12; offset 16 is fNoCompact (0 for Explorer).
     // Reading fNoCompact decoded the UTF-16LE names as latin1, and every path
     // collapsed to single characters that the absolute-path filter dropped.
@@ -1373,14 +1376,14 @@ describe('clipboard:readForPaste file lists', () => {
     expect(payload.hasContent).toBe(true);
   });
 
-  it('reads pre-wide CF_HDROP senders through the single-byte decode', async () => {
+  it.runIf(process.platform === 'win32')('reads pre-wide CF_HDROP senders through the single-byte decode', async () => {
     formatsWith('CF_HDROP');
     bufferFor('CF_HDROP', () => dropfiles('D:\\notes\\a.txt\0\0', false));
 
     expect((await readPaste()).files).toEqual(['D:\\notes\\a.txt']);
   });
 
-  it('reads browser copies from FileNameW', async () => {
+  it.runIf(process.platform === 'win32')('reads browser copies from FileNameW', async () => {
     formatsWith('FileNameW');
     bufferFor('FileNameW', () => Buffer.from('C:\\tmp\\shot.png\0C:\\tmp\\clip.mp4\0\0', 'utf16le'));
 
@@ -1410,7 +1413,7 @@ describe('clipboard:readForPaste file lists', () => {
     expect((await readPaste()).files).toEqual([fileURLToPath(uri)]);
   });
 
-  it('drops relative names and keeps only paths a CLI can read', async () => {
+  it.runIf(process.platform === 'win32')('drops relative names and keeps only paths a CLI can read', async () => {
     formatsWith('FileNameW');
     bufferFor('FileNameW', () => Buffer.from('notes.txt\0C:\\repo\\ok.md\0\0', 'utf16le'));
 
@@ -1503,7 +1506,7 @@ describe('clipboard:readForPaste acquisition gating (P2)', () => {
     expect(clipboard.readBuffer).not.toHaveBeenCalled();
   });
 
-  it('Windows file-list paste reads the live FileNameW branch, never the POSIX formats', async () => {
+  it.runIf(process.platform === 'win32')('Windows file-list paste reads the live FileNameW branch, never the POSIX formats', async () => {
     platformState.os = 'win32';
     formatsWith('FileNameW', 'text/plain');
     bufferFor('FileNameW', () => Buffer.from('C:\\tmp\\x.png\0\0', 'utf16le'));
