@@ -42,11 +42,17 @@ const SESSION_POLL_DEBOUNCE_MS = 300;
 let sessionPollTimer: ReturnType<typeof setTimeout> | null = null;
 let lastFetchKey = '';
 
-/** (project, worktree, session) identity of what a poll() would fetch. */
+/** (project, worktree) identity of what a poll() would fetch.
+ *  S3-04: the session id used to be part of the key — and the trigger
+ *  PA-10 names (a tab click) changes exactly that component, so the
+ *  dedupe guard never fired for clicks and every click paid a git
+ *  status spawn (+ getCwd, + getWorktrees every 3rd pass). Git status is
+ *  a pure function of (project, worktree): worktree switches change
+ *  gitPath (detectSessionWorktree), so they still poll. */
 function sessionPollKey(): string {
   const project = appState.activeProject;
   if (!project) return '';
-  return `${project.id}|${getActiveGitPath(project.id)}|${appState.activeSession?.id ?? ''}`;
+  return `${project.id}|${getActiveGitPath(project.id)}`;
 }
 
 async function refreshWorktrees(projectId: string, projectPath: string): Promise<void> {
@@ -103,6 +109,13 @@ async function detectSessionWorktree(sessionId: string): Promise<void> {
 
 async function poll(): Promise<void> {
   if (!appState.activeProject) return;
+  // S3-07: the 60 s interval was the only gated entry point — the main-side
+  // git push (the dominant source while agents edit files) and the
+  // working->waiting status transitions called poll() from a hidden window,
+  // spawning `git status` indefinitely. visibilitychange already runs
+  // startInterval() -> poll() on the return to visible, so dropping the
+  // hidden pass loses nothing.
+  if (document.hidden) return;
   // A poll is already running. Flag a re-poll so it picks up the latest active
   // project when it finishes, instead of dropping this request on the floor.
   if (polling) {
@@ -136,7 +149,10 @@ async function poll(): Promise<void> {
       // PA-10: record what this fetch covered, so the session-changed
       // debounce can skip a poll that would ask for the same thing.
       const gitPath = getActiveGitPath(project.id);
-      lastFetchKey = `${project.id}|${gitPath}|${activeSession?.id ?? ''}`;
+      // S3-04: same (project, worktree) key as sessionPollKey() — the
+      // session component here made the skip guard un-hittable on tab
+      // clicks (the click changes the session, so old key != new key).
+      lastFetchKey = `${project.id}|${gitPath}`;
       const status = await window.finevibe.git.getStatus(gitPath) as GitStatus;
       const cacheKey = `${project.id}:${gitPath}`;
       const prev = cache.get(cacheKey);

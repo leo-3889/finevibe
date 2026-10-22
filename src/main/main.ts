@@ -240,6 +240,36 @@ function startMainProcess(): void {
     const state = loadState();
     createAppMenu(state.preferences?.debugMode ?? false);
     createWindow();
+    // S1-01: the updater and the activate/resume handlers used to be
+    // registered at the very END of this chain, behind the awaited provider
+    // probe fan-out, the Python probe, the statusLine-consent modal (whose
+    // promise resolves only on a renderer click) and the installHooks
+    // fan-out (fs writes that can throw EACCES). A rejection there — or the
+    // modal simply staying open — left the updater, the macOS dock
+    // 'activate' re-create and the sleep-resume resync permanently
+    // unregistered, and turned any installHooks throw into an unhandled
+    // rejection (Electron: crash dialog). They gate on nothing: register
+    // them the moment the window exists.
+    initAutoUpdater();
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      } else {
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win && !win.isDestroyed()) {
+          restartAndResync(win);
+        }
+      }
+    });
+
+    powerMonitor.on('resume', () => {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win && !win.isDestroyed()) {
+        restartAndResync(win);
+      }
+    });
+
 
     // PA-01: cross-launch probe cache (resolved path + availability +
     // binary mtime, mtime-invalidated per entry) lives in userData;
@@ -300,15 +330,24 @@ function startMainProcess(): void {
     // PA-26: install hooks and status scripts for available providers
     // (after window creation so dialogs can attach). Each provider owns a
     // disjoint config dir (~/.claude, ~/.codex, ~/.gemini, …), so the
-    // installs are independent — the serial await chain used to pay every
-    // provider's IO/dialog latency before the next one started. Availability
-    // reuses the probe fan-out above (same in-process cache, no re-probe).
-    await Promise.all(providers.filter((_, i) => availability[i]).map((provider) => (
-      provider.installHooks(mainWindow)
+    // installs are independent. S1-01: fire-and-forget with a per-provider
+    // catch — the await used to gate the updater/activate/resume
+    // registrations (now done right after createWindow) on every provider's
+    // IO AND on the statusLine-consent modal (resolved only by a renderer
+    // click), and any throw (EACCES on ~/.claude, AV lock on Windows)
+    // became an unhandled rejection. A failed install is a logged warning:
+    // the provider still runs, hooks just stay uninstalled until the next
+    // spawn/Fix Settings.
+    for (const provider of providers.filter((_, i) => availability[i])) {
+      void provider.installHooks(mainWindow)
         .then(() => provider.installStatusScripts())
-    )));
+        .catch((err: unknown) => console.warn(
+          `Provider "${provider.meta.displayName}" hook install failed:`,
+          (err as Error)?.message ?? err,
+        ));
+    }
 
-    initAutoUpdater();
+
 
     // Model A: opportunistically ensure the shared agentmemory engine is running
     // before any agent session spawns, so its first MCP connect hits a live
@@ -322,23 +361,17 @@ function startMainProcess(): void {
       );
     }
 
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      } else {
-        const win = BrowserWindow.getAllWindows()[0];
-        if (win && !win.isDestroyed()) {
-          restartAndResync(win);
-        }
-      }
-    });
-
-    powerMonitor.on('resume', () => {
-      const win = BrowserWindow.getAllWindows()[0];
-      if (win && !win.isDestroyed()) {
-        restartAndResync(win);
-      }
-    });
+    })
+    // S1-01: nothing below this point may crash the app: a rejected boot
+  // chain (probe spawn failure, dialog API failure) used to surface as an
+  // unhandled rejection — Electron shows a crash dialog and exits on
+  // Node's throw-by-default policy. Log loudly; the window is already up.
+  .catch((err: unknown) => {
+    console.error('FineVibe startup failed after window creation:', err);
+    dialog.showErrorBox(
+      'FineVibe — Partial Startup Failure',
+      `Some startup steps failed. FineVibe is running, but CLI hooks may not be installed:\n\n${(err as Error)?.message ?? String(err)}`,
+    );
   });
 
   app.on('before-quit', (event) => {

@@ -188,7 +188,7 @@ describe('guardedInstall window lifecycle', () => {
     expect(installStatusLine).not.toHaveBeenCalled();
   });
 
-  it('treats closing the consent dialog as declined: no install, declined saved', async () => {
+  it('S1-04: closing the window mid-dialog is a dismissal — no install and NO recorded decision', async () => {
     const win = loadingWin();
     win.webContents.isLoading = () => false;
     const done = guardedInstall(win);
@@ -198,14 +198,12 @@ describe('guardedInstall window lifecycle', () => {
     );
     win.emit('closed');
     await done;
-    // 'keep' on close maps to declined and skips installStatusLine.
+    // The old code resolved 'keep' on close and persisted declined +
+    // the foreign command, silently retiring both prompt surfaces for a
+    // decision the user never made. A dismissal records nothing, so the
+    // next launch re-prompts.
     expect(installStatusLine).not.toHaveBeenCalled();
-    expect(saveState).toHaveBeenCalledTimes(1);
-    expect(saveState).toHaveBeenCalledWith(
-      expect.objectContaining({
-        preferences: { statusLineConsent: 'declined', statusLineConsentCommand: FOREIGN_STATUSLINE },
-      }),
-    );
+    expect(saveState).not.toHaveBeenCalled();
   });
 });
 

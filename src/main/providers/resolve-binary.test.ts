@@ -35,6 +35,7 @@ vi.mock('../platform', () => ({
 // Mock pty-manager to avoid its module-level side effects
 vi.mock('../pty-manager', () => ({
   getFullPath: () => 'C:\\Windows\\system32;C:\\Users\\test\\AppData\\Roaming\\npm',
+  getFullPathAsync: () => Promise.resolve('C:\\Windows\\system32;C:\\Users\\test\\AppData\\Roaming\\npm'),
 }));
 
 import * as fs from 'fs';

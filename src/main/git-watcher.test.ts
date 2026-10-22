@@ -268,6 +268,32 @@ describe('startGitWatcher', () => {
     await startGitWatcher(win as never, root);
     expect(mockWatch.mock.calls.length).toBe(firstCallCount);
   });
+  it('(S2-04) stops arming fs.watch handles once a superseding call invalidates the walk', async () => {
+    platform.isLinux = true;
+    const root = path.join('/big-proj');
+    const gate = Promise.withResolvers<Dirent[]>();
+    mockReaddir.mockImplementation((async (dir: unknown) => {
+      if (dir === root) {
+        await gate.promise;
+        return Array.from({ length: 50 }, (_, i) => makeDirent(`d${i}`, true));
+      }
+      return [];
+    }) as unknown as typeof fs.promises.readdir);
+    const watchers = installWatch();
+    stubGitRevParse(path.join(root, '.git'));
+
+    const p = startGitWatcher(makeWin() as never, root);
+    // Let the BFS reach its pending root readdir.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    stopGitWatcher(); // supersedes the in-flight walk (generation bump)
+    gate.resolve([]);
+    await p;
+
+    // Without the generation guard every queued subdir would be armed.
+    expect(watchers.filter((w) => w.path.includes(`${path.sep}d`))).toHaveLength(0);
+    expect(watchers.length).toBeLessThanOrEqual(1); // at most the root, closed by the caller
+  });
+
 });
 
 describe('startGitWatcher (macOS/Windows recursive working tree)', () => {

@@ -320,12 +320,25 @@ class AppState {
     if (this.persistFrameScheduled) return;
     this.persistFrameScheduled = true;
     const token = this.persistFrameToken;
-    scheduleFrame(() => {
+    const run = (): void => {
       // flushPersist() bumped the token: this state is already on disk.
       if (token !== this.persistFrameToken) return;
       this.persistFrameScheduled = false;
       this.throttledWrite();
-    });
+    };
+    // S3-03: Chromium never runs animation-frame callbacks for a hidden
+    // document — with the window minimized (the app's designed operating
+    // mode for agent swarms: git-status and the discussions badge both
+    // gate on document.hidden) the frame callback never fired, the latch
+    // above never cleared, and ZERO state writes reached disk for the
+    // whole hidden period; a crash then lost every session/rename/cost
+    // change. Timers keep running while hidden: fall back to one on the
+    // throttle window.
+    if (typeof document !== 'undefined' && document.hidden) {
+      setTimeout(run, AppState.PERSIST_THROTTLE_MS);
+    } else {
+      scheduleFrame(run);
+    }
   }
 
   /**

@@ -1,5 +1,6 @@
 import * as pty from 'node-pty';
 import { execSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import * as os from 'os';
 import * as path from 'path';
 import type { ProviderId } from '../shared/types';
@@ -12,6 +13,8 @@ import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
 import { isWin, pathSep, utf8LocaleEnv } from './platform';
 import { nvmDefaultNodeBinDir } from './providers/nvm';
+
+const execFileP = promisify(execFile);
 
 interface PtyInstance {
   process: pty.IPty;
@@ -162,6 +165,91 @@ export function getFullPath(): string {
   cachedFullPath = Array.from(pathSet).join(pathSep);
   return cachedFullPath;
 }
+/**
+ * S2-02: async twin of getFullPath. The sync one blocks the main thread
+ * for the login-shell spawn (POSIX: `execSync($SHELL -ilc …)`, 0.2-1.5 s
+ * typical on nvm/p10k setups) or two registry `reg query` execSyncs
+ * (Windows) — the PA-01 boot probe fan-out calls it on every launch
+ * (the disk-cache freshness gate needs the PATH snapshot), so the whole
+ * boot chain paid that spawn synchronously after createWindow. Same cache,
+ * same composition, same fallback; concurrent callers share one promise.
+ */
+let pendingFullPath: Promise<string> | null = null;
+
+export function getFullPathAsync(): Promise<string> {
+  if (cachedFullPath) return Promise.resolve(cachedFullPath);
+  if (pendingFullPath) return pendingFullPath;
+  pendingFullPath = (async (): Promise<string> => {
+    const currentPath = process.env.PATH || '';
+    const home = os.homedir();
+    if (isWin) {
+      const parse = (output: string): string => {
+        const match = output.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
+        if (!match) return '';
+        const value = match[1].trim();
+        return value.replace(/%([^%]+)%/g, (_m, varName) => process.env[varName] || `%${varName}%`);
+      };
+      const regQuery = async (hive: string): Promise<string> => {
+        try {
+          const { stdout } = await execFileP('reg', ['query', hive, '/v', 'Path'], {
+            encoding: 'utf-8', timeout: 3000, windowsHide: true,
+          });
+          return parse(stdout);
+        } catch {
+          // `reg query` exits non-zero when the value is absent; the hive
+          // contributes nothing to PATH (mirrors getRegistryPath).
+          return '';
+        }
+      };
+      const [systemPath, userPath] = await Promise.all([
+        regQuery('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
+        regQuery('HKCU\\Environment'),
+      ]);
+      const pathSet = new Set([
+        ...currentPath.split(pathSep),
+        ...systemPath.split(pathSep),
+        ...userPath.split(pathSep),
+        path.join(home, 'AppData', 'Roaming', 'npm'),
+        path.join(home, '.local', 'bin'),
+      ]);
+      cachedFullPath = Array.from(pathSet).join(pathSep);
+      return cachedFullPath;
+    }
+    const shell = process.env.SHELL || '/bin/zsh';
+    try {
+      const { stdout } = await execFileP(
+        shell,
+        ['-ilc', `echo "${PATH_MARKER_BEGIN}${'${PATH}'}${PATH_MARKER_END}"`],
+        {
+          encoding: 'utf-8',
+          timeout: 8000,
+          env: { ...process.env, HOME: os.homedir() },
+        },
+      );
+      const match = stdout.match(new RegExp(`${PATH_MARKER_BEGIN}([\\s\\S]*?)${PATH_MARKER_END}`));
+      if (match && match[1]) {
+        cachedFullPath = match[1].trim();
+        return cachedFullPath;
+      }
+    } catch (err) { console.warn('Failed to resolve PATH from login shell:', err); }
+    const extraDirs = [
+      '/usr/local/bin',
+      '/opt/homebrew/bin',
+      path.join(home, '.local', 'bin'),
+      path.join(home, '.npm-global', 'bin'),
+      '/usr/local/sbin',
+      '/opt/homebrew/sbin',
+    ];
+    const nvmBin = nvmDefaultNodeBinDir();
+    if (nvmBin) extraDirs.push(nvmBin);
+    const pathSet = new Set(currentPath.split(pathSep));
+    for (const dir of extraDirs) pathSet.add(dir);
+    cachedFullPath = Array.from(pathSet).join(pathSep);
+    return cachedFullPath;
+  })().finally(() => { pendingFullPath = null; });
+  return pendingFullPath;
+}
+
 
 /**
  * Fill in a UTF-8 locale when the environment names no charset, so spawned CLIs
@@ -306,7 +394,7 @@ export function resolveLaunchSpec(params: {
   const issues: string[] = [];
 
   const userEnv = parseEnvVars(envVars);
-  for (const key of findConflictingEnvKeys(userEnv)) {
+  for (const key of findConflictingEnvKeys(userEnv, isWin)) {
     issues.push(
       `Environment variable ${key} is not supported: FineVibe tracks sessions in the profile's default storage, ` +
         'and a custom session dir would hide them from history, search and resume. Remove it from the session environment and start again.',
@@ -335,9 +423,9 @@ export function resolveLaunchSpec(params: {
 
   if (issues.length > 0) {
     throw new LaunchSpecError(
-      'Unsupported launch options for this session:\n' +
-        issues.map((issue) => '  - ' + issue).join('\n') +
-        '\nRemove the options above and start the session again.',
+      `Unsupported launch options for this session:\n${
+        issues.map((issue) => `  - ${issue}`).join('\n')
+      }\nRemove the options above and start the session again.`,
     );
   }
 
@@ -394,7 +482,7 @@ export async function spawnPty(
       // it so a later re-spawn of the same id is not killed by a stale flag.
       pendingKills.delete(sessionId);
       const message = err instanceof LaunchSpecError ? err.message : `Failed to prepare the launch: ${err}`;
-      onData('\r\n\x1b[31m' + message + '\x1b[0m\r\n');
+      onData(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
       onExit(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
       return;
     }

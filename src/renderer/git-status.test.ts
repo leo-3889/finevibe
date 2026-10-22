@@ -182,7 +182,7 @@ describe('git-status session-changed debounce + key gate (PA-10)', () => {
     ));
   }
 
-  it('skips the session-driven poll when (project, worktree, session) is unchanged', async () => {
+  it('skips the session-driven poll when (project, worktree) is unchanged', async () => {
     loadWithSession();
     startPolling();
     await appState.load();
@@ -220,7 +220,7 @@ describe('git-status session-changed debounce + key gate (PA-10)', () => {
     expect(mockGetStatus.mock.calls.length).toBeLessThanOrEqual(1);
   });
 
-  it('polls when activation moves to a session in a different key slot', async () => {
+  it('S3-04: a tab switch in the same worktree does NOT re-poll (session is not part of the key)', async () => {
     mockLoad.mockResolvedValue(persisted(
       [projectWithSessions('p1', '/proj', [
         { id: 's1', name: 'S1', providerId: 'claude', cliSessionId: null },
@@ -235,6 +235,10 @@ describe('git-status session-changed debounce + key gate (PA-10)', () => {
 
     appState.setActiveSession('p1', 's2');
 
-    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'), { timeout: 1000 });
+    // Past the 300 ms debounce: git status is a pure function of
+    // (project, worktree) — the old key included the session id, so the
+    // click always differed from lastFetchKey and re-spawned git.
+    await new Promise((r) => setTimeout(r, 420));
+    expect(mockGetStatus).not.toHaveBeenCalled();
   });
 });

@@ -28,6 +28,7 @@ function getExpectedHookEvents(): string[] {
 }
 
 function readClaudeSettings(configDir: string = path.join(homedir(), '.claude')): Record<string, unknown> {
+  // pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   return readJsonSafe(path.join(configDir, 'settings.json')) ?? {};
 }
 
@@ -117,6 +118,7 @@ function defaultClaudeDir(): string {
  * always maps to one record no matter how the caller spelled it.
  */
 export function consentDirKey(configDir: string): string {
+  // pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const resolved = path.resolve(configDir).split(path.sep).join('/');
   return isWin ? resolved.toLowerCase() : resolved;
 }
@@ -233,19 +235,26 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
 
   const foreignCmd = validation.foreignStatusLineCommand ?? '(unknown)';
   const channel = 'settings:conflictDialogResponse';
-  const choice = await new Promise<'replace' | 'keep'>((resolve) => {
+  // S1-04: a window closed mid-dialog is an explicit dismissal, NOT a
+  // Keep. Resolving 'keep' here recorded `declined` + the foreign command
+  // on quit, which shouldWarnStatusLine then honors forever — the user lost
+  // both prompt surfaces for a decision they never made (directly
+  // contradicting the loading gate's rule above). Dismissal records
+  // nothing; the next launch re-prompts.
+  const choice = await new Promise<'replace' | 'keep' | 'dismissed'>((resolve) => {
     const onResponse = (_event: Electron.IpcMainEvent, c: string) => {
       win.removeListener('closed', onClose);
       resolve(c === 'replace' ? 'replace' : 'keep');
     };
     const onClose = () => {
       ipcMain.removeListener(channel, onResponse);
-      resolve('keep');
+      resolve('dismissed');
     };
     ipcMain.once(channel, onResponse);
     win.once('closed', onClose);
     win.webContents.send('settings:showConflictDialog', { foreignCommand: foreignCmd });
   });
+  if (choice === 'dismissed') return;
 
   state.preferences.statusLineConsent = choice === 'replace' ? 'granted' : 'declined';
   state.preferences.statusLineConsentCommand = currentForeign;
@@ -291,6 +300,7 @@ export function resetProfileInstallMemo(): void {
   profileInstallMemo.clear();
 }
 
+// pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 export function guardedProfileInstall(configDir: string): void {
   const settingsFile = path.join(configDir, 'settings.json');
   const key = consentDirKey(configDir);

@@ -155,9 +155,16 @@ const UNSUPPORTED_STORAGE_ENV_KEYS: readonly string[] = [
   'CODEX_HOME',
 ];
 
-/** Case-insensitive match of env keys against the unsupported storage selectors. */
-export function findConflictingEnvKeys(env: Record<string, string>): string[] {
+/**
+ * Match of env keys against the unsupported storage selectors.
+ * S1-08: case-insensitivity is Windows-only — the POSIX child env is
+ * case-sensitive, so `codex_home=/tmp/x` is inert there, and folding made
+ * the gate block spawns over a variable with no effect (an unactionable
+ * refusal). The caller passes the platform flag (this module stays
+ * electron/platform-free).
+ */
+export function findConflictingEnvKeys(env: Record<string, string>, isWindows: boolean): string[] {
   return Object.keys(env).filter((key) =>
-    UNSUPPORTED_STORAGE_ENV_KEYS.includes(key.toUpperCase()),
+    UNSUPPORTED_STORAGE_ENV_KEYS.includes(isWindows ? key.toUpperCase() : key),
   );
 }

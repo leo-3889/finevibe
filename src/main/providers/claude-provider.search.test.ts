@@ -139,6 +139,10 @@ describe('ClaudeProvider.indexTranscript()', () => {
     mockIndexFile(jsonl);
     const r = await new ClaudeProvider().indexTranscript('/p');
     expect(r.text).toContain('refactor authentication');
+    // S2-01 regression guard: an unguarded `${block.text}` indexed the
+    // literal "undefined" for every tool_use/tool_result block.
+    expect(r.text).not.toContain('undefined');
+    expect(r.text.trim().split('\n')).toEqual(['refactor authentication']);
   });
 
   it('tolerates malformed JSONL lines', async () => {

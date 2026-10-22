@@ -75,6 +75,18 @@ describe('launchSessionBaseDir/launchSessionDir', () => {
     // A hostile id is sanitized, never a path escape.
     expect(launchSessionDir('pi', '../../evil').startsWith(launchSessionBaseDir('pi'))).toBe(true);
   });
+
+  it('S1-10: ids that collapse to the same sanitized spelling keep distinct dirs', () => {
+    const a = launchSessionDir('pi', 'a:b');
+    const b = launchSessionDir('pi', 'a/b');
+    expect(a).not.toBe(b);
+    for (const dir of [a, b]) {
+      expect(path.dirname(dir)).toBe(launchSessionBaseDir('pi'));
+      expect(path.basename(dir).startsWith('a_b-')).toBe(true);
+    }
+    // Deterministic: the same raw id always maps to the same dir.
+    expect(launchSessionDir('pi', 'a:b')).toBe(a);
+  });
 });
 
 describe('pruneLaunchSessionDirs()', () => {

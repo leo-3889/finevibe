@@ -8,6 +8,7 @@ import { appState } from '../state.js';
 import {
   createRemoteTerminalPane,
   writeRemoteData,
+  resizeRemoteTerminal,
   showRemoteEndOverlay,
   destroyRemoteTerminal,
 } from '../components/remote-terminal-pane.js';
@@ -149,6 +150,14 @@ export async function joinRemoteSession(projectId: string, offer: string, passph
 
     handle.onData((payload: string) => {
       writeRemoteData(localSessionId, payload);
+    });
+
+    // S3-02: the resize leg existed end to end (protocol, host sender,
+    // guest API, forwardResize) but nothing connected it: the pane stayed
+    // frozen at join-time geometry, so host resizes re-wrapped every
+    // incoming line and garbled full-screen TUIs for the guest.
+    handle.onResize((cols: number, rows: number) => {
+      resizeRemoteTerminal(localSessionId, cols, rows);
     });
 
     const cleanup = () => {

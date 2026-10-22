@@ -38,11 +38,27 @@ export function launchSessionBaseDir(providerId: LaunchSessionProvider): string 
  * The exclusive per-launch session dir for one UI session. Unsafe id
  * characters are sanitized (never thrown — a weird id must not break a
  * spawn); the result is always inside the provider's base dir.
+ *
+ * S1-10: a bare sanitizer collapse is not injective — 'a:b' and 'a/b'
+ * both map to 'a_b', and two concurrent sessions with colliding spellings
+ * would share one "exclusive" dir (interleaved transcripts, crossed watcher
+ * attribution, prune treating them as one). A rewritten id carries an
+ * FNV-1a hash of the raw id; app-generated uuid ids match the regex and
+ * keep their historical spelling.
  */
+function fnv1aHex(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId: string): string {
   const safe = UI_SESSION_ID_RE.test(uiSessionId)
     ? uiSessionId
-    : (uiSessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 128) || 'session');
+    : `${uiSessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 119)}-${fnv1aHex(uiSessionId)}` || 'session';
   return path.join(launchSessionBaseDir(providerId), safe);
 }
 
@@ -277,7 +293,14 @@ export async function readLaunchSessionMetaCached(sessionDir: string, dirMtimeMs
     }
   }
   const hit = metaCache.get(sessionDir);
-  if (hit && hit.dirMtimeMs === mtimeMs) return hit.meta;
+  if (hit && hit.dirMtimeMs === mtimeMs) {
+    // S1-09: re-insert on hit — the eviction below drops the oldest
+    // INSERTION, so without this the hottest dirs (recent launches,
+    // scanned by every search) are evicted first at saturation.
+    metaCache.delete(sessionDir);
+    metaCache.set(sessionDir, hit);
+    return hit.meta;
+  }
   let meta: LaunchSessionMeta | null = null;
   try {
     meta = normalizeMeta(JSON.parse(await fs.promises.readFile(path.join(sessionDir, META_FILENAME), 'utf-8')));
@@ -313,17 +336,26 @@ export async function listLaunchSessionDirs(base: string, maxAgeMs = LAUNCH_SESS
   }
   const cutoff = Date.now() - maxAgeMs;
   const out: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const name of names) {
-    const dir = path.join(base, name);
-    try {
-      // lstat, not stat: a symlink in the search path is never followed.
-      const st = await fs.promises.lstat(dir);
-      if (!st.isDirectory()) continue;
-      if (st.mtimeMs > cutoff) out.push({ dir, mtimeMs: st.mtimeMs });
-      else if (await newestTranscriptMtimeAsync(dir) > cutoff) out.push({ dir, mtimeMs: st.mtimeMs });
-    } catch {
-      // Vanished between readdir and stat — skip.
-    }
+  // S1-06: PA-19 made the syscalls async but kept the loop serial — at
+  // AV-inflated stat costs a few hundred retained dirs serialized into
+  // seconds of discovery latency per debounced search. Batch them (4
+  // concurrent, the search permit-pool bound); lstat stays per-dir.
+  const BATCH = 4;
+  for (let i = 0; i < names.length; i += BATCH) {
+    const settled = await Promise.all(names.slice(i, i + BATCH).map(async (name): Promise<{ dir: string; mtimeMs: number } | null> => {
+      const dir = path.join(base, name);
+      try {
+        // lstat, not stat: a symlink in the search path is never followed.
+        const st = await fs.promises.lstat(dir);
+        if (!st.isDirectory()) return null;
+        if (st.mtimeMs > cutoff) return { dir, mtimeMs: st.mtimeMs };
+        return (await newestTranscriptMtimeAsync(dir)) > cutoff ? { dir, mtimeMs: st.mtimeMs } : null;
+      } catch {
+        // Vanished between readdir and stat — skip.
+        return null;
+      }
+    }));
+    for (const r of settled) if (r) out.push(r);
   }
   return out;
 }

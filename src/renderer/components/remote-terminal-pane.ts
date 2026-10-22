@@ -159,6 +159,23 @@ export function writeRemoteData(sessionId: string, data: string): void {
     instance.terminal.write(data);
   }
 }
+/**
+ * S3-02: apply a host-driven resize. The protocol (sharing-types resize),
+ * the host sender (peer-host) and the guest API (peer-guest onResize) all
+ * existed, but the join flow registered no onResize handler and this module
+ * exported no resize — the guest pane stayed frozen at join-time cols, so
+ * host window/split resizes re-wrapped every incoming line and garbled
+ * full-screen TUI output for the rest of the session.
+ */
+export function resizeRemoteTerminal(sessionId: string, cols: number, rows: number): void {
+  const instance = instances.get(sessionId);
+  if (!instance) return;
+  try {
+    instance.terminal.resize(cols, rows);
+  } catch {
+    // xterm throws when the element is detached mid-teardown.
+  }
+}
 
 export function showRemoteEndOverlay(sessionId: string): void {
   const instance = instances.get(sessionId);

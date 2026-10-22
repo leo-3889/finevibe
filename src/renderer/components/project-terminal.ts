@@ -314,7 +314,7 @@ function renderSidebar(projectId: string): void {
   }
   sidebarEl.classList.remove('hidden');
   const activeId = activeShellByProject.get(projectId);
-  // pi-lens-ignore: no-html-label-for
+  // pi-lens-ignore: no-html-label-for, slop, xss-innerhtml
   sidebarEl.innerHTML = list.map(s => `
     <div class="terminal-list-item${s.id === activeId ? ' active' : ''}" data-shell-id="${esc(s.id)}">
       <span class="terminal-list-item-name">${esc(s.label)}</span>
@@ -322,7 +322,7 @@ function renderSidebar(projectId: string): void {
     </div>
   `).join('');
 
-  sidebarEl.querySelectorAll<HTMLElement>('.terminal-list-item').forEach(el => {
+  for (const el of sidebarEl.querySelectorAll<HTMLElement>('.terminal-list-item')) {
     const shellId = el.dataset.shellId!;
     el.addEventListener('click', (e) => {
       const target = e.target as HTMLElement;
@@ -336,7 +336,7 @@ function renderSidebar(projectId: string): void {
         closeShell(projectId, shellId);
       });
     }
-  });
+  }
 }
 
 function fitActiveShell(): void {
@@ -440,40 +440,53 @@ export function initProjectTerminal(): void {
   let startY = 0;
   let startHeight = 0;
 
-  resizeHandleEl.addEventListener('mousedown', (e) => {
+  // S3-01: pointer events with implicit capture on the handle. The old
+  // document mousemove/mouseup pair was removed only inside onMouseUp —
+  // releasing the button outside the window (the normal way to overshoot
+  // a panel drag) never delivers mouseup to the renderer: dragging
+  // stayed true, the pair leaked for the renderer's life (every mouse
+  // move app-wide then ran a full fit sweep at mousemove rate), the body
+  // cursor/userSelect lock stayed applied, and every later mousedown
+  // stacked another pair. pointerup/pointercancel on a captured pointer
+  // are ALWAYS delivered, wherever the button is released.
+  resizeHandleEl.addEventListener('pointerdown', (e) => {
     dragging = true;
     startY = e.clientY;
     startHeight = panelEl.offsetHeight;
     resizeHandleEl.classList.add('active');
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
+    resizeHandleEl.setPointerCapture(e.pointerId);
     e.preventDefault();
-
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!dragging) return;
-      const delta = startY - ev.clientY;
-      const newHeight = Math.max(80, Math.min(startHeight + delta, window.innerHeight - 150));
-      panelEl.style.height = `${newHeight}px`;
-      fitActiveShell();
-      fitAllVisible();
-    };
-
-    const onMouseUp = () => {
-      dragging = false;
-      resizeHandleEl.classList.remove('active');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      const height = panelEl.offsetHeight;
-      appState.setTerminalPanelHeight(height);
-      fitActiveShell();
-      fitAllVisible();
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
   });
+
+  resizeHandleEl.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const delta = startY - ev.clientY;
+    const newHeight = Math.max(80, Math.min(startHeight + delta, window.innerHeight - 150));
+    panelEl.style.height = `${newHeight}px`;
+    fitActiveShell();
+    fitAllVisible();
+  });
+
+  const endDrag = (ev: PointerEvent): void => {
+    if (!dragging) return;
+    dragging = false;
+    try {
+      resizeHandleEl.releasePointerCapture(ev.pointerId);
+    } catch {
+      // Capture was already gone (pointercancel after window loss).
+    }
+    resizeHandleEl.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    const height = panelEl.offsetHeight;
+    appState.setTerminalPanelHeight(height);
+    fitActiveShell();
+    fitAllVisible();
+  };
+  resizeHandleEl.addEventListener('pointerup', endDrag);
+  resizeHandleEl.addEventListener('pointercancel', endDrag);
 
   // React to project changes
   appState.on('project-changed', () => {

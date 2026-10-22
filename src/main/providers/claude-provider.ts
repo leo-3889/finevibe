@@ -230,8 +230,13 @@ export class ClaudeProvider implements CliProvider {
           if (typeof c === 'string') {
             text = c;
           } else if (Array.isArray(c)) {
+            // S2-01: only text blocks carry text. Claude records tool
+            // results as user messages whose content arrays hold
+            // tool_result blocks; indexing `${block.text}` unguarded wrote
+            // the literal "undefined" into the persistent search index on
+            // virtually every turn (and burned the 50 KiB budget on it).
             for (const block of c) {
-              text += `${block.text}\n`;
+              if (block?.type === 'text' && typeof block.text === 'string') text += `${block.text}\n`;
             }
           }
           if (text) budget.push(text);

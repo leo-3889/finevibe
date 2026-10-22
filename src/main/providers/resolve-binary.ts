@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { execSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { getFullPath } from '../pty-manager';
+import { getFullPath, getFullPathAsync } from '../pty-manager';
 import { isWin, whichCmd } from '../platform';
 import { fileExists } from '../fs-utils';
 import { findBinaryInNvm } from './nvm';
@@ -335,7 +335,7 @@ async function probeBinaryPathAsync(binaryName: string): Promise<string | null> 
   const nvmFound = findBinaryInNvm(binaryName);
   if (nvmFound) return nvmFound;
 
-  const fullPath = getFullPath();
+  const fullPath = await getFullPathAsync();
   const resolved = await whichBinaryAsync(binaryName, fullPath);
   if (resolved) return resolved;
 
@@ -356,7 +356,10 @@ export async function validateBinaryExistsAsync(binaryName: string): Promise<boo
   if (hit && (hit.exists || Date.now() - hit.checkedAt < NEGATIVE_PROBE_TTL_MS)) {
     return hit.exists;
   }
-  const fullPath = getFullPath();
+  // S2-02: async PATH snapshot — the sync getFullPath here ran the
+  // login-shell/registry spawn on every launch, synchronously, inside the
+  // PA-01 boot fan-out (0.2-3 s main-thread block after createWindow).
+  const fullPath = await getFullPathAsync();
   const disk = await loadDiskCache();
   const entry = disk.get(binaryName);
   if (entry && (await diskEntryIsFresh(entry, fullPath))) {

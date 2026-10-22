@@ -836,6 +836,23 @@ describe('persist throttle', () => {
       vi.useRealTimers();
     }
   });
+  it('S3-03: writes still reach disk while the document is hidden (no rAF starvation)', () => {
+    // The renderer's rAF path never runs for a hidden window; persist() must
+    // fall back to a timer so a minimized app keeps saving.
+    (globalThis as { document?: unknown }).document = { hidden: true };
+    vi.useFakeTimers();
+    try {
+      appState.setPreference('theme', 'hidden-run');
+      expect(mockSave).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(200);
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      expect(mockSave.mock.calls[0][0].preferences.theme).toBe('hidden-run');
+    } finally {
+      vi.useRealTimers();
+      delete (globalThis as { document?: unknown }).document;
+    }
+  });
+
 
   it('coalesces frames inside the throttle window into one trailing save', () => {
     vi.useFakeTimers();
