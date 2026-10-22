@@ -112,7 +112,11 @@ describe('gitDiscardFile (real repository)', () => {
   let repoDir: string;
 
   beforeEach(async () => {
-    repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'finevibe-discard-'));
+    // Canonical path: git resolves --show-toplevel through symlinks; a CI
+    // tmpdir spelled via a link (macOS /var -> /private/var, Windows 8.3
+    // short names) would make the P1-17 root guard see a legit child as
+    // outside the tree.
+    repoDir = fs.realpathSync(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'finevibe-discard-')));
     await git(repoDir, ['init']);
     await git(repoDir, ['config', 'user.email', 'test@finevibe.dev']);
     await git(repoDir, ['config', 'user.name', 'FineVibe Test']);
