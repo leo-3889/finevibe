@@ -208,7 +208,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.artifacts_only && 'false' || 'true' }}
           DEBUG: ${{ inputs.artifacts_only && 'electron-builder' || '' }}
         run: npm run build && npm run icons
-          && npx electron-builder --publish never --arm64 --x64 ${{ inputs.artifacts_only && '-c.mac.notarize=false' || '' }}
+          && npx electron-builder --publish never --arm64 --x64 ${{ inputs.artifacts_only && '-c.mac.identity=null -c.mac.notarize=false' || '' }}
 
       - name: Verify code signatures
         if: inputs.artifacts_only != true
@@ -385,7 +385,7 @@ jobs:
           }
           # Stamp check: 4-part numeric, optional prerelease suffix
           # (artifacts builds stamp 'X.Y.Z-dev').
-          if ($vi.FileVersion -notmatch '^\d+\.\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+          if ($vi.FileVersion -notmatch '^(\d+\.){2,3}\d+(-[0-9A-Za-z.-]+)?$') {
             Write-Host "::error::FileVersion is '$($vi.FileVersion)'"
             Write-Host "::error::  not a stamped version like 0.1.0.0"
             $fail = $true
