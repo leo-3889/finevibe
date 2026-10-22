@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as zlib from 'zlib';
 import type { BrowserWindow } from 'electron';
 import { writeCliSessionId } from './hook-status';
+import { isLinux } from './platform';
 
 /**
  * Codex CLI has no hook system that reliably reports session IDs back to the
@@ -368,6 +369,12 @@ export function unregisterCodexSession(sessionId: string): void {
 }
 
 let watcher: fs.FSWatcher | null = null;
+/**
+ * Linux-only non-recursive watchers (S2-05): SESSIONS_ROOT plus the current
+ * YYYY, YYYY/MM and YYYY/MM/DD dirs — the chain new rollouts land in. Keyed
+ * by path so the scan-tick arming pass is idempotent across date rollovers.
+ */
+const dateDirWatchers = new Map<string, fs.FSWatcher>();
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let scanTimer: ReturnType<typeof setTimeout> | null = null;
 /**
@@ -380,35 +387,44 @@ let lastScanAt = 0;
 const SCAN_DEBOUNCE_MS = 500;
 const SCAN_MIN_SPACING_MS = 1_000;
 
-/** One rollout sweep, timestamped so both scan paths see each other. */
-function runScan(): void {
-  lastScanAt = Date.now();
-  scanRollouts();
+/**
+ * Coalesce watch events into one scan, and never run it closer than
+ * SCAN_MIN_SPACING_MS after the previous one — including a scan the poll
+ * already did (PA-22). Shared by every watcher armed on the tree.
+ */
+function scheduleScanFromEvent(): void {
+  if (scanTimer !== null) return;
+  const delay = Math.max(
+    SCAN_DEBOUNCE_MS,
+    SCAN_MIN_SPACING_MS - (Date.now() - lastScanAt)
+  );
+  scanTimer = setTimeout(() => {
+    scanTimer = null;
+    runScan();
+  }, delay);
 }
 
-export function startCodexSessionWatcher(_win: BrowserWindow): void {
-  if (watcher || pollInterval) return;
+/** The chain Codex writes new rollouts into right now, root first:
+ * SESSIONS_ROOT / YYYY / YYYY/MM / YYYY/MM/DD (local-time components,
+ * padded — the same shape scanRollouts' day-name pruning expects). */
+function currentDateDirs(): string[] {
+  const now = new Date();
+  const year = path.join(SESSIONS_ROOT, String(now.getFullYear()));
+  const month = path.join(year, pad2(now.getMonth() + 1));
+  return [SESSIONS_ROOT, year, month, path.join(month, pad2(now.getDate()))];
+}
 
+/** Arm one non-recursive dir watcher. A throw from fs.watch (ENOENT for a
+ * dir the CLI has not created yet, ENOTDIR, ENOSPC once the inotify cap is
+ * hit) is swallowed exactly like the recursive watch's catch: the 2 s poll
+ * is the correctness backbone and the watch is a latency accelerator only.
+ * A watcher 'error' is logged once and released — an FSWatcher emitting
+ * 'error' with no listener takes down main (P1-11) — so a later scan can
+ * re-arm the dir. */
+function armDirWatch(dir: string): void {
+  if (dateDirWatchers.has(dir)) return;
   try {
-    fs.mkdirSync(SESSIONS_ROOT, { recursive: true });
-    const w = fs.watch(SESSIONS_ROOT, { recursive: true }, () => {
-      // Codex appends in bursts; coalesce watch events into one scan, and
-      // never run it closer than SCAN_MIN_SPACING_MS after the previous one —
-      // including a scan the poll already did (PA-22).
-      if (scanTimer !== null) return;
-      const delay = Math.max(
-        SCAN_DEBOUNCE_MS,
-        SCAN_MIN_SPACING_MS - (Date.now() - lastScanAt)
-      );
-      scanTimer = setTimeout(() => {
-        scanTimer = null;
-        runScan();
-      }, delay);
-    });
-    // An FSWatcher error (EMFILE, the watched dir removed) emits 'error'
-    // on the watcher; with no listener that is an uncaught exception in
-    // main — it takes down the process and every live PTY with it. Log
-    // once per watcher, release it, and keep the polling fallback alive.
+    const w = fs.watch(dir, scheduleScanFromEvent);
     let errorLogged = false;
     w.on('error', () => {
       if (!errorLogged) {
@@ -416,11 +432,81 @@ export function startCodexSessionWatcher(_win: BrowserWindow): void {
         console.warn('[codex-watcher] sessions dir watch failed; relying on polling');
       }
       try { w.close(); } catch { /* already closed */ }
-      if (watcher === w) watcher = null;
+      if (dateDirWatchers.get(dir) === w) dateDirWatchers.delete(dir);
     });
-    watcher = w;
+    dateDirWatchers.set(dir, w);
   } catch {
     // Directory watch unavailable; fall through to polling only.
+  }
+}
+
+/**
+ * S2-05: arm the Linux date-chain watchers and retire the ones the calendar
+ * has moved past. Runs on every scan tick, so a date rollover is picked up
+ * within one scan cadence; the path-keyed dedupe makes the pass idempotent.
+ * No-op on win/mac, where the single recursive handle covers the tree.
+ */
+function armCurrentDateDirs(): void {
+  if (!isLinux) return;
+  const targets = currentDateDirs();
+  for (const dir of targets) armDirWatch(dir);
+  for (const [dir, w] of dateDirWatchers) {
+    if (targets.includes(dir)) continue;
+    try { w.close(); } catch { /* already closed */ }
+    dateDirWatchers.delete(dir);
+  }
+}
+
+/** One rollout sweep, timestamped so both scan paths see each other. */
+function runScan(): void {
+  lastScanAt = Date.now();
+  // Date rollover (S2-05): the scan ticks are where the Linux date-chain
+  // watchers re-arm — the 2 s poll runs at cadence, so recomputing the
+  // chain every sweep costs a handful of map lookups.
+  armCurrentDateDirs();
+  scanRollouts();
+}
+
+export function startCodexSessionWatcher(_win: BrowserWindow): void {
+  if (watcher || pollInterval) return;
+
+  if (isLinux) {
+    // S2-05: Node's Linux recursive fs.watch spends one inotify watch per
+    // directory with no ignore filter — the reason git-watcher keeps the
+    // Linux working-tree watch as a capped non-recursive BFS
+    // (git-watcher.ts:62-65, #139). ~/.codex/sessions is a YYYY/MM/DD tree
+    // that grows one day-dir per day forever, so a recursive watch here
+    // arms 1000+ watches per app start for a long-time Codex user on top
+    // of git-watcher's capped BFS and the per-session watchers, risking
+    // fs.inotify.max_user_watches exhaustion app-wide. New rollouts land
+    // only in today's chain, so watch root + YYYY + YYYY/MM + YYYY/MM/DD
+    // non-recursively; the 2 s poll below stays the correctness backbone.
+    try {
+      fs.mkdirSync(SESSIONS_ROOT, { recursive: true });
+    } catch {
+      // Directory watch unavailable; fall through to polling only.
+    }
+    armCurrentDateDirs();
+  } else {
+    try {
+      const w = fs.watch(SESSIONS_ROOT, { recursive: true }, scheduleScanFromEvent);
+      // An FSWatcher error (EMFILE, the watched dir removed) emits 'error'
+      // on the watcher; with no listener that is an uncaught exception in
+      // main — it takes down the process and every live PTY with it. Log
+      // once per watcher, release it, and keep the polling fallback alive.
+      let errorLogged = false;
+      w.on('error', () => {
+        if (!errorLogged) {
+          errorLogged = true;
+          console.warn('[codex-watcher] sessions dir watch failed; relying on polling');
+        }
+        try { w.close(); } catch { /* already closed */ }
+        if (watcher === w) watcher = null;
+      });
+      watcher = w;
+    } catch {
+      // Directory watch unavailable; fall through to polling only.
+    }
   }
 
   // Polling fallback — fs.watch can miss events on some systems.
@@ -438,6 +524,10 @@ export function stopCodexSessionWatcher(): void {
     watcher.close();
     watcher = null;
   }
+  for (const w of dateDirWatchers.values()) {
+    try { w.close(); } catch { /* already closed */ }
+  }
+  dateDirWatchers.clear();
   if (pollInterval) {
     clearInterval(pollInterval);
     pollInterval = null;
