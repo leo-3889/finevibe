@@ -1,9 +1,10 @@
 # Performance & code-optimization audit — 2026-10-21
 
-> **Status 2026-10-22 (todos audit):** PA-01…PA-19, PA-22–PA-26, PA-28, PA-31 are fixed in
-> the **uncommitted working tree** (24/27 carry `PA-NN` comments; gate certification + commit
-> pending). Open: PA-20, 21, 27, 29, 30, 32, 33, 34, 35. Detailed queue:
-> [`PENDING.md`](PENDING.md) §0/§2.
+> **Status 2026-10-22: FULLY CLOSED — archived.** All 35 rows shipped by Wave E `b4c0721`
+> "Close every row of todos/perf-audit-2026-10-21.md" (gate: 2954 tests, tsc main+preload+
+> renderer clean) — per-row evidence incl. live `dup-bodies.js` → 0. Inherited standing
+> gaps (PO-06, S1–S6 packaged runs, clipboard per-OS rows) live in
+> [`../PENDING.md`](../PENDING.md).
 
 Tree: `rebuild` `c613d03` + uncommitted agentmemory/branding work (22 modified files). 48,976 LOC non-test TS.
 Method: 4 parallel read-only scouts (main/startup/IPC/store, watchers+transcripts, renderer, search/export/build) over the current working tree, consolidated by the parent; every P1 and the headline P2s re-verified in source by the parent.
