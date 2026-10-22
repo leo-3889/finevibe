@@ -41,11 +41,15 @@ import { appState, _resetForTesting } from '../../state.js';
 import { addTask, updateTask } from '../../board-state.js';
 import { initBoard, renderBoard, resetBoardView, resetBoardViewIf } from './board-view.js';
 import { instances as kanbanInstances } from '../kanban/instance.js';
+import type { ProjectRecord } from '../../../shared/types.js';
 
 function setupKanban(): HTMLElement {
   _resetForTesting();
   document.body.innerHTML = '';
   kanbanInstances.clear();
+  // C5G-07: pane instances are keyed by pane element; drop the previous
+  // test's panes so their roots never leak into this one's renders.
+  resetBoardView();
   (window as unknown as { finevibe: unknown }).finevibe = {
     store: { load: vi.fn(async () => null), save: vi.fn() },
   };
@@ -167,7 +171,7 @@ describe('board-view inline tag input (UI3-10)', () => {
   });
 });
 
-describe('board-view singleton reset (C2R-16)', () => {
+describe('board-view pane-instance reset (C2R-16)', () => {
   it('rebuilds for a new pane instead of reviving the detached tree', () => {
     const container = setupKanban();
     addTask({ title: 'T', prompt: 'p', columnId: 'col-a' });
@@ -176,7 +180,7 @@ describe('board-view singleton reset (C2R-16)', () => {
     const card = container.querySelector('.board-card');
     expect(card).not.toBeNull();
 
-    // The pane that owned the singleton is destroyed and the board is
+    // The pane that owned its instance is destroyed and the board is
     // unchanged: without the reset both the retained element and the last
     // change key short-circuit the next pane's render (and the per-tick
     // status/cost patches keep scanning the detached tree meanwhile).
@@ -200,8 +204,8 @@ describe('board-view singleton reset (C2R-16)', () => {
   });
 });
 
-describe('board-view conditional reset (C3R-04)', () => {
-  it('leaves the singleton intact when a non-owning pane is destroyed', () => {
+describe('board-view per-pane reset (C3R-04)', () => {
+  it('leaves a live pane intact when a foreign element is destroyed', () => {
     const container = setupKanban();
     addTask({ title: 'T', prompt: 'p', columnId: 'col-a' });
     initBoard();
@@ -210,7 +214,7 @@ describe('board-view conditional reset (C3R-04)', () => {
     expect(card).not.toBeNull();
 
     // destroyKanbanPane() of a BACKGROUND project's pane: its element never
-    // owned the board, so the visible pane's singleton must survive.
+    // owned a board instance, so the visible pane's root must survive.
     const foreign = document.createElement('div');
     document.body.appendChild(foreign);
     resetBoardViewIf(foreign);
@@ -219,7 +223,7 @@ describe('board-view conditional reset (C3R-04)', () => {
     expect(container.querySelector('.board-card')).toBe(card);
   });
 
-  it('clears the singleton when the owning pane is destroyed', () => {
+  it('drops the instance when its owning pane is destroyed', () => {
     const container = setupKanban();
     addTask({ title: 'T', prompt: 'p', columnId: 'col-a' });
     initBoard();
@@ -227,7 +231,7 @@ describe('board-view conditional reset (C3R-04)', () => {
     const card = container.querySelector('.board-card');
     expect(card).not.toBeNull();
 
-    // instance.destroy() detaches the pane element (board subtree travels
+    // instance.destroy() detaches the pane element (its board subtree travels
     // with it), then destroyKanbanPane resets through the conditional form.
     container.remove();
     resetBoardViewIf(container);
@@ -245,5 +249,143 @@ describe('board-view conditional reset (C3R-04)', () => {
     const rebuilt = next.querySelector('.board-card');
     expect(rebuilt).not.toBeNull();
     expect(rebuilt).not.toBe(card);
+  });
+});
+
+describe('board-view multi-instance (C5G-07)', () => {
+  // Two kanban tabs open at once (split/swarm): one pane per project, both
+  // visible. The singleton this replaces was re-parented into the ACTIVE pane
+  // by every untargeted render, blanking the other visible pane.
+  interface TwoPanes {
+    paneA: HTMLElement;
+    paneB: HTMLElement;
+    projectA: ProjectRecord;
+    projectB: ProjectRecord;
+    columnA: string;
+  }
+
+  function setupTwoPanes(): TwoPanes {
+    _resetForTesting();
+    document.body.innerHTML = '';
+    kanbanInstances.clear();
+    resetBoardView();
+    (window as unknown as { finevibe: unknown }).finevibe = {
+      store: { load: vi.fn(async () => null), save: vi.fn() },
+    };
+
+    const projectA = appState.addProject('Alpha', '/alpha');
+    const projectB = appState.addProject('Beta', '/beta');
+    const panes = [
+      [projectA, 'kb-a', ['Backlog', 'Active', 'Done']],
+      [projectB, 'kb-b', ['B Inbox', 'B Doing', 'B Done']],
+    ] as const;
+    for (const [project, sessionId, titles] of panes) {
+      project.board = {
+        columns: titles.map((title, i) => ({
+          id: `${project.id}-col-${i}`,
+          title,
+          order: i,
+          behavior: (['inbox', 'active', 'terminal'] as const)[i],
+        })),
+        tasks: [],
+      };
+      project.sessions.push({ id: sessionId, name: 'Kanban', type: 'kanban' } as never);
+      project.activeSessionId = sessionId;
+    }
+    // Project A is the active one: the board-state mutation paths (addTask /
+    // updateTask) write its board, so project B's board is only reachable
+    // through its pane — exactly the split-view situation the finding is about.
+    appState.setActiveProject(projectA.id);
+
+    const paneFor = (project: ProjectRecord, sessionId: string): HTMLElement => {
+      const el = document.createElement('div');
+      el.dataset['sessionId'] = sessionId;
+      document.body.appendChild(el);
+      kanbanInstances.set(sessionId, {
+        sessionId,
+        projectId: project.id,
+        element: el,
+        destroy: () => el.remove(),
+      });
+      return el;
+    };
+
+    return {
+      paneA: paneFor(projectA, 'kb-a'),
+      paneB: paneFor(projectB, 'kb-b'),
+      projectA,
+      projectB,
+      columnA: projectA.board!.columns[0].id,
+    };
+  }
+
+  const columnTitles = (pane: HTMLElement): (string | null)[] =>
+    [...pane.querySelectorAll('.column-title')].map((el) => el.textContent);
+
+  it('renders each pane with its own project columns; neither is blanked', () => {
+    const { paneA, paneB, columnA } = setupTwoPanes();
+    addTask({ title: 'A task', prompt: 'p', columnId: columnA });
+    initBoard();
+
+    renderBoard(paneA);
+    renderBoard(paneB);
+
+    const rootA = paneA.querySelector('.board-view');
+    const rootB = paneB.querySelector('.board-view');
+    expect(rootA).not.toBeNull();
+    expect(rootB).not.toBeNull();
+    // Each root is parented in its OWN pane: no re-parenting, no blank pane.
+    expect(rootA!.parentElement).toBe(paneA);
+    expect(rootB!.parentElement).toBe(paneB);
+
+    expect(columnTitles(paneA)).toEqual(['Backlog', 'Active', 'Done']);
+    expect(columnTitles(paneB)).toEqual(['B Inbox', 'B Doing', 'B Done']);
+    // Project A's task renders in A's tree only.
+    expect(paneA.querySelector('.board-card-title')!.textContent).toBe('A task');
+    expect(paneB.querySelector('.board-card')).toBeNull();
+  });
+
+  it('an untargeted render refreshes every pane, not just the active one', () => {
+    const { paneA, paneB, projectB, columnA } = setupTwoPanes();
+    const task = addTask({ title: 'Old A', prompt: 'p', columnId: columnA })!;
+    initBoard();
+    renderBoard(paneA);
+    renderBoard(paneB);
+    const rootB = paneB.querySelector('.board-view');
+
+    // A mutation of the ACTIVE project's board (through the real path:
+    // updateTask fires board-changed) plus a background-board change. The
+    // singleton moved its one tree into the active pane here, blanking B.
+    updateTask(task.id, { title: 'New A' });
+    projectB.board!.columns[0].title = 'B Renamed';
+    renderBoard();
+
+    expect(paneA.querySelector('.board-card-title')!.textContent).toBe('New A');
+    expect(columnTitles(paneB)).toEqual(['B Renamed', 'B Doing', 'B Done']);
+    // Both trees survive: neither pane's root moved.
+    expect(paneA.querySelector('.board-view')!.parentElement).toBe(paneA);
+    expect(paneB.querySelector('.board-view')).toBe(rootB);
+  });
+
+  it('destroying one pane leaves the other rooted and renderable', () => {
+    const { paneA, paneB, projectB } = setupTwoPanes();
+    initBoard();
+    renderBoard(paneA);
+    renderBoard(paneB);
+    const rootB = paneB.querySelector('.board-view');
+    expect(rootB).not.toBeNull();
+
+    // destroyKanbanPane('kb-a'): instance.destroy() detaches pane A, then the
+    // conditional reset drops exactly A's instance (C3R-04, now exact).
+    kanbanInstances.delete('kb-a');
+    paneA.remove();
+    resetBoardViewIf(paneA);
+
+    expect(paneA.querySelector('.board-view')).toBeNull();
+    expect(paneB.querySelector('.board-view')).toBe(rootB);
+
+    projectB.board!.columns[0].title = 'B Renamed';
+    renderBoard();
+    expect(columnTitles(paneB)).toEqual(['B Renamed', 'B Doing', 'B Done']);
   });
 });
