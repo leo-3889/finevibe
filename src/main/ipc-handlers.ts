@@ -1379,8 +1379,18 @@ export function registerIpcHandlers(): void {
   ipcMain.on('config:watchProject', safeOn('config:watchProject', (_event, providerId: ProviderId, projectPath: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
+    // getProvider stays first: an unknown provider id must keep throwing into
+    // safeOn (P2-108), and the gate below only guards the path.
     const provider = getProvider(providerId);
-    provider.startConfigWatcher?.(win, projectPath);
+    // C3A-02: the config watcher reads the provider config tree under a
+    // renderer-supplied projectPath, so the channel takes the same PROJECT
+    // tier as git:watchProject — an unknown path never starts a watcher.
+    const resolved = path.resolve(projectPath);
+    if (!isWithinKnownProject(resolved)) {
+      console.warn(`config:watchProject blocked: ${resolved}`);
+      return;
+    }
+    provider.startConfigWatcher?.(win, resolved);
   }));
 
   ipcMain.handle('provider:listProviders', () => {
@@ -1399,6 +1409,9 @@ export function registerIpcHandlers(): void {
     // P2-113 boundary gate: a renderer-supplied configDir reaches provider
     // scan roots here - allowlist it before any read, mirroring pty:create.
     if (configDir && !isManagedMcpConfigDir(configDir)) throw new Error('Not a managed profile config dir');
+    // C3A-03: same gate as provider:getConfig — a renderer-supplied
+    // projectPath reaches provider.getTranscriptPath scan roots below.
+    if (!isWithinKnownProject(path.resolve(projectPath))) throw new Error('Path is not within a known project');
     const sourceProvider = getProvider(sourceProviderId);
     const fromProviderLabel = sourceProvider.meta.displayName;
     let transcriptPath: string | null = null;
@@ -1430,6 +1443,9 @@ export function registerIpcHandlers(): void {
     // P2-113 boundary gate: an unallowlisted configDir must never reach a
     // provider scan root - report "no transcript" (deny, not fail-open).
     if (configDir && !isManagedMcpConfigDir(configDir)) return false;
+    // C3A-03: an out-of-project path must never reach a provider scan root -
+    // deny like the configDir gate above, not fail-open.
+    if (!isWithinKnownProject(path.resolve(projectPath))) return false;
     try {
       const provider = getProvider(providerId);
       if (!provider.getTranscriptPath) return true;
@@ -1450,6 +1466,9 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
     if (!win) throw new Error('no window');
     if (configDir && !isManagedMcpConfigDir(configDir)) throw new Error('Not a managed profile config dir');
+    // C3A-03: same gate as provider:getConfig; exportArchive reads the
+    // transcript tree under this projectPath.
+    if (!isWithinKnownProject(path.resolve(projectPath))) throw new Error('Path is not within a known project');
     return exportSessionArchive(win, { providerId, cliSessionId, projectPath, configDir, meta, format });
   });
 
@@ -2180,7 +2199,19 @@ export function registerIpcHandlers(): void {
     }
   });
 
+  // C3A-01: filePath arrives via the renderer as an echo of the list results,
+  // and removeMcpServer's self-built allowlist (claude-cli.ts) is derived from
+  // the same projectPath+configDir args — so they both identify AND authorize
+  // the write target. Gate the boundary like addMcpServer (claude-cli.ts) and
+  // provider:getConfig: configDir must be a managed profile dir, and a project
+  // scope must name a known project, or the allowlist is renderer-authored.
   ipcMain.handle('mcp:removeServer', (_event, name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string) => {
+    if (configDir && !isManagedMcpConfigDir(configDir)) {
+      return { success: false, error: `Refused: ${configDir} is not a managed profile directory.` };
+    }
+    if (scope === 'project' && (!projectPath || !isWithinKnownProject(path.resolve(projectPath)))) {
+      return { success: false, error: 'Path is not within a known project' };
+    }
     try {
       removeMcpServer(name, filePath, scope, projectPath, configDir);
       return { success: true };

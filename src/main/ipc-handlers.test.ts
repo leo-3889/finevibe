@@ -187,7 +187,7 @@ vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
 
 import { registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting } from './ipc-handlers';
-import { isManagedMcpConfigDir } from './claude-cli';
+import { isManagedMcpConfigDir, removeMcpServer } from './claude-cli';
 import { loadState } from './store';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { cleanupSessionStatus } from './hook-status';
@@ -845,6 +845,8 @@ describe('session transcript channels: configDir boundary gate (P2-113)', () => 
   });
   it('passes an allowlisted configDir to the provider; null path still means absent', async () => {
     provider.getTranscriptPath = vi.fn(() => null);
+    // C3A-03: the projectPath gate admits the legit active project.
+    knownPaths.push('/proj');
     vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(true);
     expect(
       handlers.get('session:transcriptExists')!({}, 'claude', 'cli-1', '/proj', '/profiles/work', undefined),
@@ -865,6 +867,26 @@ describe('session transcript channels: configDir boundary gate (P2-113)', () => 
     await expect(
       handlers.get('session:exportArchive')!({}, 'claude', 'cli-1', '/proj', '/foreign/dir', {} as never, 'zip'),
     ).rejects.toThrow('Not a managed profile config dir');
+  });
+  it('transcriptExists denies a projectPath outside the known projects', () => {
+    provider.getTranscriptPath = vi.fn(() => '/t.jsonl');
+    // C3A-03: the provider:getConfig project gate; deny, not fail-open.
+    expect(
+      handlers.get('session:transcriptExists')!({}, 'claude', 'cli-1', '/foreign/proj', undefined, undefined),
+    ).toBe(false);
+    expect(provider.getTranscriptPath).not.toHaveBeenCalled();
+  });
+  it('buildResumeWithPrompt rejects a projectPath outside the known projects', async () => {
+    provider.getTranscriptPath = vi.fn(() => '/t.jsonl');
+    await expect(
+      handlers.get('session:buildResumeWithPrompt')!({}, 'claude', 'cli-1', '/foreign/proj', 'S'),
+    ).rejects.toThrow(/not within a known project/);
+    expect(provider.getTranscriptPath).not.toHaveBeenCalled();
+  });
+  it('session:exportArchive rejects a projectPath outside the known projects', async () => {
+    await expect(
+      handlers.get('session:exportArchive')!({}, 'claude', 'cli-1', '/foreign/proj', undefined, {} as never, 'zip'),
+    ).rejects.toThrow(/not within a known project/);
   });
 });
 
@@ -2232,5 +2254,51 @@ describe('fs:topFilesByTokens result cache (C2M-03)', () => {
       readSpy.mockRestore();
       vi.mocked(estimateTokens).mockReset();
     }
+  });
+});
+
+// C3A-02: the config watcher reads the provider config tree under a
+// renderer-supplied projectPath — the channel takes git:watchProject's
+// PROJECT tier, so a config tree (a read-allowed dir) never starts a watcher.
+describe('config:watchProject gate (C3A-02)', () => {
+  it('never starts a watcher for a path outside the known projects', () => {
+    provider.startConfigWatcher = vi.fn();
+    handlers.get('config:watchProject')!({}, 'claude', path.join(os.homedir(), '.claude'));
+    expect(provider.startConfigWatcher).not.toHaveBeenCalled();
+  });
+  it('starts the watcher for a known project', () => {
+    provider.startConfigWatcher = vi.fn();
+    knownPaths.push('/proj');
+    handlers.get('config:watchProject')!({}, 'claude', '/proj');
+    expect(provider.startConfigWatcher).toHaveBeenCalledWith(fakeWin, path.resolve('/proj'));
+  });
+});
+
+// C3A-01: removeMcpServer's write allowlist is derived from the renderer's
+// own projectPath+configDir, so the handler gates both before the call.
+describe('mcp:removeServer path gates (C3A-01)', () => {
+  it('refuses a configDir outside the managed-profile allowlist', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    const result = await handlers.get('mcp:removeServer')!(
+      {}, 'srv', '/home/attacker/.claude/.claude.json', 'user', undefined, '/home/attacker/.claude',
+    );
+    expect(result).toMatchObject({ success: false });
+    expect(removeMcpServer).not.toHaveBeenCalled();
+  });
+  it('refuses a project scope outside the known projects', async () => {
+    knownPaths.push('/proj');
+    const result = await handlers.get('mcp:removeServer')!(
+      {}, 'srv', '/foreign/.mcp.json', 'project', '/foreign', undefined,
+    );
+    expect(result).toMatchObject({ success: false, error: 'Path is not within a known project' });
+    expect(removeMcpServer).not.toHaveBeenCalled();
+  });
+  it('passes a known project plus a managed configDir through', async () => {
+    knownPaths.push('/proj');
+    const result = await handlers.get('mcp:removeServer')!(
+      {}, 'srv', '/proj/.mcp.json', 'project', '/proj', '/profiles/work',
+    );
+    expect(result).toEqual({ success: true });
+    expect(removeMcpServer).toHaveBeenCalledWith('srv', '/proj/.mcp.json', 'project', '/proj', '/profiles/work');
   });
 });
