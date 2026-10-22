@@ -2,6 +2,20 @@
 
 This is the current work queue for a local LLM. The work described below under "Implemented" is committed on `rebuild` (the integration branch); read the current code and diff before editing. Code and unit-test coverage do not establish behavior in a running or packaged Electron app.
 
+## Status 2026-10-22 night (Wave-B closure: registry drained to zero open rows)
+
+Final Wave-B slices integrated and committed on `rebuild`: P2-54 `a5662ac` ·
+P1-13/P1-16/P1-18/P1-21/P2-18/P2-53/P2-60/P2-61/P2-72/P2-98 family `01f4647`+`634b02f`+`ed05e2f`+`221510f` ·
+P3-4 `e69d722` · P2-75 `5549f4f` · P2-12 partial `45070f6` (`components/**` in; `main.ts`,
+`ipc-handlers.ts`, `preload/**` stay out by design) · vitest-4/electron typing drift `5d2de59`.
+Every Wave A–F registry row now carries a `fixed (<sha>)` status — see the banner in
+[`todos/full-audit-2026-10-20-plan.md`](../todos/full-audit-2026-10-20-plan.md).
+Exit gate: `dev/audit/gate.sh 3` exit 0 on `5d2de59` — build ✓,
+typecheck (renderer + main tests) ✓, **215 test files / 3,355 passed / 2 skipped** ×3
+(no flake, no Errors section), delta `git diff --check` clean. Queue: F64 (CHANGELOG via
+release workflow, needs tag/push), the §2 hardware-blocked acceptance rows, and the
+packaged-build gates — [`todos/PENDING.md`](../todos/PENDING.md).
+
 ## Status 2026-10-22 (Wave E: 2026-10-21/22 static performance+bug audit, 35 rows closed)
 
 Committed on `rebuild` as `b4c0721` (130 files, +4452/−949). Unit-tested on this tree; **no packaged-app runtime verification**. Full finding list with mechanisms: `todos/perf-audit-2026-10-21.md` (PA-01..PA-36 + W1/W2). Contracts re-synced: [performance](performance.md) (growth table now carries per-row Wave E disposition; the false 2026-10-18 poller claim is corrected), [FEATURES](FEATURES.md) + [security boundaries](security-boundaries.md) (transcriptExistsSync channel deletion cut over).
