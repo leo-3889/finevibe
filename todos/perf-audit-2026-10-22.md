@@ -54,14 +54,14 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | UI3-10 | P2 | session-export zip failure | failed export leaves generator + transcript fd open (Windows unlink EPERM) | AGENT | ScoutUI3Fixes (destroy generator) |
 | UI3-11 | P2 | ipc-handlers fs:topFilesByTokens | no dedup/abort; stacked full repo scans | PARENT | after IpcAsyncFixes lands |
 | UI3-12 | P2 | board tag input | Escape (blur) commits the half-typed tag | AGENT | ScoutUI3Fixes (committed flag) |
-| UI2-1 | P1 | ipc-handlers fs:listDirs + sidebar | per-keystroke sync readdir + uncoalesced native out-of-home confirm modal (== S4-04; sidebar debounce delegated SR2-c) | PARENT | async readdir + memoized per-(window,dir) confirm, after IpcAsyncFixes |
+| UI2-1 | P1 | ipc-handlers fs:listDirs + sidebar | per-keystroke sync readdir + uncoalesced native out-of-home confirm modal (== S4-04) | FIXED | async readdir + memoized per-(window,dir) consent (db59b82); sidebar debounce (0a1f70a) |
 | UI2-2 | P2 | inspector trimWindow | startIdx advanced without re-baselining firstWindowTs -> append bails after first trim, ~2.5 full rebuilds/s steady state | FIXED | same fix as S4-01 (94a7cfa, append-after-trim test) |
-| UI2-3 | P2 | github-unread + docs | pruneGithubLastSeen doc row fabricated (module absent); bulk-mark re-juvenates all items -> githubLastSeen unbounded | QUEUED | write-site cap + updated_at stamp + doc row fix (state.ts after TabBarSidebarSlice) |
-| UI2-6 | P2 | chrome-import-modal | cleanupFn wired after await -> double-open leaks subscriptions | QUEUED | follow-up slice |
-| UI2-8 | P3 | session-deep-search | pruneSearchIndex full readdir per query burst | QUEUED | rate-limit 30 s/provider |
-| UI2-9 | P3 | modal-close enterCloseKeydown | per-dialog document Enter closes stacked dialogs | QUEUED | top-of-stack Enter routing |
-| UI2-10 | P3 | provider-tools/usage-stats widgets | refresh() without generation guard | QUEUED | token pattern |
-| UI2-11 | P3 | predefined-picker | dispose leaves debounce timer armed; open not single-flighted | QUEUED | clear timer + early-return |
+| UI2-3 | P2 | githubLastSeen writes + docs | PA-31 prune module never existed (docs row fabricated); entries grew per viewed item forever | FIXED | github-last-seen.ts implemented (200 cap) + write-site wiring, 2 tests (3cd11eb); bulk-mark `now` stamp reclassified conservative-by-design |
+| UI2-6 | P2 | chrome-import-modal | cleanupFn wired after await -> double-open leaks subscriptions | FIXED | single-flight + sync dismiss binding, disposed-continuation guard (d0c592d, double-open test) |
+| UI2-8 | P3 | session-deep-search | pruneSearchIndex full readdir per query burst | FIXED | claimPruneSlot 30 s/provider rate limit (d0c592d, timing test) |
+| UI2-9 | P3 | modal-close | per-dialog document Enter closes stacked dialogs | FIXED | Enter routed through modal-manager top-of-stack (onEnter), enterCloseKeydown deleted (d0c592d, 3 tests) |
+| UI2-10 | P3 | provider-tools/usage-stats widgets | refresh() without generation guard | FIXED | renderToken guards + destroy bumps (d0c592d, stale/destroy tests) |
+| UI2-11 | P3 | predefined-picker | dispose leaves debounce timer armed; open not single-flighted | FIXED | timer cleared on dispose + open single-flight (d0c592d) |
 | UI2-12 | P3 | docs/performance.md | growth row names ENTRY_CACHE_CAP; shipped name ENTRY_CACHE_MAX_DIRS | FIXED | doc rename + prune-bound/deferral sync (24d51a2) |
 
 ## Gate
