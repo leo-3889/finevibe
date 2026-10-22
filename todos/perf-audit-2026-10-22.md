@@ -241,9 +241,9 @@ Time-box reached (15:00 UTC): 19 findings (4 P2, 15 P3) recorded OPEN, NOT fixed
 
 | id | sev | file:line | mechanism | verdict |
 | --- | --- | --- | --- | --- |
-| C5R-01 | P2 | split-layout.ts:327 | remote-terminal sessions persist; restored tab has no pane (instances live only during share) -> blank resurrected P2P tab every restart, no connect path, no Disconnect button | OPEN |
-| C5R-02 | P2 | peer-host.ts:309 + peer-guest.ts:172 | ICE 'disconnected' (Chromium self-recovers in seconds) tears down authenticated share permanently - no re-handshake path; host+guest both die on a NAT rebind | OPEN |
-| C5G-01 | P2 | git-panel.ts:246 | loadFiles has no generation guard - slow getFiles of previous project/worktree resolves last, paints stale repo list (display-only) | OPEN |
+| C5R-01 | P2 | split-layout.ts:327 | remote-terminal sessions persist; restored tab has no pane (instances live only during share) -> blank resurrected P2P tab every restart, no connect path, no Disconnect button | FIXED | 41c83e7 hydrate-drop + history finalize |
+| C5R-02 | P2 | peer-host.ts:309 + peer-guest.ts:172 | ICE 'disconnected' (Chromium self-recovers in seconds) tears down authenticated share permanently - no re-handshake path; host+guest both die on a NAT rebind | FIXED | 41c83e7 15 s ICE grace both sides |
+| C5G-01 | P2 | git-panel.ts:246 | loadFiles has no generation guard - slow getFiles of previous project/worktree resolves last, paints stale repo list (display-only) | FIXED | 363551a loadGeneration guard |
 | C5G-02 | P3 | git-status.ts:297 | project-removed prunes caches but not manualOverride map - one entry per removed project forever | OPEN |
 | C5G-03 | P3 | git-panel.ts:66 | stage/unstage/discard handlers uncaught async - git failure = unhandled rejection + silent stale panel (siblings alert) | OPEN |
 | C5G-04 | P3 | board-dnd.ts:115 | CI-04 pointerId filter only on cancel; move/up accept any pointer - second-finger touch commits/ghost-drags mid-gesture | OPEN |
@@ -260,3 +260,4 @@ Time-box reached (15:00 UTC): 19 findings (4 P2, 15 P3) recorded OPEN, NOT fixed
 | C5R-07 | P3 | peer-host.ts:295 | guest input payload unvalidated - non-string payloads -> node-pty TypeError -> unbounded console.warn stream per frame | OPEN |
 | C5R-08 | P3 | win32-terminal-keys.ts:58 | AltGr encoded LEFT_ALT (0x2) not RIGHT_ALT_PRESSED (0x4); CAPS/NUM lock bits never reported | OPEN |
 | C5R-09 | P3 | session-inspector-utils.ts:53 | tool payload slice(0,2000) can split a surrogate pair -> U+FFFD tail (chunkByUtf8Bytes documents the correct idiom) | OPEN |
+ - in-session: C5R-01 + C5R-02 (41c83e7), C5G-01 (363551a); gate 213 files / 3287 tests, tsc clean. Remaining OPEN: 16 (1 P2: C5G-07 dual-kanban visibility).
