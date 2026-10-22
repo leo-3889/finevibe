@@ -15,7 +15,7 @@ Committed on `rebuild` as `b4c0721` (130 files, +4452/−949). Unit-tested on th
 
 Gate, 2026-10-22, on `b4c0721`: `npx vitest run` → 203 files / 2,950 passed / 4 skipped / 0 errors; `npx tsc -p tsconfig.main.json --noEmit`, `tsconfig.preload.json`, `tsconfig.renderer.json` → 0 errors; `git diff --check` clean. Note: `npm install` runs `electron-builder install-app-deps`, which rebuilds `better-sqlite3` for the Electron ABI and breaks the node-ABI vitest suites; `npx prebuild-install -r node` in `node_modules/better-sqlite3` restores them.
 
-Next: Wave F re-audit of the fixed tree (in progress 2026-10-22); the standing runtime items 4 (PO-06) and 5 (live integration) remain open.
+Next: Wave F re-audit of the fixed tree — complete 2026-10-22 (ledger + gate: [perf-audit-2026-10-22](../todos/perf-audit-2026-10-22.md)); the standing runtime items 4 (PO-06) and 5 (live integration) remain open.
 
 ## Status 2026-10-20 (Wave C: decode bounds, discovery completeness, prune order, render fan-out)
 
@@ -175,7 +175,7 @@ Wave E doc separation → the Finevibe rename. Spec:
 - **Evidence disposition.** The agent workspace that held the per-finding evidence — `2026-10-19-cleanup.md` (findings W1-01…W1-25: 24 findings, 4 P1 / 12 P2 / 8 P3, with W1-16 inventory-only), `2026-10-19-architecture.md` (W3-01…W3-15), `2026-10-19-merge-map.md`, the W2 measurement harnesses and the coordinator's run-state file — was dissolved on 2026-10-21; that evidence no longer exists. The findings stay closed per the commits named in this file. The surviving durable records are this section, the W2 baseline snapshot in [performance](performance.md), the build-host requirement in [packaging](packaging.md), and the plan linked above.
 - **Housekeeping the run-state file left open.** `%APPDATA%` smoke directories `Finevibe-e2e-backup` / `Finevibe-e2e-backup(2)` from the rename E2E (user data untouched: the real userData dir is intact and the real state migrated on first launch of the renamed app); the optional `-Archives` pass of the program's cleanup script; the Wave M branch/stash list is DONE (26 branches deleted, 0 stashes, worktrees reduced to main + baseline, fork GitHub branches kept to `main` plus the PR #167 head with stale tips archived as local `fork-archive/*`).
 
-## Status 2026-10-22 (Wave F: post-Wave-E re-audit, in flight)
+## Status 2026-10-22 (Wave F: post-Wave-E re-audit, complete)
 
 Loop re-run on the `b4c0721` tree: 5 read-only scouts (startup/main, watchers,
 renderer core, UI, tab-bar/sidebar supplement) → parent verification → 4 fix
@@ -190,7 +190,15 @@ dispositions (FIXED / AGENT / PARENT / ACCEPTED):
   component dropped), git poll visibility gate, settings-guard revalidation
   burst, git-watcher superseded-walk leak, PTY exit payload race, home-root
   profile-dir containment hole.
-- **Open:** agent slices (codex watcher cadence, renderer P1s, async IPC
-  probes, tab-bar/sidebar batch slice) merge through the integration gate;
-  parent-side remainder: S3-08 search-bar teardown, S4-04 out-of-home
-  listing consent, enumerate-cache generation, store:saveSync wiring.
+- **Closed agent-side (integration commits):** S2-05 Linux non-recursive codex
+  watch (764e674); renderer P1s — trim rebase, board session key (94a7cfa),
+  terminal/inspector/pane slices (0147167); async IPC probes + keystroke-safe
+  listDirs (db59b82); tab-bar/sidebar batch slice (0a1f70a); UI2 tail — modal
+  single-flight, Enter top-of-stack, prune rate-limit, generation tokens
+  (d0c592d); UI3 slice — generation guards, teardown, dnd/modal hardening
+  (0073101); UI3-11 shared top-files walk (43fbc6b).
+- **Closed parent-side remainder:** S3-08 search-bar teardown (0147167),
+  S4-04 listing consent (db59b82), enumerate-cache generation (0073101),
+  store:saveSync wiring (7b34b9e), githubLastSeen cap (3cd11eb).
+- **Gate:** 207 files / 3169 tests green; tsc 0 errors (main+renderer).
+  Open by design: UI3-3 ring/epoch deep fix (2 s floor in place).
