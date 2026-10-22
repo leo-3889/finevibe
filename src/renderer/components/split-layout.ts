@@ -166,7 +166,11 @@ export function initSplitLayout(): void {
   // layout — a full pass costs the session loop + 9 hideAll sweeps + fitAllVisible
   // for nothing, N times per resume storm. Payload-less stays on the full path.
   appState.on('session-changed', (data?: unknown) => {
-    if ((data as { kind?: string } | undefined)?.kind === 'metadata') return;
+    const payload = data as { kind?: string; deferRender?: boolean } | undefined;
+    if (payload?.kind === 'metadata') return;
+    // S3-06: batch closes (removeAllSessions et al.) mark every per-session
+    // event `deferRender`; the batch's trailing kick renders the layout once.
+    if (payload?.deferRender) return;
     renderLayout();
   });
   appState.on('layout-changed', renderLayout);

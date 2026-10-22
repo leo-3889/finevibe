@@ -269,3 +269,72 @@ describe('Add-project checkout-and-create flow', () => {
     expect(addProject).not.toHaveBeenCalled();
   });
 });
+
+describe('Add-project clone busy guard (SR2-b)', () => {
+  const values = (url: string) => ({ 'project-name': 'repo', 'project-path': url, profile: '' });
+
+  it('swallows a re-confirm while a clone is in flight', async () => {
+    // The modal's Enter keydown fires the confirm handler even with the
+    // button disabled; the `cloning` guard must be armed before the first
+    // await so the second trigger never reaches fs.cloneRepo.
+    const { promptNewProject, addProject } = await setup('/home/u/projects');
+    let resolveClone: (v: { ok: boolean }) => void = () => {};
+    fsStub.cloneRepo.mockImplementationOnce(() => new Promise((r) => { resolveClone = r; }));
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = URL_HTTPS;
+    pathInput.dispatchEvent(new Event('input'));
+    const first = modalMock.onConfirm!(values(URL_HTTPS));
+    await modalMock.onConfirm!(values(URL_HTTPS));
+    expect(fsStub.cloneRepo).toHaveBeenCalledTimes(1);
+    resolveClone({ ok: true });
+    await first;
+    expect(fsStub.cloneRepo).toHaveBeenCalledTimes(1);
+    expect(addProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('disarms after a failed clone so a retry can start', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    fsStub.cloneRepo.mockResolvedValueOnce({ ok: false, error: 'boom' });
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = URL_HTTPS;
+    pathInput.dispatchEvent(new Event('input'));
+    await modalMock.onConfirm!(values(URL_HTTPS));
+    expect(fsStub.cloneRepo).toHaveBeenCalledTimes(1);
+    await modalMock.onConfirm!(values(URL_HTTPS));
+    expect(fsStub.cloneRepo).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('session-row surgical patch (S3-05)', () => {
+  it('patches the count pill in place on close; the open Files panel survives', async () => {
+    vi.resetModules();
+    stubDom();
+    const { appState } = await import('../state.js');
+    const fileTree = await import('./file-tree.js');
+    const { initSidebar } = await import('./sidebar.js');
+    initSidebar();
+    const p = appState.addProject('P', '/p');
+    appState.setActiveProject(p.id);
+    appState.addSession(p.id, 'S1');
+    appState.addSession(p.id, 'S2');
+
+    const filesBtn = Array.from(document.querySelectorAll('.project-action-btn'))
+      .find((b) => b.querySelector('.action-label')?.textContent === 'Files') as HTMLButtonElement;
+    filesBtn.click();
+    const renderFileTreeMock = fileTree.renderFileTree as Mock;
+    expect(renderFileTreeMock).toHaveBeenCalledTimes(1);
+    const panel = document.querySelector('.project-panel-files');
+    expect(panel).not.toBeNull();
+    renderFileTreeMock.mockClear();
+
+    appState.removeSession(p.id, appState.activeProject!.sessions[1].id);
+
+    // The tree module was never re-entered: no panel wipe, no cache eviction.
+    expect(renderFileTreeMock).not.toHaveBeenCalled();
+    expect(document.querySelector('.project-panel-files')).toBe(panel);
+    // The row's pill moved 2 → 1 in place.
+    expect(document.querySelector('.project-item.active .project-session-count')!.textContent).toBe('1');
+  });
+});

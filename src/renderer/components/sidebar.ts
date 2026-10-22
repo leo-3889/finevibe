@@ -95,8 +95,13 @@ export function initSidebar(): void {
     render();
   });
   appState.on('project-changed', render);
-  appState.on('session-added', render);
-  appState.on('session-removed', render);
+  // S3-05: an add/close moves one row's count pill + status dot. The old
+  // full render() rebuilt the active project's panel — wiping an open Files
+  // tree and evicting every cached directory listing (renderFileTree →
+  // refreshFolderCache). Structural events (project-*/layout-changed) keep
+  // the full render above.
+  appState.on('session-added', onSessionRowsChanged);
+  appState.on('session-removed', onSessionRowsChanged);
   appState.on('layout-changed', render);
   // The badge tracks the project's *current* coding tool, which moves whenever
   // the active tab changes. `session-changed` deliberately does not re-render
@@ -156,8 +161,9 @@ export function initSidebar(): void {
   // visibility/label on the active card.
   appState.on('profiles-changed', render);
 
-  document.addEventListener('click', hideTabContextMenu);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTabContextMenu(); });
+  // SR2-f: the document click/Escape → hideTabContextMenu pair lives in
+  // initTabBar() (tab-bar/index.ts), which the renderer always runs
+  // alongside this one; the duplicate pair registered here double-fired.
 
   render();
 }
@@ -247,6 +253,51 @@ function syncProfileBadge(): void {
     node,
     appState.activeProject ? projectProfileBadge(appState.activeProject) : undefined,
   );
+}
+
+/**
+ * S3-05: surgical session-row patch. Only two nodes change when a session
+ * is added or closed in a project that already has a row: the session-count
+ * pill and (for inactive rows) the aggregate status dot — the same idiom as
+ * the syncProfileBadge/onActivityChange patches. Anything the patch cannot
+ * express (unknown project, missing row, open Sessions panel whose archive
+ * list just gained a row) falls back to the full render.
+ */
+function onSessionRowsChanged(data?: unknown): void {
+  const projectId = (data as { projectId?: string } | undefined)?.projectId;
+  const project = appState.projects.find((p) => p.id === projectId);
+  const row = project
+    ? projectListEl.querySelector<HTMLElement>(`.project-item[data-project-id="${project.id}"]`)
+    : null;
+  if (!project || !row) { render(); return; }
+  if (project.id === appState.activeProjectId && projectPanelOpen.get(project.id) === 'history') {
+    render();
+    return;
+  }
+  patchSessionRow(project, row);
+}
+
+function patchSessionRow(project: ProjectRecord, row: HTMLElement): void {
+  const count = project.sessions.length;
+  let pill = row.querySelector<HTMLElement>('.project-session-count');
+  if (count > 0) {
+    if (!pill) {
+      pill = document.createElement('span');
+      pill.className = 'project-session-count';
+      row.insertBefore(pill, row.querySelector('.project-delete'));
+    }
+    pill.textContent = String(count);
+  } else if (pill) {
+    pill.remove();
+  }
+  // The active row leads with the avatar (no dot); inactive rows carry the
+  // aggregate dot — mirroring the onActivityChange patch's write shape.
+  const dot = row.querySelector<HTMLElement>('.project-status');
+  if (dot) {
+    const status = getProjectStatus(project);
+    dot.className = `project-status ${status}`;
+    dot.textContent = STATUS_GLYPH[status];
+  }
 }
 
 function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: RenderOpts): HTMLElement {
@@ -531,7 +582,14 @@ export function promptNewProject(): void {
     });
   }
   showModal(t('sidebar.newProject.title'), fields, async (values) => {
+    // SR2-b: the modal's Enter keydown fires the confirm handler even with
+    // the button disabled, so a re-trigger can land between ANY of this
+    // handler's awaits (expandPath, browseDirectory, cloneRepo). The guard
+    // arms synchronously at entry — the one point before any await — and
+    // disarms in the handler's finally, covering the plain path too.
     if (cloning) return;
+    cloning = true;
+    try {
     const name = values['project-name']?.trim();
     const rawPath = values['project-path']?.trim();
     if (!rawPath) return;
@@ -565,24 +623,30 @@ export function promptNewProject(): void {
     );
 
     // Clone is the slow step: the confirm button carries the progress state
-    // and the busy guard swallows Enter/click re-triggers while it runs.
+    // while it runs (the busy guard armed at entry swallows re-triggers).
     const confirmBtn = document.getElementById('modal-confirm') as HTMLButtonElement | null;
-    if (confirmBtn) {
-      confirmBtn.textContent = t('sidebar.newProject.cloning');
-      confirmBtn.disabled = true;
-    }
-    const res = await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
-    cloning = false;
-    if (confirmBtn) {
-      confirmBtn.disabled = false;
-      confirmBtn.textContent = t('sidebar.newProject.checkoutAndCreate');
+    let res: { ok: boolean; error?: string } | undefined;
+    try {
+      if (confirmBtn) {
+        confirmBtn.textContent = t('sidebar.newProject.cloning');
+        confirmBtn.disabled = true;
+      }
+      res = await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
+    } finally {
+      if (confirmBtn) {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = t('sidebar.newProject.checkoutAndCreate');
+      }
     }
     if (!res?.ok) {
       setModalError('project-path', t('sidebar.newProject.cloneFailed') + (res?.error ? `: ${res.error}` : ''));
       return;
     }
-    closeModal();
-    appState.addProject(projectName, targetPath, values['profile'] || undefined);
+      closeModal();
+      appState.addProject(projectName, targetPath, values['profile'] || undefined);
+    } finally {
+      cloning = false;
+    }
   });
 
   // The confirm label is swapped in place while a URL owns the path field —
@@ -654,7 +718,12 @@ export function promptNewProject(): void {
       dropdown.classList.add('visible');
     };
 
-    pathInput.addEventListener('input', async () => {
+    // SR2-c: one fs.listDirs burst per ~100ms of typing, and a generation
+    // counter so a slow reply for an old prefix can never overwrite the
+    // suggestions (or the dropdown) the current prefix already earned.
+    let suggestSeq = 0;
+    let suggestTimer: ReturnType<typeof setTimeout> | null = null;
+    pathInput.addEventListener('input', () => {
       pathManuallyEdited = true;
       const value = pathInput.value;
       const checkout = detectGitCheckoutUrl(value);
@@ -663,18 +732,30 @@ export function promptNewProject(): void {
         // The URL owns the field: name from the repo, and no path
         // autocomplete — a URL's dirPart is not a filesystem path to enumerate.
         if (nameInput && !nameManuallyEdited) nameInput.value = checkout.repoName;
+        suggestSeq++;
+        if (suggestTimer !== null) { clearTimeout(suggestTimer); suggestTimer = null; }
         hideDropdown();
         return;
       }
       autoFillName(value);
       const lastSlash = lastSeparatorIndex(value);
-      if (lastSlash === -1) { hideDropdown(); return; }
+      if (lastSlash === -1) {
+        suggestSeq++;
+        if (suggestTimer !== null) { clearTimeout(suggestTimer); suggestTimer = null; }
+        hideDropdown();
+        return;
+      }
 
       const dirPart = value.substring(0, lastSlash + 1);
       const namePart = value.substring(lastSlash + 1).toLowerCase();
-
-      const dirs = await window.finevibe.fs.listDirs(dirPart, namePart || undefined);
-      showSuggestions(dirs, dirPart);
+      const seq = ++suggestSeq;
+      if (suggestTimer !== null) clearTimeout(suggestTimer);
+      suggestTimer = setTimeout(() => {
+        suggestTimer = null;
+        window.finevibe.fs.listDirs(dirPart, namePart || undefined)
+          .then((dirs) => { if (seq === suggestSeq) showSuggestions(dirs, dirPart); })
+          .catch(() => {});
+      }, 100);
     });
 
     pathInput.addEventListener('keydown', (e) => {

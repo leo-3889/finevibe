@@ -43,6 +43,11 @@ function renameInputOpen(): boolean {
   return !!tabListEl.querySelector('.tab-name input, .tab-group-name input');
 }
 
+// SR2-e: events that arrive while a rename input owns the strip used to be
+// dropped by render()'s early-return — a closed session stayed clickable.
+// They now set this flag, and the rename's commit/cancel path replays the
+// strip rebuild the moment the input is gone.
+let stripDirtyDuringRename = false;
 type DropZone = 'left' | 'center' | 'right';
 
 // Outer thirds keep the reorder zones; the center third is the group zone.
@@ -146,6 +151,10 @@ function startRename(tab: HTMLElement, project: ProjectRecord, session: SessionR
     input.remove();
     if (newName && newName !== session.name) {
       appState.renameSession(project.id, session.id, newName, true);
+      // SR2-e: renameSession emits only a patchable `metadata` event, so
+      // nothing else rebuilds the strip — replay what the rename's
+      // early-returns banked.
+      if (stripDirtyDuringRename) render();
     } else {
       render();
     }
@@ -217,6 +226,8 @@ function startGroupRename(labelEl: HTMLElement, project: ProjectRecord, group: T
     } else {
       render();
     }
+    // SR2-e: same replay contract as startRename's commit.
+    if (stripDirtyDuringRename) render();
   };
 
   input.addEventListener('keydown', (e) => {
@@ -531,7 +542,8 @@ export function render(): void {
   // contract in tab-scroll.ts: a scroll made during an open rename is banked
   // by the render that early-returns, not silently dropped.
   bankScroll(tabListEl.scrollLeft);
-  if (renameInputOpen()) return;
+  if (renameInputOpen()) { stripDirtyDuringRename = true; return; }
+  stripDirtyDuringRename = false;
   tabListEl.innerHTML = '';
   const project = appState.activeProject;
   if (!project) {
@@ -757,14 +769,17 @@ export function updateTabStatus(sessionId: string, status: SessionStatus): void 
  * structural kinds (add/remove/reorder) keep the full render.
  */
 export function handleSessionChanged(data?: unknown): void {
-  const payload = data as { sessionId?: string; kind?: string } | null | undefined;
+  const payload = data as { sessionId?: string; kind?: string; deferRender?: boolean } | null | undefined;
   const { sessionId, kind } = payload ?? {};
+  // S3-06: batch closes defer every per-session render; the batch's trailing
+  // kick (identical payload without deferRender) rebuilds the strip once.
+  if (payload?.deferRender) return;
   if (!sessionId || !kind || kind === 'add' || kind === 'remove' || kind === 'reorder') {
     render();
     return;
   }
   bankScroll(tabListEl.scrollLeft);
-  if (renameInputOpen()) return;
+  if (renameInputOpen()) { stripDirtyDuringRename = true; return; }
   const project = appState.activeProject;
   const tab = tabListEl.querySelector<HTMLElement>(`.tab-item[data-session-id="${sessionId}"]`);
   const session = project?.sessions.find(s => s.id === sessionId);

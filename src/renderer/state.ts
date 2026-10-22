@@ -125,10 +125,14 @@ export type SessionChangeKind = 'activate' | 'add' | 'remove' | 'reorder' | 'met
  * rewrite. Subscribers MUST keep working when the argument is absent
  * (defensive full path): the payload is an optimization, not a requirement.
  * Cli-id and title adoption are `metadata`.
+ * `deferRender: true` marks an event inside a batch close: full-strip/layout
+ * consumers MUST skip their render — the batch's trailing payload-less-kick
+ * `session-changed` (no deferRender) renders once for the whole batch.
  */
 export interface SessionChangedPayload {
   sessionId?: string;
   kind: SessionChangeKind;
+  deferRender?: boolean;
 }
 
 /**
@@ -982,7 +986,7 @@ class AppState {
     return session;
   }
 
-  removeSession(projectId: string, sessionId: string, opts?: { exitReason?: string; exitCode?: number; exitSignal?: number; processId?: number }): void {
+  removeSession(projectId: string, sessionId: string, opts?: { exitReason?: string; exitCode?: number; exitSignal?: number; processId?: number; deferRender?: boolean }): void {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
 
@@ -1027,8 +1031,11 @@ class AppState {
     // path (batch closes loop through it); a group below 2 members dissolves.
     pruneSessionFromTabGroups(project, sessionId);
     this.persist();
-    this.emit('session-removed', { projectId, sessionId });
-    this.emitSessionChanged({ sessionId, kind: 'remove' });
+    // S3-06: batch closes (removeAllSessions et al., mirroring removeProject's
+    // contract above) pass `deferRender` — consumers skip the per-event
+    // rebuild and the batch emits exactly one trailing render kick.
+    this.emit('session-removed', opts?.deferRender ? { projectId, sessionId, deferRender: true } : { projectId, sessionId });
+    this.emitSessionChanged(opts?.deferRender ? { sessionId, kind: 'remove', deferRender: true } : { sessionId, kind: 'remove' });
   }
 
   /** Resolve the config dir backing a provider profile (for transcript lookup). */
@@ -1436,7 +1443,13 @@ class AppState {
     const project = this.state.projects.find((p) => p.id === projectId);
     if (!project) return;
     const ids = collectRemovalIds(project, mode, anchorSessionId);
-    for (const id of ids) this.removeSession(projectId, id);
+    if (ids.length === 0) return;
+    // S3-06: every per-session close defers its consumer renders (same
+    // contract removeProject uses); the single trailing `session-changed`
+    // kick below is the batch's one render — closing N tabs costs N cheap
+    // per-session teardowns + 1 render, not N rebuilds.
+    for (const id of ids) this.removeSession(projectId, id, { deferRender: true });
+    this.emitSessionChanged({ sessionId: ids[ids.length - 1], kind: 'remove' });
   }
 
   addInsightSnapshot(projectId: string, snapshot: InitialContextSnapshot): void {

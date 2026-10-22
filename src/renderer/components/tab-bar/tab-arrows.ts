@@ -2,7 +2,7 @@
 // them through the pure decisions in tab-scroll.ts, and writes the result to
 // the two buttons. The buttons live at the leading edge of #tab-bar (index.html).
 
-import { t } from '../../i18n.js';
+import { t, onLocaleChange } from '../../i18n.js';
 import { tabListEl } from './dom.js';
 import { tabsOverflow, arrowsEnabled, scrollStep } from './tab-scroll.js';
 
@@ -44,17 +44,29 @@ function scrollTabsBy(dir: -1 | 1): void {
   tabListEl.scrollBy({ left: dir * scrollStep(tabListEl.clientWidth), behavior: 'smooth' });
 }
 
-/** Labels and clicks; visibility is syncTabArrows' alone (see render()'s hook). */
-export function initTabArrows(): void {
+/** Labels, re-translated on every locale change (SR2-d). */
+function applyArrowLabels(): void {
   const refs = arrowRefs();
   if (!refs) return;
-  for (const [btn, key, dir] of [
-    [refs.btnLeft, 'tab.scrollLeftTooltip', -1],
-    [refs.btnRight, 'tab.scrollRightTooltip', 1],
+  for (const [btn, key] of [
+    [refs.btnLeft, 'tab.scrollLeftTooltip'],
+    [refs.btnRight, 'tab.scrollRightTooltip'],
   ] as const) {
     const label = t(key);
     btn.title = label;
     btn.setAttribute('aria-label', label);
+  }
+}
+
+/** Labels and clicks; visibility is syncTabArrows' alone (see render()'s hook). */
+export function initTabArrows(): void {
+  const refs = arrowRefs();
+  if (!refs) return;
+  applyArrowLabels();
+  // SR2-d: the labels used to be translated once at init and froze in the
+  // boot-time locale — a mid-session language switch left English tooltips.
+  onLocaleChange(applyArrowLabels);
+  for (const [btn, dir] of [[refs.btnLeft, -1], [refs.btnRight, 1]] as const) {
     btn.addEventListener('click', () => scrollTabsBy(dir));
   }
 }

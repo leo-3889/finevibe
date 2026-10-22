@@ -163,6 +163,21 @@ describe('split-layout render coalescing (P2-28)', () => {
     expect(sessions).toHaveLength(5);
   });
 
+  it('renders once when Close All removes 3 sessions (S3-06)', () => {
+    const project = appState.addProject('Batch', '/batch');
+    for (let i = 0; i < 3; i++) appState.addSession(project.id, `S${i}`);
+
+    hideAllPanesMock.mockClear();
+    destroyTerminalMock.mockClear();
+    appState.removeAllSessions(project.id);
+
+    // Every pane is torn down…
+    expect(destroyTerminalMock).toHaveBeenCalledTimes(3);
+    // …and the batch's single trailing kick (not the 3 deferred
+    // session-removed / session-changed{remove} events) renders the layout.
+    expect(hideAllPanesMock).toHaveBeenCalledTimes(1);
+  });
+
   it('still renders per event for a single-session removal', () => {
     const project = appState.addProject('One', '/one');
     const session = appState.addSession(project.id, 'S1')!;

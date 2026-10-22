@@ -175,6 +175,54 @@ describe('shared context-menu singleton (P2-107, tab side)', () => {
   });
 });
 
+describe('rename-time structural events (SR2-e)', () => {
+  it('replays the banked strip rebuild when the rename commits', () => {
+    render();
+    const tab = tabListEl.querySelector('.tab-item')!;
+    tab.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    // Close s1 while the rename input owns the strip: the event is banked,
+    // not dropped — the input survives the chatty render().
+    (activeProject as { sessions: unknown[] }).sessions = [];
+    handleSessionChanged({ sessionId: 's1', kind: 'remove' });
+    const input = tabListEl.querySelector('.tab-name input') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(1);
+
+    input.value = 'renamed';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(renameSession).toHaveBeenCalledWith('p1', 's1', 'renamed', true);
+    // The banked rebuild replayed: the strip mirrors the (now empty) model,
+    // so the closed session is no longer a clickable ghost tab.
+    expect(tabListEl.querySelector('.tab-item')).toBeNull();
+  });
+
+  it('replays the banked rebuild when the rename cancels', () => {
+    render();
+    const tab = tabListEl.querySelector('.tab-item')!;
+    tab.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    (activeProject as { sessions: unknown[] }).sessions = [];
+    handleSessionChanged({ sessionId: 's1', kind: 'remove' });
+    const input = tabListEl.querySelector('.tab-name input') as HTMLInputElement;
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(tabListEl.querySelector('.tab-item')).toBeNull();
+  });
+
+  it('skips renders for deferred (batch-close) events and rebuilds on the kick', () => {
+    activeProject = project('p1', [cliSession('s1', 'alpha'), cliSession('s2', 'beta')]);
+    render();
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(2);
+
+    handleSessionChanged({ sessionId: 's1', kind: 'remove', deferRender: true });
+    // Deferred: the strip keeps the stale tab until the batch's kick.
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(2);
+
+    (activeProject as { sessions: unknown[] }).sessions = [cliSession('s2', 'beta')];
+    handleSessionChanged({ sessionId: 's1', kind: 'remove' });
+    expect(tabListEl.querySelectorAll('.tab-item')).toHaveLength(1);
+  });
+});
+
 describe('tab groups', () => {
   function groupedProject() {
     const sessions = [cliSession('s1', 'a'), cliSession('s2', 'b'), cliSession('s3', 'c')];

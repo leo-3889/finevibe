@@ -65,9 +65,12 @@ export function initTabBar(): void {
   }).catch(() => {});
 
   appState.on('state-loaded', render);
+  // SR2-a: add/close reach the strip through `session-changed` (kind
+  // add/remove → handleSessionChanged) below. The old session-added /
+  // session-removed subscriptions double-routed every add/close into two
+  // full strip rebuilds; split-layout and sidebar own their own
+  // subscriptions to those events.
   appState.on('project-changed', render);
-  appState.on('session-added', render);
-  appState.on('session-removed', render);
   appState.on('project-removed', (id) => { if (typeof id === 'string') clearTabScrollState(id); });
   appState.on('session-changed', handleSessionChanged);
   appState.on('layout-changed', render);

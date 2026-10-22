@@ -568,6 +568,30 @@ describe('removeSession()', () => {
     expect(removedCb).toHaveBeenCalledWith({ projectId: project.id, sessionId: session.id });
     expect(changedCb).toHaveBeenCalled();
   });
+
+  it('batch close defers every per-session render and kicks exactly one', () => {
+    // S3-06 contract: consumers gate on `payload.deferRender`. A batch
+    // (Close All) must emit N deferred session-removed + N deferred
+    // session-changed{remove} and then ONE render-triggering kick — so the
+    // strip/layout rebuild once per batch, not once per closed tab.
+    const { project, sessions } = addProjectWithSessions(3);
+    let renderKicks = 0;
+    const removed: Array<Record<string, unknown>> = [];
+    appState.on('session-removed', (data) => {
+      const p = data as { sessionId: string; deferRender?: boolean };
+      removed.push(p as Record<string, unknown>);
+      if (!p.deferRender) renderKicks++;
+    });
+    appState.on('session-changed', (data) => {
+      const p = data as { kind?: string; deferRender?: boolean };
+      if ((p?.kind === 'remove' || p?.kind === 'add') && !p.deferRender) renderKicks++;
+    });
+    appState.removeAllSessions(project.id);
+    expect(removed).toHaveLength(sessions.length);
+    expect(removed.every((r) => r.deferRender === true)).toBe(true);
+    expect(renderKicks).toBe(1);
+    expect(appState.activeProject!.sessions).toHaveLength(0);
+  });
 });
 
 describe('reorderProject()', () => {
