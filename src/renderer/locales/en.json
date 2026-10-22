@@ -678,5 +678,11 @@
     "clear": "Clear",
     "eventCount": "{count} events",
     "filteredSuffix": " (filtered: {filters})"
+  },
+  "joinDialog": {
+    "join": "Join",
+    "close": "Close",
+    "authFailed": "The host rejected the response code",
+    "shareEnded": "The host ended the share."
   }
 }

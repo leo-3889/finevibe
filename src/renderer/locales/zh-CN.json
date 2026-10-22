@@ -678,5 +678,11 @@
     "clear": "清除",
     "eventCount": "{count} 个事件",
     "filteredSuffix": " （已过滤：{filters}）"
+  },
+  "joinDialog": {
+    "join": "加入",
+    "close": "关闭",
+    "authFailed": "主机拒绝了该响应码",
+    "shareEnded": "主机已结束共享。"
   }
 }

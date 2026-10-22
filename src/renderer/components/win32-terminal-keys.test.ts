@@ -114,3 +114,30 @@ describe('Win32 latch lifecycle (C2R-13)', () => {
     expect(fixture({ latchKey: doomed }).press('Escape')).toBeUndefined();
   });
 });
+
+// C5R-08: ControlKeyState parity — AltGr must encode RIGHT_ALT_PRESSED (0x4),
+// Caps Lock CAPS_LOCK (0x80); NUM_LOCK has no renderer signal and stays out.
+describe('Win32 ControlKeyState modifier bits', () => {
+  it('encodes AltGr as RIGHT_ALT_PRESSED alongside CONTROL_PRESSED', () => {
+    const f = fixture({ latched: true });
+    f.press('ArrowLeft', {
+      altKey: true,
+      ctrlKey: true,
+      getModifierState: (k: string) => k === 'AltGraph',
+    });
+    // 256 base | 8 CONTROL | 4 RIGHT_ALT — never the left-Alt 0x2.
+    expect(f.write).toHaveBeenCalledWith('\x1b[37;75;0;1;268;1_');
+  });
+
+  it('encodes Caps Lock as CAPS_LOCK (0x80)', () => {
+    const f = fixture({ latched: true });
+    f.press('ArrowUp', { getModifierState: (k: string) => k === 'CapsLock' });
+    expect(f.write).toHaveBeenCalledWith('\x1b[38;72;0;1;384;1_');
+  });
+
+  it('keeps plain left Alt at ALT_PRESSED (0x2) without an AltGraph signal', () => {
+    const f = fixture({ latched: true });
+    f.press('ArrowUp', { altKey: true });
+    expect(f.write).toHaveBeenCalledWith('\x1b[38;72;0;1;258;1_');
+  });
+});

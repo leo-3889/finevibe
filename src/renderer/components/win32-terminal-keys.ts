@@ -55,7 +55,15 @@ export function attachWin32TerminalKeys(
     const key = win32Keys[event.key];
     if (!enabled || !key || event.metaKey || event.isComposing) return undefined;
     if (event.type === 'keydown') {
-      const modifiers = key[3] | (event.shiftKey ? 16 : 0) | (event.ctrlKey ? 8 : 0) | (event.altKey ? 2 : 0);
+      // C5R-08: ControlKeyState is the Win32 key-event mask, not the DOM
+      // flags. AltGr sets RIGHT_ALT_PRESSED (0x4) on Windows (the DOM
+      // `altKey` alone encodes the left Alt, 0x2); Caps Lock is CAPS_LOCK
+      // (0x80). NUM_LOCK (0x20) is omitted: KeyboardEvent exposes no
+      // num-lock signal for the renderer to read.
+      // `?.` keeps synthetic KeyboardEvent-like objects (tests) working.
+      const altState = event.getModifierState?.('AltGraph') ? 4 : 0;
+      const leftAlt = altState === 0 && event.altKey ? 2 : 0;
+      const modifiers = key[3] | (event.shiftKey ? 16 : 0) | (event.ctrlKey ? 8 : 0) | altState | leftAlt | (event.getModifierState?.('CapsLock') ? 128 : 0);
       write(`\x1b[${key[0]};${key[1]};${key[2]};1;${modifiers};1_`);
     }
     event.preventDefault();

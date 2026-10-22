@@ -232,6 +232,21 @@ describe('startShare', () => {
     expect(ptyWrite).not.toHaveBeenCalled();
   });
 
+  // C5R-07: the guest is untrusted input; a non-string payload must be
+  // refused before pty.write, the same protocol rigor decodeConnectionCode
+  // applies on the offer/answer leg.
+  it('drops input messages whose payload is not a string', async () => {
+    startShare('s1', 'readwrite', '0123456789abcdef0123456789abcdef');
+    lastDc!.onopen?.();
+    deliver({ type: 'auth-response', response: 'expected-response' });
+    await new Promise((r) => setTimeout(r, 0));
+    deliver({ type: 'input', payload: 42 });
+    deliver({ type: 'input', payload: { cmd: 'rm' } });
+    expect(ptyWrite).not.toHaveBeenCalled();
+    deliver({ type: 'input', payload: 'ls' });
+    expect(ptyWrite).toHaveBeenCalledWith('s1', 'ls');
+  });
+
   it('resets missedPongs when a pong is received', async () => {
     vi.useFakeTimers();
     startShare('s1', 'readonly', '0123456789abcdef0123456789abcdef');

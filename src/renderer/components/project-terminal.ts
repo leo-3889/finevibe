@@ -316,7 +316,7 @@ function renderSidebar(projectId: string): void {
   }
   sidebarEl.classList.remove('hidden');
   const activeId = activeShellByProject.get(projectId);
-  // pi-lens-ignore: no-html-label-for, slop, xss-innerhtml, no-inner-html
+  // pi-lens-ignore: no-html-label-for, slop, xss-innerhtml, no-inner-html, xss-risk
   sidebarEl.innerHTML = list.map(s => `
     <div class="terminal-list-item${s.id === activeId ? ' active' : ''}" data-shell-id="${esc(s.id)}">
       <span class="terminal-list-item-name">${esc(s.label)}</span>
@@ -414,6 +414,29 @@ function destroyAllShells(projectId: string): void {
   activeShellByProject.delete(projectId);
 }
 
+// C5R-05: every shell pins a PTY + ConPTY + xterm pane and '+ New Terminal'
+// was uncapped, so a key-mash runaway grew them without bound. Exited shells
+// count too: their pane, exit overlay and sidebar label all stay alive.
+const MAX_SHELLS_PER_PROJECT = 50;
+let newTerminalBtn: HTMLElement | null = null;
+let shellLimitNoteTimer: ReturnType<typeof setTimeout> | 0 = 0;
+
+// The file's only chrome-level feedback channel is the button label/title
+// (the exit overlay is pane-scoped): swap the '+' to the live count and the
+// title to the note, restore after a beat. Re-entrant clicks reuse one timer.
+function showShellLimitNote(projectId: string): void {
+  if (!newTerminalBtn) return;
+  const count = getShellsFor(projectId).length;
+  clearTimeout(shellLimitNoteTimer);
+  newTerminalBtn.textContent = String(count);
+  newTerminalBtn.title = `Terminal limit reached (${MAX_SHELLS_PER_PROJECT} per project)`;
+  shellLimitNoteTimer = setTimeout(() => {
+    if (!newTerminalBtn) return;
+    newTerminalBtn.textContent = '+';
+    newTerminalBtn.title = 'New Terminal';
+  }, 1500);
+}
+
 export function initProjectTerminal(): void {
   panelEl = document.getElementById('project-terminal-panel')!;
   containerEl = document.getElementById('project-terminal-container')!;
@@ -421,6 +444,7 @@ export function initProjectTerminal(): void {
   resizeHandleEl = document.getElementById('project-terminal-resize-handle')!;
   const closeBtn = document.getElementById('btn-close-terminal')!;
   const newBtn = document.getElementById('btn-new-terminal')!;
+  newTerminalBtn = newBtn;
   const toggleBtn = document.getElementById('btn-toggle-terminal')!;
 
   closeBtn.addEventListener('click', () => {
@@ -431,6 +455,12 @@ export function initProjectTerminal(): void {
   newBtn.addEventListener('click', () => {
     const project = appState.activeProject;
     if (!project) return;
+    // C5R-05: count live + exited shells — exited panes keep their PTY
+    // bookkeeping, overlay and sidebar label until closed.
+    if (getShellsFor(project.id).length >= MAX_SHELLS_PER_PROJECT) {
+      showShellLimitNote(project.id);
+      return;
+    }
     activateAndRefresh(createShell(project.id));
   });
 
@@ -443,7 +473,6 @@ export function initProjectTerminal(): void {
   let dragging = false;
   let startY = 0;
   let startHeight = 0;
-
   // S3-01: pointer events with implicit capture on the handle. The old
   // document mousemove/mouseup pair was removed only inside onMouseUp —
   // releasing the button outside the window (the normal way to overshoot

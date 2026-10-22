@@ -301,6 +301,10 @@ export function startShare(sessionId: string, mode: ShareMode, passphrase: strin
     if (hostPeer.authState !== 'verified') return;
 
     if (msg.type === 'input' && mode === 'readwrite') {
+      // C5R-07: a hostile/buggy guest can put anything in `payload`; the
+      // protocol validates every other leg (decodeConnectionCode), so
+      // refuse a non-string before it reaches the PTY.
+      if (typeof msg.payload !== 'string') return;
       window.finevibe.pty.write(sessionId, msg.payload);
     } else if (msg.type === 'pong') {
       hostPeer.missedPongs = 0;

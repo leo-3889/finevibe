@@ -107,7 +107,7 @@ export function forwardResize(sessionId: string, cols: number, rows: number): vo
 // renderer) pinned the handle — and its RTCPeerConnection — forever.
 const JOIN_INIT_TIMEOUT = 30_000;
 
-export async function joinRemoteSession(projectId: string, offer: string, passphrase: string, onConnected?: () => void): Promise<{ answer: string }> {
+export async function joinRemoteSession(projectId: string, offer: string, passphrase: string, onConnected?: () => void, onFailed?: (reason: 'auth-failed' | 'ended', detail?: string) => void): Promise<{ answer: string }> {
   const { handle } = joinShare(offer, passphrase);
   // Register synchronously: getAnswer() can reject (wrong key, malformed
   // SDP), and the RTCPeerConnection joinShare created must stay reachable
@@ -184,6 +184,20 @@ export async function joinRemoteSession(projectId: string, offer: string, passph
   handle.onDisconnected(() => {
     pendingJoinHandles.delete(handle);
   });
+
+  // C5R-03: with the answer in the host's hands the dialog waited blind:
+  // a rejected answer (auth-result ok:false) and a host `end` mid-wait
+  // were swallowed, stranding the dialog on "The session will appear
+  // once they connect." Host twin: share-dialog wires onAuthFailed to
+  // its status line; here the note goes through the dialog's callback.
+  const failJoin = (reason: 'auth-failed' | 'ended', detail?: string) => {
+    if (!pendingJoinHandles.delete(handle)) return; // init (or a timeout) won the race
+    clearTimeout(joinTimeout);
+    try { handle.disconnect(); } catch { /* peer already torn down */ }
+    onFailed?.(reason, detail);
+  };
+  handle.onAuthFailed((detail: string) => failJoin('auth-failed', detail));
+  handle.onEnd(() => failJoin('ended'));
 
   return { answer };
 }

@@ -351,3 +351,70 @@ describe('project-terminal fit resize (P3-10)', () => {
     }
   });
 });
+
+// C5R-05: '+ New Terminal' was uncapped — every pane pins a PTY + ConPTY +
+// xterm, and exited shells (pane + overlay + label alive) count toward the
+// 50-per-project cap. Beyond it the click is refused with the note swapped
+// into the button label/title, the file's only chrome-level channel.
+describe('project-terminal shell cap (C5R-05)', () => {
+  class ChromeFakeEl extends FakeEl {
+    innerHTML = '';
+    textContent = '';
+    className = '';
+    querySelectorAll(): HTMLElement[] { return []; }
+  }
+  class ClickableFakeEl extends ChromeFakeEl {
+    listeners: Record<string, Array<() => void>> = {};
+    textContent = '+';
+    title = '';
+    addEventListener(type: string, cb: () => void): void {
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(cb);
+    }
+  }
+
+  let newBtn: ClickableFakeEl;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    newBtn = new ClickableFakeEl();
+    vi.stubGlobal('document', {
+      getElementById: (id: string) => (id === 'btn-new-terminal' ? newBtn : new ChromeFakeEl()),
+      // esc() reads innerHTML off created spans; the chrome elements need
+      // querySelectorAll/innerHTML for renderSidebar's escape+rebind path.
+      createElement: () => {
+        const el = new ChromeFakeEl();
+        el.innerHTML = '';
+        el.textContent = '';
+        el.className = '';
+        return el;
+      },
+      addEventListener: vi.fn(),
+      body: new FakeEl(),
+    });
+    vi.stubGlobal('window', {
+      finevibe: { pty: { write: mockPtyWrite, kill: vi.fn(), resize: vi.fn(), createShell: vi.fn() } },
+    });
+    vi.stubGlobal('navigator', { clipboard: { writeText: mockClipboardWrite } });
+    vi.stubGlobal('ResizeObserver', class { observe(): void {} });
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => cb());
+  });
+
+  it('refuses the 51st shell and notes the cap on the button', async () => {
+    const { appState } = await import('../state.js');
+    const { initProjectTerminal } = await import('./project-terminal.js');
+    (appState as any).activeProject = { id: 'proj1', path: '/project', terminalPanelOpen: true, terminalPanelHeight: 200, sessions: [] };
+    (appState as any).projects = [(appState as any).activeProject];
+    initProjectTerminal();
+
+    const clicks = newBtn.listeners['click'] ?? [];
+    expect(clicks.length).toBe(1);
+    for (let i = 0; i < 50; i++) clicks[0]();
+    expect(newBtn.textContent).toBe('+'); // the 50th creation is allowed
+
+    clicks[0](); // the 51st
+    expect(newBtn.textContent).toBe('50');
+    expect(String(newBtn.title)).toContain('Terminal limit reached');
+  });
+});

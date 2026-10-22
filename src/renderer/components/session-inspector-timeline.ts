@@ -584,6 +584,10 @@ export function appendTimelineEvents(container: HTMLElement): boolean {
       // Owned by an already-rendered agent group: full render nests it inside.
       const children = g.group.querySelector<HTMLElement>('.inspector-agent-children');
       if (children) children.appendChild(renderEventRow(i, ev));
+      // C5R-06: the header (running badge, duration, count) is rendered from
+      // the span; without refresh() an expanded running group appended to
+      // mid-stream kept showing stale header state.
+      g.refresh();
       continue;
     }
     if (model.stopIndices.has(i)) {

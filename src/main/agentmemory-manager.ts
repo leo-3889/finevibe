@@ -127,6 +127,19 @@ function rotateLogAtSpawn(): void {
  */
 export function spawnDetached(): boolean {
   let logFd: number | null = null;
+  // C5R-04: the fd holder and its closer live outside the try so the outer
+  // catch can release the fd when spawn() throws synchronously (bad cwd/env,
+  // shell failure) — block-scoped here, every such throw leaked the log fd.
+  let fdClosed = false;
+  const closeLogFd = () => {
+    if (logFd === null || fdClosed) return;
+    fdClosed = true;
+    try {
+      fs.closeSync(logFd);
+    } catch {
+      /* already closed */
+    }
+  };
   try {
     rotateLogAtSpawn();
     try {
@@ -137,16 +150,6 @@ export function spawnDetached(): boolean {
     // libuv dups the fd into the child during spawn, so the parent's copy is
     // dead weight the moment spawn() returns: left open it keeps the log
     // handle alive for the app's lifetime.
-    let fdClosed = false;
-    const closeLogFd = () => {
-      if (logFd === null || fdClosed) return;
-      fdClosed = true;
-      try {
-        fs.closeSync(logFd);
-      } catch {
-        /* already closed */
-      }
-    };
     const child = spawn('agentmemory', [], {
       detached: true,
       stdio: logFd === null ? 'ignore' : ['ignore', logFd, logFd],
@@ -162,6 +165,7 @@ export function spawnDetached(): boolean {
     child.unref();
     return true;
   } catch (err) {
+    closeLogFd();
     console.warn('[agentmemory] spawn threw:', (err as Error).message);
     return false;
   }

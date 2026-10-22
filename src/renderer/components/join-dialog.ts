@@ -4,6 +4,7 @@ import { joinRemoteSession } from '../sharing/share-manager.js';
 import { appState } from '../state.js';
 import { DecryptionError, validateShareKey } from '../sharing/share-crypto.js';
 import { bindModalDismiss } from './modal-manager.js';
+import { t } from '../i18n.js';
 
 let activeOverlay: HTMLElement | null = null;
 let activeDismiss: (() => void) | null = null;
@@ -129,7 +130,20 @@ export function showJoinDialog(): void {
     pinInput.readOnly = true;
 
     try {
-      const { answer } = await joinRemoteSession(project.id, offer, pin, closeJoinDialog);
+      const { answer } = await joinRemoteSession(project.id, offer, pin, closeJoinDialog, (reason, detail) => {
+        // C5R-03: the host rejected our answer (wrong PIN on their side)
+        // or ended the share mid-wait. Mirror the host twin in
+        // share-dialog: note it in the status line and restore controls
+        // so the user can close (a retry needs a fresh code from the host).
+        statusEl.textContent = reason === 'auth-failed'
+          ? `${t('joinDialog.authFailed')}${detail ? `: ${detail}` : ''}`
+          : t('joinDialog.shareEnded');
+        joinBtn.disabled = false;
+        joinBtn.textContent = t('joinDialog.join');
+        closeBtn.textContent = t('joinDialog.close');
+        offerTextarea.readOnly = false;
+        pinInput.readOnly = false;
+      });
 
       answerTextarea.value = answer;
       answerSection.classList.remove('hidden');

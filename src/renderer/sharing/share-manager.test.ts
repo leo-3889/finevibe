@@ -23,8 +23,9 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
     onAuthFailed: ReturnType<typeof vi.fn>;
     __fireInit: ((d: unknown) => void) | null;
     __fireDisconnect: (() => void) | null;
-    __fireData: ((p: string) => void) | null;
     __fireResize: ((cols: number, rows: number) => void) | null;
+    __fireEnd: (() => void) | null;
+    __fireAuthFailed: ((reason: string) => void) | null;
   };
   const joinShareMock = vi.fn(() => {
     const handle: FakeJoinHandleT = {
@@ -43,12 +44,18 @@ const { hostState, joinShareMock, appStateListeners, appStateMock, remoteTerm, l
       onDisconnected: vi.fn((cb: () => void) => {
         handle.__fireDisconnect = cb;
       }),
-      onEnd: vi.fn(),
-      onAuthFailed: vi.fn(),
+      onEnd: vi.fn((cb: () => void) => {
+        handle.__fireEnd = cb;
+      }),
+      onAuthFailed: vi.fn((cb: (reason: string) => void) => {
+        handle.__fireAuthFailed = cb;
+      }),
       __fireInit: null,
       __fireDisconnect: null,
       __fireData: null,
       __fireResize: null,
+      __fireEnd: null,
+      __fireAuthFailed: null,
     };
     lastJoinHandleRef.current = handle;
     return { guestId: 'guest-1', handle };
@@ -542,5 +549,40 @@ describe('onShareChange unsubscribe', () => {
     endShare('s1');
     expect(b).toHaveBeenCalledTimes(1);
     expect(c).toHaveBeenCalledTimes(2);
+  });
+});
+
+// C5R-03: a rejected answer or a host `end` mid-wait used to be swallowed;
+// the dialog sat on "The session will appear once they connect." forever.
+describe('joinRemoteSession failure notifications', () => {
+  it('notes auth failures on a pending join and tears the handle down', async () => {
+    const onFailed = vi.fn();
+    await joinRemoteSession('p1', 'offer', '1234', undefined, onFailed);
+    const h = lastJoinHandle();
+    h.__fireAuthFailed!('Passphrase mismatch');
+    expect(onFailed).toHaveBeenCalledWith('auth-failed', 'Passphrase mismatch');
+    expect(h.disconnect).toHaveBeenCalledTimes(1);
+    // a follow-up end must not double-report
+    h.__fireEnd!();
+    expect(onFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('notes a host end on a pending join', async () => {
+    const onFailed = vi.fn();
+    await joinRemoteSession('p1', 'offer', '1234', undefined, onFailed);
+    const h = lastJoinHandle();
+    h.__fireEnd!();
+    expect(onFailed).toHaveBeenCalledWith('ended', undefined);
+    expect(h.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent once the join connected (init won the race)', async () => {
+    const onFailed = vi.fn();
+    await joinRemoteSession('p1', 'offer', '1234', undefined, onFailed);
+    const h = lastJoinHandle();
+    h.__fireInit!({ scrollback: '', mode: 'readonly', cols: 80, rows: 24, sessionName: 'x' });
+    h.__fireEnd!();
+    expect(onFailed).not.toHaveBeenCalled();
+    expect(isRemoteSession('local-uuid')).toBe(true);
   });
 });
