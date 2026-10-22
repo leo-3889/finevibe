@@ -347,3 +347,27 @@ describe('auto-name lifecycle across closes', () => {
     expect(p.tabGroups!.find((g) => g.sessionIds.includes('d'))!.name).toBe('Group 2');
   });
 });
+
+describe('oversized group trim (C4TM-05)', () => {
+  it('normalizeTabGroups trims a persisted over-cap group to TAB_GROUP_MAX_MEMBERS', () => {
+    const ids = Array.from({ length: TAB_GROUP_MAX_MEMBERS + 3 }, (_, i) => `t${i}`);
+    const p = makeProject(...ids);
+    p.tabGroups = [group('g1', 'Group 1', [...ids])];
+    normalizeTabGroups(p);
+    expect(p.tabGroups).toEqual([group('g1', 'Group 1', ids.slice(0, TAB_GROUP_MAX_MEMBERS), 0)]);
+    // Idempotent: the trimmed group passes through unchanged.
+    normalizeTabGroups(p);
+    expect(p.tabGroups).toEqual([group('g1', 'Group 1', ids.slice(0, TAB_GROUP_MAX_MEMBERS), 0)]);
+  });
+
+  it('a trimmed run split in two caps each run, tail tabs ungrouped', () => {
+    const cap = TAB_GROUP_MAX_MEMBERS;
+    const ids = Array.from({ length: cap * 2 + 4 }, (_, i) => `t${i}`);
+    const p = makeProject(...ids);
+    // Non-contiguous membership: [0..cap+1] then a gap, then [cap+3 ..] — two runs.
+    p.tabGroups = [group('g1', 'Group 1', [...ids.slice(0, cap + 2), ...ids.slice(cap + 3)])];
+    normalizeTabGroups(p);
+    expect(p.tabGroups![0].sessionIds).toEqual(ids.slice(0, cap));
+    expect(p.tabGroups![1].sessionIds).toEqual(ids.slice(cap + 3, cap * 2 + 3));
+  });
+});

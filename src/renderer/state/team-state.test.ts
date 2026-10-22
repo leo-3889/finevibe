@@ -38,7 +38,7 @@ vi.mock('../provider-availability.js', () => {
 });
 
 import { appState, _resetForTesting } from '../state';
-import { buildTeamChatSession } from './team-state';
+import { buildTeamChatSession, MAX_SYSTEM_PROMPT_BYTES, nextSessionOrdinal, systemPromptByteLength, uniqueMemberId } from './team-state';
 import { getTeamChatProviderMetas } from '../provider-availability.js';
 const mockGetTeamChatProviderMetas = vi.mocked(getTeamChatProviderMetas);
 import { getCost } from '../session-cost.js';
@@ -356,5 +356,109 @@ describe('updateTeamMember unpin', () => {
     // The member modal's "Default" option sends an explicit `profileId: undefined`.
     appState.updateTeamMember(member.id, { profileId: undefined });
     expect(appState.getTeamMembers().find((m) => m.id === member.id)?.profileId).toBeUndefined();
+  });
+});
+
+describe('nextSessionOrdinal (C4T-01)', () => {
+  it('takes one past the highest matching suffix', () => {
+    expect(nextSessionOrdinal('Dev', [])).toBe(1);
+    expect(nextSessionOrdinal('Dev', ['Dev - Session 1', 'Dev - Session 7'])).toBe(8);
+  });
+
+  it('ignores foreign, suffixed-noise and truncated names', () => {
+    expect(
+      nextSessionOrdinal('Dev', ['Dev - Session 1', 'Dev - Sessions 9', 'Other - Session 4', 'Dev - Session x', 'Dev - Session 1 (archived)']),
+    ).toBe(2);
+  });
+
+  it('buildTeamChatSession derives the ordinal from existingNames, not a live count', () => {
+    const member: TeamMember = { id: 'm-1', name: 'Dev', role: 'r', systemPrompt: 'p', source: 'custom', createdAt: 0, updatedAt: 0 };
+    const project = addProject();
+    // 'Session 1' closed; the live count would return 2 and collide with the
+    // surviving 'Dev - Session 2'. The state-wide index still knows about it.
+    const session = buildTeamChatSession(project, member, 'claude', 60, undefined, undefined, [
+      'Dev - Session 1',
+      'Dev - Session 2',
+    ]);
+    expect(session.name).toBe('Dev - Session 3');
+  });
+});
+
+describe('startTeamChat() ordinal across closed tabs (C4T-01)', () => {
+  function metaFor(id: 'claude') {
+    return {
+      id,
+      displayName: id,
+      binaryName: id,
+      capabilities: {
+        sessionResume: true,
+        costTracking: false,
+        contextWindow: false,
+        hookStatus: true,
+        configReading: true,
+        shiftEnterNewline: false,
+        pendingPromptTrigger: 'startup-arg' as const,
+        systemPromptInjection: true,
+      },
+      defaultContextWindowSize: 200_000,
+    };
+  }
+
+  it('never reuses the number of a closed member session', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([metaFor('claude')]);
+    const project = addProject();
+    const member: TeamMember = { id: 'm-1', name: 'CMO', role: 'Marketing', systemPrompt: 'p', source: 'custom', createdAt: 0, updatedAt: 0 };
+    const s1 = appState.startTeamChat(project.id, member)!;
+    const s2 = appState.startTeamChat(project.id, member)!;
+    expect([s1.name, s2.name]).toEqual(['CMO - Session 1', 'CMO - Session 2']);
+    // Close Session 1's tab: a live count would hand 'Session 2' out twice.
+    project.sessions = project.sessions.filter((s) => s.id !== s1.id);
+    const s3 = appState.startTeamChat(project.id, member)!;
+    expect(s3.name).toBe('CMO - Session 3');
+  });
+});
+
+describe('uniqueMemberId (C4TM-03)', () => {
+  const m = (id: string): TeamMember => ({ id, name: id, role: 'r', systemPrompt: 'p', source: 'custom', createdAt: 0, updatedAt: 0 });
+
+  it('passes a free id through and suffixes collisions to the first free slot', () => {
+    expect(uniqueMemberId([], 'a')).toBe('a');
+    expect(uniqueMemberId([m('a')], 'a')).toBe('a-2');
+    expect(uniqueMemberId([m('a'), m('a-2')], 'a')).toBe('a-3');
+    expect(uniqueMemberId([m('a-2')], 'a')).toBe('a');
+  });
+
+  it('addTeamMember suffixes a colliding upstream id — one card delete no longer removes both', () => {
+    const first = appState.addTeamMember({ id: 'evil', name: 'A', role: 'r', systemPrompt: 'p', source: 'predefined' })!;
+    const second = appState.addTeamMember({ id: 'evil', name: 'B', role: 'r', systemPrompt: 'p', source: 'predefined' })!;
+    expect(first.id).toBe('evil');
+    expect(second.id).toBe('evil-2');
+    appState.removeTeamMember('evil');
+    expect(appState.getTeamMembers().map((x) => x.id)).toEqual(['evil-2']);
+  });
+});
+
+describe('system prompt size cap (C4TM-06)', () => {
+  it('systemPromptByteLength counts UTF-8 bytes, not UTF-16 units', () => {
+    expect(systemPromptByteLength('é')).toBe(2);
+    expect(systemPromptByteLength('😀'.repeat(MAX_SYSTEM_PROMPT_BYTES / 4))).toBe(MAX_SYSTEM_PROMPT_BYTES);
+  });
+
+  it('addTeamMember rejects an oversize prompt; updateTeamMember rejects it and keeps the old one', () => {
+    const big = 'x'.repeat(MAX_SYSTEM_PROMPT_BYTES + 1);
+    expect(appState.addTeamMember({ name: 'A', role: 'r', systemPrompt: big, source: 'custom' })).toBeUndefined();
+    expect(appState.getTeamMembers()).toHaveLength(0);
+
+    const ok = appState.addTeamMember({ name: 'A', role: 'r', systemPrompt: 'p', source: 'custom' })!;
+    expect(appState.updateTeamMember(ok.id, { systemPrompt: big })).toBeUndefined();
+    expect(appState.getTeamMemberById(ok.id)?.systemPrompt).toBe('p');
+    // A patch that leaves the prompt alone still applies.
+    expect(appState.updateTeamMember(ok.id, { role: 'Lead' })?.role).toBe('Lead');
+  });
+
+  it('the cap itself is inclusive: exactly 64 KiB is accepted', () => {
+    const exact = 'x'.repeat(MAX_SYSTEM_PROMPT_BYTES);
+    const member = appState.addTeamMember({ name: 'A', role: 'r', systemPrompt: exact, source: 'custom' });
+    expect(member?.systemPrompt).toBe(exact);
   });
 });

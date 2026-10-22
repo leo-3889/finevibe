@@ -6,6 +6,24 @@ import { isCliSession } from '../session-utils.js';
 import { resolveProfile } from './specialized-sessions.js';
 import { buildCliSession } from './session-factory.js';
 
+/**
+ * C4TM-06: hard cap on a member's system prompt. The prompt ships to the
+ * CLI as a spawn argument, and an oversized one dies in `spawn E2BIG`
+ * (argv-size class); 64 KiB sits well under the conservative OS argv
+ * budgets and far above any legitimate persona.
+ */
+export const MAX_SYSTEM_PROMPT_BYTES = 64 * 1024;
+
+/** UTF-8 encoded size of a system prompt (the argv budget is bytes, not UTF-16 length). */
+export function systemPromptByteLength(prompt: string): number {
+  return new TextEncoder().encode(prompt).length;
+}
+
+/** True when a present system prompt exceeds MAX_SYSTEM_PROMPT_BYTES. */
+export function isSystemPromptOversize(prompt: string | undefined): boolean {
+  return prompt !== undefined && systemPromptByteLength(prompt) > MAX_SYSTEM_PROMPT_BYTES;
+}
+
 export function buildNewMember(
   input: Omit<TeamMember, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
 ): TeamMember {
@@ -24,6 +42,20 @@ export function buildNewMember(
     createdAt: now,
     updatedAt: now,
   };
+}
+
+/**
+ * C4TM-03: predefined-member ids come from upstream frontmatter, so they
+ * are attacker-influenced; two members sharing an id make one card's
+ * delete remove both. Suffix a colliding id on add: `id-2`, `id-3`, …
+ * (the first free slot; a fresh random id never collides).
+ */
+export function uniqueMemberId(members: readonly TeamMember[], id: string): string {
+  const taken = new Set(members.map((m) => m.id));
+  if (!taken.has(id)) return id;
+  let n = 2;
+  while (taken.has(`${id}-${n}`)) n++;
+  return `${id}-${n}`;
 }
 
 /** Apply a patch to a member in place; returns a snapshot of the prior state, or undefined if not found. */
@@ -124,9 +156,32 @@ export interface TeamChatOpts {
 }
 
 /**
+ * C4T-01: the next `'<name> - Session N'` ordinal — one past the highest N
+ * among the member's existing session names. Counting live sessions reused
+ * a number as soon as a tab closed, and the new tab collided with a
+ * surviving `Session N` name. Truncated/foreign names simply do not match
+ * the `'<name> - Session <digits>'` pattern.
+ */
+export function nextSessionOrdinal(baseName: string, existingNames: Iterable<string>): number {
+  const prefix = `${baseName} - Session `;
+  let max = 0;
+  for (const name of existingNames) {
+    if (!name.startsWith(prefix)) continue;
+    const tail = name.slice(prefix.length);
+    if (!/^\d+$/.test(tail)) continue;
+    const n = Number(tail);
+    if (n > max) max = n;
+  }
+  return max + 1;
+}
+
+/**
  * Build the SessionRecord for a team chat session, including the pendingSystemPrompt and teamMemberId.
  * `opts` carries the New Session modal's fields: an explicit `name` (blank keeps the
- * member-derived "Name - Session N"), an explicit `args` — a present key wins even when
+ * member-derived "Name - Session N", derived by nextSessionOrdinal from
+ * `existingNames` — the member's sessions incl. the state-wide session
+ * index — when the caller supplies them, falling back to this project's
+ * live tabs), an explicit `args` — a present key wins even when
  * undefined, so clearing the field clears the args; an absent key keeps the project
  * default — and `envVars`.
  */
@@ -137,8 +192,11 @@ export function buildTeamChatSession(
   maxNameLength: number,
   profileId?: string,
   opts?: TeamChatOpts,
+  existingNames?: Iterable<string>,
 ): SessionRecord {
-  const sessionNum = project.sessions.filter((s) => s.teamMemberId === member.id).length + 1;
+  const names = existingNames
+    ?? project.sessions.filter((s) => s.teamMemberId === member.id).map((s) => s.name);
+  const sessionNum = nextSessionOrdinal(member.name, names);
   const base = buildCliSession({
     name: (opts?.name?.trim() || `${member.name} - Session ${sessionNum}`).slice(0, maxNameLength),
     providerId,

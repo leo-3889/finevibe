@@ -51,6 +51,13 @@ export async function showPredefinedPicker(): Promise<void> {
   document.body.appendChild(state.overlay);
   activeDispose = dispose;
 
+  // CI-18: the hand-rolled overlay never took focus, so every keystroke —
+  // Enter above all — fell through to the PTY behind the picker and
+  // submitted a prompt. Take it on mount: the overlay box (tabindex -1)
+  // first, then the search input as the autofocus target.
+  state.overlay.focus();
+  state.searchInput.focus();
+
   const cache = appState.team.predefinedCache;
   if (cache && isCacheFresh(cache)) {
     state.allSuggestions = cache.suggestions;
@@ -63,6 +70,10 @@ export async function showPredefinedPicker(): Promise<void> {
 function buildDialog(): { state: DialogState; dispose: () => void } {
   const overlay = document.createElement('div');
   overlay.className = 'team-picker-overlay';
+  overlay.tabIndex = -1;
+  // CI-18: remember the opener so dispose can hand focus back to it.
+  const active = document.activeElement as HTMLElement | null;
+  const opener = active && active.isConnected && !overlay.contains(active) ? active : null;
 
   const dialog = document.createElement('div');
   dialog.className = 'team-picker-dialog';
@@ -173,6 +184,8 @@ function buildDialog(): { state: DialogState; dispose: () => void } {
     teardownDismiss();
     overlay.remove();
     if (activeDispose === dispose) activeDispose = null;
+    // CI-18: give the opener its focus back, never a node removed while open.
+    if (opener && opener.isConnected) opener.focus();
   };
   const teardownDismiss = bindModalDismiss({ overlay, onClose: dispose });
   closeBtn.addEventListener('click', dispose);
@@ -194,6 +207,10 @@ async function load(state: DialogState): Promise<void> {
   try {
     const suggestions = await fetchPredefinedShared();
     appState.setTeamPredefinedCache(suggestions);
+    // CI-11: the success path writes after a dispose too — the shared-cache
+    // write above stays valid for the next open, the dead dialog must not
+    // be repopulated.
+    if (state.disposed) return;
     state.allSuggestions = suggestions;
     rerender(state);
   } catch (err) {
@@ -320,7 +337,9 @@ function buildCard(state: DialogState, member: TeamMember, isInstalled: boolean)
   addBtn.className = 'btn-primary team-picker-card-add';
   applyAddState(addBtn, isInstalled, t('team.picker.addToTeam'), t('team.picker.added'));
   const onAdd = (): void => {
-    addMember(member);
+    // C4TM-06: an oversize suggestion prompt is rejected by the state (spawn
+    // E2BIG cap) — only mark the card added when the member really landed.
+    if (!addMember(member)) return;
     applyAddState(addBtn, true, t('team.picker.addToTeam'), t('team.picker.added'));
     updateFooterCount(state);
   };
@@ -347,6 +366,10 @@ function buildCard(state: DialogState, member: TeamMember, isInstalled: boolean)
 function showMemberDetail(member: TeamMember, onAdd: () => void, isInstalled: boolean): void {
   const overlay = document.createElement('div');
   overlay.className = 'team-picker-detail-overlay';
+  overlay.tabIndex = -1;
+  // CI-18: the nested detail overlay takes focus exactly like the picker.
+  const active = document.activeElement as HTMLElement | null;
+  const opener = active && active.isConnected ? active : null;
 
   const dialog = document.createElement('div');
   dialog.className = 'team-picker-detail-dialog';
@@ -393,10 +416,13 @@ function showMemberDetail(member: TeamMember, onAdd: () => void, isInstalled: bo
   dialog.appendChild(footer);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  overlay.focus();
 
   const dispose = (): void => {
     teardownDismiss();
     overlay.remove();
+    // CI-18: focus returns to the card the detail was opened from.
+    if (opener && opener.isConnected) opener.focus();
   };
   const teardownDismiss = bindModalDismiss({ overlay, onClose: dispose });
   backBtn.addEventListener('click', dispose);
@@ -420,8 +446,8 @@ function buildNameRole(member: TeamMember): HTMLElement {
   return wrap;
 }
 
-function addMember(member: TeamMember): void {
-  appState.addTeamMember({
+function addMember(member: TeamMember): TeamMember | undefined {
+  return appState.addTeamMember({
     id: member.id,
     name: member.name,
     role: member.role,

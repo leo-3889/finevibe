@@ -1,4 +1,4 @@
-import type { TeamMember } from '../../../shared/types.js';
+import type { ProviderId, TeamMember } from '../../../shared/types.js';
 import { appState } from '../../state.js';
 import { getTeamChatProviderMetas } from '../../provider-availability.js';
 import { resolvePinnedTeamProfile } from '../../state/team-state.js';
@@ -40,9 +40,22 @@ export function buildTeamChatControl(
     return chatBtn;
   }
 
-  chatBtn.addEventListener('click', () => {
-    appState.startTeamChat(projectId, member);
-  });
+  // C4TM-02 (SR2-b): startTeamChat commits the session synchronously, but
+  // the PTY spawn lands one animation frame later (split-layout dispatches
+  // it from a requestAnimationFrame), so a double-click fired a second add
+  // inside that window and spawned two member sessions. The control latches
+  // synchronously at click entry and releases once the spawn dispatch and
+  // the add render have both run (the second frame).
+  const launch = (providerId?: ProviderId): void => {
+    if (chatBtn.disabled) return;
+    chatBtn.disabled = true;
+    try {
+      appState.startTeamChat(projectId, member, providerId);
+    } finally {
+      requestAnimationFrame(() => requestAnimationFrame(() => { chatBtn.disabled = false; }));
+    }
+  };
+  chatBtn.addEventListener('click', () => launch());
 
   // A pinned member's backend is fully determined by its Profile, so the
   // provider chevron is hidden. A dangling or non-team-capable pin leaves it.
@@ -65,7 +78,7 @@ export function buildTeamChatControl(
       teamProviders.map((p) => ({
         label: p.displayName,
         action: () => {
-          appState.startTeamChat(projectId, member, p.id);
+          launch(p.id);
         },
       })),
     );

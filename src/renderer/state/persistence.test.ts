@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../session-cost.js', () => ({ restoreCost: vi.fn() }));
 vi.mock('../session-context.js', () => ({ restoreContext: vi.fn() }));
 
-import { serializeForSave, hydrateLoadedState } from './persistence.js';
+import { serializeForSave, hydrateLoadedState, PREDEFINED_CACHE_PERSIST_MAX_AGE_MS, PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS } from './persistence.js';
 import type { PersistedState, Preferences, SessionRecord } from '../../shared/types.js';
 
 function baseState(session: Partial<SessionRecord>): PersistedState {
@@ -65,6 +65,48 @@ describe('serializeForSave', () => {
     state.profiles = [{ id: 'work', name: 'Work', providerId: 'claude', configDir: '/cfg/work', managed: true, createdAt: 0 }];
     const out = serializeForSave(state);
     expect(out.profiles).toEqual(state.profiles);
+  });
+});
+
+describe('serializeForSave predefined-cache eviction (C4TM-07)', () => {
+  const suggestions = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `s${i}`, name: `S${i}`, role: 'r', systemPrompt: 'p', source: 'custom', createdAt: 0, updatedAt: 0,
+    }));
+  function stateWithCache(fetchedAt: number, count: number): PersistedState {
+    const state = baseState({});
+    state.team = { members: [], predefinedCache: { fetchedAt, suggestions: suggestions(count) } };
+    return state;
+  }
+
+  it('drops a cache older than the persist age bound', () => {
+    const out = serializeForSave(stateWithCache(Date.now() - PREDEFINED_CACHE_PERSIST_MAX_AGE_MS - 1, 5));
+    expect(out.team?.predefinedCache).toBeUndefined();
+  });
+
+  it('keeps a fresh cache', () => {
+    const out = serializeForSave(stateWithCache(Date.now(), 5));
+    expect(out.team?.predefinedCache?.suggestions).toHaveLength(5);
+  });
+
+  it('caps a fresh oversized corpus at the persist suggestion cap', () => {
+    const out = serializeForSave(stateWithCache(Date.now(), 500));
+    expect(out.team?.predefinedCache?.suggestions).toHaveLength(PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS);
+    expect(out.team?.predefinedCache?.suggestions[0].id).toBe('s0');
+  });
+
+  it('leaves a cache-less team untouched', () => {
+    const state = baseState({});
+    state.team = { members: [] };
+    const out = serializeForSave(state);
+    expect(out.team).toEqual({ members: [] });
+    expect('predefinedCache' in (out.team ?? {})).toBe(false);
+  });
+
+  it('never mutates the in-memory state (the live cache keeps serving the picker)', () => {
+    const state = stateWithCache(Date.now() - 25 * 60 * 60 * 1000, 500);
+    serializeForSave(state);
+    expect(state.team?.predefinedCache?.suggestions).toHaveLength(500);
   });
 });
 

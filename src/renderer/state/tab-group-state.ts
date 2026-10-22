@@ -234,8 +234,11 @@ export function normalizeTabGroups(project: ProjectRecord): void {
     const bigRuns = runs.filter((r) => r.length >= 2);
     if (bigRuns.length === 0) continue; // group dissolves
     const [first, ...rest] = bigRuns;
-    survivors.push({ ...group, sessionIds: first });
-    extraRuns.push(...rest);
+    // C4TM-05: a persisted group over TAB_GROUP_MAX_MEMBERS (hand-edit, an
+    // older build) made every groupTabsInProject merge fail its +1 cap
+    // check. Trim runs to the cap; the tail tabs fall back to ungrouped.
+    survivors.push({ ...group, sessionIds: first.slice(0, TAB_GROUP_MAX_MEMBERS) });
+    extraRuns.push(...rest.map((run) => run.slice(0, TAB_GROUP_MAX_MEMBERS)));
   }
 
   if (survivors.length > 0) project.tabGroups = survivors;

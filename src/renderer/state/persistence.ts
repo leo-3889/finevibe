@@ -116,6 +116,15 @@ export function ensureProjectDefaults(state: PersistedState): void {
 }
 
 /**
+ * C4TM-07: the predefined-suggestion corpus (full prompt bodies, hundreds
+ * of KiB) is a picker convenience, not user data. It must not live in
+ * state.json forever: the persist path drops it once stale and caps the
+ * array. The live in-memory cache keeps its session-lifetime picker use.
+ */
+export const PREDEFINED_CACHE_PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS = 200;
+
+/**
  * Strip fields that must never reach disk:
  * - transient in-flight prompts;
  * - per-session `envVars` (P2-101): the New-session box takes raw
@@ -134,11 +143,28 @@ export function ensureProjectDefaults(state: PersistedState): void {
  * lifetime (spawn, split-layout resume wiring reads the live object).
  */
 export function serializeForSave(state: PersistedState): PersistedState {
-  return {
+  const out: PersistedState = {
     ...state,
     projects: state.projects.map((p: ProjectRecord) => ({
       ...p,
       sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, envVars, ...rest }: SessionRecord) => rest as SessionRecord),
     })),
   };
+  const cache = state.team?.predefinedCache;
+  if (cache) {
+    const team = { ...state.team! };
+    // The picker treats a cache older than its 1 h fresh window as dead, so
+    // a persisted one only ever serves the session that fetched it; 24 h is
+    // the generous outer bound. An oversized corpus is truncated to the cap.
+    if (Date.now() - cache.fetchedAt > PREDEFINED_CACHE_PERSIST_MAX_AGE_MS) {
+      delete team.predefinedCache;
+    } else if (cache.suggestions.length > PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS) {
+      team.predefinedCache = {
+        ...cache,
+        suggestions: cache.suggestions.slice(0, PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS),
+      };
+    }
+    out.team = team;
+  }
+  return out;
 }

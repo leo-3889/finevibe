@@ -40,12 +40,14 @@ import {
   applyMemberPatch,
   buildNewMember,
   buildTeamChatSession,
+  isSystemPromptOversize,
   type TeamChatOpts,
   fireAndForgetRemoveAgent,
   reconcileAgent as reconcileAgentPure,
   removeMember,
   resolveTeamChatBackend,
   syncAgentInstall as syncAgentInstallPure,
+  uniqueMemberId,
 } from './state/team-state.js';
 import {
   browserTabNameFromUrl,
@@ -775,10 +777,14 @@ class AppState {
     return this.team.members.find((m) => m.id === id);
   }
 
-  addTeamMember(input: Omit<TeamMember, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): TeamMember {
+  addTeamMember(input: Omit<TeamMember, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): TeamMember | undefined {
+    // C4TM-06: an oversize prompt dies in the CLI spawn (E2BIG class) — reject at the door.
+    if (isSystemPromptOversize(input.systemPrompt)) return undefined;
     const member = buildNewMember(input);
+    // C4TM-03: predefined ids arrive from upstream frontmatter (attacker-influenced);
+    // a duplicate id makes one card's delete remove both members — suffix it.
+    member.id = uniqueMemberId(this.team.members, member.id);
     this.team.members.push(member);
-    this.persist();
     this.emit('team-changed');
     if (member.installAsAgent) {
       void syncAgentInstallPure(window.finevibe.provider, this.team, member, () => this.persist());
@@ -787,6 +793,8 @@ class AppState {
   }
 
   updateTeamMember(id: string, patch: Partial<Omit<TeamMember, 'id' | 'createdAt'>>): TeamMember | undefined {
+    // C4TM-06: same spawn E2BIG cap as addTeamMember.
+    if (isSystemPromptOversize(patch.systemPrompt)) return undefined;
     const result = applyMemberPatch(this.team, id, patch);
     if (!result) return undefined;
     this.persist();
@@ -829,11 +837,6 @@ class AppState {
   setTeamPredefinedCache(suggestions: TeamMember[]): void {
     this.team.predefinedCache = { fetchedAt: Date.now(), suggestions };
     this.persist();
-  }
-
-  notifyTeamChanged(): void {
-    this.persist();
-    this.emit('team-changed');
   }
 
   // --- CLI provider profiles ---
@@ -966,7 +969,17 @@ class AppState {
     );
     if (!backend) return undefined;
 
-    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId, opts);
+    // C4T-01: derive the ordinal from the member's names across the live tabs
+    // and the state-wide session index — a live count reused closed tabs'
+    // numbers and produced a name colliding with a surviving tab.
+    const memberSessionNames = new Set<string>();
+    for (const entry of this.sessionIndex.values()) {
+      if (entry.session.teamMemberId === member.id) memberSessionNames.add(entry.session.name);
+    }
+    for (const s of project.sessions) {
+      if (s.teamMemberId === member.id) memberSessionNames.add(s.name);
+    }
+    const session = buildTeamChatSession(project, member, backend.providerId, MAX_SESSION_NAME_LENGTH, backend.profileId, opts, memberSessionNames);
     attachSessionToProject(project, session, { addToSwarm: true });
     this.commitNewSession(projectId, session);
     return session;
@@ -1623,6 +1636,9 @@ export function _resetForTesting(): void {
   (appState as any)['persistFrameToken']++;
   (appState as any)['persistFrameScheduled'] = false;
   (appState as any)['transcriptFlags'] = new Map();
+  // startTeamChat's ordinal scan (C4T-01) reads the whole index: a previous
+  // case's entries must not leak into this one.
+  (appState as any)['sessionIndex'] = new Map();
 }
 
 export const appState = new AppState();
