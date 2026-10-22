@@ -122,12 +122,6 @@ describe('pinWebviewGuest', () => {
     attach(withShipped);
     expect(withShipped.preload).toBe(SHIPPED);
 
-    // A matching attribute is kept VERBATIM: the pin strips only preloads it
-    // cannot vouch for, it never rewrites one it accepts.
-    const withFileUrl: Record<string, unknown> = { preload: `file://${SHIPPED}`, partition: 'p' };
-    attach(withFileUrl);
-    expect(withFileUrl.preload).toBe(`file://${SHIPPED}`);
-
     for (const foreign of [
       path.join('C:', 'app', 'preload', 'preload', 'evil-preload.js'),
       path.join('C:', 'app', 'preload', 'preload', '..', '..', 'main', 'main.js'),
@@ -143,14 +137,31 @@ describe('pinWebviewGuest', () => {
     attach(noPreload);
     expect(noPreload.preload).toBeUndefined();
   });
+
+  // Verbatim-keep of a matching `file://` spelling is the Windows renderer
+  // contract (see isBrowserGuestPreload below).
+  it.runIf(process.platform === 'win32')('keeps a file://-spelled shipped preload verbatim', () => {
+    // A matching attribute is kept VERBATIM: the pin strips only preloads it
+    // cannot vouch for, it never rewrites one it accepts.
+    const withFileUrl: Record<string, unknown> = { preload: `file://${SHIPPED}`, partition: 'p' };
+    attach(withFileUrl);
+    expect(withFileUrl.preload).toBe(`file://${SHIPPED}`);
+  });
 });
 
 describe('isBrowserGuestPreload', () => {
   it('normalizes the shipped path across encodings', () => {
     expect(isBrowserGuestPreload(SHIPPED, SHIPPED)).toBe(true);
     expect(isBrowserGuestPreload(`  ${SHIPPED}  `, SHIPPED)).toBe(true);
-    expect(isBrowserGuestPreload(`file://${SHIPPED}`, SHIPPED)).toBe(true);
     expect(isBrowserGuestPreload(encodeURI(SHIPPED), SHIPPED)).toBe(true);
+  });
+
+  // The renderer writes `file://${nativePath}`; on Windows that is not a
+  // valid file URL, so the pin strips the scheme and compares the remainder
+  // as a plain path. On POSIX the same spelling parses as a real file URL
+  // and resolves to a POSIX path — the Windows spelling is the contract.
+  it.runIf(process.platform === 'win32')('accepts the file:// spellings a Windows renderer writes', () => {
+    expect(isBrowserGuestPreload(`file://${SHIPPED}`, SHIPPED)).toBe(true);
     // A non-ASCII path percent-encoded by the renderer still matches.
     expect(isBrowserGuestPreload(`file://${encodeURI(path.join('C:', 'café', 'browser-tab-preload.js'))}`, path.join('C:', 'café', 'browser-tab-preload.js'))).toBe(true);
   });

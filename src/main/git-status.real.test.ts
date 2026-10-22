@@ -64,6 +64,10 @@ describe('branch checkout (real repository)', () => {
   beforeEach(async () => {
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-branch-real-'));
     await git(repoDir, ['init', '-q', '-b', 'main']);
+    // CI runners ship a checkout with no git identity; `git commit` below
+    // needs one (same convention as the other real-repo suites in this file).
+    await git(repoDir, ['config', 'user.email', 'test@finevibe.dev']);
+    await git(repoDir, ['config', 'user.name', 'FineVibe Test']);
     fs.writeFileSync(path.join(repoDir, 'a.txt'), 'committed\n');
     await git(repoDir, ['add', 'a.txt']);
     await git(repoDir, ['commit', '-qm', 'init']);

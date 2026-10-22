@@ -54,7 +54,19 @@ function insertCookie(file: string, row: { host_key: string; name: string; encry
   db.close();
 }
 
-describe('readCookies', () => {
+// CI's `npm ci` builds better-sqlite3 for the Electron ABI (the app packages
+// against Electron); vitest on plain Node cannot load that binding there.
+// These tests need the real binding, so skip the suite when it does not load.
+const sqliteUsable = (() => {
+  try {
+    new Database(':memory:').close();
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.runIf(sqliteUsable)('readCookies', () => {
   it('reads plaintext cookie rows from a snapshot opened read-write', () => {
     const file = makeCookiesDb(path.join(tmpDir, 'Cookies'));
     insertCookie(file, { host_key: '.example.com', name: 'sid', encrypted_value: Buffer.alloc(0), value: 'plain-value' });
