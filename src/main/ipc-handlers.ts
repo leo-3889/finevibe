@@ -331,6 +331,13 @@ async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
   return work;
 }
 
+// UI3-11: top-files scans are whole-repo file reads. Every top-files widget
+// mount/refresh (tab switches, dashboard opens) used to start its own scan,
+// stacking concurrent full reads of the same repo. Concurrent scans of one
+// cwd now share a single walk; the shared result is fully sorted, callers
+// slice to their own limit.
+const topFilesScans = new Map<string, Promise<{ files: TopFile[]; scanned: number; skipped: number }>>();
+
 // The debounced working-tree/branch-change signal from git-watcher is
 // subscribed in registerIpcHandlers (tests re-register and capture it).
 
@@ -1792,9 +1799,23 @@ export function registerIpcHandlers(): void {
         return { ok: false };
       }
       const clampedLimit = Math.max(1, Math.min(100, Math.floor(limit) || 10));
-      const isIgnored = buildFineVibeIgnoreMatcher(resolvedCwd);
-      const relFiles = (await getCachedProjectFiles(resolvedCwd)).filter((rel) => !isIgnored(rel));
+      // UI3-11: one shared walk per cwd — concurrent widget mounts coalesce.
+      let scan = topFilesScans.get(resolvedCwd);
+      if (!scan) {
+        scan = scanTopFiles(resolvedCwd).finally(() => topFilesScans.delete(resolvedCwd));
+        topFilesScans.set(resolvedCwd, scan);
+      }
+      const { files, scanned, skipped } = await scan;
+      return { ok: true, files: files.slice(0, clampedLimit), scanned, skipped };
+    } catch (err) {
+      console.warn('fs:topFilesByTokens failed:', err);
+      return { ok: false };
+    }
+  });
 
+  async function scanTopFiles(resolvedCwd: string): Promise<{ files: TopFile[]; scanned: number; skipped: number }> {
+    const isIgnored = buildFineVibeIgnoreMatcher(resolvedCwd);
+    const relFiles = (await getCachedProjectFiles(resolvedCwd)).filter((rel) => !isIgnored(rel));
       const results: TopFile[] = [];
       let scanned = 0;
       let skipped = 0;
@@ -1837,15 +1858,11 @@ export function registerIpcHandlers(): void {
           }
         })());
       }
-      await Promise.all(workers);
+    await Promise.all(workers);
 
-      results.sort((a, b) => b.tokens - a.tokens);
-      return { ok: true, files: results.slice(0, clampedLimit), scanned, skipped };
-    } catch (err) {
-      console.warn('fs:topFilesByTokens failed:', err);
-      return { ok: false };
-    }
-  });
+    results.sort((a, b) => b.tokens - a.tokens);
+    return { files: results, scanned, skipped };
+  }
 
   ipcMain.handle('fs:exists', (_event, filePath: string): boolean => {
     try {

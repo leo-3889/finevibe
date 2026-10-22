@@ -193,6 +193,7 @@ import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './setting
 import { cleanupSessionStatus } from './hook-status';
 import { analyzeReadiness } from './readiness/analyzer';
 import { detectRepo } from './github-cli';
+import { buildFineVibeIgnoreMatcher } from './finevibeignore';
 
 import { getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 function makeProvider(): CliProvider {
@@ -1974,5 +1975,43 @@ describe('provider binary probes are async (S4-03)', () => {
     const results = await handlers.get('provider:installAgent')!({}, 'auditor', 'body') as Array<Record<string, unknown>>;
     expect(results).toEqual([{ providerId: 'claude', ok: true, filePath: '/tmp/claude/agents/auditor.md' }]);
     expect(asyncProbe).toHaveBeenCalledTimes(1);
+  });
+});
+
+// UI3-11: whole-repo top-files scans stacked per widget mount. Concurrent
+// scans of one cwd must share a single walk, each caller slicing to its own
+// limit from the shared sorted result.
+describe('fs:topFilesByTokens shared walk (UI3-11)', () => {
+  it('coalesces concurrent scans of one cwd into a single file walk', async () => {
+    vi.mocked(buildFineVibeIgnoreMatcher).mockReturnValue(() => false);
+    // The enumeration suite leaks its execFile stub; reject git here so the
+    // walk fallback sees the real temp tree.
+    vi.mocked(mockGitCloneSpawn).mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null) => void;
+      cb(new Error('not a git repository'));
+    }) as never);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-topfiles-'));
+    const openSpy = vi.spyOn(fs.promises, 'open');
+    try {
+      for (const n of ['a.ts', 'b.ts', 'c.ts']) fs.writeFileSync(path.join(dir, n), 'word '.repeat(10));
+      knownPaths.push(dir);
+
+      openSpy.mockClear();
+      const [r10, r2] = await Promise.all([
+        handlers.get('fs:topFilesByTokens')!({}, dir, 10),
+        handlers.get('fs:topFilesByTokens')!({}, dir, 2),
+      ]);
+
+      expect(r10, JSON.stringify(r10)).toMatchObject({ ok: true });
+      expect((r10 as { ok: boolean; files: unknown[] }).files).toHaveLength(3);
+      expect((r2 as { ok: boolean; files: unknown[] }).files).toHaveLength(2);
+      // One shared walk: each file opened once, not once per caller.
+      expect(openSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      openSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+      const i = knownPaths.indexOf(dir);
+      if (i >= 0) knownPaths.splice(i, 1);
+    }
   });
 });
