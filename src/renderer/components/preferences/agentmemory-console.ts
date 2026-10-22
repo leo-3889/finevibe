@@ -60,12 +60,18 @@ export function openAgentmemoryConsoleModal(): void {
 
   let lastContent: string | null = null;
 
+  let inFlight = false;
+
   async function poll(): Promise<void> {
+    if (inFlight || document.hidden) return; // hidden: nobody reads the tail; slow IPC: never overlap ticks
+    inFlight = true;
     let log: AgentmemoryLog;
     try {
       log = await window.finevibe.agentmemory.log();
     } catch {
       return; // transient IPC failure; the next tick retries
+    } finally {
+      inFlight = false;
     }
     if (log.content === lastContent) return; // identical tail: leave the DOM untouched
     if (log.path) pathEl.textContent = log.path;

@@ -61,6 +61,9 @@ function scheduleShow(target: HTMLElement, content: string): void {
   if (showTimer) clearTimeout(showTimer);
   showTimer = setTimeout(() => {
     showTimer = null;
+    // The target can be torn out (widget rerender) during the 600 ms delay:
+    // a detached element has no rect, so showing would anchor the card at garbage.
+    if (!target.isConnected) return;
     show(target, content);
   }, HOVER_DELAY_MS);
 }

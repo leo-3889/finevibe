@@ -21,6 +21,7 @@ const mockState = vi.hoisted(() => ({
   },
   on: vi.fn(() => () => {}),
   setPreference: vi.fn(),
+  setPreferences: vi.fn(),
   sidebarView: vi.fn((key: string) => (mockState.preferences.sidebarViews as Record<string, boolean>)[key] ?? true),
   setLocale: vi.fn(),
 }));

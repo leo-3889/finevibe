@@ -3,7 +3,6 @@ import { areaLabel } from '../dom-utils.js';
 import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
 import { isAbsolutePath, dirname, samePath } from '../../shared/platform.js';
-import { escapeHtml } from './escape-html.js';
 
 interface FileViewerInstance {
   element: HTMLElement;
@@ -40,7 +39,7 @@ function flushPendingReloads(): void {
     const inst = instances.get(id);
     if (inst) {
       inst.loaded = false;
-      loadDiff(inst, id);
+      loadDiffGuarded(inst, id);
     }
   }
   // Remove listener when no longer needed
@@ -81,7 +80,7 @@ function parseDiffLines(diff: string): HTMLElement {
       div.classList.add('context');
     }
 
-    div.innerHTML = escapeHtml(line) || '&nbsp;';
+    div.textContent = line.length > 0 ? line : '\u00a0';
     content.appendChild(div);
   }
 
@@ -121,17 +120,35 @@ async function loadDiff(instance: FileViewerInstance, sessionId: string): Promis
   try {
     const diff = await window.finevibe.git.getDiff(instance.worktreePath ?? project.path, instance.filePath, instance.area);
     if (gen !== instance.loadGeneration) return; // superseded by a newer load
-    body.innerHTML = '';
+    body.replaceChildren();
     body.appendChild(parseDiffLines(diff));
     instance.loaded = true;
   } catch {
     if (gen !== instance.loadGeneration) return;
-    body.innerHTML = '';
-    const err = document.createElement('div');
-    err.className = 'file-viewer-content';
-    err.innerHTML = '<div class="diff-line context">Failed to load diff</div>';
-    body.appendChild(err);
+    showDiffFailure(instance);
   }
+}
+
+/** The pane's failure state — one context row. Used by `loadDiff`'s catch
+ *  and by the guarded fire-and-forget entry points below. */
+function showDiffFailure(instance: FileViewerInstance): void {
+  const body = instance.element.querySelector('.file-viewer-body');
+  if (!body) return;
+  body.replaceChildren();
+  const content = document.createElement('div');
+  content.className = 'file-viewer-content';
+  const row = document.createElement('div');
+  row.className = 'diff-line context';
+  row.textContent = 'Failed to load diff';
+  content.appendChild(row);
+  body.appendChild(content);
+}
+
+/** Fire-and-forget entry: `loadDiff`'s own try/catch covers the diff IPC, but
+ *  the untracked-file `fs.exists` check rejects outside it — surface that with
+ *  the same failure state instead of dropping an unhandled rejection. */
+function loadDiffGuarded(instance: FileViewerInstance, sessionId: string): void {
+  loadDiff(instance, sessionId).catch(() => showDiffFailure(instance));
 }
 
 function ensureFileChangedListener(): void {
@@ -213,7 +230,7 @@ export function showFileViewerPane(sessionId: string, isSplit: boolean): void {
     window.finevibe.fs.watchDir(dirname(fullPath));
   }
 
-  loadDiff(instance, sessionId);
+  loadDiffGuarded(instance, sessionId);
 }
 
 export function hideAllFileViewerPanes(): void {
@@ -251,5 +268,5 @@ export function reloadFileViewer(sessionId: string): void {
     return;
   }
   instance.loaded = false;
-  loadDiff(instance, sessionId);
+  loadDiffGuarded(instance, sessionId);
 }

@@ -52,6 +52,10 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
 
   let resolvedRepo: string | null = null;
   let lastConfigRepo: string | undefined = undefined;
+  // C3RP-15: negative cache. Without it, a project with no git remote re-spawns
+  // github.detectRepo on every poll tick: `resolvedRepo` stays null, so the
+  // positive cache above never hits. Cleared alongside the config-repo state.
+  let detectAttempted = false;
   let items: GithubItem[] = [];
   let loading = false;
   let lastError: string | null = null;
@@ -76,10 +80,12 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     }
     // Cached auto-detect: only re-detect if the override was cleared since the last detection.
     if (resolvedRepo && lastConfigRepo === undefined) return resolvedRepo;
+    if (detectAttempted && lastConfigRepo === undefined) return null;
     const project = appState.projects.find(p => p.id === projectId);
     if (!project) return null;
     const detected = await window.finevibe.github.detectRepo(project.path);
     if (detected) resolvedRepo = `${detected.owner}/${detected.repo}`;
+    detectAttempted = true;
     lastConfigRepo = undefined;
     return resolvedRepo;
   }

@@ -130,7 +130,13 @@ export const createSessionsWidget: WidgetFactory = (host) => {
     return row;
   }
 
-  const offHistory = appState.on('history-changed', () => render());
+  const offHistory = appState.on('history-changed', (data) => {
+    // Payload is the owning projectId (readiness-widget idiom): a sibling
+    // project's history write must not re-render this widget.
+    const id = typeof data === 'string' ? data : undefined;
+    if (id && id !== host.projectId) return;
+    render();
+  });
 
   render();
 

@@ -2,7 +2,7 @@ import { appState } from '../../state.js';
 import { createCustomSelect, type CustomSelectInstance, type SelectOption } from '../custom-select.js';
 import { loadProviderAvailability, getProviderAvailabilitySnapshot } from '../../provider-availability.js';
 import { t } from '../../i18n.js';
-import type { CliProviderMeta, Locale, ProviderId } from '../../../shared/types.js';
+import type { CliProviderMeta, Locale, Preferences, ProviderId } from '../../../shared/types.js';
 import type { PreferencesContext, SectionController } from './section.js';
 import { toggleRow } from './shared.js';
 import { isPlanModeSupported, resolvePlanModePreference } from '../../state/specialized-sessions.js';
@@ -251,16 +251,21 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
     },
 
     save() {
-      if (soundCheckbox) appState.setPreference('soundOnSessionWaiting', soundCheckbox.checked);
-      if (notificationsCheckbox) appState.setPreference('notificationsDesktop', notificationsCheckbox.checked);
-      if (historyCheckbox) appState.setPreference('sessionHistoryEnabled', historyCheckbox.checked);
-      if (insightsCheckbox) appState.setPreference('insightsEnabled', insightsCheckbox.checked);
-      if (autoTitleCheckbox) appState.setPreference('autoTitleEnabled', autoTitleCheckbox.checked);
-      if (confirmCloseCheckbox) appState.setPreference('confirmCloseWorkingSession', confirmCloseCheckbox.checked);
-      if (copyOnSelectCheckbox) appState.setPreference('copyOnSelect', copyOnSelectCheckbox.checked);
-      if (providerSelect) appState.setPreference('defaultProvider', providerSelect.getValue() as ProviderId);
-      if (askAiFocusSelect) appState.setPreference('askAiFocus', askAiFocusSelect.getValue() as 'switch' | 'stay');
-      if (projectsFolderValue !== null) appState.setPreference('defaultProjectsFolder', projectsFolderValue.trim());
+      // One batched write: per-key setPreference would persist + emit
+      // 'preferences-changed' once per checkbox, re-theming every terminal
+      // each time.
+      const patch: Preferences = { ...appState.preferences };
+      if (soundCheckbox) patch.soundOnSessionWaiting = soundCheckbox.checked;
+      if (notificationsCheckbox) patch.notificationsDesktop = notificationsCheckbox.checked;
+      if (historyCheckbox) patch.sessionHistoryEnabled = historyCheckbox.checked;
+      if (insightsCheckbox) patch.insightsEnabled = insightsCheckbox.checked;
+      if (autoTitleCheckbox) patch.autoTitleEnabled = autoTitleCheckbox.checked;
+      if (confirmCloseCheckbox) patch.confirmCloseWorkingSession = confirmCloseCheckbox.checked;
+      if (copyOnSelectCheckbox) patch.copyOnSelect = copyOnSelectCheckbox.checked;
+      if (providerSelect) patch.defaultProvider = providerSelect.getValue() as ProviderId;
+      if (askAiFocusSelect) patch.askAiFocus = askAiFocusSelect.getValue() as 'switch' | 'stay';
+      if (projectsFolderValue !== null) patch.defaultProjectsFolder = projectsFolderValue.trim();
+      appState.setPreferences(patch);
     },
 
     destroy() {

@@ -1,6 +1,5 @@
 import { appState } from '../state.js';
 import { openFileReaderChecked } from '../open-file-reader.js';
-import { escapeHtml } from './escape-html.js';
 
 let overlay: HTMLElement | null = null;
 let input: HTMLInputElement | null = null;
@@ -75,7 +74,7 @@ async function searchFiles(): Promise<void> {
 
 function renderResults(): void {
   if (!resultsList) return;
-  resultsList.innerHTML = '';
+  resultsList.replaceChildren();
 
   if (results.length === 0) {
     const empty = document.createElement('div');
@@ -95,8 +94,16 @@ function renderResults(): void {
     const fileName = parts.pop() || filePath;
     const dir = parts.join('/');
 
-    item.innerHTML = `<span class="quick-open-filename">${escapeHtml(fileName)}</span>` +
-      (dir ? `<span class="quick-open-dir">${escapeHtml(dir)}</span>` : '');
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'quick-open-filename';
+    nameSpan.textContent = fileName;
+    item.appendChild(nameSpan);
+    if (dir) {
+      const dirSpan = document.createElement('span');
+      dirSpan.className = 'quick-open-dir';
+      dirSpan.textContent = dir;
+      item.appendChild(dirSpan);
+    }
 
     item.addEventListener('mouseenter', () => {
       activeIndex = i;

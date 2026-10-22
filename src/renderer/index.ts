@@ -292,11 +292,7 @@ async function main(): Promise<void> {
   startGitPolling();
 
   function isMcpSession(sessionId: string): boolean {
-    for (const project of appState.projects) {
-      const session = project.sessions.find(s => s.id === sessionId);
-      if (session) return session.type === 'mcp-inspector';
-    }
-    return false;
+    return appState.findSessionWithProject(sessionId)?.session.type === 'mcp-inspector';
   }
 
   /** Desktop notification for an abnormal CLI exit, reusing the standard notification gate. */

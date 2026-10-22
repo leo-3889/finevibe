@@ -4,6 +4,9 @@ import { getProviderDisplayName } from '../../../provider-availability.js';
 import type { WidgetFactory } from './widget-host.js';
 import { formatRelativeDate } from '../../../../shared/text-utils.js';
 
+// C3RP-16: hard render cap, mirroring the sessions widget's recentLimit —
+// favorites grow unbounded in the archive; the dialog is the browse surface.
+const FAVORITES_RENDER_LIMIT = 50;
 export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
   const root = document.createElement('div');
   root.className = 'widget-sessions';
@@ -18,7 +21,8 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
 
     const favorites = (project?.sessionHistory ?? [])
       .filter((a) => a.bookmarked === true)
-      .sort((a, b) => (b.closedAt ?? b.createdAt).localeCompare(a.closedAt ?? a.createdAt));
+      .sort((a, b) => (b.closedAt ?? b.createdAt).localeCompare(a.closedAt ?? a.createdAt))
+      .slice(0, FAVORITES_RENDER_LIMIT);
 
     if (favorites.length === 0) {
       const empty = document.createElement('div');
@@ -100,7 +104,13 @@ export const createFavoriteSessionsWidget: WidgetFactory = (host) => {
     return row;
   }
 
-  const offHistory = appState.on('history-changed', () => render());
+  const offHistory = appState.on('history-changed', (data) => {
+    // Payload is the owning projectId (readiness-widget idiom): a sibling
+    // project's history write must not re-render this widget.
+    const id = typeof data === 'string' ? data : undefined;
+    if (id && id !== host.projectId) return;
+    render();
+  });
 
   render();
 

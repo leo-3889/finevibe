@@ -108,7 +108,6 @@ type EventType =
   | 'board-changed'
   | 'team-changed'
   | 'profiles-changed'
-  | 'overview-layout-changed'
   | 'github-unread-changed'
   | 'state-loaded';
 
@@ -534,6 +533,21 @@ class AppState {
     this.emit('preferences-changed');
   }
 
+  /**
+   * Apply many preference keys with ONE persist + ONE 'preferences-changed'
+   * emit. The emit re-themes every live terminal (index.ts), so a settings
+   * save that touches N keys must not fire it N times.
+   */
+  setPreferences(entries: Partial<Preferences>): void {
+    const keys = Object.keys(entries) as (keyof Preferences)[];
+    if (keys.length === 0) return;
+    // Union-key per-entry assignment is untypeable; Object.assign applies
+    // exactly the Partial<Preferences> pairs entries carries.
+    Object.assign(this.preferences, entries);
+    this.persist();
+    this.emit('preferences-changed');
+  }
+
   /** Convenience wrapper: persist + emit. Use this for UI locale switching. */
   setLocale(locale: Preferences['locale']): void {
     if (locale === undefined) return;
@@ -572,7 +586,10 @@ class AppState {
     const sessions = project?.sessions ?? [];
 
     this.state.projects = this.state.projects.filter((p) => p.id !== id);
-    for (const s of sessions) this.sessionIndex.delete(s.id);
+    for (const s of sessions) {
+      this.sessionIndex.delete(s.id);
+      this.transcriptFlags.delete(s.id);
+    }
     if (this.state.activeProjectId === id) {
       this.state.activeProjectId = this.state.projects[0]?.id ?? null;
     }
@@ -1513,7 +1530,6 @@ class AppState {
     if (!project) return;
     project.overviewLayout = layout;
     this.persist();
-    this.emit('overview-layout-changed', projectId);
   }
 
   setGithubItemSeen(projectId: string, itemId: string, isoTimestamp: string): void {

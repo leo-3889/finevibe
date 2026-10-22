@@ -166,7 +166,7 @@ export function createProjectTabGrid(opts: ProjectTabGridOptions): ProjectTabGri
     return instance;
   }
 
-  function placeWidget(record: OverviewWidget, opts: { autoPosition?: boolean } = {}): void {
+  function placeWidget(record: OverviewWidget, opts: { autoPosition?: boolean } = {}): boolean {
     const { wrapper, body } = buildTile(record);
     const widgetOpts: Record<string, unknown> = {
       w: record.w,
@@ -183,12 +183,12 @@ export function createProjectTabGrid(opts: ProjectTabGridOptions): ProjectTabGri
     const itemEl = grid.addWidget(widgetOpts as never);
     if (!itemEl) {
       console.warn('[project-tab] gridstack failed to add widget', record);
-      return;
+      return false;
     }
     const contentSlot = itemEl.querySelector('.grid-stack-item-content') as HTMLElement | null;
     if (!contentSlot) {
       console.warn('[project-tab] grid-stack-item-content not found on new tile', record);
-      return;
+      return false;
     }
     contentSlot.appendChild(wrapper);
 
@@ -198,6 +198,7 @@ export function createProjectTabGrid(opts: ProjectTabGridOptions): ProjectTabGri
       instance: instance ?? { element: document.createElement('div'), destroy() {} },
       itemEl,
     });
+    return true;
   }
 
   function remountBody(widgetId: string): void {
@@ -252,7 +253,13 @@ export function createProjectTabGrid(opts: ProjectTabGridOptions): ProjectTabGri
       config: { ...meta.defaultConfig },
     };
     layout = { ...layout, widgets: [...layout.widgets, record] };
-    placeWidget(record, { autoPosition: true });
+    if (!placeWidget(record, { autoPosition: true })) {
+      // C3RP-13: placement failed — splice the record out before flushing,
+      // or the unremovable ghost (no tile → removeWidget is a no-op) persists.
+      layout = { ...layout, widgets: layout.widgets.filter((w) => w.id !== record.id) };
+      flushChange();
+      return;
+    }
     const m = mounted.get(record.id);
     m?.itemEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     flushChange();

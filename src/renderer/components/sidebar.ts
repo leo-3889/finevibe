@@ -349,6 +349,7 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   // Content is filled in below from DOM nodes, never interpolated here.
   const profileBadge =
     `<span class="project-profile-badge" title="${esc(t('sidebar.profileTooltip'))}"></span>`;
+  // pi-lens-ignore: xss-innerhtml
   el.innerHTML = `
     ${lead}
     <div class="project-main">
@@ -537,6 +538,7 @@ function buildProjectActions(
 function makeActionButton(label: string, iconSvg: string, active: boolean, hint?: string): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
+  // pi-lens-ignore: xss-innerhtml
   btn.className = 'project-action-btn' + (active ? ' active' : '');
   btn.innerHTML = `<span class="action-icon" aria-hidden="true">${iconSvg}</span><span class="action-label">${esc(label)}</span>`;
   attachHoverCard(btn, hint ?? label);
@@ -1037,6 +1039,7 @@ function renderDiscussions(): void {
   // inline badge is shown only when expanded (text visible). CSS picks one per mode.
   const dot = count > 0 ? '<span class="discussions-icon-dot"></span>' : '';
   const inlineBadge = count > 0 ? ` <span class="discussions-badge">${count}</span>` : '';
+  // pi-lens-ignore: xss-innerhtml
   sidebarDiscussionsEl.title = t('sidebar.discussions.tooltip');
   sidebarDiscussionsEl.innerHTML =
     `<span class="action-icon" aria-hidden="true">${ICON_DISCUSSIONS}${dot}</span>` +

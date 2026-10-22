@@ -590,6 +590,7 @@ function showEmptyState(project: ProjectRecord | undefined): void {
 
     const cta = document.createElement('button');
     cta.className = 'btn-primary empty-state-cta';
+    // pi-lens-ignore: no-inner-html
     cta.innerHTML = `${plusIcon}<span>Start a session</span>`;
     cta.addEventListener('click', () => quickNewSession());
 

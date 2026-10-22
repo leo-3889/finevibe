@@ -316,7 +316,7 @@ function renderSidebar(projectId: string): void {
   }
   sidebarEl.classList.remove('hidden');
   const activeId = activeShellByProject.get(projectId);
-  // pi-lens-ignore: no-html-label-for, slop, xss-innerhtml
+  // pi-lens-ignore: no-html-label-for, slop, xss-innerhtml, no-inner-html
   sidebarEl.innerHTML = list.map(s => `
     <div class="terminal-list-item${s.id === activeId ? ' active' : ''}" data-shell-id="${esc(s.id)}">
       <span class="terminal-list-item-name">${esc(s.label)}</span>

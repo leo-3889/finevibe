@@ -129,9 +129,13 @@ async function openChromeImportModal(onClosed?: () => void): Promise<void> {
     );
     profileSlot.appendChild(select.element);
 
-    note.innerHTML =
-      'On macOS, the system may ask permission to read <strong>Chrome Safe Storage</strong> — click <em>Allow</em> when prompted. ' +
-      'On Windows, cookies encrypted with Chrome 127+ App-Bound Encryption can’t be imported and will be skipped.';
+    note.append(
+      'On macOS, the system may ask permission to read ',
+      Object.assign(document.createElement('strong'), { textContent: 'Chrome Safe Storage' }),
+      ' — click ',
+      Object.assign(document.createElement('em'), { textContent: 'Allow' }),
+      ' when prompted. On Windows, cookies encrypted with Chrome 127+ App-Bound Encryption can’t be imported and will be skipped.',
+    );
 
     importBtn.addEventListener('click', async () => {
       importBtn.disabled = true;
