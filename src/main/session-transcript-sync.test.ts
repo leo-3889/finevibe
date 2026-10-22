@@ -388,7 +388,7 @@ describe('fs.watch fast path', () => {
   // and is being written. It must lift the C2M-05 read-backoff window, which
   // exists only to pace pure-tick retries.
   it('a watch event lifts the read-backoff window', () => {
-    const status = { value: 'working' as CliSessionStatus };
+    const status = { value: 'working' as CliSessionStatus | 'idle' };
     provider = {
       meta: { capabilities: { selfTitles: true, polledStatus: true } },
       getTranscriptPath: vi.fn(() => '/t.jsonl'),
@@ -568,7 +568,7 @@ describe('per-tick read gating (PA-02)', () => {
 
   it('leaves the entry due when a read throws (transcript mid-write)', () => {
     provider = makeProvider({ selfTitles: true, title: { value: 'T' }, path: '/t.jsonl' });
-    const reader = vi.fn<void, [string]>()
+    const reader = vi.fn()
       .mockImplementationOnce(() => { throw new Error('EAGAIN'); })
       .mockImplementation(() => 'T');
     provider.readSessionTitle = reader as unknown as CliProvider['readSessionTitle'];
