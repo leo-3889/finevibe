@@ -256,9 +256,15 @@ export async function guardedInstall(win: BrowserWindow | null): Promise<void> {
   });
   if (choice === 'dismissed') return;
 
-  state.preferences.statusLineConsent = choice === 'replace' ? 'granted' : 'declined';
-  state.preferences.statusLineConsentCommand = currentForeign;
-  saveState(state);
+  // S1-02: `state` is the PRE-modal snapshot (line 181) — the modal can
+  // sit open for minutes while the renderer persists sessions/board moves.
+  // Saving the snapshot rolled all of that back. Consent keys only, on a
+  // fresh load (recordDirConsent's shape; the store graft keeps them
+  // immune to the renderer's next whole-state persist).
+  const fresh = loadState();
+  fresh.preferences.statusLineConsent = choice === 'replace' ? 'granted' : 'declined';
+  fresh.preferences.statusLineConsentCommand = currentForeign;
+  saveState(fresh);
 
   if (choice === 'replace') {
     installStatusLine();

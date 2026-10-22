@@ -177,6 +177,32 @@ describe('saveState', () => {
       { recursive: true },
     );
   });
+
+  it('grafts main-owned statusLine-consent keys onto every write (S1-02)', () => {
+    // Main records a consent decision (boot modal -> recordDirConsent).
+    const withConsent = {
+      ...DEFAULT_STATE,
+      preferences: {
+        ...DEFAULT_STATE.preferences,
+        statusLineConsent: 'declined' as const,
+        statusLineConsentCommand: 'foreign-cmd',
+        statusLineConsentByDir: { '/x': { consent: 'granted' as const, command: 'c' } },
+      },
+    };
+    saveState(withConsent);
+    vi.advanceTimersByTime(300);
+
+    // The renderer's next whole-state persist carries its BOOT-TIME prefs
+    // (consent keys absent). Before S1-02 this erased the consent on disk.
+    saveState({ ...DEFAULT_STATE });
+    vi.advanceTimersByTime(300);
+    const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(written.preferences.statusLineConsent).toBe('declined');
+    expect(written.preferences.statusLineConsentCommand).toBe('foreign-cmd');
+    expect(written.preferences.statusLineConsentByDir).toEqual({ '/x': { consent: 'granted', command: 'c' } });
+    // And a main-side read sees them too.
+    expect(loadState().preferences.statusLineConsent).toBe('declined');
+  });
 });
 
 describe('saveStateSync', () => {

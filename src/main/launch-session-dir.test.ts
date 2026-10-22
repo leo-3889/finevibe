@@ -277,24 +277,32 @@ describe('readLaunchSessionMetaCached()', () => {
 });
 
 describe('ensureLaunchSessionDir() retention hook', () => {
-  it('prunes expired dirs on the first launch of a base, before the spawn', () => {
+  it('S2-04/scout-2: prunes on the next macrotask, never on the spawn path', async () => {
     fs.rmSync(base, { recursive: true, force: true });
     fs.mkdirSync(base, { recursive: true });
     const dead = makeDir('dead', { createdAt: OLD, dirMtime: OLD });
     const sessionDir = path.join(base, 'new-tab');
     ensureLaunchSessionDir(sessionDir);
+    // The spawn path must return synchronously WITHOUT the sweep: the dir
+    // is created, the expired dir is still there.
+    expect(fs.existsSync(sessionDir)).toBe(true);
+    expect(fs.existsSync(dead)).toBe(true);
+    // The deferred sweep removes it on the next macrotask.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(fs.existsSync(dead)).toBe(false);
     expect(fs.existsSync(sessionDir)).toBe(true);
   });
 
-  it('runs the sweep at most once per base per process', () => {
+  it('runs the sweep at most once per base per process', async () => {
     fs.rmSync(base, { recursive: true, force: true });
     fs.mkdirSync(base, { recursive: true });
     ensureLaunchSessionDir(path.join(base, 'tab-1'));
+    await new Promise((resolve) => setImmediate(resolve)); // sweep consumed
     // Created after the sweep (e.g. by an external writer): the guard means a
     // second launch must not pay for the scan again.
     const dead = makeDir('late-dead', { createdAt: OLD, dirMtime: OLD });
     ensureLaunchSessionDir(path.join(base, 'tab-2'));
+    await new Promise((resolve) => setImmediate(resolve));
     expect(fs.existsSync(dead)).toBe(true);
     expect(fs.existsSync(path.join(base, 'tab-2'))).toBe(true);
   });

@@ -70,8 +70,12 @@ export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId:
  */
 export const LAUNCH_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Upper bound on dirs examined per prune pass, so startup never stalls on a huge tree. */
-const PRUNE_SCAN_LIMIT = 2_000;
+/** Upper bound on dirs examined per prune pass. scout-2: a candidate costs
+ * ~5-6 sync syscalls (lstat + sidecar read + transcript readdir + per-jsonl
+ * lstat), so the cap is sized for a bounded sweep, not the whole tree —
+ * expired dirs beyond it converge over consecutive launches (documented
+ * below). */
+const PRUNE_SCAN_LIMIT = 200;
 
 let pruneScanLimit = PRUNE_SCAN_LIMIT;
 
@@ -100,11 +104,18 @@ export function ensureLaunchSessionDir(sessionDir: string): void {
 function pruneLaunchSessionDirsOnce(base: string): void {
   if (prunedBases.has(base)) return;
   prunedBases.add(base);
-  try {
-    pruneLaunchSessionDirs(base);
-  } catch {
-    // Retention is best-effort; a failed sweep costs disk, never a launch.
-  }
+  // scout-2 P2: the prune used to run SYNCHRONOUSLY on the spawn path — at
+  // the scan bound that is thousands of sync syscalls between the user
+  // pressing Enter and the CLI spawning. Retention is best-effort and the
+  // spawn path is not; defer to the next macrotask, off the spawn, and
+  // keep the sweep bounded (PRUNE_SCAN_LIMIT).
+  setImmediate(() => {
+    try {
+      pruneLaunchSessionDirs(base);
+    } catch {
+      // Retention is best-effort; a failed sweep costs disk, never a launch.
+    }
+  });
 }
 
 /**
