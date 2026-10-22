@@ -140,6 +140,15 @@ export function initSessionInspector(): void {
   });
 
   // Update inspector on new events (debounced)
+  // S4-01: a session at the 2000-event retention cap rotates the array
+  // in place, so appendTimelineEvents() must bail every tick (every
+  // index moved) — the fallback then rebuilds 500 rows every 200 ms while
+  // the inspector is open, i.e. exactly on long-running agent sessions.
+  // Append stays 200 ms; the full-rebuild fallback is floored at 2 s so
+  // the storm is bounded, and the pending timer keeps the view converging.
+  type TimerHandle = ReturnType<typeof setTimeout>;
+  let lastFullRenderAt = 0;
+  let fullRenderRetry: TimerHandle | null = null;
   onInspectorChange((sessionId) => {
     if (sessionId !== inspectorState.inspectedSessionId) return;
     if (inspectorState.updateTimer) clearTimeout(inspectorState.updateTimer);
@@ -152,7 +161,26 @@ export function initSessionInspector(): void {
       // On the timeline tab, append just the delta rows; the full rebuild
       // stays the fallback (tab/session switch, /clear, cap rotation, bail).
       const content = inspectorState.inspectorPanel?.querySelector('.inspector-content') as HTMLElement | null;
-      if (inspectorState.activeTab === 'timeline' && content && appendTimelineEvents(content)) return;
+      if (inspectorState.activeTab === 'timeline' && content && appendTimelineEvents(content)) {
+        lastFullRenderAt = 0;
+        return;
+      }
+      const now = Date.now();
+      const remaining = 2000 - (now - lastFullRenderAt);
+      if (remaining > 0) {
+        // Floor respected: rebuild when it is due even if the session goes
+        // quiet (no further change events) — the view stays at most 2 s
+        // stale on a rotated (capped) event array.
+        if (fullRenderRetry === null) {
+          fullRenderRetry = setTimeout(() => {
+            fullRenderRetry = null;
+            lastFullRenderAt = Date.now();
+            renderActiveTab();
+          }, remaining);
+        }
+        return;
+      }
+      lastFullRenderAt = now;
       renderActiveTab();
     }, 200);
   });

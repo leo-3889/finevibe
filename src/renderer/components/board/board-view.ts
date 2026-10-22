@@ -208,6 +208,18 @@ export function renderBoard(target?: HTMLElement): void {
   initBoardDnd();
 }
 
+// FNV-1a, 32 bit. Cheap full-text digest for the change key: prompt/notes
+// are unbounded (a task prompt is a whole instruction), so slicing them
+// would re-introduce the staleness the key exists to prevent (S4-02).
+function textHash(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
 function boardChangeKey(board: BoardData): string {
   const cols = [...board.columns]
     .sort((a, b) => a.order - b.order)
@@ -218,7 +230,11 @@ function boardChangeKey(board: BoardData): string {
     : '';
   const tasks = [...board.tasks]
     .sort((a, b) => a.order - b.order)
-    .map((tk) => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}`)
+    // S4-02: title/prompt/notes render INTO the card; the key used to omit
+    // them, so renaming a task (the modal writes them) kept the key equal
+    // and the early return showed the stale title until an unrelated
+    // change happened to move a card.
+    .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}`)
     .join(',');
   const filters = `${getSearchQuery()}\u0000${[...getActiveTagFilters()].sort().join('+')}`;
   return `${cols}\u0001${tags}\u0001${tasks}\u0001${filters}\u0001${appState.preferences.boardCardMetrics ?? true}`;

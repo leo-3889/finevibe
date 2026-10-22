@@ -16,6 +16,8 @@ import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
+import { forwardResize } from '../sharing/share-manager.js';
+import { destroySearchBar } from './search-bar.js';
 
 interface TerminalInstance {
   terminal: Terminal;
@@ -390,6 +392,11 @@ export function fitTerminal(sessionId: string): void {
     if (size === instance.lastSize) return;
     instance.lastSize = size;
     window.finevibe.pty.resize(sessionId, cols, rows);
+    // S3-02 host side: the pane resize leg ended at the local PTY — remote
+    // guests were laid out to a geometry the host no longer has (the
+    // share-manager onResize hook existed, nothing called it).
+    // broadcastResize is a no-op for sessions that are not shared.
+    forwardResize(sessionId, cols, rows);
   } catch {
     // Element not yet visible
   }
@@ -450,6 +457,14 @@ export function destroyTerminal(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
 
+  // S3-08: Cmd+F registers a bar keyed by session id (searchBars map,
+  // search-bar.ts) holding DOM + xterm search backend + live results
+  // subscription; session ids are fresh UUIDs, so a bar left behind here is
+  // retained for the renderer's whole lifetime — per CLOSED TAB. Every
+  // other pane owner (closeShell, destroyAllShells) calls destroySearchBar;
+  // this pane was the outlier. Run it before dispose(): clearing
+  // decorations touches the live terminal.
+  destroySearchBar(sessionId);
   clearPendingPromptTimer(instance);
   window.finevibe.pty.kill(sessionId);
   instance.terminal.dispose();
