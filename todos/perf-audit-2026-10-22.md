@@ -130,3 +130,63 @@ Scouts: C2PerfMain (main/IPC), C2PerfRenderer (renderer chrome), C2BugsIntegrati
 - commits: 4364b29 (P1 preload) → 855c310 (main) → c4164be (inspector/git-status) → c9625b3 (chrome/board/sidebar) → 19e350f (panes/modals/widgets) + this docs commit
 - process: 2 scout findings (C2M-05/06) fell out of the fan-out task lists and were fixed inline by the parent; fan-out checklists must be diffed against the ledger before launch (done at integration)
 - open by design: UI3-3 ring/epoch deep fix (unchanged); S1-07/S1-08 accepted (unchanged)
+
+## Cycle 3 (2026-10-22 ~12:20 UTC, 4 scouts @ HEAD dc7c645)
+
+Scouts: C3RegressionSweep (cycle-2 commits 2439f85..dc7c645), C3MainPeriphery (providers/readiness/chrome-import/settings), C3RendererPeriphery (sharing/widgets/preferences/state), C3Contracts (IPC/event/test-pinning/docs — pending at ledger write). 29 findings fixed in-flight: 3 P2, 26 P3; renderer-periphery ids renumbered C3R→C3RP (collision with regression sweep).
+
+| id | sev | file | mechanism | verdict | fix |
+| --- | --- | --- | --- | --- | --- |
+| C3R-01 | P3 | session-inspector-state.ts:50 | exact-size gate is global inspector-open, not per-session → stringify storm returns app-wide while panel open on any session | FIXED | slice B: per-session gate + test |
+| C3R-02 | P3 | session-inspector-timeline.ts:531 | CI-15 prune deletes seq-prefixed keys that C2R-02 made rotation-stable → expansions collapse every rotation | FIXED | slice B: prune loop deleted, pinning test repointed |
+| C3R-03 | P3 | session-transcript-sync.ts:333 | nextReadAt gate discards fs.watch-triggered resyncs up to 60 s | FIXED | slice B: watch lifts backoff + test |
+| C3R-04 | P3 | kanban/pane.ts:53 | destroyKanbanPane resets board-view singleton owned by visible pane (2 projects) → visible board freezes | FIXED | slice B: resetBoardViewIf(paneEl) + 2 tests |
+| C3R-05 | P3 | session-inspector.ts:320 | startResize re-entry leaves orphaned pointermove handler → width jitter after touch tap | FIXED | slice B: arm-on-entry guard + test |
+| C3M-01 | P2 | codex-provider.ts:279 | .zst index decompresses full 64 MiB compressed prefix, no break on budget.full, unbounded decompressed expansion (≥1000:1 zstd) → main memory bomb via deep search | FIXED | slice A: break + counting Transform cap; bomb repro test |
+| C3M-02 | P2 | readiness/utils.ts:17 | execSync ls-files no maxBuffer → ENOBUFS >~30k files → [] → silent readiness score collapse; sync 5 s main freeze | FIXED | slice A: async execFile, 8 MiB maxBuffer, 5000 cap |
+| C3M-03 | P3 | codex-provider.ts:201 | getTranscriptPath sync full-tree scan of ~/.codex/sessions on main | FIXED | slice A: newest-400-day-dir bound + boundary test |
+| C3M-04 | P3 | chrome-import/decrypt-win.ts:72 | legacy DPAPI rows: powershell spawn per row, sync on main | FIXED | slice A: 1 spawn/import, cached failure |
+| C3M-05 | P3 | settings-guard.ts:157 | statusLineConsentByDir never pruned → unbounded state.json growth | FIXED | slice A: prune dead dirs + FIFO cap 200 + tests |
+| C3M-06 | P3 | gemini-provider.ts:293 | ≤64 MiB JSON readFile+parse on main (index + discovery fallback) | FIXED | slice A: 8 MiB cap both paths + tests |
+| C3M-07 | P3 | claude/copilot/codex indexers | no break on budget.full → full 8 MiB line-split cost after extraction done | FIXED | slice A: break; provable via non-ending stream tests |
+| C3RP-01 | P2 | top-files-settings-modal.ts:16 | reused modal shell never cleared → N stacked forms, stale Save closures write stale limit | FIXED | slice D: clear body/actions (sibling idiom) |
+| C3RP-02 | P2 | peer-host.ts:262 | teardown() detaches onclose before close → all stopShare teardowns silent; share badge claims live viewer forever (privacy-relevant) | FIXED | slice C: fire disconnectCbs at end of teardown |
+| C3RP-03 | P2 | webrtc-utils.ts:10 | no bufferedAmount gate → unbounded SCTP queue + guest latency growth on slow links | FIXED | slice C: pending buffer + bufferedamountlow backpressure |
+| C3RP-04 | P3 | peer-host.ts:95 | scrollback chunked in UTF-16 units; serialized ESC-dense JSON > ~256 KB cap → un-caught send throw kills keepalive+callbacks, later chunks throw | FIXED | slice C: byte-size chunks + try/catch + connected ordering |
+| C3RP-05 | P3 | peer-host.ts:144 | computeChallengeResponse chain lacks .catch → unhandled rejection, auth pending | FIXED | slice C: catch → teardown |
+| C3RP-06 | P3 | share-manager.ts:111 | pendingJoinHandles has no join-wide timeout → dead RTCPeerConnection + entry until quit | FIXED | slice C: 30 s join watchdog |
+| C3RP-07 | P3 | state.ts:575 | removeProject leaks transcriptFlags entries per CLI session | FIXED | slice D: delete flags in loop |
+| C3RP-08 | P3 | index.ts:158 | isMcpSession full projects×sessions scan per PTY chunk | FIXED | slice D: O(1) findSessionWithProject |
+| C3RP-09 | P3 | agentmemory-console.ts:94 | 1 s poll: no document.hidden gate, no in-flight guard | FIXED | slice D: hidden gate + inFlight |
+| C3RP-10 | P3 | profiles-section.ts:198 | un-latched async onConfirm → double Enter provisions 2 dirs/profiles | FIXED | slice D: in-flight flag (SR2-b idiom) |
+| C3RP-11 | P3 | general-section.ts:253 | save() = up to 10 setPreference persist+emit → 10 full re-theme fan-outs per click | FIXED | slice D: setPreferences batch mutator, one emit |
+| C3RP-12 | P3 | sessions/favorite-sessions widgets | history-changed payload projectId ignored → cross-project widget rebuilds | FIXED | slice D: filter by projectId |
+| C3RP-13 | P3 | project-tab/grid.ts:184 | grid.addWidget null → record already pushed → persisted unremovable ghost widget | FIXED | slice D: placeWidget bool + splice |
+| C3RP-14 | P3 | readiness-widget.ts:558 | per-instance scanning flag → duplicate full scans per project-tab session | FIXED | slice D: module-level Set guard |
+| C3RP-15 | P3 | github-widgets.ts:78 | ensureRepo caches only success → detectRepo spawn per minute per widget for remote-less projects | FIXED | slice D: cache negative |
+| C3RP-16 | P3 | favorite-sessions-widget.ts:33 | favorites list uncapped (only 500-history bound) | FIXED | slice D: cap 50 |
+| C3RP-17 | P3 | hover-card.ts:62 | show timer fires against detached anchor → stuck card at corner | FIXED | slice D: isConnected check |
+| C3A-01 | P2 | ipc-handlers.ts:2183 mcp:removeServer | renderer-supplied configDir/projectPath both identify AND authorize the write target (self-built allowlist in claude-cli.ts:741-758) → destructive rewrite of any .claude.json/.mcp.json/settings.json on disk | FIXED | slice E: isManagedMcpConfigDir + isWithinKnownProject gates (addServer idiom) |
+| C3A-02 | P3 | ipc-handlers.ts:1379 config:watchProject | unvalidated projectPath → fs.watch any config tree + displace real watcher (git:watchProject gates the same arg) | FIXED | slice E: isWithinKnownProject gate |
+| C3A-03 | P3 | session:exportArchive/transcriptExists/buildResumeWithPrompt | projectPath unvalidated into getTranscriptPath → transcript oracle/handoff text for foreign projects (getConfig gates both args) | FIXED | slice E: getConfig gate on all three |
+| C3A-04 | P3 | preload.ts:385 menu:next/prev/goto-session | dead IPC: main/menu.ts never sends; 3 listeners + registrations never fire | FIXED | slice E: delete bindings/types/registrations |
+| C3A-05 | P3 | state.ts:1516 overview-layout-changed | dead emit, zero subscribers repo-wide | FIXED | parent: emit + EventType removed, persist kept |
+| C3T-01 | P3 | share-manager.test.ts:60 | mock factory lacks resizeRemoteTerminal → guest-resize leg has zero coverage | FIXED | slice E: mock + assertion |
+| C3T-02 | P3 | sidebar-clone.test.ts:66 (+sidebar-preferences:20) | file-tree mock lacks FILE_MANAGER → context-menu path throws, silent drift | FIXED | slice E: add to factories |
+| C3T-03 | — | session-inspector.test.ts:59 | claimed dead split-layout mock | VERIFIED-ABSENT | session-inspector.ts:46/:75 dynamic-import split-layout (cycle-break) — mock is a real dependency edge |
+| C3D-01..23 | P3 | docs/* | PRUNE_SCAN_LIMIT 2000→200; group members 8→12; SCROLLBACK name/value; pre-rename vibeyard identities (dirs/paths/bin/env/module); §29 phantom channels + 3 missing; row bounds missing (topFiles cache, TOKEN_SCAN_READ_BYTES, MAX_PROJECT_FILES git branch, DISMISSED_CAP); consent memo/in-flight contract; MCP tombstone; seq identity + prune + watch-chain + read-backoff docs; ~60 drifted cites across 5 docs; 8 stale (N ln) claims | FIXED | slice F docs |
+| C3L-01 | — | file-viewer.ts:1123 | alleged maxOutputBytes loop off-by-one | VERIFIED-ABSENT | file is 255 lines; no maxOutputBytes in src |
+| C3L-02 | P3 | file-viewer.ts loadDiff call sites | 3 fire-and-forget loadDiff().catch missing; closeSessionIfFileMissing await outside try/catch → unhandled rejection, blank pane | FIXED | leftovers: loadDiffGuarded wrapper, existing failure state |
+| C3L-03 | — | chrome-import-modal.ts:137 | alleged unguarded import promise | VERIFIED-ABSENT | import handler awaits in try/catch, surfaces in modal (L174-179) |
+| C3L-04 | — | quick-open.ts:130 | alleged async close missing await + uncancelled search | VERIFIED-ABSENT | hideQuickOpen sync; latestSearchToken++ is the repo cancel idiom; timer cleared |
+| C3L-05 | P3 | file-viewer/chrome-import-modal/quick-open innerHTML sites | live innerHTML on data-bearing lines (diff line, note template, item template) | FIXED | leftovers: textContent/replaceChildren/createElement refactors, unused escapeHtml imports removed |
+
+### Cycle 3 gate
+
+- vitest: full suite green at integration — 211 files / 3241 passed, 4 skipped (was 3216; +25 net: bomb-repro, gate, teardown-notification, batch-mutator, resize-latch tests)
+- tsc (main + preload + renderer): 0 errors; one integration fix in state.setPreferences (Object.assign — union-key writes are untypeable)
+- git diff --check: clean; worktree clean at end of cycle
+- commits: 266f342 (main indexing/readiness/watcher) → 6278dfe (IPC gates) → 7378e6d (inspector/board) → b336eea (sharing) → d2dc22a (widgets/prefs/views) → d372acb (dead menu IPC + mocks) → c019eff (docs) + this ledger commit
+- totals: 65 findings this cycle (4 scouts + 5 leftovers) — 61 FIXED, 4 VERIFIED-ABSENT (phantom claims caught by verify-before-fix discipline)
+- process: pi-lens auto-gates replayed stale pre-edit captures throughout the cycle; triaged by fresh LSP probes per slice instead of chasing the gate; sidebar xss-innerhtml history dispositions (esc()'d static templates) committed with slice B
+- open by design: UI3-3 ring/epoch deep fix (unchanged); S1-07/S1-08 accepted (unchanged)
