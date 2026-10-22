@@ -2,6 +2,21 @@
 
 This is the current work queue for a local LLM. The work described below under "Implemented" is committed on `rebuild` (the integration branch); read the current code and diff before editing. Code and unit-test coverage do not establish behavior in a running or packaged Electron app.
 
+## Status 2026-10-22 (Wave E: 2026-10-21/22 static performance+bug audit, 35 rows closed)
+
+Committed on `rebuild` as `b4c0721` (130 files, +4452/−949). Unit-tested on this tree; **no packaged-app runtime verification**. Full finding list with mechanisms: `todos/perf-audit-2026-10-21.md` (PA-01..PA-36 + W1/W2). Contracts re-synced: [performance](performance.md) (growth table now carries per-row Wave E disposition; the false 2026-10-18 poller claim is corrected), [FEATURES](FEATURES.md) + [security boundaries](security-boundaries.md) (transcriptExistsSync channel deletion cut over).
+
+- **Startup & spawn (`7057cb9..b4c0721` slice; PA-01..PA-05, PA-18, PA-31).** Provider probes fan out after the first window; prerequisites async; spawn paths async with rejection surfaces; launch-session-dir retention + mtime-cached sidecars; store flush ordering.
+- **Watchers/transcripts (PA-02..PA-05, PA-15..PA-17, PA-26..PA-30, PA-32, PA-38..PA-40).** Pi/OMP event-driven scans with 30 s fallback + generation snapshots; git-watch cleanup covers per-session state; worktree kick on project switch; hook-status mtime sweep; provider sync paths bounded; zstd decode bounds + off-pairing full decode; Codex meta cache caps.
+- **Renderer (PA-06..PA-15, PA-25, PA-29, PA-32..PA-35).** Zero sync IPC at session close — the `session:transcriptExistsSync` channel is deleted (main handler, preload bridge, types, stubs); close consumes the prefetched `transcriptAvailable` flag. Bounded history cap (`BOOKMARK_EXEMPT = 50`, over-quota bookmarks pruned first). Badge intervals gated on visibility; frame-coalesced persist; `SCROLLBACK = 8000`; unsubscribe closures; context-menu/ModalCloser singletons.
+- **Search/export (PA-19..PA-24).** Deep-search disk index + hot tier; file-search worker path; streaming zip sidecars with half-zip unlink.
+- **Dedup (PA-34).** `hooks-utils.ts`, `modal-close.ts`, `escape-html.ts`, `team/initials.ts`, `shared/text-utils.ts`, `shared/async-utils.ts`, `chrome-import/domain-hash.ts`, `terminal-shared.ts`, `session-inspector-utils.ts`, `tab-bar/context-menu.ts` extracted; no shim re-exports.
+- **W1/W2 (21.10-wave test casualties).** win32-input-mode tests asserted disable-on-`?9001l`; the shipped latch is monotonic per PTY — tests aligned to the source contract.
+
+Gate, 2026-10-22, on `b4c0721`: `npx vitest run` → 203 files / 2,950 passed / 4 skipped / 0 errors; `npx tsc -p tsconfig.main.json --noEmit`, `tsconfig.preload.json`, `tsconfig.renderer.json` → 0 errors; `git diff --check` clean. Note: `npm install` runs `electron-builder install-app-deps`, which rebuilds `better-sqlite3` for the Electron ABI and breaks the node-ABI vitest suites; `npx prebuild-install -r node` in `node_modules/better-sqlite3` restores them.
+
+Next: Wave F re-audit of the fixed tree (in progress 2026-10-22); the standing runtime items 4 (PO-06) and 5 (live integration) remain open.
+
 ## Status 2026-10-20 (Wave C: decode bounds, discovery completeness, prune order, render fan-out)
 
 Committed on `rebuild` as `61b86ea`, `e3311ca`, `a1c0a41`, `de70291`. Unit-tested on this tree; **no packaged-app runtime verification** — nothing below establishes behavior in a running or built app. Contracts re-synced against the committed code with `file:line` cites: [provider contracts](provider-contracts.md), [session lifecycle](session-lifecycle.md), [performance](performance.md).
