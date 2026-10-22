@@ -40,6 +40,7 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | SR2-e | P3 | tab-list/sidebar rename | events during open rename dropped, dead tab clickable | AGENT | TabBarSidebarSlice |
 | SR2-f | P3 | sidebar+tab-bar | duplicate document dismissers run twice | AGENT | TabBarSidebarSlice |
 | scout2-P2 | P2 | profiles.ts | home ROOT accepted as profile configDir (CLI writes into ~) | FIXED | reject homeRel === '' (33839b7) |
+| S2-05 | P2 | codex-session-watcher Linux | recursive fs.watch on ~/.codex/sessions = one inotify watch per dir (nodejs/node#139) | FIXED | non-recursive root+YYYY/MM/DD chain, idempotent per-tick re-arm, rollover retire, error re-arm slot release (764e674, 3 new tests) |
 | S1-07/S1-08 | P2 | pi/codex session watchers | 2 s poll cadence, sync listing reads | ACCEPTED | both watchers: per-tick cost bounded (cached statSync per watched dir; codex day-dirs mtime-skipped; 1 s min-spacing floor); poll is the documented correctness guarantee |
 | UI3-1 | P1 | file-viewer loadGeneration | global gen makes concurrent diff loads discard each other; losers pinned stale (loaded=false) forever | AGENT | ScoutUI3Fixes (per-instance gen) |
 | UI3-2 | P1 | preferences-modal Enter handler | Enter in a nested modal also confirms+closes Preferences | AGENT | ScoutUI3Fixes (stack guard) |
@@ -53,6 +54,15 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | UI3-10 | P2 | session-export zip failure | failed export leaves generator + transcript fd open (Windows unlink EPERM) | AGENT | ScoutUI3Fixes (destroy generator) |
 | UI3-11 | P2 | ipc-handlers fs:topFilesByTokens | no dedup/abort; stacked full repo scans | PARENT | after IpcAsyncFixes lands |
 | UI3-12 | P2 | board tag input | Escape (blur) commits the half-typed tag | AGENT | ScoutUI3Fixes (committed flag) |
+| UI2-1 | P1 | ipc-handlers fs:listDirs + sidebar | per-keystroke sync readdir + uncoalesced native out-of-home confirm modal (== S4-04; sidebar debounce delegated SR2-c) | PARENT | async readdir + memoized per-(window,dir) confirm, after IpcAsyncFixes |
+| UI2-2 | P2 | inspector trimWindow | startIdx advanced without re-baselining firstWindowTs -> append bails after first trim, ~2.5 full rebuilds/s steady state | QUEUED | one-line rebase + append-after-trim test (after ScoutUI3Fixes, same file) |
+| UI2-3 | P2 | github-unread + docs | pruneGithubLastSeen doc row fabricated (module absent); bulk-mark re-juvenates all items -> githubLastSeen unbounded | QUEUED | write-site cap + updated_at stamp + doc row fix (state.ts after TabBarSidebarSlice) |
+| UI2-6 | P2 | chrome-import-modal | cleanupFn wired after await -> double-open leaks subscriptions | QUEUED | follow-up slice |
+| UI2-8 | P3 | session-deep-search | pruneSearchIndex full readdir per query burst | QUEUED | rate-limit 30 s/provider |
+| UI2-9 | P3 | modal-close enterCloseKeydown | per-dialog document Enter closes stacked dialogs | QUEUED | top-of-stack Enter routing |
+| UI2-10 | P3 | provider-tools/usage-stats widgets | refresh() without generation guard | QUEUED | token pattern |
+| UI2-11 | P3 | predefined-picker | dispose leaves debounce timer armed; open not single-flighted | QUEUED | clear timer + early-return |
+| UI2-12 | P3 | docs/performance.md | growth row names ENTRY_CACHE_CAP; shipped name ENTRY_CACHE_MAX_DIRS | FIXED | doc rename + prune-bound/deferral sync (24d51a2) |
 
 ## Gate
 
