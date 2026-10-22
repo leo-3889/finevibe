@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { appState } from '../state.js';
 import { attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
-import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
+import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
 import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 
@@ -206,6 +206,10 @@ export function destroyRemoteTerminal(sessionId: string): void {
   if (!instance) return;
 
   instance.terminal.dispose();
+  // C2R-13: release this session's mode-9001 latch entry (the attach above keys
+  // it `remote:<sessionId>`), otherwise every shared pane viewed by this
+  // renderer leaves a permanent entry in the module-level set.
+  unlatchWin32Key(`remote:${sessionId}`);
   instance.element.remove();
   instances.delete(sessionId);
 }

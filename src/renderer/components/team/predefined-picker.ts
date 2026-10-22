@@ -25,6 +25,22 @@ interface DialogState {
 /** The mounted picker's dispose fn, or null when no picker is open (UI2-11). */
 let activeDispose: (() => void) | null = null;
 
+// CI-11: opens share one in-flight fetch — the dedupe `showPredefinedPicker`'s
+// fresh-cache check gives completed fetches, applied to the run itself: a picker
+// opened (or re-opened after a dispose) while a GitHub fetch is still running
+// used to fire a second round-trip and let both responses race into
+// `setTeamPredefinedCache`. Every waiter settles on the same promise.
+let loadInFlight: Promise<TeamMember[]> | null = null;
+
+function fetchPredefinedShared(): Promise<TeamMember[]> {
+  if (loadInFlight) return loadInFlight;
+  const pending = fetchPredefinedMembers().finally(() => {
+    if (loadInFlight === pending) loadInFlight = null;
+  });
+  loadInFlight = pending;
+  return pending;
+}
+
 export async function showPredefinedPicker(): Promise<void> {
   // The overlay is appended fresh on every open, so a double open used to
   // stack two pickers: the first kept the ESC binding, kept its search timer
@@ -176,11 +192,14 @@ async function load(state: DialogState): Promise<void> {
   state.status.textContent = t('team.picker.loading');
   state.list.innerHTML = '';
   try {
-    const suggestions = await fetchPredefinedMembers();
+    const suggestions = await fetchPredefinedShared();
     appState.setTeamPredefinedCache(suggestions);
     state.allSuggestions = suggestions;
     rerender(state);
   } catch (err) {
+    // CI-11: the fetch outlives the dialog — a dismiss (or a newer picker)
+    // during the load leaves no status line to write the error into.
+    if (state.disposed) return;
     state.status.textContent = t('team.picker.loadError', { err: err instanceof Error ? err.message : String(err) });
   }
 }

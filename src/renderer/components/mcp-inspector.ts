@@ -10,6 +10,8 @@ interface McpInspectorInstance {
   toolsList: unknown[];
   resourcesList: unknown[];
   promptsList: unknown[];
+  /** CI-14: the pending `doConnect`, so destroy can disconnect after it lands. */
+  connectInFlight?: Promise<void>;
 }
 
 const instances = new Map<string, McpInspectorInstance>();
@@ -63,7 +65,16 @@ export function createInspectorPane(sessionId: string): void {
     } else {
       const url = urlInput.value.trim();
       if (!url) return;
-      await doConnect(sessionId, url, instance, connectBtn, statusDot, urlInput, content);
+      // CI-14: keep the pending connect reachable from destroyInspectorPane —
+      // main keys its transport by sessionId, so the disconnect fired there
+      // arrives first and this connect would re-create it with no owner left.
+      const connecting = doConnect(sessionId, url, instance, connectBtn, statusDot, urlInput, content);
+      instance.connectInFlight = connecting;
+      try {
+        await connecting;
+      } finally {
+        if (instance.connectInFlight === connecting) instance.connectInFlight = undefined;
+      }
     }
   });
 
@@ -169,18 +180,18 @@ function renderContent(sessionId: string, instance: McpInspectorInstance, conten
 
   switch (instance.activeTab) {
     case 'tools':
-      renderToolsList(sessionId, instance.toolsList, content);
+      renderToolsList(sessionId, instance, instance.toolsList, content);
       break;
     case 'resources':
-      renderResourcesList(sessionId, instance.resourcesList, content);
+      renderResourcesList(sessionId, instance, instance.resourcesList, content);
       break;
     case 'prompts':
-      renderPromptsList(sessionId, instance.promptsList, content);
+      renderPromptsList(sessionId, instance, instance.promptsList, content);
       break;
   }
 }
 
-function renderToolsList(sessionId: string, tools: unknown[], container: HTMLElement): void {
+function renderToolsList(sessionId: string, instance: McpInspectorInstance, tools: unknown[], container: HTMLElement): void {
   if (tools.length === 0) {
     container.innerHTML = '<div class="mcp-empty-content">No tools available</div>';
     return;
@@ -229,6 +240,10 @@ function renderToolsList(sessionId: string, tools: unknown[], container: HTMLEle
 
           const args = formRef ? formRef.getValues() : {};
           const res = await window.finevibe.mcp.callTool(sessionId, tool.name, args);
+          // CI-13: the pane can be destroyed — and the same session re-opened
+          // with a fresh instance and fresh cards — while the call runs; this
+          // result belongs to the detached card, not the live one.
+          if (instances.get(sessionId) !== instance) return;
           resultPre.textContent = JSON.stringify(res.success ? res.data : { error: res.error }, null, 2);
           execBtn.disabled = false;
           execBtn.textContent = 'Execute';
@@ -245,7 +260,7 @@ function renderToolsList(sessionId: string, tools: unknown[], container: HTMLEle
   }
 }
 
-function renderResourcesList(sessionId: string, resources: unknown[], container: HTMLElement): void {
+function renderResourcesList(sessionId: string, instance: McpInspectorInstance, resources: unknown[], container: HTMLElement): void {
   if (resources.length === 0) {
     container.innerHTML = '<div class="mcp-empty-content">No resources available</div>';
     return;
@@ -275,6 +290,9 @@ function renderResourcesList(sessionId: string, resources: unknown[], container:
         body.appendChild(resultPre);
 
         const res = await window.finevibe.mcp.readResource(sessionId, resource.uri);
+        // CI-13: see the tool card — a read landing after destroy (or after a
+        // re-open replaced the instance) is dropped with its detached `<pre>`.
+        if (instances.get(sessionId) !== instance) return;
         resultPre.textContent = JSON.stringify(res.success ? res.data : { error: res.error }, null, 2);
       }
     });
@@ -285,7 +303,7 @@ function renderResourcesList(sessionId: string, resources: unknown[], container:
   }
 }
 
-function renderPromptsList(sessionId: string, prompts: unknown[], container: HTMLElement): void {
+function renderPromptsList(sessionId: string, instance: McpInspectorInstance, prompts: unknown[], container: HTMLElement): void {
   if (prompts.length === 0) {
     container.innerHTML = '<div class="mcp-empty-content">No prompts available</div>';
     return;
@@ -354,6 +372,8 @@ function renderPromptsList(sessionId: string, prompts: unknown[], container: HTM
             }
           }
           const res = await window.finevibe.mcp.getPrompt(sessionId, prompt.name, args);
+          // CI-13: see the tool card.
+          if (instances.get(sessionId) !== instance) return;
           resultPre.textContent = JSON.stringify(res.success ? res.data : { error: res.error }, null, 2);
           execBtn.disabled = false;
           execBtn.textContent = 'Run';
@@ -377,6 +397,17 @@ export function destroyInspectorPane(sessionId: string): void {
   instance.element.remove();
   // Request teardown even while a connect is still pending.
   void window.finevibe.mcp.disconnect(sessionId);
+  // CI-14: a connect that is already in flight lands AFTER that disconnect and
+  // re-creates main's transport under this sessionId, with no pane left to own
+  // it — so run one more disconnect once the pending connect settles. Main
+  // rejecting a connect for a session it already tore down (the tombstone) is
+  // the durable half of this fix.
+  if (instance.connectInFlight) {
+    void instance.connectInFlight
+      .catch(() => {})
+      .then(() => window.finevibe.mcp.disconnect(sessionId))
+      .catch(() => {});
+  }
 }
 
 export function showInspectorPane(sessionId: string, split: boolean): void {

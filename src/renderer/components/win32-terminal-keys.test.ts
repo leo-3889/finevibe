@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Terminal } from '@xterm/xterm';
-import { attachWin32TerminalKeys } from './win32-terminal-keys';
+import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys';
 
 function fixture(opts?: { latchKey?: string; latched?: boolean }) {
   const modes = new Map<string, (params: number[]) => boolean>();
@@ -82,5 +82,35 @@ describe('Win32 terminal key input', () => {
     const f = fixture();
     expect(f.press('Escape')).toBeUndefined();
     expect(f.write).not.toHaveBeenCalled();
+  });
+});
+
+describe('Win32 latch lifecycle (C2R-13)', () => {
+  // The latch is keyed by session id, so destroying the PTY has to release it:
+  // the pane owners call unlatchWin32Key from their destroy paths, and a set
+  // that never shrank kept every closed tab's id alive for the renderer's life.
+  it('unlatchWin32Key releases the key so a fresh attach on it starts unarmed', () => {
+    const latchKey = 'pty-released';
+    const armed = fixture({ latchKey });
+    armed.modes.get('h')!([9001]);
+
+    unlatchWin32Key(latchKey);
+
+    const fresh = fixture({ latchKey });
+    expect(fresh.press('Escape')).toBeUndefined();
+    expect(fresh.write).not.toHaveBeenCalled();
+  });
+
+  it('unlatching one PTY leaves every other latch armed', () => {
+    const doomed = 'pty-doomed';
+    const survivor = 'pty-survivor';
+    for (const key of [doomed, survivor]) {
+      fixture({ latchKey: key }).modes.get('h')!([9001]);
+    }
+
+    unlatchWin32Key(doomed);
+
+    expect(fixture({ latchKey: survivor }).press('Escape')).toBe(false);
+    expect(fixture({ latchKey: doomed }).press('Escape')).toBeUndefined();
   });
 });

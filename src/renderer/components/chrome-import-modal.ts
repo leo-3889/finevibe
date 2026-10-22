@@ -4,6 +4,10 @@ import { createCustomSelect, type CustomSelectInstance } from './custom-select.j
 import type { ChromeProfile, ChromeImportProgress, ChromeImportResult } from '../../shared/types.js';
 
 let cleanupFn: (() => void) | null = null;
+// CI-10: the live generation's full dismiss (disposed flag + both progress
+// subscriptions + onClosed). A re-open runs it; `cleanupFn` alone only tore the
+// DOM wiring down.
+let dismissActive: (() => void) | null = null;
 
 // Module scope: a dismissed modal detaches its import; a re-opened modal
 // must not start a second concurrent run on the same profile/partition.
@@ -20,6 +24,13 @@ export function showChromeImportModal(onClosed?: () => void): Promise<void> {
 }
 
 async function openChromeImportModal(onClosed?: () => void): Promise<void> {
+  // CI-10: a re-open dismisses the previous generation completely — its
+  // `disposed` flag, BOTH progress subscriptions and its onClosed. The old
+  // `cleanupFn?.()` alone left an in-flight import subscribed to progress
+  // events that kept writing into the shared (cached) overlay's detached DOM,
+  // and left the caller's onClosed unfired.
+  dismissActive?.();
+  dismissActive = null;
   cleanupFn?.();
   cleanupFn = null;
 
@@ -91,7 +102,13 @@ async function openChromeImportModal(onClosed?: () => void): Promise<void> {
     teardownDismiss();
     liveUnsub?.();
     liveUnsub = null;
+    // CI-10: the import's own progress subscription has to be part of the
+    // teardown, so any path that drops this generation detaches the run.
+    unsubProgress?.();
+    unsubProgress = null;
   };
+  // Hoisted `close` below: the module-level dismiss points at this generation.
+  dismissActive = close;
 
   // Load profiles
   let profiles: ChromeProfile[] = [];
@@ -191,6 +208,9 @@ async function openChromeImportModal(onClosed?: () => void): Promise<void> {
     overlay.style.display = 'none';
     cleanupFn?.();
     cleanupFn = null;
+    // CI-10: only clear the module pointer while it is still ours — a close
+    // that races a re-open must not unregister the newer generation.
+    if (dismissActive === close) dismissActive = null;
     onClosed?.();
   }
 

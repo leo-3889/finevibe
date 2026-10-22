@@ -12,6 +12,9 @@ const bodyEl = document.getElementById('modal-body')!;
 const btnCancel = document.getElementById('modal-cancel') as HTMLButtonElement;
 const btnConfirm = document.getElementById('modal-confirm') as HTMLButtonElement;
 
+/** CI-18: focus holder for the static overlay, mirroring `modal.ts`'s opener. */
+let opener: HTMLElement | null = null;
+
 interface SessionRow {
   name: string;
   meta: string;
@@ -59,7 +62,12 @@ export function showMemberSessionsModal(member: TeamMember, projectId: string): 
 
   btnConfirm.style.display = 'none';
   btnCancel.textContent = t('team.sessions.closeButton');
+  // CI-18: this static overlay sits over a live terminal and never took focus,
+  // so every keystroke fell through to the PTY behind it. Mirror modal.ts:
+  // capture the opener, then focus a control once the `hidden` flip lands.
+  opener = document.activeElement as HTMLElement | null;
   overlay.classList.remove('hidden');
+  requestAnimationFrame(() => btnCancel.focus());
 
   const handleCancel = () => closeModal();
 
@@ -68,6 +76,13 @@ export function showMemberSessionsModal(member: TeamMember, projectId: string): 
   registerModalCleanup(() => {
     unregisterEsc();
     btnCancel.removeEventListener('click', handleCancel);
+    // CI-18: focus returns to the opener; `closeModal()` only restores the
+    // opener it captured itself, so this path had to keep its own.
+    const restore = opener;
+    opener = null;
+    if (restore && restore !== document.body && restore.isConnected) {
+      requestAnimationFrame(() => restore.focus());
+    }
   });
 }
 

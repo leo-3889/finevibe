@@ -234,6 +234,10 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
         getEffectiveConfigDir(providerId)
       );
     } catch {
+      // CI-12: a rejection that arrives after this refresh was superseded
+      // (provider switched mid-await, widget destroyed) belongs to a dead
+      // generation — wiping `body` here blanked the live widget's sections.
+      if (destroyed || token !== renderToken) return;
       body.innerHTML = '';
       return;
     }

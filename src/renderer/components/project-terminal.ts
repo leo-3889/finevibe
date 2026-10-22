@@ -8,7 +8,7 @@ import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
-import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
+import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { isWin } from '../platform.js';
 import { esc } from '../dom-utils.js';
 
@@ -283,6 +283,8 @@ function closeShell(projectId: string, shellId: string): void {
   destroySearchBar(instance.sessionId);
   window.finevibe.pty.kill(instance.sessionId);
   instance.terminal.dispose();
+  // C2R-13: the PTY dies here, so its mode-9001 latch entry dies with it.
+  unlatchWin32Key(instance.sessionId);
   instance.element.remove();
   list.splice(idx, 1);
 
@@ -404,6 +406,8 @@ function destroyAllShells(projectId: string): void {
     destroySearchBar(instance.sessionId);
     window.finevibe.pty.kill(instance.sessionId);
     instance.terminal.dispose();
+    // C2R-13: see closeShell — every killed PTY releases its latch entry.
+    unlatchWin32Key(instance.sessionId);
     instance.element.remove();
   }
   shells.delete(projectId);
@@ -460,13 +464,28 @@ export function initProjectTerminal(): void {
     e.preventDefault();
   });
 
+  // C2R-18: the height write stays synchronous (the drag must follow the
+  // pointer), the fits do not. fitActiveShell()+fitAllVisible() ran at
+  // pointermove rate: a forced layout plus an xterm reflow of every visible
+  // pane per move, on top of the ResizeObserver's own callback. One scheduled
+  // frame per burst (split-layout's resize idiom); endDrag fits the settled
+  // height and cancels a frame that has not run yet.
+  let fitFrame = 0;
+  const scheduleFits = (): void => {
+    if (fitFrame) return;
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = 0;
+      fitActiveShell();
+      fitAllVisible();
+    });
+  };
+
   resizeHandleEl.addEventListener('pointermove', (ev) => {
     if (!dragging) return;
     const delta = startY - ev.clientY;
     const newHeight = Math.max(80, Math.min(startHeight + delta, window.innerHeight - 150));
     panelEl.style.height = `${newHeight}px`;
-    fitActiveShell();
-    fitAllVisible();
+    scheduleFits();
   });
 
   const endDrag = (ev: PointerEvent): void => {
@@ -480,6 +499,10 @@ export function initProjectTerminal(): void {
     resizeHandleEl.classList.remove('active');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    if (fitFrame) {
+      cancelAnimationFrame(fitFrame);
+      fitFrame = 0;
+    }
     const height = panelEl.offsetHeight;
     appState.setTerminalPanelHeight(height);
     fitActiveShell();

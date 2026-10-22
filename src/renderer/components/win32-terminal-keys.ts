@@ -25,6 +25,15 @@ const win32Keys: Record<string, [number, number, number, number]> = {
 // survives every attach.
 const latchedKeys = new Set<string>();
 
+// C2R-13: the key is a session id (`remote:`-prefixed for shared panes), so the
+// entry has to die with its PTY — a pane that is closed and re-created every
+// cycle used to grow the set for the renderer's whole lifetime. Call this from
+// the destroy path that kills the PTY; a fresh PTY gets a fresh id, so a stale
+// latch can never be re-read by a live pane.
+export function unlatchWin32Key(key: string): void {
+  latchedKeys.delete(key);
+}
+
 /** ConPTY swallows ordinary VT keys while mode 9001 (win32-input-mode) is on: cursor sequences split into text and a bare ESC vanishes. Encode these keys as INPUT_RECORD sequences instead. `opts.latchKey` ties the mode-9001 sighting to the PTY, so a fresh handler attached to an already-armed PTY starts encoded; `opts.latched` pre-arms a pane that owns a local Windows PTY, whose ConPTY advertised the mode at spawn — before any parser existed. */
 export function attachWin32TerminalKeys(
   terminal: Terminal,

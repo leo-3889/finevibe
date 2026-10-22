@@ -1,5 +1,5 @@
 import { Terminal } from '@xterm/xterm';
-import { attachWin32TerminalKeys } from './win32-terminal-keys.js';
+import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { isWin } from '../platform.js';
 import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
@@ -470,6 +470,10 @@ export function destroyTerminal(sessionId: string): void {
   instance.terminal.dispose();
   instance.element.remove();
   instances.delete(sessionId);
+  // C2R-13: the win32-input-mode latch is keyed by this session id (attach
+  // site line ~131); ids are fresh UUIDs, so the latch must die with the
+  // pane or the set grows one string per closed Windows PTY.
+  unlatchWin32Key(sessionId);
   // A destroyed pane must not stay "focused": the rail and the keyboard
   // routing read this id to decide where a paste/keystroke belongs.
   if (focusedSessionId === sessionId) focusedSessionId = null;
