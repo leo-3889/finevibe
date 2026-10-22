@@ -46,6 +46,9 @@
     "postinstall": "node -e \"try{require('electron-builder/package.json');require('child_process').execSync('electron-builder install-app-deps',{stdio:'inherit'})}catch{}\"",
     "pack": "npm run build && npm run icons && electron-builder --dir",
     "dist": "npm run build && npm run icons && electron-builder",
+    "win:stamp": "node scripts/edit-win-exe.mjs",
+    "win:verify": "node scripts/verify-win-exe.mjs",
+    "dist:win:local": "npm run build && npm run icons && npx electron-builder --win dir --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && npm run win:stamp && npm run win:verify && npx electron-builder --win nsis zip --prepackaged dist/win-unpacked --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -123,6 +126,7 @@
     "esbuild": "^0.27.4",
     "jsdom": "^29.1.1",
     "png2icons": "^2.0.1",
+    "rcedit": "^5.0.2",
     "typescript": "^5.7.0",
     "vitest": "^4.1.0"
   },

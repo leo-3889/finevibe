@@ -176,7 +176,8 @@ jobs:
         # the single `publish` job below uploads every artifact.
         # electron-builder still writes latest-mac.yml into dist/, so the
         # auto-updater feed survives the publish job's aggregate upload.
-        run: npm run build && npm run icons && npx electron-builder --publish never --arm64 --x64
+        run: npm run build && npm run icons
+          && npx electron-builder --publish never --arm64 --x64
 
       - name: Verify code signatures
         # P1-9: strict deep verification of both built bundles; a broken or
@@ -225,7 +226,8 @@ jobs:
       - name: Build
         # P1-8: `--publish never` — builds must not race the shared tag;
         # the single `publish` job below uploads every artifact.
-        run: npm run build && npm run icons && npx electron-builder --linux --publish never --x64
+        run: npm run build && npm run icons
+          && npx electron-builder --linux --publish never --x64
 
       - name: Verify package integrity
         # P1-9: dpkg parses the deb's control metadata and full contents list
@@ -273,7 +275,90 @@ jobs:
       - name: Build
         # P1-8: `--publish never` — builds must not race the shared tag;
         # the single `publish` job below uploads every artifact.
-        run: npm run build && npm run icons && npx electron-builder --win --publish never --x64
+        run: npm run build && npm run icons
+          && npx electron-builder --win --publish never --x64
+
+      - name: Verify Windows exe icon + version resources
+        # Guard: a past release shipped the DEFAULT Electron icon because the
+        # build path skipped rcedit (signAndEditExecutable=false). The icon
+        # check is alpha-aware (mean of OPAQUE pixels only): composited over
+        # white the icons are indistinguishable (FineVibe 110.9 vs Electron
+        # 111.0), while the opaque mean separates the FineVibe tile (56.6)
+        # from the Electron atom (73.4). Fail at opaqueMean >= 65, and fail
+        # a blank render (< 300 opaque px). Version resources must stay.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          $exe = Join-Path $PWD 'dist/win-unpacked/FineVibe.exe'
+          if (-not (Test-Path $exe)) {
+            Write-Host "::error::Missing $exe"
+            Write-Host "  electron-builder produced no unpacked Windows exe"
+            exit 1
+          }
+          $fail = $false
+
+          # Alpha-aware discriminator on the exe's embedded 32px icon: draw
+          # it onto a fresh 32x32 bitmap WITHOUT clearing to white, then
+          # average R+G+B over OPAQUE pixels only (alpha > 128). Measured:
+          # FineVibe tile opaque mean 56.6, Electron default atom 73.4 ->
+          # threshold 65. The tile covers ~73% of the canvas (~750 opaque
+          # px at 32x32), so a render with < 300 opaque px is blank/garbage
+          # and fails the same gate.
+          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)
+          $bmp = New-Object System.Drawing.Bitmap 32, 32
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.DrawImage($icon, 0, 0, 32, 32)
+          $g.Dispose()
+          $threshold = 65
+          $minOpaque = 300
+          $opaque = 0
+          $sum = 0
+          for ($x = 0; $x -lt 32; $x++) {
+            for ($y = 0; $y -lt 32; $y++) {
+              $p = $bmp.GetPixel($x, $y)
+              if ($p.A -gt 128) {
+                $opaque += 1
+                $sum += ($p.R + $p.G + $p.B)
+              }
+            }
+          }
+          $opaqueMean = 0
+          if ($opaque -gt 0) {
+            $opaqueMean = [double]$sum / ($opaque * 3)
+          }
+          $icon.Dispose()
+          $bmp.Dispose()
+          Write-Host ("Icon opaque px: {0} (min {1})" -f $opaque, $minOpaque)
+          Write-Host ("Icon opaque mean RGB: {0:N1} (threshold < {1})" `
+            -f $opaqueMean, $threshold)
+          if ($opaque -lt $minOpaque) {
+            Write-Host "::error::Only $opaque opaque px (< $minOpaque)"
+            Write-Host "::error::  blank icon render; nothing to measure"
+            $fail = $true
+          } elseif ($opaqueMean -ge $threshold) {
+            Write-Host "::error::opaque mean RGB $opaqueMean >= $threshold"
+            Write-Host "::error::  light icon: Electron default leaked in"
+            $fail = $true
+          }
+
+          $vi = (Get-Item $exe).VersionInfo
+          Write-Host "ProductName: '$($vi.ProductName)'"
+          Write-Host "FileVersion: '$($vi.FileVersion)'"
+          Write-Host "ProductVersion: '$($vi.ProductVersion)'"
+          if ($vi.ProductName -ne 'FineVibe') {
+            Write-Host "::error::ProductName is '$($vi.ProductName)'"
+            Write-Host "::error::  expected 'FineVibe'"
+            $fail = $true
+          }
+          if ($vi.FileVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+            Write-Host "::error::FileVersion is '$($vi.FileVersion)'"
+            Write-Host "::error::  not a 4-part version like 0.1.0.0"
+            $fail = $true
+          }
+
+          if ($fail) { exit 1 }
+          Write-Host 'Windows exe icon + version resources OK'
 
       # P1-9 (documented gap): CI configures no Authenticode certificate, so
       # the Windows exe/zip ship unsigned and `signtool verify` has nothing to
