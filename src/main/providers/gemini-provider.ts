@@ -201,8 +201,15 @@ export class GeminiProvider implements CliProvider {
       if (!chatsDir || !fs.existsSync(chatsDir)) return null;
 
       // Filenames only encode the first 8 chars of the id (session-<ts>-<shortId>.json),
-      // so an 8-char prefix can collide. Prefer matching the full sessionId recorded
-      // inside the file; fall back to newest-mtime if we can't read any JSON.
+      // so an 8-char prefix can collide. Accept ONLY a file whose head records the
+      // full sessionId. The newest-mtime fallback used to return the newest
+      // prefix-match UNVERIFIED (P1-21/P2-54): this chats dir is keyed by the real
+      // cwd Gemini ran under (.project_root), so for a session launched with an
+      // overridden cwd the newest prefix-match here is a FOREIGN session's
+      // transcript — transcript-sync then mirrors its title/status into the tab
+      // and resume cross-attaches. No verified match reports nothing (fail
+      // closed): the caller resumes by id alone, the honest outcome, exactly like
+      // the Pi/OMP tree scan (pi-compatible-transcripts.findTranscriptPathSync).
       const shortId = cliSessionId.slice(0, 8);
       const suffix = `-${shortId}.json`;
       const candidates = fs.readdirSync(chatsDir)
@@ -226,7 +233,9 @@ export class GeminiProvider implements CliProvider {
           // unreadable — skip
         }
       }
-      return candidates[0]?.full ?? null;
+      // No candidate verified the full id: report nothing, never the newest
+      // unverified prefix-match (P1-21/P2-54).
+      return null;
     } catch {
       return null;
     }
