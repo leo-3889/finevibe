@@ -54,7 +54,7 @@ Decided (2026-10-21): **(ii)** `dev/audit/` **kept** — `gate.sh` + `pointer-ch
 |---|---|---|---|---|
 | P1-5 | P1 | A | open | renderer never typechecked in CI/build · *parent **+ AuditPackaging (independent)*** |
 | P1-6 | P1 | A | open | `npm test` exits 1 with all tests green (1/5 runs) · *parent* |
-| P2-12 | P2 | A | partial (45070f6: components/** in; main.ts, ipc-handlers.ts, preload/** still out) | coverage excludes `main.ts`, `ipc-handlers.ts`, `components/**`, `preload/**` (`vitest.config.ts:38-51`) · *parent* |
+| P2-12 | P2 | A | closed by-design (45070f6: components/** in; main.ts, ipc-handlers.ts, preload/** stay out — boot/preload surface is exercised by the gate suites, per-line % coverage there is noise, ratified 2026-10-22) | coverage excludes `main.ts`, `ipc-handlers.ts`, `components/**`, `preload/**` (`vitest.config.ts:38-51`) · *parent* |
 | P1-22 | P1 | A | open | **main-process tests are typechecked by nothing, and the recorded `tsc -p tsconfig.json --noEmit` gate is vacuous**: `tsconfig.main.json:17` `"exclude": ["src/main/**/*.test.ts"]`, and the root `tsconfig.json` is `"files": []` + three `references` with no `-b`, so that command typechecks zero files while `docs/AUDIT_STATUS.md:56` records it green. Live symptom: `claude-provider.test.ts:169,174,...,225`, `codex-provider.test.ts:188-233`, `copilot-provider.ts:178-223`, `gemini-provider.test.ts:169-215` call `buildArgs` without `sessionId`, which `provider.ts:23` declares required (the pi/omp suites pass it, :130-195) — 44 call sites. Fix: a tsconfig project covering `src/main/**/*.test.ts` in the gate (or `-b` the solution), then add the missing argument · *AuditMainProviders* |
 
 

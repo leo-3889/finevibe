@@ -1,5 +1,9 @@
 # Wave F audit — 2026-10-22 (post-Wave-E re-audit)
 
+> **ARCHIVED 2026-10-22 (night).** Cycles 2–7 all CLOSED, ledger OPEN = 0
+> (C5G-07 fixed by the cycle-7 slice `e54564a`). Closure gate: `dev/audit/gate.sh 3`
+> exit 0 — 215 files / 3,355 passed / 2 skipped ×3 on `5d2de59`.
+
 Loop: 4 read-only scouts over the `b4c0721` tree → parent verifies every
 finding against source → fix agents (≤4) → integration gate
 (`npx tsc -p tsconfig.main.json/preload/renderer --noEmit`, `npx vitest run`,
@@ -235,7 +239,7 @@ Scouts: C4Github (github module main+renderer), C4Team (team/swarm surface), C4S
 - open by design: UI3-3 ring/epoch deep fix (unchanged); S1-07/S1-08 accepted (unchanged)
 - pi-lens auto-gates: recurring snapshots replayed stale pre-cycle captures all cycle (e.g. file-viewer L445 on a 255-line file, pre-C3L-05 lines); triaged once at HEAD by grep evidence (static skeletons / esc()d templates), single disposition recorded; not chased per-gate
 
-## Cycle 5 (2026-10-22 ~14:15 UTC, 2 scouts @ HEAD 456f525) - OPEN, next session
+## Cycle 5 (2026-10-22 ~14:15 UTC, 2 scouts @ HEAD 456f525) - CLOSED by cycle 6
 
 Time-box reached (15:00 UTC): 19 findings (4 P2, 15 P3) recorded OPEN, NOT fixed. Fix order suggestion: P2s, then C5G-05/C5G-08 (unbounded), then rest.
 
@@ -249,7 +253,7 @@ Time-box reached (15:00 UTC): 19 findings (4 P2, 15 P3) recorded OPEN, NOT fixed
 | C5G-04 | P3 | board-dnd.ts:115 | CI-04 pointerId filter only on cancel; move/up accept any pointer - second-finger touch commits/ghost-drags mid-gesture | FIXED | 236ab5d |
 | C5G-05 | P3 | main/git-status.ts:35 | getGitStatus execFile no maxBuffer: porcelain >1 MiB (~20k entries, swarm untracked flood) -> NOT_A_REPO, panel says 'No changes' | FIXED | ff4ad13 |
 | C5G-06 | P3 | file-tree.ts:64 + file-watcher.ts:71 | watchFolder chokidar watches uncapped (git-watcher has MAX_WATCHES 2000) -> inotify exhaustion, errors swallowed | FIXED | ff4ad13 |
-| C5G-07 | P3 | board-view.ts:181 | boardEl singleton re-parented per renderBoard - two visible kanban panes: any board event blanks the non-active pane (C3R-04 fixed teardown, not dual visibility) | FIXED | uncommitted slice: viewInstances pane-keyed registry (root/projectId/lastKey), untargeted renderBoard() renders every live pane + active, getKanbanProjectIdForElement in kanban/instance.ts, per-pane resetBoardViewIf + 3 regression tests |
+| C5G-07 | P3 | board-view.ts:181 | boardEl singleton re-parented per renderBoard - two visible kanban panes: any board event blanks the non-active pane (C3R-04 fixed teardown, not dual visibility) | FIXED | e54564a: viewInstances pane-keyed registry (root/projectId/lastKey), untargeted renderBoard() renders every live pane + active, getKanbanProjectIdForElement in kanban/instance.ts, per-pane resetBoardViewIf + 3 regression tests |
 | C5G-08 | P3 | board-state.ts:131 | addColumn/addTask/addTag uncapped, persisted per-project -> runaway CLI flow grows state.json unbounded (Appendix A claims caps collected) | FIXED | 236ab5d |
 | C5G-09 | P3 | FEATURES §2 file-tree row | claims git badges + persisted expand state; code has neither (module Map, cleared on removal) | FIXED | 5c08a2a |
 | C5G-10 | P3 | pty-manager.ts:768 | getPtyCwdWindows no-op on Windows -> session worktree detection inert there (C2R-06 path); macOS symlinked-cwd prefix compare misses | FIXED | ff4ad13 (macOS; Windows documented no-op) |
