@@ -41,6 +41,18 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | SR2-f | P3 | sidebar+tab-bar | duplicate document dismissers run twice | AGENT | TabBarSidebarSlice |
 | scout2-P2 | P2 | profiles.ts | home ROOT accepted as profile configDir (CLI writes into ~) | FIXED | reject homeRel === '' (33839b7) |
 | S1-07/S1-08 | P2 | pi/codex session watchers | 2 s poll cadence, sync listing reads | ACCEPTED | both watchers: per-tick cost bounded (cached statSync per watched dir; codex day-dirs mtime-skipped; 1 s min-spacing floor); poll is the documented correctness guarantee |
+| UI3-1 | P1 | file-viewer loadGeneration | global gen makes concurrent diff loads discard each other; losers pinned stale (loaded=false) forever | AGENT | ScoutUI3Fixes (per-instance gen) |
+| UI3-2 | P1 | preferences-modal Enter handler | Enter in a nested modal also confirms+closes Preferences | AGENT | ScoutUI3Fixes (stack guard) |
+| UI3-3 | P2 | inspector append at cap | cap rotation kills the PA-14 append path (== S4-01) | MITIGATED | 2 s floor (0147167); ring/epoch deep fix open |
+| UI3-4 | P2 | quick-open searchFiles | out-of-order listFiles responses; Enter opens the wrong file | AGENT | ScoutUI3Fixes (token pattern) |
+| UI3-5 | P2 | file-tree reconcile | superseded burst's insertion pass re-inserts deleted rows as ghosts | AGENT | ScoutUI3Fixes (container gen) |
+| UI3-6 | P2 | modal-shell focus | ModalCloser modals never take focus — keystrokes reach the PTY behind the overlay | AGENT | ScoutUI3Fixes (port modal.ts focus) |
+| UI3-7 | P2 | inspector row keys | timestamp:type:tool collisions expand parallel tool-call twins together | AGENT | ScoutUI3Fixes (+index) |
+| UI3-8 | P2 | board-dnd | pointercancel leaves drag armed; next pointerup commits phantom moveTask | AGENT | ScoutUI3Fixes (cancel on pointercancel) |
+| UI3-9 | P2 | mcp-inspector refreshLists | missing destroy guard renders into dead pane | AGENT | ScoutUI3Fixes |
+| UI3-10 | P2 | session-export zip failure | failed export leaves generator + transcript fd open (Windows unlink EPERM) | AGENT | ScoutUI3Fixes (destroy generator) |
+| UI3-11 | P2 | ipc-handlers fs:topFilesByTokens | no dedup/abort; stacked full repo scans | PARENT | after IpcAsyncFixes lands |
+| UI3-12 | P2 | board tag input | Escape (blur) commits the half-typed tag | AGENT | ScoutUI3Fixes (committed flag) |
 
 ## Gate
 
