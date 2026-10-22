@@ -16,7 +16,7 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 | S1-01 | P1 | main.ts ready handler | boot serializes N sync provider probes before first window | FIXED (wave F pre-commit) | async probe fan-out, 08aa404 ancestry |
 | S1-02 | P1 | store.ts saveState/saveStateSync + settings-guard | dual-writer wipes statusLine consent; guardedInstall pre-modal snapshot rolls back renderer state | FIXED | consent-key graft at both writers + fresh loadState post-modal (33839b7), regression test |
 | S1-03 | P1 | state.ts persist + store.ts throttle | beforeunload flush discarded (300 ms throttle, trailing timer dies with process) | FIXED | saveStateSync + flushPersist (08aa404); flushPersistSync over store:save-sync sendSync (7b34b9e) |
-| S1-04 | P2 | ipc-handlers pty:create log | launch args (tokens) logged | FIXED | redactLaunchArgs shared + spawn-log redaction (08aa404) |
+| S1-04 | P2 | ipc-handlers pty:create log | launch args (tokens) logged | VERIFIED-ABSENT | cycle-2 check (C2-SEC-04): no arg-logging surface at b4c0721 (pty-manager zero logs); 08aa404 contains no redaction code — the `redactLaunchArgs` FIXED row was fabricated; no spawn-path arg/env/prompt logging exists at HEAD |
 | S1-05 | P1 | resolve-binary + providers | sync execSync PATH probe on every spawn, fresh env | FIXED | getFullPathAsync + async probes + isWithin (08aa404) |
 | S1-06 | P2 | launch-session-dir | per-spawn lstat storm over session dirs | FIXED | realpath per-call cache (08aa404) |
 | S1-06b | P2 | launch-session-dir prune | 2000-dir prune SYNCHRONOUS on spawn path, ~10-12k sync syscalls at cap | FIXED | setImmediate off spawn + PRUNE_SCAN_LIMIT 200 (33839b7) |
@@ -71,3 +71,62 @@ providers+spawn, S3 renderer core+state+terminals+tab-bar, S4 UI+search+export.
 - git diff --check: clean; worktree clean at end of wave
 - commits: 08aa404, 33839b7 (audit slices) → 0147167, 24d51a2, 764e674, 94a7cfa, 0a1f70a, db59b82, 3cd11eb, d0c592d, 0073101, 7b34b9e, 97b0b01, 43fbc6b (+ ledger docs commits)
 - open by design: UI3-3 deep fix (ring/epoch cap rotation) — mitigated by 2 s floor; S1-07/S1-08 accepted
+## Cycle 2 (2026-10-22 ~11:00 UTC, 4 scouts @ HEAD 2439f85)
+
+Scouts: C2PerfMain (main/IPC), C2PerfRenderer (renderer chrome), C2BugsIntegration (Wave-F regression sweep), C2Security (gates/boundaries). 45 findings: 1 P1, 15 P2, 29 P3; duplicates merged (CI-01=SEC-02, CI-09=C2M-10, CI-15⊂C2R-02, C2R-14=CI-07, C2M-01=SEC-02).
+
+| id | sev | file:line | mechanism | verdict | fix |
+| --- | --- | --- | --- | --- | --- |
+| C2-SEC-01 | P1 | preload.ts store block | 7b34b9e added saveSync impl+renderer type but not the preload FineVibeApi interface — tsc -p tsconfig.preload.json fails, build:core/build/start broken at HEAD | FIXED | saveSync declared (4364b29); gate expanded: tsc now main+preload+renderer |
+| C2-SEC-04 | P3 | ledger S1-04 | redactLaunchArgs FIXED row fabricated; no arg-logging surface ever existed | FIXED (docs) | row rewritten VERIFIED-ABSENT (this wave) |
+| SEC-02/CI-01/C2M-01 | P2 | ipc-handlers store:save-sync | raw ipcMain.on (P2-108 contract): poison payload = fatal main crash, PTYs orphaned, flush lost | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: safeOn + syncFallback returnValue:false; main.ts clearIsolatedStorage wrapped |
+| SEC-03 | P2 | provider:getConfig | renderer projectPath/configDir verbatim → arbitrary dir read | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: managed-configDir + isWithinKnownProject gates |
+| SEC-05 | P3 | confirmHomeOutsideListing | dialog labels raw path, listing follows canonical target (symlink deception) | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: prompt names canonical key |
+| C2M-02 | P2 | main.ts boot | PATH cache cold: first PTY spawn pays sync execSync probe on main (short-circuited by agentmemory probe) | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: getFullPathAsync prewarm in boot fan-out |
+| C2M-03/CI-08 | P2/P3 | fs:topFiles | no result cache (re-scan per widget mount) + shared scan ignores enumerateGeneration | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: 30 s result cache + git:changed invalidation + generation supersede |
+| C2M-04 | P3 | flushPtyData | outbox deleted by sessionId — re-spawn's fresh outbox killed by old exit callback | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: identity-guarded delete |
+| C2M-07 | P3 | scanTopFiles | 16×10 MiB buffers + sync tokenize; uncancellable | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: 1 MiB read budget, scaled estimate |
+| C2M-08 | P3 | enumerateProjectFiles | git branch unbounded vs fallback MAX_FILES 5000 | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: cap git branch |
+| C2M-10/CI-09 | P3 | confirmHomeOutsideListingOnce | answer-only memo; concurrent listDirs stack native dialogs | FIXED | 855c310/c4164be/c9625b3/19e350f slice A: in-flight promise memo |
+| C2M-05 | P3 | session-transcript-sync | read failures never arm backoff (codex .zst compaction): 2 s churn forever | FIXED | 855c310/c4164be/c9625b3/19e350f slice B: read-failure backoff |
+| C2M-06 | P3 | session-deep-search | shared in-flight read raced against first caller's abort → co-waiters lose results | FIXED | 855c310/c4164be/c9625b3/19e350f slice B: per-waiter raceAbort |
+| CI-02 | P2 | session-export | UI3-10 fix incomplete: JSZip destroy() never releases SOURCE fds → Windows transcript lock + fd leak on failed export | FIXED | 855c310/c4164be/c9625b3/19e350f slice B: hoist sources[], destroy all in catch |
+| C2R-01 | P2 | session-inspector startResize | mousemove/mouseup leak on release-outside-window (S3-01 twin) | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: pointer capture pattern |
+| C2R-02/CI-15 | P2 | timeline expand keys | UI3-7 index-inclusive keys drift on 2000-cap in-place rotation (expansion hops rows; stale keys unbounded) | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: monotonic seq at ingestion, seq-keyed, prune on rotation |
+| CI-03 | P2 | timeline cap guard | ts-equality cap-shift guard passes on same-ms boundary events → silent freeze (fallback disarms) | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: object-identity guard |
+| C2R-03 | P2 | git-status session-changed | manualOverride cleared on kind:'metadata' (auto-title/CLI-id adoption) → worktree pick vanishes | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: gate to activate/payload-less |
+| C2R-04 | P2 | session-inspector-state addEvents | JSON.stringify every ingested event app-wide, inspector closed included | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: cheap estimate while closed |
+| C2R-05 | P3 | git-status cache | composite project:worktree keys survive project removal | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: prefix prune |
+| C2R-06 | P3 | git-status detectSessionWorktree | getCwd IPC per event, result discarded when ≤1 worktree | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: hoist check + trailing timer |
+| CI-05 | P2 | session-inspector auto-follow | ignores deferRender: Close All → N full panel rebuilds | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: gate |
+| CI-16 | P3 | closeInspector | fullRenderRetry timer survives close | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: module-scope + clear |
+| CI-17 | P3 | file-tree collapse | only direct subContainer invalidated; deep in-flight renders paint detached | FIXED | 855c310/c4164be/c9625b3/19e350f slice C: subtree invalidate |
+| C2R-07 | P3 | git-status-bar create branch | async confirm, Enter re-fires → N branch spawns (SR2-b sibling) | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: creating flag |
+| C2R-08 | P3 | tab-bar github-unread | full strip rebuild per notify; patchUnread already covers dots | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: patch-first |
+| C2R-09 | P3 | split-layout onSessionAdded | panes built from activeProject, not payload projectId (background adds → wrong cwd) | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: owner resolve/skip |
+| C2R-10 | P3 | tab-list drag | render wipe mid-drag leaves dwell timer + draggingSessionId | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: reset on render |
+| C2R-11 | P3 | sidebar suggest | 100 ms timer survives modal close | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: registerModalCleanup |
+| C2R-12 | P3 | tab-bar+sidebar layout-changed | full rebuilds (sidebar wipes+re-reads file tree) on layout toggles, layout unread | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: drop subscriptions |
+| CI-04 | P2 | board-dnd pointercancel | skips dragEndCallbacks flush → deferred renders never land (stale board, touch); test pinned the bug | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: shared finish path, amend test |
+| CI-06 | P2 | sidebar onSessionRowsChanged | ignores deferRender, full render() per batched removal | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: gate |
+| CI-07/C2R-14 | P2 | board-session-sync | per-event fullScanSync+updateTask, ignores deferRender | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: gate |
+| C2R-15 | P3 | kanban-widget | board-changed full rebuild, no change key | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: reuse boardChangeKey |
+| C2R-16 | P3 | board-view singleton | boardEl retained detached after pane destroy; per-tick patches scan dead tree | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: resetBoardView |
+| C2R-17 | P3 | insights dismissed | unbounded persisted array | FIXED | 855c310/c4164be/c9625b3/19e350f slice D: FIFO cap 200 |
+| C2R-13 | P3 | win32-terminal-keys | latchedKeys set grows per closed Windows PTY (no un-latch) | FIXED | 855c310/c4164be/c9625b3/19e350f slice E: unlatchWin32Key on destroy |
+| C2R-18 | P3 | project-terminal panel drag | sync fit storm per pointermove (forced layout + reflow) | FIXED | 855c310/c4164be/c9625b3/19e350f slice E: rAF coalesce |
+| CI-10 | P3 | chrome-import-modal | open-replace tears down old gen without disposed flag/progress unsub/onClosed | FIXED | 855c310/c4164be/c9625b3/19e350f slice E: full dismiss |
+| CI-11 | P3 | predefined-picker | load catch writes after dispose | FIXED | 855c310/c4164be/c9625b3/19e350f slice E: disposed guard + in-flight fetch share |
+| CI-12 | P3 | provider-tools widget | catch wipes body before token check (blank live widget) | FIXED | 855c310/c4164be/c9625b3/19e350f slice E: guard |
+| CI-13 | P3 | mcp-inspector | callTool/readResource/getPrompt legs lack instance identity guard | FIXED | 855c310/c4164be/c9625b3/19e350f slice E: guards |
+| CI-14 | P3 | mcp-inspector destroy | disconnect fires while connect in flight → orphaned MCP server | FIXED | 19e350f renderer: chained post-connect disconnect; 855c310 main: connect closes transports landing on an active disconnect tombstone |
+| CI-18 | P3 | member-sessions-modal | static #modal-overlay path never focuses → keystrokes hit PTY | FIXED | 855c310/c4164be/c9625b3/19e350f slice E: focus + restore |
+
+### Cycle 2 gate
+
+- vitest: full suite green at integration — 211 files / 3216 passed, 4 skipped (was 207/3169; +4 suites, +47 tests)
+- tsc (main + preload + renderer): 0 errors (preload added to the gate after C2-SEC-01)
+- git diff --check: clean; worktree clean at end of cycle
+- commits: 4364b29 (P1 preload) → 855c310 (main) → c4164be (inspector/git-status) → c9625b3 (chrome/board/sidebar) → 19e350f (panes/modals/widgets) + this docs commit
+- process: 2 scout findings (C2M-05/06) fell out of the fan-out task lists and were fixed inline by the parent; fan-out checklists must be diffed against the ledger before launch (done at integration)
+- open by design: UI3-3 ring/epoch deep fix (unchanged); S1-07/S1-08 accepted (unchanged)
