@@ -487,6 +487,14 @@ export interface AgentmemoryStatus {
   detail?: string;
 }
 
+/** Tail of the shared daemon's captured console output (see main/agentmemory-manager.ts). */
+export interface AgentmemoryLog {
+  /** Absolute path of the log file the tail was read from. */
+  path: string;
+  /** Last bytes of the log, UTF-8 decoded; empty when the file is missing/unreadable. */
+  content: string;
+}
+
 // --- Chrome Import ---
 
 export interface ChromeProfile {

@@ -602,7 +602,11 @@
     "stopped": "未运行",
     "startButton": "启动引擎",
     "starting": "启动中…",
-    "openConsole": "打开控制台"
+    "openConsole": "打开控制台",
+    "consoleTitle": "智能体记忆控制台",
+    "consoleEmpty": "暂无日志输出。仅 FineVibe 启动的引擎会捕获控制台输出，将在下次启动后显示在这里。",
+    "consoleWebUi": "Web 界面",
+    "consoleClose": "关闭"
   },
   "preferencesNav": {
     "browser": "浏览器",

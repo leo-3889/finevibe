@@ -18,7 +18,7 @@ import { startGitWatcher, notifyGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
-import { probeAgentmemory, ensureAgentmemoryRunning } from './agentmemory-manager';
+import { probeAgentmemory, ensureAgentmemoryRunning, readAgentmemoryLog } from './agentmemory-manager';
 import { createAppMenu } from './menu';
 import { getProvider, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
@@ -1876,6 +1876,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('agentmemory:status', () => probeAgentmemory());
   ipcMain.handle('agentmemory:start', () => ensureAgentmemoryRunning());
+  ipcMain.handle('agentmemory:log', () => readAgentmemoryLog());
 
   ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string) => {
     // P2-127: configDir is the dir the warning banner was computed from —
