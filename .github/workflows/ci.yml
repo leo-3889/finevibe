@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: CI only checks out, builds, and tests.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     strategy:

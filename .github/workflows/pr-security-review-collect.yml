@@ -10,6 +10,9 @@ on:
 
 permissions:
   contents: read
+  # workflow_dispatch has no implicit PR access; gh pr view/diff in the
+  # collect step need the pull-requests read scope on the token.
+  pull-requests: read
 
 concurrency:
   group: pr-security-review-collect-${{ inputs.pr_number }}
