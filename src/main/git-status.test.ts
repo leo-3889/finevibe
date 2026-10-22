@@ -69,6 +69,31 @@ describe('getGitStatus', () => {
     expect(status.modified).toBe(1);
   });
 
+  it('bounds git status with an 8 MiB maxBuffer (C5G-05)', async () => {
+    simulateExecFile(null, '# branch.head main\n');
+    await getGitStatus('/test');
+    const opts = mockExecFile.mock.calls[0][2] as { maxBuffer: number };
+    expect(opts.maxBuffer).toBe(8 * 1024 * 1024);
+  });
+
+  it('classifies ENOBUFS as errored, not a clean tree (C5G-05)', async () => {
+    const enobufs = Object.assign(new Error('maxBuffer exceeded'), { code: 'ENOBUFS' }) as ExecFileException;
+    simulateExecFile(enobufs, '');
+    const status = await getGitStatus('/test');
+    // A porcelain listing past maxBuffer must NOT read as NOT_A_REPO/0 changes:
+    // the renderer needs `errored` to show a message, not a clean-tree lie.
+    expect(status.errored).toBe(true);
+    expect(status.isGitRepo).toBe(true);
+    expect(status.modified).toBe(0);
+  });
+
+  it('raises getGitFiles maxBuffer to 8 MiB (C5G-05)', async () => {
+    simulateExecFile(null, '');
+    await getGitFiles('/test');
+    const opts = mockExecFile.mock.calls[0][2] as { maxBuffer: number };
+    expect(opts.maxBuffer).toBe(8 * 1024 * 1024);
+  });
+
   it('counts rename entries (type 2)', async () => {
     simulateExecFile(null, '2 R. N... 100644 100644 100644 abc def R100\told.ts\tnew.ts\n');
     const status = await getGitStatus('/test');

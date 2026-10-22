@@ -305,7 +305,9 @@ describe('git-status project-removed cache prune (C2R-05)', () => {
 
   it('drops the composite worktree cache keys, not just the plain one', async () => {
     // Two worktrees so the manual override survives refreshWorktrees' cleanup
-    // and the poll really runs under the composite `p1:/wt-b` key.
+    // during the first phase and the poll runs under the composite `p1:/wt-b`
+    // key. Removal then prunes the override (C5G-02), so the re-open below
+    // polls the project's default path, not `/wt-b`.
     mockGetWorktrees.mockResolvedValue([
       { path: '/proj', branch: 'main', isMain: true },
       { path: '/wt-b', branch: 'feature', isMain: false },
@@ -325,16 +327,19 @@ describe('git-status project-removed cache prune (C2R-05)', () => {
     appState.removeProject('p1');
     expect(getGitStatus('p1')).toBeNull();
 
-    // Re-open the SAME project id (persisted ids survive a reload) on the same
-    // worktree with an identical status. The listeners must fire again: that
-    // only happens when no cache entry survived the removal. Pre-fix the
-    // composite `p1:/wt-b` entry leaked, its JSON compared equal, and the
-    // project came back with a silently dead git badge.
+    // Re-open the SAME project id (persisted ids survive a reload) with an
+    // identical status. The listeners must fire again: that only happens when
+    // no cache entry survived the removal. Pre-fix the composite `p1:/wt-b`
+    // entry leaked, its JSON compared equal, and the project came back with a
+    // silently dead git badge.
     mockLoad.mockResolvedValue(persisted([projectP1()], 'p1'));
     await appState.load();
 
     await vi.waitFor(() => expect(seen).toHaveBeenCalledWith('p1', cleanStatus));
-    expect(mockGetStatus).toHaveBeenLastCalledWith('/wt-b');
+    // C5G-02: removal pruned the manualOverride, so the re-opened project no
+    // longer pins `/wt-b` — the active path falls back to the project default.
+    expect(getActiveGitPath('p1')).toBe('/proj');
+    expect(mockGetStatus).toHaveBeenLastCalledWith('/proj');
   });
 });
 

@@ -1,5 +1,5 @@
 import { appState, ProjectRecord } from '../state.js';
-import { onChange as onGitStatusChange, gitChangeCount, getActiveGitPath, getWorktrees, setActiveWorktree, onWorktreeChange } from '../git-status.js';
+import { onChange as onGitStatusChange, gitChangeCount, gitStatusErrored, getActiveGitPath, getWorktrees, setActiveWorktree, onWorktreeChange } from '../git-status.js';
 import { onChange as onStatusChange } from '../session-activity.js';
 import { showFileViewer } from './file-viewer.js';
 import { areaLabel } from '../dom-utils.js';
@@ -59,6 +59,21 @@ function afterAction(): void {
   scheduleRefresh();
 }
 
+// C5G-03: stage/unstage/discard awaited the git IPC uncaught, so a rejected
+// IPC surfaced as an unhandled rejection — no user feedback — and afterAction()
+// never ran. Surface the failure (git-status-bar's catch-and-show idiom,
+// adapted to alert — these handlers have no open modal) and refresh only on
+// success.
+async function runGitAction(action: () => Promise<unknown>, failureMessage: string): Promise<void> {
+  try {
+    await action();
+  } catch (err) {
+    window.alert(`${failureMessage}: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  afterAction();
+}
+
 function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPath: string): void {
   hideGitContextMenu();
 
@@ -69,8 +84,7 @@ function showGitFileContextMenu(x: number, y: number, entry: GitFileEntry, gitPa
 
   if (entry.area === 'staged') {
     menu.appendChild(createMenuItem('Unstage', async () => {
-      await window.finevibe.git.unstageFile(gitPath, entry.path);
-      afterAction();
+      await runGitAction(() => window.finevibe.git.unstageFile(gitPath, entry.path), 'Failed to unstage');
     }));
   } else {
     menu.appendChild(createMenuItem('Stage', async () => {
@@ -239,6 +253,16 @@ function refreshMounted(): void {
     gitPanelEl.appendChild(body);
   }
 
+  if (gitStatusErrored(project.id)) {
+    // C5G-05: an oversized `git status` (ENOBUFS) yields no counts — showing
+    // "No uncommitted changes" hides real changes behind a clean-tree lie.
+    loadGeneration++;
+    body.innerHTML = '<div class="config-empty">Too many changes to list — open a terminal to inspect</div>';
+    lastFilesKey = '';
+    displayedGitPath = null;
+    return;
+  }
+
   const total = gitChangeCount(project.id);
   if (total === null || total === 0) {
     loadGeneration++;
@@ -341,8 +365,7 @@ async function loadFiles(body: HTMLElement, gitPath: string): Promise<void> {
           }));
         }
         actions.appendChild(createActionButton('Stage', '+', async () => {
-          await window.finevibe.git.stageFile(gitPath, entry.path);
-          afterAction();
+          await runGitAction(() => window.finevibe.git.stageFile(gitPath, entry.path), 'Failed to stage');
         }));
       }
 

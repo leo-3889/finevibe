@@ -8,6 +8,7 @@ vi.mock('../state.js', () => ({ appState: { on: vi.fn(), activeProjectId: null, 
 vi.mock('../git-status.js', () => ({
   onChange: vi.fn(),
   gitChangeCount: vi.fn(),
+  gitStatusErrored: vi.fn(),
   getActiveGitPath: vi.fn(),
   getWorktrees: vi.fn(),
   setActiveWorktree: vi.fn(),
@@ -27,6 +28,7 @@ import { appState } from '../state.js';
 import {
   onChange as onGitStatusChange,
   gitChangeCount,
+  gitStatusErrored,
   getActiveGitPath,
   getWorktrees,
 } from '../git-status.js';
@@ -93,6 +95,7 @@ beforeEach(() => {
   (window as unknown as { finevibe: unknown }).finevibe = { git: { getFiles } };
   setActiveProject('p1');
   vi.mocked(gitChangeCount).mockReturnValue(2);
+  vi.mocked(gitStatusErrored).mockReturnValue(false);
   vi.mocked(getActiveGitPath).mockReturnValue('/repo');
   vi.mocked(getWorktrees).mockReturnValue(null);
 });

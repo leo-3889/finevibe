@@ -7,6 +7,13 @@ import type { FsChange, FsChangeType } from '../shared/types';
 // still coalescing the burst from a tool writing many files into one renderer flush.
 const DEBOUNCE_MS = 150;
 
+// C5G-06: every watched directory is a live chokidar watcher (an OS file
+// descriptor). The ref-counted set grew one entry per distinct directory ever
+// opened for the app's lifetime — unbounded. Cap the live set (git-watcher's
+// MAX_WATCHES idiom) and evict the least-recently-watched folder when full.
+const MAX_FOLDER_WATCHES = 2000;
+let capWarned = false;
+
 /**
  * Directory-granular file watcher backed by a single chokidar instance.
  *
@@ -69,9 +76,31 @@ export function setFileWatcherWindow(win: BrowserWindow): void {
 
 /** Watch a directory's immediate children. Expects an already-resolved absolute path. */
 export function watchDir(dir: string): void {
-  const cur = refCounts.get(dir) ?? 0;
-  refCounts.set(dir, cur + 1);
-  if (cur === 0) ensureWatcher().add(dir);
+  const cur = refCounts.get(dir);
+  if (cur) {
+    // C5G-06: LRU touch — move to the Map tail so the eviction candidate is
+    // always the least-recently-watched folder, not the first one ever added.
+    refCounts.delete(dir);
+    refCounts.set(dir, cur + 1);
+    return;
+  }
+  // C5G-06: at the cap, evict the least-recently-watched folder (the Map head,
+  // since the touch above keeps the tail most-recent) via the normal unwatch
+  // path, releasing its chokidar watch + fd. Graceful degradation matches
+  // git-watcher's MAX_WATCHES: an evicted folder stops pushing fs:changed
+  // events until it is re-opened (watchDir re-arms it).
+  if (refCounts.size >= MAX_FOLDER_WATCHES) {
+    const oldest = refCounts.keys().next().value;
+    if (oldest !== undefined) unwatchDir(oldest);
+    if (!capWarned) {
+      console.warn(
+        `[file-watcher] reached MAX_FOLDER_WATCHES=${MAX_FOLDER_WATCHES}; evicted the least-recently-watched folder to admit ${dir}`
+      );
+      capWarned = true;
+    }
+  }
+  refCounts.set(dir, 1);
+  ensureWatcher().add(dir);
 }
 
 /** Drop a reference to a watched directory; closes the watch when the last ref goes. */
@@ -93,6 +122,7 @@ export function stopAllFileWatchers(): void {
   }
   pending.clear();
   refCounts.clear();
+  capWarned = false;
   if (watcher) {
     void watcher.close();
     watcher = null;

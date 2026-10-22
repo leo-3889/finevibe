@@ -13,6 +13,13 @@ export function renderGitStatus(): void {
   }
 
   const status = getGitStatus(project.id);
+  // C5G-05: an oversized `git status` (ENOBUFS) reads as zero changes, so the
+  // all-zero branch below renders an empty bar — a huge repo looks clean. Show
+  // a marker instead of vanishing (isGitRepo stays true in the main module).
+  if (status?.errored) {
+    gitStatusEl.innerHTML = '<span class="git-conflicted" title="git status output too large to read">⚠ !</span>';
+    return;
+  }
   if (!status || !status.isGitRepo) {
     gitStatusEl.innerHTML = '';
     return;

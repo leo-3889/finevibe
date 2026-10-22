@@ -11,7 +11,8 @@ import { getProvider } from './providers/registry';
 import { registerSession } from './hook-status';
 import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
-import { isWin, pathSep, utf8LocaleEnv } from './platform';
+import { isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
+import { canonicalPath } from './fs-utils';
 import { nvmDefaultNodeBinDir } from './providers/nvm';
 
 const execFileP = promisify(execFile);
@@ -754,7 +755,11 @@ export function getPtyCwd(sessionId: string): Promise<string | null> {
           // Parse lsof output: lines starting with 'n' contain the path
           for (const line of stdout.split('\n')) {
             if (line.startsWith('n') && line.length > 1) {
-              resolve(line.slice(1));
+              // C5G-10: lsof reports the kernel-canonical cwd (/private/tmp/…)
+              // while git worktree paths arrive symlinked (/tmp/…); canonicalize
+              // so the renderer's worktree prefix-match stops missing them.
+              const raw = line.slice(1);
+              resolve(isMac ? canonicalPath(raw) : raw);
               return;
             }
           }
@@ -768,6 +773,10 @@ export function getPtyCwd(sessionId: string): Promise<string | null> {
 function getPtyCwdWindows(_pid: number): Promise<string | null> {
   // Windows does not expose process cwd reliably via standard APIs.
   // This is a best-effort no-op — cwd tracking is not supported on Windows.
+  // C5G-10: that makes the C2R-06 session→worktree auto-detection inert on
+  // Windows (getPtyCwd returns null, so detectSessionWorktree bails and the
+  // panel falls back to the active/manual worktree). Deliberately left a no-op
+  // this window — no new Windows-only cwd mechanism is introduced here.
   return Promise.resolve(null);
 }
 

@@ -11,6 +11,10 @@ export interface GitStatus {
   modified: number;
   untracked: number;
   conflicted: number;
+  // C5G-05: `git status` output exceeded maxBuffer (ENOBUFS). The counts are
+  // unavailable, not zero — a huge repo, not a clean tree. The renderer must
+  // surface a message instead of the 'No changes' empty state / vanishing bar.
+  errored?: boolean;
 }
 
 type GitStatusCallback = (projectId: string, status: GitStatus) => void;
@@ -186,6 +190,13 @@ export function gitChangeCount(projectId: string): number | null {
   return status.staged + status.modified + status.untracked + status.conflicted;
 }
 
+/** True when the last poll of this project died on an oversized `git status`
+ *  (C5G-05): the counts are unknown, not zero. Lets the panel/bar show a
+ *  message instead of a misleading empty state. */
+export function gitStatusErrored(projectId: string): boolean {
+  return getGitStatus(projectId)?.errored === true;
+}
+
 export function getWorktrees(projectId: string): GitWorktree[] | null {
   return worktreeCache.get(projectId) ?? null;
 }
@@ -298,6 +309,10 @@ export function startPolling(): void {
         if (key === projectId || key.startsWith(`${projectId}:`)) cache.delete(key);
       }
       worktreeCache.delete(projectId);
+      // C5G-02: manualOverride is keyed by projectId (setActiveWorktree) and
+      // used to survive removal — one stale entry per project ever opened, for
+      // the app's lifetime.
+      manualOverride.delete(projectId);
     }
   });
 

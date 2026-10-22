@@ -809,6 +809,7 @@ describe('getPtyCwd', () => {
   });
 });
 
+
 const mockExecSync = vi.mocked(child_process.execSync);
 
 describe('getRegistryPath', () => {
