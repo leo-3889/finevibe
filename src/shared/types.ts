@@ -346,6 +346,17 @@ export interface ProjectRecord {
   tabGroups?: TabGroupRecord[];
 }
 
+/**
+ * One legacy `~/.vibeyard/state.json` project offered for one-time import
+ * into the live project list (see src/main/legacy-import.ts).
+ */
+export interface ImportableLegacyProject {
+  name: string;
+  path: string;
+  /** Session count of the legacy entry; shown so the import picker says what a project carries. */
+  sessions: number;
+}
+
 // --- Overview Widgets ---
 
 export type OverviewWidgetType =

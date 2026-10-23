@@ -684,5 +684,20 @@
     "close": "Close",
     "authFailed": "The host rejected the response code",
     "shareEnded": "The host ended the share."
+  },
+  "legacyImport": {
+    "buttonTitle": "Import projects from Vibeyard",
+    "title": "Import projects from Vibeyard",
+    "intro": "These projects were recorded by the previous version of this app, Vibeyard. Pick the ones to add to FineVibe — nothing on disk is moved or changed.",
+    "empty": "No Vibeyard projects left to import.",
+    "sessionsOne": "1 session",
+    "sessionsOther": "{count} sessions",
+    "import": "Import",
+    "cancel": "Cancel",
+    "close": "Close",
+    "resultOne": "Imported 1 project.",
+    "resultOther": "Imported {count} projects.",
+    "skippedOne": "1 was skipped — FineVibe already lists it.",
+    "skippedOther": "{count} were skipped — FineVibe already lists them."
   }
 }

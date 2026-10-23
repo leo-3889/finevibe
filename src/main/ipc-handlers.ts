@@ -9,6 +9,7 @@ import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from
 import { addMcpServer, removeMcpServer, isManagedMcpConfigDir } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { fileURLToPath } from 'node:url';
+import { listImportableLegacyProjects } from './legacy-import';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
@@ -977,6 +978,15 @@ export function registerIpcHandlers(): void {
     const prefs = loadState().preferences;
     event.returnValue = { theme: prefs.theme ?? null, zoomFactor: prefs.zoomFactor ?? null };
   }, () => ({ theme: null, zoomFactor: null })));
+
+  // List projects from the legacy `~/.vibeyard/state.json` that can be
+  // imported into the board. The one-time file migration is destination-
+  // wins, so the legacy project list never merged into a live state.json
+  // written under the new name. Read-only: the renderer adds the user's
+  // picks through its own state -> persist path.
+  ipcMain.handle('vibeyard:listImportableProjects', () => {
+    return listImportableLegacyProjects({ homedir: os.homedir(), existingPaths: getKnownProjectPaths() });
+  });
 
   // Provision (create) a profile's config dir. Returns the resolved absolute
   // path and whether it is the auto-managed location.

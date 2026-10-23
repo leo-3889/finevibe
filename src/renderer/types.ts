@@ -1,5 +1,6 @@
 export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, AgentmemoryStatus, AgentmemoryLog } from '../shared/types.js';
 import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types.js';
+import type { ImportableLegacyProject } from '../shared/types.js';
 import type { AgentmemoryLog } from '../shared/types.js';
 
 export interface FinevibeApi {
@@ -56,6 +57,10 @@ export interface FinevibeApi {
     /** S1-03: synchronous quit flush (blocks the renderer until the write lands). */
     saveSync(state: unknown): boolean;
     startupPrefs(): StartupPrefs;
+  };
+  vibeyard: {
+    /** Projects the legacy `~/.vibeyard/state.json` lists that FineVibe does not. Never rejects: main reads the legacy file defensively and answers [] when there is nothing importable. */
+    listImportableProjects(): Promise<ImportableLegacyProject[]>;
   };
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;

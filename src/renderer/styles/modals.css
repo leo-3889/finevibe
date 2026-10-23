@@ -613,3 +613,54 @@
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 11px;
 }
+
+/* Legacy Vibeyard import: the pick-list of projects recorded by the old app.
+   Rows are labels, so the whole row toggles the checkbox. */
+.vibeyard-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.vibeyard-import-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.vibeyard-import-check {
+  grid-row: span 2;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.vibeyard-import-name {
+  font-weight: 600;
+}
+
+.vibeyard-import-sessions {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.vibeyard-import-path {
+  grid-column: 2 / -1;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The post-import state reuses .modal-message; only the skipped note is dimmer. */
+.vibeyard-import-skipped {
+  color: var(--text-secondary);
+}

@@ -68,6 +68,13 @@
   outline: none;
 }
 
+/* Import-from-Vibeyard: markup ships hidden and the startup scan reveals it
+   only when the legacy state lists projects. Repo convention: `.hidden` needs
+   a per-selector rule, there is no global utility. */
+#btn-import-vibeyard.hidden {
+  display: none;
+}
+
 /* Collapsed rail — a 58px vertical strip: expand button, divider, active
    project avatar, nav icons, then Discussions pinned to the bottom. */
 #sidebar.collapsed {

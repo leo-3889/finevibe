@@ -684,5 +684,20 @@
     "close": "关闭",
     "authFailed": "主机拒绝了该响应码",
     "shareEnded": "主机已结束共享。"
+  },
+  "legacyImport": {
+    "buttonTitle": "从 Vibeyard 导入项目",
+    "title": "从 Vibeyard 导入项目",
+    "intro": "以下项目由本应用的旧版 Vibeyard 记录。勾选要添加到 FineVibe 的项目——磁盘上的文件不会被移动或修改。",
+    "empty": "没有需要导入的 Vibeyard 项目。",
+    "sessionsOne": "1 个会话",
+    "sessionsOther": "{count} 个会话",
+    "import": "导入",
+    "cancel": "取消",
+    "close": "关闭",
+    "resultOne": "已导入 1 个项目。",
+    "resultOther": "已导入 {count} 个项目。",
+    "skippedOne": "已跳过 1 个——FineVibe 中已存在。",
+    "skippedOther": "已跳过 {count} 个——FineVibe 中已存在。"
   }
 }
