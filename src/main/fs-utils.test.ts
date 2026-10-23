@@ -10,11 +10,17 @@ vi.mock('os', () => ({
 const realpathSync = vi.hoisted(() => vi.fn());
 vi.mock('fs', () => ({ realpathSync }));
 
+// %VAR% expansion is gated on the module-level `isWin` const in platform.ts,
+// which a test cannot flip; the mock re-exports it as a getter over a
+// mutable stub so both platform branches run on any host.
+const platformStub = vi.hoisted(() => ({ isWin: false }));
+vi.mock('./platform', () => ({ get isWin() { return platformStub.isWin; } }));
+
 import {
   expandUserPath, isBinaryBuffer, isMacPackagePath,
   canonicalPath, canonicalRoot,
   invalidateCanonicalPathCache, invalidateCanonicalPathIfRootsChanged,
-  TARGET_CANONICAL_CACHE_MAX, TARGET_CANONICAL_TTL_MS,
+  TARGET_CANONICAL_CACHE_MAX, TARGET_CANONICAL_TTL_MS, ROOT_CANONICAL_CACHE_MAX,
 } from './fs-utils';
 
 /** Install a fake filesystem: keys are the existing paths (resolved), values
@@ -74,6 +80,69 @@ describe('expandUserPath', () => {
 
   it('does not expand empty string', () => {
     expect(expandUserPath('')).toBe('');
+  });
+});
+
+describe('expandUserPath Windows %VAR% expansion', () => {
+  const ENV = 'FINEVIBE_TEST_ENV';
+  beforeEach(() => { delete process.env[ENV]; });
+  afterEach(() => {
+    delete process.env[ENV];
+    platformStub.isWin = false;
+  });
+
+  it('leaves %VAR% literal on POSIX (POSIX shells expand before main sees the path)', () => {
+    platformStub.isWin = false;
+    process.env[ENV] = 'expanded';
+    expect(expandUserPath(`%${ENV}%\\projects`)).toBe(`%${ENV}%\\projects`);
+  });
+
+  it('expands %VAR% on Windows', () => {
+    platformStub.isWin = true;
+    process.env[ENV] = 'C:\\Users\\me\\AppData';
+    expect(expandUserPath(`%${ENV}%\\Roaming`)).toBe('C:\\Users\\me\\AppData\\Roaming');
+  });
+
+  it('leaves an unset %VAR% literal on Windows', () => {
+    platformStub.isWin = true;
+    expect(expandUserPath(`%${ENV}%\\Roaming`)).toBe(`%${ENV}%\\Roaming`);
+  });
+
+  it('expands %VAR% inside a ~ path on Windows', () => {
+    platformStub.isWin = true;
+    process.env[ENV] = 'data';
+    expect(expandUserPath(`~/sub/%${ENV}%`)).toBe(path.join(home, 'sub', 'data'));
+  });
+});
+
+// `~\` is the spelling cmd/PowerShell accept and users type into preferences;
+// these paths never pass through a shell that would expand them.
+describe('expandUserPath Windows ~\\ expansion', () => {
+  afterEach(() => { platformStub.isWin = false; });
+
+  it('expands ~\\sub to homedir/sub on Windows', () => {
+    platformStub.isWin = true;
+    expect(expandUserPath('~\\git\\my-project')).toBe(path.join(home, 'git', 'my-project'));
+  });
+
+  it('expands the mixed ~\\git/my-project on Windows', () => {
+    platformStub.isWin = true;
+    expect(expandUserPath('~\\git/my-project')).toBe(path.join(home, 'git', 'my-project'));
+  });
+
+  it('keeps ~\\ literal on POSIX — a backslash is legal filename data there', () => {
+    platformStub.isWin = false;
+    expect(expandUserPath('~\\git\\my-project')).toBe('~\\git\\my-project');
+  });
+
+  it('keeps expanding ~/ on POSIX (unchanged behaviour)', () => {
+    platformStub.isWin = false;
+    expect(expandUserPath('~/git/my-project')).toBe(path.join(home, 'git/my-project'));
+  });
+
+  it('does not expand ~otheruser on Windows (a ~user path, not a home ref)', () => {
+    platformStub.isWin = true;
+    expect(expandUserPath('~otheruser\\projects')).toBe('~otheruser\\projects');
   });
 });
 
@@ -255,6 +324,24 @@ describe('canonicalPath caches (P2-59)', () => {
     expect(realpathSync.mock.calls).toHaveLength(afterFill + 2); // evicted: re-walked
     canonicalPath(targets[targets.length - 1]);
     expect(realpathSync.mock.calls).toHaveLength(afterFill + 2); // recent: cached
+  });
+
+  it('the root cache is bounded and evicts least-recently-used roots (B1)', () => {
+    const roots = Array.from({ length: ROOT_CANONICAL_CACHE_MAX + 1 }, (_, i) =>
+      path.resolve(`/mock/roots/r${i}`));
+    existingFs(Object.fromEntries(roots.map((r) => [r, r])));
+    for (const r of roots.slice(0, ROOT_CANONICAL_CACHE_MAX)) canonicalRoot(r);
+    // Insertion order doubles as recency: touching the oldest root moves it
+    // to the tail, so the overflow evicts roots[1] and the touched root
+    // survives the cap.
+    canonicalRoot(roots[0]!);
+    canonicalRoot(roots[ROOT_CANONICAL_CACHE_MAX]!);
+    const afterFill = realpathSync.mock.calls.length;
+    canonicalRoot(roots[1]!);
+    expect(realpathSync.mock.calls.length).toBeGreaterThan(afterFill); // evicted: re-walked
+    const afterRewalk = realpathSync.mock.calls.length;
+    canonicalRoot(roots[0]!);
+    expect(realpathSync.mock.calls).toHaveLength(afterRewalk); // touched: survived the cap
   });
 
   it('an unresolvable filesystem root falls back to the resolved form', () => {

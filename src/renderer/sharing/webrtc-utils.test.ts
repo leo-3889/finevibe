@@ -9,8 +9,12 @@ import {
 } from './webrtc-utils.js';
 
 describe('ICE_CONFIG', () => {
-  it('includes a STUN server', () => {
-    expect(ICE_CONFIG.iceServers?.[0].urls).toContain('stun:');
+  it('includes STUN servers from two providers', () => {
+    const urls = (ICE_CONFIG.iceServers ?? []).flatMap((server) =>
+      Array.isArray(server.urls) ? server.urls : [server.urls]
+    );
+    expect(urls).toContain('stun:stun.l.google.com:19302');
+    expect(urls).toContain('stun:stun.cloudflare.com:3478');
   });
 });
 

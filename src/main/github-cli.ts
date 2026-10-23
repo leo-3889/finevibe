@@ -36,7 +36,11 @@ function ghCandidates(): string[] {
       path.join('C:\\Program Files\\GitHub CLI', 'gh.exe'),
       path.join(home, 'AppData', 'Local', 'Programs', 'GitHub CLI', 'gh.exe'),
       path.join(home, 'scoop', 'shims', 'gh.exe'),
-      path.join(home, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages', 'GitHub.cli_Microsoft.Winget.Source_8wekyb3d8bbwe', 'gh.exe'),
+      // WinGet installs the exe under Packages\GitHub.cli_...\<version dir>\bin\,
+      // so a fixed Packages path has no gh.exe at its root and never hits.
+      // The Links dir is the stable symlink WinGet maintains into that
+      // versioned bin\ folder — the canonical machine-wide gh location.
+      path.join(home, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'gh.exe'),
     ];
   }
   return [

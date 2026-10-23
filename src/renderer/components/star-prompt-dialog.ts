@@ -2,10 +2,12 @@ import { appState } from '../state.js';
 import { createModalShell } from './modal-shell.js';
 import { pushModal } from './modal-manager.js';
 import { ModalCloser } from './modal-close.js';
+import { openExternal } from '../open-external.js';
 
 const STAR_THRESHOLD = 10;
-// legacy: the GitHub repo slug stays `vibeyard` — the repository is NOT renamed with the product.
-const REPO_URL = 'https://github.com/leo-3889/vibeyard';
+// C4S-10: the fork's public repo is leo-3889/finevibe (git remote `fork`),
+// same target as the About section's GITHUB_URL.
+const REPO_URL = 'https://github.com/leo-3889/finevibe';
 
 const closer = new ModalCloser();
 
@@ -60,7 +62,7 @@ function showStarPromptDialog(): void {
   const close = () => closer.close(overlay);
 
   const handleStar = () => {
-    window.finevibe.app.openExternal(REPO_URL);
+    void openExternal(REPO_URL);
     appState.dismissStarPrompt();
     close();
   };

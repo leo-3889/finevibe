@@ -65,6 +65,11 @@ describe('classifyError', () => {
     expect(classifyError('Command exited with non-zero status code 126', baseTool)).toBe('permission-denied');
   });
 
+  it('classifies the Windows "Access is denied." form as permission-denied', () => {
+    expect(classifyError("Program 'node.exe' failed: Access is denied.", baseTool)).toBe('permission-denied');
+    expect(classifyError('Access is denied.', baseTool)).toBe('permission-denied');
+  });
+
   it('classifies auth error with matching pattern as auth-required', () => {
     expect(classifyError('To get started with GitHub CLI, please run: gh auth login', toolWithAuth)).toBe('auth-required');
   });

@@ -12,6 +12,7 @@ vi.mock('../file-url.js', () => ({ pathToFileURL: (p: string) => `file://${p}` }
 
 import { renderFileTree, _resetForTesting, DirEntry, isExpanded, FILE_MANAGER } from './file-tree.js';
 import { showContextMenu, MenuOption } from './board/board-context-menu.js';
+import { showConfirmModal } from './modal.js';
 
 // --- Fake filesystem backing window.finevibe.fs ---
 let dirContents: Map<string, DirEntry[]>;
@@ -368,5 +369,57 @@ describe('show in file manager menu option', () => {
     options.find((o) => o.label === 'Copy Path')!.action();
     expect(writeText).toHaveBeenCalledWith('/proj/src');
     vi.unstubAllGlobals();
+  });
+});
+
+// A delete the Trash refuses has to be visible. `shell.trashItem` moves the
+// file into the trash of its OWN volume, so it rejects EXDEV for a project
+// under os.tmpdir() or on a secondary drive — the file then sits exactly where
+// it was. The renderer used to console.warn, so the click looked like success
+// and the only record of the reason was in main's console.
+describe('delete menu option (trash failure surfacing)', () => {
+  let alerts: string[];
+  let warn: { mockRestore(): void };
+
+  beforeEach(() => {
+    alerts = [];
+    // file-tree.ts calls window.alert; this suite aliases window = globalThis.
+    (globalThis as any).alert = (msg: string) => { alerts.push(msg); };
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { warn.mockRestore(); });
+
+  /** Right-click → Delete → confirm, with `trashItem` answering `impl`. */
+  async function deleteFile(impl: () => Promise<{ ok: boolean; error?: string }>): Promise<void> {
+    (globalThis as any).finevibe.fs.trashItem = vi.fn(impl);
+    dirContents.set('/proj', [entry('screenshot.png', '/proj', false)]);
+    const container = document.createElement('div');
+    renderFileTree({ id: 'p1', path: '/proj' } as any, container);
+    await settle();
+
+    openMenu(container, '/proj/screenshot.png').find((o) => o.label === 'Delete')!.action();
+    await vi.mocked(showConfirmModal).mock.calls[0][2]();
+  }
+
+  it('names the file and says no permanent delete was attempted on a reported failure', async () => {
+    await deleteFile(async () => ({ ok: false, error: 'EXDEV: cross-device link not permitted, rename' }));
+
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain('screenshot.png');
+    expect(alerts[0]).toContain('EXDEV: cross-device link not permitted, rename');
+    expect(alerts[0]).toContain('Permanent delete not attempted');
+  });
+
+  it('surfaces a rejected channel call instead of an unhandled rejection', async () => {
+    await deleteFile(async () => { throw new Error('EXDEV: cross-device link not permitted'); });
+
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain('screenshot.png');
+    expect(alerts[0]).toContain('Permanent delete not attempted');
+  });
+
+  it('stays silent when the file reaches the Trash', async () => {
+    await deleteFile(async () => ({ ok: true }));
+    expect(alerts).toEqual([]);
   });
 });

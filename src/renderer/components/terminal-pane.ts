@@ -13,6 +13,7 @@ import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
 import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
+import { openExternal } from '../open-external.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
@@ -106,7 +107,7 @@ export function createTerminalPane(
     linkHandler: {
       activate: (event, uri) => {
         if (event.metaKey || event.ctrlKey) {
-          window.finevibe.app.openExternal(uri);
+          void openExternal(uri);
         }
       },
     },
@@ -120,7 +121,7 @@ export function createTerminalPane(
 
   terminal.loadAddon(new WebLinksAddon((event, url) => {
     if (event.metaKey || event.ctrlKey) {
-      window.finevibe.app.openExternal(url);
+      void openExternal(url);
     }
   }));
 

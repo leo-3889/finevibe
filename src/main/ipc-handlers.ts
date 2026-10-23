@@ -281,7 +281,11 @@ async function enumerateProjectFiles(resolvedCwd: string): Promise<string[]> {
   try {
     const { stdout } = await execFileAsync(
       'git',
-      ['ls-files', '--cached', '--others', '--exclude-standard'],
+      // core.quotePath=false is load-bearing, exactly as in readiness/utils.ts:
+      // git octal-escapes any non-ASCII path by default ("caf\\303\\251.ts"),
+      // and Quick Open then shows the C-quoted spelling and matches nothing on
+      // the name the user types (nor on what the file tree offers).
+      ['-c', 'core.quotePath=false', 'ls-files', '--cached', '--others', '--exclude-standard'],
       { cwd: resolvedCwd, encoding: 'utf-8', timeout: 5000 },
     );
     // C2M-08: same cap as the fallback walk; git's own order is kept.
@@ -289,6 +293,19 @@ async function enumerateProjectFiles(resolvedCwd: string): Promise<string[]> {
   } catch {
     return walkProjectFiles(resolvedCwd);
   }
+}
+
+/**
+ * The enumeration contract is '/'-separated, project-relative paths — that is
+ * what `git ls-files` prints on every OS, and every consumer matches on it:
+ * `.finevibeignore` directory patterns (`build/`), Quick Open's path filters,
+ * the readiness checkers. `path.relative` yields the NATIVE spelling, so the
+ * fallback walk converts at the single point where a path leaves the walk: on
+ * Windows `build\out.js` matched no directory pattern, so an excluded tree was
+ * scanned anyway.
+ */
+function toPosixRel(rel: string): string {
+  return path.sep === '/' ? rel : rel.split(path.sep).join('/');
 }
 
 /**
@@ -312,7 +329,7 @@ async function walkProjectFiles(root: string): Promise<string[]> {
       if (entry.isDirectory()) {
         await walk(path.join(dir, entry.name), depth + 1);
       } else {
-        files.push(rel);
+        files.push(toPosixRel(rel));
       }
     }
   }
@@ -1293,7 +1310,20 @@ export function registerIpcHandlers(): void {
   // entry points: main reads the clipboard itself for the keystrokes the renderer
   // intercepts (Windows Ctrl+V, the context menu), and the renderer hands bytes
   // over for a native paste event, whose file objects main cannot see.
-  const PASTE_DIR = path.join(os.tmpdir(), 'finevibe-paste');
+  /**
+   * The paste temp dir. POSIX suffixes the uid, mirroring hook-status's
+   * `getStatusDir`: os.tmpdir() is /tmp — world-writable and shared by every
+   * user, so a fixed name under mode 0700 is claimed by whoever creates it
+   * first and every other user's mkdir then fails EACCES. One local
+   * `mkdir /tmp/finevibe-paste` therefore switches off pasted images for every
+   * user of the machine, with no diagnostic beyond a console line. Windows
+   * keeps the bare name: per-user %TEMP% already isolates users.
+   */
+  function getPasteDir(): string {
+    const uid = !isWin && typeof process.getuid === 'function' ? process.getuid() : undefined;
+    return path.join(os.tmpdir(), uid === undefined ? 'finevibe-paste' : `finevibe-paste-${uid}`);
+  }
+  const PASTE_DIR = getPasteDir();
   const PASTE_MAX_BYTES = 25 * 1024 * 1024;
   // P4: the pasted TEXT bound (plan: ~8 MiB), counted in UTF-16 characters —
   // the unit the structured clone and the `pty:write` round trip cost on.

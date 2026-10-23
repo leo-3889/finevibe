@@ -67,7 +67,10 @@ describe('statusCmd interpreter pinning', () => {
     try {
       const { statusCmd } = await import('./hook-commands');
       const cmd = statusCmd('UserPromptSubmit', 'working', 'SID', HOOK_MARKER);
-      expect(cmd.startsWith('py -3 "')).toBe(true);
+      // -X utf8 rides between the pinned interpreter and the script path
+      // (UTF-8 stdin fix: Python <3.15 decodes sys.stdin with the ANSI code
+      // page; a non-ASCII payload killed every capture on Windows).
+      expect(cmd.startsWith('py -3 -X utf8 "')).toBe(true);
       expect(cmd.startsWith('python ')).toBe(false);
     } finally {
       vi.doUnmock('./platform');
@@ -86,7 +89,7 @@ describe('statusCmd interpreter pinning', () => {
       const cmd = statusCmd('UserPromptSubmit', 'working', 'SID', HOOK_MARKER);
       // status_writer.py parses argv positionally with every field quoted; a
       // shape drift silently kills every event:status hook.
-      const m = cmd.match(/^py -3 "([^"]+)" "([^"]+)" "([^"]+)" "([^"]+)" "([^"]+)" "([^"]*)"$/);
+      const m = cmd.match(/^py -3 -X utf8 "([^"]+)" "([^"]+)" "([^"]+)" "([^"]+)" "([^"]+)" "([^"]*)"$/);
       expect(m, `unparsable command shape: ${cmd}`).not.toBeNull();
       expect(m![1].endsWith('/status_writer.py')).toBe(true);
       expect(m![2]).toBe('UserPromptSubmit');
@@ -221,7 +224,7 @@ describe('statusCmd POSIX quoting (P2-78)', () => {
     });
     try {
       const { statusCmd } = await import('./hook-commands');
-      return { cmd: statusCmd('Stop', 'completed', 'SID', HOOK_MARKER), dir: path.join(tmpdir, 'finevibe') };
+      return { cmd: statusCmd('Stop', 'completed', 'SID', HOOK_MARKER), dir: path.join(tmpdir, process.getuid ? `finevibe-${process.getuid()}` : 'finevibe') };
     } finally {
       vi.doUnmock('./platform');
       vi.doUnmock('os');
@@ -323,7 +326,8 @@ describe('stopStatusCmd', () => {
     const cmd = stopStatusCmd('CLAUDE_IDE_SESSION_ID', HOOK_MARKER);
     // Hooks must spawn the LIVE pythonBin binding — whatever
     // prerequisites.checkPythonAvailable() repointed to on this machine.
-    expect(cmd.startsWith(`${pythonBin} "`)).toBe(true);
+    const prefix = isWin ? `${pythonBin} -X utf8 "` : `${pythonBin} "`;
+    expect(cmd.startsWith(prefix)).toBe(true);
     if (pythonBin !== 'python') expect(cmd.startsWith('python ')).toBe(false);
   });
 
@@ -335,7 +339,7 @@ describe('stopStatusCmd', () => {
     // digits is required for the "every field quoted" contract. The anchored
     // ^...$ pins argv to exactly five quoted fields (script, sid var, dir,
     // stale ms, marker) in the writer's parse order; a sixth token fails.
-    const m = cmd.match(new RegExp(`^${esc} "([^"]+)" "([^"]+)" "([^"]+)" "(\\d+)" "([^"]*)"$`));
+    const m = cmd.match(new RegExp(`^${esc} ${isWin ? '-X utf8 ' : ''}"([^"]+)" "([^"]+)" "([^"]+)" "(\\d+)" "([^"]*)"$`));
     expect(m, `unparsable command shape: ${cmd}`).not.toBeNull();
     // Script resolved under SCRIPT_DIR, slashes normalized for sh/python.
     expect(m![1].endsWith('/stop_status_writer.py')).toBe(true);
@@ -373,6 +377,73 @@ describe('installHookScripts', () => {
   });
 });
 
+describe('UTF-8 stdin layers', () => {
+  // Windows (layers a+b of the UTF-8 fix): every generated python invocation
+  // must pass -X utf8, and every script that reads stdin must reconfigure
+  // sys.stdin to UTF-8 before its first read. One mocked-win import covers
+  // all five command generators.
+  async function winCommands(): Promise<string[]> {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./platform')>();
+      return { ...actual, isWin: true, pythonBin: 'py -3' };
+    });
+    try {
+      const m = await import('./hook-commands');
+      return [
+        m.statusCmd('Stop', 'completed', 'SID', HOOK_MARKER),
+        m.stopStatusCmd('SID', HOOK_MARKER),
+        m.captureSessionIdCmd('SID', HOOK_MARKER),
+        m.captureToolFailureCmd('SID', HOOK_MARKER),
+        m.wrapPythonHookCmd('claude_event_Stop.py', '', HOOK_MARKER),
+      ];
+    } finally {
+      vi.doUnmock('./platform');
+      vi.resetModules();
+    }
+  }
+
+  it('every Windows python command passes -X utf8 right after the interpreter', async () => {
+    for (const cmd of await winCommands()) {
+      expect(cmd, cmd).toMatch(/^py -3 -X utf8 "/);
+    }
+  });
+
+  it('POSIX commands carry no -X utf8 (POSIX stdin decodes per locale env)', async () => {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./platform')>();
+      return { ...actual, isWin: false };
+    });
+    try {
+      const m = await import('./hook-commands');
+      for (const cmd of [
+        m.stopStatusCmd('SID', HOOK_MARKER),
+        m.captureSessionIdCmd('SID', HOOK_MARKER),
+        m.captureToolFailureCmd('SID', HOOK_MARKER),
+        m.wrapPythonHookCmd('claude_event_Stop.py', '', HOOK_MARKER),
+      ]) {
+        expect(cmd, cmd).not.toContain('-X utf8');
+      }
+    } finally {
+      vi.doUnmock('./platform');
+      vi.resetModules();
+    }
+  });
+
+  it('every stdin-reading script reconfigures stdin before json.load(sys.stdin)', () => {
+    for (const name of ['stop_status_writer.py', 'session_id_capture.py', 'tool_failure_capture.py']) {
+      const body = installedScript(name);
+      const guard = body.indexOf('sys.stdin.reconfigure(encoding="utf-8")');
+      const read = body.indexOf('json.load(sys.stdin)');
+      expect(guard, `${name} has no UTF-8 guard`).not.toBe(-1);
+      expect(read, `${name} has no stdin read`).not.toBe(-1);
+      expect(guard, `${name} reads stdin before reconfiguring`).toBeLessThan(read);
+      expect(body.startsWith('import sys'), `${name} guard precedes the sys import`).toBe(true);
+    }
+  });
+
+});
 // The Stop writer's decision table is the load-bearing part of completion
 // detection, and asserting on its source text can't tell a correct branch from
 // a typo'd one. Run the real script the way Claude Code does: payload on stdin,

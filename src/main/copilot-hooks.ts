@@ -3,7 +3,8 @@ import * as path from 'path';
 import { STATUS_DIR, SCRIPT_DIR } from './hook-status';
 import { installEventScript, installHookScripts } from './hook-commands';
 import { readFileSafe, readJsonSafe } from './fs-utils';
-import { pythonBin } from './platform';
+import { isWin, pythonBin } from './platform';
+import { STDIN_UTF8_GUARD } from '../shared/python';
 import type { SettingsValidationResult, InspectorEventType } from '../shared/types';
 
 type HookStatus = 'waiting' | 'working' | 'completed';
@@ -77,7 +78,7 @@ function isIdeHook(h: HookEntry): boolean {
 // from CopilotProvider.buildEnv(), but when Copilot also includes its own
 // session ID we persist that separately for resume/history support.
 const EVENT_CAPTURE_SCRIPT_BODY = `import sys,json,os,time,random,string
-try:
+${STDIN_UTF8_GUARD}try:
     d=json.load(sys.stdin)
 except:
     d={}
@@ -157,11 +158,15 @@ function buildHookEntry(event: string): HookEntry {
   // Hook subprocesses spawned by Copilot CLI inherit FINEVIBE_SESSION_ID from
   // the PTY env. The Python script reads argv[4] as the env var *name*.
   const argv = `"${event}" "${type}" "${status}" "${SESSION_ID_VAR}" "${statusDir}"`;
-  const bash = `${pythonBin} "${script}" ${argv} ${COPILOT_HOOK_MARKER}`;
+  // UTF-8 mode on Windows: Python <3.15 decodes stdin with the ANSI code
+  // page, and a non-ASCII payload kills this script (see STDIN_UTF8_GUARD,
+  // which the body carries for the POSIX side).
+  const py = isWin ? `${pythonBin} -X utf8` : pythonBin;
+  const bash = `${py} "${script}" ${argv} ${COPILOT_HOOK_MARKER}`;
   // P2-23: PowerShell reads the same live `pythonBin` binding as bash — a
   // literal `python` here dies silently on installs where the interpreter
   // was re-pointed (py -3 launcher on Windows, probed candidate on POSIX).
-  const powershell = `${pythonBin} "${script}" ${argv} ${COPILOT_HOOK_MARKER}`;
+  const powershell = `${py} "${script}" ${argv} ${COPILOT_HOOK_MARKER}`;
   return { type: 'command', bash, powershell };
 }
 

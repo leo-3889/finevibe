@@ -66,7 +66,12 @@ function parseDiffLines(diff: string): HTMLElement {
   const content = document.createElement('div');
   content.className = 'file-viewer-content';
 
-  for (const line of diff.split('\n')) {
+  // CRLF: the split is LF-only; a CRLF file leaves '\r' at every line end
+  // and under white-space:pre the paragraph break renders that tail as a
+  // second, visibly empty line — the diff reads double-height. Normalize
+  // CRLF/CR to LF first; pure-LF diffs are unchanged.
+  const normalized = diff.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (const line of normalized.split('\n')) {
     const div = document.createElement('div');
     div.className = 'diff-line';
 

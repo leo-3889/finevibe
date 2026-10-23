@@ -24,6 +24,7 @@ vi.mock('./hook-commands', () => ({
 import * as fs from 'fs';
 import * as path from 'path';
 import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks, GEMINI_HOOK_MARKER } from './gemini-hooks';
+import { installEventScript } from './hook-commands';
 
 const mockReadFileSync = vi.mocked(fs.readFileSync);
 const mockWriteFileSync = vi.mocked(fs.writeFileSync);
@@ -289,5 +290,24 @@ describe('cleanupGeminiHooks', () => {
     mockFiles({});
     expect(() => cleanupGeminiHooks()).not.toThrow();
     expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('UTF-8 stdin guard (gemini capture script)', () => {
+  it('reconfigures stdin to UTF-8 before the first json.load(sys.stdin)', () => {
+    // Windows: Python <3.15 decodes sys.stdin with the ANSI code page, so a
+    // non-ASCII payload raises UnicodeDecodeError and event capture dies
+    // silently (see STDIN_UTF8_GUARD in shared/python.ts).
+    mockFiles({});
+    installGeminiHooks();
+    const call = vi.mocked(installEventScript).mock.calls
+      .find(([name]) => String(name).startsWith('gemini_event_'));
+    expect(call, 'no gemini event script installed').toBeDefined();
+    const body = String(call![1]);
+    const guard = body.indexOf('sys.stdin.reconfigure(encoding="utf-8")');
+    const read = body.indexOf('json.load(sys.stdin)');
+    expect(guard, 'no UTF-8 guard in the gemini event body').not.toBe(-1);
+    expect(guard).toBeLessThan(read);
+    expect(body.startsWith('import sys'), 'guard precedes the sys import').toBe(true);
   });
 });

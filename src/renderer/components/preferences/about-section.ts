@@ -2,6 +2,7 @@ import { appState } from '../../state.js';
 import { t } from '../../i18n.js';
 import type { SectionController } from './section.js';
 import { toggleRow } from './shared.js';
+import { openExternal } from '../../open-external.js';
 
 // C4S-10: the fork's public repo is leo-3889/finevibe (git remote `fork`).
 const GITHUB_URL = 'https://github.com/leo-3889/finevibe';
@@ -86,13 +87,13 @@ export function createAboutSection(): SectionController {
       ghLink.className = 'about-link';
       ghLink.textContent = t('about.githubLink');
       ghLink.href = '#';
-      ghLink.addEventListener('click', (e) => { e.preventDefault(); window.finevibe.app.openExternal(GITHUB_URL); });
+      ghLink.addEventListener('click', (e) => { e.preventDefault(); void openExternal(GITHUB_URL); });
 
       const bugLink = document.createElement('a');
       bugLink.className = 'about-link';
       bugLink.textContent = t('about.bugLink');
       bugLink.href = '#';
-      bugLink.addEventListener('click', (e) => { e.preventDefault(); window.finevibe.app.openExternal(ISSUES_URL); });
+      bugLink.addEventListener('click', (e) => { e.preventDefault(); void openExternal(ISSUES_URL); });
 
       linksDiv.appendChild(ghLink);
       linksDiv.appendChild(bugLink);
@@ -103,7 +104,7 @@ export function createAboutSection(): SectionController {
       contributeLink.className = 'about-link';
       contributeLink.href = '#';
       contributeLink.textContent = t('about.contributeLink');
-      contributeLink.addEventListener('click', (e) => { e.preventDefault(); window.finevibe.app.openExternal(GITHUB_URL); });
+      contributeLink.addEventListener('click', (e) => { e.preventDefault(); void openExternal(GITHUB_URL); });
       communityDiv.append(
         t('about.communityPrefix'),
         contributeLink,

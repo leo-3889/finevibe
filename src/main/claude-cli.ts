@@ -4,13 +4,14 @@ import { homedir } from 'os';
 import { STATUS_DIR, getStatusLineScriptPath } from './hook-status';
 import { canonicalPath, readJsonSafe, readDirSafe } from './fs-utils';
 import { getKnownProjectPaths, loadState } from './store';
-import { statusCmd as mkStatusCmd, stopStatusCmd as mkStopStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, captureToolFailureCmd as mkCaptureToolFailureCmd, installEventScript, wrapPythonHookCmd, installHookScripts } from './hook-commands';
+import { statusCmd as mkStatusCmd, stopStatusCmd as mkStopStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd, captureToolFailureCmd as mkCaptureToolFailureCmd, installEventScript, wrapPythonHookCmd, installHookScripts, shQuote } from './hook-commands';
 import { parseFrontmatter } from './frontmatter';
 import { getSupportedHookEvents as computeSupportedHookEvents } from './claude-hook-versions';
 import { getClaudeVersion } from './providers/claude-version';
 import { resolveBinary } from './providers/resolve-binary';
 import { TOKEN_TRUNCATION_KEY, TOKEN_TRUNCATION_SENTINEL } from '../shared/constants';
-import { pyLiteral } from '../shared/python';
+import { pyLiteral, STDIN_UTF8_GUARD } from '../shared/python';
+import { isWin } from './platform';
 import type { McpServer, Agent, Skill, Command, ClaudeConfig, InspectorEvent, InspectorEventType } from '../shared/types';
 
 export type { McpServer, Agent, Skill, Command, ClaudeConfig } from '../shared/types';
@@ -476,7 +477,7 @@ if tn=="Read":
   json.dump({"tool_name":tn,"tool_input":d.get("tool_input",{}),"error":_msg},open(os.path.join(status_dir,sid+"-"+sfx+".toolfailure"),"w"))` : '';
 
     const pyCode = `import sys,json,os,time
-try:
+${STDIN_UTF8_GUARD}try:
  d=json.load(sys.stdin)
 except:
  sys.exit(0)
@@ -627,9 +628,16 @@ export function installStatusLine(configDir: string = defaultClaudeDir()): void 
   // whole config with a statusLine-only file.
   const settings = readJsonForRewrite(settingsPath) ?? {};
 
+  // Claude Code runs the statusLine command through a shell, so the raw
+  // path broke on the first space — `/Users/John Smith/.finevibe/...` and
+  // every `C:\Users\...`-style install under a spaced profile name failed
+  // to launch the script at all (cost/context/title silently dead). Same
+  // quoting conventions as hook commands: POSIX single-quote escaping via
+  // shQuote, cmd.exe double quotes.
+  const scriptPath = getStatusLineScriptPath();
   settings.statusLine = {
     type: 'command',
-    command: getStatusLineScriptPath(),
+    command: isWin ? `"${scriptPath}"` : shQuote(scriptPath),
   };
 
   writeSettings(settings, configDir);

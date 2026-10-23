@@ -3,9 +3,21 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import type { BrowserWindow } from 'electron';
 import { isLinux } from './platform';
+import { gitBinaryPath, ensureGitProbe } from './git-status';
 
 const DEBOUNCE_MS = 300;
 const MAX_WATCHES = 2000;
+
+// Watcher resilience: a watcher 'error' (inotify exhaustion, EMFILE, a dead
+// FSEvents stream) silently kills the event channel — the module used to
+// swallow it. The renderer's 60s git-status poll is the only backstop, and
+// a panel that lags a minute per stage/commit reads as broken. On the first
+// error the module falls back to a periodic rescan: notify() is the rescan
+// trigger the renderer + the Quick Open cache already listen for, on the
+// 2s watchdog cadence the main-side watchers use (hook-status POLL_MS).
+const RESCAN_POLL_MS = 2000;
+let rescanTimer: ReturnType<typeof setInterval> | null = null;
+let watcherErrorWarned = false;
 
 const IGNORE_SEGMENTS = new Set([
   '.git', 'node_modules', 'dist', 'build', '.next', '.cache', 'coverage', '__pycache__',
@@ -58,6 +70,26 @@ function hasIgnoredSegment(filename: string): boolean {
   return filename.split(path.sep).some(isIgnored);
 }
 
+/** First watcher error per project: warn once with the code, then rescan. */
+function onWatcherError(where: string, err: unknown): void {
+  const e = err as NodeJS.ErrnoException;
+  if (!watcherErrorWarned) {
+    watcherErrorWarned = true;
+    if (e?.code === 'ENOSPC' && isLinux) {
+      console.warn(
+        `[git-watcher] inotify limit reached (fs.inotify.max_user_watches) while watching ${where}: ` +
+          `native watches are dead, falling back to periodic rescans every ${RESCAN_POLL_MS}ms`
+      );
+    } else {
+      console.warn(
+        `[git-watcher] watcher error (${e?.code ?? 'unknown'}) while watching ${where}: ` +
+          `falling back to periodic rescans every ${RESCAN_POLL_MS}ms`
+      );
+    }
+  }
+  if (!rescanTimer) rescanTimer = setInterval(() => notify(), RESCAN_POLL_MS);
+}
+
 /**
  * Watch the whole working tree with a single recursive watch (macOS + Windows
  * — Linux keeps the capped BFS in walkAndWatch: Node's Linux recursive watch
@@ -77,7 +109,7 @@ async function watchRecursiveWorkingTree(root: string, sink: fs.FSWatcher[], isS
       // coalesces events — notify conservatively when we can't classify it.
       if (!filename || !hasIgnoredSegment(filename)) notify();
     });
-    watcher.on('error', () => {}); // ignore (dir deleted, etc.)
+    watcher.on('error', (err: unknown) => onWatcherError(root, err));
     sink.push(watcher);
   } catch {
     // Recursive watch unavailable/failed — fall back to per-dir BFS so we still
@@ -92,7 +124,7 @@ function watchOne(dirPath: string, onEvent: (filename: string | null) => void, s
     const watcher = fs.watch(dirPath, (_event, filename) => {
       onEvent(filename);
     });
-    watcher.on('error', () => {}); // ignore errors (dir deleted, etc.)
+    watcher.on('error', (err: unknown) => onWatcherError(dirPath, err));
     sink.push(watcher);
   } catch {
     // Directory doesn't exist or unreadable — that's fine
@@ -147,7 +179,8 @@ async function walkAndWatch(root: string, sink: fs.FSWatcher[], isStale: () => b
 
 function resolveGitDir(projectPath: string): Promise<string> {
   return new Promise((resolve) => {
-    execFile('git', ['rev-parse', '--git-dir'], { cwd: projectPath, timeout: 3000 }, (err, stdout) => {
+    ensureGitProbe(); // git discovery lives in git-status.ts — never assume the GUI PATH
+    execFile(gitBinaryPath(), ['rev-parse', '--git-dir'], { cwd: projectPath, timeout: 3000 }, (err, stdout) => {
       if (err) {
         // pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
         resolve(path.join(projectPath, '.git'));
@@ -167,6 +200,11 @@ function stopAll(): void {
   }
   for (const w of dirWatchers) w.close();
   dirWatchers = [];
+  if (rescanTimer) {
+    clearInterval(rescanTimer);
+    rescanTimer = null;
+  }
+  watcherErrorWarned = false;
 }
 
 async function setupWatchers(projectPath: string, isStale: () => boolean = () => false): Promise<fs.FSWatcher[]> {
@@ -205,7 +243,7 @@ async function setupWatchers(projectPath: string, isStale: () => boolean = () =>
   const headPath = path.join(gitDir, 'HEAD');
   try {
     const watcher = fs.watch(headPath, () => notify());
-    watcher.on('error', () => {});
+    watcher.on('error', (err: unknown) => onWatcherError(headPath, err));
     sink.push(watcher);
   } catch {
     // HEAD doesn't exist (unlikely for a valid git repo)

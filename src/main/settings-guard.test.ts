@@ -26,6 +26,12 @@ vi.mock('fs', () => ({
   rmdirSync: vi.fn(),
   rmSync: vi.fn(),
   watch: vi.fn(),
+  // consentDirKey canonicalizes through fs-utils' canonicalPath, whose
+  // realpath chain runs against this mock. Identity by default (a real
+  // realpath never returns undefined — canonicalChain's fallback needs a
+  // throw, and the identity keeps every existing key in resolve form);
+  // cases override for symlinks.
+  realpathSync: vi.fn((p: fs.PathLike) => String(p)),
 }));
 
 // guardedInstall exercises the full consent flow: stub the installers, the
@@ -59,20 +65,27 @@ vi.mock('./store', () => ({
   saveState: vi.fn(),
 }));
 
-vi.mock('./fs-utils', () => ({
-  readJsonSafe: vi.fn(() => ({ statusLine: { command: FOREIGN_STATUSLINE } })),
-}));
+// The real fs-utils stays live (consentDirKey uses canonicalPath, which
+// resolves through the mocked fs above); only the settings reader is stubbed.
+vi.mock('./fs-utils', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...(actual as typeof fsUtilsModule),
+    readJsonSafe: vi.fn(() => ({ statusLine: { command: FOREIGN_STATUSLINE } })),
+  };
+});
 
 import { EventEmitter } from 'node:events';
 import {
   isFineVibeStatusLine, shouldWarnStatusLine, guardedInstall,
   guardedProfileInstall, reinstallSettings, consentDirKey, resetProfileInstallMemo,
-  recordDirConsent, validateSettings,
+  recordDirConsent, validateSettings, FOLDS_CASE_BY_DIR_MAX,
 } from './settings-guard';
+import { readJsonSafe } from './fs-utils';
+import type * as fsUtilsModule from './fs-utils';
 import * as fs from 'fs';
 import { installStatusLine } from './claude-cli';
 import { saveState, loadState } from './store';
-import { readJsonSafe } from './fs-utils';
 
 describe('isFineVibeStatusLine', () => {
   it('returns true for current statusline path', () => {
@@ -384,6 +397,51 @@ describe('recordDirConsent map hygiene (C3M-05)', () => {
   });
 });
 
+// consentDirKey canonicalization: a symlinked spelling of an already-
+// answered dir used to earn its own consent record (repeat prompts),
+// because path.resolve leaves links, junctions, 8.3 names and case
+// spellings intact. canonicalPath + a folds-case probe collapse them.
+describe('consentDirKey canonicalization', () => {
+  const REAL_DIR = path.join('/home/test', '.claude-profiles', 'work');
+  const LINK_DIR = path.join('/home/test', 'link-to-work');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fs.realpathSync).mockImplementation((p) => String(p));
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'maps a symlinked spelling of a dir onto the same consent key',
+    () => {
+      vi.mocked(fs.realpathSync).mockImplementation((p) =>
+        String(p) === LINK_DIR ? REAL_DIR : String(p),
+      );
+      expect(consentDirKey(LINK_DIR)).toBe(consentDirKey(REAL_DIR));
+    },
+  );
+
+  it('collapses case spellings on a case-folding filesystem', () => {
+    // The folds-case probe writes a probe file and checks the flipped
+    // spelling: with the mocked fs both exist, so the key case-folds —
+    // one record for 'MixedCase-Dir' and 'mixedcase-dir'.
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    expect(consentDirKey(path.join('/home/test', 'MixedCase-Dir')))
+      .toBe(consentDirKey(path.join('/home/test', 'mixedcase-dir')));
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'keeps Windows keys resolve-form lowercase (stored-key identity)',
+    () => {
+      // Existing on-disk consent records were keyed by
+      // resolve().toLowerCase(); for plain (non-linked) dirs the new
+      // canonical form must produce the same key, or every user would be
+      // re-prompted.
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      expect(consentDirKey('C:\\Users\\Alex\\.claude')).toBe('c:/users/alex/.claude');
+    },
+  );
+});
+
 // P1-13: when `claude --version` fails (a 3 s timeout during a heavy launch,
 // an unrecognized build) the supported-event set collapses to empty. Pre-fix
 // the guard compared `found === expectedHookEvents.length` — `0 === 0` — and
@@ -448,5 +506,29 @@ describe('validateSettings with an undetectable CLI version (P1-13)', () => {
     expect(result.hooks).toBe('partial');
     expect(result.hookDetails.Stop).toBe(true);
     expect(result.hookDetails.SessionStart).toBe(false);
+  });
+});
+
+// B1: the probe memo is module state with no bound — a long-lived session
+// touching many config dirs wrote a probe result per dir forever. The fill
+// below saturates the memo past the cap, so every dir an EARLIER suite
+// probed is evicted too: the probe counts below depend on this test's dirs
+// only, whatever ran before it.
+describe('foldsCase memo cap (B1)', () => {
+  it('caps the probe memo at 200 dirs, oldest dir evicted first', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    const dirs = Array.from({ length: FOLDS_CASE_BY_DIR_MAX + 10 }, (_, i) =>
+      path.join('/home/test', `probe-cap-${i}`));
+    for (const d of dirs) consentDirKey(d);
+    // One probe per fresh dir: 210 writes, cap 200 → the 10 oldest evicted.
+    expect(vi.mocked(fs.writeFileSync).mock.calls.length)
+      .toBeGreaterThanOrEqual(FOLDS_CASE_BY_DIR_MAX + 10);
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    consentDirKey(dirs[0]!); // evicted by the overflow: the dir is re-probed
+    expect(vi.mocked(fs.writeFileSync).mock.calls.length).toBe(1);
+
+    consentDirKey(dirs[dirs.length - 1]!); // recent: memo hit, zero probes
+    expect(vi.mocked(fs.writeFileSync).mock.calls.length).toBe(1);
   });
 });

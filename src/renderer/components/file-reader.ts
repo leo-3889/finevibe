@@ -6,6 +6,7 @@ import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
 import { escapeHtml } from './dom-search-backend.js';
 import { isAbsolutePath, dirname, samePath } from '../../shared/platform.js';
+import { openExternal } from '../open-external.js';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../../shared/token-estimate.js';
 import { pathToFileURL } from '../file-url.js';
 import { resolveMarkdownLink } from '../markdown-link.js';
@@ -99,9 +100,7 @@ function handleMarkdownClick(wrapper: HTMLElement, baseDir: string | undefined, 
       scrollToHeading(wrapper, target.slug);
       break;
     case 'external':
-      window.finevibe.app
-        .openExternal(target.url)
-        .catch((err: unknown) => console.warn(`[markdown-link] could not open ${target.url}`, err));
+      void openExternal(target.url);
       break;
     case 'file': {
       // openFileReaderChecked validates the path before it spawns a tab — a
@@ -121,6 +120,7 @@ export function renderMarkdownContent(content: string, baseDir?: string): HTMLEl
   const wrapper = document.createElement('div');
   wrapper.className = 'file-reader-markdown';
   const rawHtml = marked.parse(content, { async: false }) as string;
+  // pi-lens-ignore: xss-innerhtml
   wrapper.innerHTML = DOMPurify.sanitize(rawHtml);
   wrapper.addEventListener('click', (event) => handleMarkdownClick(wrapper, baseDir, event));
   return wrapper;

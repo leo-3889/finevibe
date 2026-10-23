@@ -14,6 +14,18 @@ const DEBOUNCE_MS = 150;
 const MAX_FOLDER_WATCHES = 2000;
 let capWarned = false;
 
+// Watcher resilience: network mounts (UNC shares, \\wsl.localhost\ / wsl$)
+// are where native fs notifications are known to stop reporting; chokidar's
+// documented fallback is polling. Polling costs a stat pass per root per
+// interval, so it is opt-in: on when a watched root is a network path, and
+// latched on after ANY watcher 'error' — the watcher is global (every dir
+// shares one chokidar instance), so an error invalidates native
+// notifications for every root, not just the one that tripped.
+const POLL_INTERVAL_MS = 2000;
+let pollingLatched = false;
+let watcherPolling = false;
+let watcherErrorWarned = false;
+
 /**
  * Directory-granular file watcher backed by a single chokidar instance.
  *
@@ -54,20 +66,51 @@ function queueChange(type: FsChangeType, fullPath: string): void {
 
 function ensureWatcher(): FSWatcher {
   if (watcher) return watcher;
+  const usePolling = pollingLatched || [...refCounts.keys()].some(isNetworkRoot);
   const w = new FSWatcher({
     ignoreInitial: true, // don't replay existing entries when a dir is added
     depth: 0, // non-recursive: each added dir reports only its immediate children
     atomic: true, // collapse write-temp + rename into a single change event
     ignorePermissionErrors: true,
     persistent: true,
+    usePolling,
+    ...(usePolling ? { interval: POLL_INTERVAL_MS, binaryInterval: POLL_INTERVAL_MS } : {}),
   });
   const events: FsChangeType[] = ['add', 'addDir', 'change', 'unlink', 'unlinkDir'];
   for (const ev of events) {
     w.on(ev, (p: string) => queueChange(ev, p));
   }
-  w.on('error', () => {}); // dir deleted / unreadable — handled via parent's unlinkDir
+  // Dir deleted / unreadable is handled via the parent's unlinkDir — the
+  // swallow stops at the FIRST real error: warn once with the code, then
+  // rebuild in polling mode; native notifications are no longer trusted.
+  w.on('error', (err: unknown) => onWatcherError(err as NodeJS.ErrnoException));
+  watcherPolling = usePolling;
   watcher = w;
   return w;
+}
+
+/** UNC share / WSL mount: roots where native fs events are unreliable. */
+function isNetworkRoot(p: string): boolean {
+  const lower = p.toLowerCase();
+  return lower.startsWith('\\\\') || lower.includes('wsl.localhost') || lower.includes('wsl$');
+}
+
+function onWatcherError(err: NodeJS.ErrnoException): void {
+  if (!watcherErrorWarned) {
+    watcherErrorWarned = true;
+    console.warn(`[file-watcher] watcher error (${err?.code ?? 'unknown'}): ${err?.message ?? String(err)}`);
+  }
+  if (!watcherPolling) restartWithPolling();
+}
+
+/** Rebuild the global watcher in polling mode and re-arm every live root. */
+function restartWithPolling(): void {
+  pollingLatched = true;
+  const dirs = [...refCounts.keys()];
+  void watcher?.close();
+  watcher = null;
+  const w = ensureWatcher();
+  for (const dir of dirs) w.add(dir);
 }
 
 export function setFileWatcherWindow(win: BrowserWindow): void {
@@ -101,6 +144,9 @@ export function watchDir(dir: string): void {
   }
   refCounts.set(dir, 1);
   ensureWatcher().add(dir);
+  // A network root admitted into a native-mode watcher: native events are
+  // unreliable exactly there — rebuild in polling mode (idempotent latch).
+  if (isNetworkRoot(dir) && !watcherPolling) restartWithPolling();
 }
 
 /** Drop a reference to a watched directory; closes the watch when the last ref goes. */
@@ -123,6 +169,9 @@ export function stopAllFileWatchers(): void {
   pending.clear();
   refCounts.clear();
   capWarned = false;
+  pollingLatched = false;
+  watcherPolling = false;
+  watcherErrorWarned = false;
   if (watcher) {
     void watcher.close();
     watcher = null;

@@ -122,6 +122,23 @@ function parseAccelerator(accelerator: string): { ctrl: boolean; meta: boolean; 
   return { ctrl, meta, shift, alt, key };
 }
 
+/**
+ * Canonical ASCII letter/digit for the physical key of an event.
+ * Non-Latin keyboard layouts (Cyrillic, Greek, Arabic…) report `e.key`
+ * as the layout's character for that key-position ('т' on the physical
+ * T), so a Ctrl+Т press never matches a 'T' binding. `e.code` is
+ * layout-independent: KeyA→'a', Digit1→'1' on every layout. Falls back
+ * to `e.key` when the code is not a plain letter/digit position (e.g.
+ * Numpad1, where e.key already carries the digit).
+ */
+function canonicalAlnumKey(e: KeyboardEvent): string {
+  const letter = /^Key([A-Z])$/.exec(e.code ?? '');
+  if (letter) return letter[1].toLowerCase();
+  const digit = /^Digit([0-9])$/.exec(e.code ?? '');
+  if (digit) return digit[1];
+  return e.key;
+}
+
 /** Check if a KeyboardEvent matches an accelerator string */
 function matchesAccelerator(e: KeyboardEvent, accelerator: string): boolean {
   const parsed = parseAccelerator(accelerator);
@@ -136,9 +153,13 @@ function matchesAccelerator(e: KeyboardEvent, accelerator: string): boolean {
   if (parsed.shift !== eventShift) return false;
   if (parsed.alt !== eventAlt) return false;
 
-  // Compare key - handle special cases
-  const eventKey = e.key;
+  // Compare key - handle special cases. Letter/digit bindings resolve
+  // through the physical-key code so non-Latin layouts keep working;
+  // symbols, punctuation and F-keys keep the e.key comparison.
   const parsedKey = parsed.key;
+  const eventKey = /^[a-zA-Z0-9]$/.test(parsedKey)
+    ? canonicalAlnumKey(e)
+    : e.key;
 
   // Direct match
   if (eventKey === parsedKey) return true;

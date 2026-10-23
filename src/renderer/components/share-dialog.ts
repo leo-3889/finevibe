@@ -4,7 +4,20 @@ import type { ShareMode } from '../../shared/sharing-types.js';
 import { shareSession, acceptShareAnswer, endShare } from '../sharing/share-manager.js';
 import { isSharing, isConnected } from '../sharing/peer-host.js';
 import { generateShareKey } from '../sharing/share-crypto.js';
+import { isWin, isMac } from '../platform.js';
 import { bindModalDismiss } from './modal-manager.js';
+
+// A share that dies at ICE ('failed') carries no actionable error text, and on
+// Windows/macOS the usual cause is an OS network gate the user answered wrong:
+// Chromium's first RTCPeerConnection triggers a Defender Firewall inbound-allow
+// prompt (electron#23756), and macOS 15+ gates local-network access behind a
+// TCC prompt (Apple TN3179). Cancel/Don't Allow makes joins fail silently, so
+// show the recovery step for the running OS.
+const PLATFORM_GATE_HINT = isWin
+  ? 'Windows Defender Firewall may ask to allow FineVibe on first use — choose Allow (Cancel blocks incoming connections)'
+  : isMac
+    ? 'macOS Settings → Privacy & Security → Local Network must be allowed for local joins'
+    : '';
 
 let activeOverlay: HTMLElement | null = null;
 let activeDismiss: (() => void) | null = null;
@@ -261,6 +274,23 @@ export function showShareDialog(sessionId: string): void {
         connectBtn.textContent = 'Connect';
         answerTextarea.value = '';
         answerTextarea.readOnly = false;
+      });
+
+      // peer-host treats ICE 'failed' as terminal and tears the peer down,
+      // which surfaces here as a disconnect. The dialog is only open during
+      // the handshake (onConnected closes it), so every disconnect it sees is
+      // a connection that did not make it — replace the stale waiting text and
+      // point at the OS gate that most often causes it.
+      let gateHintShown = false;
+      handle.onDisconnected(() => {
+        if (activeOverlay !== overlay || gateHintShown) return;
+        gateHintShown = true;
+        statusEl.textContent = 'Connection failed.';
+        if (!PLATFORM_GATE_HINT) return;
+        const hint = document.createElement('div');
+        hint.className = 'share-notice';
+        hint.textContent = PLATFORM_GATE_HINT;
+        statusEl.appendChild(hint);
       });
     } catch (err) {
       if (pendingShareSessionId && isSharing(pendingShareSessionId)) {

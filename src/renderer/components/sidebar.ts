@@ -5,6 +5,7 @@ import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unrea
 import { onChange as onActivityChange, STATUS_GLYPH } from '../session-activity.js';
 import { getProjectStatus, projectInitial } from '../project-status.js';
 import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, markSeen as markDiscussionsSeen, onChange as onDiscussionsChange, DISCUSSIONS_URL } from '../discussions-badge.js';
+import { openExternal } from '../open-external.js';
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
 import { detectGitCheckoutUrl } from '../../shared/git-url.js';
@@ -64,7 +65,7 @@ export function initSidebar(): void {
   applyDiscussionsVisibility();
   sidebarDiscussionsEl.addEventListener('click', () => {
     markDiscussionsSeen();
-    window.finevibe.app.openExternal(DISCUSSIONS_URL);
+    void openExternal(DISCUSSIONS_URL);
   });
   initDiscussionsBadge();
   onDiscussionsChange(renderDiscussions);
@@ -349,7 +350,7 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   // Content is filled in below from DOM nodes, never interpolated here.
   const profileBadge =
     `<span class="project-profile-badge" title="${esc(t('sidebar.profileTooltip'))}"></span>`;
-  // pi-lens-ignore: xss-innerhtml
+  // pi-lens-ignore: xss-innerhtml, no-inner-html
   el.innerHTML = `
     ${lead}
     <div class="project-main">

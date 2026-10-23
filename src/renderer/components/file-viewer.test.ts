@@ -87,3 +87,46 @@ describe('file viewer concurrent loads', () => {
     expect(bodyText('s2')).toContain('added b');
   });
 });
+
+describe('CRLF rendering (git diff viewer)', () => {
+  // Under white-space:pre, splitting a CRLF diff on '\n' left a trailing
+  // '\r' on every line — the pre-formatted CR renders as a second, visibly
+  // empty row: every diff line shows double-height. renderDiff normalizes
+  // CRLF/CR to LF before splitting.
+  async function renderDiff(sessionId: string, file: string, diff: string): Promise<Element> {
+    createFileViewerPane(sessionId, file, 'working');
+    showFileViewerPane(sessionId, false);
+    diffByFile.get(file)!.resolve(diff);
+    await vi.waitFor(() => expect(getFileViewerInstance(sessionId)!.loaded).toBe(true));
+    return getFileViewerInstance(sessionId)!.element.querySelector('.file-viewer-body')!;
+  }
+
+  const rowsIn = (body: Element) => [...body.querySelectorAll('.diff-line')];
+
+  it('renders a CRLF diff with one row per source line (no double-height)', async () => {
+    const body = await renderDiff('crlf', 'crlf.ts', '--- a/crlf.ts\r\n+++ b/crlf.ts\r\n@@ -1 +1 @@\r\n+a\r\n+b');
+    const rows = rowsIn(body);
+    // 3 headers + hunk + 2 added lines — one row per source line.
+    expect(rows).toHaveLength(5);
+    // '+a'/'+b' plus the '+++' header carry the added class.
+    expect(rows.filter((r) => r.classList.contains('added'))).toHaveLength(3);
+    // Double-height would mean an extra empty row per content line: none
+    // (blank rows carry a non-breaking space, never an empty string).
+    expect(rows.filter((r) => r.textContent === '')).toHaveLength(0);
+    expect(body.textContent).not.toMatch(/\r/);
+  });
+
+  it('renders a CR-only diff with one row per source line', async () => {
+    const body = await renderDiff('cr', 'cr.ts', '+a\rb\rc');
+    const rows = rowsIn(body);
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toBe('+a');
+    expect(rows[1].textContent).toBe('b');
+    expect(rows[2].textContent).toBe('c');
+  });
+
+  it('leaves a pure-LF diff unchanged', async () => {
+    const body = await renderDiff('lf', 'lf.ts', '+a\nb\nc');
+    expect(rowsIn(body)).toHaveLength(3);
+  });
+});

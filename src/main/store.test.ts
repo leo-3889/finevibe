@@ -19,7 +19,7 @@ vi.mock('os', () => ({
 }));
 
 import * as fs from 'fs';
-import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, getKnownProjectPaths, DEFAULT_PREFERENCES } from './store';
+import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, getKnownProjectPaths, DEFAULT_PREFERENCES, GATE_ROOT_CANONICAL_MAX, resetWriteStateForTests } from './store';
 import type { PersistedState, ProjectRecord } from './store';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -121,6 +121,29 @@ describe('loadState', () => {
     saveStateSync(raw);
     expect(loadState().preferences).toEqual(DEFAULT_PREFERENCES);
     expect(loadState().activeProjectId).toBe('p1');
+  });
+
+  it('parses a state file saved with a UTF-8 BOM (Notepad/PowerShell edit)', () => {
+    // Notepad/PowerShell on Windows save state.json with a BOM;
+    // JSON.parse rejects it, so an intact hand-edited file was graded
+    // corrupt — .tmp recovery at best, a silent reset to defaults.
+    const state: PersistedState = {
+      version: 1,
+      projects: [],
+      activeProjectId: 'p1',
+      preferences: { ...DEFAULT_PREFERENCES },
+    };
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('\uFEFF' + JSON.stringify(state));
+    expect(loadState()).toEqual(state);
+  });
+
+  it('treats a BOM-only state file as corrupt: defaults, no crash', () => {
+    // A Notepad save of an empty doc is just the BOM. It normalizes to ''
+    // and fails the parse — the existing corrupt path, deliberately.
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('\uFEFF');
+    expect(loadState()).toEqual(DEFAULT_STATE);
   });
 });
 
@@ -278,6 +301,50 @@ describe('saveStateSync', () => {
 
     expect(mockCloseSync).toHaveBeenCalledOnce();
     expect(mockRenameSync).not.toHaveBeenCalled();
+  });
+
+  it('retries the rename through transient Windows lock failures (EPERM/EBUSY)', () => {
+    // AV scans and editor buffers hold state.json open; renameSync onto
+    // the locked target fails EPERM/EBUSY. The save must survive the
+    // lock, not lose the write.
+    const locked = (code: string) => Object.assign(new Error(`${code}: locked`), { code });
+    mockRenameSync
+      .mockImplementationOnce(() => { throw locked('EPERM'); })
+      .mockImplementationOnce(() => { throw locked('EBUSY'); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    saveStateSync(DEFAULT_STATE);
+
+    expect(mockRenameSync).toHaveBeenCalledTimes(3);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('gives up after the rename budget: logged, fsynced .tmp left for startup recovery', () => {
+    const locked = () => Object.assign(new Error('EPERM: locked'), { code: 'EPERM' });
+    mockRenameSync.mockImplementation(() => { throw locked(); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    saveStateSync(DEFAULT_STATE);
+
+    // 5 attempts, 50ms doubling backoff; the payload is NOT lost — the
+    // fsynced .tmp survives (loadState consumes it at next startup).
+    expect(mockRenameSync).toHaveBeenCalledTimes(5);
+    expect(err).toHaveBeenCalledWith('Failed to save state:', expect.objectContaining({ code: 'EPERM' }));
+    err.mockRestore();
+  });
+
+  it('does not retry a rename failure that is not a lock', () => {
+    mockRenameSync.mockImplementation(() => {
+      throw Object.assign(new Error('EXDEV: cross-device'), { code: 'EXDEV' });
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    saveStateSync(DEFAULT_STATE);
+
+    expect(mockRenameSync).toHaveBeenCalledOnce();
+    expect(err).toHaveBeenCalledWith('Failed to save state:', expect.objectContaining({ code: 'EXDEV' }));
+    err.mockRestore();
   });
 });
 
@@ -437,5 +504,115 @@ describe('gate root memo (PA-08)', () => {
     expect(mockRealpathSync).not.toHaveBeenCalled();
     expect(mockStatSync.mock.calls.map((call) => String(call[0]))).not.toContain('/mock/home/projects/real');
     warn.mockRestore();
+  });
+
+  // B1: the memo was unbounded (only invalidateStateCache cleared it) — a
+  // session that keeps gating on fresh project paths grew it forever.
+  it('caps the per-path canonical memo at 200 entries, oldest evicted first', () => {
+    const paths = Array.from({ length: GATE_ROOT_CANONICAL_MAX }, (_, i) => `/mock/home/projects/p${i}`);
+    saveState({ ...DEFAULT_STATE, projects: paths.map(projectAt) });
+    // One realpath per project path. The lazily recomputed CLI-config-root
+    // canonicals (dropped with the memo by invalidateStateCache) ride along
+    // on this first save — they are process constants, not memo misses, so
+    // the memo contract is counted on project paths only.
+    const isProjectPath = (call: unknown[]): boolean =>
+      String(call[0]).startsWith('/mock/home/projects/');
+    expect(mockRealpathSync.mock.calls.filter(isProjectPath)).toHaveLength(GATE_ROOT_CANONICAL_MAX);
+
+    // One more path: the cap+1-th insert evicts the oldest (p0), FIFO.
+    saveState({ ...DEFAULT_STATE, projects: [...paths.map(projectAt), projectAt('/mock/home/projects/overflow')] });
+    mockStatSync.mockClear();
+    mockRealpathSync.mockClear();
+
+    // p0 was evicted: it re-validates. Its re-insert hits the cap again and
+    // evicts the NEXT oldest survivor (p1), which the same loop then
+    // re-validates — pure FIFO cascade, never a policy miss. saveState's
+    // own persistence bookkeeping (state-file stat checks) rides along, so
+    // the memo contract is counted on project paths only.
+    saveState({ ...DEFAULT_STATE, projects: [projectAt(paths[0]!), projectAt(paths[1]!)] });
+    expect(mockStatSync.mock.calls.filter(isProjectPath).map((c) => String(c[0]))).toEqual([paths[0], paths[1]]);
+    expect(mockRealpathSync.mock.calls.filter(isProjectPath).map((c) => String(c[0]))).toEqual([paths[0], paths[1]]);
+  });
+});
+
+// ENOSPC write storm (workstation incident, 2026-10-23): a full disk made
+// every renderer `store:save` IPC a failed atomic write, and the old
+// catch-and-log printed a full stack per attempt (~400/min, journald-
+// mirrored, consuming the very space it complained about). The backoff
+// machine in writeStateAtomically must log ONCE per outage and retry on
+// one exponential timer, never per event.
+describe('write-failure backoff (ENOSPC storm)', () => {
+  const enospc = () =>
+    Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+
+  it('logs the failure once, stays silent across a save storm', () => {
+    resetWriteStateForTests(); // clean leading edge: drop leaked throttle/backoff state from a prior case
+    mockWriteSync.mockImplementation(() => {
+      throw enospc();
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    for (let i = 0; i < 20; i++) {
+      saveState({ ...DEFAULT_STATE, activeProjectId: `storm-${i}` });
+      vi.advanceTimersByTime(400); // every save takes the leading edge
+    }
+
+    // Flood regression: pre-backoff this logged ~20 full stacks (leading
+    // edge per save + trailing timer writes). Now the first failure logs
+    // with the exact legacy shape, and every repeat — the swallowed
+    // mutations and the retry timer's own failures (1s/2s/4s fire inside
+    // the 8s of advancing) — stays silent.
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalledWith('Failed to save state:', expect.objectContaining({ code: 'ENOSPC' }));
+    err.mockRestore();
+  });
+
+  it('backs off to the 60s cap, then recovers with one line', () => {
+    resetWriteStateForTests();
+    mockWriteSync.mockImplementation(() => {
+      throw enospc();
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    // The 'gives up after the rename budget' case installs a PERSISTENT
+    // mockImplementation(throw EPERM) on renameSync, and beforeEach's
+    // vi.clearAllMocks() = mockClear keeps persistent implementations.
+    // Neutralize that leak locally: the recovery attempt must reach a
+    // successful rename for the success handler to fire.
+    mockRenameSync.mockImplementation(() => undefined);
+
+    saveState(DEFAULT_STATE); // leading-edge attempt #1: logs once
+    expect(mockWriteSync).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalledTimes(1);
+
+    // The outage retries on the doubling 1s→60s-capped series — NOT the
+    // 300ms throttle. Renderer mutations keep arriving during every step;
+    // the backoff gate swallows them at zero write syscalls per event.
+    const cadence = [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000];
+    for (let step = 0; step < cadence.length; step++) {
+      for (let burst = 0; burst < 3; burst++) {
+        saveState({ ...DEFAULT_STATE, activeProjectId: `outage-${step}-${burst}` });
+        vi.advanceTimersByTime(200); // 600ms of mutations < the 1s floor
+      }
+      vi.advanceTimersByTime(cadence[step] - 600);
+      expect(mockWriteSync).toHaveBeenCalledTimes(step + 2); // ONE attempt per step
+    }
+    expect(err).toHaveBeenCalledTimes(1); // 8 repeats counted, not logged
+
+    // Disk recovers: the next backoff step writes, logs ONE recovery line,
+    // and no new error fires.
+    mockWriteSync.mockImplementation(((
+      _fd: number,
+      buffer: Buffer,
+      position = 0,
+    ) => buffer.length - position) as unknown as typeof fs.writeSync);
+    vi.advanceTimersByTime(60000);
+
+    expect(mockWriteSync).toHaveBeenCalledTimes(cadence.length + 2);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith('State saved after 8 failed attempt(s)');
+    expect(err).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+    info.mockRestore();
   });
 });

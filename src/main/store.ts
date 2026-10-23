@@ -30,6 +30,31 @@ export function invalidateStateCache(): void {
   gateRootMemo = null;
   gateRootRawPaths = null;
   cliConfigRootsCanonical = null;
+  // The write-backoff machine (see writeStateAtomically) is module state
+  // too: a forced-failure case must not leave an outage armed that would
+  // suppress the next case's leading-edge write.
+  clearWriteRetryTimer();
+  writeBackoffMs = 0;
+  suppressedWriteFailures = 0;
+}
+
+// Test-only. Fully resets the leading-edge throttle and the write-backoff
+// machine. The write-storm tests need a clean leading edge: a trailing
+// saveTimer armed by a prior case lives on a fake clock afterEach tears down,
+// so its handle survives as non-null `saveTimer` and makes the next saveState
+// skip the leading edge (write + log never fire). Production never calls this
+// — invalidateStateCache() deliberately leaves lastState/saveTimer intact so
+// store:save coalescing and the flush contract are preserved.
+export function resetWriteStateForTests(): void {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  clearWriteRetryTimer();
+  writeBackoffMs = 0;
+  suppressedWriteFailures = 0;
+  lastSaveAt = 0;
+  lastState = null;
 }
 
 /** The single documented default for a state file that omits `preferences`
@@ -60,6 +85,17 @@ function defaultState(): LoadedState {
 // both parse, the newer mtime wins; the consumed .tmp is always unlinked,
 // because a stale copy left behind is what a later corrupt state.json would
 // resurrect.
+// A state.json saved by Notepad/PowerShell on Windows carries a UTF-8 BOM;
+// fs.readFileSync('utf-8') keeps it and JSON.parse rejects it, so an intact
+// hand-edited file used to be graded corrupt: .tmp recovery if a sibling
+// exists, else a silent reset to defaults. Strip the leading BOM before
+// parsing. A BOM-only file (a Notepad save of an empty doc) becomes '' and
+// fails the parse — the existing corrupt path, deliberately.
+function parseStateJson(raw: string): PersistedState {
+  // pi-lens-ignore: slop, unchecked-throwing-call
+  return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw) as PersistedState;
+}
+
 export function loadState(): LoadedState {
   if (stateCache) return stateCache;
   const valid: { main?: PersistedState; tmp?: PersistedState } = {};
@@ -67,7 +103,7 @@ export function loadState(): LoadedState {
     try {
       if (!fs.existsSync(file)) continue;
       const raw = fs.readFileSync(file, 'utf-8');
-      const parsed = JSON.parse(raw) as PersistedState;
+      const parsed = parseStateJson(raw);
       if (parsed.version !== 1) continue;
       if (file === STATE_FILE) valid.main = parsed;
       else valid.tmp = parsed;
@@ -141,6 +177,12 @@ export function saveState(state: PersistedState): void {
   // the loader's single documented default on the way in.
   stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
   knownProjectPaths = deriveGateRoots(state.projects);
+  // ENOSPC storm guard (workstation, 2026-10-23): the disk is failing, so
+  // the single backoff timer (see writeStateAtomically) owns retries — no
+  // per-event write syscalls, no per-event log. `lastState` is already the
+  // newest state, so the recovery write flushes every mutation accepted
+  // while backing off.
+  if (writeBackoffMs > 0) return;
   // Leading-edge throttle (same shape as the renderer's persist in
   // state.ts, ffcd283): the first save of a burst writes through
   // IMMEDIATELY, so a crash loses at most the mutations after the last
@@ -297,6 +339,12 @@ function validateGateRoot(rawPath: unknown): { canonical: string } | { drop: str
 // - gateRootMemo: the derived array keyed on the raw path list it came from;
 //   an unchanged list returns the memo with ZERO fs calls.
 const gateRootCanonicalByPath = new Map<string, string>();
+// B1: FIFO bound on the per-path memo (settings-guard.ts'
+// MAX_CONSENT_DIR_RECORDS idiom): a session that keeps gating on fresh
+// project paths must not grow it without limit. Oldest path evicted first;
+// an eviction costs one stat + one realpath on the next save, never a
+// policy miss — the memoized canonical is re-checked on every hit anyway.
+export const GATE_ROOT_CANONICAL_MAX = 200;
 let gateRootRawPaths: string[] | null = null;
 let gateRootMemo: string[] | null = null;
 
@@ -336,7 +384,14 @@ function deriveGateRoots(projects: ProjectRecord[]): string[] {
       console.warn(`Dropped project root from the gate set: ${JSON.stringify(rawPath)} (${validated.drop})`);
       continue;
     }
-    if (cached === undefined && typeof rawPath === 'string') gateRootCanonicalByPath.set(rawPath, validated.canonical);
+    if (cached === undefined && typeof rawPath === 'string') {
+      gateRootCanonicalByPath.set(rawPath, validated.canonical);
+      while (gateRootCanonicalByPath.size > GATE_ROOT_CANONICAL_MAX) {
+        const oldest = gateRootCanonicalByPath.keys().next().value;
+        if (oldest === undefined) break;
+        gateRootCanonicalByPath.delete(oldest);
+      }
+    }
     if (!roots.includes(validated.canonical)) roots.push(validated.canonical);
   }
   // Whole-list memo for an all-valid list only: a list containing a refused
@@ -364,9 +419,16 @@ export function flushState(): void {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
+  // Same teardown for the backoff retry timer (see writeStateAtomically):
+  // a quit has no future to retry in, and an armed timer would fire after
+  // teardown exactly like the debounced one above.
+  clearWriteRetryTimer();
   if (lastState) {
     saveStateSync(lastState);
   }
+  // saveStateSync → onStateWriteFailed can arm one last retry; tear it
+  // down with the flush, mirroring the saveTimer teardown above.
+  clearWriteRetryTimer();
 }
 
 export function saveStateSync(state: PersistedState): void {
@@ -402,44 +464,136 @@ function writeFully(fd: number, payload: Buffer): void {
   }
 }
 
+// Windows holds open files against replacement: while an AV scan, an
+// editor buffer or a backup indexer keeps a handle on state.json,
+// renameSync(tmp, state.json) fails EPERM/EBUSY. The payload is fsynced
+// into .tmp by this point, so a short bounded retry turns a silently lost
+// newest snapshot into a brief stall. Synchronous by necessity:
+// saveStateSync/flushState run on shutdown paths (Windows logout) that do
+// not outlive an async retry, so an armed timer would be dropped
+// mid-flight. Any other errno, or a failed budget, re-throws into the
+// existing catch-and-log; the fsynced .tmp then survives for loadState's
+// startup recovery.
+const RENAME_MAX_ATTEMPTS = 5;
+const RENAME_BACKOFF_MS = 50;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function renameWithRetry(tmpFile: string, target: string): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(tmpFile, target);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if ((code !== 'EPERM' && code !== 'EBUSY') || attempt >= RENAME_MAX_ATTEMPTS) throw err;
+      sleepSync(RENAME_BACKOFF_MS * 2 ** (attempt - 1));
+    }
+  }
+}
+
+// ENOSPC storm guard (workstation incident, 2026-10-23): a full disk made
+// EVERY renderer `store:save` IPC a failed atomic write, and the old
+// catch-and-log printed a full stack per attempt. The 300ms leading-edge
+// throttle re-armed on every mutation, so one outage logged ~400 stacks a
+// minute (journald + rsyslog mirrored them); the log growth consumed the
+// very space the failure complained about — a self-amplifying loop. The
+// first failure of an outage keeps the exact log line, repeats are counted
+// and suppressed, and ONE exponential backoff timer (1s -> 60s cap) owns
+// all retries. Steady state pays nothing: `writeBackoffMs === 0` is the
+// only state, and success short-circuits before any logging.
+const WRITE_BACKOFF_BASE_MS = 1000;
+const WRITE_BACKOFF_CAP_MS = 60000;
+/** Current retry delay; 0 = healthy (no outage in progress). */
+let writeBackoffMs = 0;
+let writeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let suppressedWriteFailures = 0;
+
+function clearWriteRetryTimer(): void {
+  if (writeRetryTimer !== null) {
+    clearTimeout(writeRetryTimer);
+    writeRetryTimer = null;
+  }
+}
+
+function onStateWriteSucceeded(): void {
+  if (writeBackoffMs === 0) return; // steady path: zero syscalls, zero logs
+  const n = suppressedWriteFailures;
+  writeBackoffMs = 0;
+  suppressedWriteFailures = 0;
+  console.info(`State saved after ${n} failed attempt(s)`);
+}
+
+function onStateWriteFailed(err: unknown): void {
+  if (writeBackoffMs === 0) {
+    writeBackoffMs = WRITE_BACKOFF_BASE_MS;
+    suppressedWriteFailures = 0;
+    // First failure of the outage: the exact pre-backoff log line, once.
+    console.error('Failed to save state:', err);
+  } else {
+    suppressedWriteFailures++;
+  }
+  scheduleWriteRetry();
+}
+
+function scheduleWriteRetry(): void {
+  if (writeRetryTimer !== null) return; // a retry is already armed
+  const delay = writeBackoffMs;
+  writeBackoffMs = Math.min(writeBackoffMs * 2, WRITE_BACKOFF_CAP_MS);
+  writeRetryTimer = setTimeout(() => {
+    writeRetryTimer = null;
+    // Coalesce like the trailing throttle: retry the LATEST state.
+    if (lastState) writeStateAtomically(lastState);
+  }, delay);
+}
+
+/** The atomic write, unguarded: every failure (mkdir/chmod, open,
+ * writeFully, fsync, rename) throws to writeStateAtomically's handler. */
+function performStateWrite(state: PersistedState): void {
+  if (fs.existsSync(STATE_DIR)) {
+    // C4S-12: state.json carries secrets, and its PARENT must be private
+    // too. Older builds created the dir with the 0755 default and mkdir
+    // never repairs an existing dir's mode — enforce 0700 on it as well.
+    // Both are no-ops for ACL purposes on Windows (harmless), and the
+    // stat guard keeps the hot persist path free of redundant chmods.
+    try {
+      if ((fs.statSync(STATE_DIR).mode & 0o777) !== 0o700) fs.chmodSync(STATE_DIR, 0o700);
+    } catch { /* best-effort: never block persistence */ }
+  } else {
+    fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  }
+  const tmpFile = `${STATE_FILE}.tmp`;
+  // fsync before rename: a crash between rename and data flush used to
+  // leave a truncated state.json whose .tmp recovery copy was already
+  // consumed by the rename — whole-state loss to defaults.
+  const payload = Buffer.from(JSON.stringify(state, null, 2), 'utf-8');
+  // P2-101: state.json can carry secrets (`project.defaultEnv`). The
+  // default file mode is 0644 — world-readable on multi-user hosts, and
+  // any backup/dotfile sync picks it up. Open the temp file 0600; the
+  // rename below hands that mode to state.json itself. On Windows the
+  // mode argument is a no-op (NTFS uses ACLs; every mode bit ≥0200 maps
+  // to "not read-only"), so this only ever tightens, never breaks.
+  const fd = fs.openSync(tmpFile, 'w', 0o600);
+  // The open mode applies only on CREATE; a .tmp left by an older build
+  // keeps its 0644, so force the mode on the descriptor. fchmodSync is
+  // likewise a no-op for ACL purposes on Windows.
+  fs.fchmodSync(fd, 0o600);
+  try {
+    writeFully(fd, payload);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  renameWithRetry(tmpFile, STATE_FILE);
+}
+
 function writeStateAtomically(state: PersistedState): void {
   try {
-    if (fs.existsSync(STATE_DIR)) {
-      // C4S-12: state.json carries secrets, and its PARENT must be private
-      // too. Older builds created the dir with the 0755 default and mkdir
-      // never repairs an existing dir's mode — enforce 0700 on it as well.
-      // Both are no-ops for ACL purposes on Windows (harmless), and the
-      // stat guard keeps the hot persist path free of redundant chmods.
-      try {
-        if ((fs.statSync(STATE_DIR).mode & 0o777) !== 0o700) fs.chmodSync(STATE_DIR, 0o700);
-      } catch { /* best-effort: never block persistence */ }
-    } else {
-      fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
-    }
-    const tmpFile = `${STATE_FILE}.tmp`;
-    // fsync before rename: a crash between rename and data flush used to
-    // leave a truncated state.json whose .tmp recovery copy was already
-    // consumed by the rename — whole-state loss to defaults.
-    const payload = Buffer.from(JSON.stringify(state, null, 2), 'utf-8');
-    // P2-101: state.json can carry secrets (`project.defaultEnv`). The
-    // default file mode is 0644 — world-readable on multi-user hosts, and
-    // any backup/dotfile sync picks it up. Open the temp file 0600; the
-    // rename below hands that mode to state.json itself. On Windows the
-    // mode argument is a no-op (NTFS uses ACLs; every mode bit ≥0200 maps
-    // to "not read-only"), so this only ever tightens, never breaks.
-    const fd = fs.openSync(tmpFile, 'w', 0o600);
-    // The open mode applies only on CREATE; a .tmp left by an older build
-    // keeps its 0644, so force the mode on the descriptor. fchmodSync is
-    // likewise a no-op for ACL purposes on Windows.
-    fs.fchmodSync(fd, 0o600);
-    try {
-      writeFully(fd, payload);
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmpFile, STATE_FILE);
+    performStateWrite(state);
+    onStateWriteSucceeded();
   } catch (err) {
-    console.error('Failed to save state:', err);
+    onStateWriteFailed(err);
   }
 }

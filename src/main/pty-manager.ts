@@ -2,6 +2,7 @@ import * as pty from 'node-pty';
 import { execSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
+import * as fs from 'fs';
 import * as path from 'path';
 import type { ProviderId } from '../shared/types';
 import { parseEnvVars, partitionUserEnv } from '../shared/env-vars';
@@ -11,7 +12,7 @@ import { getProvider } from './providers/registry';
 import { registerSession } from './hook-status';
 import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
-import { isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
+import { isLinux, isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
 import { canonicalPath } from './fs-utils';
 import { nvmDefaultNodeBinDir } from './providers/nvm';
 
@@ -56,6 +57,28 @@ let cachedFullPath: string | null = null;
 
 const PATH_MARKER_BEGIN = '__VY_PATH_BEGIN__';
 const PATH_MARKER_END = '__VY_PATH_END__';
+
+/**
+ * Default POSIX shell when $SHELL is unset. `/bin/zsh` is the macOS default
+ * login shell; stock Linux distros (Ubuntu) ship no zsh, so the same default
+ * ENOENTs the login-shell PATH probe and the shell tab there. `/bin/sh` is
+ * the always-present fallback and a valid `-ilc` probe target.
+ */
+export function defaultPosixShell(): string {
+  return process.env.SHELL || (isMac ? '/bin/zsh' : '/bin/sh');
+}
+
+/**
+ * Shell for the interactive terminal tab. The default POSIX fallback is
+ * `/bin/sh` (see defaultPosixShell) — a valid `-ilc` probe target, but a
+ * poor interactive shell (no readline history, sparse completion); when
+ * $SHELL is unset prefer `/bin/bash` on Linux if it is installed.
+ */
+function interactiveShell(): string {
+  const fallback = defaultPosixShell();
+  if (isWin || isMac || process.env.SHELL) return fallback;
+  return fs.existsSync('/bin/bash') ? '/bin/bash' : fallback;
+}
 
 export function getRegistryPath(): string {
   if (!isWin) return '';
@@ -125,7 +148,7 @@ export function getFullPath(): string {
     return cachedFullPath;
   }
 
-  const shell = process.env.SHELL || '/bin/zsh';
+  const shell = defaultPosixShell();
 
   // -i is required: nvm exports PATH from ~/.zshrc, only sourced for interactive shells.
   try {
@@ -216,7 +239,7 @@ export function getFullPathAsync(): Promise<string> {
       cachedFullPath = Array.from(pathSet).join(pathSep);
       return cachedFullPath;
     }
-    const shell = process.env.SHELL || '/bin/zsh';
+    const shell = defaultPosixShell();
     try {
       const { stdout } = await execFileP(
         shell,
@@ -695,7 +718,7 @@ export function spawnShellPty(
 
   const shell = isWin
     ? (process.env.COMSPEC || 'cmd.exe')
-    : (process.env.SHELL || '/bin/zsh');
+    : interactiveShell();
   const shellEnv = withUtf8Locale({ ...process.env, PATH: getFullPath() });
   const ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-256color',
@@ -727,7 +750,9 @@ export function killAllPtys(): void {
 
 /**
  * Get the current working directory of a PTY's deepest child process.
- * Uses pgrep/lsof on Unix. Not supported on Windows (returns null).
+ * Uses pgrep/lsof on macOS, a `/proc/<pid>/cwd` readlink on Linux (stock
+ * distros ship without lsof, making the lsof path inert there). Not
+ * supported on Windows (returns null).
  */
 export function getPtyCwd(sessionId: string): Promise<string | null> {
   const instance = ptys.get(sessionId);
@@ -737,6 +762,22 @@ export function getPtyCwd(sessionId: string): Promise<string | null> {
 
   if (isWin) {
     return getPtyCwdWindows(pid);
+  }
+
+  if (isLinux) {
+    return new Promise((resolve) => {
+      findDeepestChild(pid, (deepestPid) => {
+        try {
+          // C5G-10 parity with the macOS path: canonicalize the readlink
+          // target so the renderer's worktree prefix-match sees
+          // kernel-canonical paths.
+          resolve(canonicalPath(fs.readlinkSync(`/proc/${deepestPid}/cwd`)));
+        } catch (err) {
+          console.debug(`[pty-manager] /proc cwd readlink failed for pid ${deepestPid}:`, err);
+          resolve(null);
+        }
+      });
+    });
   }
 
   return new Promise((resolve) => {

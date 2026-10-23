@@ -4,9 +4,30 @@ import * as path from 'path';
 import * as os from 'os';
 import { BrowserWindow } from 'electron';
 import { isWin, pythonBin } from './platform';
+import { STDIN_UTF8_GUARD } from '../shared/python';
 import type { CliSessionStatus } from '../shared/types';
 
-export const STATUS_DIR = path.join(os.tmpdir(), 'finevibe');
+/**
+ * The status-data directory (the watcher's root; every `.status`/`.cost`/
+ * `.name`/… file lives here).
+ *
+ * POSIX suffixes the uid: `os.tmpdir()` is `/tmp` — world-writable and
+ * shared by every user. A fixed `finevibe` name under mode 0700 means the
+ * first user to launch FineVibe owns the directory and every other user's
+ * hooks then fail to create/write their status files — cost, status, and
+ * titles die silently, with no diagnostic beyond missing data. The uid
+ * suffix gives each user a private, still-0700 directory. Windows keeps the
+ * bare name: per-user %TEMP% already isolates users.
+ *
+ * Every producer/consumer (watcher, mkdirs, cleanup, and the Python
+ * generators that embed the path at generation time) routes through this
+ * helper via `STATUS_DIR` — one definition, no drift.
+ */
+export function getStatusDir(): string {
+  const uid = !isWin && typeof process.getuid === 'function' ? process.getuid() : undefined;
+  return path.join(os.tmpdir(), uid === undefined ? 'finevibe' : `finevibe-${uid}`);
+}
+export const STATUS_DIR = getStatusDir();
 export const SCRIPT_DIR = path.join(os.homedir(), '.finevibe', 'run');
 const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'statusline.sh');
 
@@ -146,7 +167,7 @@ export function getStatusLineScriptPath(): string {
  */
 export function buildStatusLinePython(statusDir: string): string {
   return `import sys,json,os
-try:
+${STDIN_UTF8_GUARD}try:
     d=json.load(sys.stdin)
 except:
     sys.exit(0)
@@ -199,7 +220,7 @@ export function installStatusLineScript(): void {
   // interfere with cmd.exe's >> redirection parsing on some Windows versions.
   const logPath = `${STATUS_DIR.replace(/\\/g, '/')}/statusline.log`;
   const script = isWin
-    ? `@echo off\r\n${pythonBin} "${pyPath}" 2>>"${logPath}"\r\n`
+    ? `@echo off\r\n${pythonBin} -X utf8 "${pyPath}" 2>>"${logPath}"\r\n`
     : `#!/bin/sh\n${pythonBin} "${pyPath}" 2>>"${logPath}"\n`;
 
   fs.writeFileSync(STATUSLINE_SCRIPT, script, { mode: 0o755 });

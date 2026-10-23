@@ -21,7 +21,7 @@ vi.mock('../state/specialized-sessions.js', () => ({
   resolvePlanModePreference,
 }));
 
-const { buildPrompt, initFilePrompt } = await import('./file-prompt.js');
+const { buildPrompt, initFilePrompt, chipFileName } = await import('./file-prompt.js');
 const { getFileReaderInstance } = await import('./file-reader.js');
 type PaneContext = Parameters<typeof buildPrompt>[0];
 
@@ -136,5 +136,25 @@ describe('Ask AI composer send', () => {
     expect(mockState.addPlanSession).toHaveBeenCalledWith(
       'proj-1', 'README.md: rename x', true, undefined, undefined, { activate: true },
     );
+  });
+});
+
+describe('chipFileName (Ask-AI session chip)', () => {
+  // The chip label split on '/' only — a Windows path printed its full
+  // backslash path as the "file name".
+  it('keeps the last segment of a Windows backslash path', () => {
+    expect(chipFileName('C:\\Users\\dev\\project\\src\\AuthController.cs')).toBe('AuthController.cs');
+  });
+
+  it('keeps the last segment of a POSIX path', () => {
+    expect(chipFileName('/repo/src/auth.ts')).toBe('auth.ts');
+  });
+
+  it('keeps a bare file name', () => {
+    expect(chipFileName('auth.ts')).toBe('auth.ts');
+  });
+
+  it('falls back to "file" for an empty path', () => {
+    expect(chipFileName('')).toBe('file');
   });
 });

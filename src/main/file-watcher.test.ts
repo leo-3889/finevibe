@@ -13,17 +13,17 @@ class FakeWatcher {
   add(p: string) { this.added.push(p); return this; }
   unwatch(p: string) { this.unwatched.push(p); return this; }
   close() { this.closed = true; return Promise.resolve(); }
-  emit(event: string, p: string) { this.handlers.get(event)?.(p); }
+  emit(event: string, payload: string | NodeJS.ErrnoException) { this.handlers.get(event)?.(payload as string); }
 }
 
 let lastWatcher: FakeWatcher;
-const FSWatcherCtor = vi.fn(() => {
+const FSWatcherCtor = vi.fn((_opts?: unknown) => {
   lastWatcher = new FakeWatcher();
   return lastWatcher;
 });
 
 vi.mock('chokidar', () => ({
-  FSWatcher: function () { return FSWatcherCtor(); },
+  FSWatcher: function (opts?: unknown) { return FSWatcherCtor(opts); },
 }));
 
 import { watchDir, unwatchDir, setFileWatcherWindow, stopAllFileWatchers } from './file-watcher';
@@ -113,5 +113,56 @@ describe('teardown', () => {
     // A subsequent watch spins up a fresh watcher.
     watchDir('/b');
     expect(FSWatcherCtor).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('watcher resilience', () => {
+  it('warns once with the error code and restarts the watcher with usePolling', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    watchDir('/repo/a');
+    const first = lastWatcher;
+    lastWatcher.emit('error', Object.assign(new Error('native events died'), { code: 'EMFILE' }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('EMFILE');
+    // The native watcher is closed and rebuilt in polling mode…
+    expect(first.closed).toBe(true);
+    expect(FSWatcherCtor).toHaveBeenCalledTimes(2);
+    const opts = FSWatcherCtor.mock.calls[1][0] as { usePolling: boolean; interval?: number };
+    expect(opts.usePolling).toBe(true);
+    expect(opts.interval).toBe(2000);
+    // …and every live root is re-armed on it.
+    expect(lastWatcher.added).toEqual(['/repo/a']);
+    // A second error: no second warn, no second restart (already polling).
+    lastWatcher.emit('error', new Error('again'));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(FSWatcherCtor).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts in polling mode for a UNC root (native events are unreliable there)', () => {
+    watchDir('\\\\server\\share\\repo');
+    const opts = FSWatcherCtor.mock.calls[0][0] as { usePolling: boolean };
+    expect(opts.usePolling).toBe(true);
+  });
+
+  it('starts in polling mode for a wsl.localhost root', () => {
+    watchDir('\\\\wsl.localhost\\Ubuntu\\home\\user\\repo');
+    const opts = FSWatcherCtor.mock.calls[0][0] as { usePolling: boolean };
+    expect(opts.usePolling).toBe(true);
+  });
+
+  it('keeps native watching for plain local roots (polling costs stay opt-in)', () => {
+    watchDir('/repo/plain');
+    const opts = FSWatcherCtor.mock.calls[0][0] as { usePolling: boolean };
+    expect(opts.usePolling).toBe(false);
+  });
+
+  it('a network root admitted to a live native watcher restarts it polling', () => {
+    watchDir('/repo/plain');
+    expect(FSWatcherCtor.mock.calls[0][0]).toEqual(expect.objectContaining({ usePolling: false }));
+    watchDir('\\\\server\\share\\repo');
+    expect(FSWatcherCtor).toHaveBeenCalledTimes(2);
+    expect(FSWatcherCtor.mock.calls[1][0]).toEqual(expect.objectContaining({ usePolling: true }));
+    // Both roots live on the polling watcher.
+    expect(lastWatcher.added).toEqual(['/repo/plain', '\\\\server\\share\\repo']);
   });
 });
