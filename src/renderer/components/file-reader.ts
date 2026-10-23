@@ -45,7 +45,10 @@ function renderFileContent(content: string, firstLine = 1): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'file-reader-content';
 
-  const lines = content.split('\n');
+  // CRLF: the split is LF-only; a trailing '\r' under white-space:pre
+  // renders as a second, visibly empty row — CRLF files read double-height.
+  // Normalize CRLF/CR to LF first; pure-LF content is unchanged.
+  const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   for (let i = 0; i < lines.length; i++) {
     const row = document.createElement('div');
     row.className = 'file-reader-line';

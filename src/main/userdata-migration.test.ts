@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { migrateLegacyUserData } from './userdata-migration';
+import {
+  migrateLegacyUserData,
+  retireLegacyUserData,
+  getLegacyRetirementStatus,
+  RETIRE_GRACE_MS,
+  type MigrationLedgerRecord,
+} from './userdata-migration';
 
 const dirs: string[] = [];
 function tmpRoot(): string {
@@ -140,5 +146,173 @@ describe('migrateLegacyUserData', () => {
 
     expect(['Vibeyard', 'vibeyard']).toContain(path.basename(String(report.appData.source)));
     expect(fs.readFileSync(path.join(userData, 'probe-cache.json'), 'utf8')).toBe('dev');
+  });
+});
+
+// --- A3: migration ledger + retirement -----------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Comfortably past RETIRE_GRACE_MS. */
+const GRACE_ELAPSED = RETIRE_GRACE_MS + 2 * DAY_MS;
+
+function readLedgerFile(userData: string): MigrationLedgerRecord[] {
+  return JSON.parse(fs.readFileSync(path.join(userData, '.finevibe-migrations.json'), 'utf8')).migrations;
+}
+
+/** Backdate one ledger record, simulating `ageMs` of wall time passing. */
+function ageLedger(userData: string, id: string, ageMs: number): void {
+  const file = path.join(userData, '.finevibe-migrations.json');
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.migrations.find((r: MigrationLedgerRecord) => r.id === id).completedAt =
+    new Date(Date.now() - ageMs).toISOString();
+  fs.writeFileSync(file, JSON.stringify(raw));
+}
+
+describe('migration ledger (A3)', () => {
+  it('records fileCount/copiedBytes for every clean copy pass', () => {
+    const root = tmpRoot();
+    const { home, appData, userData } = layout(root);
+
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+
+    const ledger = readLedgerFile(userData);
+    const appDataRec = ledger.find((r) => r.id === 'appData')!;
+    expect(appDataRec.from).toBe(path.join(appData, 'Vibeyard'));
+    expect(appDataRec.to).toBe(userData);
+    // Local State + iso Cookies + indexeddb/level; the purged stale
+    // partition is NOT counted (it never lands at the destination).
+    expect(appDataRec.fileCount).toBe(3);
+    expect(appDataRec.copiedBytes).toBeGreaterThan(0);
+    const homeRec = ledger.find((r) => r.id === 'home')!;
+    expect(homeRec.fileCount).toBe(2);
+    expect(homeRec.copiedBytes).toBeGreaterThan(0);
+  });
+
+  it('is idempotent: a later launch never rewrites the verified record', () => {
+    const root = tmpRoot();
+    const { home, appData, userData } = layout(root);
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+    const first = readLedgerFile(userData).find((r) => r.id === 'appData')!;
+
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+
+    expect(readLedgerFile(userData).find((r) => r.id === 'appData')).toEqual(first);
+  });
+});
+
+describe('retireLegacyUserData (A3)', () => {
+  it('keeps the legacy tree while the grace has not elapsed', () => {
+    const root = tmpRoot();
+    const { home, appData, userData, legacyUserData } = layout(root);
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+
+    const entries = retireLegacyUserData({ userDataDir: userData, appDataDir: appData });
+
+    const entry = entries.find((e) => e.id === 'appData')!;
+    expect(entry.outcome).toBe('kept');
+    expect(entry.reason).toContain('grace not elapsed');
+    expect(fs.existsSync(legacyUserData)).toBe(true);
+  });
+
+  it('keeps the legacy tree when the opt-out file is present', () => {
+    const root = tmpRoot();
+    const { home, appData, userData, legacyUserData } = layout(root);
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+    ageLedger(userData, 'appData', GRACE_ELAPSED);
+    write(path.join(userData, 'retire-legacy-user-data.off'), 'user said no');
+
+    const entries = retireLegacyUserData({ userDataDir: userData, appDataDir: appData });
+
+    const entry = entries.find((e) => e.id === 'appData')!;
+    expect(entry.outcome).toBe('kept');
+    expect(entry.reason).toContain('opt-out');
+    expect(fs.existsSync(legacyUserData)).toBe(true);
+  });
+
+  it('keeps the legacy tree when the destination integrity check fails', () => {
+    const root = tmpRoot();
+    const { home, appData, userData, legacyUserData } = layout(root);
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+    ageLedger(userData, 'appData', GRACE_ELAPSED);
+    // Destination lost files since the copy: dest count < record count.
+    fs.rmSync(path.join(userData, 'indexeddb'), { recursive: true, force: true });
+    fs.rmSync(path.join(userData, 'Local State'), { force: true });
+
+    const entries = retireLegacyUserData({ userDataDir: userData, appDataDir: appData });
+
+    const entry = entries.find((e) => e.id === 'appData')!;
+    expect(entry.outcome).toBe('kept');
+    expect(entry.reason).toContain('integrity');
+    expect(fs.existsSync(legacyUserData)).toBe(true);
+  });
+
+  it('marks a pre-ledger copy unverified and never retires it', () => {
+    const root = tmpRoot();
+    const { home, appData, userData, legacyUserData } = layout(root);
+    // An OLD code version did the copy: marker present, no ledger. The
+    // destination is even missing every file - an integrity walk would
+    // fail - so only the unverified gate may keep this tree alive.
+    fs.mkdirSync(userData, { recursive: true });
+    fs.writeFileSync(path.join(userData, '.finevibe-migrated'), 'pre-ledger copy');
+
+    const report = migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+    expect(report.appData.alreadyMigrated).toBe(true);
+    const rec = readLedgerFile(userData).find((r) => r.id === 'appData')!;
+    expect(rec.fileCount).toBe(-1);
+    ageLedger(userData, 'appData', GRACE_ELAPSED);
+
+    const entries = retireLegacyUserData({ userDataDir: userData, appDataDir: appData });
+
+    const entry = entries.find((e) => e.id === 'appData')!;
+    expect(entry.outcome).toBe('unverified');
+    expect(fs.existsSync(legacyUserData)).toBe(true);
+  });
+
+  it('removes the legacy userData tree after grace + integrity, logs it, and never touches the home tree', () => {
+    const root = tmpRoot();
+    const { home, appData, userData, legacyHome, legacyUserData } = layout(root);
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+    ageLedger(userData, 'appData', GRACE_ELAPSED);
+    ageLedger(userData, 'home', GRACE_ELAPSED);
+
+    const entries = retireLegacyUserData({ userDataDir: userData, appDataDir: appData });
+
+    // Home records are out of retirement scope: silent skip, no entry.
+    expect(entries.map((e) => e.id)).toEqual(['appData']);
+    const appDataEntry = entries[0]!;
+    expect(appDataEntry.outcome).toBe('removed');
+    expect(appDataEntry.bytesFreed).toBeGreaterThan(0);
+    expect(fs.existsSync(legacyUserData)).toBe(false);
+    // The home tree is structurally out of scope (legacy-import.ts reads it).
+    expect(fs.existsSync(legacyHome)).toBe(true);
+    // Audit log written and readable through the exported status API.
+    const log = getLegacyRetirementStatus(userData);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.outcome).toBe('removed');
+    expect(log[0]!.from).toBe(legacyUserData);
+  });
+
+  it('second launch is a no-op: no entries, audit log unchanged', () => {
+    const root = tmpRoot();
+    const { home, appData, userData, legacyUserData } = layout(root);
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+    ageLedger(userData, 'appData', GRACE_ELAPSED);
+    retireLegacyUserData({ userDataDir: userData, appDataDir: appData });
+    expect(fs.existsSync(legacyUserData)).toBe(false);
+    const logFile = path.join(userData, 'legacy-retirement.json');
+    const logBefore = fs.readFileSync(logFile, 'utf8');
+
+    const entries = retireLegacyUserData({ userDataDir: userData, appDataDir: appData });
+
+    expect(entries).toEqual([]);
+    expect(fs.readFileSync(logFile, 'utf8')).toBe(logBefore);
+  });
+
+  it('is a no-op with no ledger (fresh install, nothing ever migrated)', () => {
+    const root = tmpRoot();
+    const userData = path.join(root, 'appData', 'finevibe');
+    fs.mkdirSync(userData, { recursive: true });
+    expect(retireLegacyUserData({ userDataDir: userData, appDataDir: path.join(root, 'appData') })).toEqual([]);
+    expect(getLegacyRetirementStatus(userData)).toEqual([]);
   });
 });

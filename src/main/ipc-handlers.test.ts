@@ -3,8 +3,8 @@ import { searchSessions } from './session-deep-search';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { CliProvider } from './providers/provider';
 import * as fs from 'fs';
-import { clipboard, dialog, utilityProcess } from 'electron';
 import * as os from 'os';
+import { clipboard, dialog, shell, utilityProcess } from 'electron';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ClipboardPastePayload } from '../shared/types';
 import * as path from 'path';
@@ -186,7 +186,10 @@ vi.mock('./profiles', autoStub);
 vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
 
-import { registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting } from './ipc-handlers';
+import {
+  registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
+  sweepEnumerationCaches, ENUMERATE_CACHE_MAX, TOP_FILES_CACHE_MAX, OUTSIDE_HOME_CONSENT_MAX,
+} from './ipc-handlers';
 import { isManagedMcpConfigDir, removeMcpServer } from './claude-cli';
 import { loadState } from './store';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
@@ -408,6 +411,54 @@ describe('fs:listFiles enumeration cache (PA-07)', () => {
     expect(await list(root, 'gone')).toEqual([]);
     expect(mockGitCloneSpawn).toHaveBeenCalledTimes(2);
     expect(await list(root, 'b')).toEqual(['b.ts']);
+  });
+});
+
+// The file tree's two shell channels. `shell.trashItem` moves a file into the
+// trash of ITS OWN volume, so it rejects EXDEV for a project under os.tmpdir()
+// or on a secondary drive; the renderer caller has to see that reason, and the
+// reveal has to keep passing the file (not the parent) to be selected.
+describe('fs:trashItem / fs:showInFolder shell wiring', () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-shell-'));
+    knownPaths.push(root);
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('surfaces an EXDEV trash rejection to the caller as { ok:false, error }', async () => {
+    const file = path.join(root, 'shot.png');
+    fs.writeFileSync(file, 'x');
+    const exdev = Object.assign(new Error('EXDEV: cross-device link not permitted, rename'), { code: 'EXDEV' });
+    vi.mocked(shell.trashItem).mockRejectedValueOnce(exdev);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await handlers.get('fs:trashItem')!({}, file)).toEqual({ ok: false, error: exdev.message });
+      expect(warn).toHaveBeenCalledWith('fs:trashItem failed:', exdev);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('reveals a file with showItemInFolder(file) — the file path is what selects it', async () => {
+    const file = path.join(root, 'a.ts');
+    fs.writeFileSync(file, 'x');
+    expect(await handlers.get('fs:showInFolder')!({}, file)).toEqual({ ok: true });
+    // Electron's Linux reveal passes `--select <file>` to the file manager
+    // (Nautilus, Nemo, …), which needs the FILE; handing it the parent dir
+    // would open the folder with nothing highlighted.
+    expect(shell.showItemInFolder).toHaveBeenCalledWith(file);
+    expect(shell.openPath).not.toHaveBeenCalled();
+  });
+
+  it('opens a directory itself with openPath, never as a reveal', async () => {
+    const dir = path.join(root, 'src');
+    fs.mkdirSync(dir);
+    expect(await handlers.get('fs:showInFolder')!({}, dir)).toEqual({ ok: true });
+    expect(shell.openPath).toHaveBeenCalledWith(dir);
+    expect(shell.showItemInFolder).not.toHaveBeenCalled();
   });
 });
 
@@ -801,14 +852,33 @@ describe('fs:listDirs home gate (P1-19)', () => {
 });
 
 describe('fs:isDirectory home gate (P2-38)', () => {
-  it('reports false for a home-outside directory - same oracle fs:exists denies', () => {
-    expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).toBe(false);
+  it('asks for a home-outside directory and reports false on Cancel', async () => {
+    // dialog.showMessageBox resolves response 0 (Cancel) by default.
+    // The old silent-false oracle (fs:exists denies, no dialog) is gone:
+    // home-outside now gets the same explicit confirm fs:listDirs uses.
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalled();
   });
 
-  it('reports true for a home-tree directory (pre-project add flow)', () => {
+  it('reports the honest stat for a home-outside directory after an explicit confirm', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    // OUTSIDE_HOME is a real existing directory (C:\\Windows / /etc), so
+    // the post-confirm answer is the honest stat: true, not the old deny.
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(true);
+  });
+
+  it('caches the confirm per directory — repeats answer from the cache with one dialog', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(true);
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(true);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports true for a home-tree directory with no confirm (pre-project add flow)', async () => {
     const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-isdir-'));
     try {
-      expect(handlers.get('fs:isDirectory')!({}, homeDir)).toBe(true);
+      await expect(handlers.get('fs:isDirectory')!({}, homeDir)).resolves.toBe(true);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
@@ -2336,5 +2406,135 @@ describe('vibeyard:listImportableProjects', () => {
     // ./legacy-import is unmocked, so this reads the developer's real
     // homedir; the module never throws, so the contract is "an array".
     expect(await handler!({})).toBeInstanceOf(Array);
+  });
+});
+
+// B1: the two per-cwd caches were unbounded — one entry per project opened
+// in the session, freed only by TTL/git:changed on the cwds someone
+// revisited. Cap + touch-refresh LRU (fs-utils.ts idiom), plus the
+// TTL-expiry sweep exported for the idle housekeeper.
+describe('enumeration cache caps and sweep (B1)', () => {
+  const list = (cwd: string, query = ''): Promise<string[]> =>
+    handlers.get('fs:listFiles')!({}, cwd, query) as Promise<string[]>;
+  const scan = (cwd: string): Promise<Record<string, unknown>> =>
+    handlers.get('fs:topFilesByTokens')!({}, cwd, 10) as Promise<Record<string, unknown>>;
+
+  function stubGit(stdout: string | null) {
+    mockGitCloneSpawn.mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null, stdout: unknown, stderr?: string) => void;
+      if (stdout === null) cb(new Error('not a git repository'), '', '');
+      else cb(null, { stdout }, ''); // envelope convention, as stubGitLsFiles
+    }) as never);
+  }
+
+  let root: string;
+  function subdir(name: string): string {
+    const d = path.join(root, name);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'a.ts'), 'a');
+    return d;
+  }
+  beforeEach(() => {
+    vi.mocked(buildFineVibeIgnoreMatcher).mockReturnValue(() => false);
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-cache-cap-'));
+    knownPaths.push(root);
+    _resetEnumerateCacheForTesting();
+  });
+  afterEach(() => {
+    // A failed expect() must not leak a recording open-spy into the next
+    // test: vi.spyOn on an already-spied method reuses the live spy, so a
+    // leaked spy reports the NEXT test's own opens as unexpected calls.
+    vi.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+    vi.useRealTimers();
+  });
+
+  it('bounds enumerateCache at the cap; a touched cwd survives, the oldest re-enumerates', async () => {
+    stubGit('a.ts\n');
+    const dirs = Array.from({ length: ENUMERATE_CACHE_MAX }, (_, i) => subdir(`c${i}`));
+    for (const d of dirs) expect(await list(d)).toEqual(['a.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX);
+
+    // Touch-refresh dirs[0] (recency tail), then overflow with a fresh cwd.
+    expect(await list(dirs[0]!)).toEqual(['a.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX); // served from cache
+    await list(subdir('overflow'));
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX + 1);
+
+    // LRU eviction hit dirs[1] (the oldest now), not the touched dirs[0].
+    await list(dirs[1]!);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX + 2);
+    await list(dirs[0]!);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX + 2); // survived: no spawn
+  });
+
+  it('bounds topFilesCache at the cap; a touched cwd survives, the oldest re-reads', async () => {
+    stubGit(null); // reject git: the walk fallback enumerates (readdir only)
+    const openSpy = vi.spyOn(fs.promises, 'open');
+    const dirs = Array.from({ length: TOP_FILES_CACHE_MAX }, (_, i) => subdir(`t${i}`));
+    for (const d of dirs) {
+      openSpy.mockClear();
+      expect(((await scan(d)).files as unknown[]).length).toBe(1);
+      expect(openSpy).toHaveBeenCalledTimes(1); // the one file was read
+    }
+    await scan(dirs[0]!); // touch-refresh to the recency tail
+    await scan(subdir('overflow'));
+
+    openSpy.mockClear();
+    await scan(dirs[1]!); // evicted: the file is opened again
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    openSpy.mockClear(); // the dirs[1] re-read above is the expected eviction cost
+    await scan(dirs[0]!); // touched: served from the cache
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+
+  it('sweepEnumerationCaches drops TTL-expired entries and keeps fresh ones', async () => {
+    vi.useFakeTimers();
+    stubGit('a.ts\n');
+    const a = subdir('sweep-a');
+    const b = subdir('sweep-b');
+    expect(await list(a)).toEqual(['a.ts']); // enumerateCache: a
+    expect(await scan(a)).toMatchObject({ ok: true }); // topFilesCache: a
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(30_001); // a is now TTL-expired
+    expect(await list(b)).toEqual(['a.ts']); // b enters fresh (spawn 2)
+    expect(await scan(b)).toMatchObject({ ok: true }); // b's scan shares the listing
+
+    sweepEnumerationCaches();
+
+    expect(await list(a)).toEqual(['a.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(3);
+    // b's fresh entries survived the sweep: no spawn, no file open.
+    const openSpy = vi.spyOn(fs.promises, 'open');
+    console.log('SPY created; calls so far:', openSpy.mock.calls.length);
+    expect(await list(b)).toEqual(['a.ts']);
+    expect(((await scan(b)).files as unknown[]).length).toBe(1);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(3);
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+});
+
+// B1: the consent answer cache was unbounded — one canonical dir per prefix
+// typed into the Add-Project dialog for the life of the session. FIFO cap;
+// an eviction costs a re-prompt, the safe direction for consent.
+describe('home-outside consent cache cap (B1)', () => {
+  it('caps the consent cache at the cap, oldest answer evicted first', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValue({ response: 1 } as never);
+    // Keys only — the dirs never need to exist: enumeration asks before it
+    // reads, so a missing dir is answered from the cache like a real one.
+    const dirs = Array.from({ length: OUTSIDE_HOME_CONSENT_MAX + 1 }, (_, i) =>
+      path.join(OUTSIDE_HOME, `fv-consent-cap-${i}`));
+    for (const d of dirs) await handlers.get('fs:listDirs')!({}, d);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(OUTSIDE_HOME_CONSENT_MAX + 1);
+
+    // The cap+1-th insert evicted dirs[0]; the newest answer is cached.
+    await handlers.get('fs:listDirs')!({}, dirs[dirs.length - 1]!);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(OUTSIDE_HOME_CONSENT_MAX + 1);
+
+    await handlers.get('fs:listDirs')!({}, dirs[0]!); // evicted: asks again
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(OUTSIDE_HOME_CONSENT_MAX + 2);
   });
 });

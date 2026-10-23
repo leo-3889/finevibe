@@ -10,7 +10,7 @@ import { addMcpServer, removeMcpServer, isManagedMcpConfigDir } from './claude-c
 import type { McpServerConfig } from './claude-cli';
 import { fileURLToPath } from 'node:url';
 import { listImportableLegacyProjects } from './legacy-import';
-import { loadState, saveState, saveStateSync, getKnownProjectPaths, PersistedState } from './store';
+import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateStateCache, PersistedState } from './store';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
@@ -36,12 +36,15 @@ import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPack
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
 import { sweepImportTempDirs } from './chrome-import/copy';
+import { dirSizeBytes } from './launch-session-dir';
+import { getLegacyRetirementStatus } from './userdata-migration';
 import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { buildFineVibeIgnoreMatcher } from './finevibeignore';
 import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
 import { getKeychainIsolationStatus } from './claude-keychain';
+import { getLastDiskHealth } from './disk-health';
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
 // "Checkout and create": a full clone of a large allowlisted repo over a slow
 // link is minutes, not seconds; the modal shows a progress state, so this
@@ -186,8 +189,8 @@ function isAllowedReadPath(resolvedPath: string): boolean {
  * read gate widened with the home tree. The pre-project add / new-project
  * picker flows run in home before any project exists, so home is a
  * legitimate enumeration root; everything outside home + known roots is
- * not app data and needs the explicit confirm below (fs:listDirs) or is
- * answered with the channel's empty shape (fs:isDirectory).
+ * not app data and needs the explicit confirm below (fs:listDirs,
+ * fs:isDirectory) before anything is answered about it.
  */
 function isWithinHomeTree(resolvedPath: string): boolean {
   return isWithin(canonicalRoot(os.homedir()), canonicalPath(resolvedPath));
@@ -222,6 +225,11 @@ async function confirmHomeOutsideListing(canonicalDir: string): Promise<boolean>
 // dialog per typed prefix (C:\, C:\dev\, ...). The answer is cached per
 // canonical directory for the session: enumeration asks at most once per
 // dir, and a Cancel keeps denying every repeat on that dir.
+// B1: FIFO bound mirroring settings-guard.ts' MAX_CONSENT_DIR_RECORDS
+// (C3M-05): a long-lived session browsing many home-outside prefixes must
+// not grow the answer cache without limit. Oldest answer evicted first; a
+// re-prompt after eviction is the safe direction (consent, not access).
+export const OUTSIDE_HOME_CONSENT_MAX = 200;
 const outsideHomeConsent = new Map<string, boolean>();
 // C2M-10 + CI-09: the answer cache only closes the SEQUENTIAL repeat. The
 // keystroke burst fires concurrent fs:listDirs for one dir while the first
@@ -242,6 +250,11 @@ async function confirmHomeOutsideListingOnce(dir: string): Promise<boolean> {
   outsideHomeConsentInFlight.set(key, run);
   const answer = await run;
   outsideHomeConsent.set(key, answer);
+  while (outsideHomeConsent.size > OUTSIDE_HOME_CONSENT_MAX) {
+    const oldest = outsideHomeConsent.keys().next().value;
+    if (oldest === undefined) break;
+    outsideHomeConsent.delete(oldest);
+  }
   return answer;
 }
 
@@ -315,6 +328,11 @@ async function walkProjectFiles(root: string): Promise<string[]> {
 // at most one.
 const enumerateCache = new Map<string, { at: number; files: string[] }>();
 const enumerateInFlight = new Map<string, Promise<string[]>>();
+// B1: LRU bound on the per-cwd enumeration caches. Map insertion order
+// doubles as recency: every read hit re-inserts its entry, so evicting the
+// first key past the cap drops the least recently used cwd
+// (canonical inline idiom, fs-utils.ts:63-79).
+export const ENUMERATE_CACHE_MAX = 64;
 const ENUMERATE_TTL_MS = 30_000;
 // Clearing the cache does not reach an enumeration already walking the tree,
 // so a plain `enumerateCache.clear()` on git:changed left two holes: new
@@ -335,16 +353,41 @@ function invalidateEnumerations(): void {
   topFilesCache.clear();
 }
 
+/** B1: drop every TTL-expired entry from the two persistent enumeration
+ * caches (the in-flight maps are transient — a settled walk always clears
+ * its own slot). `invalidateEnumerations` is the force-clear on git:changed;
+ * this is the idle sweep that keeps a session reading only a few cwds from
+ * holding TTL-dead listings (and their file arrays) forever. */
+export function sweepEnumerationCaches(): void {
+  const now = Date.now();
+  for (const [cwd, entry] of enumerateCache) {
+    if (now - entry.at >= ENUMERATE_TTL_MS) enumerateCache.delete(cwd);
+  }
+  for (const [cwd, entry] of topFilesCache) {
+    if (now - entry.at >= TOP_FILES_TTL_MS) topFilesCache.delete(cwd);
+  }
+}
+
 async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
   const hit = enumerateCache.get(resolvedCwd);
-  if (hit && Date.now() - hit.at < ENUMERATE_TTL_MS) return hit.files;
+  if (hit && Date.now() - hit.at < ENUMERATE_TTL_MS) {
+    enumerateCache.delete(resolvedCwd);
+    enumerateCache.set(resolvedCwd, hit);
+    return hit.files;
+  }
   const pending = enumerateInFlight.get(resolvedCwd);
   if (pending) return pending;
   const gen = enumerateGeneration;
   const run = async (): Promise<string[]> => {
     try {
       const files = await enumerateProjectFiles(resolvedCwd);
-      if (gen === enumerateGeneration) enumerateCache.set(resolvedCwd, { at: Date.now(), files });
+      if (gen === enumerateGeneration) {
+        enumerateCache.set(resolvedCwd, { at: Date.now(), files });
+        if (enumerateCache.size > ENUMERATE_CACHE_MAX) {
+          const oldest = enumerateCache.keys().next().value;
+          if (oldest !== undefined) enumerateCache.delete(oldest);
+        }
+      }
       return files;
     } finally {
       // Only the run that still owns the slot clears it; an invalidation may
@@ -369,6 +412,8 @@ const topFilesScans = new Map<string, Promise<{ files: TopFile[]; scanned: numbe
 // the tree on every mount after the first. CI-08: a walk superseded by
 // invalidateEnumerations() never publishes here (see scanTopFiles).
 const topFilesCache = new Map<string, { at: number; files: TopFile[]; scanned: number; skipped: number }>();
+// B1: same LRU bound as the enumeration cache it derives from.
+export const TOP_FILES_CACHE_MAX = 64;
 const TOP_FILES_TTL_MS = ENUMERATE_TTL_MS;
 
 // C2M-05: the head sample a token estimate is computed from. Mirrors the
@@ -542,6 +587,169 @@ async function removeAgentFromProvider(p: CliProvider, slug: string): Promise<Ag
     }
   }
   return results;
+}
+
+// ---- A5: in-app storage report (storage:scan / storage:clear) -----------
+
+/** Bounded-walk caps for `storage:scan`. The scan reports userData subtrees
+ *  for a human-facing MB report; a userData tree with more than these many
+ *  entries is abnormal enough that a complete census is not worth blocking
+ *  the call — the result carries `truncated: true` instead. */
+const STORAGE_SCAN_MAX_ENTRIES = 50_000;
+/** Children enumerated per directory before the scan marks itself truncated
+ *  (the shared dirSizeBytes idiom then bounds the recursion depth at 4). */
+const STORAGE_SCAN_MAX_CHILDREN = 1_000;
+
+export interface StorageSubtreeUsage {
+  name: string;
+  bytes: number;
+}
+
+/** One shared visit budget + truncated flag threaded through a scan. */
+interface ScanBudget {
+  entries: number;
+  truncated: boolean;
+}
+
+/**
+ * Size one directory with the caps applied: the top level is enumerated
+ * here (child count capped), every sub-directory is then sized with the
+ * shared `dirSizeBytes` idiom from launch-session-dir.ts — depth-bounded,
+ * symlink-ignoring, swallow-per-entry. Never throws; a missing dir is 0.
+ * `skip` names (top level only) let the "misc" bucket exclude subtrees the
+ * scan already counted under their own names.
+ */
+function subtreeBytesBounded(
+  dir: string,
+  budget: ScanBudget,
+  skip?: Set<string>,
+): number {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  if (skip) names = names.filter((n) => !skip.has(n));
+  if (names.length > STORAGE_SCAN_MAX_CHILDREN || budget.entries <= 0) {
+    budget.truncated = true;
+    names = names.slice(0, Math.max(0, STORAGE_SCAN_MAX_CHILDREN));
+  }
+  let bytes = 0;
+  for (const name of names) {
+    if (budget.entries <= 0) {
+      budget.truncated = true;
+      break;
+    }
+    budget.entries -= 1;
+    const child = path.join(dir, name);
+    try {
+      const st = fs.lstatSync(child);
+      if (st.isFile()) bytes += st.size;
+      else if (st.isDirectory()) bytes += dirSizeBytes(child, 1);
+    } catch {
+      // Vanished between readdir and stat.
+    }
+  }
+  return bytes;
+}
+
+/** The named userData subtrees the report breaks out; everything else is
+ *  bucketed as "misc" (userData's own top level minus these + the scan's
+ *  per-directory caps apply everywhere). */
+const STORAGE_SUBTREES = ['pi-sessions', 'omp-sessions', 'Partitions', 'Cache'] as const;
+
+/**
+ * Size the userData subtrees the storage report shows, descending by bytes.
+ * Synchronous and bounded: the caps above bound entries visited; depth is
+ * bounded by dirSizeBytes; every fs error degrades that entry to 0.
+ * Exported for storage-section.test.ts (fixture-driven scan tests).
+ */
+export function scanUserDataUsage(userDataDir: string): {
+  entries: StorageSubtreeUsage[];
+  truncated: boolean;
+} {
+  const budget: ScanBudget = { entries: STORAGE_SCAN_MAX_ENTRIES, truncated: false };
+  const entries: StorageSubtreeUsage[] = STORAGE_SUBTREES.map((name) => ({
+    name,
+    bytes: subtreeBytesBounded(path.join(userDataDir, name), budget),
+  }));
+  entries.push({
+    name: 'misc',
+    bytes: subtreeBytesBounded(userDataDir, budget, new Set<string>(STORAGE_SUBTREES)),
+  });
+  entries.sort((a, b) => b.bytes - a.bytes);
+  return { entries, truncated: budget.truncated };
+}
+
+/** Session-id format guard, identical to the session:release partition
+ *  lookup below — an iso dir is only ever `finevibe-browser-iso-<that id>`. */
+const ISO_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const ISO_PARTITION_PREFIX = 'finevibe-browser-iso-';
+
+/**
+ * Remove per-session isolated browser partition dirs under
+ * `userData/Partitions` (pane.ts: `persist:finevibe-browser-iso-<id>`).
+ * With `sessionId`, only that session's dir; without it, every dir whose
+ * suffix re-validates against the same guard — the boot sweep in main.ts
+ * (per-session ephemera left by a quit/crash between release hooks).
+ * Names that cannot be produced by the renderer's partition spelling are
+ * left alone. Never throws; a locked dir (Windows EBUSY) survives to the
+ * next sweep. Returns the number of dirs removed.
+ */
+export function removeIsoPartitionDirs(userDataDir: string, sessionId?: string): number {
+  const partitionsRoot = path.join(userDataDir, 'Partitions');
+  let names: string[];
+  try {
+    names = fs.readdirSync(partitionsRoot);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith(ISO_PARTITION_PREFIX)) continue;
+    const id = name.slice(ISO_PARTITION_PREFIX.length);
+    if (!ISO_SESSION_ID_RE.test(id)) continue;
+    if (sessionId !== undefined && id !== sessionId) continue;
+    try {
+      fs.rmSync(path.join(partitionsRoot, name), { recursive: true, force: true });
+      removed++;
+    } catch {
+      // Locked by Chromium until the partition object dies — next sweep retries.
+    }
+  }
+  return removed;
+}
+
+/**
+ * Clear ONLY the safe caches. Path allowlist — the entire set of things
+ * this function can delete:
+ *   userData/Cache, userData/GPUCache, userData/Code Cache,
+ *   userData/DawnGraphiteCache, userData/DawnWebGPUCache (Chromium's
+ *   clearCache() file set — no fs call below touches userData), plus
+ *   OS-temp finevibe-chrome-import-* dirs (sweepImportTempDirs' own
+ *   prefix+age gate, tmpdir-scoped).
+ * NEVER in scope: userData/omp-sessions, userData/pi-sessions,
+ * userData/Partitions (isolated browser logins), the default session's
+ * cookies/Local Storage (the imported Chrome jar — P2-100 in main.ts
+ * deliberately keeps it non-clearable from the renderer). That is why the
+ * clearStorageData() call below passes an explicit cache-only `storages`
+ * list: unscoped, it wipes cookies/Local Storage/IndexedDB, which are NOT
+ * caches. Pinned by storage-section.test.ts (allowlist assertions).
+ */
+export async function clearSafeCaches(
+  target: {
+    clearCache(): Promise<void>;
+    clearStorageData(options?: { storages?: string[] }): Promise<void>;
+  } = session.defaultSession,
+): Promise<{ tempDirsSwept: number }> {
+  await target.clearCache();
+  await target.clearStorageData({ storages: ['appcache', 'shadercache', 'serviceworkers', 'cachestorage'] });
+  // maxAgeMs: 0 mirrors the chromeImport:run finally-site sweep — a user
+  // pressing "Clear caches" wants the temp snapshots gone now, and no
+  // import is running while this dialog-driven clear is the front action.
+  const tempDirsSwept = sweepImportTempDirs({ maxAgeMs: 0 });
+  return { tempDirsSwept };
 }
 
 export function registerIpcHandlers(): void {
@@ -842,13 +1050,19 @@ export function registerIpcHandlers(): void {
     killPty(sessionId);
   });
 
-  ipcMain.handle('fs:isDirectory', (_event, filePath: string) => {
+  ipcMain.handle('fs:isDirectory', async (_event, filePath: string) => {
     try {
       const expanded = expandUserPath(filePath);
       // P2-38: this is fs:exists' existence oracle with a second spelling
       // (the sidebar's pre-project add flow), so it takes the widened home
-      // gate. Outside home + known roots: answer nothing.
-      if (!isAllowedEnumeratePath(expanded)) return false;
+      // gate. Home + known roots are answered honestly and never prompt;
+      // outside them the channel asks the same explicit per-directory
+      // confirm fs:listDirs / fs:cloneRepo use (consent cached by
+      // confirmHomeOutsideListingOnce) and Cancel keeps the old deny shape.
+      // The old silent false ignored the Windows reality that projects on
+      // non-home drives (E:\...) are the norm: adding an existing dir like
+      // E:\Ai\Brilliance reported "Directory does not exist".
+      if (!isAllowedEnumeratePath(expanded) && !(await confirmHomeOutsideListingOnce(expanded))) return false;
       return fs.statSync(expanded).isDirectory();
     } catch {
       return false;
@@ -954,8 +1168,37 @@ export function registerIpcHandlers(): void {
     return loadState();
   });
 
+
+  // Disk-health preflight (src/main/disk-health.ts): the renderer fetches
+  // the last emitted status on mount; main.ts pushes transitions on
+  // 'disk-health:status'. Transition-only emissions keep a full disk at one
+  // banner, not a per-write stream.
+  ipcMain.handle('disk-health:get', () => getLastDiskHealth());
+
+  // A5: in-app storage report. `storage:scan` sizes the userData subtrees
+  // (bounded walk, truncated flag on caps); `storage:clear` is the ONLY
+  // renderer-reachable deletion sink in userData-adjacent space and is
+  // allowlist-bound to Chromium caches + import temp dirs (see
+  // clearSafeCaches — sessions/Partitions are never deleted, pinned by
+  // storage-section.test.ts); `storage:retirement` is a read-only
+  // passthrough of the A3 audit log. Renderer passes no paths anywhere:
+  // userDataDir is main-side app.getPath, so no path input to validate.
+  ipcMain.handle('storage:scan', () => scanUserDataUsage(app.getPath('userData')));
+  ipcMain.handle('storage:clear', () => clearSafeCaches());
+  ipcMain.handle('storage:retirement', () => getLegacyRetirementStatus(app.getPath('userData')));
   ipcMain.handle('store:save', (_event, state: PersistedState) => {
-    invalidateCanonicalPathIfRootsChanged(state); saveState(state);
+    // B2: the store's gate-root canonical memo is fs-derived state keyed on
+    // the same root set these canonical caches cover — a project add/remove
+    // or configDir change must drop it in production, not only in tests.
+    // The drop is cache hygiene, never a verifier: it runs best-effort so a
+    // failing hook can never stop the payload from reaching the store's own
+    // validation in saveState (the P1-12 wiring contract).
+    try {
+      if (invalidateCanonicalPathIfRootsChanged(state)) invalidateStateCache();
+    } catch (err) {
+      console.warn('store:save root-cache hook failed:', err);
+    }
+    saveState(state);
   });
 
   // S1-03: synchronous quit flush. The renderer's beforeunload needs the
@@ -967,7 +1210,14 @@ export function registerIpcHandlers(): void {
   // (P2-108). It is a sendSync, so the throw answers `false`: the renderer's
   // best-effort quit flush reports the miss instead of dying with it.
   ipcMain.on('store:save-sync', safeOn('store:save-sync', (event, state: PersistedState) => {
-    invalidateCanonicalPathIfRootsChanged(state); saveStateSync(state);
+    // B2: same gate-root memo drop as store:save (see the note there) —
+    // best-effort for the same reason; saveStateSync must always run.
+    try {
+      if (invalidateCanonicalPathIfRootsChanged(state)) invalidateStateCache();
+    } catch (err) {
+      console.warn('store:save-sync root-cache hook failed:', err);
+    }
+    saveStateSync(state);
     event.returnValue = true;
   }, () => false));
 
@@ -1062,7 +1312,9 @@ export function registerIpcHandlers(): void {
   async function writePastedFile(buffer: Buffer, ext: string): Promise<string | null> {
     if (buffer.length === 0 || buffer.length > PASTE_MAX_BYTES) return null;
     try {
-      await fs.promises.mkdir(PASTE_DIR, { recursive: true });
+      // 0700: the dir is under a world-writable parent, and a pasted
+      // screenshot is whatever the user just copied.
+      await fs.promises.mkdir(PASTE_DIR, { recursive: true, mode: 0o700 });
       if (!pasteFilesPruned) {
         pasteFilesPruned = true;
         void pruneStaleImages(PASTE_DIR);
@@ -1621,12 +1873,18 @@ export function registerIpcHandlers(): void {
     // localStorage must go when the session goes. Guarded by directory
     // existence so releasing a non-browser session never materialises a
     // partition via fromPartition().
-    if (typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
-      const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
+    if (typeof sessionId === 'string' && ISO_SESSION_ID_RE.test(sessionId)) {
+      const partDir = path.join(app.getPath('userData'), 'Partitions', `${ISO_PARTITION_PREFIX}${sessionId}`);
       if (fs.existsSync(partDir)) {
         session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
           .clearStorageData()
-          .catch((err) => console.warn('clearStorageData failed:', err));
+          .catch((err) => console.warn('clearStorageData failed:', err))
+          // A5 leak fix: clearStorageData empties the jar's contents, the
+          // DIRECTORY itself used to survive until quit — every isolated
+          // browser session ever released left its Partitions subtree
+          // behind for the app's whole lifetime. Remove it once the jar is
+          // cleared (locked dirs fall through to the boot sweep in main.ts).
+          .finally(() => { removeIsoPartitionDirs(app.getPath('userData'), sessionId); });
       }
     }
   }));
@@ -1898,6 +2156,8 @@ export function registerIpcHandlers(): void {
       // polling widget reads a sorted list instead of re-walking the tree.
       const hit = topFilesCache.get(resolvedCwd);
       if (hit && Date.now() - hit.at < TOP_FILES_TTL_MS) {
+        topFilesCache.delete(resolvedCwd);
+        topFilesCache.set(resolvedCwd, hit);
         return { ok: true, files: hit.files.slice(0, clampedLimit), scanned: hit.scanned, skipped: hit.skipped };
       }
       // UI3-11: one shared walk per cwd — concurrent widget mounts coalesce.
@@ -1978,6 +2238,10 @@ export function registerIpcHandlers(): void {
     const result = { files: results, scanned, skipped };
     if (gen === enumerateGeneration) {
       topFilesCache.set(resolvedCwd, { at: Date.now(), ...result });
+      if (topFilesCache.size > TOP_FILES_CACHE_MAX) {
+        const oldest = topFilesCache.keys().next().value;
+        if (oldest !== undefined) topFilesCache.delete(oldest);
+      }
     }
     return result;
   }

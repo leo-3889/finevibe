@@ -1,6 +1,9 @@
 param([int]$Ms = 2500, [string]$Flag = '')
 # Holds the Win32 clipboard open for $Ms ms, modelling rdprclip.exe-style
 # contention (todos/clipboard-paste-latency-plan.md section 7, P0-2 Windows).
+# A6 temp discipline: writes no fixed %TEMP% paths - the only artifact is the
+# caller-supplied -Flag sentinel (clipbench.ps1 keeps it inside its own scratch
+# dir); release + flag removal are guaranteed by the finally below.
 Add-Type -Namespace W -Name U32 -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)] public static extern bool OpenClipboard(System.IntPtr hWndNewOwner);
 [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)] public static extern bool CloseClipboard();
@@ -18,7 +21,10 @@ if (-not $acquired) {
 }
 Write-Output ("[" + (Stamp) + "] ACQUIRED holding " + $Ms + "ms")
 if ($Flag -ne '') { Set-Content -LiteralPath $Flag -Value 'acquired' -Encoding ascii }
-Start-Sleep -Milliseconds $Ms
-[void][W.U32]::CloseClipboard()
-Write-Output ("[" + (Stamp) + "] RELEASED")
-if ($Flag -ne '') { Remove-Item -LiteralPath $Flag -Force -ErrorAction SilentlyContinue }
+try {
+  Start-Sleep -Milliseconds $Ms
+} finally {
+  [void][W.U32]::CloseClipboard()
+  Write-Output ("[" + (Stamp) + "] RELEASED")
+  if ($Flag -ne '') { Remove-Item -LiteralPath $Flag -Force -ErrorAction SilentlyContinue }
+}

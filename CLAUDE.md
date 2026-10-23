@@ -26,6 +26,7 @@ Internal working docs (audit status, incident notes, work queue) live in the loc
 - [Claude hook compatibility](HOOKS.md) — version-specific event payloads and status mapping.
 - [Packaging and releases](docs/packaging.md) — artifact matrix, deb build requirements and verification.
 - [Feature reference](docs/FEATURES.md) — every feature with behavior, owning module, test mapping, numeric limits and coverage gaps.
+- Module-level `Map`/`Set` in `src/main` MUST be capped (exported cap constant + LRU/FIFO eviction per the `fs-utils.ts` idiom), teardown-bound, or transient — enforced by `src/main/module-map-governance.test.ts`; a new collection requires an allowlist entry naming its bound class.
 
 Use `src/main/platform.ts` for OS checks and platform path helpers. Build path expectations with `path.join` or `path.resolve` in tests, including on Windows.
 

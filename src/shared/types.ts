@@ -862,3 +862,8 @@ export type ClipboardPastePayload = {
   /** P4: true when main cut the text at the 8 Mi paste bound — a visible truncation the renderer must surface. */
   textTruncated?: boolean;
 };
+
+/** One disk-space reading for the volume that hosts app userData. Emitted
+ * by the disk-health preflight (src/main/disk-health.ts) on state
+ * transitions only, and served on `disk-health:get` for the renderer. */
+export type DiskHealth = { state: 'ok' | 'low' | 'unknown'; availableBytes?: number; checkedAt: string };

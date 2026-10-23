@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Fail-closed guard for local Windows packaging: proves dist/win-unpacked/
+// Fail-closed guard for local Windows packaging: proves out/win-unpacked/
 // FineVibe.exe carries the FineVibe icon AND the version stamp written by
 // scripts/edit-win-exe.mjs. The historical defect: a build run with
 // --config.win.signandeditexecutable=false ships a renamed electron.exe that
@@ -15,7 +15,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const exe = process.argv[2] ?? path.join(root, 'dist', 'win-unpacked', 'FineVibe.exe');
+const exe = process.argv[2] ?? path.join(root, 'out', 'win-unpacked', 'FineVibe.exe');
 
 const RT_ICON = 3;
 const RT_GROUP_ICON = 14;

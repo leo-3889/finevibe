@@ -32,9 +32,9 @@ The derived disk index lives at:
 
 The index contains extracted user text, its working directory and source version metadata. It is local plaintext data; hashed filenames do not encrypt its contents. Source mtime, size and ctime determine reuse. Each record's text is capped at 50 Ki characters, and its serialized JSON must fit within 332 KiB. Records for sources absent from a completed, uncancelled provider discovery/index pass are pruned; the sweep is rate-limited per provider — `claimPruneSlot` grants each provider one prune pass per 30 s (`PRUNE_MIN_INTERVAL_MS`, `src/main/session-deep-search.ts:21-30,335`) — so repeat searches never re-walk the index per keystroke. A cancelled pass can leave them until a later completed pass. A pass whose discovery reported an incomplete scan root (`TranscriptDiscovery.complete` false, P2-70) counts as not-completed for pruning: its records survive untouched, because a root that failed to list is not evidence its transcripts are gone (see [provider contracts](provider-contracts.md)).
 
-Disk usage scales with history; there is no fixed aggregate disk quota. Eviction from the in-memory cache does not require reparsing an unchanged transcript when its disk index remains valid. Search still performs discovery and reads index records, so it is not free of filesystem work.
+Disk usage scales with history; the Pi/OMP session bases are bounded by the 2 GiB per-base quota (`SESSIONS_QUOTA_BYTES`, `src/main/launch-session-dir.ts`, A4 — startup + 24 h sweeps), and Preferences → Storage (A5, `storage:scan`, `src/main/ipc-handlers.ts`) reports the userData subtree sizes with scan caps surfaced as a `truncated` note. Eviction from the in-memory cache does not require reparsing an unchanged transcript when its disk index remains valid. Search still performs discovery and reads index records, so it is not free of filesystem work.
 
-To rebuild the index, close VibeYard and remove only `search-index-v3` from its Electron user-data directory. The next search rebuilds the required entries. This does not delete provider transcripts or the separate `~/.finevibe/state.json` file. There is currently no in-app cache-clear control. Developers must change the index directory version when extraction semantics change; the v2→v3 bump (P2-69) invalidated every pre-fix record because the Codex cwd extraction fix changed the persisted working directory that search results carry.
+To rebuild the index, close VibeYard and remove only `search-index-v3` from its Electron user-data directory. The next search rebuilds the required entries. This does not delete provider transcripts or the separate `~/.finevibe/state.json` file. Preferences → Storage (A5) adds an in-app cache-clear control (`storage:clear` in `src/main/ipc-handlers.ts`): Chromium caches (Cache/GPUCache/Code Cache/Dawn*Cache) plus Chrome-import temp dirs, sessions and browser profiles never touched — the search index is deliberately not in that cache set, so the directory removal above stays the rebuild path. Developers must change the index directory version when extraction semantics change; the v2→v3 bump (P2-69) invalidated every pre-fix record because the Codex cwd extraction fix changed the persisted working directory that search results carry.
 
 Sources: [search coordinator](../src/main/session-deep-search.ts), [disk index](../src/main/session-search-index.ts), [IPC cancellation](../src/main/ipc-handlers.ts), and [palette](../src/renderer/components/session-search-palette.ts).
 
@@ -87,12 +87,54 @@ A full static audit of main + renderer verified every bound above against source
 | File-tree directory cache | `src/renderer/components/file-tree.ts` `entryCache` | fixed (PA-30): one entry list per directory expanded during the session, freed only on collapse/project removal | LRU cap 2,000 directories (`ENTRY_CACHE_MAX_DIRS`), Map-insertion recency; every user-initiated expand and panel re-render evicts the subtree and re-reads from disk (`refreshFolderCache`, 5a4b9bd) |
 | `ProjectRecord.githubLastSeen` | `src/shared/types.ts` | fixed (PA-31): one entry per viewed PR/issue, forever | `pruneGithubLastSeen` keeps the newest 200 entries (`src/shared/github-last-seen.ts`) at every write site |
 | Per-launch session dirs | `src/main/launch-session-dir.ts` (`<userData>/pi-sessions`, `<userData>/omp-sessions`) | fixed: one directory per Pi/OMP start/resume, never removed — unbounded on disk, and `listLaunchSessionDirs()` cost one `stat` + one sidecar `readFile` per directory on EVERY global session search (~2,000 synchronous syscalls per search at 1,000 tabs) | 30-day retention window (`LAUNCH_SESSION_RETENTION_MS`), swept once per provider base per process, deferred off the spawn path to a `setImmediate` and capped at 200 directories per pass; the same age filter now gates the search listing |
+| Per-launch session dirs — A4 sweeps/quota (2026-10-23) | `src/main/launch-session-dir.ts` (`startSessionRetentionSweeps`, `enforceLaunchSessionQuota`) | the row above's arming was launch-only: an install that never launches Pi/OMP grew the two bases forever, and a heavy user's bases had no disk bound inside the 30-day window | startup sweep on a `setImmediate` + unref'd 24 h re-arm (daily tick also runs `sweepEnumerationCaches()`), plus a 2 GiB per-base quota (`SESSIONS_QUOTA_BYTES`): over quota, expired dirs evict oldest-first (sidecar `createdAt` → newest transcript mtime → dir mtime) under the same all-timestamps-past-window predicate; young dirs survive; `PRUNE_SCAN_LIMIT` bound and P2-57 ordering reused |
+| `enumerateCache` / `topFilesCache` | `src/main/ipc-handlers.ts` | fixed (B1): one entry per cwd enumerated/scanned in the session (Quick Open listings and token scans), freed only by the 30 s TTL / `git:changed` on the cwds someone revisited | LRU cap 64 cwds each (`ENUMERATE_CACHE_MAX`, `TOP_FILES_CACHE_MAX`), read-hit touch + oldest eviction; `sweepEnumerationCaches()` drops TTL-expired entries between invalidations |
+| `outsideHomeConsent` | `src/main/ipc-handlers.ts` | fixed (B1): one consent answer per home-outside dir canonicalized in the session (every Add-Project keystroke prefix on a home-outside root) | FIFO cap 200 (`OUTSIDE_HOME_CONSENT_MAX`), oldest answer evicted first (mirrors `MAX_CONSENT_DIR_RECORDS`); an eviction costs a re-prompt, the safe direction |
+| `rootCanonicalCache` | `src/main/fs-utils.ts` | fixed (B1): gate-root canonical forms live for the process, dropped only when the project/profile root set changes | LRU cap 1,024 (`ROOT_CANONICAL_CACHE_MAX`), read-hit touch + oldest eviction |
+| `gateRootCanonicalByPath` | `src/main/store.ts` | fixed (B1/B2): per-path gate memo cleared only by the test-only `invalidateStateCache`, so production grew it per project path and could keep a stale realpath after project add/remove | FIFO cap 200 (`GATE_ROOT_CANONICAL_MAX`); `store:save`/`store:save-sync` now call `invalidateStateCache()` whenever `invalidateCanonicalPathIfRootsChanged` reports a root-set change |
+| `foldsCaseByDir` | `src/main/settings-guard.ts` | fixed (B1): one case-fold probe result per dir probed in the session | FIFO cap 200 (`FOLDS_CASE_BY_DIR_MAX`), oldest evicted first; the eviction cost is one re-probe, never a policy change |
+| Legacy `Vibeyard`/`vibeyard` userData tree | `src/main/userdata-migration.ts` | fixed (A3): the copy-only migration contract left the whole legacy Chromium tree (browser state, caches, cookies) on disk for the machine's life after every cutover install | ledger-driven retirement (`retireLegacyUserData`, run at startup after the migration): deletes a legacy appData tree only after a 30-day grace (`RETIRE_GRACE_MS`), a destination integrity check against the migration ledger's `fileCount` (`userData/.finevibe-migrations.json`) and with no `retire-legacy-user-data.off` opt-out; pre-ledger copies (`fileCount: -1`) are never auto-retired; the home tree (`~/.vibeyard`) is out of scope; outcomes land in `userData/legacy-retirement.json` (`getLegacyRetirementStatus()`) |
 
 Sources: [state store](../src/main/store.ts), [session export](../src/main/session-export.ts), [hook status](../src/main/hook-status.ts), [terminal pane](../src/renderer/components/terminal-pane.ts), [file tree](../src/renderer/components/file-tree.ts).
 Per-launch retention policy: a directory is expired only when every timestamp it exposes is older than 30 days — the `.finevibe.json` sidecar's `createdAt`, the newest `*.jsonl` mtime, and the directory's own mtime (the last-activity proxy for pre-sidecar dirs and launches that never wrote a transcript). A resumed tab rewrites a fresh transcript, so its old sidecar never gets it deleted; a directory whose age cannot be established is kept. The sweep is armed by `ensureLaunchSessionDir()` — which every Pi/OMP start/resume calls — on a `setImmediate`, so the scan never runs on the spawn path (scout-2 P2); it uses `lstat` only (symlinked directories are skipped, never followed) and removes paths built by joining the provider base with a single `readdir` name, so it cannot escape its own base directory. Search visibility follows the same rule: a directory with no activity inside the window can only contain transcripts retention is about to delete, so it is filtered out before its sidecar is read. Scan bound: at most `PRUNE_SCAN_LIMIT = 200` dirs are examined per pass (`src/main/launch-session-dir.ts`) — an examined candidate costs ~5–6 sync syscalls (lstat + sidecar read + transcript readdir + per-jsonl lstat), so the bound sizes a bounded sweep, not a whole-tree walk; expired dirs past the bound converge over consecutive launches. On an over-limit base the names are first ordered by dir mtime ascending (`oldestDirsFirst`, one extra `lstat` per name, over-limit only), so the examined prefix is the deletion-candidate set and expired dirs can no longer hide in the unexamined tail past the cap; symlinks, non-dirs and vanished entries are parked behind the real dirs and never displace an examination slot. The unexamined tail is safe by the AND rule above: a dir with an in-window mtime is undeletable.
 
 
+Legacy userData retirement (A3, copy → verify → retire): the migration stays copy-first, and
+`retireLegacyUserData()` — called at startup right after `migrateLegacyUserData()` — closes
+the lifecycle from the ledger. Every clean copy pass records
+`{id, from, to, completedAt, fileCount, copiedBytes}` in
+`userData/.finevibe-migrations.json`. Gates per record: 30-day grace from `completedAt`
+(`RETIRE_GRACE_MS`), destination integrity (dest subtree file count ≥ the recorded count),
+no `retire-legacy-user-data.off` opt-out in userData, the source strictly under appData (the
+home tree `~/.vibeyard`, still read by the project importer, is never deleted), and a
+verified record — a pre-ledger copy (`fileCount: -1`) is only reported `unverified`.
+Removal is `fs.rmSync` recursive; every outcome (`removed`/`kept`/`unverified`/`error`,
+`bytesFreed`, `reason`) appends to `userData/legacy-retirement.json` (FIFO-capped at 50
+entries), read back by `getLegacyRetirementStatus()`. Covered by
+`src/main/userdata-migration.test.ts` (retirement suite).
+
+A4 sweep arming details: `startSessionRetentionSweeps(onDaily)` sweeps both provider bases
+mirroring the per-launch `setImmediate` arm, re-arms on an unref'd 24-hour `setInterval`
+(stop handle returned; main.ts passes `sweepEnumerationCaches` as the daily co-task), and
+each pass runs the window sweep before the quota. The quota's eviction scan is bounded by
+the same `pruneScanLimit` as the window sweep — an in-window dir mtime already makes a dir
+undeletable, so the unexamined tail cannot hold candidates — and over-quota bases past the
+bound converge over consecutive daily passes. The per-launch `ensureLaunchSessionDir()` arm
+is unchanged.
+
 Covered by `src/main/launch-session-dir.test.ts`.
+
+### Cache governance
+
+Every module-level `Map`/`Set` in `src/main` is process-lifetime, so it MUST be
+**capped** (exported cap constant + LRU/FIFO eviction, the `fs-utils.ts` idiom
+used by the B1 rows above), **teardown-bound** (every key dropped on
+exit/destroy/stop), **transient** (in-flight promise/marker maps the operation
+itself clears), or **bounded-by-construction** (keys from a small fixed set).
+`src/main/module-map-governance.test.ts` enforces this: it scans `src/main`
+for zero-indent collection declarations and fails on any collection without a
+bound-class allowlist entry, so a new module-level `Map`/`Set` cannot land
+without a reviewer recording its bound.
 
 ## Measured runtime baseline (W2, 2026-10-19, Windows)
 
@@ -101,9 +143,14 @@ The only measured runtime numbers this machine has for the app's hot paths, from
 `858d97c`, Windows 10.0.26300 (NTFS, real-time AV active), Node v24.14.0. Every row
 below drove the real modules — bundled with esbuild, `electron` stubbed — except the
 startup row, which ran the real Electron app in the dev tree (not packaged); no gate ran
-concurrently, so no vitest contention. **The measurement harnesses no longer exist**: the
-agent workspace that held them was dissolved on 2026-10-21, so this is a baseline
-snapshot, not a rerunnable suite.
+concurrently, so no vitest contention. **The W2 harnesses themselves no longer exist**
+(the agent workspace holding them was dissolved on 2026-10-21). Their periodic
+successors — `dev/perf/s3-idle-growth.js`, `po06-watcher-cost.js`, `f2-codex-spike.js`,
+`f3-pi-tick.js` (see *Periodic perf harnesses* in [dev/perf/README.md](../dev/perf/README.md)),
+driven by [`.github/workflows/perf.yml`](../.github/workflows/perf.yml) weekly + on
+dispatch against a built tree, results uploaded as artifacts, non-gating — re-measure
+the S3 / F2 / F3 / PO-06 scenarios in the running app, so these rows are a baseline
+with a rerun path, not a one-off snapshot.
 
 | Metric | Measured | Conditions |
 | --- | --- | --- |

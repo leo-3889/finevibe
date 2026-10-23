@@ -592,6 +592,7 @@ export function promptNewProject(): void {
         input.value = dir;
         pathManuallyEdited = true;
         autoFillName(dir);
+        probeDirExists(dir);
       },
     },
   ];
@@ -661,7 +662,7 @@ export function promptNewProject(): void {
     } finally {
       if (confirmBtn) {
         confirmBtn.disabled = false;
-        confirmBtn.textContent = t('sidebar.newProject.checkoutAndCreate');
+        updateConfirmLabel();
       }
     }
     if (!res?.ok) {
@@ -675,13 +676,50 @@ export function promptNewProject(): void {
     }
   });
 
-  // The confirm label is swapped in place while a URL owns the path field —
-  // showModal's label is fixed at open, the URL arrives on input.
+  // The confirm label is a three-state machine owned by updateConfirmLabel:
+  // a git URL owns the path field → "Checkout and create"; the field points
+  // at an existing directory → "Select"; else showModal's fixed label.
   const confirmBtnEl = document.getElementById('modal-confirm');
   const baseConfirmLabel = confirmBtnEl?.textContent ?? '';
-  const setCheckoutLabel = (on: boolean) => {
-    if (confirmBtnEl) confirmBtnEl.textContent = on ? t('sidebar.newProject.checkoutAndCreate') : baseConfirmLabel;
+  let isCheckoutLabel = false;
+  let dirExists = false;
+  const updateConfirmLabel = () => {
+    if (!confirmBtnEl) return;
+    confirmBtnEl.textContent = isCheckoutLabel
+      ? t('sidebar.newProject.checkoutAndCreate')
+      : dirExists
+        ? t('sidebar.newProject.selectButton')
+        : baseConfirmLabel;
   };
+
+  // The directory probe runs only on open-prefill, blur, Browse and
+  // autocomplete selection — never on the keystroke path (S4-04 precedent:
+  // a probe behind a consent-style gate must not fire per keystroke).
+  // Generation counter as in the suggest burst: a stale reply must never
+  // paint over the state the current value already earned.
+  let dirProbeSeq = 0;
+  const probeDirExists = async (value: string) => {
+    const seq = ++dirProbeSeq;
+    const apply = (exists: boolean) => {
+      if (seq !== dirProbeSeq) return;
+      dirExists = exists;
+      updateConfirmLabel();
+    };
+    const trimmed = value.trim();
+    if (!trimmed || detectGitCheckoutUrl(trimmed)) {
+      apply(false);
+      return;
+    }
+    try {
+      const expanded = await window.finevibe.fs.expandPath(trimmed);
+      apply(await window.finevibe.fs.isDirectory(expanded));
+    } catch {
+      apply(false);
+    }
+  };
+  // Mirror of the suggest-debounce teardown: a probe in flight when the
+  // modal closes must not paint the label of an already-closed modal.
+  registerModalCleanup(() => { dirProbeSeq++; });
 
   const nameInput = document.getElementById('modal-project-name') as HTMLInputElement | null;
   let nameManuallyEdited = false;
@@ -738,6 +776,7 @@ export function promptNewProject(): void {
           pathInput.value = item.textContent!;
           hideDropdown();
           autoFillName(pathInput.value);
+          probeDirExists(pathInput.value);
         });
         dropdown.appendChild(item);
       }
@@ -753,7 +792,8 @@ export function promptNewProject(): void {
       pathManuallyEdited = true;
       const value = pathInput.value;
       const checkout = detectGitCheckoutUrl(value);
-      setCheckoutLabel(!!checkout);
+      isCheckoutLabel = !!checkout;
+      updateConfirmLabel();
       if (checkout) {
         // The URL owns the field: name from the repo, and no path
         // autocomplete — a URL's dirPart is not a filesystem path to enumerate.
@@ -814,6 +854,7 @@ export function promptNewProject(): void {
         pathInput.value = items[activeIndex].textContent!;
         hideDropdown();
         autoFillName(pathInput.value);
+        probeDirExists(pathInput.value);
       } else if (e.key === 'Escape') {
         hideDropdown();
       }
@@ -822,7 +863,12 @@ export function promptNewProject(): void {
     pathInput.addEventListener('blur', () => {
       setTimeout(hideDropdown, 100);
       autoFillName(pathInput.value);
+      probeDirExists(pathInput.value);
     });
+
+    // The field arrives with the default-folder prefill: probe it once at
+    // open so the button already reads "Select" for an existing folder.
+    if (pathInput.value.trim()) probeDirExists(pathInput.value);
   }
 }
 

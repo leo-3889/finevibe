@@ -167,6 +167,81 @@ describe('Add-project git-URL detection', () => {
   });
 });
 
+describe('Add-project Select label (existing-directory probe)', () => {
+  // The probe chain (expandPath → isDirectory) is pure microtasks; one
+  // macrotask tick settles it.
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const browseField = () => (modalMock.showModal.mock.calls[0][1] as unknown as Array<{
+    id: string;
+    onButtonClick?: (input: HTMLInputElement) => Promise<void> | void;
+  }>).find((f) => f.id === 'project-path')!.onButtonClick!;
+
+  it('probes the open-prefill and shows Select for an existing folder', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    promptNewProject();
+    await flush();
+    expect(fsStub.isDirectory).toHaveBeenCalledWith('/home/u/projects');
+    expect(confirmBtn().textContent).toBe('Select');
+  });
+
+  it('never probes on the keystroke path; blur probes and flips to Select', async () => {
+    const { promptNewProject } = await setup('');
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = '/home/u/demo';
+    pathInput.dispatchEvent(new Event('input'));
+    await flush();
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    expect(confirmBtn().textContent).toBe('Create');
+    pathInput.dispatchEvent(new Event('blur'));
+    await flush();
+    expect(fsStub.isDirectory).toHaveBeenCalledWith('/home/u/demo');
+    expect(confirmBtn().textContent).toBe('Select');
+  });
+
+  it('keeps Checkout and create precedence: a URL blurs without probing', async () => {
+    const { promptNewProject } = await setup('');
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = URL_HTTPS;
+    pathInput.dispatchEvent(new Event('input'));
+    pathInput.dispatchEvent(new Event('blur'));
+    await flush();
+    expect(fsStub.expandPath).not.toHaveBeenCalledWith(URL_HTTPS);
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    expect(confirmBtn().textContent).toBe('Checkout and create');
+  });
+
+  it('probes after Browse fills the field', async () => {
+    const { promptNewProject } = await setup('');
+    fsStub.browseDirectory.mockResolvedValueOnce('/picked/dir');
+    promptNewProject();
+    await browseField()(input('modal-project-path'));
+    await flush();
+    expect(fsStub.isDirectory).toHaveBeenCalledWith('/picked/dir');
+    expect(confirmBtn().textContent).toBe('Select');
+  });
+
+  it('restores the plain label when the probed directory does not exist', async () => {
+    const { promptNewProject } = await setup('');
+    fsStub.isDirectory.mockResolvedValueOnce(false);
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = '/home/u/gone';
+    pathInput.dispatchEvent(new Event('blur'));
+    await flush();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+
+  it('drops a late probe reply when the modal closes first (C2R-11 pattern)', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    promptNewProject();
+    modalMock.closeModal();
+    await flush();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+});
+
 describe('Add-project default-projects-folder prefill', () => {
   it('pre-fills the path with the folder and syncs while the name is edited', async () => {
     const { promptNewProject } = await setup('/home/u/projects');
@@ -217,7 +292,9 @@ describe('Add-project checkout-and-create flow', () => {
     pathInput.value = URL_HTTPS;
     pathInput.dispatchEvent(new Event('input'));
     await modalMock.onConfirm!({ 'project-name': 'repo', 'project-path': URL_HTTPS, profile: '' });
-    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    // The open-prefill probe legitimately stats the default folder; the
+    // URL confirm path itself must never consult isDirectory.
+    expect(fsStub.isDirectory).not.toHaveBeenCalledWith(URL_HTTPS);
   });
 
   it('prompts for the parent folder when no default folder is set', async () => {
