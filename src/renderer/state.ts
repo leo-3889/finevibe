@@ -880,21 +880,29 @@ class AppState {
     return profile;
   }
 
+  /**
+   * True while a live session references the profile. This gates the UI's
+   * delete button (preferences/profiles-section.ts): a conversation must
+   * never silently resume under a different account, so a profile with live
+   * sessions is undeletable. Archived history rows deliberately do NOT count
+   * (P3-4): counting them made a history-referenced profile permanently
+   * undeletable while removeProfile's own cleanup loops could never run.
+   * History entries have no conversation to resume — they drop the id.
+   */
   isProfileInUse(id: string): boolean {
     return this.state.projects.some((project) =>
-      project.sessions.some((session) => session.profileId === id) ||
-      (project.sessionHistory ?? []).some((archived) => archived.profileId === id)
+      project.sessions.some((session) => session.profileId === id)
     );
   }
 
   removeProfile(id: string): void {
     const idx = this.profiles.findIndex((p) => p.id === id);
     if (idx === -1) return;
-    // A conversation must never silently resume under a different account.
-    if (this.isProfileInUse(id)) return;
     this.profiles.splice(idx, 1);
     // Don't orphan references: any session/project/preference pointing at the
-    // deleted profile falls back to the default config dir.
+    // deleted profile falls back to the provider default config dir and
+    // archived history rows drop the id (P3-4: the old isProfileInUse
+    // early-return made the session/history loops below dead code).
     for (const project of this.state.projects) {
       if (project.defaultProfileId === id) project.defaultProfileId = undefined;
       for (const session of project.sessions) {

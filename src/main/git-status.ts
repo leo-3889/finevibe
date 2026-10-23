@@ -291,9 +291,21 @@ export async function gitDiscardFile(cwd: string, filePath: string, area: GitFil
   }
   const toplevel = (await execGitWithOutput(cwd, ['rev-parse', '--show-toplevel'])).trim();
   if (toplevel === '') throw new Error('Not inside a git working tree');
+  // Both sides of the compare come from the CALLER's cwd spelling — one
+  // spawn environment, so `path.relative` is exact on every OS. git's
+  // --show-toplevel stays only as proof this is a working tree: its
+  // spelling can diverge from the cwd's for the SAME directory (Windows
+  // spells temp paths in 8.3 form, fs.realpathSync returns them as-opened,
+  // and git expands them — a cross-source string compare then reads a
+  // legit child as "outside the repository root"; CI runners do exactly
+  // this). Resolve each cwd-derived side to its deepest existing ancestor
+  // (the target itself may not exist yet on the tracked-restore branch).
+  // Escapes through symlinked ancestors become real '..' segments here, so
+  // the guard gets STRICTER, never laxer.
+  // `target` keeps the caller spelling: it is the rm() operand.
   const target = path.join(cwd, filePath);
-  const treeRoot = path.resolve(toplevel);
-  const rel = path.relative(treeRoot, target);
+  const treeRoot = canonicalPath(path.resolve(cwd));
+  const rel = path.relative(treeRoot, canonicalPath(path.resolve(target)));
   if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     throw new Error(`Refusing to discard ${JSON.stringify(filePath)}: at or outside the repository root`);
   }

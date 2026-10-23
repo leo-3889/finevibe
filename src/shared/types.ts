@@ -346,6 +346,17 @@ export interface ProjectRecord {
   tabGroups?: TabGroupRecord[];
 }
 
+/**
+ * One legacy `~/.vibeyard/state.json` project offered for one-time import
+ * into the live project list (see src/main/legacy-import.ts).
+ */
+export interface ImportableLegacyProject {
+  name: string;
+  path: string;
+  /** Session count of the legacy entry; shown so the import picker says what a project carries. */
+  sessions: number;
+}
+
 // --- Overview Widgets ---
 
 export type OverviewWidgetType =
@@ -557,6 +568,10 @@ export interface SettingsWarningData {
   /** P2-127: the profile config dir the validation was computed from;
    * undefined = the default ~/.claude. The Fix Settings CTA repairs THIS dir. */
   configDir?: string;
+  /** P2-55/P2-86: the project cwd the validation was computed from;
+   * Copilot's hooks are project-scoped, so the Fix Settings CTA repairs
+   * THIS project (and settings:validate re-checks it), not the user scope. */
+  projectPath?: string;
   /** The foreign statusLine command, present when statusLine === 'foreign'
    * (P1-14: the banner's dismissal records a Keep bound to this command). */
   foreignStatusLineCommand?: string;

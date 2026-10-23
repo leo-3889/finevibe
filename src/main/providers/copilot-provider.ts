@@ -119,8 +119,13 @@ export class CopilotProvider implements CliProvider {
     return validateCopilotHooks(projectPath);
   }
 
-  reinstallSettings(): void {
-    installCopilotHooks();
+  // P2-55: the warning banner (and its Fix Settings CTA) is computed from a
+  // project's scoped hooks, so the repair must target THAT project — same
+  // source of truth as installHooks at spawn (pty-manager passes the session
+  // cwd). Without it the CTA falls back to the last installed project and
+  // repairs the wrong file.
+  reinstallSettings(_configDir?: string, projectPath?: string): void {
+    installCopilotHooks(projectPath);
   }
 
   agentsDir(): string {

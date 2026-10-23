@@ -757,7 +757,7 @@ describe('fs:listDirs home gate (P1-19)', () => {
     // mockImplementationOnce: the shared in-flight confirm opens exactly one
     // dialog, and the default Cancel answer survives for later tests.
     vi.mocked(dialog.showMessageBox).mockImplementationOnce(
-      () => new Promise<{ response: number }>((resolve) => { release = resolve; }),
+      () => new Promise<Electron.MessageBoxReturnValue>((resolve) => { release = resolve as (v: { response: number }) => void; }),
     );
     const first = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
     const second = handlers.get('fs:listDirs')!({}, OUTSIDE_HOME) as Promise<string[]>;
@@ -895,7 +895,7 @@ describe('session transcript channels: configDir boundary gate (P2-113)', () => 
 // config-reading channel enforces (managed profile dir, known project).
 describe('provider:getConfig path gates (SEC-03)', () => {
   beforeEach(() => {
-    provider.getConfig = vi.fn(async () => ({ servers: ['s'] }));
+    provider.getConfig = vi.fn(async () => ({ servers: ['s'] })) as unknown as typeof provider.getConfig;
   });
 
   it('rejects an unallowlisted configDir before the provider is consulted', async () => {
@@ -1359,7 +1359,10 @@ describe('clipboard:readForPaste file lists', () => {
     return await handlers.get('clipboard:readForPaste')!({}) as never;
   }
 
-  it('reads Explorer copies from CF_HDROP with the wide flag at offset 12', async () => {
+  // The CF_HDROP/FileNameW decoders emit Windows paths and the handler's
+  // absolute-path filter is the running OS's `path.isAbsolute`, so these
+  // layouts can only validate end to end on Windows.
+  it.runIf(process.platform === 'win32')('reads Explorer copies from CF_HDROP with the wide flag at offset 12', async () => {
     // fWide lives at offset 12; offset 16 is fNoCompact (0 for Explorer).
     // Reading fNoCompact decoded the UTF-16LE names as latin1, and every path
     // collapsed to single characters that the absolute-path filter dropped.
@@ -1373,14 +1376,14 @@ describe('clipboard:readForPaste file lists', () => {
     expect(payload.hasContent).toBe(true);
   });
 
-  it('reads pre-wide CF_HDROP senders through the single-byte decode', async () => {
+  it.runIf(process.platform === 'win32')('reads pre-wide CF_HDROP senders through the single-byte decode', async () => {
     formatsWith('CF_HDROP');
     bufferFor('CF_HDROP', () => dropfiles('D:\\notes\\a.txt\0\0', false));
 
     expect((await readPaste()).files).toEqual(['D:\\notes\\a.txt']);
   });
 
-  it('reads browser copies from FileNameW', async () => {
+  it.runIf(process.platform === 'win32')('reads browser copies from FileNameW', async () => {
     formatsWith('FileNameW');
     bufferFor('FileNameW', () => Buffer.from('C:\\tmp\\shot.png\0C:\\tmp\\clip.mp4\0\0', 'utf16le'));
 
@@ -1410,7 +1413,7 @@ describe('clipboard:readForPaste file lists', () => {
     expect((await readPaste()).files).toEqual([fileURLToPath(uri)]);
   });
 
-  it('drops relative names and keeps only paths a CLI can read', async () => {
+  it.runIf(process.platform === 'win32')('drops relative names and keeps only paths a CLI can read', async () => {
     formatsWith('FileNameW');
     bufferFor('FileNameW', () => Buffer.from('notes.txt\0C:\\repo\\ok.md\0\0', 'utf16le'));
 
@@ -1503,7 +1506,7 @@ describe('clipboard:readForPaste acquisition gating (P2)', () => {
     expect(clipboard.readBuffer).not.toHaveBeenCalled();
   });
 
-  it('Windows file-list paste reads the live FileNameW branch, never the POSIX formats', async () => {
+  it.runIf(process.platform === 'win32')('Windows file-list paste reads the live FileNameW branch, never the POSIX formats', async () => {
     platformState.os = 'win32';
     formatsWith('FileNameW', 'text/plain');
     bufferFor('FileNameW', () => Buffer.from('C:\\tmp\\x.png\0\0', 'utf16le'));
@@ -1784,7 +1787,7 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
         sessionId: 'ui-1',
         statusLine: 'foreign',
         configDir: '/profiles/work',
-        foreignStatusLineCommand: '/usr/bin/other-statusline',
+        projectPath: '/proj',
       }),
     );
   });
@@ -1796,7 +1799,7 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
 
   it('settings:reinstall repairs the profile dir the banner was computed from', async () => {
     await handlers.get('settings:reinstall')!({}, 'claude', '/profiles/work');
-    expect(provider.reinstallSettings).toHaveBeenCalledWith('/profiles/work');
+    expect(provider.reinstallSettings).toHaveBeenCalledWith('/profiles/work', undefined);
   });
 
   it('settings:reinstall refuses a configDir outside the managed-profile allowlist', async () => {
@@ -1808,7 +1811,27 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
 
   it('settings:reinstall without a configDir keeps repairing the default dir', async () => {
     await handlers.get('settings:reinstall')!({}, 'claude');
-    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined);
+    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  // P2-55: Copilot's hooks are project-scoped — the CTA must repair the
+  // project the banner was validated against, not the user scope.
+  it('settings:reinstall threads the banner project to project-scoped providers', async () => {
+    await handlers.get('settings:reinstall')!({}, 'copilot', undefined, '/proj');
+    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined, '/proj');
+  });
+
+  // P2-86: settings:validate must dispatch scoped like the post-spawn
+  // validation (pty:create passes (cwd, configDir)); the unscoped dispatch
+  // read the user-global file and reported a broken project as `complete`.
+  it('settings:validate scopes to the project and dir it was given', async () => {
+    await handlers.get('settings:validate')!({}, 'copilot', '/proj', '/profiles/work');
+    expect(provider.validateSettings).toHaveBeenCalledWith('/proj', '/profiles/work');
+  });
+
+  it('settings:validate without scope keeps the user-scope check', async () => {
+    await handlers.get('settings:validate')!({}, 'copilot');
+    expect(provider.validateSettings).toHaveBeenCalledWith(undefined, undefined);
   });
 
   it('settings:declineStatusLine records the per-dir Keep and gates unmanaged dirs', () => {
@@ -2237,7 +2260,7 @@ describe('fs:topFilesByTokens result cache (C2M-03)', () => {
     // vitest's `fs` namespace carries no FileHandle export; take the
     // prototype off a real handle (the spy is prototype-wide, as needed).
     const probe = await fs.promises.open(path.join(dir, 'a.ts'), 'r');
-    const readSpy = vi.spyOn(Object.getPrototypeOf(probe) as Record<string, unknown>, 'read');
+    const readSpy = vi.spyOn(Object.getPrototypeOf(probe) as Record<string, (...args: any[]) => any>, 'read');
     await probe.close();
     const size = 1024 * 1024 + 4096;
     fs.writeFileSync(path.join(dir, 'big.ts'), 'a'.repeat(size));
@@ -2300,5 +2323,18 @@ describe('mcp:removeServer path gates (C3A-01)', () => {
     );
     expect(result).toEqual({ success: true });
     expect(removeMcpServer).toHaveBeenCalledWith('srv', '/proj/.mcp.json', 'project', '/proj', '/profiles/work');
+  });
+});
+
+// The vibeyard: channel is thin glue over the pure legacy-import module;
+// the suite exercises the wiring (channel name, arg plumbing through the
+// store mock) rather than the enumeration logic, which has its own suite.
+describe('vibeyard:listImportableProjects', () => {
+  it('is registered and answers with an array', async () => {
+    const handler = handlers.get('vibeyard:listImportableProjects');
+    expect(handler).toBeTypeOf('function');
+    // ./legacy-import is unmocked, so this reads the developer's real
+    // homedir; the module never throws, so the contract is "an array".
+    expect(await handler!({})).toBeInstanceOf(Array);
   });
 });

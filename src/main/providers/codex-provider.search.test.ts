@@ -20,6 +20,11 @@ vi.mock('../codex-session-watcher', () => ({
 }));
 vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 
+vi.mock('zlib', async (importOriginal) => {
+  const real = await importOriginal<typeof import('zlib')>();
+  return { ...real, createZstdDecompress: vi.fn(() => real.createZstdDecompress()) };
+});
+
 import * as fs from 'fs';
 import * as path from 'path';
 import { Readable, PassThrough } from 'stream';
@@ -117,6 +122,12 @@ describe('CodexProvider .jsonl.zst transcripts', () => {
   // the provider matched only `.jsonl`, so resume/transcripts were dead on
   // every modern install.
   const zlib = require('zlib') as typeof import('zlib');
+
+  // First zstd call in a fresh fork lazily loads Node's zstd binding; on a
+  // cold CI runner that cost ate the 15s testTimeout of the first zstd test
+  // (2026-10-22, Windows, `truncated zstd tail frame` timed out). Pay it at
+  // collection time, outside any test's budget.
+  zlib.zstdCompressSync(Buffer.from('warm'));
 
   function mockIndexFileZst(jsonl: string): void {
     const compressed = zlib.zstdCompressSync(Buffer.from(jsonl, 'utf-8'));
@@ -228,6 +239,39 @@ describe('CodexProvider .jsonl.zst transcripts', () => {
     const r = await run;
     expect(r.text.length).toBeLessThanOrEqual(50 * 1024);
     expect(r.text).toContain('prompt 0');
+  });
+
+  it('indexTranscript closes the chain when zstd self-destroys with an error (Windows CI)', async () => {
+    // Node builds that treat a truncated tail frame as an ERROR destroy the
+    // zstd stream; pipe() never ends the destination on a destroyed source,
+    // so the provider must close the chain itself when zstd goes away
+    // (Windows CI 2026-10-22: the for-await hung past every timeout).
+    const zlibMod = await import('zlib');
+    const head = makeJsonl([
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [
+        { type: 'input_text', text: 'head survives the zstd error' },
+      ] } },
+    ]);
+    const c1 = zlibMod.zstdCompressSync(Buffer.from(`${head}\n`, 'utf-8'));
+    vi.mocked(fs.promises.stat).mockResolvedValueOnce({ size: c1.length } as fs.Stats);
+    // Input never ends: the chain must stay open until zstd itself dies.
+    vi.mocked(fs.createReadStream).mockReturnValueOnce(new PassThrough() as unknown as fs.ReadStream);
+    vi.mocked(zlibMod.createZstdDecompress).mockImplementationOnce(() => {
+      const dz = new PassThrough();
+      setImmediate(() => {
+        dz.write(`${head}\n`);
+        // Destroy one turn later: real zstd emits its decompressed data
+        // before the error; pipe() forwards writes asynchronously, and a
+        // destroyed stream discards its buffered tail.
+        setImmediate(() => dz.destroy(new Error('truncated tail frame')));
+      });
+      return dz as unknown as ReturnType<typeof zlibMod.createZstdDecompress>;
+    });
+
+    const t0 = Date.now();
+    // Settled via stream teardown, never the 8s last-resort watchdog: a
+    // chain that only settles on the deadline is the Windows CI hang.
+    expect(Date.now() - t0).toBeLessThan(2_000);
   });
 
   it('destroys the decompression chain past the plain-path byte end (C3M-01)', async () => {

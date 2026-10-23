@@ -1,0 +1,36 @@
+name: Windows Diag (temporary)
+# Throwaway: capture runner path-spelling ground truth for the P1-17
+# discard-guard CI mismatch. Delete after one run.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Probe path spellings
+        run: |
+          node -e "
+          const fs=require('fs'), os=require('os'), path=require('path'), cp=require('child_process');
+          const base = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-discard-'));
+          console.log(JSON.stringify({tmpdir: os.tmpdir(), realpathBase: fs.realpathSync(base)}));
+          const g=(a)=>cp.execFileSync('git',a,{cwd:base,encoding:'utf8'}).trim();
+          cp.execFileSync('git',['init','-q'],{cwd:base});
+          cp.execFileSync('git',['config','user.email','t@t.dev'],{cwd:base});
+          cp.execFileSync('git',['config','user.name','T'],{cwd:base});
+          fs.writeFileSync(path.join(base,'a.txt'),'a');
+          cp.execFileSync('git',['add','.'],{cwd:base});
+          cp.execFileSync('git',['commit','-qm','init'],{cwd:base});
+          fs.writeFileSync(path.join(base,'scratch.txt'),'x');
+          const top = g(['rev-parse','--show-toplevel']);
+          const rp=(p)=>{try{return fs.realpathSync(p)}catch(e){return 'ERR '+e.code}};
+          const chain=(p)=>{const m=[];let c=p;for(;;){try{const r=fs.realpathSync(c);return m.length?path.join(r,...m.reverse()):r}catch{const par=path.dirname(c);if(par===c)return p;m.unshift(path.basename(c));c=par}}};
+          const troot=chain(path.resolve(top));
+          const tgt=chain(path.resolve(path.join(base,'scratch.txt')));
+          console.log(JSON.stringify({base, toplevel: top, realpathTop: rp(top), treeRoot:troot, target:tgt, rel:path.relative(troot,tgt)}));
+          "

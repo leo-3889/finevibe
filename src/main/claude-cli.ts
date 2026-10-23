@@ -250,16 +250,51 @@ function isIdeHook(h: HookHandler): boolean {
 }
 
 /**
+ * Read a JSON config file the caller is about to rewrite, and tell the two
+ * very different states apart: `null` means the file is missing (legitimate —
+ * the caller starts fresh), a throw means the file exists and cannot be
+ * understood.
+ *
+ * P1-18: `readJsonSafe` answers `null` for a missing file, a syntax-broken
+ * file and an unreadable file alike, and every installer here persists what it
+ * read (`{ ...settings, hooks }` -> writeSettings). Collapsing a truncation, a
+ * disk-full partial write or a hand-edit typo into "empty" rewrote the user's
+ * settings.json as hooks + statusLine only — `model`, `env`, `mcpServers`,
+ * `enabledPlugins` gone, no warning, nothing to recover them. So only ENOENT
+ * starts fresh; every other failure aborts the install and leaves the file
+ * untouched, the guard gemini-hooks.ts already carries.
+ */
+function readJsonForRewrite(filePath: string): Record<string, unknown> | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+    throw new Error(`${filePath} could not be read; refusing to overwrite it`, { cause: err });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`${filePath} is not valid JSON; refusing to overwrite a corrupt config`, { cause: err });
+  }
+  // `[1,2]`, `"x"`, `null`: every caller spreads this value into an object,
+  // which turns an array into indexed keys and a scalar into `{}` — the same
+  // silent loss, so treat it as corrupt.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${filePath} is not a JSON object; refusing to overwrite it`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
  * Read and clean Claude settings, returning the settings object and cleaned hooks.
+ * Throws when settings.json exists but cannot be understood: callers persist
+ * what this returns, so a corrupt file must stop the install (P1-18).
  */
 function prepareSettings(configDir: string = defaultClaudeDir()): { settings: Record<string, unknown>; cleaned: HooksConfig } {
   const settingsPath = path.join(configDir, 'settings.json');
-  let settings: Record<string, unknown> = {};
-  try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-  } catch {
-    // File may not exist yet
-  }
+  const settings = readJsonForRewrite(settingsPath) ?? {};
 
   const existingHooks: HooksConfig = (settings.hooks ?? {}) as HooksConfig;
 
@@ -281,17 +316,21 @@ function prepareSettings(configDir: string = defaultClaudeDir()): { settings: Re
 }
 
 /**
- * Write settings.json atomically, mirroring store.ts writeStateAtomically:
+ * Write a user config file (settings.json, .claude.json) atomically,
+ * mirroring store.ts writeStateAtomically:
  * payload -> sibling .tmp -> fsync -> rename. A plain writeFileSync can die
  * mid-write (crash, power loss) and leave a truncated settings.json; Claude
  * Code would then read - and rewrite - a half-written config, silently
  * losing the user's hooks. fsync before the rename matters: renaming an
  * unflushed temp file re-creates the same truncation window on crash.
+ * P2-18: the MCP config writers route through here too — a crash mid-write
+ * used to leave a .claude.json holding only the server being added, and the
+ * next read collapsed it into every other server's definition.
  */
-function writeSettingsAtomically(settingsPath: string, payload: string): void {
+function writeJsonAtomically(targetPath: string, payload: string): void {
   // The temp file sits next to the target so the rename stays on one
   // filesystem (the atomicity guarantee).
-  const tmpFile = settingsPath + '.tmp';
+  const tmpFile = targetPath + '.tmp';
   const buf = Buffer.from(payload, 'utf-8');
   const fd = fs.openSync(tmpFile, 'w');
   try {
@@ -311,13 +350,13 @@ function writeSettingsAtomically(settingsPath: string, payload: string): void {
   } finally {
     fs.closeSync(fd);
   }
-  fs.renameSync(tmpFile, settingsPath);
+  fs.renameSync(tmpFile, targetPath);
 }
 
 function writeSettings(settings: Record<string, unknown>, configDir: string = defaultClaudeDir()): void {
   const settingsPath = path.join(configDir, 'settings.json');
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  writeSettingsAtomically(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  writeJsonAtomically(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 }
 
 /**
@@ -328,6 +367,17 @@ export function installHooksOnly(configDir: string = defaultClaudeDir()): void {
   const { settings, cleaned } = prepareSettings(configDir);
 
   const supportedEvents = getSupportedHookEvents();
+
+  // P1-13 fail-closed: an empty supported set is the version probe's
+  // "undetectable" signal (a 3 s timeout on `claude --version`, an
+  // unrecognized build) — NOT a CLI that supports no hook events. Writing in
+  // that state is destructive: prepareSettings above already stripped every
+  // FineVibe command from `cleaned` and the loops below add none back, so one
+  // slow probe silently deletes the user's installed hooks and every Claude
+  // session runs with zero status events. Leave settings.json untouched: the
+  // settings guard reports the hooks 'missing', and the next install retries
+  // the probe (P2-53 makes a failed probe retryable).
+  if (supportedEvents.size === 0) return;
 
   installHookScripts();
 
@@ -572,12 +622,10 @@ with open(os.path.join(status_dir,sid+".events"),"a") as f:
  */
 export function installStatusLine(configDir: string = defaultClaudeDir()): void {
   const settingsPath = path.join(configDir, 'settings.json');
-  let settings: Record<string, unknown> = {};
-  try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-  } catch {
-    // File may not exist yet
-  }
+  // P1-18: a corrupt settings.json aborts here. The write below persists
+  // this object, so collapsing the read failure would replace the user's
+  // whole config with a statusLine-only file.
+  const settings = readJsonForRewrite(settingsPath) ?? {};
 
   settings.statusLine = {
     type: 'command',
@@ -699,7 +747,11 @@ export function addMcpServer(
   const filePath = configDir
     ? path.join(configDir, '.claude.json')
     : path.join(homedir(), '.claude.json');
-  const json = readJsonSafe(filePath) ?? {};
+  // P1-18 / P2-18: a corrupt .claude.json is not an empty one. The write
+  // below persists this object, so collapsing a parse error into `{}` would
+  // leave a config holding only the new server — every other MCP definition
+  // and its env secrets gone. Only a missing file starts fresh.
+  const json = readJsonForRewrite(filePath) ?? {};
 
   if (scope === 'project' && projectPath) {
     const projects = (json.projects ?? {}) as Record<string, Record<string, unknown>>;
@@ -715,7 +767,7 @@ export function addMcpServer(
     json.mcpServers = servers;
   }
 
-  fs.writeFileSync(filePath, JSON.stringify(json, null, 2) + '\n');
+  writeJsonAtomically(filePath, JSON.stringify(json, null, 2) + '\n');
 }
 
 /**
@@ -757,7 +809,11 @@ export function removeMcpServer(
   if (!allowed.some((allowedPath) => canonicalPath(allowedPath) === target)) {
     throw new Error(`Not a writable MCP config path: ${JSON.stringify(filePath)}`);
   }
-  const json = readJsonSafe(filePath);
+  // Strict read (P1-18): a missing file has nothing to delete, so the
+  // no-op return stands. A corrupt file throws instead of returning, so a
+  // deletion never reports success while the write below persists a
+  // `{}`-collapsed config over the user's servers.
+  const json = readJsonForRewrite(filePath);
   if (!json) return;
 
   if (scope === 'project' && projectPath) {
@@ -774,7 +830,7 @@ export function removeMcpServer(
     }
   }
 
-  fs.writeFileSync(filePath, JSON.stringify(json, null, 2) + '\n');
+  writeJsonAtomically(filePath, JSON.stringify(json, null, 2) + '\n');
 }
 
 export async function getClaudeConfig(projectPath: string, configDir?: string): Promise<ClaudeConfig> {

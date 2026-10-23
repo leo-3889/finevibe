@@ -125,7 +125,9 @@ describe('migrateLegacyUserData', () => {
     expect(fs.existsSync(path.join(home, '.finevibe', '.finevibe-migrated'))).toBe(false);
   });
 
-  it('migrates from the dev lowercase userData tree when present', () => {
+  // 'Vibeyard' and 'vibeyard' are one directory only on Windows; on a
+  // case-sensitive FS the dev tree is a third tree the migration never sees.
+  it.runIf(process.platform === 'win32')('migrates from the dev lowercase userData tree when present', () => {
     // Windows filesystems are case-insensitive: 'Vibeyard' and 'vibeyard'
     // are the same dir there, so assert the migration ran from the dev-named
     // tree, not which candidate path won the lookup.

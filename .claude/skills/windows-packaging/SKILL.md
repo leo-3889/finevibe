@@ -91,7 +91,7 @@ provider (this exercises the ConPTY path, the least-verified link) → Chrome im
 - **userData migration is absent on `rebuild`**: no `src/main/userdata-migration.ts`, no
   `app.setName`, no `app.setPath('userData')`. An install whose identity changes from
   Vibeyard to FineVibe boots into a fresh empty `%APPDATA%\FineVibe` and leaves state in
-  `%APPDATA%\Vibeyard`. Tracked as a P1 release blocker in `docs/AUDIT_STATUS.md`.
+  `%APPDATA%\Vibeyard`. Tracked as a P1 release blocker in `todos/AUDIT_STATUS.md`.
 - `publish.repo` is the stale slug (`leo-3889/vibeyard`, works via GitHub's redirect) —
   repoint to `leo-3889/finevibe`.
 - **Nothing is signed**: no `sign`/`csc*`/`certificateFile` anywhere; Setup.exe triggers

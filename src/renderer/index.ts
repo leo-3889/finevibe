@@ -36,6 +36,7 @@ import type { InspectorEvent } from '../shared/types.js';
 import { getContext } from './session-context.js';
 import { initSessionInspector } from './components/session-inspector.js';
 import { initFilePrompt } from './components/file-prompt.js';
+import { initVibeyardImport } from './components/vibeyard-import.js';
 import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
 import { loadProviderMetas, getProviderCapabilities } from './provider-availability.js';
 import { setLocale as setI18nLocale, getLocale, t } from './i18n.js';
@@ -289,6 +290,14 @@ async function main(): Promise<void> {
   initBoardSessionSync();
   initTeamView();
   initFilePrompt();
+  // Legacy Vibeyard project import: the scan reads ~/.vibeyard/state.json, so
+  // a broken legacy state must never block boot — the entry point simply
+  // stays hidden.
+  try {
+    initVibeyardImport();
+  } catch {
+    /* nothing to import */
+  }
   startGitPolling();
 
   function isMcpSession(sessionId: string): boolean {

@@ -1,6 +1,6 @@
 # Performance and resource limits
 
-These behaviours apply to the current source working tree. They have build and automated-test coverage; packaged-app performance has not been measured. See [audit status](AUDIT_STATUS.md) for recorded validation and remaining work.
+These behaviours apply to the current source working tree. They have build and automated-test coverage; packaged-app performance has not been measured.
 
 ## File previews and search
 
@@ -27,14 +27,14 @@ Workers score each transcript immediately and retain compact results. Result sni
 The derived disk index lives at:
 
 ```text
-<Electron userData>/search-index-v2/<provider>/<SHA-256-of-source-path>.json
+<Electron userData>/search-index-v3/<provider>/<SHA-256-of-source-path>.json
 ```
 
 The index contains extracted user text, its working directory and source version metadata. It is local plaintext data; hashed filenames do not encrypt its contents. Source mtime, size and ctime determine reuse. Each record's text is capped at 50 Ki characters, and its serialized JSON must fit within 332 KiB. Records for sources absent from a completed, uncancelled provider discovery/index pass are pruned; the sweep is rate-limited per provider — `claimPruneSlot` grants each provider one prune pass per 30 s (`PRUNE_MIN_INTERVAL_MS`, `src/main/session-deep-search.ts:21-30,335`) — so repeat searches never re-walk the index per keystroke. A cancelled pass can leave them until a later completed pass. A pass whose discovery reported an incomplete scan root (`TranscriptDiscovery.complete` false, P2-70) counts as not-completed for pruning: its records survive untouched, because a root that failed to list is not evidence its transcripts are gone (see [provider contracts](provider-contracts.md)).
 
 Disk usage scales with history; there is no fixed aggregate disk quota. Eviction from the in-memory cache does not require reparsing an unchanged transcript when its disk index remains valid. Search still performs discovery and reads index records, so it is not free of filesystem work.
 
-To rebuild the index, close VibeYard and remove only `search-index-v2` from its Electron user-data directory. The next search rebuilds the required entries. This does not delete provider transcripts or the separate `~/.finevibe/state.json` file. There is currently no in-app cache-clear control. Developers must change the index directory version when extraction semantics change.
+To rebuild the index, close VibeYard and remove only `search-index-v3` from its Electron user-data directory. The next search rebuilds the required entries. This does not delete provider transcripts or the separate `~/.finevibe/state.json` file. There is currently no in-app cache-clear control. Developers must change the index directory version when extraction semantics change; the v2→v3 bump (P2-69) invalidated every pre-fix record because the Codex cwd extraction fix changed the persisted working directory that search results carry.
 
 Sources: [search coordinator](../src/main/session-deep-search.ts), [disk index](../src/main/session-search-index.ts), [IPC cancellation](../src/main/ipc-handlers.ts), and [palette](../src/renderer/components/session-search-palette.ts).
 
@@ -54,7 +54,7 @@ During polling, unchanged directory listings are reused. Directory mtime changes
 
 When a transcript's last meaningful entry does not fit the 16 Ki status window, a bounded 4 MiB fallback read parses it (a search dump larger than the old 1 MiB bound left tab status frozen on its last value, because the derived null suppressed writes); entries beyond the fallback yield no status and the status stays at the last value written. The derived status is cached with the file size and reused while the size is unchanged. That cache is an LRU capped at 512 paths (`MAX_STATUS_TAIL_CACHE`): reads and writes move a path to the newest position and writes past capacity evict the oldest, so a closed session whose oversized final entry never yields a status again cannot pin an entry for the process lifetime. `loadState()` likewise serves the parsed `state.json` from an in-memory cache, refreshed by every save path; anything that rewrites the state file behind `saveState()`/`saveStateSync()` must call `invalidateStateCache()` first.
 
-This removes duplicate per-session snapshots and reduces idle directory enumeration. The per-launch directory and known resume ID address the earlier cross-tab attribution paths in code. Registration scans still run on the main thread, and watcher allocation and runtime resource use have not been measured at scale: real main-thread delay, RSS and watcher-handle counts in the running app have never been measured — every bound in this document is a code constant verified by unit tests on Windows, not a measured runtime cost. **PO-06 remains partially addressed.** See the [audit status](AUDIT_STATUS.md) for the next measurement and validation work.
+This removes duplicate per-session snapshots and reduces idle directory enumeration. The per-launch directory and known resume ID address the earlier cross-tab attribution paths in code. Registration scans still run on the main thread, and watcher allocation and runtime resource use have not been measured at scale: real main-thread delay, RSS and watcher-handle counts in the running app have never been measured — every bound in this document is a code constant verified by unit tests on Windows, not a measured runtime cost. **PO-06 remains partially addressed.**
 
 Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), [fallback status reader](../src/main/providers/pi-compatible-transcripts.ts), and [state store](../src/main/store.ts).
 
@@ -74,7 +74,7 @@ Sources: [Codex session watcher](../src/main/codex-session-watcher.ts).
 
 ## Static footprint audit (2026-10-18): growth structures
 
-A full static audit of main + renderer verified every bound above against source and found the registry/watcher/pane layers correctly bounded: no main-side PTY output buffering, streaming launcher download, and one-shot child processes reaped synchronously. The 2026-10-18 claims "no per-spawn listener accumulation", "no watcher or polling retention for closed sessions" and "singleton timers only (four 2-second pollers, each a no-op while its registry is empty)" were corrected by the 2026-10-21/22 Wave E audit (`todos/perf-audit-2026-10-21.md`): the idle main process runs ~14 timers (the 2 s Claude `cleanup()` sweep and the 2 s per-session `readStatus` poll were real; pi/OMP scanning is watcher-driven (250 ms debounce, 1 s floor) with a 2 s full-sweep poll backbone and a 30 s directory-listing cache, PA-01/02; git-watch cleanup covers all per-session state, PA-16; worktree polling is a 30 s cadence with an immediate kick on project switch, PA-17). Structures that grew without a code cap, with their Wave E disposition:
+A full static audit of main + renderer verified every bound above against source and found the registry/watcher/pane layers correctly bounded: no main-side PTY output buffering, streaming launcher download, and one-shot child processes reaped synchronously. The 2026-10-18 claims "no per-spawn listener accumulation", "no watcher or polling retention for closed sessions" and "singleton timers only (four 2-second pollers, each a no-op while its registry is empty)" were corrected by the 2026-10-21/22 Wave E audit: the idle main process runs ~14 timers (the 2 s Claude `cleanup()` sweep and the 2 s per-session `readStatus` poll were real; pi/OMP scanning is watcher-driven (250 ms debounce, 1 s floor) with a 2 s full-sweep poll backbone and a 30 s directory-listing cache, PA-01/02; git-watch cleanup covers all per-session state, PA-16; worktree polling is a 30 s cadence with an immediate kick on project switch, PA-17). Structures that grew without a code cap, with their Wave E disposition:
 
 | Structure | Location | Growth | Planned fix |
 | --- | --- | --- | --- |
@@ -84,7 +84,7 @@ A full static audit of main + renderer verified every bound above against source
 | xterm scrollback | all three `new Terminal({...})` sites | fixed (PA-29): library default 1,000 lines/tab (~240 KB UTF-16 at 120 cols) was a bound by omission | `TERMINAL_SCROLLBACK = 5000` in `src/renderer/components/terminal-shared.ts:12`, set at all three sites |
 | `hook-status` `lastMtimes` | `src/main/hook-status.ts` | fixed (PA-15): rows for one-shot files (e.g. `.toolfailure`) lingered after the file was unlinked, until session cleanup | a sweep at the poll cadence (15 s watchdog while the watcher lives, 2 s without) deletes every row whose file is gone, no exemptions; session cleanup prunes rows the last `readdir` lacked |
 | Push-only listener arrays | `sharing/share-manager.ts`, `session-inspector-state.ts` | fixed (PA-32): no public unsubscribe (latent — today one module-scope caller each) | `onChange` returns unsubscribe closures; renderer init keeps one handle per feed and unsubscribes on re-init |
-| File-tree directory cache | `src/renderer/components/file-tree.ts` `entryCache` | fixed (PA-30): one entry list per directory expanded during the session, freed only on collapse/project removal | LRU cap 2,000 directories (`ENTRY_CACHE_MAX_DIRS`), Map-insertion recency |
+| File-tree directory cache | `src/renderer/components/file-tree.ts` `entryCache` | fixed (PA-30): one entry list per directory expanded during the session, freed only on collapse/project removal | LRU cap 2,000 directories (`ENTRY_CACHE_MAX_DIRS`), Map-insertion recency; every user-initiated expand and panel re-render evicts the subtree and re-reads from disk (`refreshFolderCache`, 5a4b9bd) |
 | `ProjectRecord.githubLastSeen` | `src/shared/types.ts` | fixed (PA-31): one entry per viewed PR/issue, forever | `pruneGithubLastSeen` keeps the newest 200 entries (`src/shared/github-last-seen.ts`) at every write site |
 | Per-launch session dirs | `src/main/launch-session-dir.ts` (`<userData>/pi-sessions`, `<userData>/omp-sessions`) | fixed: one directory per Pi/OMP start/resume, never removed — unbounded on disk, and `listLaunchSessionDirs()` cost one `stat` + one sidecar `readFile` per directory on EVERY global session search (~2,000 synchronous syscalls per search at 1,000 tabs) | 30-day retention window (`LAUNCH_SESSION_RETENTION_MS`), swept once per provider base per process, deferred off the spawn path to a `setImmediate` and capped at 200 directories per pass; the same age filter now gates the search listing |
 
@@ -135,7 +135,7 @@ warm tier (0 transcript re-reads) and `statusTailCache` at 512 entries (≤ 51 K
 live work stays open in *Measurement protocol for the live run* and *Evidence and open
 measurement* below.
 
-Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), [Codex session watcher](../src/main/codex-session-watcher.ts), [state store](../src/main/store.ts), [deep-search coordinator](../src/main/session-deep-search.ts), [startup order](../src/main/main.ts), and the [audit status](AUDIT_STATUS.md) closure record of the program that produced them.
+Sources: [Pi-compatible watcher](../src/main/pi-compatible-session-watcher.ts), [Codex session watcher](../src/main/codex-session-watcher.ts), [state store](../src/main/store.ts), [deep-search coordinator](../src/main/session-deep-search.ts), [startup order](../src/main/main.ts).
 
 ## Clipboard and paste baseline (P0, 2026-10-21, Windows)
 
@@ -189,11 +189,11 @@ Payload `\x1b[200~` + N bytes + `\x1b[201~` written once to the PTY; child echoe
 
 **Coverage:** Windows rows are measured. macOS and Linux (X11 + Wayland) rows for all three tables: **harness ready, pending a machine of that OS** — the Electron bench and PTY probe are cross-platform by construction; the ps1 contention harness is Windows-specific by design, its macOS (`pbcopy` busy-owner) and Linux (`SIGSTOP` owner) counterparts are user-executed checks (the CI matrix has no OS clipboard, and this agent box is Windows-only). `readImage`/`toPNG`/`writePastedFile` on the text scenarios are the handler's real skips, not missing runs.
 
-Sources: [clipboard bench](../dev/perf/clipboard-bench.js), [contention harness](../dev/perf/clipbench.ps1), [PTY probe](../dev/perf/pty-paste-probe.js), [clipboard handlers](../src/main/ipc-handlers.ts), [paste renderer path](../src/renderer/components/terminal-utils.ts), and [the investigation plan](../todos/clipboard-paste-latency-plan.md).
+Sources: [clipboard bench](../dev/perf/clipboard-bench.js), [contention harness](../dev/perf/clipbench.ps1), [PTY probe](../dev/perf/pty-paste-probe.js), [clipboard handlers](../src/main/ipc-handlers.ts), [paste renderer path](../src/renderer/components/terminal-utils.ts).
 
 ### Copy/paste plan results (P1–P5, 2026-10-21)
 
-All five phases shipped behind automated, mocked-clipboard coverage. Rows that need a real OS clipboard are marked pending; the CI matrix (`macos-latest`/`ubuntu-latest`/`windows-2022`) runs the mocked platform branches. This section supersedes one note above: `preload.ts` now forwards `FINEVIBE_CLIPBOARD_TIMING` into the sandbox at startup (P1), so the renderer gate works in the packaged app, not only under vitest.
+All five phases shipped behind automated, mocked-clipboard coverage. Rows that need a real OS clipboard are marked pending; the CI matrix (`macos-latest`/`ubuntu-latest`/`windows-2022`) runs the mocked platform branches. The Windows file-list decoder rows (`FileNameW`/`CF_HDROP` layouts in `ipc-handlers.test.ts`) are `runIf(win32)`-gated: the handler validates decoded paths with the running OS's `path.isAbsolute`, so they only execute on the Windows lane. This section supersedes one note above: `preload.ts` now forwards `FINEVIBE_CLIPBOARD_TIMING` into the sandbox at startup (P1), so the renderer gate works in the packaged app, not only under vitest.
 
 | Phase | Shipped behavior | Automated evidence |
 | --- | --- | --- |

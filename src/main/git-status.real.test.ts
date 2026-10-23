@@ -64,6 +64,10 @@ describe('branch checkout (real repository)', () => {
   beforeEach(async () => {
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-branch-real-'));
     await git(repoDir, ['init', '-q', '-b', 'main']);
+    // CI runners ship a checkout with no git identity; `git commit` below
+    // needs one (same convention as the other real-repo suites in this file).
+    await git(repoDir, ['config', 'user.email', 'test@finevibe.dev']);
+    await git(repoDir, ['config', 'user.name', 'FineVibe Test']);
     fs.writeFileSync(path.join(repoDir, 'a.txt'), 'committed\n');
     await git(repoDir, ['add', 'a.txt']);
     await git(repoDir, ['commit', '-qm', 'init']);
@@ -108,7 +112,11 @@ describe('gitDiscardFile (real repository)', () => {
   let repoDir: string;
 
   beforeEach(async () => {
-    repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'finevibe-discard-'));
+    // Canonical path: git resolves --show-toplevel through symlinks; a CI
+    // tmpdir spelled via a link (macOS /var -> /private/var, Windows 8.3
+    // short names) would make the P1-17 root guard see a legit child as
+    // outside the tree.
+    repoDir = fs.realpathSync(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'finevibe-discard-')));
     await git(repoDir, ['init']);
     await git(repoDir, ['config', 'user.email', 'test@finevibe.dev']);
     await git(repoDir, ['config', 'user.name', 'FineVibe Test']);
