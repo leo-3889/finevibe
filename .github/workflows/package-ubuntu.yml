@@ -29,6 +29,19 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Cache Electron + electron-builder downloads
+        # The npm lock pins the Electron version, so its hash keys the
+        # download caches (Electron zips, AppImage tooling). Restored before
+        # `npm ci` so the electron postinstall download hits it too.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
       - name: Install dependencies
         run: npm ci
 
@@ -40,12 +53,14 @@ jobs:
 
       - name: Verify package
         run: |
-          dpkg-deb --info dist/*.deb
-          dpkg-deb --contents dist/*.deb | grep 'node-pty\|better_sqlite3'
+          dpkg-deb --info out/*.deb
+          dpkg-deb --contents out/*.deb | grep 'node-pty\|better_sqlite3'
+          dpkg-deb --contents out/*.deb | grep 'usr/share/icons/hicolor'
+          dpkg-deb --contents out/*.deb | grep 'usr/share/applications/finevibe.desktop'
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: finevibe-deb-x64
-          path: dist/*.deb
+          path: out/*.deb
           if-no-files-found: error

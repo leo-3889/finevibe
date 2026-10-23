@@ -3,6 +3,7 @@ import type { Mock } from 'vitest';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as vm from 'vm';
 import { PassThrough, Writable } from 'stream';
 
@@ -42,6 +43,9 @@ interface LoadOptions {
   env?: Record<string, string>;
   httpsGet?: Mock;
   installedVersion?: string | null;
+  // Replace the fake fs wholesale — desktop-integration tests exercise
+  // real readdirSync/copyFileSync against a temp-dir fixture.
+  fs?: Record<string, unknown>;
 }
 
 function loadLauncher(options: LoadOptions = {}) {
@@ -68,7 +72,7 @@ function loadLauncher(options: LoadOptions = {}) {
     require: (name: string) => {
       if (name === 'https') return { get: httpsGet };
       if (name === 'http') throw new Error('launcher must never require http');
-      if (name === 'fs') return fakeFs;
+      if (name === 'fs') return options.fs ?? fakeFs;
       if (name === 'crypto') return crypto;
       if (name === 'os') return { homedir: () => '/home/test' };
       if (name === 'path') return path;
@@ -150,6 +154,41 @@ describe('Linux npm launcher', () => {
       { detached: true, stdio: 'ignore' },
     );
     expect(fakeProcess.exit).not.toHaveBeenCalled();
+  });
+
+  // Ubuntu 24.04 ships without libfuse2: a bare AppImage spawn dies with
+  // 'dlopen libfuse.so.2'. Without /dev/fuse the launcher must set
+  // APPIMAGE_EXTRACT_AND_RUN=1 so the runtime extracts to temp (works
+  // everywhere, costs a temp copy) instead of mounting via FUSE.
+  it('launches with APPIMAGE_EXTRACT_AND_RUN when /dev/fuse is missing', async () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'bin', 'finevibe.js'), 'utf8');
+    const version = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version as string;
+    const spawn = vi.fn(() => ({ unref: vi.fn() }));
+    const fakeFs = {
+      readFileSync: vi.fn(() => JSON.stringify({ version })),
+      existsSync: vi.fn((p: string) => p !== '/dev/fuse'),
+    };
+    const context = {
+      require: (name: string) => {
+        if (name === 'fs') return fakeFs;
+        if (name === 'os') return { homedir: () => '/home/test' };
+        if (name === 'path') return path;
+        if (name === 'child_process') return { spawn, execSync: vi.fn() };
+        if (name === '../package.json') return { version };
+        return {};
+      },
+      process: {
+        platform: 'linux', arch: 'x64', argv: ['node', 'finevibe', '--example'],
+        env: {}, exit: vi.fn(), stdout: { write: vi.fn() },
+      },
+      console: { log: vi.fn(), error: vi.fn() },
+    };
+    await vm.runInNewContext(source, context);
+    expect(spawn).toHaveBeenCalledWith(
+      path.join('/home/test', '.finevibe', 'app', 'FineVibe.AppImage'),
+      ['--example'],
+      { detached: true, stdio: 'ignore', env: { APPIMAGE_EXTRACT_AND_RUN: '1' } },
+    );
   });
 });
 
@@ -473,6 +512,128 @@ describe('launcher linux asset name', () => {
     expect(consoleError).not.toHaveBeenCalled();
     expect(exports.RELEASE_API_URL).toBe(apiUrl);
   }, 15000);
+});
+
+describe('launcher linux desktop entry', () => {
+  // Linux icon bug: the AppImage's embedded .desktop points at AppRun
+  // paths that die with the squashfs, and Wayland/GTK docks match windows
+  // via StartupWMClass — without a corrected entry the app is a generic
+  // icon (or invisible) in the launcher.
+  const appPath = '/home/test/.finevibe/app/FineVibe.AppImage';
+
+  function builtEntry() {
+    const { exports } = loadLauncher();
+    return exports.buildDesktopEntry(
+      [
+        '[Desktop Entry]',
+        'Name=FineVibe',
+        'Type=Application',
+        'Exec=AppRun --appimage-extract-and-run %U',
+        'Icon=old-icon',
+        'Categories=Development;IDE;',
+        'MimeType=x-scheme-handler/finevibe;',
+        'Comment=Tenant IDE for AI CLI tools',
+      ].join('\n'),
+      appPath,
+    );
+  }
+
+  it('rewrites Exec to the absolute AppImage path and forces Icon=finevibe', () => {
+    const text = builtEntry();
+    expect(text).toContain(`Exec=${appPath} %U`);
+    expect(text).not.toContain('AppRun');
+    expect(text).toContain('Icon=finevibe');
+    expect(text).not.toContain('Icon=old-icon');
+  });
+
+  it('adds StartupWMClass=FineVibe and preserves unrelated keys', () => {
+    const text = builtEntry();
+    expect(text).toContain('StartupWMClass=FineVibe');
+    expect(text).toContain('Name=FineVibe');
+    expect(text).toContain('Categories=Development;IDE;');
+    expect(text).toContain('MimeType=x-scheme-handler/finevibe;');
+    expect(text).toContain('Comment=Tenant IDE for AI CLI tools');
+  });
+
+  // No FUSE (Ubuntu 24.04 without libfuse2): the installed entry must
+  // launch through the runtime's self-extraction path, mirroring the
+  // launcher's own spawn fallback. The param defaults to true (plain Exec,
+  // covered by the tests above).
+  it('prefixes Exec with env APPIMAGE_EXTRACT_AND_RUN=1 when FUSE is unavailable', () => {
+    const { exports } = loadLauncher();
+    const text = exports.buildDesktopEntry('[Desktop Entry]\nExec=AppRun %U\n', appPath, false);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
+    expect(text).not.toContain(`\nExec=${appPath} %U\n`);
+    expect(text).toContain('Icon=finevibe');
+  });
+
+  it('generates a valid base entry from empty embedded content', () => {
+    const { exports } = loadLauncher();
+    const text = exports.buildDesktopEntry('', appPath);
+    expect(text).toContain('[Desktop Entry]');
+    expect(text).toContain('Name=FineVibe');
+    expect(text).toContain('Type=Application');
+    expect(text).toContain('Categories=Development;');
+    expect(text).toContain('Terminal=false');
+    expect(text).toContain('Comment=Tenant IDE for AI CLI tools');
+    expect(text).toContain(`Exec=${appPath} %U`);
+    expect(text).toContain('Icon=finevibe');
+    expect(text).toContain('StartupWMClass=FineVibe');
+  });
+});
+
+describe('launcher linux desktop install', () => {
+  // The DE only surfaces apps whose .desktop and icons live under
+  // $XDG_DATA_HOME; installDesktopIntegration writes them from an
+  // --appimage-extract fixture. No AppImage is executed and no network
+  // is touched: the fixture is plain files under os.tmpdir().
+  const appPath = '/home/test/.finevibe/app/FineVibe.AppImage';
+
+  it('copies hicolor icons to the same relpath and writes the rewritten entry', () => {
+    const { exports } = loadLauncher({ fs: fs as unknown as Record<string, unknown> });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-desktop-test-'));
+    try {
+      const share = path.join(root, 'squashfs-root', 'usr', 'share');
+      const iconsDir = path.join(share, 'icons', 'hicolor', '256x256', 'apps');
+      fs.mkdirSync(iconsDir, { recursive: true });
+      fs.writeFileSync(path.join(iconsDir, 'X.png'), 'png-bytes');
+      const appsDir = path.join(share, 'applications');
+      fs.mkdirSync(appsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(appsDir, 'finevibe.desktop'),
+        ['[Desktop Entry]', 'Name=FineVibe', 'Exec=AppRun %U', 'MimeType=x-scheme-handler/finevibe;'].join('\n'),
+      );
+
+      const dataDir = path.join(root, 'data');
+      exports.installDesktopIntegration({ appPath, extractRoot: path.join(root, 'squashfs-root'), dataDir });
+
+      expect(
+        fs.readFileSync(path.join(dataDir, 'icons', 'hicolor', '256x256', 'apps', 'X.png'), 'utf8'),
+      ).toBe('png-bytes');
+      const desktop = fs.readFileSync(path.join(dataDir, 'applications', 'finevibe.desktop'), 'utf8');
+      expect(desktop).toContain(`Exec=${appPath} %U`);
+      expect(desktop).toContain('Icon=finevibe');
+      expect(desktop).toContain('StartupWMClass=FineVibe');
+      expect(desktop).toContain('MimeType=x-scheme-handler/finevibe;');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('tolerates a missing icon tree and desktop file', () => {
+    const { exports } = loadLauncher({ fs: fs as unknown as Record<string, unknown> });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-desktop-test-'));
+    try {
+      const dataDir = path.join(root, 'data');
+      exports.installDesktopIntegration({ appPath, extractRoot: path.join(root, 'squashfs-root'), dataDir });
+      const desktop = fs.readFileSync(path.join(dataDir, 'applications', 'finevibe.desktop'), 'utf8');
+      expect(desktop).toContain('[Desktop Entry]');
+      expect(desktop).toContain('Name=FineVibe');
+      expect(desktop).toContain(`Exec=${appPath} %U`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('published launcher manifest', () => {

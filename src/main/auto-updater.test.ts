@@ -149,6 +149,26 @@ describe('auto-updater', () => {
     }
   });
 
+  // Portable win target: electron-updater does not support it — an update
+  // would download the NSIS setup and clobber the portable layout. The
+  // portable bootstrap sets PORTABLE_EXECUTABLE_DIR, so its presence must
+  // skip updater init entirely (portable updates via the npm launcher).
+  it('skips updater init for portable builds (PORTABLE_EXECUTABLE_DIR set)', () => {
+    process.env.PORTABLE_EXECUTABLE_DIR = 'C:\\apps';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      initAutoUpdater();
+      expect(autoUpdater.setFeedURL).not.toHaveBeenCalled();
+      expect(autoUpdater.on).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(10_000);
+      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('portable'));
+    } finally {
+      log.mockRestore();
+      delete process.env.PORTABLE_EXECUTABLE_DIR;
+    }
+  });
+
   it('skips initialization in dev mode', async () => {
     vi.resetModules();
     vi.doMock('electron', () => ({

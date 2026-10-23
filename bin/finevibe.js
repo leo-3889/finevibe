@@ -272,7 +272,144 @@ function extract(zipPath) {
   }
 
   fs.writeFileSync(VERSION_FILE, JSON.stringify({ version }));
+
+  // Desktop integration runs after the version stamp so a failed install
+  // is never mistaken for a completed one; Linux AppImage only.
+  if (!isWin && !isMac) linuxDesktopIntegration();
   console.log('Done.');
+}
+
+// Ubuntu 24.04 ships without libfuse2, the FUSE userspace library a bare
+// AppImage dlopens at startup — the spawn dies with 'dlopen libfuse.so.2'
+// before any window appears. /dev/fuse is the kernel-side precondition of
+// the FUSE mount path; when it is missing, launch and desktop entry set
+// APPIMAGE_EXTRACT_AND_RUN=1 so the AppImage runtime self-extracts to a
+// temp dir — works everywhere, costs a temp copy per launch.
+function fuseAvailable() {
+  return fs.existsSync('/dev/fuse');
+}
+
+// Linux desktop integration: the launcher drops a bare AppImage into
+// ~/.finevibe/app, so the DE never receives a .desktop entry or icons —
+// Wayland/GTK docks match windows via StartupWMClass and show a generic
+// icon. Extract the AppImage's own entry/icons into $XDG_DATA_HOME.
+// Pure: rewrite the embedded .desktop text for the installed AppImage.
+// The Exec value is replaced wholesale (AppRun-relative paths die once the
+// squashfs is gone), Icon is forced to the installed hicolor theme name,
+// and StartupWMClass is pinned so docks match the running window. All
+// other keys (Name, Comment, Categories, MimeType, …) are preserved.
+function buildDesktopEntry(embeddedContent, appPath, fuseAvailable = true) {
+  const lines = embeddedContent
+    ? String(embeddedContent).split(/\r?\n/)
+    : [
+        '[Desktop Entry]',
+        'Name=FineVibe',
+        'Type=Application',
+        'Categories=Development;',
+        'Terminal=false',
+        'Comment=Tenant IDE for AI CLI tools',
+      ];
+  const forced = {
+    Exec: fuseAvailable
+      ? `Exec=${appPath} %U`
+      : `Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`,
+    Icon: 'Icon=finevibe',
+    StartupWMClass: 'StartupWMClass=FineVibe',
+  };
+  const seen = new Set();
+  const out = lines.map((line) => {
+    const key = line.slice(0, line.indexOf('='));
+    if (line.startsWith(`${key}=`) && Object.prototype.hasOwnProperty.call(forced, key)) {
+      seen.add(key);
+      return forced[key];
+    }
+    return line;
+  });
+  for (const [key, value] of Object.entries(forced)) {
+    if (!seen.has(key)) out.push(value);
+  }
+  return out.join('\n');
+}
+
+// Collect hicolor icon files to install: apps/*.png under any size dir,
+// plus apps/*.svg under scalable/ (the electron-builder AppImage layout).
+function collectIconFiles(dir, rel, out) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out; // missing icon tree is tolerated
+  }
+  for (const entry of entries) {
+    const source = path.join(dir, entry.name);
+    const relative = rel ? path.join(rel, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      collectIconFiles(source, relative, out);
+    } else if (path.basename(path.dirname(relative)) === 'apps') {
+      const scalable = path.basename(path.dirname(path.dirname(relative))) === 'scalable';
+      if (entry.name.endsWith('.png') || (scalable && entry.name.endsWith('.svg'))) {
+        out.push([source, relative]);
+      }
+    }
+  }
+  return out;
+}
+
+// Install icons + .desktop from an --appimage-extract tree into dataDir
+// (the DE's data root). Missing icons/desktop file are tolerated: the
+// generated-base entry is still written so the app is findable.
+function installDesktopIntegration({ appPath, extractRoot, dataDir, fuseAvailable = true }) {
+  const share = path.join(extractRoot, 'usr', 'share');
+  const iconsDest = path.join(dataDir, 'icons', 'hicolor');
+  for (const [source, relative] of collectIconFiles(path.join(share, 'icons', 'hicolor'), '', [])) {
+    const target = path.join(iconsDest, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+  }
+  let embedded = '';
+  try {
+    const names = fs.readdirSync(path.join(share, 'applications')).filter((n) => n.endsWith('.desktop')).sort();
+    if (names.length > 0) embedded = fs.readFileSync(path.join(share, 'applications', names[0]), 'utf8');
+  } catch {
+    // no packaged .desktop — fall back to the generated base entry
+  }
+  const entryFile = path.join(dataDir, 'applications', 'finevibe.desktop');
+  fs.mkdirSync(path.dirname(entryFile), { recursive: true });
+  fs.writeFileSync(entryFile, buildDesktopEntry(embedded, appPath, fuseAvailable));
+}
+
+// Production wrapper: self-extract the installed AppImage into a temp dir,
+// install from the squashfs-root, refresh the DE caches. Entirely
+// best-effort — a failure costs desktop integration, never the launch.
+function linuxDesktopIntegration() {
+  try {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-desktop-'));
+    try {
+      execFileSync(APP_PATH, ['--appimage-extract'], { cwd: tmp, stdio: 'ignore', timeout: 180000 });
+      const dataDir = process.env.XDG_DATA_HOME
+        || path.join(os.homedir(), '.local', 'share');
+      installDesktopIntegration({
+        appPath: APP_PATH,
+        extractRoot: path.join(tmp, 'squashfs-root'),
+        dataDir,
+        fuseAvailable: fuseAvailable(),
+      });
+      for (const [cmd, arg] of [
+        ['update-desktop-database', path.join(dataDir, 'applications')],
+        ['gtk-update-icon-cache', path.join(dataDir, 'icons', 'hicolor')],
+      ]) {
+        try {
+          execFileSync(cmd, [arg], { stdio: 'ignore' });
+        } catch {
+          // cache refresh is cosmetic; the DE picks the files up anyway
+        }
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  } catch (err) {
+    console.log('Desktop integration skipped: ' + err.message);
+  }
 }
 
 function launch(args) {
@@ -288,7 +425,11 @@ function launch(args) {
       stdio: 'ignore',
     });
   } else {
-    child = spawn(APP_PATH, args, { detached: true, stdio: 'ignore' });
+    const options = { detached: true, stdio: 'ignore' };
+    if (!fuseAvailable()) {
+      options.env = { ...process.env, APPIMAGE_EXTRACT_AND_RUN: '1' };
+    }
+    child = spawn(APP_PATH, args, options);
   }
   child.unref();
 }
@@ -360,6 +501,8 @@ if (typeof module !== 'undefined' && module.exports) {
     sha256File,
     verifyAssetDigest,
     download,
+    buildDesktopEntry,
+    installDesktopIntegration,
   };
 }
 
