@@ -56,7 +56,9 @@
     "dist": "npm run build && npm run icons && electron-builder",
     "win:stamp": "node scripts/edit-win-exe.mjs",
     "win:verify": "node scripts/verify-win-exe.mjs",
-    "dist:win:local": "npm run build && npm run icons && npx electron-builder --win dir --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && npm run win:stamp && npm run win:verify && npx electron-builder --win nsis zip --prepackaged dist/win-unpacked --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false",
+    "dist:win:local": "npm run build && npm run icons && npx electron-builder --win dir --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && npm run win:stamp && npm run win:verify && npx electron-builder --win nsis zip --prepackaged out/win-unpacked --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && node -e \"require('fs').rmSync('out/win-unpacked',{recursive:true,force:true})\"",
+    "clean": "node -e \"const fs=require('fs');for(const p of ['dist','out','coverage'])fs.rmSync(p,{recursive:true,force:true});for(const f of fs.readdirSync('.').filter(f=>f.endsWith('.tsbuildinfo')))fs.rmSync(f)\"",
+    "clean:caches": "node scripts/clean-caches.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -65,7 +67,7 @@
   "build": {
     "appId": "com.finevibe.app",
     "productName": "FineVibe",
-    "icon": "build/icon.png",
+    "directories": { "output": "out" },
     "files": [
       "dist/main/**/*",
       "dist/preload/**/*",
@@ -88,7 +90,8 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "FineVibe needs microphone access so CLI tools running in the terminal (e.g. Claude Code's /voice) can capture audio."
+        "NSMicrophoneUsageDescription": "FineVibe needs microphone access so CLI tools running in the terminal (e.g. Claude Code's /voice) can capture audio.",
+        "NSLocalNetworkUsageDescription": "FineVibe connects to other devices on your local network to share terminal sessions directly between them."
       },
       "notarize": true
     },
@@ -99,7 +102,10 @@
         "deb"
       ],
       "category": "Development",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "deb": {
+        "depends": ["libsecret-tools"]
+      }
     },
     "win": {
       "artifactName": "FineVibe-${version}-win-${arch}.${ext}",

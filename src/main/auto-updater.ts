@@ -41,6 +41,20 @@ function resolveReleaseRepo(): string | null {
 
 export function initAutoUpdater(): () => void {
   if (!app.isPackaged) return () => {};
+
+  // The published portable .exe (electron-builder `portable` target) is NOT
+  // supported by electron-updater: an update would download the NSIS setup
+  // and install it, clobbering the portable layout. PORTABLE_EXECUTABLE_DIR
+  // is set by the portable bootstrap, so its presence identifies this run;
+  // portable installs update via the launcher/npm package path instead.
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    console.log(
+      '[auto-updater] portable build (PORTABLE_EXECUTABLE_DIR is set) — skipping ' +
+      'auto-update; electron-updater cannot update a portable install. Update ' +
+      'through the npm launcher (npx finevibe) instead.',
+    );
+    return () => {};
+  }
  
   const releaseRepo = resolveReleaseRepo();
   if (!releaseRepo) {
