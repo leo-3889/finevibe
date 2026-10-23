@@ -49,7 +49,17 @@ function getMasterKey(): Buffer {
     throw new Error(`Chrome "Local State" is not valid JSON: ${statePath}`);
   }
   const b64 = parsed.os_crypt?.encrypted_key;
-  if (!b64) throw new Error('encrypted_key not found in Local State');
+  if (!b64) {
+    // Chrome 127+ on Windows moves the cookie key to the app-bound
+    // `app_bound_encrypted_key` (APPB, decryptable only from a Chrome-named
+    // process) and may stop writing `os_crypt.encrypted_key` entirely. The
+    // bare 'encrypted_key not found' read as a corrupt install; name the
+    // real cause so the modal's keyError line tells the user why v20 rows
+    // cannot be imported.
+    throw new Error(
+      'Chrome app-bound encryption: master key unavailable (Chrome 127+); v20 cookies cannot be imported',
+    );
+  }
   const blob = Buffer.from(b64, 'base64');
   // Chrome prefixes the DPAPI blob with the ASCII bytes "DPAPI".
   if (blob.subarray(0, 5).toString('ascii') !== 'DPAPI') {
@@ -59,22 +69,28 @@ function getMasterKey(): Buffer {
   return cachedKey;
 }
 
-/** Returns the protocol version: 'v10' (AES-GCM), 'v11' (App-Bound, unsupported), 'legacy' (DPAPI-direct), or 'plain'. */
-export function detectVersion(encrypted: Buffer): 'v10' | 'v11' | 'legacy' | 'plain' {
+/**
+ * Returns the protocol version: 'v10' (AES-GCM), 'v11'/'v20' (App-Bound
+ * Encryption, undecryptable out-of-process — Chrome 127+ writes 'v20' on
+ * Windows; keep recognizing 'v11' so any v11-tagged row skips on the same
+ * channel instead of falling to 'plain'), 'legacy' (DPAPI-direct), or 'plain'.
+ */
+export function detectVersion(encrypted: Buffer): 'v10' | 'v11' | 'v20' | 'legacy' | 'plain' {
   if (encrypted.length === 0) return 'plain';
   const head = encrypted.subarray(0, 3).toString('ascii');
   if (head === 'v10') return 'v10';
   if (head === 'v11') return 'v11';
+  if (head === 'v20') return 'v20';
   // Legacy DPAPI-direct format starts with 0x01 0x00 0x00 0x00 (CryptoAPI structure marker)
   if (encrypted[0] === 0x01 && encrypted[1] === 0x00 && encrypted[2] === 0x00 && encrypted[3] === 0x00) return 'legacy';
   return 'plain';
 }
 
-/** Decrypts a Chrome value on Windows. Returns null for v11 (unsupported). */
+/** Decrypts a Chrome value on Windows. Returns null for App-Bound (v11/v20). */
 export function decryptValue(encrypted: Buffer): Buffer | null {
   if (encrypted.length === 0) return Buffer.alloc(0);
   const version = detectVersion(encrypted);
-  if (version === 'v11') return null;
+  if (version === 'v11' || version === 'v20') return null;
   if (version === 'plain') return Buffer.from(encrypted);
   if (version === 'legacy') {
     if (legacyKeyError) throw new Error(legacyKeyError);

@@ -14,7 +14,22 @@ export function chromeUserDataDir(): string | null {
     const localAppData = process.env['LOCALAPPDATA'] || path.join(home, 'AppData', 'Local');
     candidate = path.join(localAppData, 'Google', 'Chrome', 'User Data');
   } else {
-    candidate = path.join(home, '.config', 'google-chrome');
+    // P2-50: Linux packaging puts the user-data dir in several places —
+    // distro Chrome (stable/beta/unstable), Debian's chromium, the
+    // snap-confined chromium, and the Flatpak sandboxes. A chromium-only
+    // machine used to report "Chrome not found". First existing candidate
+    // wins; stable Chrome outranks Chromium so a Chrome install is
+    // preferred when both exist.
+    const candidates = [
+      path.join(home, '.config', 'google-chrome'),
+      path.join(home, '.config', 'google-chrome-beta'),
+      path.join(home, '.config', 'google-chrome-unstable'),
+      path.join(home, '.config', 'chromium'),
+      path.join(home, 'snap', 'chromium', 'common', 'chromium'),
+      path.join(home, '.var', 'app', 'com.google.Chrome', 'config', 'google-chrome'),
+      path.join(home, '.var', 'app', 'org.chromium.Chromium', 'config', 'chromium'),
+    ];
+    candidate = candidates.find((root) => fs.existsSync(root)) ?? candidates[0]!;
   }
   return fs.existsSync(candidate) ? candidate : null;
 }

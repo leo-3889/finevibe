@@ -2,6 +2,7 @@ import { createModalShell, createModalButton } from './modal-shell.js';
 import { bindModalDismiss } from './modal-manager.js';
 import { createCustomSelect, type CustomSelectInstance } from './custom-select.js';
 import type { ChromeProfile, ChromeImportProgress, ChromeImportResult } from '../../shared/types.js';
+import { isLinux } from '../platform.js';
 
 let cleanupFn: (() => void) | null = null;
 // CI-10: the live generation's full dismiss (disposed flag + both progress
@@ -136,6 +137,17 @@ async function openChromeImportModal(onClosed?: () => void): Promise<void> {
       Object.assign(document.createElement('em'), { textContent: 'Allow' }),
       ' when prompted. On Windows, cookies encrypted with Chrome 127+ App-Bound Encryption can’t be imported and will be skipped.',
     );
+    if (isLinux) {
+      note.append(
+        ' On Linux, the import reads Chrome’s safe-storage key from the login keyring via ',
+        Object.assign(document.createElement('code'), { textContent: 'secret-tool' }),
+        ': if cookies fail to decrypt, unlock the login keyring and, on Debian/Ubuntu, install the ',
+        Object.assign(document.createElement('code'), { textContent: 'libsecret-tools' }),
+        ' package (it provides ',
+        Object.assign(document.createElement('code'), { textContent: 'secret-tool' }),
+        ').',
+      );
+    }
 
     importBtn.addEventListener('click', async () => {
       importBtn.disabled = true;
@@ -187,12 +199,22 @@ async function openChromeImportModal(onClosed?: () => void): Promise<void> {
       const summary = document.createElement('div');
       summary.className = 'chrome-import-summary';
       const lines: string[] = [`Imported ${result!.cookieCount} cookies`];
-      if (result!.skippedV11 > 0) lines.push(`Skipped ${result!.skippedV11} entries (Chrome v11 App-Bound Encryption)`);
+      // Label matches the skip channel in decrypt.ts: Chrome 127+ on Windows
+      // writes the v20 App-Bound prefix, so "v11" here was never true. The
+      // result field stays `skippedV11` (stable IPC shape).
+      if (result!.skippedV11 > 0) lines.push(`Skipped ${result!.skippedV11} entries (Chrome App-Bound Encryption)`);
       if (result!.errors.length > 0) {
         // P2-49: show the actual reasons (e.g. keychain denial), not a bare
         // error count that lets a failed import read as a success.
         const shown = result!.errors.slice(0, 3).join(' · ');
         lines.push(result!.errors.length > 3 ? `${shown} (+${result!.errors.length - 3} more errors)` : shown);
+      }
+      const warnings = result!.warnings ?? [];
+      if (warnings.length > 0) {
+        // P2-49: non-fatal key problems (Linux keyring diagnosis on a
+        // `peanuts`-legacy success) must reach the user without
+        // failing an import that delivered cookies.
+        lines.push(`Warning: ${warnings.slice(0, 2).join(' · ')}${warnings.length > 2 ? ` (+${warnings.length - 2} more warnings)` : ''}`);
       }
       summary.textContent = lines.join(' · ');
       progressBox.appendChild(summary);

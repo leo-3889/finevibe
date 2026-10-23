@@ -85,6 +85,23 @@ describe('snapshotProfile', () => {
     snap.cleanup();
     expect(fs.existsSync(snap.dir)).toBe(false);
   });
+
+  // Cookie-snapshot permission hardening: the dir used to land 0755 in the
+  // shared OS temp dir (and the buffered EBUSY fallback wrote Cookies 0644).
+  // Windows emulates chmod, so the mode assertions run on POSIX only.
+  it.skipIf(process.platform === 'win32')(
+    'lands the snapshot dir 0700 and the Cookies copy 0600',
+    () => {
+      const snap = snapshotProfile(profileDir);
+      try {
+        expect(snap.cookiesPath).not.toBeNull();
+        expect(fs.statSync(snap.dir).mode & 0o777).toBe(0o700);
+        expect(fs.statSync(snap.cookiesPath!).mode & 0o777).toBe(0o600);
+      } finally {
+        snap.cleanup();
+      }
+    },
+  );
 });
 
 // P2-47: quit/crash mid-import used to leave the cookie snapshot under

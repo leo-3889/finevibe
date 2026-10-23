@@ -23,6 +23,7 @@ export async function runImport(
   onProgress: ProgressFn,
 ): Promise<ChromeImportResult> {
   const errors: string[] = [];
+  const warnings: string[] = [];
   let cookieCount = 0;
   let skippedV11 = 0;
 
@@ -46,8 +47,10 @@ export async function runImport(
         skippedV11 += ck;
         // P2-49: a keychain/keyring denial must make the import fail loudly.
         // Swallowing it here is what let `{ok:true, cookieCount:0}` be
-        // persisted as a completed import.
-        if (keyError) errors.push(`Cookies: ${keyError}`);
+        // persisted as a completed import. P2-49: the verdict is deferred
+        // until cookieCount is known — when cookies DID import (the Linux
+        // `peanuts`-legacy success path reports the keyring problem on
+        // every row), the key problem is a warning, not a failure.
         onProgress({ stage: 'cookies', done: 0, total: records.length });
         const sess = session.fromPartition(BROWSER_DEFAULT_PARTITION, { cache: true });
         // Named async helper so the `map` callback below returns the promise
@@ -75,6 +78,10 @@ export async function runImport(
           if (r.status === 'fulfilled') cookieCount++;
           else errors.push(String(r.reason));
         }
+        if (keyError) {
+          if (cookieCount > 0) warnings.push(`Cookies: ${keyError}`);
+          else errors.push(`Cookies: ${keyError}`);
+        }
         onProgress({ stage: 'cookies', done: records.length, total: records.length });
       } catch (err) {
         errors.push(`Cookies: ${(err as Error).message}`);
@@ -88,7 +95,7 @@ export async function runImport(
 
   onProgress({ stage: 'done', skippedV11, errors: errors.length });
 
-  return { ok: errors.length === 0, cookieCount, skippedV11, errors };
+  return { ok: errors.length === 0, cookieCount, skippedV11, errors, warnings };
 }
 
 export async function clearImportedCookies(): Promise<void> {

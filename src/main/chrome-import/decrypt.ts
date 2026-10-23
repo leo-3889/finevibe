@@ -6,7 +6,7 @@ import { stripDomainHash } from './domain-hash';
 
 export interface DecryptResult {
   text: string | null;
-  skipped: 'v11' | null;
+  skipped: 'app-bound' | null;
   /**
    * Why the value could not be decrypted because of a key problem
    * (keychain/keyring denial, lookup timeout, master-key failure).
@@ -17,8 +17,10 @@ export interface DecryptResult {
 
 /**
  * Cross-platform decryption of a Chrome-encrypted blob. Returns text=null and
- * skipped='v11' when the value is encrypted with Chrome 127+ App-Bound
- * Encryption on Windows (which we can't decrypt without privileged access).
+ * skipped='app-bound' when the value is encrypted with Chrome App-Bound
+ * Encryption — the 'v20' prefix Chrome 127+ writes on Windows, plus any
+ * 'v11'-tagged row (Chrome never writes v11 cookies on Windows; both skip
+ * because the app-bound key is undecryptable out-of-process).
  * Returns keyError when the platform key is unavailable — the caller reports
  * it instead of silently dropping the row (P2-49).
  */
@@ -34,7 +36,7 @@ export function decryptChromeValue(encrypted: Buffer, hasDomainHash: boolean): D
     }
     if (isWin) {
       const plain = winDecrypt.decryptValue(encrypted);
-      if (plain === null) return { text: null, skipped: 'v11' };
+      if (plain === null) return { text: null, skipped: 'app-bound' };
       return { text: stripDomainHash(plain, hasDomainHash), skipped: null };
     }
     const plain = linuxDecrypt.decryptValue(encrypted);
@@ -44,7 +46,12 @@ export function decryptChromeValue(encrypted: Buffer, hasDomainHash: boolean): D
       keyError: linuxDecrypt.getKeyError() ?? undefined,
     };
   } catch (err) {
-    return { text: null, skipped: null, keyError: (err as Error).message };
+    // P2-49: on the Linux throw path (`bad decrypt`) the keyring diagnosis
+    // from `getKeyError()` (secret-tool missing/timed out, peanuts fallback)
+    // was discarded, so the actionable cause never reached the modal.
+    // Keep both: the diagnosis first, the raw failure after it.
+    const keyError = [linuxDecrypt.getKeyError(), (err as Error).message].filter(Boolean).join('; ');
+    return { text: null, skipped: null, keyError };
   }
 }
 
