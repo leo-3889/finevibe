@@ -1,6 +1,6 @@
 ---
 name: plan-status-audit
-description: This skill MUST be used whenever the task involves the repo's work queue — `todos/*-plan.md`, the full-audit P-id registry, `docs/AUDIT_STATUS.md`, "what is done / remaining / open", "check todos and plans", status snapshots, commit-splitting for large sweeps, or committing while other agents share the working tree. Use when the user asks what is finished, what is left, whether a plan landed, what to commit next, or to reconcile the plan with git history.
+description: This skill MUST be used whenever the task involves the repo's work queue — `todos/*-plan.md`, the full-audit P-id registry, `todos/AUDIT_STATUS.md`, "what is done / remaining / open", "check todos and plans", status snapshots, commit-splitting for large sweeps, or committing while other agents share the working tree. Use when the user asks what is finished, what is left, whether a plan landed, what to commit next, or to reconcile the plan with git history.
 ---
 
 # Status auditing and commit discipline
@@ -33,7 +33,7 @@ while Waves A–F are committed. **Reconcile against git, then report.**
 Anchors go stale after refactors (a 2026-10-19 row cited `ipc-handlers.ts:4621-4625`, now
 `:6215` after the registrar split). Re-derive from the tree; do not re-cite a dead line.
 
-## SHA citation rule (`docs/AUDIT_STATUS.md` convention)
+## SHA citation rule (`todos/AUDIT_STATUS.md` convention)
 
 Every SHA printed in `docs/` must pass
 `git merge-base --is-ancestor <sha> rebuild`. The 2026-10-19/20 program's commits
@@ -46,7 +46,7 @@ Docs must be **self-contained**: never link to a sibling agent workspace
 (`../finevibe-llm/...`); that folder is dissolved and gone. Check for stray refs with
 `git grep -n "finevibe-llm" $(git rev-parse --abbrev-ref HEAD)` — zero today, keep it that
 way. When a workspace holding per-finding evidence is dissolved, record the durable
-findings + commits in `docs/AUDIT_STATUS.md` and state plainly that the evidence no longer
+findings + commits in `todos/AUDIT_STATUS.md` and state plainly that the evidence no longer
 exists (see the 2026-10-21 salvage section).
 
 ## Commit discipline
@@ -69,7 +69,7 @@ exists (see the 2026-10-21 salvage section).
   session's in-progress Icons section into an audit commit; undone with
   `git commit --amend` + `git reset <path>` + re-commit.
 - If a concurrent session has staged someone else's renames (e.g. a doc move), give them
-  their own commit and strip them from yours (`git reset docs/audits/x.md` after the first
+  their own commit and strip them from yours (`git reset todos/audits/x.md` after the first
   commit, then re-commit).
 - `.git/index.lock` contention appears mid-command: bounded retry loop on
   `git add`/`git commit`, never a blind single retry.
@@ -108,7 +108,7 @@ passing, and say which leg produced each number.
 
 - `rebuild` is the integration branch and exists on **no remote** (111 commits ahead of
   `fork/main`, which fast-forwards onto it). No push without asking.
-- `todos/fork-rebuildable-on-origin.md` (tracked): upstream's PR #167 breaks if the
+- `todos/fork-rebuildable-on-origin.md` (local-only, gitignored): upstream's PR #167 breaks if the
   `feature/*` branches under it are rebuilt — rebuilding is allowed **only** as a
   force-push plus a coordinated PR #167 update.
 - The 2026-10-19/20 agent workspace was dissolved 2026-10-21; per-finding evidence is gone,
