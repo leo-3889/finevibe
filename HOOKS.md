@@ -131,10 +131,18 @@ guarantee of eventual completion. Any later hook event cancels it.
 1. **Hook installation** (`claude-cli.ts`) — each event gets a status writer, and
    `SessionStart`/`UserPromptSubmit` also get a session-id capture,
    `PostToolUseFailure` a failure capture, and every event an inspector event
-   capture. Commands carry the `# vibeyard-hook` marker so reinstallation is
+   capture. Commands carry the `# finevibe-hook` marker so reinstallation is
    idempotent and never touches a user's own hooks.
 2. **File watching** (`hook-status.ts`) — the main process watches `STATUS_DIR`
-   (`<tmpdir>/vibeyard`) via `fs.watch()` plus a 2s polling fallback.
+   (`getStatusDir()`: `<tmpdir>/finevibe-<uid>` on POSIX — the uid suffix gives
+   each user a private directory on the shared `/tmp`, mode `0700`; bare
+   `<tmpdir>\finevibe` on Windows, where `%TEMP%` is already per-user) via
+   `fs.watch()` plus a 2s polling fallback.
+   Every generated Python script reads stdin as UTF-8: the body carries a
+   `sys.stdin.reconfigure(encoding="utf-8")` guard and every Windows
+   invocation passes `-X utf8` — Python <3.15 decodes stdin with the ANSI
+   code page, so a non-ASCII payload would otherwise raise
+   `UnicodeDecodeError` and silently drop the capture.
 3. **IPC broadcast** — main sends `session:hookStatus`, `session:costData`,
    `session:sessionName`, `session:toolFailure`, `session:inspectorEvents`, …
 4. **State update** (`session-activity.ts`) — the renderer applies the rules above.

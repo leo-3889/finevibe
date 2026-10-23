@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
 import { isWin } from './platform';
 
-const STATUS_DIR = path.join('/tmp', 'finevibe');
+// Mirrors getStatusDir(): on POSIX the module suffixes the uid (shared
+// world-writable /tmp); Windows keeps the bare name under per-user %TEMP%.
+const STATUS_DIR = path.join('/tmp', !isWin && process.getuid ? `finevibe-${process.getuid()}` : 'finevibe');
 const SCRIPT_DIR = path.join('/home/test', '.finevibe', 'run');
 const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'statusline.sh');
 
@@ -144,6 +146,19 @@ describe('hook-status', () => {
       }
     });
 
+    it('reconfigures stdin to UTF-8 before the first json.load(sys.stdin)', () => {
+      // Windows: Python <3.15 decodes sys.stdin with the ANSI code page, so
+      // a non-ASCII payload raises UnicodeDecodeError inside the try/except
+      // and the script exits at line ~5 — cost, context, title and session
+      // id all die silently (see STDIN_UTF8_GUARD in shared/python.ts).
+      const script = body();
+      const guard = script.indexOf('sys.stdin.reconfigure(encoding="utf-8")');
+      const read = script.indexOf('json.load(sys.stdin)');
+      expect(guard, 'no UTF-8 guard in the statusline body').not.toBe(-1);
+      expect(guard).toBeLessThan(read);
+      expect(script.startsWith('import sys'), 'guard precedes the sys import').toBe(true);
+    });
+
     it('builds every path with os.path.join off the status_dir literal', () => {
       const script = body();
       expect(script).toContain(`status_dir=${JSON.stringify(STATUS_DIR)}`);
@@ -180,9 +195,12 @@ describe('hook-status', () => {
     it('writes the name as ASCII-safe JSON', () => {
       // json.dumps defaults to ensure_ascii=True, so a CJK/emoji title never
       // hits Windows' locale codepage and raises UnicodeEncodeError — which
-      // would abort the script and take the .cost write down with it.
+      // would abort the script and take the .cost write down with it. The
+      // proxy is "no open() carries an encoding kwarg"; the UTF-8 stdin
+      // guard's reconfigure(encoding="utf-8") is a deliberate, scoped
+      // exception — it decodes INPUT, it never re-encodes these writes.
       expect(body()).toContain('json.dumps(');
-      expect(body()).not.toContain("encoding=");
+      expect(body()).not.toMatch(/open\([^)]*encoding/);
     });
 
     it('writes .sessionid only when the id changed', () => {
@@ -277,6 +295,14 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
         .find(([target]) => target === STATUSLINE_SCRIPT)![1] as string;
       expect(wrapper).toContain(`"${pyPath}"`);
       expect(wrapper).not.toContain('-c');
+    });
+
+    it('invokes python with -X utf8 on Windows, plain elsewhere', () => {
+      // UTF-8 stdin fix, invocation layer: paired with the body guard above.
+      installStatusLineScript();
+      const wrapper = vi.mocked(fs.writeFileSync).mock.calls
+        .find(([target]) => target === STATUSLINE_SCRIPT)![1] as string;
+      expect(wrapper.includes('-X utf8')).toBe(isWin);
     });
   });
 
@@ -768,5 +794,40 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       expect(() => cleanupAll()).not.toThrow();
     });
+  });
+});
+
+describe('getStatusDir (multi-user tmpdir)', () => {
+  // POSIX /tmp is world-writable and shared: a fixed 'finevibe' name under
+  // mode 0700 belongs to whoever created it first, and every other user's
+  // hooks then fail to write their status files — silently. The uid suffix
+  // gives each user a private directory; Windows %TEMP% is already per-user.
+  it('suffixes the uid on POSIX and stays bare on Windows', async () => {
+    const cases = [
+      { win: false, uid: 1000, want: path.join('/tmp', 'finevibe-1000') },
+      { win: true, uid: 1000, want: path.join('/tmp', 'finevibe') },
+      { win: false, uid: undefined, want: path.join('/tmp', 'finevibe') },
+    ] as const;
+    for (const { win, uid, want } of cases) {
+      vi.resetModules();
+      vi.doMock('./platform', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('./platform')>();
+        return { ...actual, isWin: win };
+      });
+      const realGetuid = process.getuid;
+      if (uid === undefined) delete (process as { getuid?: unknown }).getuid;
+      else (process as { getuid?: unknown }).getuid = () => uid;
+      try {
+        const m = await import('./hook-status');
+        expect(m.getStatusDir(), `isWin=${win} uid=${uid}`).toBe(want);
+        // STATUS_DIR is the one constant every producer/consumer routes
+        // through (watcher, mkdirs, cleanup, generated scripts).
+        expect(m.STATUS_DIR).toBe(want);
+      } finally {
+        (process as { getuid?: unknown }).getuid = realGetuid;
+        vi.doUnmock('./platform');
+        vi.resetModules();
+      }
+    }
   });
 });

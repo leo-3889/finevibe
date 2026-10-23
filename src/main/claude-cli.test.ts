@@ -49,7 +49,12 @@ vi.mock('./hook-commands', () => ({
   // and the assertions checked for that baked-in literal).
   captureToolFailureCmd: vi.fn((v: string, marker: string) => `capture-toolfailure ${v} ${marker}`),
   wrapPythonHookCmd: vi.fn((_name: string, _code: string, marker: string) => `capture-event .events ${marker}`),
+  // installStatusLine shells the script path with the real shQuote; the
+  // quoting test below asserts its exact output, so stub the real logic.
+  shQuote: (word: string) => `'${word.replace(/'/g, `'\\''`)}'`,
 }));
+
+import { isWin } from './platform';
 
 // The MCP config-dir allowlist asks the store which config dirs the app
 // handed out (profiles) and which projects it knows; both are state the
@@ -458,6 +463,17 @@ describe('install into a profile config dir', () => {
     expect(n(String(mockRenameSync.mock.calls[0][1]))).toBe(n(path.join(profileDir, 'settings.json')));
     const written = JSON.parse(settingsWrites()[0]);
     expect(written.statusLine.type).toBe('command');
+  });
+
+  it('installStatusLine quotes the script path for the shell', () => {
+    // Claude Code runs the statusLine command through a shell: the raw path
+    // broke on the first space (`/Users/John Smith/.finevibe/...`, spaced
+    // Windows profiles), silently killing cost/context/title. POSIX:
+    // shQuote single quotes; cmd.exe: double quotes.
+    installStatusLine(profileDir);
+    const written = JSON.parse(settingsWrites()[0]);
+    const p = path.join('/mock/home', '.finevibe', 'run', isWin ? 'statusline.cmd' : 'statusline.sh');
+    expect(written.statusLine.command).toBe(isWin ? `"${p}"` : `'${p}'`);
   });
 
   it('defaults to ~/.claude when no config dir is given', () => {

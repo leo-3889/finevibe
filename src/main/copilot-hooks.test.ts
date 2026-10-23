@@ -149,6 +149,38 @@ describe('installCopilotHooks', () => {
     }
   });
 
+  it('passes -X utf8 on Windows on both shell fields (UTF-8 stdin fix)', async () => {
+    // Python <3.15 decodes sys.stdin with the ANSI code page on Windows: a
+    // non-ASCII payload raises UnicodeDecodeError and the dispatcher dies,
+    // silently killing status/events/session-id capture. Fresh module graph:
+    // isWin is a module-load constant, so the win path needs a re-import —
+    // and with it the fs-mock instances the fresh graph writes through.
+    vi.resetModules();
+    vi.doMock('./platform', () => ({ isWin: true, pythonBin: 'py -3' }));
+    try {
+      const [fsMod, m] = await Promise.all([import('fs'), import('./copilot-hooks')]);
+      m._resetForTesting();
+      const writeFileSync = vi.mocked(fsMod.writeFileSync);
+      const readFileSync = vi.mocked(fsMod.readFileSync);
+      readFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+      m.installCopilotHooks(PROJECT);
+      const call = writeFileSync.mock.calls.find(c => n(String(c[0])) === n(HOOK_FILE));
+      expect(call, 'hook file not written by the fresh graph').toBeDefined();
+      const { hooks } = JSON.parse(String(call![1]));
+      for (const entries of Object.values(hooks) as any[][]) {
+        for (const h of entries) {
+          expect(h.bash.startsWith('py -3 -X utf8 "')).toBe(true);
+          expect(h.powershell.startsWith('py -3 -X utf8 "')).toBe(true);
+        }
+      }
+    } finally {
+      vi.doUnmock('./platform');
+      vi.resetModules();
+      // Re-bind the suite-level helpers onto the rebuilt default graph.
+      await import('fs');
+    }
+  });
+
   it('passes event, inspector type, status, env var, and status dir as argv to the Python script', () => {
     mockFiles({});
     installCopilotHooks(PROJECT);
@@ -178,6 +210,20 @@ describe('installCopilotHooks', () => {
     expect(end).toContain('"sessionEnd"');
     expect(end).toContain('"session_end"');
     expect(end).toContain('"completed"');
+  });
+
+  it('the dispatcher reconfigures stdin to UTF-8 before its first json.load(sys.stdin)', () => {
+    // Windows UTF-8 stdin fix, script-body layer (see STDIN_UTF8_GUARD).
+    mockFiles({});
+    installCopilotHooks(PROJECT);
+    const call = mockInstallEventScript.mock.calls.find(([name]) => name === 'copilot_event_capture.py');
+    expect(call).toBeDefined();
+    const body = String(call![1]);
+    const guard = body.indexOf('sys.stdin.reconfigure(encoding="utf-8")');
+    const read = body.indexOf('json.load(sys.stdin)');
+    expect(guard, 'no UTF-8 guard in the dispatcher body').not.toBe(-1);
+    expect(guard).toBeLessThan(read);
+    expect(body.startsWith('import sys'), 'guard precedes the sys import').toBe(true);
   });
 
   it('installs an event capture script that writes the Copilot session ID to .sessionid when present', () => {

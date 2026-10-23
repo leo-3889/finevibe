@@ -1,6 +1,7 @@
 import { t } from '../../i18n.js';
 import { createModalShell, createModalButton } from '../modal-shell.js';
 import { pushModal } from '../modal-manager.js';
+import { openExternal } from '../../open-external.js';
 import type { AgentmemoryLog } from '../../../shared/types.js';
 
 /**
@@ -89,12 +90,9 @@ export function openAgentmemoryConsoleModal(): void {
   };
 
   const handleWeb = () => {
-    // openExternal rejects when no default handler answers; warn like the
-    // other openExternal call sites (file-reader.ts) instead of leaking an
-    // unhandled rejection.
-    window.finevibe.app
-      .openExternal(CONSOLE_URL)
-      .catch((err: unknown) => console.warn(`[agentmemory] could not open ${CONSOLE_URL}`, err));
+    // openExternal rejects when no default handler answers; the shared helper
+    // owns the warn (see open-external.ts).
+    void openExternal(CONSOLE_URL);
   };
 
   const timer = setInterval(() => void poll(), POLL_INTERVAL_MS);

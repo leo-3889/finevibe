@@ -275,12 +275,18 @@ function composeOrNull(): { prompt: string; instruction: string; ctx: PaneContex
   return { prompt, instruction, ctx: currentCtx };
 }
 
+/** Ask-AI session chip: keep the last path segment. Windows paths carry
+ * backslashes — a '/'-only split printed the whole backslash path. */
+export function chipFileName(filePath: string): string {
+  return filePath.split(/[\\/]/).pop() || 'file';
+}
+
 function submit(): void {
   const composed = composeOrNull();
   if (!composed) return;
   const project = appState.activeProject;
   if (!project) return;
-  const fileName = composed.ctx.filePath.split('/').pop() || 'file';
+  const fileName = chipFileName(composed.ctx.filePath);
   const sessionName = `${fileName}: ${composed.instruction.slice(0, 30)}`;
   const planMode = resolvePlanModePreference(appState.preferences, resolvePlanProvider(project, appState.preferences, undefined));
   const newSession = appState.addPlanSession(project.id, sessionName, planMode, undefined, undefined, { activate: shouldActivateAskAiSession(appState.preferences) });

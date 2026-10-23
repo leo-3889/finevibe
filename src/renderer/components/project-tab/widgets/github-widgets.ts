@@ -1,4 +1,5 @@
 import { appState } from '../../../state.js';
+import { openExternal } from '../../../open-external.js';
 import { esc } from '../../../dom-utils.js';
 import { ingestItems, isUnread, makeItemId, markRead, markAllReadInProject } from '../../../github-unread.js';
 import { t } from '../../../i18n.js';
@@ -145,7 +146,7 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     link.addEventListener('click', (e) => {
       e.preventDefault();
       markRead(projectId, repo, item);
-      void window.finevibe.app.openExternal(item.html_url);
+      void openExternal(item.html_url);
       render();
     });
     title.appendChild(link);

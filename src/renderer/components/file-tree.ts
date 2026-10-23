@@ -598,6 +598,23 @@ function deleteMenuOption(entry: DirEntry): MenuOption {
   };
 }
 
+/**
+ * A failed delete has to reach the user, not just the console. The common
+ * cause is EXDEV: `shell.trashItem` moves the file to the volume's trash, so
+ * it rejects when that is another device - a project under os.tmpdir(), a
+ * secondary drive, some tmpfs. Before this the click appeared to succeed and
+ * the file sat exactly where it was, with the reason in main's console only.
+ * The fallback is deliberately nothing: a permanent delete is never attempted
+ * behind the user's back, because the Trash path is the only recoverable one.
+ */
+function reportTrashFailure(entry: DirEntry, reason: string): void {
+  console.warn(`Failed to trash ${entry.path}: ${reason}`);
+  window.alert(
+    `"${entry.name}" was not moved to the Trash: ${reason}\n`
+    + 'Permanent delete not attempted - the file is unchanged.',
+  );
+}
+
 function confirmAndTrash(entry: DirEntry): void {
   const kind = entry.isDirectory ? 'folder' : 'file';
   const message = entry.isDirectory
@@ -607,9 +624,15 @@ function confirmAndTrash(entry: DirEntry): void {
     `Delete ${kind}`,
     message,
     async () => {
-      const result = await window.finevibe.fs.trashItem(entry.path);
-      if (!result.ok) {
-        console.warn(`Failed to trash ${entry.path}: ${result.error ?? 'unknown error'}`);
+      try {
+        const result = await window.finevibe.fs.trashItem(entry.path);
+        if (!result.ok) reportTrashFailure(entry, result.error ?? 'unknown error');
+      } catch (err) {
+        // The channel can reject outright (the invoke itself fails) rather
+        // than answer { ok: false }; showConfirmModal never awaits this
+        // callback, so an uncaught throw here is an unhandled rejection and
+        // no feedback at all.
+        reportTrashFailure(entry, err instanceof Error ? err.message : String(err));
       }
     },
     { confirmLabel: 'Delete', danger: true },

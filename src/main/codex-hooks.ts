@@ -6,7 +6,7 @@ import { statusCmd as mkStatusCmd, captureSessionIdCmd as mkCaptureSessionIdCmd,
 import { readFileSafe, readJsonSafe } from './fs-utils';
 import { cleanHooks, isIdeHook, type HookHandler, type HooksConfig } from './hooks-utils';
 import type { InspectorEventType, SettingsValidationResult } from '../shared/types';
-import { pyLiteral } from '../shared/python';
+import { pyLiteral, STDIN_UTF8_GUARD } from '../shared/python';
 
 export const CODEX_HOOK_MARKER = '# finevibe-hook';
 
@@ -170,7 +170,7 @@ export function installCodexHooks(): void {
 
   const captureEventCmd = (hookEvent: string, eventType: string) => {
     const pyCode = `import sys,json,os,time
-try:
+${STDIN_UTF8_GUARD}try:
  d=json.load(sys.stdin)
 except:
  sys.exit(0)

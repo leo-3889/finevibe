@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { ipcMain, BrowserWindow } from 'electron';
 import { getStatusLineScriptPath } from './hook-status';
 import { HOOK_MARKER, installHooksOnly, installStatusLine, getSupportedHookEvents } from './claude-cli';
-import { readJsonSafe } from './fs-utils';
+import { readJsonSafe, canonicalPath } from './fs-utils';
 import { loadState, saveState } from './store';
 import { isWin } from './platform';
 import type { Preferences, SettingsValidationResult } from '../shared/types';
@@ -127,14 +127,81 @@ function defaultClaudeDir(): string {
 }
 
 /**
- * Normalized consent key for a config dir: resolved, separator-normalized
- * and case-folded where the filesystem is case-insensitive, so one dir
- * always maps to one record no matter how the caller spelled it.
+ * Cached {@link probeFoldsCase} result, keyed by the canonical
+ * (separator-normalized) dir. Case folding is a volume property; probing
+ * once per dir keeps the write side of the probe off the consent lookup
+ * (a hot path: every banner check, every install).
+ */
+const foldsCaseByDir = new Map<string, boolean>();
+/** B1: FIFO bound mirroring MAX_CONSENT_DIR_RECORDS (C3M-05) below — a
+ * long-lived session probing many dirs must not grow the memo unbounded.
+ * Oldest dir evicted first; the eviction cost is one re-probe (a write +
+ * exists + unlink in a `finally`), never a policy change. */
+export const FOLDS_CASE_BY_DIR_MAX = 200;
+
+/**
+ * Whether the filesystem holding `dir` (or its nearest existing ancestor)
+ * folds letter case in lookups.
+ *
+ * Probed rather than derived from `process.platform`: APFS can be created
+ * either way on macOS, so the platform alone does not answer it. If the
+ * anchor cannot be written the probe is impossible, so we fall back to the
+ * platform default — Windows folds (mirrors profiles.ts' canonicalDir
+ * probe).
+ */
+function probeFoldsCase(dir: string): boolean {
+  let anchor = path.resolve(dir);
+  while (!fs.existsSync(anchor)) {
+    const parent = path.dirname(anchor);
+    if (parent === anchor) return true;
+    anchor = parent;
+  }
+  const probe = path.join(anchor, `FineVibeCaseProbe-${process.pid}`);
+  const flipped = path.join(anchor, `finevibeCASEprobe-${process.pid}`);
+  try {
+    fs.writeFileSync(probe, '');
+    return fs.existsSync(flipped);
+  } catch {
+    return isWin;
+  } finally {
+    try { fs.unlinkSync(probe); } catch { /* already gone */ }
+  }
+}
+
+function foldsCase(dir: string): boolean {
+  const cached = foldsCaseByDir.get(dir);
+  if (cached !== undefined) return cached;
+  const folds = probeFoldsCase(dir);
+  foldsCaseByDir.set(dir, folds);
+  while (foldsCaseByDir.size > FOLDS_CASE_BY_DIR_MAX) {
+    const oldest = foldsCaseByDir.keys().next().value;
+    if (oldest === undefined) break;
+    foldsCaseByDir.delete(oldest);
+  }
+  return folds;
+}
+
+/**
+ * Normalized consent key for a config dir: canonical (realpath chain —
+ * symlinks, junctions, Windows 8.3 short names and case-insensitive-volume
+ * spellings of one dir all collapse), separator-normalized, and case-folded
+ * when the filesystem folds case, so one dir always maps to one record no
+ * matter how the caller spelled it. The old `path.resolve` form left a
+ * symlinked spelling of an already-answered dir with its own record — the
+ * duplicate-prompt bug.
+ *
+ * Migration: stored keys keep their identity for plain dirs — realpath
+ * returns the same path in real casing (lowercase-folded on Windows as
+ * before), and on case-sensitive POSIX volumes the resolve form is
+ * untouched. A dir reached through a symlink (or on a case-insensitive
+ * APFS volume) resolves to a new key, so its old record is simply not
+ * found and the dir is asked about once more: consent re-prompt is the
+ * safe direction for a record that licenses overwriting a foreign
+ * statusLine.
  */
 export function consentDirKey(configDir: string): string {
-  // pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-  const resolved = path.resolve(configDir).split(path.sep).join('/');
-  return isWin ? resolved.toLowerCase() : resolved;
+  const canonical = canonicalPath(configDir).split(path.sep).join('/');
+  return foldsCase(canonical) ? canonical.toLowerCase() : canonical;
 }
 
 function isDefaultClaudeDir(configDir?: string): boolean {

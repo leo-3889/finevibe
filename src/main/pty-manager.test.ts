@@ -35,6 +35,7 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn(),
   readFileSync: vi.fn(() => { throw new Error('ENOENT'); }),
   readdirSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  readlinkSync: vi.fn(() => { throw new Error('ENOENT'); }),
 }));
 
 vi.mock('./providers/nvm', () => ({
@@ -1035,6 +1036,141 @@ describe('getFullPath (macOS)', () => {
     const result = getFullPath();
     expect(result).toContain('/mock/home/.nvm/versions/node/v24.11.1/bin');
     expect(result).toContain('/opt/homebrew/bin');
+  });
+});
+
+describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
+  // Platform constants are baked at module load, so the linux/darwin builds
+  // need a fresh module registry with './platform' pinned — same seam as the
+  // darwin getFullPath suite above (test-case exception to static imports).
+  async function importPosixPtyManager(platform: 'linux' | 'darwin') {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => ({
+      ...(await importOriginal<typeof PlatformModule>()),
+      isWin: false,
+      isMac: platform === 'darwin',
+      isLinux: platform === 'linux',
+      pathSep: ':',
+      whichCmd: 'which',
+      utf8LocaleEnv: platform === 'darwin' ? { LC_CTYPE: 'UTF-8' } : { LANG: 'C.UTF-8' },
+    }));
+    // canonicalPath is host-path-sensitive (Windows path.resolve turns '/x'
+    // into 'C:\x'); stub the seam so cwd assertions stay native.
+    vi.doMock('./fs-utils', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('./fs-utils')>()),
+      canonicalPath: (p: string) => p,
+    }));
+    const cp = await import('child_process');
+    const fsp = await import('fs');
+    const pm = await import('./pty-manager');
+    return {
+      pm,
+      execSync: vi.mocked(cp.execSync),
+      execFile: vi.mocked(cp.execFile),
+      readlinkSync: vi.mocked(fsp.readlinkSync),
+      existsSync: vi.mocked(fsp.existsSync),
+    };
+  }
+
+  afterEach(() => {
+    vi.doUnmock('./platform');
+    vi.doUnmock('./fs-utils');
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    mockExecSync.mockImplementation(() => {
+      throw new Error('not found');
+    });
+  });
+
+  beforeEach(() => {
+    vi.stubEnv('SHELL', '');
+    vi.stubEnv('PATH', '/usr/bin:/bin');
+    mockNvmDefaultNodeBinDir.mockReturnValue(null);
+  });
+
+  it('probes /bin/sh on Linux when $SHELL is unset', async () => {
+    const { pm, execSync } = await importPosixPtyManager('linux');
+    execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
+    expect(pm.getFullPath()).toBe('/usr/bin');
+    expect(execSync.mock.calls[0][0]).toMatch(/^\/bin\/sh -ilc /);
+  });
+
+  it('keeps the /bin/zsh probe on macOS when $SHELL is unset', async () => {
+    const { pm, execSync } = await importPosixPtyManager('darwin');
+    execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
+    expect(pm.getFullPath()).toBe('/usr/bin');
+    expect(execSync.mock.calls[0][0]).toMatch(/^\/bin\/zsh -ilc /);
+  });
+
+  it('spawns /bin/bash for the shell tab on Linux when $SHELL is unset and bash exists', async () => {
+    const { pm, existsSync } = await importPosixPtyManager('linux');
+    existsSync.mockImplementation((p) => String(p) === '/bin/bash');
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    pm.spawnShellPty('sh-bash', '/project', vi.fn(), vi.fn());
+    expect(mockSpawn.mock.calls[0][0]).toBe('/bin/bash');
+  });
+
+  it('falls back to /bin/sh for the shell tab on Linux without bash', async () => {
+    const { pm, existsSync } = await importPosixPtyManager('linux');
+    existsSync.mockReturnValue(false);
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    pm.spawnShellPty('sh-plain', '/project', vi.fn(), vi.fn());
+    expect(mockSpawn.mock.calls[0][0]).toBe('/bin/sh');
+  });
+
+  it('keeps /bin/zsh for the shell tab on macOS when $SHELL is unset', async () => {
+    const { pm } = await importPosixPtyManager('darwin');
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    pm.spawnShellPty('sh-mac', '/project', vi.fn(), vi.fn());
+    expect(mockSpawn.mock.calls[0][0]).toBe('/bin/zsh');
+  });
+
+  it('reads /proc/<pid>/cwd for getPtyCwd on Linux and never spawns lsof', async () => {
+    const { pm, execFile, readlinkSync } = await importPosixPtyManager('linux');
+    // mockClear (clearAllMocks) does not drop queued mockImplementationOnce
+    // entries; suites that early-return on this host can leave stale ones.
+    execFile.mockReset();
+    const proc = createMockPtyProcess();
+    (proc as unknown as { pid: number }).pid = 1000;
+    mockSpawn.mockReturnValue(proc);
+    pm.spawnShellPty('cwd-linux', '/project', vi.fn(), vi.fn());
+
+    // pgrep: pid 1000 has child 2000, which has no children of its own.
+    execFile
+      .mockImplementationOnce(((_cmd: string, args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
+        cb(null, args[1] === '1000' ? '2000\n' : '');
+        return undefined as never;
+      }) as never)
+      .mockImplementationOnce(((_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
+        cb(new Error('no children'), '');
+        return undefined as never;
+      }) as never);
+    readlinkSync.mockReturnValue('/some/worktree/path');
+
+    expect(await pm.getPtyCwd('cwd-linux')).toBe('/some/worktree/path');
+    expect(readlinkSync).toHaveBeenCalledWith('/proc/2000/cwd');
+    expect(execFile.mock.calls.every(([cmd]) => cmd !== 'lsof')).toBe(true);
+  });
+
+  it('returns null for getPtyCwd on Linux when the /proc readlink fails', async () => {
+    const { pm, execFile, readlinkSync } = await importPosixPtyManager('linux');
+    execFile.mockReset();
+
+    const proc = createMockPtyProcess();
+    (proc as unknown as { pid: number }).pid = 1000;
+    mockSpawn.mockReturnValue(proc);
+    pm.spawnShellPty('cwd-fail', '/project', vi.fn(), vi.fn());
+
+    execFile.mockImplementationOnce(((_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
+      cb(new Error('no children'), '');
+      return undefined as never;
+    }) as never);
+    readlinkSync.mockImplementation(() => {
+      throw new Error('ENOENT');
+    });
+
+    expect(await pm.getPtyCwd('cwd-fail')).toBeNull();
+    expect(execFile.mock.calls.every(([cmd]) => cmd !== 'lsof')).toBe(true);
   });
 });
 

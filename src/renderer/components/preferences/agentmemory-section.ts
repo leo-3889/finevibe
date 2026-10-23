@@ -4,6 +4,7 @@ import type { PreferencesContext, SectionController } from './section.js';
 import { toggleRow } from './shared.js';
 import type { AgentmemoryStatus } from '../../../shared/types.js';
 import { CONSOLE_URL, openAgentmemoryConsoleModal } from './agentmemory-console.js';
+import { openExternal } from '../../open-external.js';
 
 /**
  * agentmemory section (Model A). A toggle controls whether FineVibe starts the
@@ -88,10 +89,8 @@ export function createAgentmemorySection(ctx: PreferencesContext): SectionContro
       consoleLink.textContent = t('agentmemory.openConsole');
       consoleLink.addEventListener('click', (e) => {
         e.preventDefault();
-        // Warn on failure (file-reader.ts precedent); the modal opens regardless.
-        window.finevibe.app
-          .openExternal(CONSOLE_URL)
-          .catch((err: unknown) => console.warn(`[agentmemory] could not open ${CONSOLE_URL}`, err));
+        // The shared helper warns on failure (open-external.ts); the modal opens regardless.
+        void openExternal(CONSOLE_URL);
         openAgentmemoryConsoleModal();
       });
 

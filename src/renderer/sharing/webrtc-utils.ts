@@ -3,8 +3,16 @@
 import type { ShareMessage } from '../../shared/sharing-types.js';
 import { encryptPayload, decryptPayload } from './share-crypto.js';
 
+// Two public STUN servers: Google's endpoint alone fails where Google is
+// blocked, so Cloudflare is the fallback. STUN only discovers server-reflexive
+// candidates — LAN-only shares work with zero STUN servers (host candidates
+// reach the peer directly), and an internet share behind a symmetric NAT needs
+// a relay, i.e. a self-hosted TURN server; none is shipped here.
 export const ICE_CONFIG: RTCConfiguration = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ],
 };
 
 export function sendMessage(dc: RTCDataChannel, msg: ShareMessage): void {

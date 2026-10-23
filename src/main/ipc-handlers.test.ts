@@ -76,7 +76,15 @@ vi.mock('electron', () => ({
     quit: vi.fn(),
   },
   dialog: { showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })) },
-  shell: { openExternal: () => Promise.resolve() },
+  // The file-tree channels: `fs:trashItem` moves a file to its volume's trash
+  // (the EXDEV test overrides `trashItem` per test) and `fs:showInFolder`
+  // reveals a file with showItemInFolder / opens a folder with openPath.
+  shell: {
+    openExternal: () => Promise.resolve(),
+    trashItem: vi.fn(() => Promise.resolve()),
+    showItemInFolder: vi.fn(),
+    openPath: vi.fn(() => Promise.resolve('')),
+  },
   clipboard: {
     writeText: vi.fn(),
     readText: vi.fn(() => ''),
@@ -376,7 +384,56 @@ describe('fs:listFiles enumeration cache (PA-07)', () => {
     fs.writeFileSync(path.join(root, 'sub', 'b.ts'), 'b');
     fs.writeFileSync(path.join(root, 'node_modules', 'x.ts'), 'x');
     const files = await list(root);
-    expect(new Set(files)).toEqual(new Set(['a.ts', path.join('sub', 'b.ts')]));
+    // '/'-separated on every OS — the enumeration contract (see toPosixRel).
+    expect(new Set(files)).toEqual(new Set(['a.ts', 'sub/b.ts']));
+  });
+
+  it('asks git for unquoted paths so a non-ASCII filename survives enumeration', async () => {
+    stubGitLsFiles('café/AGENTS.md\n');
+    expect(await list(root, 'café')).toEqual(['café/AGENTS.md']);
+    const [cmd, argv] = mockGitCloneSpawn.mock.calls[0] as unknown as [string, string[]];
+    expect(cmd).toBe('git');
+    // The same flag readiness/utils.ts pins, for the same reason: by default
+    // git octal-escapes non-ASCII paths, so Quick Open listed
+    // "caf\303\251/AGENTS.md" — a name that is neither what the user types nor
+    // what the file tree shows, so the file was unopenable from Quick Open.
+    expect(argv).toContain('core.quotePath=false');
+    expect(argv).toContain('ls-files');
+  });
+
+  it('reports fallback-walked paths with \'/\' separators on a Windows host', async () => {
+    // `git ls-files` prints '/' on every OS, and every consumer of the listing
+    // matches on that shape. The walk handed them path.relative's native
+    // spelling instead: on Windows `generated\out.js` matched no `generated/`
+    // pattern. POSIX is a no-op (sep === '/'), so this is the Windows pin.
+    // The directory is NOT one of the walk's built-in IGNORE names, which are
+    // dropped by entry name and would hide the separator contract.
+    platformState.os = 'win32';
+    stubGitLsFiles(null);
+    fs.mkdirSync(path.join(root, 'generated'));
+    fs.writeFileSync(path.join(root, 'generated', 'out.js'), 'x');
+    fs.writeFileSync(path.join(root, 'a.ts'), 'a');
+    expect(new Set(await list(root))).toEqual(new Set(['a.ts', 'generated/out.js']));
+  });
+
+  it('a trailing-slash ignore pattern excludes a fallback-walked directory', async () => {
+    platformState.os = 'win32';
+    stubGitLsFiles(null);
+    fs.mkdirSync(path.join(root, 'generated'));
+    fs.writeFileSync(path.join(root, 'generated', 'bundle.js'), 'bundled');
+    fs.writeFileSync(path.join(root, 'a.ts'), 'source');
+    // picomatch's `generated/` semantics over '/' paths — finevibeignore builds
+    // exactly this, and mocking it is this suite's convention.
+    vi.mocked(buildFineVibeIgnoreMatcher).mockReturnValue((rel: string) => rel.split('/')[0] === 'generated');
+
+    const res = await handlers.get('fs:topFilesByTokens')!({}, root, 10) as {
+      ok: boolean;
+      files: Array<{ path: string }>;
+    };
+    expect(res.ok).toBe(true);
+    // The excluded directory never reaches the scan; on the pre-fix native
+    // spelling (`generated\bundle.js`) the pattern missed and it was read.
+    expect(res.files.map((f) => f.path)).toEqual(['a.ts']);
   });
 
   it('a git:changed invalidation drops the enumeration already in flight (UI3-11)', async () => {
@@ -1728,7 +1785,9 @@ describe('clipboard:readForPaste bounds + off-main encode (P4)', () => {
     const payload = await readPaste();
 
     expect(clipboard.readImage).not.toHaveBeenCalled();
-    expect(payload.imagePath).toMatch(/[\\/]finevibe-paste[\\/].*\.png$/);
+    // POSIX suffixes the dir with the uid (see the test below); Windows keeps
+    // the bare name, and this suite defaults to the Windows platform.
+    expect(payload.imagePath).toMatch(/[\\/]finevibe-paste(-\d+)?[\\/].*\.png$/);
     expect(fs.readFileSync(payload.imagePath!)).toEqual(Buffer.from('PNGBYTES'));
   });
 
@@ -1787,6 +1846,33 @@ describe('clipboard:readForPaste bounds + off-main encode (P4)', () => {
     expect(clipboard.readImage).not.toHaveBeenCalled();
     expect(utilityProcess.fork).not.toHaveBeenCalled();
     expect(payload.imagePath).toBeNull();
+  });
+
+  it('suffixes the POSIX paste dir with the uid — a shared /tmp name is a free DoS', async () => {
+    // os.tmpdir() is /tmp: world-writable and shared. A fixed name created
+    // under 0700 is claimed by whoever gets there first, and every other
+    // user's mkdir then fails EACCES — one local `mkdir /tmp/finevibe-paste`
+    // switches off pasted images for the whole machine. The uid suffix is
+    // hook-status's getStatusDir shape; Windows' per-user %TEMP% needs none.
+    platformState.os = 'linux';
+    const realGetuid = process.getuid;
+    (process as { getuid?: unknown }).getuid = () => 4321;
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      registerIpcHandlers(); // the dir name is resolved per registration
+      formatsWith('image/png');
+      vi.mocked(clipboard.readBuffer).mockReturnValue(Buffer.from('PNGBYTES'));
+
+      const payload = await readPaste();
+
+      expect(payload.imagePath).toContain(`finevibe-paste-4321${path.sep}`);
+      // 0700: the parent is world-writable and a pasted screenshot is
+      // whatever the user just copied.
+      expect(mkdir.mock.calls[0][1]).toEqual({ recursive: true, mode: 0o700 });
+    } finally {
+      (process as { getuid?: unknown }).getuid = realGetuid;
+      mkdir.mockRestore();
+    }
   });
 });
 

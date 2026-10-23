@@ -12,7 +12,7 @@ The file reader accepts text files up to 8 MiB. It displays a bounded page inste
 | Find within a file preview | Displayed page only | Matches outside the current page are not searched. Change pages to search another section. |
 | Untracked Git diff | 256 KiB and 5,000 split lines | An explanatory message instead of an oversized diff. Files containing NUL bytes receive a binary-file message. |
 | Global session search | Best 20 results; indexed text capped at 50 Ki characters per transcript, join separators included | Results search extracted user text, not every byte of a conversation. |
-| Pasted clipboard image | 25 MiB decoded; PNG, JPEG, GIF, WebP, BMP, TIFF | An oversized or unsupported image attaches nothing: the paste is silent. Saved images live in `os.tmpdir()/finevibe-paste` and files older than a day are pruned. |
+| Pasted clipboard image | 25 MiB decoded; PNG, JPEG, GIF, WebP, BMP, TIFF | An oversized or unsupported image attaches nothing: the paste is silent. Saved images live in the uid-suffixed paste dir under `os.tmpdir()` (`finevibe-paste-<uid>` on POSIX, `finevibe-paste` on Windows, created `0700`) and files older than a day are pruned. |
 
 `KiB` means 1,024 bytes. Character budgets use JavaScript string length (UTF-16 code units), not bytes or displayed symbols. These limits are code constants, not Preferences settings.
 

@@ -8,19 +8,27 @@ vi.mock('child_process', () => ({
 
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),
+  existsSync: vi.fn(() => false),
   promises: {
     rm: vi.fn(),
     open: vi.fn(),
+    stat: vi.fn(),
+    chmod: vi.fn(),
   },
 }));
 
 import { execFile } from 'child_process';
+import * as fs from 'fs';
 import { promises as fsPromises } from 'fs';
 import * as path from 'path';
-import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitDiscardFile, checkoutGitBranch, createGitBranch, getGitRemoteUrl } from './git-status';
+import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitDiscardFile, checkoutGitBranch, createGitBranch, getGitRemoteUrl, gitStageFile, gitCandidatePaths, getGitBinary, resetGitBinaryCacheForTesting, primeGitBinaryForTesting } from './git-status';
+import { whichCmd } from './platform';
 
 const mockExecFile = vi.mocked(execFile);
 const mockRm = vi.mocked(fsPromises.rm);
+const mockExistsSync = vi.mocked(fs.existsSync);
+const mockStat = vi.mocked(fsPromises.stat);
+const mockChmod = vi.mocked(fsPromises.chmod);
 
 function simulateExecFile(err: ExecFileException | null, stdout: string) {
   mockExecFile.mockImplementationOnce((_cmd, _args, _opts, callback) => {
@@ -31,6 +39,10 @@ function simulateExecFile(err: ExecFileException | null, stdout: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Spawns must use the plain 'git' the suites assert against, and the
+  // git-binary probe (which would consume the simulateExecFile queue)
+  // must never fire.
+  primeGitBinaryForTesting('git');
 });
 
 describe('getGitStatus', () => {
@@ -531,5 +543,165 @@ describe('getGitRemoteUrl', () => {
     const err = Object.assign(new Error('timed out'), { killed: true }) as ExecFileException;
     simulateExecFile(err, '');
     expect(await getGitRemoteUrl('/test')).toBeNull();
+  });
+});
+
+describe('git binary resolution (GIT-BINARY)', () => {
+  beforeEach(() => {
+    resetGitBinaryCacheForTesting();
+  });
+
+  function answerVersion() {
+    mockExecFile.mockImplementation(((_cmd: unknown, _args: unknown, _opts: unknown, callback: unknown) => {
+      (callback as (err: ExecFileException | null, stdout: string) => void)(null, 'git version 2.45.0');
+      return undefined as never;
+    }) as never);
+  }
+
+  it('picks the first install candidate that exists and answers --version, in candidate order', async () => {
+    const [first, second] = gitCandidatePaths();
+    mockExistsSync.mockImplementation((p) => p === second);
+    answerVersion();
+    await expect(getGitBinary()).resolves.toBe(second);
+    // Candidate order is contractual: candidate 0 is checked before 1.
+    expect(mockExistsSync.mock.calls.map((c) => c[0])).toEqual([first, second]);
+  });
+
+  it('skips a candidate whose --version probe fails and takes the next', async () => {
+    const [first, second] = gitCandidatePaths();
+    mockExistsSync.mockImplementation((p) => p === first || p === second);
+    let firstProbe = true;
+    mockExecFile.mockImplementation(((_cmd: unknown, _args: unknown, _opts: unknown, callback: unknown) => {
+      const cb = callback as (err: ExecFileException | null, stdout: string) => void;
+      if (firstProbe) {
+        firstProbe = false;
+        cb(new Error('broken install') as ExecFileException, '');
+        return undefined as never;
+      }
+      cb(null, 'git version 2.45.0');
+      return undefined as never;
+    }) as never);
+    await expect(getGitBinary()).resolves.toBe(second);
+  });
+
+  it('falls back to the PATH-widened which probe when no candidate exists', async () => {
+    mockExistsSync.mockImplementation(() => false);
+    mockExecFile.mockImplementation(((_cmd: unknown, _args: unknown, _opts: unknown, callback: unknown) => {
+      const cb = callback as (err: ExecFileException | null, stdout: string) => void;
+      if (String(_cmd) === whichCmd) {
+        cb(null, '/custom/bin/git\n');
+        return undefined as never;
+      }
+      cb(null, 'git version 2.45.0');
+      return undefined as never;
+    }) as never);
+    await expect(getGitBinary()).resolves.toBe('/custom/bin/git');
+  });
+
+  it('falls back to the plain name and warns GIT_NOT_FOUND when nothing answers', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockExistsSync.mockImplementation(() => false);
+    mockExecFile.mockImplementation(((_cmd: unknown, _args: unknown, _opts: unknown, callback: unknown) => {
+      const cb = callback as (err: ExecFileException | null, stdout: string) => void;
+      cb(Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }) as ExecFileException, '');
+      return undefined as never;
+    }) as never);
+    await expect(getGitBinary()).resolves.toBe('git');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('GIT_NOT_FOUND');
+  });
+
+  it('caches the probe: a repeated getGitBinary spawns nothing new', async () => {
+    mockExistsSync.mockImplementation(() => false);
+    answerVersion();
+    await getGitBinary();
+    const calls = mockExecFile.mock.calls.length;
+    await getGitBinary();
+    expect(mockExecFile).toHaveBeenCalledTimes(calls);
+  });
+});
+
+describe('GIT_NOT_FOUND mapping (spawn ENOENT)', () => {
+  const enoent = () =>
+    Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }) as ExecFileException;
+
+  it('getGitStatus reports gitNotFound, not a plain NOT_A_REPO', async () => {
+    simulateExecFile(enoent(), '');
+    const status = await getGitStatus('/test');
+    expect(status.gitNotFound).toBe(true);
+    expect(status.isGitRepo).toBe(false);
+  });
+
+  it('keeps non-ENOENT failures as NOT_A_REPO (not a repo is not a missing git)', async () => {
+    simulateExecFile(new Error('fatal: not a git repository') as ExecFileException, '');
+    const status = await getGitStatus('/test');
+    expect(status.gitNotFound).toBeUndefined();
+    expect(status.isGitRepo).toBe(false);
+  });
+
+  it('gitStageFile rejects with a GIT_NOT_FOUND-coded error', async () => {
+    simulateExecFile(enoent(), '');
+    await expect(gitStageFile('/test', 'a.ts')).rejects.toThrow(/GIT_NOT_FOUND/);
+    await gitStageFile('/test', 'a.ts').catch((err: NodeJS.ErrnoException) => {
+      expect(err.code).toBe('GIT_NOT_FOUND');
+    });
+  });
+});
+
+describe('gitDiscardFile read-only retry (Windows polish)', () => {
+  const workingTree = () => simulateExecFile(null, '/repo\n');
+  const listing = (out: string) => simulateExecFile(null, out);
+
+  it('clears the read-only bit and retries once on EPERM', async () => {
+    workingTree();
+    listing('new.ts\n');
+    listing('');
+    const target = path.join('/repo', 'new.ts');
+    mockRm
+      .mockRejectedValueOnce(Object.assign(new Error('EPERM'), { code: 'EPERM' }))
+      .mockResolvedValueOnce(undefined);
+    mockStat.mockResolvedValueOnce({ mode: 0o444 } as never);
+    mockChmod.mockResolvedValueOnce(undefined);
+    await gitDiscardFile('/repo', 'new.ts', 'untracked');
+    expect(mockChmod).toHaveBeenCalledWith(target, 0o644);
+    expect(mockRm).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries on EBUSY too', async () => {
+    workingTree();
+    listing('new.ts\n');
+    listing('');
+    mockRm
+      .mockRejectedValueOnce(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }))
+      .mockResolvedValueOnce(undefined);
+    mockStat.mockResolvedValueOnce({ mode: 0o644 } as never);
+    mockChmod.mockResolvedValueOnce(undefined);
+    await gitDiscardFile('/repo', 'new.ts', 'untracked');
+    expect(mockRm).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces unrelated rm failures without touching permissions', async () => {
+    workingTree();
+    listing('new.ts\n');
+    listing('');
+    mockRm.mockRejectedValueOnce(Object.assign(new Error('ELOOP'), { code: 'ELOOP' }));
+    await expect(gitDiscardFile('/repo', 'new.ts', 'untracked')).rejects.toThrow('ELOOP');
+    expect(mockChmod).not.toHaveBeenCalled();
+    expect(mockRm).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('untracked diff CRLF normalization', () => {
+  it('counts CRLF lines once (hunk header matches the rendered lines)', async () => {
+    const data = Buffer.from('a\r\nb\r\nc');
+    vi.mocked(fsPromises.open).mockResolvedValueOnce({
+      stat: async () => ({ size: data.length }),
+      read: async (buffer: Buffer, offset: number, length: number, position: number) => ({
+        bytesRead: data.copy(buffer, offset, position, position + length),
+      }),
+      close: async () => {},
+    } as never);
+    const diff = await getGitDiff('/test', 'new.ts', 'untracked');
+    expect(diff).toContain('@@ -0,0 +1,3 @@');
   });
 });

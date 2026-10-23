@@ -135,7 +135,9 @@ function createWindow(): void {
 
   // Open external links in default browser instead of inside the app
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isHttpUrl(url)) shell.openExternal(url);
+    // openExternal rejects on a headless / no-default-browser Linux session;
+    // this handler has no caller to catch it, so warn here.
+    if (isHttpUrl(url)) shell.openExternal(url).catch((err: unknown) => console.warn(`[window-open] could not open ${url}`, err));
     return { action: 'deny' };
   });
   const appSession = mainWindow.webContents.session;
@@ -185,7 +187,7 @@ function createWindow(): void {
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (isAppUrl(url)) return;
     event.preventDefault();
-    if (isHttpUrl(url)) shell.openExternal(url);
+    if (isHttpUrl(url)) shell.openExternal(url).catch((err: unknown) => console.warn(`[will-navigate] could not open ${url}`, err));
   });
 
   mainWindow.on('close', (event) => {

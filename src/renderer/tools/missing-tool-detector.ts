@@ -31,7 +31,10 @@ function extractCommand(cmd: string): string {
 }
 
 const NOT_FOUND_RE = /command not found|(?:bash|sh|zsh):\s*\S+:\s*not found|is not recognized as |status code 127|exit code 127/i;
-const PERMISSION_DENIED_RE = /permission denied|status code 126|exit code 126/i;
+// Windows prints "Access is denied." (the locale-agnostic English form cmd
+// and Node surface); localized systems keep the 126 exit codes. Without the
+// pattern the tool alert misses the platform's most common permission failure.
+const PERMISSION_DENIED_RE = /permission denied|access is denied|status code 126|exit code 126/i;
 
 export function classifyError(error: string, tool: ToolInfo): FailureReason {
   if (NOT_FOUND_RE.test(error)) return 'not-found';

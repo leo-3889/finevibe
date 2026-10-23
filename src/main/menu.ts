@@ -1,5 +1,5 @@
 import { app, Menu, BrowserWindow } from 'electron';
-import { isMac, isWin } from './platform';
+import { isMac, isWin, isLinux } from './platform';
 
 export function createAppMenu(debugMode = false): void {
 
@@ -8,6 +8,12 @@ export function createAppMenu(debugMode = false): void {
       label: app.name,
       submenu: [
         { role: 'about' as const },
+        { type: 'separator' as const },
+        { role: 'services' as const },
+        { type: 'separator' as const },
+        { role: 'hide' as const },
+        { role: 'hideOthers' as const },
+        { role: 'unhide' as const },
         { type: 'separator' as const },
         { role: 'quit' as const },
       ],
@@ -33,7 +39,19 @@ export function createAppMenu(debugMode = false): void {
           accelerator: 'CmdOrCtrl+W',
           registerAccelerator: false,
           click: () => sendToRenderer('menu:close-session'),
-        } : { role: 'quit' as const },
+        } : {
+          // Menu quit accelerator: role:'quit' registers a Ctrl+Q accelerator on
+          // win/linux, stealing the XON flow-control byte from xterm.js
+          // PTYs. A custom item claims no key — the renderer owns the
+          // Ctrl+W/Ctrl+Q session semantics. app.quit() here is NOT a raw
+          // quit: main.ts before-quit gates on isCloseConfirmed() and
+          // routes through requestConfirmClose() — the same close pipeline
+          // as mainWindow 'close' — before the flushState/killAllPtys
+          // teardown runs.
+          label: 'Quit',
+          registerAccelerator: false,
+          click: () => app.quit(),
+        },
         ...(isMac ? [{
           label: 'Close Window',
           accelerator: 'CmdOrCtrl+Shift+W',
@@ -43,11 +61,12 @@ export function createAppMenu(debugMode = false): void {
     },
     {
       label: 'Edit',
-      // On Windows, role-based items register Ctrl+C/V/X/Z/A as global
-      // accelerators which steal keystrokes from xterm.js terminals.
+      // On Windows and Linux (GTK), role-based items register Ctrl+C/V/X/Z/A
+      // as menu-bar accelerators which steal keystrokes from xterm.js
+      // terminals before the renderer sees them.
       // Use custom items without accelerators — Chromium still handles
       // these shortcuts natively in regular DOM inputs/textareas.
-      submenu: isWin ? [
+      submenu: isWin || isLinux ? [
         { label: 'Undo', click: () => focusedContents()?.undo() },
         { label: 'Redo', click: () => focusedContents()?.redo() },
         { type: 'separator' as const },
@@ -111,6 +130,16 @@ export function createAppMenu(debugMode = false): void {
         ] : []),
       ],
     },
+    ...(isMac ? [{
+      label: 'Window',
+      role: 'window' as const,
+      submenu: [
+        { role: 'minimize' as const },
+        // The renderer owns Cmd+W (File → Close Session above); an empty
+        // accelerator keeps the entry while claiming no key.
+        { role: 'close' as const, accelerator: '' },
+      ],
+    }] : []),
   ];
 
   const menu = Menu.buildFromTemplate(template);
