@@ -62,6 +62,7 @@
       "defaultProfileLabel": "默认配置文件",
       "directoryNotExist": "目录不存在",
       "checkoutAndCreate": "检出并创建",
+      "selectButton": "选择",
       "cloning": "正在克隆…",
       "cloneFailed": "克隆失败"
     },
@@ -600,6 +601,10 @@
     "debugModeLabel": "调试模式",
     "versionLoaded": "版本：{ver}"
   },
+  "disk": {
+    "lowSpace": "磁盘空间不足——剩余 {available}。请释放空间，以免 FineVibe 无法继续保存您的工作。",
+    "lowSpaceUnknown": "磁盘空间不足。请释放空间，以免 FineVibe 无法继续保存您的工作。"
+  },
   "update": {
     "downloadFailed": "更新下载失败"
   },
@@ -625,7 +630,31 @@
     "about": "关于",
     "general": "通用",
     "appearance": "外观",
-    "agentmemory": "智能体记忆"
+    "agentmemory": "智能体记忆",
+    "storage": "存储"
+  },
+  "storage": {
+    "usageHeading": "磁盘占用（应用数据）",
+    "scanning": "扫描中…",
+    "scanFailed": "扫描失败",
+    "truncated": "结果不完整 — 已达扫描上限",
+    "subPi": "Pi 会话",
+    "subOmp": "OMP 会话",
+    "subPartitions": "浏览器配置文件",
+    "subCache": "缓存",
+    "subMisc": "其他应用数据",
+    "clearButton": "清理缓存",
+    "clearConfirm": "删除浏览器与应用缓存（Cache、GPUCache、Code Cache、Dawn 缓存）及 Chrome 导入临时文件？会话、转录与浏览器配置文件登录信息不受影响。",
+    "clearing": "清理中…",
+    "cleared": "缓存已清理",
+    "clearFailed": "清理失败",
+    "retirementHeading": "旧版数据退役",
+    "retirementNone": "无待退役的旧版数据",
+    "retirementEntry": "{from}：{outcome}",
+    "outcomeRemoved": "已删除",
+    "outcomeKept": "保留（宽限期）",
+    "outcomeUnverified": "未验证",
+    "outcomeError": "错误"
   },
   "session": {
     "crashedTitle": "会话异常结束",

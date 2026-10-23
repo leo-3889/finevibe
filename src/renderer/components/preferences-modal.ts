@@ -11,6 +11,7 @@ import { createShortcutsSection } from './preferences/shortcuts-section.js';
 import { createProfilesSection } from './preferences/profiles-section.js';
 import { createSetupSection, updateSetupBadge } from './preferences/setup-section.js';
 import { createAgentmemorySection } from './preferences/agentmemory-section.js';
+import { createStorageSection } from './preferences/storage-section.js';
 import { createAboutSection } from './preferences/about-section.js';
 import { createHelpSection } from './preferences/help-section.js';
 
@@ -26,6 +27,7 @@ const SECTIONS: { id: Section; labelKey: string; create: (ctx: PreferencesContex
   { id: 'profiles', labelKey: 'preferencesNav.profiles', create: createProfilesSection },
   { id: 'setup', labelKey: 'preferencesNav.setup', create: createSetupSection },
   { id: 'agentmemory', labelKey: 'preferencesNav.agentmemory', create: createAgentmemorySection },
+  { id: 'storage', labelKey: 'preferencesNav.storage', create: createStorageSection },
   { id: 'help', labelKey: 'preferencesNav.help', create: createHelpSection },
   { id: 'about', labelKey: 'preferencesNav.about', create: createAboutSection },
 ];

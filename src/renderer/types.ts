@@ -1,6 +1,7 @@
 export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, AgentmemoryStatus, AgentmemoryLog } from '../shared/types.js';
 import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types.js';
 import type { ImportableLegacyProject } from '../shared/types.js';
+import type { DiskHealth } from '../shared/types.js';
 import type { AgentmemoryLog } from '../shared/types.js';
 
 export interface FinevibeApi {
@@ -99,6 +100,10 @@ export interface FinevibeApi {
     onDownloaded(cb: (info: { version: string }) => void): () => void;
     onError(cb: (info: { message: string }) => void): () => void;
   };
+  disk: {
+    get(): Promise<DiskHealth | null>;
+    onStatus(callback: (status: DiskHealth) => void): () => void;
+  };
   app: {
     focus(): void;
     getVersion(): Promise<string>;
@@ -164,6 +169,21 @@ export interface FinevibeApi {
     start(): Promise<AgentmemoryStatus>;
     /** Tail of the daemon console log file (see main/agentmemory-manager.ts). */
     log(): Promise<AgentmemoryLog>;
+  };
+  storage: {
+    /** userData subtree sizes, descending; `truncated` on scan caps. */
+    scan(): Promise<{ entries: Array<{ name: string; bytes: number }>; truncated: boolean }>;
+    /** Clear caches ONLY (see clearSafeCaches in main/ipc-handlers.ts). */
+    clear(): Promise<{ tempDirsSwept: number }>;
+    /** Read-only A3 retirement audit log. */
+    retirement(): Promise<Array<{
+      id: string;
+      from: string;
+      at: string;
+      outcome: 'removed' | 'kept' | 'unverified' | 'error';
+      bytesFreed?: number;
+      reason?: string;
+    }>>;
   };
   menu: {
     onNewProject(callback: () => void): () => void;

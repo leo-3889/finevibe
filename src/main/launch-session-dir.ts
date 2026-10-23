@@ -216,6 +216,156 @@ export function pruneLaunchSessionDirs(base: string, now = Date.now()): number {
 }
 
 /**
+ * A4: total-size quota per provider base. The 30-day window bounds dir
+ * AGE; the quota bounds DISK: when a base exceeds it, expired dirs
+ * (exactly the window sweep's AND predicate — young dirs always survive)
+ * are evicted oldest-first by enforceLaunchSessionQuota().
+ */
+export const SESSIONS_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
+
+/** A4: re-arm cadence of the startup/daily sweeps. */
+const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** All recursive file bytes under one per-launch dir; symlinks ignored.
+ *  A5: exported — the storage report (ipc-handlers.ts `storage:scan`)
+ *  reuses this bounded walk verbatim; do not duplicate it there. */
+export function dirSizeBytes(dir: string, depth = 0): number {
+  if (depth > 4) return 0;
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  let bytes = 0;
+  for (const name of names) {
+    const file = path.join(dir, name);
+    try {
+      const st = fs.lstatSync(file);
+      if (st.isFile()) bytes += st.size;
+      else if (st.isDirectory()) bytes += dirSizeBytes(file, depth + 1);
+    } catch {
+      // Vanished between readdir and stat.
+    }
+  }
+  return bytes;
+}
+
+/**
+ * A4: bound `base` to `quotaBytes` after the window sweep. Only dirs the
+ * window sweep's AND predicate calls expired are eviction candidates,
+ * ordered by the oldest age each exposes (sidecar `createdAt`, fallback
+ * the newest transcript mtime, fallback the dir mtime); young dirs
+ * survive an over-quota base. The eviction scan is bounded by the same
+ * `pruneScanLimit` as the window sweep — an in-window dir mtime already
+ * makes a dir undeletable, so the unexamined tail cannot hold candidates
+ * (P2-57's argument, reused verbatim); over-quota bases past the scan
+ * bound converge over consecutive daily passes. The full-base size walk
+ * runs only from the startup/daily arms (setImmediate, off any user
+ * path). Returns the number of dirs removed.
+ */
+export function enforceLaunchSessionQuota(
+  base: string,
+  quotaBytes = SESSIONS_QUOTA_BYTES,
+  now = Date.now(),
+): number {
+  let names: string[];
+  try {
+    names = fs.readdirSync(base);
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  const dirs: string[] = [];
+  for (const name of names) {
+    const dir = path.join(base, name);
+    try {
+      if (!fs.lstatSync(dir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    dirs.push(dir);
+    total += dirSizeBytes(dir);
+  }
+  if (total <= quotaBytes) return 0;
+  // Same bounded-scan rule as pruneLaunchSessionDirs: on an over-limit
+  // base, order by dir mtime (one lstat per name) and examine at most
+  // pruneScanLimit dirs.
+  const scan = dirs.length > pruneScanLimit
+    ? oldestDirsFirst(base, names).slice(0, pruneScanLimit).map((name) => path.join(base, name))
+    : dirs;
+  const cutoff = now - LAUNCH_SESSION_RETENTION_MS;
+  const candidates: Array<{ dir: string; age: number; size: number }> = [];
+  for (const dir of scan) {
+    // P1-16: a live launch's dir is never an eviction candidate either.
+    if (protectedLaunchDirs.has(launchDirKey(dir))) continue;
+    let dirStat: fs.Stats;
+    try {
+      dirStat = fs.lstatSync(dir);
+    } catch {
+      continue;
+    }
+    if (!dirStat.isDirectory()) continue;
+    const created = Date.parse(readLaunchSessionMeta(dir)?.createdAt ?? '');
+    const newest = newestTranscriptMtime(dir);
+    const ages = [created, newest, dirStat.mtimeMs].filter((a) => Number.isFinite(a) && a > 0);
+    // Deletion requires EVERY timestamp past the window — the exact
+    // window-sweep predicate, quota included.
+    if (!ages.length || ages.some((a) => a > cutoff)) continue;
+    const age = Number.isFinite(created) ? created : newest > 0 ? newest : dirStat.mtimeMs;
+    candidates.push({ dir, age, size: dirSizeBytes(dir) });
+  }
+  candidates.sort((a, b) => a.age - b.age);
+  let removed = 0;
+  for (const candidate of candidates) {
+    if (total <= quotaBytes) break;
+    try {
+      fs.rmSync(candidate.dir, { recursive: true, force: true });
+      total -= candidate.size;
+      removed++;
+    } catch {
+      // Locked by the CLI on Windows, or vanished — retry next pass.
+    }
+  }
+  return removed;
+}
+
+/**
+ * A4: startup + daily retention sweeps for BOTH provider bases, mirroring
+ * the per-launch arm (deferred to a `setImmediate`, off the boot path)
+ * and re-arming every RETENTION_SWEEP_INTERVAL_MS. Each pass runs the
+ * window sweep, then the quota. `onDaily` (main.ts passes
+ * sweepEnumerationCaches) runs on every 24 h tick. Returns a stop handle;
+ * the interval is unref'd, so the sweep never keeps the process alive.
+ * The per-launch arm in ensureLaunchSessionDir() stays: it covers the
+ * first launch long after boot on a base the boot sweep found missing.
+ */
+export function startSessionRetentionSweeps(onDaily?: () => void): () => void {
+  const sweepAll = () => {
+    for (const providerId of ['pi', 'omp'] as const) {
+      const base = launchSessionBaseDir(providerId);
+      try {
+        pruneLaunchSessionDirs(base);
+        enforceLaunchSessionQuota(base);
+      } catch {
+        // Retention is best-effort; a failed sweep costs disk, never the app.
+      }
+    }
+  };
+  setImmediate(sweepAll);
+  const timer = setInterval(() => {
+    sweepAll();
+    try {
+      onDaily?.();
+    } catch {
+      // Same best-effort contract for the co-scheduled cache sweep.
+    }
+  }, RETENTION_SWEEP_INTERVAL_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+/**
  * readdir names whose dirs exist, ordered by mtime ascending (oldest first);
  * non-dirs and entries that vanish between readdir and lstat go last, so
  * they never displace an examination slot — the loop's lstat rules skip them

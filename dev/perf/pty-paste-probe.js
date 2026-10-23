@@ -9,8 +9,16 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const TMP = os.tmpdir();
-const ECHO_JS = path.join(TMP, 'clipbench-echo.js');
+// A6 temp discipline: every scratch artifact lives in a per-run mkdtemp dir,
+// removed on exit and on SIGINT/SIGTERM. Results stay in the scratch dir and
+// are printed as an absolute path, never committed into the repo.
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-bench-'));
+const cleanupScratch = () => {
+  try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* best effort */ }
+};
+process.on('exit', cleanupScratch);
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { cleanupScratch(); process.exit(1); });
+const ECHO_JS = path.join(SCRATCH, 'echo.js');
 fs.writeFileSync(ECHO_JS, "process.stdin.pipe(process.stdout);\n");
 const SHELL = process.env.COMSPEC || 'bash.exe';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -39,7 +47,7 @@ async function legA() {
   const rows = [];
   for (const n of [1024, 10240, 102400, 1048576]) {
     const row = { n, status: 'timeout', writeMs: -1, drainMs: -1, chunks: 0, minChunk: 0, medChunk: 0, maxChunk: 0, bytesIn: 0, bytesSent: 0 };
-    const term = pty.spawn(SHELL, [], { name: 'xterm-256color', cols: 120, rows: 30, cwd: TMP, env: process.env });
+    const term = pty.spawn(SHELL, [], { name: 'xterm-256color', cols: 120, rows: 30, cwd: SCRATCH, env: process.env });
     try {
       const payload = makePayload(n, (i) => 'MK' + String(i).padStart(4, '0') + 'TAIL');
       const frames = '\x1b[200~' + payload + '\x1b[201~';
@@ -102,12 +110,12 @@ async function legA() {
 async function legB() {
   console.log('\n=== Leg B: omp child under pty (R3) ===');
   const where = spawnSync('where', ['omp'], { encoding: 'utf8', shell: true });
-  const ompPath = ((where.stdout || '').split(/\r?\n/).find((l) => l.trim()) || 'C:\\Users\\Leo\\.bun\\bin\\omp.exe').trim();
+  const ompPath = ((where.stdout || '').split(/\r?\n/).find((l) => l.trim()) || 'C:\\Users\\Alex\\.bun\\bin\\omp.exe').trim();
   console.log('omp=' + ompPath);
   const rows = [];
   for (const n of [1024, 10240]) {
     const row = { n, status: 'timeout', firstFrameMs: -1, writeToFirstChunkMs: -1, writeToMarkerMs: -1, chunksAfterPaste: 0 };
-    const term = pty.spawn(ompPath, [], { name: 'xterm-256color', cols: 120, rows: 30, cwd: TMP, env: process.env });
+    const term = pty.spawn(ompPath, [], { name: 'xterm-256color', cols: 120, rows: 30, cwd: SCRATCH, env: process.env });
     try {
       const marker = 'ZQ' + n + 'MK';
       const payload = makePayload(n, (i) => marker + i + 'END');
@@ -163,7 +171,7 @@ async function legB() {
   console.log('\nLeg B table:');
   console.log(pad('N', 8) + pad('status', 24) + pad('first frame', 13) + pad('write→1st', 11) + pad('write→marker', 14) + 'chunks');
   for (const r of b) console.log(pad(r.n, 8) + pad(r.status, 24) + pad(r.firstFrameMs, 13) + pad(r.writeToFirstChunkMs, 11) + pad(r.writeToMarkerMs, 14) + r.chunksAfterPaste);
-  const out = path.join(TMP, 'pty-probe-results.json');
+  const out = path.join(SCRATCH, 'results.json');
   fs.writeFileSync(out, JSON.stringify({ shell: SHELL, omp: ompPathForJson(), node: process.version, nodePty: require('node-pty/package.json').version, legA: a, legB: b }, null, 2));
   console.log('\nPTY_PROBE_JSON=' + out);
   process.exit(0);

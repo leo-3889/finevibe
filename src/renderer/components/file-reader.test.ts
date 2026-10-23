@@ -200,3 +200,54 @@ it('reloads per fs change per pane — there is no coalescer (P3-11)', async () 
     destroyFileReaderPane('burst');
   }
 });
+
+describe('CRLF rendering (raw file reader)', () => {
+  // white-space:pre + LF-only splitting rendered every line of a CRLF file
+  // double-height: the trailing '\r' after the split leaves a visibly empty
+  // line per source line. The pane normalizes CRLF/CR to LF before splitting.
+  async function renderRaw(sessionId: string, content: string): Promise<ReturnType<typeof getFileReaderInstance>> {
+    Object.assign(window.finevibe.fs, { readFile: vi.fn(async () => ({ ok: true, content })) });
+    createFileReaderPane(sessionId, `/repo/${sessionId}.txt`);
+    const instance = getFileReaderInstance(sessionId)!;
+    document.body.appendChild(instance.element);
+    showFileReaderPane(sessionId, false);
+    await vi.waitFor(() => expect(instance.loaded).toBe(true));
+    return instance;
+  }
+
+  it('renders a CRLF file as one row per source line', async () => {
+    const instance = await renderRaw('crlf', 'a\r\nb');
+    try {
+      const rows = instance.element.querySelectorAll('.file-reader-line');
+      expect(rows).toHaveLength(2);
+      expect(rows[0].querySelector('.file-reader-line-text')?.textContent).toBe('a');
+      expect(rows[1].querySelector('.file-reader-line-text')?.textContent).toBe('b');
+      expect(instance.element.textContent).not.toMatch(/\r/);
+    } finally {
+      destroyFileReaderPane('crlf');
+    }
+  });
+
+  it('renders a CR-only file as one row per source line', async () => {
+    const instance = await renderRaw('cr', 'a\rb');
+    try {
+      const rows = instance.element.querySelectorAll('.file-reader-line');
+      expect(rows).toHaveLength(2);
+      expect(rows[0].querySelector('.file-reader-line-text')?.textContent).toBe('a');
+      expect(rows[1].querySelector('.file-reader-line-text')?.textContent).toBe('b');
+    } finally {
+      destroyFileReaderPane('cr');
+    }
+  });
+
+  it('leaves a pure-LF file unchanged', async () => {
+    const instance = await renderRaw('lf', 'a\nb\nc');
+    try {
+      const rows = instance.element.querySelectorAll('.file-reader-line');
+      expect(rows).toHaveLength(3);
+      expect(rows[2].querySelector('.file-reader-line-text')?.textContent).toBe('c');
+    } finally {
+      destroyFileReaderPane('lf');
+    }
+  });
+});

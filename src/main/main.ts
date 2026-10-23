@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell } fro
 import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
-import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
+import { registerIpcHandlers, resetHookWatcher, sweepEnumerationCaches, removeIsoPartitionDirs } from './ipc-handlers';
 import { sweepImportTempDirs } from './chrome-import/copy';
 import { killAllPtys, getFullPathAsync } from './pty-manager';
 import { flushState, loadState } from './store';
@@ -21,9 +21,23 @@ import { isMac, isWin } from './platform';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
 import { isHttpUrl } from '../shared/url';
-import { migrateLegacyUserData } from './userdata-migration';
+import { migrateLegacyUserData, retireLegacyUserData } from './userdata-migration';
+import { startSessionRetentionSweeps } from './launch-session-dir';
 
+import { installConsoleThrottle } from './log-throttle';
+import { startDiskHealthPreflight } from './disk-health';
+
+// 2026-10-23 ENOSPC incident: the state writer logged a full stack on every
+// renderer save against a full disk — 160 409 journal lines in 30 min,
+// rsyslog-mirrored into /var/log/syslog, and the log growth consumed the very
+// space it complained about (a self-amplifying loop). The per-write source is
+// fixed in store.ts; this is the app-wide net: any main-process logger that
+// loops collapses to one line plus a "repeated n times" tally, so no future
+// storm floods journald/syslog. Guarded on VITEST so per-test console spies
+// stay pristine (the mocked-boot suites import this module).
+if (!process.env.VITEST) installConsoleThrottle();
 let mainWindow: BrowserWindow | null = null;
+let stopDiskHealthPreflight: (() => void) | null = null;
 
 // The UI boots ONLY for the single-instance lock winner:
 // startMainProcess() (below createWindow) owns the second-instance,
@@ -249,6 +263,20 @@ function startMainProcess(): void {
     console.error('[userdata-migration] failed; legacy data left untouched', error);
   }
 
+  // A3: ledger-driven retirement of the legacy userData tree the migration
+  // copied. Gated by the ledger: 30-day grace, destination integrity check,
+  // opt-out file, appData-only (the home tree `~/.vibeyard`, still read by
+  // the project importer, is never touched). Runs AFTER the migration, so a
+  // fresh cutover launch is never a retirement candidate. Never throws.
+  try {
+    retireLegacyUserData({
+      userDataDir: app.getPath('userData'),
+      appDataDir: app.getPath('appData'),
+    });
+  } catch (error) {
+    console.error('[userdata-retirement] failed; legacy data left untouched', error);
+  }
+
   // Winner-only: a relaunch while the app runs focuses the existing
   // window, so launching again behaves like "focus FineVibe".
   app.on('second-instance', () => {
@@ -270,6 +298,19 @@ function startMainProcess(): void {
     // fresh dir is never touched. Never throws; tmpdir-sized, negligible
     // on the boot path.
     sweepImportTempDirs();
+    // A5: isolated browser partitions are per-session ephemera — every
+    // `session:release` removes its own jar (ipc-handlers.ts), but a quit
+    // or crash between close and release leaves `finevibe-browser-iso-*`
+    // dirs under userData/Partitions for the machine's life. Sweep all of
+    // them at boot; no live session exists this early, so every
+    // re-validating iso dir is by definition orphaned. Never throws.
+    removeIsoPartitionDirs(app.getPath('userData'));
+    // A4: Pi/OMP session-dir retention used to be armed ONLY by the first
+    // Pi/OMP launch — an install that never launches one grew the two base
+    // dirs forever. Sweep both bases at boot (setImmediate, off the boot
+    // path), re-arm every 24 h with the 2 GiB per-base quota, and run the
+    // enumeration-cache TTL sweep on every daily tick.
+    startSessionRetentionSweeps(sweepEnumerationCaches);
     initProviders();
 
     // PA-01: the all-missing guard used to run BEFORE the window existed —
@@ -310,6 +351,16 @@ function startMainProcess(): void {
     const state = loadState();
     createAppMenu(state.preferences?.debugMode ?? false);
     createWindow();
+    // 2026-10-23: proactive disk-health preflight. Warn ONCE, before writes
+    // start failing, when the userData volume runs low — one banner instead of
+    // a per-write ENOSPC stack storm. Emits on state transitions only (see
+    // disk-health.ts), so a full disk is a single warning, not a flood.
+    stopDiskHealthPreflight = startDiskHealthPreflight({
+      getUserDataPath: () => app.getPath('userData'),
+      onStatus: (status) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('disk-health:status', status);
+      },
+    });
     // S1-01: the updater and the activate/resume handlers used to be
     // registered at the very END of this chain, behind the awaited provider
     // probe fan-out, the Python probe, the statusLine-consent modal (whose
@@ -468,6 +519,8 @@ function startMainProcess(): void {
     }
     disposeAutoUpdater?.();
     flushState();
+    stopDiskHealthPreflight?.();
+    stopDiskHealthPreflight = null;
     const win = BrowserWindow.getAllWindows()[0];
     if (win && !win.isDestroyed()) {
       win.webContents.send('app:quitting');

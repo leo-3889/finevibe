@@ -62,6 +62,7 @@
       "defaultProfileLabel": "Default profile",
       "directoryNotExist": "Directory does not exist",
       "checkoutAndCreate": "Checkout and create",
+      "selectButton": "Select",
       "cloning": "Cloning…",
       "cloneFailed": "Clone failed"
     },
@@ -600,6 +601,10 @@
     "debugModeLabel": "Debug Mode",
     "versionLoaded": "Version: {ver}"
   },
+  "disk": {
+    "lowSpace": "Low disk space — {available} free. Free up space so FineVibe can keep saving your work.",
+    "lowSpaceUnknown": "Low disk space. Free up space so FineVibe can keep saving your work."
+  },
   "update": {
     "downloadFailed": "Update download failed"
   },
@@ -625,7 +630,31 @@
     "about": "About",
     "general": "General",
     "appearance": "Appearance",
-    "agentmemory": "Agent Memory"
+    "agentmemory": "Agent Memory",
+    "storage": "Storage"
+  },
+  "storage": {
+    "usageHeading": "Disk usage (app data)",
+    "scanning": "Scanning…",
+    "scanFailed": "Scan failed",
+    "truncated": "Partial result — scan limit reached",
+    "subPi": "Pi sessions",
+    "subOmp": "OMP sessions",
+    "subPartitions": "Browser profiles",
+    "subCache": "Caches",
+    "subMisc": "Other app data",
+    "clearButton": "Clear caches",
+    "clearConfirm": "Delete browser and app caches (Cache, GPUCache, Code Cache, Dawn caches) and Chrome-import temp files? Sessions, transcripts and browser profile logins are never touched.",
+    "clearing": "Clearing…",
+    "cleared": "Caches cleared",
+    "clearFailed": "Clear failed",
+    "retirementHeading": "Legacy data retirement",
+    "retirementNone": "No pending legacy data",
+    "retirementEntry": "{from}: {outcome}",
+    "outcomeRemoved": "removed",
+    "outcomeKept": "kept (grace)",
+    "outcomeUnverified": "unverified",
+    "outcomeError": "error"
   },
   "session": {
     "crashedTitle": "Session ended unexpectedly",

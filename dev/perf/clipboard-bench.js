@@ -9,13 +9,22 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const TMP = os.tmpdir();
+// A6 temp discipline: every scratch artifact lives in a per-run mkdtemp dir,
+// removed on exit and on SIGINT/SIGTERM. Results stay in the scratch dir and
+// are printed as absolute paths, never committed into the repo.
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-bench-'));
+const cleanupScratch = () => {
+  try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* best effort */ }
+};
+process.on('exit', cleanupScratch);
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { cleanupScratch(); process.exit(1); });
 const PS = process.platform === 'win32' ? 'powershell.exe' : 'powershell';
 const PASSES = 11;
-const RESULTS_JSON = path.join(TMP, 'clipbench-results.json');
-const PASTE_DIR = path.join(TMP, 'finevibe-paste');
-const FILES_DIR = path.join(TMP, 'clipbench-files');
-const HTML_FILE = path.join(TMP, 'clipbench-rich.html');
+const RESULTS_JSON = path.join(SCRATCH, 'results.json');
+const PASTE_DIR = path.join(SCRATCH, 'paste');
+const FILES_DIR = path.join(SCRATCH, 'files');
+const HTML_FILE = path.join(SCRATCH, 'rich.html');
+const SETUP_PS1 = path.join(SCRATCH, 'setup.ps1');
 
 if (process.argv.includes('--smoke')) {
   console.log('clipboard-bench smoke');
@@ -34,7 +43,7 @@ if (process.argv.includes('--smoke')) {
 }
 
 function runPs(script, timeoutMs = 120000) {
-  const file = path.join(TMP, 'clipbench-setup.ps1');
+  const file = SETUP_PS1;
   fs.writeFileSync(file, script, 'utf8');
   const r = spawnSync(PS, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file], {
     encoding: 'utf8',
@@ -108,7 +117,7 @@ function makeImages() {
 Add-Type -AssemblyName System.Drawing
 foreach ($spec in @(@(1920,1080), @(2560,1440))) {
   $w = $spec[0]; $h = $spec[1]
-  $out = Join-Path $env:TEMP ("clipbench-img-" + $w + "x" + $h + ".png")
+  $out = Join-Path '${SCRATCH}' ("bench-img-" + $w + "x" + $h + ".png")
   if (-not (Test-Path $out)) {
     $bmp = New-Object System.Drawing.Bitmap($w, $h)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -143,7 +152,7 @@ function setup(scenario) {
       fs.mkdirSync(FILES_DIR, { recursive: true });
       const files = [];
       for (let i = 1; i <= 3; i++) {
-        const f = path.join(FILES_DIR, 'clipbench-file-' + i + '.txt');
+        const f = path.join(FILES_DIR, 'bench-file-' + i + '.txt');
         fs.writeFileSync(f, 'clipbench file ' + i + '\n');
         files.push(f);
       }
@@ -188,7 +197,7 @@ function setup(scenario) {
       return runPs(
         CLIP_PSH +
           "\nAdd-Type -AssemblyName System.Drawing\nAdd-Type -AssemblyName System.Windows.Forms\n" +
-          "$png = Join-Path $env:TEMP 'clipbench-img-" + dim[0] + 'x' + dim[1] + ".png'\n" +
+          "$png = Join-Path '" + SCRATCH + "' 'bench-img-" + dim[0] + 'x' + dim[1] + ".png'\n" +
           '$img = [System.Drawing.Image]::FromFile($png)\n' +
           '[System.Windows.Forms.Clipboard]::SetImage($img)\n' +
           '$img.Dispose()\n' +

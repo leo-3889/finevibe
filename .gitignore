@@ -30,9 +30,6 @@ out/
 .remember/
 .ruff_cache/
 
-# Local electron-builder overrides
-electron-builder.local.json
-
 finevibe-copilot-hooks.json
 
 # Claude Code local settings

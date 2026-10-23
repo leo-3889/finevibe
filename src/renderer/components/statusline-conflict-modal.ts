@@ -17,8 +17,8 @@ function getOverlay(): HTMLElement {
       <div class="modal-title">Settings Conflict</div>
       <div class="modal-body statusline-conflict-body"></div>
       <div class="modal-actions">
-        <button id="statusline-conflict-keep" class="btn-secondary">Keep Existing</button>
-        <button id="statusline-conflict-replace" class="btn-primary">Replace</button>
+        <button id="statusline-conflict-keep" class="btn-secondary">Start fresh</button>
+        <button id="statusline-conflict-replace" class="btn-primary">Import from Vibeyard</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -47,7 +47,7 @@ export function showStatusLineConflictModal(foreignCommand: string): Promise<'re
     </div>
     <p class="statusline-conflict-text statusline-conflict-warning">
       FineVibe needs its own statusLine for cost tracking and context window monitoring.
-      If you keep the existing setting, these features will be unavailable.
+      If you start fresh, these features will be unavailable.
     </p>`;
 
   overlay.style.display = '';

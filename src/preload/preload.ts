@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ImportableLegacyProject } from '../shared/types';
+import type { DiskHealth } from '../shared/types';
 import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus, AgentmemoryLog } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
@@ -105,6 +106,10 @@ export interface FineVibeApi {
     onDownloaded(cb: (info: { version: string }) => void): () => void;
     onError(cb: (info: { message: string }) => void): () => void;
   };
+  disk: {
+    get(): Promise<DiskHealth | null>;
+    onStatus(callback: (status: DiskHealth) => void): () => void;
+  };
   app: {
     focus(): void;
     getVersion(): Promise<string>;
@@ -115,6 +120,22 @@ export interface FineVibeApi {
     closeConfirmed(): void;
   };
 
+  /** One row of the A3 legacy-retirement audit log (main/userdata-migration.ts). */
+  storage: {
+    /** userData subtree sizes, descending; `truncated` on scan caps. */
+    scan(): Promise<{ entries: Array<{ name: string; bytes: number }>; truncated: boolean }>;
+    /** Clear caches ONLY (see clearSafeCaches in main/ipc-handlers.ts). */
+    clear(): Promise<{ tempDirsSwept: number }>;
+    /** Read-only A3 retirement audit log. */
+    retirement(): Promise<Array<{
+      id: string;
+      from: string;
+      at: string;
+      outcome: 'removed' | 'kept' | 'unverified' | 'error';
+      bytesFreed?: number;
+      reason?: string;
+    }>>;
+  };
   agentmemory: {
     status(): Promise<AgentmemoryStatus>;
     start(): Promise<AgentmemoryStatus>;
@@ -313,6 +334,10 @@ const api: FineVibeApi = {
     onDownloaded: (cb) => onChannel('update:downloaded', (info) => cb(info as { version: string })),
     onError: (cb) => onChannel('update:error', (info) => cb(info as { message: string })),
   },
+  disk: {
+    get: () => ipcRenderer.invoke('disk-health:get'),
+    onStatus: (cb) => onChannel('disk-health:status', (status) => cb(status as DiskHealth)),
+  },
   app: {
     focus: () => { ipcRenderer.send('app:focus'); },
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -326,6 +351,11 @@ const api: FineVibeApi = {
     status: () => ipcRenderer.invoke('agentmemory:status'),
     start: () => ipcRenderer.invoke('agentmemory:start'),
     log: () => ipcRenderer.invoke('agentmemory:log'),
+  },
+  storage: {
+    scan: () => ipcRenderer.invoke('storage:scan'),
+    clear: () => ipcRenderer.invoke('storage:clear'),
+    retirement: () => ipcRenderer.invoke('storage:retirement'),
   },
   browser: {
     saveScreenshot: (sessionId: string, dataUrl: string) =>

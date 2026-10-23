@@ -19,6 +19,7 @@ import { initDebugPanel, logDebugEvent } from './components/debug-panel.js';
 import { initGitPanel } from './components/git-panel.js';
 import { initActiveSessions } from './components/active-sessions-panel.js';
 import { initUpdateBanner } from './components/update-banner.js';
+import { initDiskHealthBanner } from './components/disk-health-banner.js';
 import { initSessionHistory } from './components/session-history.js';
 import { captureInitialContext } from './session-insights.js';
 import { initInsightAlert } from './components/insight-alert.js';
@@ -278,6 +279,7 @@ async function main(): Promise<void> {
   initActiveSessions();
   initSessionHistory();
   initUpdateBanner();
+  initDiskHealthBanner();
   initInsightAlert();
   initToolDetector();
   initToolAlert();

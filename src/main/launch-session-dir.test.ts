@@ -17,6 +17,9 @@ import {
   readLaunchSessionMeta,
   readLaunchSessionMetaCached,
   pruneLaunchSessionDirs,
+  enforceLaunchSessionQuota,
+  startSessionRetentionSweeps,
+  SESSIONS_QUOTA_BYTES,
   protectLaunchSessionDir,
   listLaunchSessionDirs,
   LAUNCH_SESSION_RETENTION_MS,
@@ -377,5 +380,137 @@ describe('ensureLaunchSessionDir() retention hook', () => {
 describe('LAUNCH_SESSION_RETENTION_MS', () => {
   it('is the documented 30-day window', () => {
     expect(LAUNCH_SESSION_RETENTION_MS).toBe(30 * DAY_MS);
+  });
+});
+
+describe('enforceLaunchSessionQuota() (A4)', () => {
+  /** An expired dir whose content is `bytes` of filler, dated `mtime`. */
+  function makeSizedDir(name: string, bytes: number, mtime: number): string {
+    const dir = makeDir(name, { dirMtime: mtime });
+    fs.writeFileSync(path.join(dir, 'filler.bin'), Buffer.alloc(bytes, 7));
+    // Writing the filler bumped the dir mtime; restore the fixture age.
+    fs.utimesSync(dir, new Date(mtime), new Date(mtime));
+    return dir;
+  }
+
+  it('leaves an under-quota base untouched', () => {
+    const live = makeSizedDir('small', 100, OLD);
+    expect(enforceLaunchSessionQuota(base, 10_000)).toBe(0);
+    expect(fs.existsSync(live)).toBe(true);
+  });
+
+  it('evicts the oldest expired dirs first until the base is under quota', () => {
+    // Four expired dirs of 1000 filler bytes each (base total 4000) with a
+    // 2500 quota: z0 (oldest) and z1 go, z2/z3 stay.
+    const z0 = makeSizedDir('z0', 1000, OLD - 4 * DAY_MS);
+    const z1 = makeSizedDir('z1', 1000, OLD - 3 * DAY_MS);
+    const z2 = makeSizedDir('z2', 1000, OLD - 2 * DAY_MS);
+    const z3 = makeSizedDir('z3', 1000, OLD - DAY_MS);
+    expect(enforceLaunchSessionQuota(base, 2500)).toBe(2);
+    expect(fs.existsSync(z0)).toBe(false);
+    expect(fs.existsSync(z1)).toBe(false);
+    expect(fs.existsSync(z2)).toBe(true);
+    expect(fs.existsSync(z3)).toBe(true);
+  });
+
+  it('orders eviction by sidecar createdAt over the dir-mtime fallback', () => {
+    // 'a-sidecar' exposes an OLD-5d sidecar next to an OLD dir mtime;
+    // 'z-mtime' exposes only its OLD-4d dir mtime. createdAt is the primary
+    // age, so the sidecar dir is the oldest candidate even though a
+    // mtime-only sort would rank 'z-mtime' first.
+    const withSidecar = makeDir('a-sidecar', { createdAt: OLD - 5 * DAY_MS, dirMtime: OLD });
+    fs.writeFileSync(path.join(withSidecar, 'filler.bin'), Buffer.alloc(1000, 7));
+    fs.utimesSync(withSidecar, new Date(OLD), new Date(OLD));
+    const byMtime = makeSizedDir('z-mtime', 1000, OLD - 4 * DAY_MS);
+    // ~2090 total > 1500 quota; evicting the sidecar dir lands under it.
+    expect(enforceLaunchSessionQuota(base, 1500)).toBe(1);
+    expect(fs.existsSync(withSidecar)).toBe(false);
+    expect(fs.existsSync(byMtime)).toBe(true);
+  });
+
+  it('young dirs survive an over-quota base (all-timestamps-past-window predicate)', () => {
+    // The young dir alone busts the quota: it must survive untouched while
+    // the sweep takes the expired dirs (and stops with the base still over
+    // quota — the quota never overrides the window predicate).
+    const dead1 = makeSizedDir('z-dead-1', 1000, OLD - 2 * DAY_MS);
+    const dead2 = makeSizedDir('z-dead-2', 1000, OLD - DAY_MS);
+    const young = makeSizedDir('a-young', 3000, RECENT);
+    expect(enforceLaunchSessionQuota(base, 1500)).toBe(2);
+    expect(fs.existsSync(dead1)).toBe(false);
+    expect(fs.existsSync(dead2)).toBe(false);
+    expect(fs.existsSync(young)).toBe(true);
+  });
+
+  it('P1-16: a protected launch dir is never a quota eviction candidate', () => {
+    const protectedDir = makeSizedDir('z-live', 3000, OLD - DAY_MS);
+    protectLaunchSessionDir(protectedDir);
+    const dead = makeSizedDir('z-dead', 1000, OLD - 9 * DAY_MS);
+    expect(enforceLaunchSessionQuota(base, 1500)).toBe(1);
+    expect(fs.existsSync(protectedDir)).toBe(true);
+    expect(fs.existsSync(dead)).toBe(false);
+  });
+});
+
+describe('startSessionRetentionSweeps() (A4)', () => {
+  it('sweeps the provider bases at startup with zero launches', async () => {
+    // The base the boot sweep targets is the mocked userData's pi base —
+    // distinct from every `base` fixture (mkdtemp `pi-sessions-*` siblings).
+    const piBase = launchSessionBaseDir('pi');
+    fs.rmSync(piBase, { recursive: true, force: true });
+    fs.mkdirSync(piBase, { recursive: true });
+    const dead = path.join(piBase, 'boot-dead');
+    fs.mkdirSync(dead);
+    const t = new Date(OLD);
+    fs.utimesSync(dead, t, t);
+
+    const stop = startSessionRetentionSweeps();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(fs.existsSync(dead)).toBe(false);
+    stop();
+    fs.rmSync(piBase, { recursive: true, force: true });
+  });
+
+  it('re-arms on a 24 h tick, runs the daily co-task, unrefs the timer, and the stop handle clears it', () => {
+    vi.useFakeTimers();
+    try {
+      const clockSetInterval = globalThis.setInterval;
+      const clockClearInterval = globalThis.clearInterval;
+      let tick: (() => void) | null = null;
+      let cleared = false;
+      const unrefSpy = vi.fn();
+      vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
+        const timer = clockSetInterval(fn, ms);
+        tick = fn;
+        // Shadow the clock timer's unref so the module's call is observable.
+        (timer as { unref?: unknown }).unref = unrefSpy;
+        return timer as NodeJS.Timeout;
+      }) as typeof setInterval);
+      vi.spyOn(globalThis, 'clearInterval').mockImplementation(((timer: NodeJS.Timeout) => {
+        cleared = true;
+        clockClearInterval(timer);
+      }) as typeof clearInterval);
+
+      const onDaily = vi.fn();
+      const stop = startSessionRetentionSweeps(onDaily);
+
+      expect(tick).toBeTypeOf('function');
+      expect(unrefSpy).toHaveBeenCalledTimes(1);
+      expect(onDaily).not.toHaveBeenCalled();
+
+      tick!(); // the 24 h tick fires: sweep + daily co-task (sweepEnumerationCaches in prod)
+      expect(onDaily).toHaveBeenCalledTimes(1);
+
+      stop();
+      expect(cleared).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('SESSIONS_QUOTA_BYTES', () => {
+  it('is the documented 2 GiB per-base quota', () => {
+    expect(SESSIONS_QUOTA_BYTES).toBe(2 * 1024 * 1024 * 1024);
   });
 });
