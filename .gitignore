@@ -40,3 +40,6 @@ finevibe-copilot-hooks.json
 
 # Local dev sandbox
 dev/
+
+# Internal working docs (audit status, incident notes, work queue) — local only, never committed
+todos/

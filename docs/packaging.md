@@ -103,8 +103,8 @@ it produces an artifact:
 Both were observed on 2026-10-21 on a plain Windows 10.0.26300 host during the
 2026-10-19/20 audit program's packaged-smoke attempt, which was recorded BLOCKED rather
 than failed: an environment gap, not an app defect — the same tree had produced the
-previously packaged app on the packaging machine (evidence row in
-[audit status](AUDIT_STATUS.md)). Run `npm run pack` / `npm run dist` for release
+previously packaged app on the packaging machine. Run `npm run pack` / `npm run dist`
+for release
 verification on a host that has both prerequisites, or on the CI `windows-2022` runner
 (`build-windows` in `release.yml`); read a toolchain or symlink error on a bare box as a
 host problem, never as a regression in the tree under test.

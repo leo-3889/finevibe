@@ -14,6 +14,8 @@ git diff --check
 
 `npm start` builds before launching. There is no hot reload.
 
+Internal working docs (audit status, incident notes, work queue) live in the local-only `todos/` folder — it is gitignored and never committed.
+
 ## Current contracts
 
 - [Provider contracts](docs/provider-contracts.md) — registry, profiles, spawn arguments, transcripts and status sources.
