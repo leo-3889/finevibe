@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
+import type { ImportableLegacyProject } from '../shared/types';
 import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus, AgentmemoryLog } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
@@ -62,6 +63,10 @@ export interface FineVibeApi {
     /** Quit-path synchronous flush (sendSync; true only when main wrote the state). */
     saveSync(state: unknown): boolean;
     startupPrefs(): StartupPrefs;
+  };
+  vibeyard: {
+    /** Legacy `~/.vibeyard/state.json` projects that can be imported into the current list. */
+    listImportableProjects(): Promise<ImportableLegacyProject[]>;
   };
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
@@ -276,6 +281,9 @@ const api: FineVibeApi = {
     // Sync round-trip: the renderer needs theme/zoom before its first paint,
     // which is earlier than any invoke promise can resolve.
     startupPrefs: () => ipcRenderer.sendSync('store:startup-prefs'),
+  },
+  vibeyard: {
+    listImportableProjects: () => ipcRenderer.invoke('vibeyard:listImportableProjects'),
   },
   profiles: {
     provision: (profileId, customPath, providerId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId),

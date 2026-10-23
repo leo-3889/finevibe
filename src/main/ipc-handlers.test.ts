@@ -2325,3 +2325,16 @@ describe('mcp:removeServer path gates (C3A-01)', () => {
     expect(removeMcpServer).toHaveBeenCalledWith('srv', '/proj/.mcp.json', 'project', '/proj', '/profiles/work');
   });
 });
+
+// The vibeyard: channel is thin glue over the pure legacy-import module;
+// the suite exercises the wiring (channel name, arg plumbing through the
+// store mock) rather than the enumeration logic, which has its own suite.
+describe('vibeyard:listImportableProjects', () => {
+  it('is registered and answers with an array', async () => {
+    const handler = handlers.get('vibeyard:listImportableProjects');
+    expect(handler).toBeTypeOf('function');
+    // ./legacy-import is unmocked, so this reads the developer's real
+    // homedir; the module never throws, so the contract is "an array".
+    expect(await handler!({})).toBeInstanceOf(Array);
+  });
+});
