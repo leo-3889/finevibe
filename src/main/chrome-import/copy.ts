@@ -100,12 +100,28 @@ export function sweepImportTempDirs(
 export function snapshotProfile(profileDir: string): Snapshot {
   const uniq = crypto.randomBytes(8).toString('hex');
   const dir = path.join(os.tmpdir(), `${IMPORT_TEMP_PREFIX}${uniq}`);
-  fs.mkdirSync(dir, { recursive: true });
+  // The snapshot is the full cookie DB and used to land world-readable:
+  // a plain recursive mkdir gives the dir the tmpdir-default 0755 (the
+  // buffered EBUSY fallback then wrote Cookies 0644). `mode` on a recursive
+  // mkdir applies only to the final segment and is masked by umask, so
+  // mkdir 0700 + explicit chmod is the only portable way to pin it.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
 
   let cookiesPath: string | null = null;
   const src = path.join(profileDir, COOKIES_FILE);
   const dest = path.join(dir, COOKIES_FILE);
-  if (fs.existsSync(src) && copyOne(src, dest)) cookiesPath = dest;
+  if (fs.existsSync(src) && copyOne(src, dest)) {
+    cookiesPath = dest;
+    // copyFileSync inherits the source's modes; the fallback lands 0644.
+    // Pin 0600 (Windows emulates chmod — the mode call is a benign no-op
+    // there; exotic filesystems without POSIX perms must not fail the copy).
+    try {
+      fs.chmodSync(dest, 0o600);
+    } catch {
+      // the 0700 dir still gates access on POSIX
+    }
+  }
 
   return {
     dir,

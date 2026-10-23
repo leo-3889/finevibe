@@ -538,6 +538,12 @@ export interface ChromeImportResult {
   cookieCount: number;
   skippedV11: number;
   errors: string[];
+  /**
+   * Non-fatal problems that did not block the imported cookies — e.g. the
+   * Linux keyring diagnosis (secret-tool missing, `peanuts` fallback)
+   * reported alongside a partial import. Shown next to the summary.
+   */
+  warnings?: string[];
 }
 
 /**

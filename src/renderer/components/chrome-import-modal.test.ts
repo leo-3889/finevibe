@@ -83,6 +83,24 @@ describe('chrome-import-modal', () => {
     expect(summary?.textContent).toContain('macOS keychain access denied');
   });
 
+  // Chrome 127+ on Windows writes the v20 App-Bound prefix; the summary
+  // label says "Chrome App-Bound Encryption" (the old "(Chrome v11 ...)"
+  // named a version Chrome never writes for Windows cookies).
+  it('labels App-Bound skips without the stale v11 name', async () => {
+    run.mockResolvedValue({
+      ok: true,
+      cookieCount: 5,
+      skippedV11: 2,
+      errors: [],
+    });
+    const overlay = await openModal();
+    importButton(overlay).click();
+    await flush();
+    const summary = overlay.querySelector('.chrome-import-summary');
+    expect(summary?.textContent).toContain('Skipped 2 entries (Chrome App-Bound Encryption)');
+    expect(summary?.textContent).not.toContain('v11');
+  });
+
   // P2-109: dismissing mid-import must detach the progress subscription
   // immediately (before the run settles) and stop late DOM writes.
   it('detaches the in-flight import when dismissed', async () => {

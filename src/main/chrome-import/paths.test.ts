@@ -1,8 +1,19 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { chromeProfileDir } from './paths';
+
+// The Linux candidate scan reads `os.homedir()` and the platform flags at
+// call time, so the fake home + Linux flags below drive P2-50 coverage on
+// any host OS (same getter pattern as prompt-utils.test.ts).
+const fixture = vi.hoisted(() => ({ home: '' }));
+vi.mock('os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('os')>()),
+  homedir: () => fixture.home,
+}));
+vi.mock('../platform', () => ({ isMac: false, isWin: false, isLinux: true }));
+
+import { chromeProfileDir, chromeUserDataDir } from './paths';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -53,5 +64,52 @@ describe('chromeProfileDir containment', () => {
     const link = path.join(userData, 'link');
     fs.symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => chromeProfileDir(userData, path.join('link', 'Profile 1'))).toThrow(/Invalid Chrome profile id/);
+  });
+});
+
+describe('chromeUserDataDir (Linux candidates)', () => {
+  let home: string;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-chrome-home-'));
+    dirs.push(home);
+    fixture.home = home;
+  });
+
+  it('finds ~/.config/chromium on a chromium-only machine', () => {
+    fs.mkdirSync(path.join(home, '.config', 'chromium'), { recursive: true });
+    expect(chromeUserDataDir()).toBe(path.join(home, '.config', 'chromium'));
+  });
+
+  it('prefers stable google-chrome when chromium also exists', () => {
+    fs.mkdirSync(path.join(home, '.config', 'chromium'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.config', 'google-chrome'), { recursive: true });
+    expect(chromeUserDataDir()).toBe(path.join(home, '.config', 'google-chrome'));
+  });
+
+  it('finds the flatpak chromium sandbox dir', () => {
+    fs.mkdirSync(
+      path.join(home, '.var', 'app', 'org.chromium.Chromium', 'config', 'chromium'),
+      { recursive: true },
+    );
+    expect(chromeUserDataDir()).toBe(
+      path.join(home, '.var', 'app', 'org.chromium.Chromium', 'config', 'chromium'),
+    );
+  });
+
+  it('finds the snap-confined chromium user-data dir', () => {
+    fs.mkdirSync(path.join(home, 'snap', 'chromium', 'common', 'chromium'), { recursive: true });
+    expect(chromeUserDataDir()).toBe(path.join(home, 'snap', 'chromium', 'common', 'chromium'));
+  });
+
+  it('prefers .config/chromium (and Chrome) over the snap dir', () => {
+    fs.mkdirSync(path.join(home, 'snap', 'chromium', 'common', 'chromium'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.config', 'chromium'), { recursive: true });
+    expect(chromeUserDataDir()).toBe(path.join(home, '.config', 'chromium'));
+    fs.mkdirSync(path.join(home, '.config', 'google-chrome'), { recursive: true });
+    expect(chromeUserDataDir()).toBe(path.join(home, '.config', 'google-chrome'));
+  });
+
+  it('returns null when no candidate exists', () => {
+    expect(chromeUserDataDir()).toBeNull();
   });
 });

@@ -75,7 +75,10 @@ export function readCookies(cookiesDbPath: string): CookieReadResult {
       if (!plain && row.encrypted_value && row.encrypted_value.length > 0) {
         try {
           const result = decryptChromeValue(row.encrypted_value, hasDomainHash);
-          if (result.skipped === 'v11') {
+          // App-Bound rows (v20 on Chrome 127+ Windows, v11 tag) skip; the
+          // counter keeps its `skippedV11` field name across the IPC/result
+          // boundary, so only the semantic check is renamed.
+          if (result.skipped === 'app-bound') {
             skippedV11++;
             continue;
           }
