@@ -35,14 +35,15 @@ import { loadState } from './store';
  * covers both locations.
  */
 
-export type LaunchSessionProvider = 'pi' | 'omp';
+export type LaunchSessionProvider = 'pi' | 'omp' | 'pi-bolt';
 
 /** A UI session id becomes a directory name; it must not escape the base dir. */
 const UI_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** Base directory holding every per-launch session dir for one provider. */
 export function launchSessionBaseDir(providerId: LaunchSessionProvider): string {
-  return path.join(app.getPath('userData'), providerId === 'pi' ? 'pi-sessions' : 'omp-sessions');
+  const dirName = providerId === 'pi' ? 'pi-sessions' : providerId === 'omp' ? 'omp-sessions' : 'pi-bolt-sessions';
+  return path.join(app.getPath('userData'), dirName);
 }
 
 /**
@@ -342,7 +343,7 @@ export function enforceLaunchSessionQuota(
  */
 export function startSessionRetentionSweeps(onDaily?: () => void): () => void {
   const sweepAll = () => {
-    for (const providerId of ['pi', 'omp'] as const) {
+    for (const providerId of ['pi', 'omp', 'pi-bolt'] as const) {
       const base = launchSessionBaseDir(providerId);
       try {
         pruneLaunchSessionDirs(base);
@@ -465,7 +466,7 @@ function normalizeMeta(raw: unknown): LaunchSessionMeta | null {
   if (typeof (raw as LaunchSessionMeta)?.cwd !== 'string' || !(raw as LaunchSessionMeta).cwd) return null;
   const r = raw as Record<string, unknown>;
   return {
-    providerId: r.providerId === 'omp' ? 'omp' : 'pi',
+    providerId: r.providerId === 'omp' ? 'omp' : r.providerId === 'pi-bolt' ? 'pi-bolt' : 'pi',
     cwd: r.cwd as string,
     configDir: typeof r.configDir === 'string' && r.configDir ? r.configDir : undefined,
     createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date(0).toISOString(),

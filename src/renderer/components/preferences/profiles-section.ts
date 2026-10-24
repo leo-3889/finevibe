@@ -33,8 +33,8 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
     desc.textContent = t('profiles.description');
     container.appendChild(desc);
 
-    // Per-provider setup hints (today: Claude, Pi + OMP, the profile-capable CLIs).
-    for (const hintKey of ['profiles.descriptionClaude', 'profiles.descriptionPi', 'profiles.descriptionOmp']) {
+    // Per-provider setup hints (today: Claude, Pi, Pi-Bolt + OMP, the profile-capable CLIs).
+    for (const hintKey of ['profiles.descriptionClaude', 'profiles.descriptionPi', 'profiles.descriptionPiBolt', 'profiles.descriptionOmp']) {
       const hint = document.createElement('div');
       hint.className = 'preferences-section-desc';
       hint.textContent = t(hintKey);

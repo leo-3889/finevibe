@@ -13,6 +13,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Gemini CLI',
   pi: 'Pi',
   omp: 'Oh My Pi',
+  'pi-bolt': 'Pi-Bolt',
 };
 
 interface ProjectFilterState {

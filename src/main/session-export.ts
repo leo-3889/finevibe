@@ -26,7 +26,7 @@ export interface SessionExportParams {
  * ONLY in that dir — the provider tree scan never sees them.
  */
 export function resolveLaunchSessionDir(providerId: ProviderId, liveSessionId?: string): string | undefined {
-  if ((providerId !== 'pi' && providerId !== 'omp') || !liveSessionId) return undefined;
+  if ((providerId !== 'pi' && providerId !== 'omp' && providerId !== 'pi-bolt') || !liveSessionId) return undefined;
   return launchSessionDir(providerId as LaunchSessionProvider, liveSessionId);
 }
 

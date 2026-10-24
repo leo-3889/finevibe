@@ -699,7 +699,7 @@ function subtreeBytesBounded(
 /** The named userData subtrees the report breaks out; everything else is
  *  bucketed as "misc" (userData's own top level minus these + the scan's
  *  per-directory caps apply everywhere). */
-const STORAGE_SUBTREES = ['pi-sessions', 'omp-sessions', 'Partitions', 'Cache'] as const;
+const STORAGE_SUBTREES = ['pi-sessions', 'omp-sessions', 'pi-bolt-sessions', 'Partitions', 'Cache'] as const;
 
 /**
  * Size the userData subtrees the storage report shows, descending by bytes.
