@@ -36,6 +36,7 @@ vi.mock('./provider-availability.js', () => ({
 import { appState, _resetForTesting, MAX_PROJECT_NAME_LENGTH, MAX_SESSION_NAME_LENGTH } from './state';
 import { getCost, restoreCost } from './session-cost.js';
 import { restoreContext } from './session-context.js';
+import { getSshStatus, _resetSshForTesting } from './session-ssh.js';
 
 const mockGetCost = vi.mocked(getCost);
 const mockRestoreCost = vi.mocked(restoreCost);
@@ -236,6 +237,47 @@ describe('persist()', () => {
     appState.addSession(project.id, 'S1');
     appState.flushPersist();
     expect(mockSave).toHaveBeenCalled();
+  });
+});
+
+describe('setSessionSshHost()', () => {
+  beforeEach(() => _resetSshForTesting());
+
+  it('persists a valid host and marks the session connected (explicit)', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    expect(appState.setSessionSshHost(session.id, 'lab.example.com')).toBe(true);
+    appState.flushPersist();
+    expect(mockSave.mock.calls.at(-1)![0].projects[0].sessions[0].sshHost).toBe('lab.example.com');
+    expect(getSshStatus(session.id)).toEqual({ host: 'lab.example.com', source: 'explicit' });
+  });
+
+  it('normalizes user@host and stores the full reference', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    expect(appState.setSessionSshHost(session.id, 'root@lab.example.com')).toBe(true);
+    expect(session.sshHost).toBe('root@lab.example.com');
+  });
+
+  it('rejects an invalid host without touching state or registry', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    expect(appState.setSessionSshHost(session.id, 'bad host!')).toBe(false);
+    expect(session.sshHost).toBeUndefined();
+    expect(getSshStatus(session.id)).toBeNull();
+  });
+
+  it('clearing removes the field and disconnects the registry', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    appState.setSessionSshHost(session.id, 'lab.example.com');
+    expect(appState.setSessionSshHost(session.id, null)).toBe(true);
+    expect(session.sshHost).toBeUndefined();
+    expect(getSshStatus(session.id)).toBeNull();
+  });
+
+  it('returns false for an unknown session id', () => {
+    expect(appState.setSessionSshHost('nope', 'lab.example.com')).toBe(false);
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockAppState = vi.hoisted(() => {
   const state = {
@@ -41,6 +41,7 @@ vi.mock('./state.js', () => ({
 
 import { _resetForTesting as resetActivity, setHookStatus, initSession } from './session-activity.js';
 import { _resetForTesting as resetDesktopNotif, initNotificationDesktop } from './notification-desktop.js';
+import { _resetSshForTesting as resetSsh, setSshStatus } from './session-ssh.js';
 
 
 // Track Notification constructor calls
@@ -86,6 +87,7 @@ describe('notification-desktop', () => {
   beforeEach(() => {
     resetActivity();
     resetDesktopNotif();
+    resetSsh();
     notificationInstances = [];
     notificationEvents = [];
     mockHasFocus = false;
@@ -115,6 +117,17 @@ describe('notification-desktop', () => {
     expect(notificationInstances[0].options.silent).toBe(true);
   });
 
+  it('prefixes the body with the live ssh host when the session is connected', () => {
+    setSshStatus('bg-session', { host: 'lab.example.com', source: 'explicit' });
+    initSession('bg-session');
+    setHookStatus('bg-session', 'working');
+    setHookStatus('bg-session', 'completed');
+
+    expect(notificationInstances).toHaveLength(1);
+    expect(notificationInstances[0].options.body).toBe(
+      'ssh lab.example.com - Background Session has completed',
+    );
+  });
   it('should notify on working → completed', () => {
     initSession('bg-session');
     setHookStatus('bg-session', 'working');

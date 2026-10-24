@@ -1,6 +1,7 @@
 import { appState } from '../state.js';
 import { ProjectRecord } from '../../shared/types.js';
 import { getStatus, SessionStatus, onChange as onActivityChange, STATUS_GLYPH } from '../session-activity.js';
+import { getSshStatus, onSshChange, sshPrefixText } from '../session-ssh.js';
 import { STATUS_PRIORITY } from '../project-status.js';
 import { isCliSession } from '../session-utils.js';
 import { esc } from '../dom-utils.js';
@@ -25,6 +26,7 @@ export interface ActiveSessionRow {
 export function selectActiveSessions(
   projects: ProjectRecord[],
   statusOf: (sessionId: string) => SessionStatus,
+  sshOf: (sessionId: string) => string = () => '',
 ): ActiveSessionRow[] {
   const rows: ActiveSessionRow[] = [];
   for (const project of projects) {
@@ -34,7 +36,7 @@ export function selectActiveSessions(
         projectId: project.id,
         projectName: project.name,
         sessionId: session.id,
-        sessionName: session.name,
+        sessionName: sshOf(session.id) + session.name,
         status: statusOf(session.id),
       });
     }
@@ -70,7 +72,7 @@ export function renderActiveSessions(): void {
   // Only meaningful across multiple projects — with a single project the rows
   // just duplicate that project's own tab bar, so the section stays hidden.
   const enabled = appState.sidebarView('activeSessions') && appState.projects.length > 1;
-  const rows = enabled ? selectActiveSessions(appState.projects, getStatus) : [];
+  const rows = enabled ? selectActiveSessions(appState.projects, getStatus, (id) => sshPrefixText(getSshStatus(id))) : [];
 
   if (rows.length === 0) {
     containerEl.classList.add('hidden');
@@ -79,7 +81,7 @@ export function renderActiveSessions(): void {
   }
 
   containerEl.classList.remove('hidden');
-  // pi-lens-ignore: xss-innerhtml, slop
+  // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
   containerEl.innerHTML = `
     <div class="active-sessions-header">
       <span class="active-sessions-title">${esc(t('sidebar.activeSessions.title'))}</span>
@@ -130,6 +132,7 @@ export function initActiveSessions(): void {
   });
 
   onActivityChange(scheduleRender);
+  onSshChange(scheduleRender);
   for (const event of [
     'session-added',
     'session-removed',

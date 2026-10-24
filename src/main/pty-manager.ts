@@ -7,9 +7,11 @@ import * as path from 'path';
 import type { ProviderId } from '../shared/types';
 import { parseEnvVars, partitionUserEnv } from '../shared/env-vars';
 import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from '../shared/launch-args';
+import { parseSshHost } from '../shared/ssh-host';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
-import { registerSession } from './hook-status';
+import { registerSession, unregisterSession, writeSshStatus } from './hook-status';
+import { observePtyOutput } from './ssh-detect';
 import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
 import { isLinux, isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
@@ -392,6 +394,23 @@ export class LaunchSpecError extends Error {
   }
 }
 
+/** POSIX single-quote quoting for one token of the remote command string. */
+function posixQuote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The provider launch command as one string for the remote login shell:
+ * the binary's basename (Windows `.CMD`/`.EXE` shims carry the same stem as
+ * the POSIX command) plus every argument, each POSIX-quoted. The local
+ * absolute path does not exist on the remote — the remote login shell's PATH
+ * resolves the remote's own install.
+ */
+function remoteCommand(spec: LaunchSpec): string {
+  const bin = path.basename(spec.executable).replace(/\.(cmd|bat|exe)$/i, '');
+  return [bin, ...spec.argv].map(posixQuote).join(' ');
+}
+
 /**
  * Resolve the single effective launch spec for a session: executable,
  * argv, environment, provider/profile identity and storage mode.
@@ -412,8 +431,10 @@ export function resolveLaunchSpec(params: {
   systemPrompt?: string;
   envVars: string;
   configDir?: string;
+  /** Set = spawn the provider command through `ssh` on this host (P3). */
+  sshHost?: string;
 }): LaunchSpec {
-  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir } = params;
+  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost } = params;
   const provider = getProvider(providerId);
   const issues: string[] = [];
 
@@ -453,7 +474,7 @@ export function resolveLaunchSpec(params: {
     );
   }
 
-  return {
+  const base: LaunchSpec = {
     executable: provider.resolveBinaryPath(),
     argv: provider.buildArgs({ sessionId, cliSessionId, isResume, extraArgs, initialPrompt, systemPrompt }),
     env,
@@ -461,6 +482,19 @@ export function resolveLaunchSpec(params: {
     configDir,
     storageMode: 'default',
   };
+  if (sshHost === undefined || sshHost === '') return base;
+
+  // SSH-wrapped launch (P3): the provider command runs on the remote host.
+  // `ssh -tt` allocates a PTY so the TUI renders; `--` stops ssh from parsing
+  // a hostile host token as an option (parseSshHost already rejects leading
+  // `-`, so this is defense in depth, matching execGit's git-status idiom).
+  const ref = parseSshHost(sshHost);
+  if (!ref) {
+    throw new LaunchSpecError(
+      `Invalid SSH host "${sshHost}": expected [user@]host (no port, no URL, no options).`,
+    );
+  }
+  return { ...base, executable: 'ssh', argv: ['-tt', '--', ref.host, remoteCommand(base)] };
 }
 
 export async function spawnPty(
@@ -478,7 +512,8 @@ export async function spawnPty(
   // ever existed for this session, so the exit is not a process exit. Real PTY
   // exits leave it undefined.
   onExit: (exitCode: number, signal?: number, pid?: number, spawnRejectedReason?: string) => void,
-  configDir?: string
+  configDir?: string,
+  sshHost?: string
 ): Promise<void> {
   // Register the in-flight spawn BEFORE any side effect: the window
   // between this request and the PTY landing in `ptys` is exactly where a
@@ -500,7 +535,7 @@ export async function spawnPty(
     // that never spawned.
     let spec: LaunchSpec;
     try {
-      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir });
+      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost });
     } catch (err) {
       // Nothing will spawn for this session; drop any kill that arrived for
       // it so a later re-spawn of the same id is not killed by a stale flag.
@@ -517,6 +552,7 @@ export async function spawnPty(
     }
 
     registerSession(sessionId);
+    if (sshHost) writeSshStatus(sessionId, sshHost, 'spawned');
 
     const provider = getProvider(providerId);
 
@@ -591,7 +627,12 @@ export async function spawnPty(
       throw err;
     }
 
-    ptyProcess.onData((data) => onData(data));
+    ptyProcess.onData((data) => {
+      // An explicit ssh launch already published its host; scanning its
+      // remote output could only echo the same value back.
+      if (!sshHost) observePtyOutput(sessionId, data);
+      onData(data);
+    });
     ptyProcess.onExit(({ exitCode, signal }) => {
       if (replacedPtys.delete(ptyProcess)) return;
       // Only remove from map if this PTY is still the active one for this session
@@ -716,6 +757,12 @@ export function spawnShellPty(
     killPty(sessionId);
   }
 
+  // Register before spawn side effects so the SSH sidecar (`.ssh`) the
+  // output scanner writes below routes through handleFileChange's
+  // known-session gate; a shell session's whole existence is its PTY, so
+  // the registry entry lives and dies with the process.
+  registerSession(sessionId);
+
   const shell = isWin
     ? (process.env.COMSPEC || 'cmd.exe')
     : interactiveShell();
@@ -728,7 +775,10 @@ export function spawnShellPty(
     env: shellEnv,
   });
 
-  ptyProcess.onData((data) => onData(data));
+  ptyProcess.onData((data) => {
+    observePtyOutput(sessionId, data);
+    onData(data);
+  });
   ptyProcess.onExit(({ exitCode, signal }) => {
     if (replacedPtys.delete(ptyProcess)) return;
     // Only remove from map if this PTY is still the active one for this session
@@ -736,6 +786,7 @@ export function spawnShellPty(
     if (current?.process === ptyProcess) {
       ptys.delete(sessionId);
     }
+    unregisterSession(sessionId);
     onExit(exitCode, signal);
   });
 

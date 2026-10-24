@@ -103,7 +103,8 @@
       "browserNew": "新标签页",
       "projectTools": "项目工具",
       "kanbanBoard": "看板",
-      "team": "团队"
+      "team": "团队",
+      "sshHost": "SSH：{host}"
     },
     "title": {
       "overview": "{name} - 概览",
@@ -185,7 +186,11 @@
       "closeInspector": "关闭检查器",
       "inspect": "检查",
       "renameGroup": "重命名分组",
-      "ungroup": "取消分组"
+      "ungroup": "取消分组",
+      "sshHostSet": "设置 SSH 主机…",
+      "sshHostChange": "更改 SSH 主机…",
+      "sshHostClear": "清除 SSH 主机",
+      "sshHostPrompt": "SSH 主机（user@host 或主机名）："
     },
     "board": {
       "deleteTag": "删除标签"
@@ -448,40 +453,108 @@
       "View": "视图",
       "Browser": "浏览器"
     },
-    "new-session": { "label": "新建会话" },
-    "new-session-alt": { "label": "新建会话（Alt）" },
-    "new-project": { "label": "新建项目" },
-    "goto-session-1": { "label": "转到会话 1" },
-    "goto-session-2": { "label": "转到会话 2" },
-    "goto-session-3": { "label": "转到会话 3" },
-    "goto-session-4": { "label": "转到会话 4" },
-    "goto-session-5": { "label": "转到会话 5" },
-    "goto-session-6": { "label": "转到会话 6" },
-    "goto-session-7": { "label": "转到会话 7" },
-    "goto-session-8": { "label": "转到会话 8" },
-    "goto-session-9": { "label": "转到会话 9" },
-    "next-session": { "label": "下一个会话" },
-    "prev-session": { "label": "上一个会话" },
-    "tab-back": { "label": "后退（标签历史）" },
-    "tab-forward": { "label": "前进（标签历史）" },
-    "toggle-sidebar": { "label": "切换侧边栏" },
-    "toggle-split": { "label": "切换分屏模式" },
-    "project-terminal": { "label": "项目终端" },
-    "project-terminal-alt": { "label": "项目终端（Alt）" },
-    "debug-panel": { "label": "调试面板" },
-    "git-panel": { "label": "Git 面板" },
-    "quick-open": { "label": "快速打开文件" },
-    "session-search": { "label": "搜索所有会话" },
-    "find-in-terminal": { "label": "查找" },
-    "goto-line": { "label": "跳转到行" },
-    "help": { "label": "帮助" },
-    "close-session": { "label": "关闭会话" },
-    "toggle-inspector": { "label": "切换会话检查器" },
-    "zoom-in": { "label": "放大" },
-    "zoom-out": { "label": "缩小" },
-    "zoom-reset": { "label": "重置缩放" },
-    "browser-reload": { "label": "重新加载页面" },
-    "browser-hard-reload": { "label": "强制重新加载（绕过缓存）" }
+    "new-session": {
+      "label": "新建会话"
+    },
+    "new-session-alt": {
+      "label": "新建会话（Alt）"
+    },
+    "new-project": {
+      "label": "新建项目"
+    },
+    "goto-session-1": {
+      "label": "转到会话 1"
+    },
+    "goto-session-2": {
+      "label": "转到会话 2"
+    },
+    "goto-session-3": {
+      "label": "转到会话 3"
+    },
+    "goto-session-4": {
+      "label": "转到会话 4"
+    },
+    "goto-session-5": {
+      "label": "转到会话 5"
+    },
+    "goto-session-6": {
+      "label": "转到会话 6"
+    },
+    "goto-session-7": {
+      "label": "转到会话 7"
+    },
+    "goto-session-8": {
+      "label": "转到会话 8"
+    },
+    "goto-session-9": {
+      "label": "转到会话 9"
+    },
+    "next-session": {
+      "label": "下一个会话"
+    },
+    "prev-session": {
+      "label": "上一个会话"
+    },
+    "tab-back": {
+      "label": "后退（标签历史）"
+    },
+    "tab-forward": {
+      "label": "前进（标签历史）"
+    },
+    "toggle-sidebar": {
+      "label": "切换侧边栏"
+    },
+    "toggle-split": {
+      "label": "切换分屏模式"
+    },
+    "project-terminal": {
+      "label": "项目终端"
+    },
+    "project-terminal-alt": {
+      "label": "项目终端（Alt）"
+    },
+    "debug-panel": {
+      "label": "调试面板"
+    },
+    "git-panel": {
+      "label": "Git 面板"
+    },
+    "quick-open": {
+      "label": "快速打开文件"
+    },
+    "session-search": {
+      "label": "搜索所有会话"
+    },
+    "find-in-terminal": {
+      "label": "查找"
+    },
+    "goto-line": {
+      "label": "跳转到行"
+    },
+    "help": {
+      "label": "帮助"
+    },
+    "close-session": {
+      "label": "关闭会话"
+    },
+    "toggle-inspector": {
+      "label": "切换会话检查器"
+    },
+    "zoom-in": {
+      "label": "放大"
+    },
+    "zoom-out": {
+      "label": "缩小"
+    },
+    "zoom-reset": {
+      "label": "重置缩放"
+    },
+    "browser-reload": {
+      "label": "重新加载页面"
+    },
+    "browser-hard-reload": {
+      "label": "强制重新加载（绕过缓存）"
+    }
   },
   "profiles": {
     "heading": "CLI 配置文件",
@@ -583,7 +656,10 @@
     "gitConflictedDesc": "存在合并冲突的文件",
     "gitSampleAhead": "↑2 ↓3",
     "gitAheadLabel": "领先/落后",
-    "gitAheadDesc": "领先/落后于远程的提交数"
+    "gitAheadDesc": "领先/落后于远程的提交数",
+    "sshPrefixSample": "ssh 主机 - 名称",
+    "sshPrefixLabel": "SSH 主机前缀",
+    "sshPrefixDesc": "通过 SSH 连接的会话会以主机为前缀显示（ssh 主机 - 名称）；推理进行时名称会像 working 字形一样脉动。"
   },
   "about": {
     "appName": "FineVibe",

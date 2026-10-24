@@ -43,6 +43,17 @@ describe('openFileReaderChecked', () => {
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
+  it('short-circuits on a missing file: isDirectory is never consulted', async () => {
+    // `fs:isDirectory` is the consent-gated stat in main; a dead path must
+    // resolve on `exists` alone, so the old parallel probe asked for consent
+    // on a path that does not even exist.
+    exists.mockResolvedValue(false);
+    await openFileReaderChecked('p1', 'src/gone.ts');
+    expect(exists).toHaveBeenCalledWith('/repo/src/gone.ts');
+    expect(isDirectory).not.toHaveBeenCalled();
+    expect(addFileReaderSession).not.toHaveBeenCalled();
+  });
+
   it('opens no tab for a directory, which exists but cannot be read', async () => {
     isDirectory.mockResolvedValue(true);
     await openFileReaderChecked('p1', 'src/components');

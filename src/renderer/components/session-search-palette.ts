@@ -1,4 +1,5 @@
 import { appState } from '../state.js';
+import { getSshStatus, sshPrefixText } from '../session-ssh.js';
 import { getProviderDisplayName } from '../provider-availability.js';
 import { escapeHtml, escapeRegExp } from './dom-search-backend.js';
 import { deriveProjectName } from '../../shared/project-name.js';
@@ -221,7 +222,9 @@ function renderResults(): void {
     const nameRow = document.createElement('div');
     nameRow.className = 'session-palette-item-name';
     const nameText = document.createElement('span');
-    nameText.textContent = r.sessionName ?? r.derivedName ?? r.cliSessionId.slice(0, 8) + '\u2026';
+    const baseName = r.sessionName ?? r.derivedName ?? r.cliSessionId.slice(0, 8) + '\u2026';
+    // Active rows show the live ssh prefix; the resume path (openResult) keeps the raw name.
+    nameText.textContent = (r.activeSessionId ? sshPrefixText(getSshStatus(r.activeSessionId)) : '') + baseName;
     nameRow.appendChild(nameText);
 
     const providerBadge = document.createElement('span');
@@ -240,7 +243,7 @@ function renderResults(): void {
     meta.textContent = r.projectCwd || r.projectSlug;
 
     const snippet = document.createElement('div');
-    snippet.className = 'session-palette-item-snippet';
+    // pi-lens-ignore: xss-innerhtml, slop, no-inner-html, xss-risk
     snippet.innerHTML = highlightMatches(r.snippet, query);
 
     item.appendChild(nameRow);

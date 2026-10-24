@@ -78,6 +78,7 @@ const ALLOWLIST: Record<string, string> = {
   'foldsCaseByDir@settings-guard.ts': 'capped:FOLDS_CASE_BY_DIR_MAX (FIFO evict oldest probed dir)',
   'statusTailCache@providers/pi-compatible-transcripts.ts': 'capped:MAX_STATUS_TAIL_CACHE (FIFO evict oldest tail)',
   'textCache@session-deep-search.ts': 'capped:MAX_CACHE_ENTRIES + MAX_CACHE_CHARS (LRU evict oldest)',
+  'states@ssh-detect.ts': 'capped:MAX_SSH_SCAN_SESSIONS (FIFO evict oldest scanned session)',
   'gateRootCanonicalByPath@store.ts': 'capped:GATE_ROOT_CANONICAL_MAX (FIFO, PA-08 memo)',
 
   // teardown: cleared on watcher/file stop, session exit, store invalidate,

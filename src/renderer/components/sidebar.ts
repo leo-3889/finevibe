@@ -539,8 +539,8 @@ function buildProjectActions(
 function makeActionButton(label: string, iconSvg: string, active: boolean, hint?: string): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
-  // pi-lens-ignore: xss-innerhtml
   btn.className = 'project-action-btn' + (active ? ' active' : '');
+  // pi-lens-ignore: xss-innerhtml, no-inner-html
   btn.innerHTML = `<span class="action-icon" aria-hidden="true">${iconSvg}</span><span class="action-label">${esc(label)}</span>`;
   attachHoverCard(btn, hint ?? label);
   return btn;
@@ -580,6 +580,10 @@ export function promptNewProject(): void {
   const initialFolder = currentFolder();
   let pathManuallyEdited = false;
   let cloning = false;
+  // The probe gate: fs:isDirectory is a consent-gated stat in main, so no
+  // probe may start unless this modal is actually on screen. Armed right
+  // after showModal renders, closed by the modal-cleanup funnel below.
+  let modalOpen = false;
   const fields: FieldDef[] = [
     { label: t('sidebar.newProject.nameLabel'), id: 'project-name', placeholder: t('sidebar.newProject.namePlaceholder') },
     {
@@ -677,6 +681,8 @@ export function promptNewProject(): void {
     }
   });
 
+  modalOpen = true;
+
   // The confirm label is a three-state machine owned by updateConfirmLabel:
   // a git URL owns the path field → "Checkout and create"; the field points
   // at an existing directory → "Select"; else showModal's fixed label.
@@ -693,13 +699,15 @@ export function promptNewProject(): void {
         : baseConfirmLabel;
   };
 
-  // The directory probe runs only on open-prefill, blur, Browse and
-  // autocomplete selection — never on the keystroke path (S4-04 precedent:
-  // a probe behind a consent-style gate must not fire per keystroke).
+  // The directory probe runs only on blur, Browse and autocomplete selection —
+  // never at open (a modal that is merely shown must not pop a native dialog),
+  // never on the keystroke path (S4-04 precedent: a probe behind a
+  // consent-style gate must not fire per keystroke).
   // Generation counter as in the suggest burst: a stale reply must never
   // paint over the state the current value already earned.
   let dirProbeSeq = 0;
   const probeDirExists = async (value: string) => {
+    if (!modalOpen) return;
     const seq = ++dirProbeSeq;
     const apply = (exists: boolean) => {
       if (seq !== dirProbeSeq) return;
@@ -718,9 +726,13 @@ export function promptNewProject(): void {
       apply(false);
     }
   };
-  // Mirror of the suggest-debounce teardown: a probe in flight when the
-  // modal closes must not paint the label of an already-closed modal.
-  registerModalCleanup(() => { dirProbeSeq++; });
+  // Mirror of the suggest-debounce teardown: a probe in flight when the modal
+  // closes must not paint the label of an already-closed modal, and the gate
+  // closes with it — Esc/Cancel/Create all funnel through here.
+  registerModalCleanup(() => {
+    modalOpen = false;
+    dirProbeSeq++;
+  });
 
   const nameInput = document.getElementById('modal-project-name') as HTMLInputElement | null;
   let nameManuallyEdited = false;
@@ -743,6 +755,11 @@ export function promptNewProject(): void {
     if (!initialFolder || !pathEl || pathManuallyEdited) return;
     if (detectGitCheckoutUrl(pathEl.value)) return;
     pathEl.value = initialFolder.replace(/[\\/]+$/, '') + '/' + (nameInput?.value.trim() ?? '');
+    // The field was rewritten programmatically: any Select the old value
+    // earned is stale, and a probe in flight for it must not repaint.
+    dirExists = false;
+    dirProbeSeq++;
+    updateConfirmLabel();
   };
 
   // Attach path autocomplete to the rendered input
@@ -793,7 +810,7 @@ export function promptNewProject(): void {
       pathManuallyEdited = true;
       const value = pathInput.value;
       const checkout = detectGitCheckoutUrl(value);
-      isCheckoutLabel = !!checkout;
+      isCheckoutLabel = Boolean(checkout);
       updateConfirmLabel();
       if (checkout) {
         // The URL owns the field: name from the repo, and no path
@@ -804,6 +821,12 @@ export function promptNewProject(): void {
         hideDropdown();
         return;
       }
+      // Keystroke rewrite: same invalidation as the programmatic one. The
+      // keystroke path itself never probes — the label stays plain until the
+      // next blur/Browse/autocomplete probe earns Select again.
+      dirExists = false;
+      dirProbeSeq++;
+      updateConfirmLabel();
       autoFillName(value);
       const lastSlash = lastSeparatorIndex(value);
       if (lastSlash === -1) {
@@ -861,15 +884,17 @@ export function promptNewProject(): void {
       }
     });
 
-    pathInput.addEventListener('blur', () => {
+    pathInput.addEventListener('blur', (e) => {
       setTimeout(hideDropdown, 100);
       autoFillName(pathInput.value);
+      // Probe only on a real focus move. A null relatedTarget is the overlay
+      // being hidden (Esc/Cancel dismissal) or plain focus loss, and a move
+      // into the modal footer is Cancel/Confirm — Cancel must never probe, and
+      // the confirm handler re-checks the directory on its own.
+      const to = e.relatedTarget as HTMLElement | null;
+      if (!to || to.closest('#modal-actions')) return;
       probeDirExists(pathInput.value);
     });
-
-    // The field arrives with the default-folder prefill: probe it once at
-    // open so the button already reads "Select" for an existing folder.
-    if (pathInput.value.trim()) probeDirExists(pathInput.value);
   }
 }
 
@@ -1086,8 +1111,8 @@ function renderDiscussions(): void {
   // inline badge is shown only when expanded (text visible). CSS picks one per mode.
   const dot = count > 0 ? '<span class="discussions-icon-dot"></span>' : '';
   const inlineBadge = count > 0 ? ` <span class="discussions-badge">${count}</span>` : '';
-  // pi-lens-ignore: xss-innerhtml
   sidebarDiscussionsEl.title = t('sidebar.discussions.tooltip');
+  // pi-lens-ignore: xss-innerhtml, no-inner-html
   sidebarDiscussionsEl.innerHTML =
     `<span class="action-icon" aria-hidden="true">${ICON_DISCUSSIONS}${dot}</span>` +
     `<div class="discussions-text">` +

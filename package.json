@@ -102,10 +102,10 @@
         "deb"
       ],
       "category": "Development",
-      "icon": "build/icon.png",
-      "deb": {
-        "depends": ["libsecret-tools"]
-      }
+      "icon": "build/icon.png"
+    },
+    "deb": {
+      "depends": ["libsecret-tools"]
     },
     "win": {
       "artifactName": "FineVibe-${version}-win-${arch}.${ext}",

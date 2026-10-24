@@ -6,6 +6,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { initSession, removeSession } from '../session-activity.js';
+import { setSshStatus } from '../session-ssh.js';
 import { markFreshSession } from '../session-insights.js';
 import { removeSession as removeCostSession, formatTokens, getCost, type CostInfo } from '../session-cost.js';
 import { removeSession as removeContextSession, getContext, getContextSeverity, type ContextWindowInfo } from '../session-context.js';
@@ -33,6 +34,7 @@ interface TerminalInstance {
   envVars: string;
   /** Resolved profile config dir (CLAUDE_CONFIG_DIR), or undefined for the default ~/.claude. */
   configDir?: string;
+  sshHost?: string;
   isResume: boolean;
   wasResumed: boolean;
   spawned: boolean;
@@ -68,7 +70,8 @@ export function createTerminalPane(
   providerId: ProviderId = 'claude',
   projectId?: string,
   envVars: string = '',
-  configDir?: string
+  configDir?: string,
+  sshHost?: string
 ): TerminalInstance {
   if (instances.has(sessionId)) {
     return instances.get(sessionId)!;
@@ -155,6 +158,7 @@ export function createTerminalPane(
     args,
     envVars,
     configDir,
+    sshHost,
     isResume,
     wasResumed: isResume,
     spawned: false,
@@ -294,7 +298,7 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     instance.pendingSystemPrompt = null;
   }
   try {
-    await window.finevibe.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
+    await window.finevibe.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir, instance.sshHost);
   } catch (err) {
     // pty:create rejected (missing binary, ConPTY failure, provider spawn
     // error). Callers fire spawnTerminal un-awaited, so a throw here becomes
@@ -322,6 +326,9 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
   // already true while `pty:create` was suspended (Copilot awaits a hook
   // install), and a file dropped into the pane was written to nothing.
   instance.ptyReady = true;
+  // A persisted ssh host means the session runs over that host (or is marked
+  // to): publish it as the live explicit state so the tab prefix appears.
+  if (instance.sshHost) setSshStatus(sessionId, { host: instance.sshHost, source: 'explicit' });
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
 
   // Callers fire this un-awaited and fit the pane immediately after, so that fit

@@ -90,6 +90,17 @@
   animation: pulse 1.5s ease-in-out infinite;
 }
 
+/* SSH-connected session prefix (dynamic; see session-ssh.ts). */
+.tab-ssh-prefix {
+  color: var(--text-muted);
+}
+
+/* The name "hovers" like the working status glyph while inference runs.
+   Reuses the global `pulse` keyframe above; never redefine it here. */
+.tab-name.ssh-inferred {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
 .tab-status.waiting {
   color: var(--status-waiting);
 }
