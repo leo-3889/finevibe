@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="build/icon.png" alt="Vibeyard" width="128" />
+  <img src="build/icon.png" alt="FineVibe" width="128" />
 </p>
 
 # Vibeyard — the `leo-3889/finevibe` fork
@@ -63,7 +63,7 @@ This README covers what the fork adds on top of Vibeyard; the base product's Hig
 - **Instant plain-text paste** — a clipboard-latency program: zero clipboard IPC for plain text on all three platforms, PNG encoding off the main thread, coalesced PTY output.
 - **Sidebar folder refresh** — expanding a folder re-reads the listing from disk, so files created by agents outside the watcher's view show up immediately.
 - **Copy path** — right-click → Copy path in the file tree and the project sidebar.
-- **New-session persona + prompt rows** — launch a team persona straight from the New Session modal and type its first message there; delivered at spawn on all six providers.
+- **New-session persona + prompt rows** — launch a team persona straight from the New Session modal and type its first message there; delivered at spawn on all seven providers.
 - **Per-member backend pin** — pin a team member to a specific provider/profile; the pin wins at launch from any launch surface.
 - **Session export** — every session is recorded from creation; export any archived session as a zip archive or a single transcript file.
 - **Default projects folder + git-URL checkout** — new projects pre-fill under your chosen projects folder; paste a GitHub/Codeberg URL to clone the repo and create the project in one step.
