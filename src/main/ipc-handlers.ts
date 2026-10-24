@@ -32,7 +32,7 @@ import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { detectGitCheckoutUrl } from '../shared/git-url';
 import type { ProviderId, Profile, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
-import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
+import { canonicalPath, canonicalRoot, expandUserPath, resolveUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
 import { sweepImportTempDirs } from './chrome-import/copy';
@@ -196,8 +196,27 @@ function isWithinHomeTree(resolvedPath: string): boolean {
   return isWithin(canonicalRoot(os.homedir()), canonicalPath(resolvedPath));
 }
 
+/** True when `resolvedPath` sits inside the preferences' default projects
+ * folder. A blank/absent value NEVER matches: `path.resolve('')` is the cwd,
+ * so an unset folder would silently admit every cwd subtree into the gate. */
+function isWithinDefaultProjectsFolder(resolvedPath: string): boolean {
+  const configured = loadState().preferences?.defaultProjectsFolder;
+  if (typeof configured !== 'string' || !configured.trim()) return false;
+  return isWithin(canonicalRoot(configured), canonicalPath(resolvedPath));
+}
+
 function isAllowedEnumeratePath(resolvedPath: string): boolean {
-  return isAllowedReadPath(resolvedPath) || isWithinHomeTree(resolvedPath);
+  // The preferences' default projects folder joins the enumerate tier: the
+  // New Project flow composes `<defaultProjectsFolder>/<name>` and probes it
+  // with fs:isDirectory BEFORE the project exists, so a non-home folder (the
+  // Windows `E:\dev` norm) has to answer honestly — under the old gate the
+  // probe opened a confirm whose Cancel was reported as "Directory does not
+  // exist". It is deliberately NOT added to isAllowedReadPath: a folder the
+  // user named for new projects authorizes stat/enumerate of what the modal
+  // composes there, not reading arbitrary files inside it.
+  return isAllowedReadPath(resolvedPath)
+    || isWithinHomeTree(resolvedPath)
+    || isWithinDefaultProjectsFolder(resolvedPath);
 }
 
 /** Confirm flow for home-outside enumeration, mirroring confirmRemoteHost in
@@ -771,7 +790,7 @@ export function removeIsoPartitionDirs(userDataDir: string, sessionId?: string):
  *   clearCache() file set — no fs call below touches userData), plus
  *   OS-temp finevibe-chrome-import-* dirs (sweepImportTempDirs' own
  *   prefix+age gate, tmpdir-scoped).
- * NEVER in scope: userData/omp-sessions, userData/pi-sessions,
+ * NEVER in scope: userData/omp-sessions, userData/pi-sessions, userData/pi-bolt-sessions,
  * userData/Partitions (isolated browser logins), the default session's
  * cookies/Local Storage (the imported Chrome jar — P2-100 in main.ts
  * deliberately keeps it non-clearable from the renderer). That is why the
@@ -1095,7 +1114,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('fs:isDirectory', async (_event, filePath: string) => {
     try {
-      const expanded = expandUserPath(filePath);
+      // resolveUserPath: the renderer spells this path with `/` joins on
+      // Windows (`E:\AI/Brillance`), and a mixed spelling must never reach
+      // statSync, the gate, or the persisted project path.
+      const expanded = resolveUserPath(filePath);
       // P2-38: this is fs:exists' existence oracle with a second spelling
       // (the sidebar's pre-project add flow), so it takes the widened home
       // gate. Home + known roots are answered honestly and never prompt;
@@ -1117,7 +1139,69 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('fs:expandPath', (_event, filePath: string): string => {
-    return expandUserPath(filePath);
+    return resolveUserPath(filePath);
+  });
+
+  // The New Project modal's "Create" verb: the renderer composes
+  // `<folder>/<name>` and main makes the directory it just promised, then
+  // answers with ITS resolved spelling — the renderer must persist that, not
+  // its own `/`-joined string. A pre-project WRITE, so it takes fs:cloneRepo's
+  // gate shape (home tree / known roots / the default projects folder pass, a
+  // home-outside target needs the same explicit confirm) plus fs:isDirectory's
+  // parent-consent cascade: the autocomplete that named this dir already
+  // consented its parent. A DENIED consent is reported as an error, never as
+  // non-existence — the modal has to tell "you declined" apart from "the
+  // folder is not there", which is exactly what the old fs:isDirectory false
+  // conflated.
+  ipcMain.handle('fs:ensureDirectory', async (_event, dirPath: string) => {
+    try {
+      if (typeof dirPath !== 'string' || !dirPath.trim()) {
+        return { ok: false, error: 'No directory path was given' };
+      }
+      const target = resolveUserPath(dirPath);
+      if (!isAllowedEnumeratePath(target)
+        && !hasHomeOutsideConsent(path.dirname(target))
+        && !(await confirmHomeOutsideListingOnce(target))) {
+        console.warn(`fs:ensureDirectory blocked: ${target} is outside home and not confirmed`);
+        return { ok: false, error: 'Location is outside your home directory and was not confirmed' };
+      }
+      try {
+        const stat = await fs.promises.stat(target);
+        if (!stat.isDirectory()) return { ok: false, error: `Not a directory: ${target}` };
+        return { ok: true, path: canonicalPath(target) };
+      } catch (err) {
+        const statErr = err as NodeJS.ErrnoException;
+        if (statErr.code !== 'ENOENT') {
+          return { ok: false, error: `${statErr.code}: ${statErr.message}` };
+        }
+      }
+      try {
+        await fs.promises.mkdir(target, { recursive: true });
+      } catch (err) {
+        const mkErr = err as NodeJS.ErrnoException;
+        if (mkErr.code !== 'EEXIST') {
+          console.warn('fs:ensureDirectory failed:', mkErr);
+          return { ok: false, error: `${mkErr.code}: ${mkErr.message}` };
+        }
+        // Race: the directory appeared between the stat and the mkdir (a
+        // concurrent New Project, an editor's autosave). Re-stat and answer
+        // as if it had been there from the start.
+        try {
+          const stat = await fs.promises.stat(target);
+          if (!stat.isDirectory()) return { ok: false, error: `Not a directory: ${target}` };
+          return { ok: true, path: canonicalPath(target) };
+        } catch {
+          return { ok: false, error: `${mkErr.code}: ${mkErr.message}` };
+        }
+      }
+      // Answered AFTER the mkdir: the canonical form of a path that did not
+      // exist a moment ago is now fully resolvable, so this is the spelling
+      // the user's own file explorer shows.
+      return { ok: true, path: canonicalPath(target) };
+    } catch (err) {
+      console.warn('fs:ensureDirectory failed:', err);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   ipcMain.handle('fs:listDirs', async (_event, dirPath: string, prefix?: string) => {
@@ -1181,7 +1265,7 @@ export function registerIpcHandlers(): void {
       }
       const target = detectGitCheckoutUrl(url);
       if (!target) return { ok: false, error: 'Unsupported repository URL' };
-      const dest = path.resolve(expandUserPath(destPath));
+      const dest = resolveUserPath(destPath);
       if (!isAllowedEnumeratePath(dest) && !(await confirmHomeOutsideListing(dest))) {
         console.warn(`fs:cloneRepo blocked: ${dest} is outside home and not confirmed`);
         return { ok: false, error: 'Clone location is outside your home directory and was not confirmed' };
@@ -1819,7 +1903,7 @@ export function registerIpcHandlers(): void {
     const provider = getProvider(providerId);
     // S4-03: async twin (Wave E) — the sync probe chain (`where` 3 s,
     // `npm prefix -g` 5 s per missing binary) blocked main; Preferences→
-    // Setup fires this for all six providers per section mount. The
+    // Setup fires this for all seven providers per section mount. The
     // probe caches (in-process + disk) keep repeats on the hot path.
     return await (provider.validatePrerequisitesAsync?.() ?? provider.validatePrerequisites());
   });
@@ -1863,9 +1947,29 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('fs:browseDirectory', async () => {
-    const win = BrowserWindow.getAllWindows()[0];
+    // The focused window, mirroring confirmHomeOutsideListing: with several
+    // windows open, getAllWindows()[0] attaches the sheet to an arbitrary
+    // (possibly hidden) one.
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
     if (!win) return null;
-    const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+    // Open where the user's projects live. Without defaultPath the native
+    // picker starts wherever the OS last was — Documents on a fresh Windows
+    // install, the portal/gtk default on Linux — so picking inside `E:\dev`
+    // is a walk on every single pick. A stale preference must not break the
+    // picker (and some platforms reject a missing defaultPath), so only an
+    // existing directory is passed.
+    let defaultPath: string | undefined;
+    const configured = loadState().preferences?.defaultProjectsFolder;
+    if (typeof configured === 'string' && configured.trim()) {
+      const candidate = resolveUserPath(configured);
+      try {
+        if (fs.statSync(candidate).isDirectory()) defaultPath = candidate;
+      } catch { /* removed/renamed folder: fall back to the platform default */ }
+    }
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openDirectory'],
+      ...(defaultPath ? { defaultPath } : {}),
+    });
     if (result.canceled || result.filePaths.length === 0) return null;
     const picked = result.filePaths[0];
     // The native picker's selection IS the consent: record the pick so the

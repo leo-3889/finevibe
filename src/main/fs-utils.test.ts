@@ -17,7 +17,7 @@ const platformStub = vi.hoisted(() => ({ isWin: false }));
 vi.mock('./platform', () => ({ get isWin() { return platformStub.isWin; } }));
 
 import {
-  expandUserPath, isBinaryBuffer, isMacPackagePath,
+  expandUserPath, resolveUserPath, isBinaryBuffer, isMacPackagePath,
   canonicalPath, canonicalRoot,
   invalidateCanonicalPathCache, invalidateCanonicalPathIfRootsChanged,
   TARGET_CANONICAL_CACHE_MAX, TARGET_CANONICAL_TTL_MS, ROOT_CANONICAL_CACHE_MAX,
@@ -349,5 +349,61 @@ describe('canonicalPath caches (P2-59)', () => {
     const target = path.resolve('/x/y');
     expect(canonicalPath(target)).toBe(target);
     expect(canonicalRoot(target)).toBe(target);
+  });
+});
+
+// The one resolve step every `fs:` channel applies to a renderer path:
+// expand, then `path.resolve`. The renderer composes `<folder>/<name>` with
+// `/` joins, so Windows receives `E:\AI/Brillance` verbatim — the mixed
+// spelling is what used to be persisted as the project path.
+describe('resolveUserPath', () => {
+  it('expands ~ to the resolved home dir', () => {
+    expect(resolveUserPath('~')).toBe(path.resolve(home));
+  });
+
+  it('expands ~/x to home/x', () => {
+    expect(resolveUserPath('~/git/Brillance')).toBe(path.resolve(home, 'git', 'Brillance'));
+  });
+
+  it('resolves a relative path against the cwd', () => {
+    expect(resolveUserPath('relative/Brillance')).toBe(path.resolve('relative', 'Brillance'));
+  });
+
+  it('normalizes a mixed-separator absolute path to the platform spelling', () => {
+    expect(resolveUserPath(`${home}/git/Brillance`)).toBe(path.resolve(home, 'git', 'Brillance'));
+  });
+
+  it('collapses a .. segment', () => {
+    expect(resolveUserPath(path.join(home, 'git', '..', 'Brillance'))).toBe(path.resolve(home, 'Brillance'));
+  });
+
+  it('leaves $NAME unexpanded on POSIX (a literal %NAME% is filename data)', () => {
+    platformStub.isWin = false;
+    expect(resolveUserPath('%NOT_A_REAL_VAR%/projects')).toBe(path.resolve('%NOT_A_REAL_VAR%', 'projects'));
+  });
+});
+
+describe('resolveUserPath Windows spellings', () => {
+  const ENV = 'FINEVIBE_TEST_ENV';
+  afterEach(() => {
+    delete process.env[ENV];
+    platformStub.isWin = false;
+  });
+
+  it('normalizes the renderer\'s E:\\AI/Brillance to E:\\AI\\Brillance', () => {
+    platformStub.isWin = true;
+    expect(resolveUserPath('E:\\AI/Brillance')).toBe('E:\\AI\\Brillance');
+  });
+
+  it('expands the ~\\ spelling users type into preferences', () => {
+    platformStub.isWin = true;
+    expect(resolveUserPath('~\\git\\Brillance')).toBe(path.resolve(home, 'git', 'Brillance'));
+  });
+
+  it('expands %APPDATA% before resolving', () => {
+    platformStub.isWin = true;
+    process.env[ENV] = 'C:\\Users\\me\\AppData\\Roaming';
+    expect(resolveUserPath(`%${ENV}%\\projects\\Brillance`))
+      .toBe('C:\\Users\\me\\AppData\\Roaming\\projects\\Brillance');
   });
 });

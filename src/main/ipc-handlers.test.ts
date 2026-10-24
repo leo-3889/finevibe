@@ -979,6 +979,42 @@ describe('fs:browseDirectory pick records consent', () => {
     await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(false);
     expect(dialog.showMessageBox).toHaveBeenCalled();
   });
+
+  /** The options the handler handed the picker. The handler uses the
+   *  `showOpenDialog(browserWindow, options)` overload; the module mock is
+   *  typed with the 1-arg overload, so the args tuple is read untyped. */
+  const lastPickerOptions = (): { defaultPath?: string } => {
+    const call = vi.mocked(dialog.showOpenDialog).mock.calls.at(-1) as unknown as unknown[];
+    return (call[1] ?? call[0]) as { defaultPath?: string };
+  };
+
+  // The picker opens at the preferences' default projects folder: with no
+  // defaultPath the native dialog starts wherever the OS last was (Documents
+  // on a fresh Windows install, the portal default on Linux), so picking
+  // inside `E:\dev` is a walk every single time. A stale preference must not
+  // break the picker, so only an EXISTING directory is passed.
+  it('opens at the default projects folder when it exists', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fv-pick-default-'));
+    try {
+      vi.mocked(loadState).mockReturnValueOnce(
+        { projects: [], preferences: { defaultProjectsFolder: root } } as never,
+      );
+      await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBeNull();
+      expect(lastPickerOptions().defaultPath).toBe(root);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes no defaultPath for a blank, whitespace or missing preference', async () => {
+    for (const configured of ['', '   ', path.join(os.tmpdir(), 'fv-pick-missing-zz')]) {
+      vi.mocked(loadState).mockReturnValueOnce(
+        { projects: [], preferences: { defaultProjectsFolder: configured } } as never,
+      );
+      await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBeNull();
+      expect(lastPickerOptions().defaultPath).toBeUndefined();
+    }
+  });
 });
 
 // The parent-consent cascade (fs:isDirectory only): a consented dir's
@@ -1165,6 +1201,15 @@ describe('pty:create provider hooks', () => {
     expect(provider.onSessionStarted).not.toHaveBeenCalled();
   });
 
+  it('a resumed Pi-Bolt session seeds the transcript sync on its own pi-bolt-sessions dir', async () => {
+    await create('ui-1', 'cli-1', { isResume: true, providerId: 'pi-bolt', configDir: '/profiles/work' });
+    // Pi-Bolt owns a third launch base — the seed must name pi-bolt-sessions,
+    // not the Pi/OMP dirs (launch-session-dir.ts:44-46).
+    expect(mockRegisterSync).toHaveBeenCalledWith('ui-1', 'pi-bolt', 'cli-1', '/proj', '/profiles/work', { sessionDir: expect.stringContaining('pi-bolt-sessions') });
+    expect(provider.onSessionResumed).toHaveBeenCalledWith('ui-1', '/proj', fakeWin, '/profiles/work', 'cli-1');
+    expect(calls).toEqual(['resumed']);
+  });
+
   it('a provider with no resume hook still spawns', async () => {
     delete provider.onSessionResumed;
     await create('ui-1', 'cli-1', { isResume: true });
@@ -1184,6 +1229,17 @@ describe('session:syncRestored', () => {
     ]);
     expect(mockRegisterSync).toHaveBeenCalledWith('ui-1', 'omp', 'cli-1', '/proj', undefined, { titleOnly: true, sessionDir: expect.stringContaining('omp-sessions') });
     expect(mockRegisterSession).toHaveBeenCalledWith('ui-1');
+  });
+
+  it('mirrors a Pi-Bolt session title-only against its own pi-bolt-sessions dir', () => {
+    mockRegisterSync.mockReturnValue(true);
+    syncRestored([
+      { sessionId: 'ui-pb', providerId: 'pi-bolt', cliSessionId: 'cli-pb', cwd: '/proj', createdAt: '2026-09-30T10:00:00.000Z', configDir: '/profiles/work' },
+    ]);
+    // Third restore arm (besides pi/omp): the titleOnly registration names the
+    // Pi-Bolt launch base, so a restored tab polls its own transcripts.
+    expect(mockRegisterSync).toHaveBeenCalledWith('ui-pb', 'pi-bolt', 'cli-pb', '/proj', '/profiles/work', { titleOnly: true, sessionDir: expect.stringContaining('pi-bolt-sessions') });
+    expect(mockRegisterSession).toHaveBeenCalledWith('ui-pb');
   });
 
   it('leaves a null-id session unresolved: no title mirror, no recovery', () => {
@@ -2366,7 +2422,7 @@ describe('fs:listDirs keystroke path (S4-04)', () => {
   });
 });
 
-// S4-03: Preferences→Setup fires provider:checkBinary for all six providers
+// S4-03: Preferences→Setup fires provider:checkBinary for all seven providers
 // per section mount, installAgent filters targets, and readiness:analyze
 // probes availability — all must ride the async probe twin (Wave E), not the
 // sync `where`/`npm prefix -g` chain, and keep their response shapes.
@@ -2713,5 +2769,203 @@ describe('home-outside consent cache cap (B1)', () => {
 
     await handlers.get('fs:listDirs')!({}, dirs[0]!); // evicted: asks again
     expect(dialog.showMessageBox).toHaveBeenCalledTimes(OUTSIDE_HOME_CONSENT_MAX + 2);
+  });
+});
+
+// The New Project modal's "Create" verb: the renderer composes
+// `<folder>/<name>` (its own `/` joins) and main creates the directory,
+// answering with ITS resolved + canonical spelling. As a pre-project WRITE it
+// takes fs:cloneRepo's gate shape, and a denied consent is an ERROR: the old
+// fs:isDirectory `false` conflated "you pressed Cancel" with "the folder is
+// not there", which is how an existing `E:\AI\Brillance` came to be reported
+// as non-existent on a non-home drive.
+describe('fs:ensureDirectory', () => {
+  it('rejects a non-string or blank path before any filesystem work', async () => {
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      const expected = { ok: false, error: 'No directory path was given' };
+      await expect(handlers.get('fs:ensureDirectory')!({}, '')).resolves.toEqual(expected);
+      await expect(handlers.get('fs:ensureDirectory')!({}, '   ')).resolves.toEqual(expected);
+      await expect(handlers.get('fs:ensureDirectory')!({}, 42)).resolves.toEqual(expected);
+      await expect(handlers.get('fs:ensureDirectory')!({}, undefined)).resolves.toEqual(expected);
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('answers an existing directory with its canonical path and creates nothing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, dir)).resolves.toEqual({
+        ok: true,
+        path: fs.realpathSync(dir),
+      });
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers the renderer\'s `/`-joined spelling with the resolved path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
+    try {
+      // `${root}/Brillance` is what the modal sends on Windows
+      // (`E:\AI` + '/' + name); the answer is the platform spelling.
+      await expect(handlers.get('fs:ensureDirectory')!({}, `${root}/Brillance`)).resolves.toEqual({
+        ok: true,
+        path: path.join(fs.realpathSync(root), 'Brillance'),
+      });
+      expect(fs.statSync(path.join(root, 'Brillance')).isDirectory()).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a path that exists as a file', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
+    const blocker = path.join(root, 'blocker');
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      fs.writeFileSync(blocker, 'x');
+      await expect(handlers.get('fs:ensureDirectory')!({}, blocker)).resolves.toEqual({
+        ok: false,
+        error: `Not a directory: ${blocker}`,
+      });
+      expect(mkdir).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates a missing directory inside an allowed root recursively and answers its path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
+    const target = path.join(root, 'Brillance', 'nested');
+    // No mockImplementation: the spy calls through, so the directory is real.
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toEqual({
+        ok: true,
+        path: path.join(fs.realpathSync(root), 'Brillance', 'nested'),
+      });
+      expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
+      expect(fs.statSync(target).isDirectory()).toBe(true);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a denied home-outside consent as an error and creates nothing', async () => {
+    const target = path.join(OUTSIDE_HOME, 'finevibe-ensure-denied-zz');
+    // A REPLACING spy: on a deny nothing may reach the filesystem, and this
+    // suite runs as the real user, whose mkdir in C:\\Windows / /etc is a
+    // permission error at best and a real directory at worst.
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+    try {
+      // The Cancel answer is pinned per test: an earlier suite leaves a
+      // persistent confirm-true implementation on this mock.
+      vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 0 } as never);
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toEqual({
+        ok: false,
+        error: 'Location is outside your home directory and was not confirmed',
+      });
+      expect(dialog.showMessageBox).toHaveBeenCalled();
+      expect(mkdir).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('creates after an explicit confirm for a home-outside directory', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    const target = path.join(OUTSIDE_HOME, 'finevibe-ensure-confirmed-zz');
+    // The spy REPLACES mkdir: nothing gets created inside C:\\Windows / /etc.
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toMatchObject({ ok: true });
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+      expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('creates a child of a consented directory with no second dialog (cascade)', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    // The New Project autocomplete's enumeration: the parent's consent NAMED
+    // this child, so creating it asks nothing the dialog did not publish.
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    const target = path.join(OUTSIDE_HOME, 'finevibe-ensure-cascade-zz');
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toEqual({
+        ok: true,
+        path: path.join(fs.realpathSync(OUTSIDE_HOME), 'finevibe-ensure-cascade-zz'),
+      });
+      expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1); // the parent's, only
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+});
+
+// The preferences' default projects folder is an enumerate root: the New
+// Project modal composes `<defaultProjectsFolder>/<name>` and probes it with
+// fs:isDirectory BEFORE the project exists, so a non-home folder (the Windows
+// `E:\dev` norm) has to answer honestly — under the old gate the probe opened
+// a confirm whose Cancel was reported as "Directory does not exist". The READ
+// gate is untouched: naming a folder for new projects never authorizes reading
+// arbitrary files inside it.
+describe('default projects folder in the enumerate gate', () => {
+  // A real existing child dir of the home-outside root, on every platform.
+  const existingChildDir = () => {
+    const name = fs.readdirSync(OUTSIDE_HOME).find((n) => {
+      try { return fs.statSync(path.join(OUTSIDE_HOME, n)).isDirectory(); } catch { return false; }
+    });
+    if (!name) throw new Error('no child dir under ' + OUTSIDE_HOME);
+    return path.join(OUTSIDE_HOME, name);
+  };
+  const withDefaultFolder = (folder: string) =>
+    vi.mocked(loadState).mockReturnValueOnce({ projects: [], preferences: { defaultProjectsFolder: folder } } as never);
+
+  it('answers fs:isDirectory for a child with zero confirms', async () => {
+    withDefaultFolder(OUTSIDE_HOME);
+    await expect(handlers.get('fs:isDirectory')!({}, existingChildDir())).resolves.toBe(true);
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('admits fs:ensureDirectory into the same folder with zero confirms', async () => {
+    withDefaultFolder(OUTSIDE_HOME);
+    const target = path.join(OUTSIDE_HOME, 'fv-default-folder-zz');
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toMatchObject({ ok: true });
+      expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('leaves the old confirm behavior unchanged when the preference is blank', async () => {
+    // `path.resolve('')` is the cwd: a blank folder must admit NOTHING, or
+    // every cwd subtree would join the gate.
+    withDefaultFolder('');
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 0 } as never);
+    await expect(handlers.get('fs:isDirectory')!({}, existingChildDir())).resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalled();
+  });
+
+  it('does not widen the read gate: fs:listDir still refuses the folder', async () => {
+    withDefaultFolder(OUTSIDE_HOME);
+    await expect(handlers.get('fs:listDir')!({}, OUTSIDE_HOME)).resolves.toEqual([]);
   });
 });

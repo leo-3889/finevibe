@@ -33,6 +33,20 @@ export function expandUserPath(filePath: string): string {
 }
 
 /**
+ * The single resolve step every `fs:` channel applies to a renderer path:
+ * expand the user spellings ({@link expandUserPath}), then `path.resolve`,
+ * which normalizes separators and the drive spelling. The renderer composes
+ * paths with `/` (its own join helper), so Windows receives the mixed
+ * `E:\AI/Brillance` verbatim; resolving here is what keeps that spelling
+ * from being persisted as a project path and makes every gate comparison
+ * see ONE spelling of one directory. A relative path resolves against
+ * main's cwd — the documented behavior of every channel that uses it.
+ */
+export function resolveUserPath(rawPath: string): string {
+  return path.resolve(expandUserPath(rawPath));
+}
+
+/**
  * Resolve existing links, including a link in an existing parent directory.
  * Path *comparisons* must use this: the same directory can be spelled with a
  * different drive-letter case, separator style, `..` segment, junction or

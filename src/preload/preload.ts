@@ -47,6 +47,7 @@ export interface FineVibeApi {
     listDir(dirPath: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
     browseDirectory(): Promise<string | null>;
     cloneRepo(url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
+    ensureDirectory(dirPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
     exists(filePath: string): Promise<boolean>;
@@ -276,6 +277,7 @@ const api: FineVibeApi = {
     listDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
     browseDirectory: () => ipcRenderer.invoke('fs:browseDirectory'),
     cloneRepo: (url: string, destPath: string) => ipcRenderer.invoke('fs:cloneRepo', url, destPath),
+    ensureDirectory: (dirPath: string) => ipcRenderer.invoke('fs:ensureDirectory', dirPath),
     listFiles: (cwd: string, query: string) => ipcRenderer.invoke('fs:listFiles', cwd, query),
     topFilesByTokens: (cwd: string, limit: number) => ipcRenderer.invoke('fs:topFilesByTokens', cwd, limit),
     exists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
