@@ -24,10 +24,11 @@ This README covers what the fork adds on top of Vibeyard; the base product's Hig
 
 ## What this fork adds on top of Vibeyard
 
-### Six CLI backends
+### Seven CLI backends
 
 - **Pi sessions** — drive the Pi coding agent (`pi`) in a full session tab: spawn, resume, live status — alongside the four upstream CLIs.
-- **Oh my Pi sessions** — the same first-class treatment for `omp`. Six backends in total: Claude Code, Codex, Copilot, Gemini, Pi, and Oh my Pi.
+- **Pi-Bolt sessions** — drive the Pi coding agent compiled ahead-of-time to native code (`pi-bolt`) in a full session tab: same `~/.pi/agent` sessions, spawn, resume, live status.
+- **Oh my Pi sessions** — the same first-class treatment for `omp`. Seven backends in total: Claude Code, Codex, Copilot, Gemini, Pi, Pi-Bolt, and Oh my Pi.
 
 ### Live session state without hooks
 
@@ -84,6 +85,7 @@ The complete per-feature reference — behavior, owning module, numeric limits �
 - **Cost and context tracking stay Claude-only** — every other backend, including Pi and OMP, runs without the cost/context rail.
 - **`pi` and `omp` must be on `PATH`** (or resolvable via nvm/npm-global probing) — a provider whose binary isn't found stays hidden.
 - **macOS and Linux are unverified in this delta** — no new platform-specific code beyond `src/main/platform.ts`, but neither OS was exercised.
+- **Pi-Bolt shares `~/.pi/agent` with Pi** — Pi-Bolt-launched sessions use their own `pi-bolt-sessions` dir; terminal-launched `pi-bolt` sessions appear under the Pi provider.
 - **Updates arrive only from the fork's release feed** — never upstream; with `FINEVIBE_RELEASE_REPO` unset, downloading and auto-update are disabled entirely.
 - **Linux artifacts are x64-only** — launcher and release matrix ship amd64; no arm64 Linux builds.
 

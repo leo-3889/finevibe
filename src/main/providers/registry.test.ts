@@ -101,7 +101,7 @@ describe('getAllProviders', () => {
   it('returns all registered providers', () => {
     registerProvider(makeFakeProvider(fakeMeta));
     const all = getAllProviders();
-    expect(all.length).toBe(6);
+    expect(all.length).toBe(7);
     const ids = all.map(p => p.meta.id);
     expect(ids).toContain('claude');
     expect(ids).toContain('codex');
@@ -109,6 +109,7 @@ describe('getAllProviders', () => {
     expect(ids).toContain('copilot');
     expect(ids).toContain('pi');
     expect(ids).toContain('omp');
+    expect(ids).toContain('pi-bolt');
   });
 });
 
@@ -124,12 +125,13 @@ describe('getAllProviderMetas', () => {
   it('returns meta array for all providers', () => {
     registerProvider(makeFakeProvider(fakeMeta));
     const metas = getAllProviderMetas();
-    expect(metas.length).toBe(6);
+    expect(metas.length).toBe(7);
     expect(metas.map(m => m.id)).toContain('codex');
     expect(metas.map(m => m.id)).toContain('gemini');
     expect(metas.map(m => m.id)).toContain('copilot');
     expect(metas.map(m => m.id)).toContain('pi');
     expect(metas.map(m => m.id)).toContain('omp');
+    expect(metas.map(m => m.id)).toContain('pi-bolt');
   });
 });
 

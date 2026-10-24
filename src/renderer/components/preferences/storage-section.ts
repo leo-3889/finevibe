@@ -23,6 +23,7 @@ export function formatMB(bytes: number): string {
 const SUBTREE_LABEL_KEYS: Record<string, string> = {
   'pi-sessions': 'storage.subPi',
   'omp-sessions': 'storage.subOmp',
+  'pi-bolt-sessions': 'storage.subPiBolt',
   'Partitions': 'storage.subPartitions',
   'Cache': 'storage.subCache',
   'misc': 'storage.subMisc',

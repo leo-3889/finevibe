@@ -8,7 +8,7 @@ export const ZOOM_MAX = 2.0;
 
 // --- Provider ---
 
-export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi' | 'omp';
+export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi' | 'omp' | 'pi-bolt';
 type PendingPromptTrigger = 'session-start' | 'startup-arg';
 
 /**

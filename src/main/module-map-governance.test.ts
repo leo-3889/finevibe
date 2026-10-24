@@ -101,6 +101,7 @@ const ALLOWLIST: Record<string, string> = {
   'connections@mcp-client.ts': 'teardown: deleted when the connection closes; cleared on shutdown',
   'launchStates@providers/omp-provider.ts': 'teardown: deleted on session exit; cleared on provider stop',
   'launchStates@providers/pi-provider.ts': 'teardown: deleted on session exit; cleared on provider stop',
+  'launchStates@providers/pi-bolt-provider.ts': 'teardown: deleted on session exit; cleared on provider stop',
   'ptys@pty-manager.ts': 'teardown: deleted on PTY exit/kill',
   'spawningInFlight@pty-manager.ts': 'teardown: spawnPty finally owns the delete',
   'entries@session-transcript-sync.ts': 'teardown: deleted per pane stop; cleared on stopAll',
