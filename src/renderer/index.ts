@@ -5,7 +5,7 @@ import { initTabBar } from './components/tab-bar/index.js';
 import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
 import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals, refreshProfileLabels } from './components/terminal-pane.js';
-import { setHookStatus, notifyInterrupt } from './session-activity.js';
+import { setHookStatus, notifyInterrupt, noteInspectorEvents } from './session-activity.js';
 import { setSshStatus, removeSshSession } from './session-ssh.js';
 import { parseCost, setCostData, onChange as onCostChange } from './session-cost.js';
 import { applyCliSessionName } from './session-title.js';
@@ -229,6 +229,8 @@ async function main(): Promise<void> {
   window.finevibe.session.onInspectorEvents((sessionId, events) => {
     if (!appState.hasSession(sessionId)) return;
     logDebugEvent('inspectorEvents', sessionId, { count: events.length });
+    // In-flight children gate the status glyph (see session-activity).
+    noteInspectorEvents(sessionId, events);
     addInspectorEvents(sessionId, events);
   });
 

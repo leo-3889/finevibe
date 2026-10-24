@@ -28,6 +28,8 @@ vi.mock('./pi-compatible-transcripts', () => ({
   indexCompatibleTranscript: vi.fn(),
   readTranscriptStatusSync: vi.fn(),
   readSessionExitReasonSync: vi.fn(),
+  readTranscriptTitleSync: vi.fn(() => null),
+  readTranscriptTitleWithSessionInfoSync: vi.fn(),
 }));
 
 import * as path from 'path';
