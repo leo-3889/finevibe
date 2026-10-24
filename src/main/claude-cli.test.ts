@@ -70,6 +70,7 @@ vi.mock('./store', () => ({
 import * as fs from 'fs';
 import * as path from 'path';
 import { addMcpServer, getClaudeConfig, getSupportedHookEvents, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
+import { isFineVibeStatusLine } from './settings-guard';
 import { installEventScript, stopStatusCmd } from './hook-commands';
 import { getClaudeVersion } from './providers/claude-version';
 
@@ -474,6 +475,17 @@ describe('install into a profile config dir', () => {
     const written = JSON.parse(settingsWrites()[0]);
     const p = path.join('/mock/home', '.finevibe', 'run', isWin ? 'statusline.cmd' : 'statusline.sh');
     expect(written.statusLine.command).toBe(isWin ? `"${p}"` : `'${p}'`);
+  });
+
+  it('installStatusLine output reads back as FineVibe\'s own statusLine', () => {
+    // Writer/reader round trip: `installStatusLine` shells the path, and
+    // settings-guard's validator must classify that exact payload as
+    // FineVibe's. A raw-string compare made every healthy install grade as
+    // `foreign` (checklist: "Overwritten by another tool"; consent gate about
+    // FineVibe's own command; a `Fix` that could never clear).
+    installStatusLine(profileDir);
+    const written = JSON.parse(settingsWrites()[0]!);
+    expect(isFineVibeStatusLine(written.statusLine)).toBe(true);
   });
 
   it('defaults to ~/.claude when no config dir is given', () => {

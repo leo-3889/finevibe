@@ -1,5 +1,6 @@
 import { escapeHtml } from './dom-search-backend.js';
 import { pushModal } from './modal-manager.js';
+import { t } from '../i18n.js';
 
 let cleanupFn: (() => void) | null = null;
 let pendingResolve: ((choice: 'replace' | 'keep') => void) | null = null;
@@ -12,15 +13,7 @@ function getOverlay(): HTMLElement {
   overlay.id = 'statusline-conflict-overlay';
   overlay.className = 'modal-overlay';
   overlay.style.display = 'none';
-  overlay.innerHTML = `
-    <div class="modal-box statusline-conflict-box">
-      <div class="modal-title">Settings Conflict</div>
-      <div class="modal-body statusline-conflict-body"></div>
-      <div class="modal-actions">
-        <button id="statusline-conflict-keep" class="btn-secondary">Start fresh</button>
-        <button id="statusline-conflict-replace" class="btn-primary">Import from Vibeyard</button>
-      </div>
-    </div>`;
+  overlay.innerHTML = '<div class="modal-box statusline-conflict-box"></div>';
   document.body.appendChild(overlay);
   return overlay;
 }
@@ -35,20 +28,31 @@ export function showStatusLineConflictModal(foreignCommand: string): Promise<'re
   cleanupFn = null;
 
   const overlay = getOverlay();
-  const body = overlay.querySelector('.statusline-conflict-body')!;
+  const box = overlay.querySelector('.statusline-conflict-box')!;
 
-  body.innerHTML = `
-    <p class="statusline-conflict-text">
-      Claude Code already has a <strong>statusLine</strong> setting configured by another tool.
-    </p>
-    <div class="statusline-conflict-command">
-      <div class="statusline-conflict-command-label">Current statusLine</div>
-      <code>${escapeHtml(foreignCommand)}</code>
+  // Render the whole box per show so a locale switch between prompts is
+  // reflected. The copy is statusLine-scoped on purpose: Replace rewrites
+  // only the statusLine key in settings.json (installStatusLine), Keep
+  // leaves the foreign command in place. Nothing here imports settings —
+  // the legacy full import is the separate projects feature.
+  box.innerHTML = `
+    <div class="modal-title">${t('statuslineConflict.title')}</div>
+    <div class="modal-body statusline-conflict-body">
+      <p class="statusline-conflict-text">
+        ${t('statuslineConflict.intro')}
+      </p>
+      <div class="statusline-conflict-command">
+        <div class="statusline-conflict-command-label">${t('statuslineConflict.currentLabel')}</div>
+        <code>${escapeHtml(foreignCommand)}</code>
+      </div>
+      <p class="statusline-conflict-text statusline-conflict-warning">
+        ${t('statuslineConflict.warning')}
+      </p>
     </div>
-    <p class="statusline-conflict-text statusline-conflict-warning">
-      FineVibe needs its own statusLine for cost tracking and context window monitoring.
-      If you start fresh, these features will be unavailable.
-    </p>`;
+    <div class="modal-actions">
+      <button id="statusline-conflict-keep" class="btn-secondary">${t('statuslineConflict.keepButton')}</button>
+      <button id="statusline-conflict-replace" class="btn-primary">${t('statuslineConflict.replaceButton')}</button>
+    </div>`;
 
   overlay.style.display = '';
 
