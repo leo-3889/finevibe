@@ -9,6 +9,7 @@ import { openExternal } from '../open-external.js';
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
 import { detectGitCheckoutUrl } from '../../shared/git-url.js';
+import { joinChildPath } from '../path-join.js';
 import { esc } from '../dom-utils.js';
 import { projectProfileBadge, providerProfileOptions } from '../profile-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree, FILE_MANAGER } from './file-tree.js';
@@ -629,14 +630,21 @@ export function promptNewProject(): void {
     const checkout = detectGitCheckoutUrl(rawPath);
     if (!checkout) {
       if (!name) return;
-      const projectPath = await window.finevibe.fs.expandPath(rawPath);
-      const isDir = await window.finevibe.fs.isDirectory(projectPath);
-      if (!isDir) {
-        setModalError('project-path', t('sidebar.newProject.directoryNotExist'));
+      // Create means create. Main resolves the raw path (`~`, relative),
+      // applies its own consent gate and makes the directory when it is
+      // missing. Gating on `fs:isDirectory` here was the bug: outside the
+      // allowlisted roots that stat is a confirm-gated call (P2-38), so a
+      // cancelled dialog answered "Directory does not exist" for a folder
+      // that exists — and the Create verb created nothing.
+      const ensured = await window.finevibe.fs.ensureDirectory(rawPath);
+      if (!ensured.ok) {
+        setModalError('project-path', t('sidebar.newProject.directoryNotCreated') + (ensured.error ? `: ${ensured.error}` : ''));
         return;
       }
       closeModal();
-      appState.addProject(name, projectPath, values['profile'] || undefined);
+      // Main's resolved/canonical spelling, never the typed string: the
+      // project record must carry the path main itself answers for.
+      appState.addProject(name, ensured.path!, values['profile'] || undefined);
       return;
     }
 
@@ -651,7 +659,7 @@ export function promptNewProject(): void {
       parent = picked;
     }
     const targetPath = await window.finevibe.fs.expandPath(
-      parent.replace(/[\\/]+$/, '') + '/' + checkout.repoName
+      joinChildPath(parent, checkout.repoName)
     );
 
     // Clone is the slow step: the confirm button carries the progress state
@@ -699,10 +707,10 @@ export function promptNewProject(): void {
         : baseConfirmLabel;
   };
 
-  // The directory probe runs only on blur, Browse and autocomplete selection —
-  // never at open (a modal that is merely shown must not pop a native dialog),
-  // never on the keystroke path (S4-04 precedent: a probe behind a
-  // consent-style gate must not fire per keystroke).
+  // The directory probe runs at open for the prefill only, then on blur,
+  // Browse, autocomplete selection and the name→path rewrite — never on the
+  // keystroke path (S4-04 precedent: a probe behind a consent-style gate
+  // must not fire per keystroke on an arbitrary typed path).
   // Generation counter as in the suggest burst: a stale reply must never
   // paint over the state the current value already earned.
   let dirProbeSeq = 0;
@@ -734,6 +742,12 @@ export function promptNewProject(): void {
     dirProbeSeq++;
   });
 
+  // The prefill is the one value this modal can answer for without a
+  // dialog: the default projects folder is an allowlisted root in main, so
+  // probing it can never raise the native confirm. It is what makes the
+  // label right for a folder the user never tabbed through.
+  probeDirExists(initialFolder);
+
   const nameInput = document.getElementById('modal-project-name') as HTMLInputElement | null;
   let nameManuallyEdited = false;
   nameInput?.addEventListener('input', () => {
@@ -754,12 +768,12 @@ export function promptNewProject(): void {
     const pathEl = document.getElementById('modal-project-path') as HTMLInputElement | null;
     if (!initialFolder || !pathEl || pathManuallyEdited) return;
     if (detectGitCheckoutUrl(pathEl.value)) return;
-    pathEl.value = initialFolder.replace(/[\\/]+$/, '') + '/' + (nameInput?.value.trim() ?? '');
-    // The field was rewritten programmatically: any Select the old value
-    // earned is stale, and a probe in flight for it must not repaint.
-    dirExists = false;
-    dirProbeSeq++;
-    updateConfirmLabel();
+    pathEl.value = joinChildPath(initialFolder, nameInput?.value.trim() ?? '');
+    // The field was rewritten programmatically, so probe the new value: it
+    // is `<default projects folder>/<name>`, a child of an allowlisted
+    // root, so the probe is dialog-free too. The generation guard inside
+    // drops any reply a probe for the old value has in flight.
+    probeDirExists(pathEl.value);
   };
 
   // Attach path autocomplete to the rendered input
