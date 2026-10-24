@@ -82,6 +82,10 @@ function requestConfirmClose(): void {
 // import is Electron's sandbox-safe ipcRenderer, so it keeps working with
 // nodeIntegration off and sandbox forced on.
 const BROWSER_GUEST_PRELOAD = path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js');
+// The renderer entry the main window loads. Module scope: the not-built
+// boot guard (rendererIsBuilt) and createWindow must agree on ONE path.
+const RENDERER_INDEX_PATH = path.join(__dirname, '..', '..', 'renderer', 'index.html');
+
 
 // The app UI only ever needs clipboard reads (copy path) and its own desktop
 // notifications; camera/mic/geolocation/MIDI are denied for the host renderer
@@ -122,7 +126,7 @@ function createWindow(): void {
     },
   });
 
-  const indexPath = path.join(__dirname, '..', '..', 'renderer', 'index.html');
+  const indexPath = RENDERER_INDEX_PATH;
   const loadRenderer = (): void => { mainWindow?.loadFile(indexPath); };
   loadRenderer();
 
@@ -228,6 +232,32 @@ function claimWindowsIdentity(): void {
     app.setAppUserModelId('com.finevibe.app');
   }
 }
+// Boot guard for an unbuilt tree (dist/ missing after a fresh clone,
+// `npm run clean`, or a failed build). The silent failure this replaces:
+// `electron .` loaded the nonexistent dist/renderer/index.html, the window
+// died with the app, and no message ever surfaced — users then launched
+// bare `electron` and landed on the stock Electron welcome window. Fail
+// loudly BEFORE the first window: name the exact missing artifact and the
+// fix, then quit. VITEST-gated like installConsoleThrottle (line 38): the
+// mocked-boot suites (main-single-instance, main-app-user-model-id) boot
+// main.ts from the SOURCE tree, where this dist-relative path never exists
+// — ungated, the guard would abort every mocked boot. The guard's own
+// suite (main-not-built.test.ts) unsets VITEST around its import to
+// exercise the real path.
+function rendererIsBuilt(): boolean {
+  if (process.env.VITEST) return true;
+  if (fs.existsSync(RENDERER_INDEX_PATH)) return true;
+  const projectDir = path.resolve(__dirname, '..', '..', '..');
+  dialog.showErrorBox(
+    'FineVibe is not built',
+    `FineVibe cannot start: its build output is missing.\n\n` +
+      `Missing: ${RENDERER_INDEX_PATH}\n\n` +
+      `Run "npm run build" in ${projectDir}, then start FineVibe again.`,
+  );
+  app.quit();
+  return false;
+}
+
 
 function startMainProcess(): void {
   // C4S-06: updater disposer (startup timeout + 4 h interval); quit runs it.
@@ -352,6 +382,11 @@ function startMainProcess(): void {
     registerIpcHandlers();
     const state = loadState();
     createAppMenu(state.preferences?.debugMode ?? false);
+    // Boot guard (rendererIsBuilt): an unbuilt tree fails with the
+    // not-built dialog, never a silent window death. Quit BEFORE the first
+    // window — the close-confirm watchdog, the disk-health preflight and
+    // the provider probes below all assume a live renderer.
+    if (!rendererIsBuilt()) return;
     createWindow();
     // 2026-10-23: proactive disk-health preflight. Warn ONCE, before writes
     // start failing, when the userData volume runs low — one banner instead of
