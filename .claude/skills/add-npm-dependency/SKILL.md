@@ -38,10 +38,10 @@ This determines every gotcha that follows.
 
 esbuild only has the `.ts` loader configured. **It will not bundle any CSS the package ships.** If the library needs a stylesheet to work (the way `gridstack` and `@xterm/xterm` do):
 
-1. Add a copy step in `scripts/copy-assets.js` — copy from `node_modules/<pkg>/.../file.css` to `dist/renderer/vendor/<file>.css`. Mirror the existing **gridstack** precedent in that file.
-2. Add a `<link rel="stylesheet" href="vendor/<file>.css">` to `src/renderer/index.html` (gridstack/xterm links are already there as examples).
+1. Add a copy step in `scripts/copy-assets.js` — `copyFile(node_modules/<pkg>/.../file.css, dist/renderer/<target>)`, where `dist` in that script is `dist/renderer`. Mirror the two existing precedents (`scripts/copy-assets.js:39-46`): **gridstack** → `dist/renderer/vendor/gridstack.min.css`, **xterm** → `dist/renderer/xterm.css`. `vendor/` is gridstack's choice, not a rule — pick the layout the component expects.
+2. Add a `<link rel="stylesheet" href="…">` to `src/renderer/index.html` to match the copy target (see the existing `styles.css` / `xterm.css` / `vendor/gridstack.min.css` links at `:9-11`).
 
-If you skip this, the JS bundles fine but the component renders unstyled. (CLAUDE.md documents this: "esbuild has no CSS loader" — gridstack CSS is copied manually.)
+If you skip step 2, the JS bundles fine but the component renders unstyled. (This is a property of the `build:renderer` script — `esbuild … --loader:.ts=ts`, no CSS loader — not of `CLAUDE.md`; verify with `node -p "require('./package.json').scripts['build:renderer']"`.)
 
 ## Step 3 — Native module gotcha (`.node` binaries)
 
@@ -59,12 +59,16 @@ Examples already in the repo: `better-sqlite3`, `node-pty`.
 
 ## Step 5 — Verify (required, not optional)
 
-There is **no hot reload** — every change needs a rebuild.
+There is **no hot reload** — every change needs a rebuild. Run the full documented gate (`CLAUDE.md`), not just the build:
 
 ```bash
-npm run build    # must pass: tsc main + tsc preload + esbuild renderer + copy-assets
-npm test         # Vitest suite
+npm run build     # tsc main + tsc preload + esbuild renderer + copy-assets
+npm test          # Vitest suite
+npm run typecheck # tsc -p tsconfig.renderer.json --noEmit && tsconfig.main-tests.json
+git diff --check  # whitespace/conflict-marker gate
 ```
+
+`npm run build` does **not** typecheck the renderer (`esbuild` strips types) and does not typecheck the test sources — a dependency with renderer-hostile types (Node built-ins in its type graph, `moduleResolution` assumptions) passes build+test and breaks `typecheck`. Never declare a dependency added before all four legs pass.
 
 Then confirm the dependency actually works end to end:
 - **Renderer / UI / CSS dep:** `npm start`, and visually confirm the feature renders and styles load.
@@ -87,7 +91,6 @@ electron-builder packages only `dist/main/**`, `dist/preload/**`, `dist/renderer
 **Don't:**
 - Pin an exact version or hand-edit a version in `package.json`.
 - Import Node built-ins or native modules from the renderer.
-- Forget the `scripts/copy-assets.js` step for CSS (esbuild won't bundle it).
+- Forget the `scripts/copy-assets.js` step + `<link>` for CSS (esbuild won't bundle it).
+- Stop at `npm run build` + `npm test` and skip `npm run typecheck`.
 - Put a native module in `devDependencies` or assume it works without the postinstall rebuild.
-
-$ARGUMENTS

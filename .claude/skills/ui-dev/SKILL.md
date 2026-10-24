@@ -38,11 +38,12 @@ const select = createCustomSelect('my-select', [
 Use `showModal()` for generic modals with form fields:
 
 ```typescript
-import { showModal, closeModal, setModalError } from './components/modal';
+import { showModal, closeModal, setModalError, showConfirmDialog } from './components/modal';
 
 showModal('My Title', [
   { id: 'name', label: 'Name', type: 'text', placeholder: 'Enter name' },
   { id: 'option', label: 'Option', type: 'select', options: [...] },
+  { id: 'notes', label: 'Notes', type: 'textarea', rows: 4 },
   { id: 'enabled', label: 'Enable feature', type: 'checkbox' },
 ], (values) => {
   // values is Record<string, string>
@@ -52,16 +53,36 @@ showModal('My Title', [
   }
   // ... handle confirm
   closeModal();
-});
+}, { confirmLabel: 'Create' });   // optional ModalOptions — default "Confirm"
 ```
 
-- **File**: `src/renderer/components/modal.ts`
-- Exports: `showModal()`, `closeModal()`, `setModalError()`
-- Supports field types: `text`, `checkbox`, `select` (uses custom select internally)
-- Supports field buttons (e.g., a "Browse" button next to a text input)
-- Keyboard: Enter to confirm, Escape to cancel
+- **File**: `src/renderer/components/modal.ts` (shared `#modal-overlay`, one instance)
+- Exports: `showModal()`, `showConfirmDialog()`, `showPropertiesDialog()`, `closeModal()`, `setModalError()`, `registerModalCleanup()`
+- Field types (`FieldDef`, `modal.ts:4-20`): `text`, `textarea` (honors `rows`), `checkbox`, `select`. Common fields: `placeholder`, `defaultValue`, `maxLength`, `options` (`{value,label,disabled?}`), `buttonLabel` + `onButtonClick(input)` (inline button, e.g. "Browse"), `onChange(checked)` for checkboxes, `onSelectChange(value)` and `onSelectCreated(select)` for selects (the latter lets you re-scope options through `CustomSelectInstance.setOptions`).
+- `showConfirmDialog(title, message, { confirmLabel?, cancelLabel?, onConfirm })` — **use this for any yes/no**, never hand-build a two-button overlay.
+- `showPropertiesDialog(...)` — key/value property sheet.
+- `registerModalCleanup(fn)` — run teardown (destroy a custom select, clear a timer) when the modal closes; use it for anything injected outside the standard `FieldDef` flow.
+- Keyboard: Enter to confirm, Escape to cancel. Dismissal routes through the modal manager (`components/modal-manager.ts`: `pushModal(entry)` returns an unregister fn; ESC reaches only the top-of-stack entry, and `canEscape()` can decline dismissal while still consuming the key; `modalStackDepth()` exposes depth).
+- `closeModal()` restores focus to the element that was focused when the modal opened (only if it is still connected and not `body`) — don't re-implement focus juggling.
 
-For specialized modals (complex layout, multi-pane, unique behavior), create a dedicated file in `src/renderer/components/` following the existing pattern (e.g., `preferences-modal.ts`, `usage-modal.ts`).
+For specialized modals (complex layout, multi-pane, unique behavior), create a dedicated file in `src/renderer/components/` following an existing one: `preferences-modal.ts`, `chrome-import-modal.ts`, `mcp-add-modal.ts`, `statusline-conflict-modal.ts`, `vibeyard-import.ts`, `board/board-task-modal.ts`.
+
+### Custom-layout dialogs: `modal-shell`
+
+When you need your own overlay (not the shared `#modal-overlay`), build it on `createModalShell` and wire dismissal — do not hand-roll the overlay markup, ESC stack, focus trap, or focus restore:
+
+```typescript
+import { createModalShell, createModalButton } from './components/modal-shell';
+import { bindModalDismiss } from './components/modal-manager';
+
+const { overlay, titleEl, body, actions } = createModalShell({ id: 'my-overlay', title: 'Title', wide: true });
+const close = bindModalDismiss({ overlay, onClose: () => hide(), canEscape: () => !recorderActive });
+const okBtn = createModalButton('OK', true);   // primary=true → .btn-primary
+// … on close: overlay.style.display = 'none'; close();   // teardown unregisters ESC + click
+```
+
+- **File**: `src/renderer/components/modal-shell.ts` — `createModalShell({id, title, wide?})` caches the overlay by `id` (re-open reuses the node), attaches a focus trap, focuses the first text input, and restores focus to the opener on hide.
+- **Shortcuts contract** (`docs/ui-conventions.md`): app shortcuts are suppressed while the shared `#modal-overlay` **or any visible `.modal-overlay` root** is open. A new overlay in that family must focus a text input on open, or shortcuts stay live behind it. Zoom + Help are the deliberate pass-through exceptions.
 
 ## Alert Banners
 
@@ -181,7 +202,7 @@ Always provide a `destroy()` method that removes event listeners and DOM nodes. 
 
 ### DOM creation
 - Prefer `document.createElement()` + property assignment over `innerHTML`
-- When using `innerHTML`, always escape user content with `esc()` from `src/renderer/components/dom-utils.ts`
+- When using `innerHTML`, always escape user content with `esc()` from `src/renderer/dom-utils.ts` — **renderer root, not `components/`** (`import { esc } from '../dom-utils.js'`). Same module: `areaLabel()`, `scoreColor()`, `createPlanModeRow()`.
 - Use `classList.toggle()` / `classList.add()` / `classList.remove()` for conditional classes
 - Use `element.dataset.*` for data attributes
 
@@ -199,21 +220,37 @@ Also ensure clickable containers that hold selectable text use `stopPropagation(
 
 ## CSS File Organization
 
+**Register every stylesheet.** `src/renderer/styles.css` is the `@import` manifest, `src/renderer/index.html` links only `styles.css` (+ `xterm.css`, `vendor/gridstack.min.css`), and `scripts/copy-assets.js` copies `styles/` wholesale. A new CSS file that is not added to `styles.css` is **never loaded** — it ships and does nothing. Order in the manifest is cascade order; a file that must override another comes after it.
+
 Add styles to the appropriate existing CSS file — do not create new CSS files unless introducing a wholly new component area:
 
 | File | Contents |
 |------|----------|
-| `styles/base.css` | CSS variables, resets, global styles |
+| `styles/base.css` | CSS variables, resets, global button/badge classes |
 | `styles/modals.css` | Modal, custom select, config sections, path autocomplete |
-| `styles/tabs.css` | Tab bar, icon buttons, context menus |
+| `styles/tabs.css` | Main area, tab bar, icon buttons, context menus, tab groups, the global `@keyframes pulse` (reused by `.card-status-dot.working` and `help-shared.ts` — never redefine it) |
 | `styles/sidebar.css` | Sidebar, project list, update banner |
-| `styles/terminal.css` | Terminal pane, status bar, exit overlay |
-| `styles/alerts.css` | Alert banners, insight alerts, readiness badges |
-| `styles/search.css` | Search bar, toggle buttons, match highlighting |
-| `styles/dialogs.css` | Help dialog |
-| `styles/preferences.css` | Preferences modal, sections |
+| `styles/terminal.css` | Terminal container, status bar, exit overlay |
+| `styles/search.css` | Shared overlay bar base, in-pane search bar, match highlighting |
+| `styles/alerts.css` | Insight alert banners, readiness badges |
+| `styles/dialogs.css` | Session search palette and other dialog shells |
+| `styles/preferences.css` | Preferences modal, section toggles |
 | `styles/session-history.css` | Session history list |
-| `styles/file-viewer.css` | File viewer, diff display |
+| `styles/file-viewer.css` | File viewer overlay, diff display, area badges |
 | `styles/git-panel.css` | Git panel, worktree selector |
+| `styles/file-tree.css` | File tree rows |
 | `styles/mcp-inspector.css` | MCP inspector pane |
 | `styles/session-inspector.css` | Session inspector panel |
+| `styles/usage.css` | Provider usage-stats widget |
+| `styles/debug-panel.css` | Debug panel |
+| `styles/p2p-sharing.css` | P2P session sharing (`.share-btn` and its `.hidden` toggle) |
+| `styles/browser-tab.css` | Browser tab strip |
+| `styles/kanban.css` | Board view, card status dots |
+| `styles/team.css` | Team tab (`.team-card-*`, team picker) |
+| `styles/project-tab.css` | Project tab shell |
+| `styles/widgets.css` | Project-tab toolbar (Add Widget / Edit layout), widget cards, GitHub widgets |
+| `styles/chrome-import.css` | Chrome import wizard |
+
+## i18n
+
+All user-facing strings go through `t()` from `src/renderer/i18n.ts` (`t('namespace.key', vars?)`, `{name}` interpolation). Locales are `en` + `zh-CN` with English fallback, and **`src/renderer/i18n.test.ts:145` enforces key parity between `locales/en.json` and `locales/zh-CN.json`** — add the key to both files in the same commit. Components initialize before `appState.load()`/`initI18n()`, so anything rendering translated text must re-apply on `state-loaded` / `preferences-changed` (or `onLocaleChange()`); see the locale contract at the top of `docs/ui-conventions.md`.

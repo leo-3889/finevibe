@@ -23,6 +23,11 @@ npm run dist:win:local
 # -> out/FineVibe-Setup-<version>.exe (+ .exe.blockmap + latest.yml) and the win zip
 ```
 
+**Scope: `win.target` is `[nsis, portable, zip]`, and `dist:win:local` builds `nsis` +
+`zip` only.** The portable exe (`FineVibe-<version>.exe`, `build.portable.artifactName`)
+is produced only by `npm run dist` on CI — the local flow neither builds nor verifies it,
+so "the local build is green" says nothing about the portable artifact.
+
 Verified on this repo (Electron 41.1.0, electron-builder 26.8.1, node-pty 1.1.0,
 better-sqlite3 12.10.0, rcedit 5.0.2, Windows 10.0.26300, Node 24): 111.5 MB Setup.exe,
 exe icon within RGB delta 1.0 of `build/icon.png` at 32×32, `VersionInfo`
@@ -98,27 +103,50 @@ provider (this exercises the ConPTY path, the least-verified link) → Chrome im
 
 ## Release blockers to check before cutting an installer
 
-- **userData migration is absent on `rebuild`**: no `src/main/userdata-migration.ts`, no
-  `app.setName`, no `app.setPath('userData')`. An install whose identity changes from
-  Vibeyard to FineVibe boots into a fresh empty `%APPDATA%\FineVibe` and leaves state in
-  `%APPDATA%\Vibeyard`. Tracked as a P1 release blocker in `todos/AUDIT_STATUS.md`.
-- `publish.repo` is the stale slug (`leo-3889/vibeyard`, works via GitHub's redirect) —
-  repoint to `leo-3889/finevibe`.
-- **Nothing is signed**: no `sign`/`csc*`/`certificateFile` anywhere; Setup.exe triggers
-  SmartScreen "unknown publisher". Integrity story today is `SHA256SUMS.txt` from the
-  publish job. Authenticode means adding `certificateFile`/`CSC_LINK` + CI secrets.
+Re-derive every bullet before repeating it — this list has carried dead blockers before
+(it asserted "no `src/main/userdata-migration.ts`" in the very commit that added that
+file, `cf0cacf7`). The checks are one-liners; run them, then quote the result.
+
+- **Legacy identity migration SHIPS** — do not re-report it as a blocker.
+  `src/main/userdata-migration.ts` runs from `src/main/main.ts` before anything reads
+  userData: `~/.vibeyard` → `~/.finevibe` and `%APPDATA%/Vibeyard|vibeyard` → userData,
+  per-file destination-wins, marker-gated (`.finevibe-migrated`), ledger
+  (`.finevibe-migrations.json`) + 30-day-grace retirement of the legacy userData tree
+  only. Check: `ls src/main/userdata-migration.ts` and the `[userdata-migration]` log
+  line in a packaged launch. Recovery UX: `src/main/legacy-import.ts` + the in-app
+  `#btn-import-vibeyard` modal (see the `import-legacy-settings` skill).
+- `publish.repo` is **already** `leo-3889/finevibe` (`package.json` → `build.publish`).
+  Verify, don't repoint: `node -p "JSON.stringify(require('./package.json').build.publish)"`.
+- **Windows is unsigned; macOS is signed.** `release.yml` wires `CSC_LINK` /
+  `CSC_KEY_PASSWORD` (+ notarization) for the mac job and flips
+  `CSC_IDENTITY_AUTO_DISCOVERY=false` for the `artifacts_only` input; the Windows job
+  ships exe/zip unsigned by documented decision (**P1-9**), so Setup.exe triggers
+  SmartScreen "unknown publisher" and `signtool verify` has nothing to validate.
+  Integrity story on Windows is the `SHA256SUMS.txt` the publish job ships.
+  Authenticode means a real cert + `certificateFile`/`CSC_LINK` + CI secrets — a change
+  to the Windows job, not to this skill's local flow (which signs nothing, by design).
 - Keep the `zip` win target: `bin/finevibe.js` hardcodes the asset name
-  `FineVibe-<version>-win-<arch>.zip`; npm installs break without it.
-- The updater/launcher read the publishing repo **only** from `FINEVIBE_RELEASE_REPO` and
-  refuse a built-in default — set it in `release.yml` for the release to self-update.
+  `FineVibe-<version>-win-<arch>.zip` (`:38`); npm installs break without it.
+- **`FINEVIBE_RELEASE_REPO` is not set anywhere in `.github/` today** — and both feed
+  readers refuse a built-in default (`src/main/auto-updater.ts:31-40` disables
+  auto-update with a warning; `bin/finevibe.js:22-31,480-482` refuses to download).
+  A release cut from this workflow therefore self-updates nothing. Verify:
+  `grep -rn FINEVIBE_RELEASE_REPO .github/` (zero hits = blocker is live).
 - Cut a real version: `release.yml` `workflow_dispatch` mints version + changelog + tag;
   a `-dev` suffix becomes `~dev` in deb metadata and is a prerelease everywhere else.
+- CI builds on `windows-2022`, pinned deliberately: the `windows-latest` (2025) image
+  breaks node-gyp's Visual Studio detection when compiling node-pty (`release.yml:336-338`,
+  `ci.yml:17-19`). Don't "modernize" the runner label.
 
 ## Test-suite reality on a Windows dev box
 
 `npx vitest run` fails 6 tests in `src/main/chrome-import/{cookies,importer}.test.ts` with
-`NODE_MODULE_VERSION 145 … requires 137` whenever `install-app-deps` has built
-better-sqlite3 for Electron's ABI. That is the host, not the code: reproduce by loading
-better-sqlite3 under plain Node. Everything else (≈3000 tests) must be green. The
+`NODE_MODULE_VERSION 145 … requires 137` **when the precondition holds**: `install-app-deps`
+has built `better-sqlite3` for Electron's ABI and vitest then loads it under plain Node.
+That is the host, not the code. It is conditional, not a standing red suite — measured
+2026-10-24 on a tree where the native build was on the Node ABI, the leg is green
+(`npx vitest run src/main/chrome-import` → 48 passed / 9 skipped). Reproduce by loading
+better-sqlite3 under plain Node; fix by rebuilding for the Node ABI (or accept the 6 and
+say which ABI produced them). Everything else (≈3000 tests) must be green. The
 documented gate legs are `npm run build`, `npm run typecheck`, `npx vitest run`,
 `git diff --check` (`dev/audit/gate.sh` runs them, N times).
