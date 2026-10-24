@@ -26,6 +26,7 @@ vi.mock('./pi-compatible-transcripts', () => ({
   indexCompatibleTranscript: vi.fn(),
   readTranscriptStatusSync: vi.fn(),
   readSessionExitReasonSync: vi.fn(),
+  readTranscriptTitleWithSessionInfoSync: vi.fn(),
 }));
 
 import * as fs from 'fs';
@@ -33,7 +34,7 @@ import * as path from 'path';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession } from '../pi-session-watcher';
 import { PiProvider, _resetCachedPath } from './pi-provider';
-import { findTranscriptPathSync, findTranscriptPathInFlatDir, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, findTranscriptPathInFlatDir, readTranscriptStatusSync, readSessionExitReasonSync, readTranscriptTitleWithSessionInfoSync } from './pi-compatible-transcripts';
 const mockReadFile = vi.mocked(fs.promises.readFile);
 const mockResolveBinary = vi.mocked(resolveBinary);
 const mockValidateBinaryExists = vi.mocked(validateBinaryExists);
@@ -271,6 +272,25 @@ describe('getConfig', () => {
     await expect(provider.getConfig('/some/path')).resolves.toEqual({
       mcpServers: [], agents: [], skills: [], commands: [],
     });
+  });
+});
+
+describe('readSessionTitle', () => {
+  it('adopts the newest session_info name from the given transcript path', () => {
+    vi.mocked(readTranscriptTitleWithSessionInfoSync).mockReturnValue('Refactor auth module');
+
+    expect(provider.readSessionTitle!('/sessions/dir-a/2026.jsonl')).toBe('Refactor auth module');
+    expect(readTranscriptTitleWithSessionInfoSync).toHaveBeenCalledWith('/sessions/dir-a/2026.jsonl');
+  });
+
+  it('returns null when the transcript carries no session name', () => {
+    vi.mocked(readTranscriptTitleWithSessionInfoSync).mockReturnValue(null);
+
+    expect(provider.readSessionTitle!('/sessions/dir-a/2026.jsonl')).toBeNull();
+  });
+
+  it('declares selfTitles so transcript-sync mirrors the title', () => {
+    expect(provider.meta.capabilities.selfTitles).toBe(true);
   });
 });
 

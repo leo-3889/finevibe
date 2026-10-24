@@ -10,7 +10,7 @@ import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { TranscriptDiscoveryScan } from './transcript-utils';
 import { piAgentDir, piSessionsRoot } from './pi-transcripts';
-import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync, readTranscriptTitleWithSessionInfoSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startPiBoltSessionWatcher, registerPendingPiBoltSession, unregisterPiBoltSession, stopPiBoltSessionWatcher } from '../pi-bolt-session-watcher';
 import { writeCliSessionId } from '../hook-status';
@@ -66,7 +66,7 @@ export class PiBoltProvider implements CliProvider {
       pendingPromptTrigger: 'startup-arg',
       systemPromptInjection: true,
       profiles: true,
-      selfTitles: false,
+      selfTitles: true,
       polledStatus: true,
     },
     defaultContextWindowSize: 200_000,
@@ -240,6 +240,16 @@ export class PiBoltProvider implements CliProvider {
       if (inDir) return inDir;
     }
     return findTranscriptPathSync(piSessionsRoot, cliSessionId, projectPath, configDir);
+  }
+
+  /**
+   * The CLI's own session name from a resolved transcript path: the newest
+   * `session_info` entry (set via `--name`, `/name`, or pi-bolt extensions
+   * calling `pi.setSessionName()`), scanned from the tail first (recent
+   * renames land at the end of the append-only file), then the head.
+   */
+  readSessionTitle(transcriptPath: string): string | null {
+    return readTranscriptTitleWithSessionInfoSync(transcriptPath);
   }
 
   /**

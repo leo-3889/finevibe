@@ -13,6 +13,11 @@ import { registerTranscriptSync } from './session-transcript-sync';
  * process-scoped: the watcher adopts a transcript by its exclusive directory
  * (and, when the id is known up front, by exact id) — the shared tree is safe
  * to watch because adoption is keyed by the launch dir, not the provider.
+ * `registerTranscriptSync` mirrors BOTH title and status for Pi-Bolt: it
+ * declares `selfTitles: true` and reads the CLI's `session_info` name (set
+ * via `--name`, `/name`, or extensions calling `pi.setSessionName()`), so a
+ * tab adopts the CLI session name and keeps it across a restart (the
+ * restored-session title-only mirror, see docs/session-lifecycle.md).
  */
 const watcher = createCompatibleSessionWatcher({
   onAdopted: (uiSessionId, cliSessionId, projectPath, configDir, sessionDir) =>

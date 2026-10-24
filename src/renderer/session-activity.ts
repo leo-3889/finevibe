@@ -1,5 +1,5 @@
 import { STOP_INFLIGHT_TRUST_MS } from '../shared/constants';
-import type { CliSessionStatus } from '../shared/types';
+import type { CliSessionStatus, InspectorEvent } from '../shared/types';
 export type SessionStatus = 'working' | 'waiting' | 'idle' | 'completed' | 'input';
 
 /**
@@ -55,6 +55,66 @@ function clearStopFallback(sessionId: string): void {
   }
 }
 
+function armStopFallback(sessionId: string): void {
+  stopFallbackTimers.set(sessionId, setTimeout(() => {
+    stopFallbackTimers.delete(sessionId);
+    const st = sessions.get(sessionId);
+    if (st && st.status === 'working') {
+      clearInFlight(sessionId);
+      setStatus(sessionId, 'completed');
+    }
+  }, STOP_FALLBACK_MS));
+}
+
+/**
+ * Children a session is still waiting on, keyed by `agent_id` (a repeated
+ * SubagentStart for the same id is one child, not two). Fed from the inspector
+ * event stream — the one signal every hook-based provider emits (Claude, Codex,
+ * Copilot and Gemini all log SubagentStart/SubagentStop into `.events`).
+ *
+ * While the set is non-empty a `completed` is a lie: the model paused on its
+ * children and will produce more output, so `completed` is held back (glyph
+ * stays '…', and the Kanban auto-Done does not fire) and released when the last
+ * child stops.
+ *
+ * Self-healing: a parent-side terminal event (`stop` / `stop_failure` /
+ * `session_end`) clears the set — the hook-side Stop writer has already judged
+ * nothing to be in flight, and a lost SubagentStop must not wedge the session
+ * in 'working'; the same STOP_FALLBACK backstop covers a silent child.
+ */
+const inFlight = new Map<string, Set<string>>();
+const pendingCompleted = new Set<string>();
+
+function clearInFlight(sessionId: string): void {
+  inFlight.delete(sessionId);
+  pendingCompleted.delete(sessionId);
+}
+
+/** Feed the in-flight child set from a session's inspector events. */
+export function noteInspectorEvents(sessionId: string, events: readonly InspectorEvent[]): void {
+  const inflight = () => inFlight.get(sessionId)?.size ?? 0;
+  for (const ev of events) {
+    if (ev.type === 'subagent_start') {
+      const set = inFlight.get(sessionId) ?? new Set<string>();
+      // ponytail: id-less starts are a legacy-payload edge case; one key each.
+      set.add(ev.agent_id || `#${set.size}`);
+      inFlight.set(sessionId, set);
+    } else if (ev.type === 'subagent_stop') {
+      const set = inFlight.get(sessionId);
+      if (!set) continue;
+      set.delete(ev.agent_id || '');
+      if (!set.size) inFlight.delete(sessionId);
+    } else if (ev.type === 'stop' || ev.type === 'stop_failure'
+      || ev.type === 'session_end' || ev.type === 'user_prompt') {
+      clearInFlight(sessionId);
+    }
+  }
+  if (inflight() || !pendingCompleted.has(sessionId)) return;
+  pendingCompleted.delete(sessionId);
+  const st = sessions.get(sessionId);
+  if (st && st.status === 'working') setStatus(sessionId, 'completed');
+}
+
 function setStatus(sessionId: string, status: SessionStatus): void {
   const state = sessions.get(sessionId);
   if (!state || state.status === status) return;
@@ -91,21 +151,28 @@ export function setHookStatus(sessionId: string, status: CliSessionStatus, hookN
   // Any non-working hook clears the interrupt flag (CLI reached a definitive state).
   if (status !== 'working') state.interrupted = false;
 
+  // A completion while children are still running is not a completion: show
+  // 'working' and let the last subagent_stop (or the backstop below) release it.
+  if (status === 'completed' && (inFlight.get(sessionId)?.size ?? 0) > 0) {
+    pendingCompleted.add(sessionId);
+    setStatus(sessionId, 'working');
+    armStopFallback(sessionId);
+    return;
+  }
+  pendingCompleted.delete(sessionId);
+
   setStatus(sessionId, status);
 
   // A Stop that resolved to 'working' means the subagent-aware hook is holding
   // the session open for in-flight subagents. Arm the backstop so a wrong
   // in-flight signal can't wedge the session in 'working' indefinitely.
   if (hookName === 'Stop' && status === 'working' && sessions.get(sessionId)?.status === 'working') {
-    stopFallbackTimers.set(sessionId, setTimeout(() => {
-      stopFallbackTimers.delete(sessionId);
-      const st = sessions.get(sessionId);
-      if (st && st.status === 'working') setStatus(sessionId, 'completed');
-    }, STOP_FALLBACK_MS));
+    armStopFallback(sessionId);
   }
 }
 
 export function initSession(sessionId: string): void {
+  clearInFlight(sessionId);
   sessions.set(sessionId, { status: 'waiting', interrupted: false });
   for (const cb of listeners) cb(sessionId, 'waiting');
 }
@@ -121,11 +188,13 @@ export function setIdle(sessionId: string): void {
   const state = sessions.get(sessionId);
   if (!state) return;
   clearStopFallback(sessionId);
+  clearInFlight(sessionId);
   setStatus(sessionId, 'idle');
 }
 
 export function removeSession(sessionId: string): void {
   clearStopFallback(sessionId);
+  clearInFlight(sessionId);
   sessions.delete(sessionId);
 }
 
@@ -145,6 +214,8 @@ export function onChange(callback: StatusChangeCallback): () => void {
 export function _resetForTesting(): void {
   for (const timer of stopFallbackTimers.values()) clearTimeout(timer);
   stopFallbackTimers.clear();
+  inFlight.clear();
+  pendingCompleted.clear();
   sessions.clear();
   listeners.length = 0;
 }

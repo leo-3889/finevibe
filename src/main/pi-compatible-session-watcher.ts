@@ -5,8 +5,8 @@ import { writeCliSessionId } from './hook-status';
 import { readSessionHeaderSync } from './providers/pi-compatible-transcripts';
 
 /**
- * Shared transcript-ownership watcher for Pi-compatible providers (Pi and
- * OMP).
+ * Shared transcript-ownership watcher for Pi-compatible providers (Pi,
+ * OMP and Pi-Bolt).
  *
  * Ownership is process-scoped, not inferred: every launch runs with
  * `--session-dir <dir>` pointing at a directory that only that launch
