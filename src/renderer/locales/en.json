@@ -16,7 +16,7 @@
     "desktopNotifications": "Desktop notifications when sessions need attention",
     "recordSessionHistory": "Record session history when sessions close",
     "showInsightAlerts": "Show insight alerts",
-    "autoNameSessions": "Auto-name sessions from the CLI's session title (Claude only)",
+    "autoNameSessions": "Auto-name sessions from the CLI's session title (Claude, OMP, Pi, Pi-Bolt)",
     "confirmClosingActiveSession": "Confirm closing an active session",
     "copyOnSelect": "Copy on select",
     "askAiFocus": "Ask AI opens the new session in",
@@ -60,7 +60,7 @@
       "urlPlaceholder": "Existing directory — or paste a GitHub/Codeberg URL",
       "browseButton": "Browse",
       "defaultProfileLabel": "Default profile",
-      "directoryNotExist": "Directory does not exist",
+      "directoryNotCreated": "Could not create the directory",
       "checkoutAndCreate": "Checkout and create",
       "selectButton": "Select",
       "cloning": "Cloning…",
@@ -150,7 +150,8 @@
       "promptLabel": "Prompt",
       "promptPlaceholder": "Add a custom prompt for this persona…",
       "title": "New Session",
-      "envError": "Use KEY=VALUE — invalid line: {line}"
+      "envError": "Use KEY=VALUE — invalid line: {line}",
+      "envOwnedError": "{keys} — owned by the pinned provider profile and ignored at launch. Remove the line(s); use the Profile field to choose a profile or config directory."
     },
     "newMcpInspector": {
       "defaultName": "Inspector {num}"
@@ -607,6 +608,14 @@
     "hooksLabel": "Session Hooks",
     "hooksDescription": "Required for session activity tracking.",
     "fixAllButton": "Fix All"
+  },
+  "statuslineConflict": {
+    "title": "Settings Conflict",
+    "intro": "Claude Code already has a <strong>statusLine</strong> setting configured by another tool.",
+    "currentLabel": "Current statusLine",
+    "warning": "FineVibe needs its own statusLine for cost tracking and context window monitoring. If you keep the current statusLine, these features will be unavailable.",
+    "keepButton": "Keep current statusLine",
+    "replaceButton": "Use FineVibe statusLine"
   },
   "help": {
     "tabStatusDot": "Tab Status Dot",

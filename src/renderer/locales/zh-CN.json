@@ -16,7 +16,7 @@
     "desktopNotifications": "会话需要关注时显示桌面通知",
     "recordSessionHistory": "会话关闭时记录会话历史",
     "showInsightAlerts": "显示洞察提醒",
-    "autoNameSessions": "根据 CLI 的会话标题自动命名会话（仅限 Claude）",
+    "autoNameSessions": "根据 CLI 的会话标题自动命名会话（Claude、OMP、Pi、Pi-Bolt）",
     "confirmClosingActiveSession": "关闭活动会话前进行确认",
     "copyOnSelect": "选中即复制",
     "askAiFocus": "Ask AI 在何处打开新会话",
@@ -60,7 +60,7 @@
       "urlPlaceholder": "现有目录 —— 或粘贴 GitHub/Codeberg URL",
       "browseButton": "浏览",
       "defaultProfileLabel": "默认配置文件",
-      "directoryNotExist": "目录不存在",
+      "directoryNotCreated": "无法创建该目录",
       "checkoutAndCreate": "检出并创建",
       "selectButton": "选择",
       "cloning": "正在克隆…",
@@ -150,7 +150,8 @@
       "promptLabel": "提示词",
       "promptPlaceholder": "为该角色添加自定义提示词…",
       "title": "新建会话",
-      "envError": "请使用 KEY=VALUE 格式——非法行：{line}"
+      "envError": "请使用 KEY=VALUE 格式——非法行：{line}",
+      "envOwnedError": "{keys} 由固定的 Provider Profile 管理，启动时会被忽略。请删除这些行；如需选择 Profile 或配置目录，请使用“Profile”下拉框。"
     },
     "newMcpInspector": {
       "defaultName": "检查器 {num}"
@@ -607,6 +608,14 @@
     "hooksLabel": "会话钩子",
     "hooksDescription": "用于会话活动跟踪。",
     "fixAllButton": "一键修复"
+  },
+  "statuslineConflict": {
+    "title": "设置冲突",
+    "intro": "Claude Code 已由其他工具配置了 <strong>statusLine</strong> 设置。",
+    "currentLabel": "当前 statusLine",
+    "warning": "FineVibe 需要自己的 statusLine 来实现成本跟踪和上下文窗口监控。如果保留当前 statusLine，这些功能将不可用。",
+    "keepButton": "保留当前 statusLine",
+    "replaceButton": "使用 FineVibe statusLine"
   },
   "help": {
     "tabStatusDot": "标签状态点",

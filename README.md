@@ -83,7 +83,7 @@ The complete per-feature reference — behavior, owning module, numeric limits �
 ## Known limits
 
 - **Cost and context tracking stay Claude-only** — every other backend, including Pi and OMP, runs without the cost/context rail.
-- **`pi` and `omp` must be on `PATH`** (or resolvable via nvm/npm-global probing) — a provider whose binary isn't found stays hidden.
+- **`pi`, `omp` and `pi-bolt` must be on `PATH`** (or resolvable via nvm/npm-global probing) — a provider whose binary isn't found stays hidden.
 - **macOS and Linux are unverified in this delta** — no new platform-specific code beyond `src/main/platform.ts`, but neither OS was exercised.
 - **Pi-Bolt shares `~/.pi/agent` with Pi** — Pi-Bolt-launched sessions use their own `pi-bolt-sessions` dir; terminal-launched `pi-bolt` sessions appear under the Pi provider.
 - **Updates arrive only from the fork's release feed** — never upstream; with `FINEVIBE_RELEASE_REPO` unset, downloading and auto-update are disabled entirely.
@@ -91,7 +91,7 @@ The complete per-feature reference — behavior, owning module, numeric limits �
 
 ## Install
 
-Requires at least one supported CLI installed and authenticated; `pi` and `omp` must be on `PATH` to appear.
+Requires at least one supported CLI installed and authenticated; `pi`, `omp` and `pi-bolt` must be on `PATH` to appear.
 
 ### npm (macOS, Linux & Windows)
 

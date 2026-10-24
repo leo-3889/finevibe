@@ -118,6 +118,24 @@ verification commands read `out/*`. `npm run pack` / `npm run dist` /
 `npm run dist:win:local` all write there; the local Windows flow also
 deletes `out/win-unpacked` automatically after the nsis+zip legs.
 
+## Local pipeline
+
+`dist/` is the `npm run build` output (tsc main + preload, esbuild renderer,
+`scripts/copy-assets.js`) and is what `electron .` consumes — `npm start` /
+`npm run dev` build first, then launch it. `out/` is the electron-builder
+artifact tree (see [Build output
+directories](#build-output-directories)). `npm run dist:win:local` produces
+the standalone `out/FineVibe-Setup-<version>.exe` installer as one gated
+chain: dir build → `win:stamp` → `win:verify` → nsis+zip repack from
+`out/win-unpacked` → `win:verify:setup`, so a stamp/verify failure aborts
+before anything ships. `npm run clean` removes `dist/` and `out/`; an
+unbuilt tree then fails fast — the `prestart`/`predev` gate
+(`scripts/require-built.js`) lists the missing artifacts before Electron
+starts, and the boot guard in `src/main/main.ts`
+(`rendererIsBuilt`) shows a "FineVibe is not built" dialog naming the
+missing renderer entry, instead of exiting silently and letting a stock
+Electron welcome window appear.
+
 ## Disk hygiene
 
 - `npm run clean` — removes `dist/`, `out/`, `coverage/`, and any
