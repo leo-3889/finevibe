@@ -447,6 +447,30 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.env.OMP_PROFILE).toBeUndefined();
   });
 
+  it('reports each dropped provider-owned var with what it controls and where to set it', () => {
+    // The drop is silent in a packaged app (no main console), so the one
+    // signal must name the key AND be actionable.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      resolveLaunchSpec({ ...base, envVars: 'CLAUDE_CONFIG_DIR=/other\nOMP_PROFILE=intruder\nANTHROPIC_API_KEY=sk', configDir: '/profiles/work' });
+      const line = warn.mock.calls.map(c => String(c[0])).join('\n');
+      expect(line).toContain('CLAUDE_CONFIG_DIR (relocates the Claude config tree');
+      expect(line).toContain('OMP_PROFILE (selects an Oh my Pi profile');
+      expect(line).toContain('remove them from the session environment');
+      expect(line).not.toContain('ANTHROPIC_API_KEY');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves an inert lowercase provider-owned var alone on POSIX', () => {
+    // S1-08: the POSIX child env is case-sensitive, so `pi_profile` reaches
+    // nothing; folding it into the drop list warned on every session start
+    // about a variable with no effect.
+    const spec = resolveLaunchSpec({ ...base, envVars: 'pi_profile=lowercase' });
+    expect(spec.env.pi_profile).toBe(isWin ? undefined : 'lowercase');
+  });
+
   it('strips an inherited native profile selector from the child environment', () => {
     process.env.OMP_PROFILE = 'inherited';
     try {

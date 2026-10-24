@@ -331,6 +331,44 @@ describe('New Session modal persona/prompt rows', () => {
     expect(startTeamChat).not.toHaveBeenCalled();
   });
 
+  it('a provider-owned env var is refused before spawn, naming the key', async () => {
+    // Main drops these silently (the pinned profile owns them) and the only
+    // signal was a main-process console line a packaged app never shows, so
+    // the modal must block the spawn and say what to do instead. Exact-case
+    // key: live on both POSIX (case-sensitive) and Windows (folded).
+    await promptNewSession();
+
+    await confirmWith({ 'session-env': 'CLAUDE_CONFIG_DIR=/other' });
+
+    expect(overlay().classList.contains('hidden')).toBe(false);
+    expect(addSession).not.toHaveBeenCalled();
+    const err = document.getElementById('modal-error-session-env')!;
+    expect(err.textContent).toContain('CLAUDE_CONFIG_DIR');
+    expect(err.textContent).toMatch(/Profile/);
+  });
+
+  it('a provider-owned persona-session env var is refused too', async () => {
+    teamMembersVal = [makeMember()];
+    await promptNewSession();
+
+    await confirmWith({ persona: 'm1', 'session-env': 'OMP_PROFILE=x' });
+
+    expect(startTeamChat).not.toHaveBeenCalled();
+    expect(document.getElementById('modal-error-session-env')!.textContent).toContain('OMP_PROFILE');
+  });
+
+  it('an inert lowercase variant on POSIX is not refused', async () => {
+    // Mirrors findConflictingEnvKeys' S1-08 rule: a POSIX child env is
+    // case-sensitive, so `claude_config_dir` reaches nothing and blocking it
+    // would be an unactionable refusal.
+    const { isWin } = await import('../../platform.js');
+    await promptNewSession();
+
+    await confirmWith({ 'session-env': 'claude_config_dir=/other' });
+
+    expect(addSession).toHaveBeenCalledTimes(isWin ? 0 : 1);
+  });
+
   it('a pinned persona explains the provider override via the provider field tooltip', async () => {
     profilesVal = [{ id: 'prof-1', name: 'Work', providerId: 'claude' }];
     teamMembersVal = [makeMember({ profileId: 'prof-1' })];

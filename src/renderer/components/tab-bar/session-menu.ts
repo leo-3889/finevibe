@@ -1,7 +1,8 @@
 import { appState, type SessionRecord } from '../../state.js';
 import type { ProviderId, TeamMember } from '../../../shared/types.js';
 import { showModal, closeModal, setModalError, FieldDef } from '../modal.js';
-import { findInvalidEnvLines } from '../../../shared/env-vars.js';
+import { findInvalidEnvLines, findProviderOwnedEnvKeys, parseEnvVars } from '../../../shared/env-vars.js';
+import { isWin } from '../../platform.js';
 import { showJoinDialog } from '../join-dialog.js';
 import { loadProviderAvailability, getProviderAvailabilitySnapshot, getProviderCapabilities, getProviderDisplayName, getTeamCapableProviderIds } from '../../provider-availability.js';
 import { providerProfileOptions } from '../../profile-utils.js';
@@ -261,6 +262,15 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       const invalid = findInvalidEnvLines(envVars);
       if (invalid.length > 0) {
         setModalError('session-env', t('tab.newSessionModal.envError', { line: invalid[0] }));
+        return;
+      }
+      // Syntax is valid, but a provider-owned key is dropped at spawn (the
+      // pinned profile owns it) and the only signal used to be a main-process
+      // console line the packaged app never shows. Reject it here, where the
+      // user can act on it, with the same platform rule main applies.
+      const owned = findProviderOwnedEnvKeys(parseEnvVars(envVars), isWin);
+      if (owned.length > 0) {
+        setModalError('session-env', t('tab.newSessionModal.envOwnedError', { keys: owned.join(', ') }));
         return;
       }
     }

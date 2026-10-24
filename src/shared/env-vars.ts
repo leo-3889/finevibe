@@ -80,6 +80,46 @@ const PROVIDER_OWNED_ENV_KEYS: readonly string[] = [
   'COPILOT_HOME',
 ];
 
+/**
+ * What each owned key controls and where the user should set it instead,
+ * keyed by canonical (uppercase) name. Used by the pre-spawn console warning
+ * so a dropped variable is actionable rather than just named.
+ */
+const PROVIDER_OWNED_ENV_REASONS: Readonly<Record<string, string>> = {
+  CLAUDE_CONFIG_DIR: 'relocates the Claude config tree — pick a profile instead',
+  PI_CODING_AGENT_DIR: 'relocates the Pi config tree — pick a profile instead',
+  PI_CONFIG_DIR: 'relocates the Pi config tree — pick a profile instead',
+  COPILOT_HOME: 'relocates the Copilot data tree — pick a profile instead',
+  PI_PROFILE: 'selects a Pi profile — pick it in the Profile field instead',
+  OMP_PROFILE: 'selects an Oh my Pi profile — pick it in the Profile field instead',
+  CLAUDE_IDE_SESSION_ID: 'keys the status files the Claude hooks write for this session',
+  FINEVIBE_SESSION_ID: 'keys the status files the provider hooks write for this session',
+};
+
+/**
+ * Reason for a user-typed key (any casing) naming what it controls and where
+ * to set it; the canonical entry is matched case-insensitively so the message
+ * is useful on POSIX too, where only the exact-case name is the real one.
+ */
+export function providerOwnedEnvReason(key: string): string {
+  return PROVIDER_OWNED_ENV_REASONS[key.toUpperCase()] ?? 'owned by the pinned provider profile';
+}
+
+/**
+ * Match of env keys against the provider-owned set. Mirrors
+ * `findConflictingEnvKeys`: case-folding is Windows-only, because the POSIX
+ * child env is case-sensitive, so `claude_config_dir=/x` is inert there and
+ * must not be reported as a dropped override (S1-08).
+ */
+export function findProviderOwnedEnvKeys(
+  env: Record<string, string>,
+  isWindows: boolean,
+): string[] {
+  return Object.keys(env).filter((key) =>
+    PROVIDER_OWNED_ENV_KEYS.includes(isWindows ? key.toUpperCase() : key),
+  );
+}
+
 /** Windows environment names are case-insensitive even when object keys are not. */
 export function removeEnvKey(env: Record<string, string>, name: string): void {
   for (const key of Object.keys(env)) {
@@ -90,20 +130,20 @@ export function removeEnvKey(env: Record<string, string>, name: string): void {
 /**
  * Split parsed user env into the part that may be merged over the provider's
  * environment and the provider-owned keys that must not be, so the caller can
- * report what was dropped instead of losing it silently.
+ * report what was dropped instead of losing it silently. `isWindows` follows
+ * `findConflictingEnvKeys`: env names are case-insensitive on Windows, so
+ * every casing variant is dropped there; on POSIX only the exact-case name
+ * reaches the child, and an inert lowercase variant is left alone.
  */
-export function partitionUserEnv(env: Record<string, string>): {
-  allowed: Record<string, string>;
-  dropped: string[];
-} {
+export function partitionUserEnv(
+  env: Record<string, string>,
+  isWindows: boolean,
+): { allowed: Record<string, string>; dropped: string[] } {
+  const dropped = findProviderOwnedEnvKeys(env, isWindows);
+  const droppedKeys = new Set(dropped);
   const allowed: Record<string, string> = {};
-  const dropped: string[] = [];
   for (const [key, value] of Object.entries(env)) {
-    if (PROVIDER_OWNED_ENV_KEYS.includes(key.toUpperCase())) {
-      dropped.push(key);
-    } else {
-      allowed[key] = value;
-    }
+    if (!droppedKeys.has(key)) allowed[key] = value;
   }
   return { allowed, dropped };
 }
