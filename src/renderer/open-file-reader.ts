@@ -35,16 +35,22 @@ export async function openFileReaderChecked(
   const fullPath = resolveProjectFilePath(project, filePath);
 
   try {
-    const [exists, isDir] = await Promise.all([
-      window.finevibe.fs.exists(fullPath),
-      window.finevibe.fs.isDirectory(fullPath),
-    ]);
-    if (!exists || isDir) {
+    // Sequential, never `Promise.all`: `fs:isDirectory` is the consent-gated
+    // stat in main, so a path that does not exist must resolve on `exists`
+    // alone — a parallel probe would ask the user to consent on a dead path.
+    const exists = await window.finevibe.fs.exists(fullPath);
+    if (!exists) {
+      console.warn(`[open-file] not an openable file: ${fullPath}`);
+      return;
+    }
+    const isDir = await window.finevibe.fs.isDirectory(fullPath);
+    if (isDir) {
       console.warn(`[open-file] not an openable file: ${fullPath}`);
       return;
     }
   } catch (err: unknown) {
     // An invoke rejects when the window is tearing down mid-click.
+    // pi-lens-ignore: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring
     console.warn(`[open-file] could not check ${fullPath}`, err);
     return;
   }

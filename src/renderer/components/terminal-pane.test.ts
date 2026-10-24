@@ -277,7 +277,7 @@ describe('terminal pending prompt injection', () => {
     setPendingPrompt('claude-1', 'fix the bug');
     await spawnTerminal('claude-1');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('claude-1', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined);
+    expect(mockPtyCreate).toHaveBeenCalledWith('claude-1', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined, undefined);
     expect(mockPtyWrite).not.toHaveBeenCalled();
   });
 
@@ -289,7 +289,7 @@ describe('terminal pending prompt injection', () => {
     setPendingPrompt('codex-1', 'fix the bug');
     await spawnTerminal('codex-1');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('codex-1', '/project', null, false, '', 'codex', 'fix the bug', undefined, '', undefined);
+    expect(mockPtyCreate).toHaveBeenCalledWith('codex-1', '/project', null, false, '', 'codex', 'fix the bug', undefined, '', undefined, undefined);
     expect(mockPtyWrite).not.toHaveBeenCalled();
   });
 
@@ -300,7 +300,7 @@ describe('terminal pending prompt injection', () => {
     createTerminalPane('claude-2', '/project', null, false, '', 'claude');
     await spawnTerminal('claude-2');
 
-    expect(mockPtyCreate).toHaveBeenCalledWith('claude-2', '/project', null, false, '', 'claude', undefined, undefined, '', undefined);
+    expect(mockPtyCreate).toHaveBeenCalledWith('claude-2', '/project', null, false, '', 'claude', undefined, undefined, '', undefined, undefined);
   });
 
   it('does not inject pending prompt from PTY output', async () => {
@@ -1029,7 +1029,7 @@ describe('spawn failure surface (a0ee463)', () => {
 
     expect(mockPtyCreate).toHaveBeenCalledTimes(2);
     // Fresh start, not a resume: the failed spawn never reached isResume=true.
-    expect(mockPtyCreate).toHaveBeenLastCalledWith('fail-2', '/project', null, false, '', 'claude', undefined, undefined, '', undefined);
+    expect(mockPtyCreate).toHaveBeenLastCalledWith('fail-2', '/project', null, false, '', 'claude', undefined, undefined, '', undefined, undefined);
     expect(getTerminalInstance('fail-2')!.spawned).toBe(true);
   });
 
@@ -1049,7 +1049,7 @@ describe('spawn failure surface (a0ee463)', () => {
     instance.element.querySelector('.respawn-btn')!.dispatchEvent('click');
     await vi.runAllTimersAsync();
 
-    expect(mockPtyCreate).toHaveBeenLastCalledWith('fail-3', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined);
+    expect(mockPtyCreate).toHaveBeenLastCalledWith('fail-3', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined, undefined);
     // Recovery clears the failure overlay.
     expect(instance.element.querySelector('.terminal-exit-overlay')).toBeNull();
   });

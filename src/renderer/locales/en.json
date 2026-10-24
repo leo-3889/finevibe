@@ -103,7 +103,8 @@
       "browserNew": "New Tab",
       "projectTools": "Project tools",
       "kanbanBoard": "Kanban board",
-      "team": "Team"
+      "team": "Team",
+      "sshHost": "SSH: {host}"
     },
     "title": {
       "overview": "{name} - Overview",
@@ -185,7 +186,11 @@
       "closeInspector": "Close Inspector",
       "inspect": "Inspect",
       "renameGroup": "Rename Group",
-      "ungroup": "Ungroup"
+      "ungroup": "Ungroup",
+      "sshHostSet": "Set SSH host…",
+      "sshHostChange": "Change SSH host…",
+      "sshHostClear": "Clear SSH host",
+      "sshHostPrompt": "SSH host (user@host or host):"
     },
     "board": {
       "deleteTag": "Delete Tag"
@@ -448,40 +453,108 @@
       "View": "View",
       "Browser": "Browser"
     },
-    "new-session": { "label": "New Session" },
-    "new-session-alt": { "label": "New Session (Alt)" },
-    "new-project": { "label": "New Project" },
-    "goto-session-1": { "label": "Go to Session 1" },
-    "goto-session-2": { "label": "Go to Session 2" },
-    "goto-session-3": { "label": "Go to Session 3" },
-    "goto-session-4": { "label": "Go to Session 4" },
-    "goto-session-5": { "label": "Go to Session 5" },
-    "goto-session-6": { "label": "Go to Session 6" },
-    "goto-session-7": { "label": "Go to Session 7" },
-    "goto-session-8": { "label": "Go to Session 8" },
-    "goto-session-9": { "label": "Go to Session 9" },
-    "next-session": { "label": "Next Session" },
-    "prev-session": { "label": "Previous Session" },
-    "tab-back": { "label": "Back (Tab History)" },
-    "tab-forward": { "label": "Forward (Tab History)" },
-    "toggle-sidebar": { "label": "Toggle Sidebar" },
-    "toggle-split": { "label": "Toggle Split Mode" },
-    "project-terminal": { "label": "Project Terminal" },
-    "project-terminal-alt": { "label": "Project Terminal (Alt)" },
-    "debug-panel": { "label": "Debug Panel" },
-    "git-panel": { "label": "Git Panel" },
-    "quick-open": { "label": "Quick Open File" },
-    "session-search": { "label": "Search All Sessions" },
-    "find-in-terminal": { "label": "Find" },
-    "goto-line": { "label": "Go to Line" },
-    "help": { "label": "Help" },
-    "close-session": { "label": "Close Session" },
-    "toggle-inspector": { "label": "Toggle Session Inspector" },
-    "zoom-in": { "label": "Zoom In" },
-    "zoom-out": { "label": "Zoom Out" },
-    "zoom-reset": { "label": "Reset Zoom" },
-    "browser-reload": { "label": "Reload Page" },
-    "browser-hard-reload": { "label": "Hard Reload (Bypass Cache)" }
+    "new-session": {
+      "label": "New Session"
+    },
+    "new-session-alt": {
+      "label": "New Session (Alt)"
+    },
+    "new-project": {
+      "label": "New Project"
+    },
+    "goto-session-1": {
+      "label": "Go to Session 1"
+    },
+    "goto-session-2": {
+      "label": "Go to Session 2"
+    },
+    "goto-session-3": {
+      "label": "Go to Session 3"
+    },
+    "goto-session-4": {
+      "label": "Go to Session 4"
+    },
+    "goto-session-5": {
+      "label": "Go to Session 5"
+    },
+    "goto-session-6": {
+      "label": "Go to Session 6"
+    },
+    "goto-session-7": {
+      "label": "Go to Session 7"
+    },
+    "goto-session-8": {
+      "label": "Go to Session 8"
+    },
+    "goto-session-9": {
+      "label": "Go to Session 9"
+    },
+    "next-session": {
+      "label": "Next Session"
+    },
+    "prev-session": {
+      "label": "Previous Session"
+    },
+    "tab-back": {
+      "label": "Back (Tab History)"
+    },
+    "tab-forward": {
+      "label": "Forward (Tab History)"
+    },
+    "toggle-sidebar": {
+      "label": "Toggle Sidebar"
+    },
+    "toggle-split": {
+      "label": "Toggle Split Mode"
+    },
+    "project-terminal": {
+      "label": "Project Terminal"
+    },
+    "project-terminal-alt": {
+      "label": "Project Terminal (Alt)"
+    },
+    "debug-panel": {
+      "label": "Debug Panel"
+    },
+    "git-panel": {
+      "label": "Git Panel"
+    },
+    "quick-open": {
+      "label": "Quick Open File"
+    },
+    "session-search": {
+      "label": "Search All Sessions"
+    },
+    "find-in-terminal": {
+      "label": "Find"
+    },
+    "goto-line": {
+      "label": "Go to Line"
+    },
+    "help": {
+      "label": "Help"
+    },
+    "close-session": {
+      "label": "Close Session"
+    },
+    "toggle-inspector": {
+      "label": "Toggle Session Inspector"
+    },
+    "zoom-in": {
+      "label": "Zoom In"
+    },
+    "zoom-out": {
+      "label": "Zoom Out"
+    },
+    "zoom-reset": {
+      "label": "Reset Zoom"
+    },
+    "browser-reload": {
+      "label": "Reload Page"
+    },
+    "browser-hard-reload": {
+      "label": "Hard Reload (Bypass Cache)"
+    }
   },
   "profiles": {
     "heading": "CLI profiles",
@@ -583,7 +656,10 @@
     "gitConflictedDesc": "Files with merge conflicts",
     "gitSampleAhead": "↑2 ↓3",
     "gitAheadLabel": "Ahead/Behind",
-    "gitAheadDesc": "Commits ahead/behind remote"
+    "gitAheadDesc": "Commits ahead/behind remote",
+    "sshPrefixSample": "ssh host - Name",
+    "sshPrefixLabel": "SSH host prefix",
+    "sshPrefixDesc": "A session connected over SSH shows its host as a prefix (ssh host - Name); while inference runs the name pulses like the working glyph."
   },
   "about": {
     "appName": "FineVibe",

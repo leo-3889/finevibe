@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ImportableLegacyProject } from '../shared/types';
 import type { DiskHealth } from '../shared/types';
 import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus, AgentmemoryLog } from '../shared/types';
+import type { SshSource } from '../shared/ssh-host';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -12,7 +13,7 @@ export type { CostData } from '../shared/types';
 
 export interface FineVibeApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, sshHost?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -32,6 +33,7 @@ export interface FineVibeApi {
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
+    onSshStatus(callback: (sessionId: string, host: string | null, source: SshSource) => void): () => void;
     resyncStatus(): void;
     syncRestored(sessions: { sessionId: string; providerId: ProviderId; cliSessionId: string | null; cwd: string; configDir?: string; createdAt: string }[]): Promise<void>;
     release(sessionId: string): void;
@@ -214,8 +216,8 @@ function onChannel(channel: string, callback: (...args: unknown[]) => void): () 
 
 const api: FineVibeApi = {
   pty: {
-    create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir) =>
-      ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt, systemPrompt, envVars || '', configDir),
+    create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost) =>
+      ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt, systemPrompt, envVars || '', configDir, sshHost),
     createShell: (sessionId, cwd) =>
       ipcRenderer.invoke('pty:createShell', sessionId, cwd),
     write: (sessionId, data) =>
@@ -254,6 +256,9 @@ const api: FineVibeApi = {
     onSessionName: (callback) =>
       onChannel('session:sessionName', (sessionId, name, cliSessionId) =>
         callback(sessionId as string, name as string, (cliSessionId as string) || '')),
+    onSshStatus: (callback) =>
+      onChannel('session:sshStatus', (sessionId, host, source) =>
+        callback(sessionId as string, (host as string) ?? null, source as SshSource)),
     resyncStatus: () => ipcRenderer.send('session:resyncStatus'),
     syncRestored: (sessions) => ipcRenderer.invoke('session:syncRestored', sessions),
     release: (sessionId) => ipcRenderer.send('session:release', sessionId),

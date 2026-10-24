@@ -75,7 +75,12 @@ vi.mock('electron', () => ({
     whenReady: () => Promise.resolve(),
     quit: vi.fn(),
   },
-  dialog: { showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })) },
+  dialog: {
+    showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })),
+    // fs:browseDirectory passes the native directory picker through; the
+    // default cancels, picker-success tests override per test.
+    showOpenDialog: vi.fn(() => Promise.resolve({ canceled: true, filePaths: [] as string[] })),
+  },
   // The file-tree channels: `fs:trashItem` moves a file to its volume's trash
   // (the EXDEV test overrides `trashItem` per test) and `fs:showInFolder`
   // reveals a file with showItemInFolder / opens a folder with openPath.
@@ -939,6 +944,92 @@ describe('fs:isDirectory home gate (P2-38)', () => {
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
+  });
+});
+
+// The New Project picker's native selection (fs:browseDirectory) IS the
+// consent: the picked dir is recorded in the home-outside answer cache, so
+// the post-pick label probes for that dir answer from the cache and never
+// pop a second confirm.
+describe('fs:browseDirectory pick records consent', () => {
+  const pickOutsideHome = () =>
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce(
+      { canceled: false, filePaths: [OUTSIDE_HOME] } as never,
+    );
+
+  it('a native pick answers a later fs:isDirectory from the cache with no confirm', async () => {
+    pickOutsideHome();
+    await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBe(OUTSIDE_HOME);
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(true);
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('a native pick answers a later fs:listDirs from the cache with no confirm', async () => {
+    pickOutsideHome();
+    await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBe(OUTSIDE_HOME);
+    const dirs = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
+    expect(dirs.length).toBeGreaterThan(0);
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('a canceled pick records nothing — the gate still fires', async () => {
+    // The default showOpenDialog mock cancels.
+    await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBeNull();
+    // Default showMessageBox answer is Cancel (response 0) → the old deny.
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalled();
+  });
+});
+
+// The parent-consent cascade (fs:isDirectory only): a consented dir's
+// enumeration (fs:listDirs / the New Project autocomplete) NAMED its
+// children, so answering "is child X a directory" asks nothing the parent
+// dialog already published — no child dialogs. Cancel never cascades, and
+// fs:listDirs keeps asking per dir (contents were never authorized).
+describe('fs:isDirectory parent-consent cascade', () => {
+  // A child dir that really exists under the home-outside root, on every
+  // platform: the first directory entry of C:\\Windows / /etc.
+  const existingChildDir = () => {
+    const name = fs.readdirSync(OUTSIDE_HOME).find((n) => {
+      try { return fs.statSync(path.join(OUTSIDE_HOME, n)).isDirectory(); } catch { return false; }
+    });
+    if (!name) throw new Error('no child dir under ' + OUTSIDE_HOME);
+    return path.join(OUTSIDE_HOME, name);
+  };
+
+  it('answers a child from the parent listDirs consent with no child dialog', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME); // the consent burst
+    await expect(handlers.get('fs:isDirectory')!({}, existingChildDir())).resolves.toBe(true);
+    // Exactly the parent's dialog; the child probe added none.
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('a canceled parent does not cascade — the child asks its own confirm', async () => {
+    // Default showMessageBox answer is Cancel: the parent's answer caches
+    // false, and a Cancel must never auto-answer a child.
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    await expect(handlers.get('fs:isDirectory')!({}, existingChildDir())).resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(2); // child's own confirm
+  });
+
+  it('a consented parent answers a vanished child honestly (false) with no dialog', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    await expect(handlers.get('fs:isDirectory')!({}, path.join(OUTSIDE_HOME, 'finevibe-cascade-missing-zz')))
+      .resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('cascade is parent-only: fs:listDirs on the child keeps its own confirm', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME); // parent consented
+    const child = existingChildDir();
+    // Cancel (default) for the child's own enumeration — listing a listed
+    // dir's CONTENTS was never authorized by the parent consent.
+    await expect(handlers.get('fs:listDirs')!({}, child)).resolves.toEqual([]);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(2);
   });
 });
 

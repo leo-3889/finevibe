@@ -595,17 +595,18 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
   });
 
   describe('cleanupSessionStatus', () => {
-    it('unlinks all 7 file types', () => {
+    it('unlinks all 8 file types', () => {
       cleanupSessionStatus('sess-1');
 
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'sess-1.status'));
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'sess-1.sessionid'));
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'sess-1.cost'));
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'sess-1.name'));
+      expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'sess-1.ssh'));
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'sess-1.toolfailure'));
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'sess-1.events'));
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'sess-1.subagents'));
-      expect(fs.unlinkSync).toHaveBeenCalledTimes(7);
+      expect(fs.unlinkSync).toHaveBeenCalledTimes(8);
     });
 
     it('handles errors when files do not exist', () => {

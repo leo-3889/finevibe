@@ -4,6 +4,8 @@ import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { basename } from '../shared/platform.js';
+import { parseSshHost } from '../shared/ssh-host.js';
+import { setSshStatus } from './session-ssh.js';
 import { isCliSession } from './session-utils.js';
 import {
   archiveSession as archiveSessionPure,
@@ -1415,6 +1417,30 @@ class AppState {
     if ((session.browserIsolated ?? false) === isolated) return;
     session.browserIsolated = isolated || undefined;
     this.persist();
+  }
+
+  /** Set/clear the persisted SSH host of a session (display prefix source).
+   * Returns false when `raw` is not a valid host; never touches `userRenamed`. */
+  setSessionSshHost(sessionId: string, raw: string | null): boolean {
+    const session = this.findSessionById(sessionId);
+    if (!session) return false;
+    if (raw === null) {
+      if (session.sshHost === undefined) return true;
+      session.sshHost = undefined;
+      this.persist();
+      this.emitSessionChanged({ sessionId, kind: 'metadata' });
+      setSshStatus(sessionId, null);
+      return true;
+    }
+    const parsed = parseSshHost(raw);
+    if (!parsed) return false;
+    if (session.sshHost === parsed.host) return true;
+    session.sshHost = parsed.host;
+    this.persist();
+    this.emitSessionChanged({ sessionId, kind: 'metadata' });
+    // The session exists, so its PTY is live: mark it connected now (plan §4-R2 S1).
+    setSshStatus(sessionId, { host: parsed.host, source: 'explicit' });
+    return true;
   }
 
   renameSession(projectId: string, sessionId: string, name: string, userRenamed?: boolean): void {

@@ -238,6 +238,36 @@ const outsideHomeConsent = new Map<string, boolean>();
 // the in-flight confirmation is one dialog per dir, answered by all waiters.
 const outsideHomeConsentInFlight = new Map<string, Promise<boolean>>();
 
+/** Records a consent answer for the canonical spelling of `dir`, applying
+ * the B1 FIFO trim. `confirmHomeOutsideListingOnce` feeds this the dialog
+ * answer (both ways); `fs:browseDirectory` feeds it a native-picker pick,
+ * whose selection IS the consent — the follow-up label probes for the
+ * picked dir then answer from the cache with zero dialogs. */
+function rememberHomeOutsideConsent(dir: string, answer: boolean): void {
+  outsideHomeConsent.set(canonicalPath(dir), answer);
+  while (outsideHomeConsent.size > OUTSIDE_HOME_CONSENT_MAX) {
+    const oldest = outsideHomeConsent.keys().next().value;
+    if (oldest === undefined) break;
+    outsideHomeConsent.delete(oldest);
+  }
+}
+
+/** Parent-consent cascade for the fs:isDirectory existence gate ONLY.
+ * A `true` answer for a dir authorized the enumeration (fs:listDirs) that
+ * NAMED its children — the New Project autocomplete lists children of
+ * exactly that consented dir, and the keystroke burst consents the parent
+ * before any child probe fires. Answering "is this listed child a
+ * directory" therefore asks nothing the parent consent did not already
+ * publish, so the child skips its own dialog. A `false` (Cancel) never
+ * cascades — an explicit denial must not auto-answer anything. This does
+ * NOT apply to fs:listDirs: enumerating a child's CONTENTS was never
+ * authorized by the parent's consent, so every dir keeps its own confirm.
+ * Canonical-spelling mismatches (symlinked parent) miss the cascade and
+ * fall through to the confirm — the safe direction. */
+function hasHomeOutsideConsent(dir: string): boolean {
+  return outsideHomeConsent.get(canonicalPath(dir)) === true;
+}
+
 async function confirmHomeOutsideListingOnce(dir: string): Promise<boolean> {
   const key = canonicalPath(dir);
   const cached = outsideHomeConsent.get(key);
@@ -249,12 +279,7 @@ async function confirmHomeOutsideListingOnce(dir: string): Promise<boolean> {
   const run = confirmHomeOutsideListing(key).finally(() => { outsideHomeConsentInFlight.delete(key); });
   outsideHomeConsentInFlight.set(key, run);
   const answer = await run;
-  outsideHomeConsent.set(key, answer);
-  while (outsideHomeConsent.size > OUTSIDE_HOME_CONSENT_MAX) {
-    const oldest = outsideHomeConsent.keys().next().value;
-    if (oldest === undefined) break;
-    outsideHomeConsent.delete(oldest);
-  }
+  rememberHomeOutsideConsent(key, answer);
   return answer;
 }
 
@@ -773,7 +798,7 @@ export function registerIpcHandlers(): void {
   // PA-07: invalidate the Quick Open enumeration cache on the same debounced
   // git:changed signal the renderer receives.
   onGitChanged(invalidateEnumerations);
-  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string) => {
+  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string, sshHost?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
 
@@ -916,7 +941,8 @@ export function registerIpcHandlers(): void {
             w.webContents.send('pty:exit', sessionId, exitCode, signal, exitReason, pid);
           }
         },
-        configDir
+        configDir,
+        sshHost
       );
     } catch (err) {
       // spawnPty threw before installing the exit callback — cancel pending
@@ -1079,7 +1105,11 @@ export function registerIpcHandlers(): void {
       // The old silent false ignored the Windows reality that projects on
       // non-home drives (E:\...) are the norm: adding an existing dir like
       // E:\Ai\Brilliance reported "Directory does not exist".
-      if (!isAllowedEnumeratePath(expanded) && !(await confirmHomeOutsideListingOnce(expanded))) return false;
+      // Cascade: the parent's consent (or the native picker's selection of
+      // it) named this child via enumeration — answer from it, no dialog.
+      if (!isAllowedEnumeratePath(expanded)
+        && !hasHomeOutsideConsent(path.dirname(expanded))
+        && !(await confirmHomeOutsideListingOnce(expanded))) return false;
       return fs.statSync(expanded).isDirectory();
     } catch {
       return false;
@@ -1837,7 +1867,13 @@ export function registerIpcHandlers(): void {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
     if (result.canceled || result.filePaths.length === 0) return null;
-    return result.filePaths[0];
+    const picked = result.filePaths[0];
+    // The native picker's selection IS the consent: record the pick so the
+    // post-Browse fs:isDirectory / fs:listDirs label probes answer from the
+    // cache with zero confirms. Home-tree picks never consult the gate, so
+    // recording keeps the cache semantics uniform.
+    rememberHomeOutsideConsent(picked, true);
+    return picked;
   });
 
   // Replay every status file. The hook scripts write only on change, so a

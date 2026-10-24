@@ -3,10 +3,11 @@ import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus
 import type { ImportableLegacyProject } from '../shared/types.js';
 import type { DiskHealth } from '../shared/types.js';
 import type { AgentmemoryLog } from '../shared/types.js';
+import type { SshSource } from '../shared/ssh-host.js';
 
 export interface FinevibeApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, sshHost?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -26,6 +27,7 @@ export interface FinevibeApi {
     cancelDeepSearch(): void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
+    onSshStatus(callback: (sessionId: string, host: string | null, source: SshSource) => void): () => void;
     onInspectorEvents(callback: (sessionId: string, events: InspectorEvent[]) => void): () => void;
     onToolFailure(callback: (sessionId: string, data: ToolFailureData) => void): () => void;
     resyncStatus(): void;

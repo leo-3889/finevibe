@@ -409,6 +409,20 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.storageMode).toBe('default');
   });
 
+  it('wraps the provider command in ssh when sshHost is set', () => {
+    const spec = resolveLaunchSpec({ ...base, sshHost: 'lab' });
+    expect(spec.executable).toBe('ssh');
+    expect(spec.argv[0]).toBe('-tt');
+    expect(spec.argv[1]).toBe('--');
+    expect(spec.argv[2]).toBe('lab');
+    expect(spec.argv[3]).toMatch(/^'omp' '--session-dir'/);
+    expect(spec.providerId).toBe('omp');
+  });
+
+  it('rejects an invalid sshHost before spawning', () => {
+    expect(() => resolveLaunchSpec({ ...base, sshHost: 'lab:22' })).toThrow(/Invalid SSH host/);
+  });
+
   it('resolves the default agent dir (no configDir) with storage mode default', () => {
     const spec = resolveLaunchSpec(base);
     expect(spec.configDir).toBeUndefined();

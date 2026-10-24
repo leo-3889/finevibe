@@ -6,6 +6,7 @@ import { BrowserWindow } from 'electron';
 import { isWin, pythonBin } from './platform';
 import { STDIN_UTF8_GUARD } from '../shared/python';
 import type { CliSessionStatus } from '../shared/types';
+import type { SshSource } from '../shared/ssh-host';
 
 /**
  * The status-data directory (the watcher's root; every `.status`/`.cost`/
@@ -39,8 +40,7 @@ const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'stat
 // fills it from its statusLine payload (see buildStatusLinePython); another
 // provider can populate it from any source, the way codex-session-watcher.ts
 // already writes `.sessionid` without hooks.
-const KNOWN_EXTENSIONS = ['.status', '.sessionid', '.cost', '.name', '.toolfailure', '.events', '.subagents'];
-
+const KNOWN_EXTENSIONS = ['.status', '.sessionid', '.cost', '.name', '.ssh', '.toolfailure', '.events', '.subagents'];
 let watcher: fs.FSWatcher | null = null;
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 const lastMtimes = new Map<string, number>();
@@ -126,6 +126,20 @@ export function writeStatus(uiSessionId: string, status: CliSessionStatus): void
   fs.writeFileSync(filePath, `Transcript:${status}`);
 }
 
+
+/**
+ * The SSH connection sidecar (`.ssh`): the watcher forwards it as
+ * `session:sshStatus`. `host:null` = explicitly disconnected; `source` says
+ * where the knowledge came from (spawn wrap vs. PTY-output detection).
+ * Writers must have validated the host with `parseSshHost` first — the
+ * renderer injects it into the tab DOM (escaped) and main into `ssh` argv.
+ */
+export function writeSshStatus(uiSessionId: string, host: string | null, source: SshSource): void {
+  const filePath = statusFilePath(uiSessionId, 'ssh');
+  if (filePath === null) return;
+  ensureStatusDir();
+  fs.writeFileSync(filePath, JSON.stringify({ host, source }));
+}
 export function unregisterSession(sessionId: string): void {
   knownSessionIds.delete(sessionId);
 }
@@ -312,6 +326,23 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
           name,
           typeof cliSessionId === 'string' ? cliSessionId : '',
         );
+      }
+    } catch {
+      // File may have been deleted or contain invalid JSON (partial write)
+    }
+  } else if (filename.endsWith('.ssh')) {
+    const sessionId = extractedId;
+    const filePath = path.join(STATUS_DIR, filename);
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8').trim()) as {
+        host?: unknown;
+        source?: unknown;
+      };
+      const validHost = data.host === null || (typeof data.host === 'string' && data.host.length > 0);
+      const validSource =
+        data.source === 'explicit' || data.source === 'spawned' || data.source === 'detected';
+      if (validHost && validSource && !win.isDestroyed()) {
+        win.webContents.send('session:sshStatus', sessionId, data.host, data.source);
       }
     } catch {
       // File may have been deleted or contain invalid JSON (partial write)

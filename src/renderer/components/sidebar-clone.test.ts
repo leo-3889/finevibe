@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 
 // "Checkout and create" (plan 65-67) in the Add-project modal: a git URL in
@@ -171,17 +171,24 @@ describe('Add-project Select label (existing-directory probe)', () => {
   // The probe chain (expandPath → isDirectory) is pure microtasks; one
   // macrotask tick settles it.
   const flush = () => new Promise((r) => setTimeout(r, 0));
+  // A blur probe needs a real focus move: FocusEvent carries the element the
+  // focus lands on, and the sidebar ignores a null target (dismissal) and any
+  // move into the modal footer (Cancel/Confirm).
+  const blurTo = (el: Element | null) => new FocusEvent('blur', { relatedTarget: el });
+  // Longer than the 100 ms autocomplete debounce: a keystroke probe would
+  // surface inside the sleep, i.e. before the assertion, not after it.
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const browseField = () => (modalMock.showModal.mock.calls[0][1] as unknown as Array<{
     id: string;
     onButtonClick?: (input: HTMLInputElement) => Promise<void> | void;
   }>).find((f) => f.id === 'project-path')!.onButtonClick!;
 
-  it('probes the open-prefill and shows Select for an existing folder', async () => {
+  it('never probes at open: the default-folder prefill stays plain Create', async () => {
     const { promptNewProject } = await setup('/home/u/projects');
     promptNewProject();
-    await flush();
-    expect(fsStub.isDirectory).toHaveBeenCalledWith('/home/u/projects');
-    expect(confirmBtn().textContent).toBe('Select');
+    await sleep(150);
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    expect(confirmBtn().textContent).toBe('Create');
   });
 
   it('never probes on the keystroke path; blur probes and flips to Select', async () => {
@@ -190,25 +197,32 @@ describe('Add-project Select label (existing-directory probe)', () => {
     const pathInput = input('modal-project-path');
     pathInput.value = '/home/u/demo';
     pathInput.dispatchEvent(new Event('input'));
-    await flush();
+    await sleep(150);
     expect(fsStub.isDirectory).not.toHaveBeenCalled();
     expect(confirmBtn().textContent).toBe('Create');
-    pathInput.dispatchEvent(new Event('blur'));
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
     await flush();
     expect(fsStub.isDirectory).toHaveBeenCalledWith('/home/u/demo');
     expect(confirmBtn().textContent).toBe('Select');
   });
 
-  it('keeps Checkout and create precedence: a URL blurs without probing', async () => {
+  it('keeps Checkout and create precedence: Select yields to a typed URL', async () => {
     const { promptNewProject } = await setup('');
     promptNewProject();
     const pathInput = input('modal-project-path');
+    // Earn Select on a local dir first: an implementation that re-probes (or
+    // repaints Select) on the URL's blur would keep the wrong label here.
+    pathInput.value = '/home/u/demo';
+    pathInput.dispatchEvent(new Event('input'));
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    expect(confirmBtn().textContent).toBe('Select');
     pathInput.value = URL_HTTPS;
     pathInput.dispatchEvent(new Event('input'));
-    pathInput.dispatchEvent(new Event('blur'));
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
     await flush();
     expect(fsStub.expandPath).not.toHaveBeenCalledWith(URL_HTTPS);
-    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    expect(fsStub.isDirectory).not.toHaveBeenCalledWith(URL_HTTPS);
     expect(confirmBtn().textContent).toBe('Checkout and create');
   });
 
@@ -228,7 +242,48 @@ describe('Add-project Select label (existing-directory probe)', () => {
     promptNewProject();
     const pathInput = input('modal-project-path');
     pathInput.value = '/home/u/gone';
-    pathInput.dispatchEvent(new Event('blur'));
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+
+  it('never probes on a Cancel dismissal: a blur into the footer is not a focus move', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    promptNewProject();
+    const actions = document.createElement('div');
+    actions.id = 'modal-actions';
+    const cancel = document.createElement('button');
+    actions.appendChild(cancel);
+    document.body.appendChild(actions);
+    // Cancel/Confirm blur: the footer owns the click, so no probe.
+    input('modal-project-path').dispatchEvent(blurTo(cancel));
+    // Esc hides the overlay: a dismissal carries no relatedTarget at all.
+    input('modal-project-path').dispatchEvent(new Event('blur'));
+    await flush();
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+
+  it('drops Select on a name-typed path rewrite; a stale probe reply cannot restore it', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    expect(confirmBtn().textContent).toBe('Select');
+    // Queue a probe whose reply is delayed past the rewrite.
+    let resolveStale: (v: boolean) => void = () => {};
+    fsStub.isDirectory.mockImplementationOnce(
+      () => new Promise<boolean>((r) => { resolveStale = r; }),
+    );
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    const nameInput = input('modal-project-name');
+    nameInput.value = 'demo';
+    nameInput.dispatchEvent(new Event('input'));
+    expect(input('modal-project-path').value).toBe('/home/u/projects/demo');
+    expect(confirmBtn().textContent).toBe('Create');
+    resolveStale(true);
     await flush();
     expect(confirmBtn().textContent).toBe('Create');
   });
@@ -292,9 +347,10 @@ describe('Add-project checkout-and-create flow', () => {
     pathInput.value = URL_HTTPS;
     pathInput.dispatchEvent(new Event('input'));
     await modalMock.onConfirm!({ 'project-name': 'repo', 'project-path': URL_HTTPS, profile: '' });
-    // The open-prefill probe legitimately stats the default folder; the
-    // URL confirm path itself must never consult isDirectory.
-    expect(fsStub.isDirectory).not.toHaveBeenCalledWith(URL_HTTPS);
+    // A typed URL owns the field: nothing in the modal — open, blur, confirm —
+    // may reach isDirectory for it, and with no blur at all this modal never
+    // probes once.
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
   });
 
   it('prompts for the parent folder when no default folder is set', async () => {

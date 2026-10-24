@@ -1,5 +1,6 @@
 import { appState } from '../../state.js';
 import { onChange as onStatusChange } from '../../session-activity.js';
+import { onSshChange } from '../../session-ssh.js';
 import { onChange as onGitStatusChange } from '../../git-status.js';
 import { onChange as onUnreadChange } from '../../session-unread.js';
 import { onChange as onGithubUnreadChange } from '../../github-unread.js';
@@ -8,7 +9,7 @@ import { onShareChange } from '../../sharing/share-manager.js';
 import { loadProviderAvailability, hasMultipleAvailableProviders } from '../../provider-availability.js';
 import { getActiveContextMenu, hideTabContextMenu } from './menu.js';
 import { gitStatusEl, tabListEl } from './dom.js';
-import { render, updateTabStatus, handleSessionChanged, patchUnread } from './tab-list.js';
+import { render, updateTabStatus, updateTabSsh, handleSessionChanged, patchUnread } from './tab-list.js';
 import { clearTabScrollState } from './tab-scroll.js';
 import { initTabArrows, syncTabArrows } from './tab-arrows.js';
 import { renderGitStatus, showBranchContextMenu } from './git-status-bar.js';
@@ -81,6 +82,9 @@ export function initTabBar(): void {
   onShareChange(render);
 
   onStatusChange(updateTabStatus);
+
+  // Live ssh connect/disconnect: patch the tab's ssh prefix in place.
+  onSshChange((sessionId) => updateTabSsh(sessionId));
 
   // PA-11: flip the tab dots in place; full strip render only if the strip
   // no longer mirrors the model (session-unread already coalesces per frame).
