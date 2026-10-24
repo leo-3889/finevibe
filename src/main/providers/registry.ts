@@ -48,7 +48,7 @@ export function getAllProviderMetas(): CliProviderMeta[] {
 
 // Availability probes (validatePrerequisites → validateBinaryExists: bin-dir
 // scans, nvm walk, `which`/`npm prefix -g` subprocesses) used to run for all
-// six providers on every getAvailableProviderIds call (readiness analysis,
+// seven providers on every getAvailableProviderIds call (readiness analysis,
 // the provider IPC). The result is cached for the process; the explicit
 // invalidation hook below clears it plus the binary probe cache. Call it
 // after provider install/uninstall or a settings change that moves binaries

@@ -87,6 +87,10 @@ describe('launchSessionBaseDir/launchSessionDir', () => {
   it('maps a UI session id to a dir inside the provider base', () => {
     expect(launchSessionBaseDir('pi').replaceAll('\\', '/')).toContain('pi-sessions');
     expect(launchSessionBaseDir('omp').replaceAll('\\', '/')).toContain('omp-sessions');
+    // Pi-Bolt is the third consumer of the per-launch scheme (its own base).
+    expect(launchSessionBaseDir('pi-bolt').replaceAll('\\', '/')).toContain('pi-bolt-sessions');
+    expect(path.dirname(launchSessionDir('pi-bolt', 'sess_1-2_x')).replaceAll('\\', '/'))
+      .toBe(launchSessionBaseDir('pi-bolt').replaceAll('\\', '/'));
     const dir = launchSessionDir('pi', 'sess_1-2_x');
     expect(path.dirname(dir).replaceAll('\\', '/')).toBe(launchSessionBaseDir('pi').replaceAll('\\', '/'));
     expect(path.basename(dir)).toBe('sess_1-2_x');
@@ -453,22 +457,26 @@ describe('enforceLaunchSessionQuota() (A4)', () => {
 
 describe('startSessionRetentionSweeps() (A4)', () => {
   it('sweeps the provider bases at startup with zero launches', async () => {
-    // The base the boot sweep targets is the mocked userData's pi base —
-    // distinct from every `base` fixture (mkdtemp `pi-sessions-*` siblings).
-    const piBase = launchSessionBaseDir('pi');
-    fs.rmSync(piBase, { recursive: true, force: true });
-    fs.mkdirSync(piBase, { recursive: true });
-    const dead = path.join(piBase, 'boot-dead');
-    fs.mkdirSync(dead);
-    const t = new Date(OLD);
-    fs.utimesSync(dead, t, t);
+    // The boot sweep targets all three provider bases under the mocked
+    // userData — each distinct from every `base` fixture (mkdtemp siblings).
+    const bases = (['pi', 'omp', 'pi-bolt'] as const).map((p) => launchSessionBaseDir(p));
+    const deads = bases.map((b, i) => {
+      fs.rmSync(b, { recursive: true, force: true });
+      fs.mkdirSync(b, { recursive: true });
+      const dead = path.join(b, `boot-dead-${i}`);
+      fs.mkdirSync(dead);
+      const t = new Date(OLD);
+      fs.utimesSync(dead, t, t);
+      return dead;
+    });
 
     const stop = startSessionRetentionSweeps();
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(fs.existsSync(dead)).toBe(false);
+    // sweepAll visits every base: pi-sessions, omp-sessions AND pi-bolt-sessions.
+    for (const dead of deads) expect(fs.existsSync(dead)).toBe(false);
     stop();
-    fs.rmSync(piBase, { recursive: true, force: true });
+    for (const b of bases) fs.rmSync(b, { recursive: true, force: true });
   });
 
   it('re-arms on a 24 h tick, runs the daily co-task, unrefs the timer, and the stop handle clears it', () => {

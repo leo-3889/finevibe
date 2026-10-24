@@ -102,11 +102,13 @@ afterEach(async () => {
 });
 
 describe('resolveLaunchSessionDir()', () => {
-  it('only resolves the exclusive launch dir for Pi/OMP rows with a live session', () => {
+  it('only resolves the exclusive launch dir for Pi-family rows with a live session', () => {
     expect(resolveLaunchSessionDir('claude', 'ui-1')).toBeUndefined();
     expect(resolveLaunchSessionDir('pi', undefined)).toBeUndefined();
     expect(resolveLaunchSessionDir('pi', 'ui-1')).toBe('pi-launch-ui-1');
     expect(resolveLaunchSessionDir('omp', 'ui-2')).toBe('omp-launch-ui-2');
+    // pi-bolt is the third arm of the providerId gate (session-export.ts:29).
+    expect(resolveLaunchSessionDir('pi-bolt', 'ui-3')).toBe('pi-bolt-launch-ui-3');
   });
 });
 
