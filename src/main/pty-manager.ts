@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ProviderId } from '../shared/types';
-import { parseEnvVars, partitionUserEnv } from '../shared/env-vars';
+import { parseEnvVars, partitionUserEnv, providerOwnedEnvReason } from '../shared/env-vars';
 import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from '../shared/launch-args';
 import { parseSshHost } from '../shared/ssh-host';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
@@ -451,11 +451,12 @@ export function resolveLaunchSpec(params: {
   // vars like PATH ("user vars win") — EXCEPT the vars a provider owns for
   // profile isolation, which would silently repoint the session at another
   // login's config tree. Those are dropped and reported rather than applied.
-  const { allowed: userAllowed, dropped } = partitionUserEnv(userEnv);
+  const { allowed: userAllowed, dropped } = partitionUserEnv(userEnv, isWin);
   if (dropped.length > 0) {
     console.warn(
-      `Ignoring provider-owned env var(s) for session ${sessionId}: ${dropped.join(', ')} ` +
-        '— the pinned profile owns these.',
+      `Ignoring provider-owned env var(s) for session ${sessionId}: ` +
+        dropped.map((key) => `${key} (${providerOwnedEnvReason(key)})`).join(', ') +
+        ' — the pinned profile owns these; remove them from the session environment.',
     );
   }
   Object.assign(env, userAllowed);

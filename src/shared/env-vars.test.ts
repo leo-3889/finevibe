@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { parseEnvVars, findInvalidEnvLines, partitionUserEnv } from './env-vars';
+import {
+  parseEnvVars,
+  findInvalidEnvLines,
+  partitionUserEnv,
+  findProviderOwnedEnvKeys,
+  providerOwnedEnvReason,
+} from './env-vars';
 
 describe('parseEnvVars', () => {
   it('returns an empty object for empty/whitespace input', () => {
@@ -34,21 +40,21 @@ describe('parseEnvVars', () => {
 
 describe('profile-owned environment', () => {
   it('drops casing variants that Windows treats as the same variable', () => {
-    expect(partitionUserEnv({ claude_config_dir: '/other', Pi_Coding_Agent_Dir: '/other', SAFE: 'yes' })).toEqual({
+    expect(partitionUserEnv({ claude_config_dir: '/other', Pi_Coding_Agent_Dir: '/other', SAFE: 'yes' }, true)).toEqual({
       allowed: { SAFE: 'yes' },
       dropped: ['claude_config_dir', 'Pi_Coding_Agent_Dir'],
     });
   });
 
-  it('drops the pi/omp profile and directory selectors in any casing', () => {
-    expect(partitionUserEnv({ OMP_PROFILE: 'x', pi_profile: 'y', PI_CONFIG_DIR: 'z', PI_CODING_AGENT_DIR: 'w', SAFE: 'yes' })).toEqual({
+  it('drops the pi/omp profile and directory selectors in any casing on Windows', () => {
+    expect(partitionUserEnv({ OMP_PROFILE: 'x', pi_profile: 'y', PI_CONFIG_DIR: 'z', PI_CODING_AGENT_DIR: 'w', SAFE: 'yes' }, true)).toEqual({
       allowed: { SAFE: 'yes' },
       dropped: ['OMP_PROFILE', 'pi_profile', 'PI_CONFIG_DIR', 'PI_CODING_AGENT_DIR'],
     });
   });
 
-  it('drops the per-session hook status keys in any casing', () => {
-    expect(partitionUserEnv({ FINEVIBE_SESSION_ID: 'x', claude_ide_session_id: 'y', SAFE: 'yes' })).toEqual({
+  it('drops the per-session hook status keys in any casing on Windows', () => {
+    expect(partitionUserEnv({ FINEVIBE_SESSION_ID: 'x', claude_ide_session_id: 'y', SAFE: 'yes' }, true)).toEqual({
       allowed: { SAFE: 'yes' },
       dropped: ['FINEVIBE_SESSION_ID', 'claude_ide_session_id'],
     });
@@ -57,10 +63,41 @@ describe('profile-owned environment', () => {
   it('drops COPILOT_HOME so a session cannot relocate the Copilot data tree', () => {
     // The transcript readers only scan the pinned home; a session that
     // overrides COPILOT_HOME writes transcripts where the app never looks.
-    expect(partitionUserEnv({ COPILOT_HOME: '/other', copilot_home: '/x', SAFE: 'yes' })).toEqual({
+    expect(partitionUserEnv({ COPILOT_HOME: '/other', copilot_home: '/x', SAFE: 'yes' }, true)).toEqual({
       allowed: { SAFE: 'yes' },
       dropped: ['COPILOT_HOME', 'copilot_home'],
     });
+  });
+
+  it('drops only the exact-case name on POSIX, where the child env is case-sensitive', () => {
+    // S1-08: `claude_config_dir=/x` is inert in a POSIX child, so folding it
+    // would report a dropped override that never existed.
+    expect(partitionUserEnv({ CLAUDE_CONFIG_DIR: '/other', claude_config_dir: '/inert', SAFE: 'yes' }, false)).toEqual({
+      allowed: { claude_config_dir: '/inert', SAFE: 'yes' },
+      dropped: ['CLAUDE_CONFIG_DIR'],
+    });
+  });
+
+  it('reports nothing for a clean environment on either platform', () => {
+    const env = { PATH: '/usr/local/bin', ANTHROPIC_API_KEY: 'sk' };
+    expect(partitionUserEnv(env, true).dropped).toEqual([]);
+    expect(partitionUserEnv(env, false).dropped).toEqual([]);
+  });
+
+  it('findProviderOwnedEnvKeys mirrors partitionUserEnv on both platforms', () => {
+    const env = { OMP_PROFILE: 'x', omp_profile: 'y' };
+    expect(findProviderOwnedEnvKeys(env, true)).toEqual(['OMP_PROFILE', 'omp_profile']);
+    expect(findProviderOwnedEnvKeys(env, false)).toEqual(['OMP_PROFILE']);
+    expect(findProviderOwnedEnvKeys(env, true)).toEqual(partitionUserEnv(env, true).dropped);
+    expect(findProviderOwnedEnvKeys(env, false)).toEqual(partitionUserEnv(env, false).dropped);
+  });
+
+  it('explains every owned key case-insensitively so the report is actionable', () => {
+    // The renderer warns about a typed key on POSIX too, where only the
+    // exact-case name is live — the explanation must still resolve.
+    expect(providerOwnedEnvReason('claude_config_dir')).toMatch(/profile/i);
+    expect(providerOwnedEnvReason('FINEVIBE_SESSION_ID')).toMatch(/status files/);
+    expect(providerOwnedEnvReason('SOMETHING_ELSE')).toMatch(/pinned .*profile/);
   });
 });
 
