@@ -96,7 +96,7 @@ vi.mock('electron', () => {
 });
 
 vi.mock('./ipc-handlers', async (importOriginal) => {
-  const real = await importOriginal();
+  const real = await importOriginal<typeof import('./ipc-handlers')>();
   return { ...real, registerIpcHandlers: vi.fn(), resetHookWatcher: vi.fn() };
 });
 // main.ts imports both members it calls at boot (killAllPtys on quit, and
