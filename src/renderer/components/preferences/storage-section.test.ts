@@ -169,6 +169,7 @@ describe('storage:scan (bounded userData scan)', () => {
     file('pi-sessions/a.json', 1000);
     file('pi-sessions/nested/deep/b.json', 500);
     file('omp-sessions/c.json', 250);
+    file('pi-bolt-sessions/d.json', 75);
     file('Partitions/finevibe-browser-iso-s1/cookies', 1234);
     file('Cache/data_1', 99);
     file('legacy-retirement.json', 42);
@@ -181,9 +182,10 @@ describe('storage:scan (bounded userData scan)', () => {
     const byName = Object.fromEntries(scan.entries.map((e) => [e.name, e.bytes]));
     expect(byName['pi-sessions']).toBe(1500);
     expect(byName['omp-sessions']).toBe(250);
+    expect(byName['pi-bolt-sessions']).toBe(75);
     expect(byName['Partitions']).toBe(1234);
     expect(byName['Cache']).toBe(99);
-    // misc = userData top level minus the four named subtrees.
+    // misc = userData top level minus the five named subtrees.
     expect(byName['misc']).toBe(42);
     const bytes = scan.entries.map((e) => e.bytes);
     expect([...bytes].sort((a, b) => b - a)).toEqual(bytes);
@@ -213,6 +215,7 @@ describe('storage:clear (path allowlist)', () => {
   it('clears Chromium caches + import temps and NEVER touches session data', async () => {
     file('pi-sessions/a.json', 10);
     file('omp-sessions/b.json', 10);
+    file('pi-bolt-sessions/c.json', 10);
     file('Partitions/finevibe-browser-iso-s1/cookies', 10);
     file('Cache/data_1', 10);
     registerIpcHandlers();
@@ -231,7 +234,7 @@ describe('storage:clear (path allowlist)', () => {
     // The tmp sweep runs with the immediate bound.
     expect(mockSweepImportTempDirs).toHaveBeenCalledWith({ maxAgeMs: 0 });
     // ALLOWLIST ASSERTION: every session-bearing subtree survives, byte-intact.
-    for (const keep of ['pi-sessions/a.json', 'omp-sessions/b.json', 'Partitions/finevibe-browser-iso-s1/cookies', 'Cache/data_1']) {
+    for (const keep of ['pi-sessions/a.json', 'omp-sessions/b.json', 'pi-bolt-sessions/c.json', 'Partitions/finevibe-browser-iso-s1/cookies', 'Cache/data_1']) {
       expect(fs.existsSync(path.join(tmp, keep))).toBe(true);
     }
   });
