@@ -1,15 +1,17 @@
 #!/usr/bin/env node
-// Fail-closed guard for local Windows packaging: proves out/win-unpacked/
-// FineVibe.exe carries the FineVibe icon AND the version stamp written by
-// scripts/edit-win-exe.mjs. The historical defect: a build run with
-// --config.win.signandeditexecutable=false ships a renamed electron.exe that
-// shows the default Electron icon. That exe is NOT iconless — it carries
-// Electron's own atom icon — so presence checks pass; the discriminators are
-// (1) the VS_VERSION_INFO strings electron-builder/rcedit stamp (an
-// unedited exe says "Electron"), and (2) the icon pixels: the FineVibe tile
-// is near-black, the Electron atom averages light. Both are checked directly
+// Fail-closed guard for Windows packaging identity. Proves an artifact carries
+// the FineVibe icon AND FineVibe version resources. Works on both shipped
+// artifacts: the app exe (PE32+, stamped by scripts/edit-win-exe.mjs /
+// electron-builder's rcedit pass) and the NSIS Setup stub (32-bit PE32, whose
+// icon + version info makensis embeds from build/icon.ico at build time).
+// The historical defect: a build run with --config.win.signAndEditExecutable=false
+// ships a renamed electron.exe showing the default Electron icon. That exe is
+// NOT iconless — it carries Electron's own atom icon — so presence checks pass;
+// the discriminators are (1) the VS_VERSION_INFO strings electron-builder/rcedit
+// stamp (an unedited exe says "Electron"), and (2) the icon pixels: the FineVibe
+// tile is near-black, the Electron atom averages light. Both are checked directly
 // against the PE resource directory (no Windows API, no deps).
-// Usage: node scripts/verify-win-exe.mjs [path-to-exe]
+// Usage: node scripts/verify-win-exe.mjs [path-to-exe]   (default: out/win-unpacked/FineVibe.exe)
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -36,11 +38,15 @@ const buf = fs.readFileSync(exe);
 if (buf.readUInt16LE(0) !== 0x5a4d) fail('not an MZ executable');
 const peOff = buf.readUInt32LE(0x3c);
 if (buf.readUInt32LE(peOff) !== 0x00004550) fail('not a PE executable');
-if (buf.readUInt16LE(peOff + 24) !== 0x20b) fail('expected PE32+ (64-bit) image');
+// The app exe is PE32+; the NSIS Setup stub is a 32-bit PE32 image, and both
+// carry the identity resources, so accept either (the data-directory offset
+// differs by image type below).
+const magic = buf.readUInt16LE(peOff + 24);
+if (magic !== 0x20b && magic !== 0x10b) fail(`expected a PE32 (0x10b) or PE32+ (0x20b) image, got 0x${magic.toString(16)}`);
 const numSections = buf.readUInt16LE(peOff + 6);
 const sizeOfOptional = buf.readUInt16LE(peOff + 20);
 const secOff = peOff + 24 + sizeOfOptional;
-const dataDirOff = peOff + 24 + 112; // PE32+ optional header data directories start at +112; index 2 = .rsrc
+const dataDirOff = peOff + 24 + (magic === 0x20b ? 112 : 96); // data directories: PE32+ at +112, PE32 at +96; index 2 = .rsrc
 const rsrcRva = buf.readUInt32LE(dataDirOff + 2 * 8);
 const rsrcSize = buf.readUInt32LE(dataDirOff + 2 * 8 + 4);
 if (!rsrcRva || !rsrcSize) fail('exe has no resource directory at all');
@@ -152,7 +158,29 @@ const strings = Object.fromEntries(
 );
 console.log(`version strings: ProductName=${JSON.stringify(strings.ProductName)} FileVersion=${JSON.stringify(strings.FileVersion)} OriginalFilename=${JSON.stringify(strings.OriginalFilename)}`);
 if (strings.ProductName !== EXPECTED_PRODUCT_NAME) fail(`ProductName is ${JSON.stringify(strings.ProductName)}, expected ${JSON.stringify(EXPECTED_PRODUCT_NAME)} - an unedited build reports "Electron"; run npm run win:stamp`);
-if (!/^\d+\.\d+\.\d+\.\d+$/.test(strings.FileVersion ?? '')) fail(`FileVersion ${JSON.stringify(strings.FileVersion)} is not 4-part numeric`);
-if (strings.OriginalFilename !== 'FineVibe.exe') fail(`OriginalFilename is ${JSON.stringify(strings.OriginalFilename)}, expected "FineVibe.exe"`);
+// Two artifact shapes: the app exe carries rcedit's 4-part numeric stamp plus
+// OriginalFilename; the NSIS Setup stub carries the app version verbatim
+// (`0.3.9-dev`) and no OriginalFilename at all — that is what makensis writes,
+// and the shape release.yml's guard accepts.
+const isSetup = /-Setup-/i.test(path.basename(exe));
+if (!/^(\d+\.){2,3}\d+(-[0-9A-Za-z.-]+)?$/.test(strings.FileVersion ?? '')) {
+  fail(`FileVersion ${JSON.stringify(strings.FileVersion)} is not a version string`);
+}
+if (isSetup) {
+  let appVersion;
+  try {
+    appVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  } catch (err) {
+    fail(`cannot read the app version from package.json: ${err.message}`);
+  }
+  if (strings.FileVersion.split('-')[0] !== appVersion.split('-')[0]) {
+    fail(`Setup FileVersion ${JSON.stringify(strings.FileVersion)} does not carry the app version ${JSON.stringify(appVersion)}`);
+  }
+} else {
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(strings.FileVersion ?? '')) {
+    fail(`app exe FileVersion ${JSON.stringify(strings.FileVersion)} is not 4-part numeric - run npm run win:stamp`);
+  }
+  if (strings.OriginalFilename !== 'FineVibe.exe') fail(`OriginalFilename is ${JSON.stringify(strings.OriginalFilename)}, expected "FineVibe.exe"`);
+}
 
 console.log('OK: exe carries the FineVibe icon and FineVibe version resources');

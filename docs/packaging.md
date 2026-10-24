@@ -17,11 +17,78 @@ derives the packaged assets. Every packaging entrypoint runs it before
 |---|---|
 | `build/icon.png` | `build.icon` + linux icon; shipped in the asar and used as the window icon (`src/main/main.ts`) |
 | `build/icon.icns` | macOS (`build.mac.icon`) |
-| `build/icon.ico` | Windows (`build.win.icon`, 16–256px sizes) |
+| `build/icon.ico` | Windows (`build.win.icon`, 16–256px sizes; also `win:stamp`'s rcedit icon and the NSIS `MUI_ICON`) |
+| `build/installerHeader.bmp` | NSIS assisted-wizard header strip, 150×57 (`MUI_HEADERIMAGE_BITMAP`) |
+| `build/installerSidebar.bmp` | NSIS welcome/finish page bitmap, 164×314 (`MUI_WELCOMEFINISHPAGE_BITMAP`) |
 
-After changing the icon design, edit `scripts/generate-icon.mjs`, run
+The art math (palette, SDF primitives, glyph geometry, PNG encoder) lives in
+`scripts/icon-art.mjs`, shared by the master generator and the wizard bitmaps.
+After changing the icon design, edit `scripts/icon-art.mjs`, run
 `node scripts/generate-icon.mjs && npm run icons`, and commit the regenerated
 master and `build/` assets.
+
+Beyond the packaged installers, the same asset tree feeds:
+
+- **Renderer favicon** — `scripts/copy-assets.js:47` copies
+  `build/icon.png` into the renderer dist; `src/renderer/index.html:8`
+  links it as `rel="icon"`.
+- **Windows app exe stamp** — `scripts/edit-win-exe.mjs` writes
+  `build/icon.ico` + version resources into
+  `out/win-unpacked/FineVibe.exe` via the `rcedit` npm package (see
+  [Icon-stamped Windows builds without Developer Mode](#icon-stamped-windows-builds-without-developer-mode)).
+- **Local guard** — `scripts/verify-win-exe.mjs` (`npm run win:verify`,
+  run inside `npm run dist:win:local`) parses the PE resources directly:
+  it accepts both the PE32+ app exe (4-part numeric `FileVersion` +
+  `OriginalFilename=FineVibe.exe`) and the 32-bit PE32 NSIS Setup stub
+  (its `FileVersion` must carry the app version core from
+  `package.json`).
+- **CI guard** — `release.yml`'s `build-windows` job runs the
+  "Verify Windows exe icon + version resources" step
+  (`.github/workflows/release.yml:357`): it renders the built exe's
+  embedded 32px icon and fails if it matches the default Electron icon,
+  then asserts `ProductName` and the `FileVersion` shape.
+- **macOS bundle icon** — `release.yml`'s `build` job compares
+  `build/icon.icns` byte-for-byte against the `.icns` inside
+  `out/mac{,-arm64}/FineVibe.app/Contents/Resources` (electron-builder
+  copies it verbatim), so a bundle shipping without the master fails CI.
+- **NSIS wizard art** — with `nsis.oneClick: false` the visible installer UI
+  is the assisted wizard, and app-builder-lib reads its art from
+  `build/installerHeader.bmp` (150×57) + `build/installerSidebar.bmp`
+  (164×314) by filename (`NsisTarget.configureDefines`, non-oneClick
+  branch): `installerHeaderIcon.ico` is used only in the oneClick branch, so
+  it is not shipped. makensis fails on any other pixel size; both files are
+  rendered by `npm run icons` from the same art as the master. Measured
+  effect on the artifact: the Setup carries ~18.7 KB more (LZMA-compressed
+  art) with the bitmaps present than with them moved out of `build/`.
+
+### Provider marks
+
+Session tabs and board cards resolve provider art by id at runtime:
+`src/renderer/components/board/board-card.ts:38` and
+`src/renderer/components/tab-bar/tab-list.ts:121` request
+`assets/providers/<providerId>.png` — one PNG per `ProviderId`
+(`src/shared/types.ts:11`: claude, codex, copilot, gemini, pi, omp,
+pi-bolt). `scripts/copy-assets.js:50-53` copies
+`src/renderer/assets/providers/` verbatim into the package, and the marks
+draw at 14×14 (`.tab-provider-icon`, `src/renderer/styles/tabs.css:540`).
+
+`scripts/generate-provider-icons.mjs` (pure Node, deterministic — reruns
+are byte-identical) renders the marks that are not checked-in brand art.
+`pi-bolt.png` is generated from the vendored upstream logo
+`src/renderer/assets/providers/pi-bolt.svg` — `docs/images/logo.svg` from
+[Pi-Bolt](https://github.com/opensec-git/Pi-Bolt) (MIT, © 2025 Mario
+Zechner / © 2026 OpenSec, sha256
+`ccbb953e8f8c3ef9fc773463f5221458d2dc9746eae60e2b7634071f649e22f1`); the
+generator parses the SVG's `<polygon fill= points=…>` shapes, so an
+upstream logo change needs only a re-vendor of the SVG plus a rerun of the
+generator.
+
+`src/renderer/provider-icons.test.ts` gates the directory: the suite
+fails if a `ProviderId` has no icon asset, an icon is trivial or
+malformed (non-square, <32px, <96 bytes), two providers share
+byte-identical icon bytes (the defect that first shipped `pi-bolt.png` as
+a copy of `pi.png`), a `.png` in the directory is owned by no provider id,
+or the registry and the `ProviderId` union disagree.
 
 ## Artifact matrix
 
@@ -222,9 +289,16 @@ symlink privilege are needed), and electron-builder repacks the stamped
 directory with `--prepackaged out/win-unpacked` into the NSIS Setup and the zip.
 `VersionInfo` of `FineVibe.exe` then reports `ProductName=FineVibe` with a
 4-part `FileVersion`, and the file icon is the FineVibe tile. The Setup.exe's
-own installer-stub icon stays the default NSIS icon — editing that stub hits
-the same symlink blocker — and releases remain the CI `windows-2022` path,
-which embeds every icon through the full flow. See the
+own installer stub carries the FineVibe icon too, not the default NSIS one:
+app-builder-lib's `NsisTarget` sets `MUI_ICON`/`MUI_UNICON` from
+`build/icon.ico` at makensis time, so the 32-bit PE32 stub embeds the full
+9-image icon group (16–256px; measured on `out/FineVibe-Setup-0.3.9-dev.exe`
+— 32px entry opaque-pixel mean RGB 56.6, the FineVibe tile, vs 73.4 for the
+Electron atom) with no `winCodeSign` extraction and no symlink privilege.
+The symlink/winCodeSign blockers apply only to electron-builder's own
+rcedit/Authenticode pass on the app exe, never to the installer stub, and
+`scripts/verify-win-exe.mjs` audits both shapes. Releases remain the CI
+`windows-2022` path, which embeds every icon through the full flow. See the
 [windows-packaging skill](../.claude/skills/windows-packaging/SKILL.md) for the
 blocker table and verification steps.
 

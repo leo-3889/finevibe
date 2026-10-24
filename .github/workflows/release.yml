@@ -223,6 +223,25 @@ jobs:
         run: npm run build && npm run icons
           && npx electron-builder --publish never --arm64 --x64 ${{ inputs.artifacts_only && '-c.mac.identity=null -c.mac.notarize=false' || '' }}
 
+      - name: Verify app icon in built bundles
+        # The mac target was the one packaging surface with no icon assertion
+        # (codesign and notarization say nothing about the tile). electron-builder
+        # copies build/icon.icns verbatim into Contents/Resources, so a byte
+        # comparison against the freshly generated master is exact.
+        run: |
+          for app in out/mac-arm64/FineVibe.app out/mac/FineVibe.app; do
+            icns=$(find "$app/Contents/Resources" -maxdepth 1 -name '*.icns' -print -quit)
+            if [ -z "$icns" ]; then
+              echo "::error::$app ships no .icns - the bundle has no app icon"
+              exit 1
+            fi
+            if ! cmp -s build/icon.icns "$icns"; then
+              echo "::error::$icns is not the generated build/icon.icns (assets/icon-source.png)"
+              exit 1
+            fi
+            echo "$app: $(basename "$icns") matches build/icon.icns"
+          done
+
       - name: Verify code signatures
         if: inputs.artifacts_only != true
         # P1-9: strict deep verification of both built bundles; a broken or
@@ -437,6 +456,28 @@ jobs:
 
           if ($fail) { exit 1 }
           Write-Host 'Windows exe icon + version resources OK'
+
+      - name: Verify Setup installer identity
+        # The Setup .exe is the artifact the update feed hands users
+        # (electron-updater installs it on quit), and it is a separate PE: a
+        # 32-bit NSIS stub whose icon + version info makensis embeds from
+        # build/icon.ico (MUI_ICON/MUI_UNICON). Nothing audited it, so an
+        # installer showing the stock NSIS icon while the app tile was fine
+        # shipped green. Same guard as the app exe: scripts/verify-win-exe.mjs
+        # accepts PE32, the 16-256px icon group, the dark-tile pixel mean, and
+        # the installer's version shape (app version, no OriginalFilename).
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setups = @(Get-ChildItem out/FineVibe-Setup-*.exe)
+          if ($setups.Count -eq 0) {
+            Write-Host "::error::No out/FineVibe-Setup-*.exe - the nsis target produced nothing"
+            exit 1
+          }
+          foreach ($s in $setups) {
+            node scripts/verify-win-exe.mjs $s.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       # P1-9 (documented gap): CI configures no Authenticode certificate, so
       # the Windows exe/zip ship unsigned and `signtool verify` has nothing to
