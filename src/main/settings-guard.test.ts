@@ -108,6 +108,34 @@ describe('isFineVibeStatusLine', () => {
     })).toBe(true);
   });
 
+  // The contract between the two sides: installStatusLine shells the script
+  // path ("..." for cmd.exe, shQuote '...' on POSIX) and validateSettings must
+  // read that exact form back as FineVibe's own. A raw-string compare graded
+  // every healthy install as `foreign` — the checklist showed "Overwritten by
+  // another tool", the consent gate prompted about FineVibe's own command, and
+  // Fix rewrote the same value forever.
+  it('returns true for the shell-quoted forms installStatusLine writes', () => {
+    expect(isFineVibeStatusLine({ command: `"${STATUSLINE_SCRIPT}"` })).toBe(true);
+    expect(isFineVibeStatusLine({ command: `'${STATUSLINE_SCRIPT}'` })).toBe(true);
+  });
+
+  it('returns true for a POSIX-quoted path containing a single quote', () => {
+    // shQuote("/home/test/.finevibe/run/o'brien.sh")-style escaping: ' \'' .
+    const quoted = `'${STATUSLINE_SCRIPT.replace(/'/g, `'\\''`)}'`;
+    expect(isFineVibeStatusLine({ command: quoted })).toBe(true);
+  });
+
+  it('returns true for a spelling variant of the script path', () => {
+    const variant = path.resolve(SCRIPT_DIR, '.', '..', 'run', isWin ? 'statusline.cmd' : 'statusline.sh');
+    const slashed = variant.split(path.sep).join('/');
+    expect(isFineVibeStatusLine({ command: `"${slashed}"` })).toBe(true);
+  });
+
+  it('returns false for a quoted foreign command', () => {
+    expect(isFineVibeStatusLine({ command: '"/usr/local/bin/ccline.sh"' })).toBe(false);
+    expect(isFineVibeStatusLine({ command: `'/home/test/.finevibe/run/other.sh'` })).toBe(false);
+  });
+
   it('returns false for foreign statusline', () => {
     expect(isFineVibeStatusLine({ command: '/usr/local/bin/some-other-tool.sh' })).toBe(false);
   });

@@ -39,16 +39,52 @@ function readClaudeSettings(configDir: string = path.join(homedir(), '.claude'))
   return readJsonSafe(path.join(configDir, 'settings.json')) ?? {};
 }
 
+/**
+ * Remove the single layer of shell quoting `installStatusLine` writes around
+ * the script path: `"C:\Users\...\statusline.cmd"` for cmd.exe, `'/path'`
+ * via shQuote on POSIX (where an embedded `'` is escaped as `'\''`).
+ *
+ * The reader must undo what the writer did. The writer quotes because Claude
+ * Code runs the statusLine command through a shell and a raw path breaks on
+ * the first space (spaced home dirs, every `C:\Users\...` install); the
+ * reader once compared the raw `getStatusLineScriptPath()` string, so every
+ * healthy FineVibe install graded as `foreign` — the setup checklist showed
+ * "Overwritten by another tool", the consent gate prompted about FineVibe's
+ * own command, and `Fix` rewrote the same quoted command forever.
+ */
+function unquoteStatusLineCommand(command: string): string {
+  const trimmed = command.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if (first !== last || (first !== '"' && first !== "'")) return trimmed;
+  const inner = trimmed.slice(1, -1);
+  // POSIX shQuote closes the quote, emits an escaped literal quote, and
+  // reopens: `it` -> `'it'\''s'`. cmd.exe doubles an embedded `"`.
+  return (first === "'" ? inner.replace(/'\\''/g, "'") : inner.replace(/""/g, '"')).trim();
+}
+
+/**
+ * Lexical key for a statusline script path: shell-quoted forms, `..`/`.`
+ * segments, trailing separators, `\` vs `/` spellings, and (on the
+ * case-folding Windows volumes this runs on) letter case all collapse to one
+ * key. Lexical on purpose: `canonicalPath`/realpath hits the filesystem, and
+ * validation runs before the script has necessarily been installed.
+ */
+function statusLinePathKey(command: string): string {
+  const resolved = path.resolve(unquoteStatusLineCommand(command));
+  const slashed = resolved.split(path.sep).join('/');
+  return isWin ? slashed.toLowerCase() : slashed;
+}
+
 export function isFineVibeStatusLine(statusLine: unknown): boolean {
   if (!statusLine || typeof statusLine !== 'object') return false;
   const sl = statusLine as Record<string, unknown>;
-  if (sl.command === getStatusLineScriptPath()) return true;
+  if (typeof sl.command !== 'string') return false;
+  if (statusLinePathKey(sl.command) === statusLinePathKey(getStatusLineScriptPath())) return true;
   // Recognize legacy FineVibe statusline paths (e.g. /tmp/finevibe/statusline.sh)
   // so upgrades silently replace them without showing a conflict dialog.
-  if (typeof sl.command === 'string') {
-    return LEGACY_STATUSLINE_RE.test(sl.command);
-  }
-  return false;
+  return LEGACY_STATUSLINE_RE.test(unquoteStatusLineCommand(sl.command));
 }
 
 export function validateSettings(configDir?: string): SettingsValidationResult {
