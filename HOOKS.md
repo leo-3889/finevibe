@@ -246,3 +246,30 @@ on arrival. Elicitation's real discriminator is `mode` (`'form' | 'url'`).
 On each PTY creation the app validates that the core hooks are installed and the
 statusLine is configured, returning `'missing'`, `'partial'`, or `'complete'` and
 showing a warning banner if incomplete. Inspector-only hooks are not validated.
+
+## StatusLine consent (`settings-guard.ts`)
+
+Hooks are additive and install without asking. The **statusLine** is not: overwriting a
+foreign (non-FineVibe) statusLine command requires the user's consent, recorded per config
+dir. Every code path that writes a statusLine into a dir it does not own must go through
+this gate — new providers included.
+
+- **Record**: `Preferences.statusLineConsent` (`'granted' | 'declined' | null`) +
+  `statusLineConsentCommand`, the foreign command the decision was about. The default
+  Claude dir uses these global fields; every profile dir gets its own record in
+  `statusLineConsentByDir[consentDirKey(dir)]` (P1-14) — a Keep/Replace decided for one
+  dir never governs another, in either direction.
+- **Key**: `consentDirKey` = canonical path, `/`-joined, case-folded only on
+  case-insensitive filesystems. A dir reached through a symlink resolves to a new key, so
+  its old record is not found and the dir is asked about once more — consent re-prompt is
+  the safe direction.
+- **Consent binds to the command, not the dir**: `granted` installs only while the current
+  foreign command equals the recorded one; any other (or unknown) foreign command is a new
+  conflict and re-prompts. `declined` with no recorded command (legacy) freezes the
+  current foreign as the kept command. A `declined` decision makes the Setup badge and the
+  Fix Settings CTA leave that provider alone (SA-P2-1) — repair paths must honor Keep.
+- **Writes**: `recordDirConsent` is the map's only write site; it prunes records whose dir
+  no longer exists and caps the map FIFO at 200 (C3M-05).
+- **Persistence**: consent is main-owned state. The renderer's root-change persist
+  load-then-grafts it (SA-P1-1, `4c9e429f`), so a B2 root change can never erase granted
+  or declined decisions.
