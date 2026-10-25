@@ -566,6 +566,9 @@ export interface SettingsValidationResult {
   statusLine: 'missing' | 'finevibe' | 'foreign';
   hooks: 'missing' | 'complete' | 'partial';
   foreignStatusLineCommand?: string;
+  /** SA-P2-1: statusLine is foreign AND the user's declined consent covers
+   * this exact command — a deliberate Keep, not an issue to fix. */
+  userKeptStatusLine?: boolean;
   hookDetails: Record<string, boolean>;
 }
 

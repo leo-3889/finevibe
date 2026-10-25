@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { clipboard, dialog, shell, utilityProcess } from 'electron';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { ClipboardPastePayload } from '../shared/types';
+import type { ClipboardPastePayload, SettingsValidationResult } from '../shared/types';
 import * as path from 'path';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 
@@ -2147,6 +2147,37 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
   it('settings:validate without scope keeps the user-scope check', async () => {
     await handlers.get('settings:validate')!({}, 'copilot');
     expect(provider.validateSettings).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  // SA-P2-1: a foreign statusLine covered by the dir's declined consent is
+  // the user's Keep — validate marks it so Setup renders the neutral tier
+  // and the badge stays silent instead of a red dot + a Replace-performing Fix.
+  it('settings:validate marks a kept foreign statusLine (SA-P2-1)', async () => {
+    provider.validateSettings = vi.fn(() => ({
+      statusLine: 'foreign' as const, hooks: 'complete' as const,
+      foreignStatusLineCommand: '/usr/bin/other-statusline', hookDetails: {},
+    }));
+    vi.mocked(loadState).mockReturnValue({ projects: [], preferences: {} } as never);
+
+    // Matching declined record → Keep.
+    vi.mocked(getDirConsent).mockReturnValue({ consent: 'declined', command: '/usr/bin/other-statusline' });
+    const kept = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/profiles/work')) as SettingsValidationResult;
+    expect(kept.userKeptStatusLine).toBe(true);
+
+    // Command-less declined record freezes onto the current foreign command.
+    vi.mocked(getDirConsent).mockReturnValue({ consent: 'declined', command: null });
+    const frozen = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/profiles/work')) as SettingsValidationResult;
+    expect(frozen.userKeptStatusLine).toBe(true);
+
+    // Stale declined command (a NEW tool overwrote it) → not a Keep.
+    vi.mocked(getDirConsent).mockReturnValue({ consent: 'declined', command: '/usr/bin/OLD-tool' });
+    const notKept = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/profiles/work')) as SettingsValidationResult;
+    expect(notKept.userKeptStatusLine).toBeUndefined();
+
+    // Granted consent (the overwrite is an issue to repair) → not a Keep.
+    vi.mocked(getDirConsent).mockReturnValue({ consent: 'granted', command: null });
+    const granted = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/profiles/work')) as SettingsValidationResult;
+    expect(granted.userKeptStatusLine).toBeUndefined();
   });
 
   it('settings:declineStatusLine records the per-dir Keep and gates unmanaged dirs', () => {

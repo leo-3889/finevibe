@@ -600,6 +600,7 @@
     "statusLineConfigured": "已配置",
     "statusLineMissing": "未配置",
     "statusLineForeign": "已被其他工具覆盖",
+    "statusLineKept": "已保留你的选择",
     "statusLineLabel": "状态行",
     "statusLineDescription": "用于成本跟踪和上下文窗口监控。",
     "hooksComplete": "所有钩子已安装",

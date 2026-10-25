@@ -2634,7 +2634,19 @@ export function registerIpcHandlers(): void {
   // broken project-scoped config is not reported `complete` from the
   // user-global file. No args = user-scope check (Preferences > Setup).
   ipcMain.handle('settings:validate', (_event, providerId: ProviderId = 'claude', projectPath?: string, configDir?: string): SettingsValidationResult => {
-    return getProvider(providerId).validateSettings(projectPath, configDir);
+    const result = getProvider(providerId).validateSettings(projectPath, configDir);
+    // SA-P2-1: a declined consent covering the CURRENT foreign command is the
+    // user's Keep — surface it so Setup renders a neutral tier and the badge
+    // stays silent, instead of a red dot + a Fix that performs the declined
+    // Replace. A declined record with no recorded command freezes onto the
+    // current foreign command (mirrors the settings-guard gate).
+    if (result.statusLine === 'foreign') {
+      const { consent, command } = getDirConsent(loadState().preferences, configDir);
+      if (consent === 'declined' && (!command || command === result.foreignStatusLineCommand)) {
+        return { ...result, userKeptStatusLine: true };
+      }
+    }
+    return result;
   });
 
   // P1-14: for a profile session the warning banner is the single consent
