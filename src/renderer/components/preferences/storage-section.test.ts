@@ -109,7 +109,6 @@ vi.mock('../../../main/menu', autoStub);
 vi.mock('../../../main/readiness/analyzer', autoStub);
 vi.mock('../../../main/github-cli', autoStub);
 vi.mock('../../../main/legacy-import', autoStub);
-vi.mock('../../../main/agentmemory-manager', autoStub);
 vi.mock('../../../main/session-export', autoStub);
 vi.mock('../../../main/fs-utils', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../../main/fs-utils')>(),

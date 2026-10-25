@@ -19,7 +19,6 @@ import { startGitWatcher, notifyGitChanged, onGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
 import { checkForUpdates, quitAndInstall } from './auto-updater';
-import { probeAgentmemory, ensureAgentmemoryRunning, readAgentmemoryLog } from './agentmemory-manager';
 import { createAppMenu } from './menu';
 import { getProvider, getAllProviderMetas, getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
@@ -132,7 +131,7 @@ const PREFERENCE_KEYS = {
   statusLineConsent: true, statusLineConsentCommand: true, statusLineConsentByDir: true,
   copyOnSelect: true, askAiFocus: true, defaultProjectsFolder: true,
   keybindings: true, theme: true, readinessExcludedProviders: true,
-  sidebarViews: true, boardCardMetrics: true, agentmemoryAutoStart: true,
+  sidebarViews: true, boardCardMetrics: true,
   chromeImport: true,
 } satisfies Record<keyof Preferences, true>;
 
@@ -2647,10 +2646,6 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('update:checkNow', () => checkForUpdates());
   ipcMain.handle('update:install', () => quitAndInstall());
-
-  ipcMain.handle('agentmemory:status', () => probeAgentmemory());
-  ipcMain.handle('agentmemory:start', () => ensureAgentmemoryRunning());
-  ipcMain.handle('agentmemory:log', () => readAgentmemoryLog());
 
   ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string, projectPath?: string) => {
     // P2-127: configDir is the dir the warning banner was computed from —

@@ -68,7 +68,6 @@ This README covers what the fork adds on top of the upstream product; the base p
 - **Per-member backend pin** — pin a team member to a specific provider/profile; the pin wins at launch from any launch surface.
 - **Session export** — every session is recorded from creation; export any archived session as a zip archive or a single transcript file.
 - **Default projects folder + git-URL checkout** — new projects pre-fill under your chosen projects folder; paste a GitHub/Codeberg URL to clone the repo and create the project in one step.
-- **Agent Memory engine management** — a Preferences section to auto-start, probe, and tail the shared `agentmemory` daemon in-app; the app never stops the engine — it's shared by every CLI.
 
 The complete per-feature reference — behavior, owning module, numeric limits — lives in
 [`docs/FEATURES.md`](docs/FEATURES.md); provider spawn contracts in

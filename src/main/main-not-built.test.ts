@@ -78,9 +78,7 @@ vi.mock('./ipc-handlers', async (importOriginal) => {
 vi.mock('./pty-manager', () => ({ killAllPtys: vi.fn(), getFullPathAsync: vi.fn(async () => '/usr/bin') }));
 vi.mock('./store', () => ({
   flushState: vi.fn(),
-  // agentmemoryAutoStart: false keeps the boot chain console-silent
-  // (P1-6 teardown race), same as the other mocked-boot suites.
-  loadState: vi.fn(() => ({ preferences: { agentmemoryAutoStart: false } })),
+  loadState: vi.fn(() => ({ preferences: {} })),
 }));
 vi.mock('./menu', () => ({ createAppMenu: vi.fn() }));
 vi.mock('./hook-status', () => ({ restartAndResync: vi.fn() }));
@@ -92,9 +90,6 @@ vi.mock('./auto-updater', () => ({ initAutoUpdater: vi.fn() }));
 vi.mock('./git-watcher', () => ({ stopGitWatcher: vi.fn() }));
 vi.mock('./file-watcher', () => ({ stopAllFileWatchers: vi.fn() }));
 vi.mock('./config-watcher', () => ({ stopConfigWatcher: vi.fn() }));
-vi.mock('./agentmemory-manager', () => ({
-  ensureAgentmemoryRunning: vi.fn(() => Promise.resolve({ running: false })),
-}));
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 vi.mock('./providers/resolve-binary', () => ({ configureProbeCacheDir: vi.fn() }));

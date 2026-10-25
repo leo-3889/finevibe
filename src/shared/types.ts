@@ -481,31 +481,7 @@ export interface Preferences {
   readinessExcludedProviders?: ProviderId[];
   sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;
-  /** Model A: start the shared agentmemory engine when FineVibe launches (start-if-absent; never killed on quit). */
-  agentmemoryAutoStart?: boolean;
   chromeImport?: ChromeImportSummary;
-}
-
-/** Result of probing the shared agentmemory daemon (see main/agentmemory-manager.ts). */
-export interface AgentmemoryStatus {
-  /** True when the daemon answers its health endpoint (reachable on any HTTP response). */
-  running: boolean;
-  /** agentmemory service version, e.g. "0.9.30" (top-level health field). */
-  serviceVersion?: string;
-  /** Pinned engine version(s) advertised by the daemon's workers, e.g. ["0.11.2"]. */
-  engineVersions?: string[];
-  /** Console (Viewer) URL to open, e.g. "http://localhost:3113". */
-  consoleUrl: string;
-  /** Short health detail / failure reason for the UI (e.g. "healthy", "spawn-failed"). */
-  detail?: string;
-}
-
-/** Tail of the shared daemon's captured console output (see main/agentmemory-manager.ts). */
-export interface AgentmemoryLog {
-  /** Absolute path of the log file the tail was read from. */
-  path: string;
-  /** Last bytes of the log, UTF-8 decoded; empty when the file is missing/unreadable. */
-  content: string;
 }
 
 // --- Chrome Import ---

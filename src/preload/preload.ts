@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ImportableLegacyProject } from '../shared/types';
 import type { DiskHealth } from '../shared/types';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus, AgentmemoryLog } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession } from '../shared/types';
 import type { SshSource } from '../shared/ssh-host';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
@@ -138,12 +138,6 @@ export interface FineVibeApi {
       bytesFreed?: number;
       reason?: string;
     }>>;
-  };
-  agentmemory: {
-    status(): Promise<AgentmemoryStatus>;
-    start(): Promise<AgentmemoryStatus>;
-    /** Tail of the daemon console log file (see main/agentmemory-manager.ts). */
-    log(): Promise<AgentmemoryLog>;
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
@@ -353,11 +347,6 @@ const api: FineVibeApi = {
     onQuitting: (cb: () => void) => onChannel('app:quitting', cb),
     onConfirmClose: (cb: () => void) => onChannel('app:confirmClose', cb),
     closeConfirmed: () => { ipcRenderer.send('app:closeConfirmed'); },
-  },
-  agentmemory: {
-    status: () => ipcRenderer.invoke('agentmemory:status'),
-    start: () => ipcRenderer.invoke('agentmemory:start'),
-    log: () => ipcRenderer.invoke('agentmemory:log'),
   },
   storage: {
     scan: () => ipcRenderer.invoke('storage:scan'),
