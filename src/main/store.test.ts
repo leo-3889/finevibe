@@ -134,7 +134,7 @@ describe('loadState', () => {
       preferences: { ...DEFAULT_PREFERENCES },
     };
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('\uFEFF' + JSON.stringify(state));
+    mockReadFileSync.mockReturnValue(`\uFEFF${JSON.stringify(state)}`);
     expect(loadState()).toEqual(state);
   });
 
@@ -226,12 +226,114 @@ describe('saveState', () => {
     // And a main-side read sees them too.
     expect(loadState().preferences.statusLineConsent).toBe('declined');
   });
+
+  // SA-P1-1: the B2 root-change hook calls invalidateStateCache() immediately
+  // before saveState — the old guard (`stateCache?.preferences`) was then false
+  // and the renderer's stale payload became the cache verbatim, erasing a
+  // consent granted in the boot modal permanently. load-then-graft: an empty
+  // cache reloads from disk before the graft reads it.
+  it('reloads disk state when the cache was invalidated before a persist (SA-P1-1)', () => {
+    // Real-disk stand-in: readFileSync returns exactly what the last write wrote.
+    let disk = JSON.stringify({
+      ...DEFAULT_STATE,
+      preferences: {
+        ...DEFAULT_STATE.preferences!,
+        statusLineConsent: 'granted' as const,
+        statusLineConsentCommand: 'cmd-a',
+      },
+    });
+    mockWriteSync.mockImplementation(((
+      _fd: number,
+      buffer: Buffer,
+      position = 0,
+    ) => {
+      if (position === 0) disk = buffer.toString('utf-8');
+      return buffer.length - position;
+    }) as unknown as typeof fs.writeSync);
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('state.json'));
+    mockReadFileSync.mockImplementation(() => disk);
+    invalidateStateCache();
+
+    // The renderer persists its whole state with a BOOT-TIME stale consent
+    // ('declined' from before the modal granted 'granted').
+    const staleRendererPayload: PersistedState = {
+      ...DEFAULT_STATE,
+      preferences: {
+        ...DEFAULT_STATE.preferences!,
+        statusLineConsent: 'declined' as const,
+        statusLineConsentCommand: 'stale-cmd',
+      },
+    };
+    saveState(staleRendererPayload);
+
+    const written = JSON.parse(disk);
+    expect(written.preferences.statusLineConsent).toBe('granted');
+    expect(written.preferences.statusLineConsentCommand).toBe('cmd-a');
+  });
+
+  // SA-P2-2: chromeImport is main-owned (chromeImport:run/clearCookies write
+  // it); a renderer whole-state save must not clobber it.
+  it('grafts the main-owned chromeImport summary onto renderer writes (SA-P2-2)', () => {
+    const summary = { lastImportedAt: 123, profileId: 'Default', cookieCount: 42, skippedV11: 0 };
+    const withImport: PersistedState = {
+      ...DEFAULT_STATE,
+      preferences: { ...DEFAULT_STATE.preferences!, chromeImport: summary },
+    };
+    // Main wrote the summary (chromeImport:run) — disk/cache now carry it.
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('state.json'));
+    mockReadFileSync.mockImplementation(() => JSON.stringify(withImport));
+    loadState();
+
+    // Renderer persist without the key (its boot snapshot predates the import).
+    saveState({ ...DEFAULT_STATE });
+    const written = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
+    expect(written.preferences.chromeImport).toEqual(summary);
+
+    // A renderer payload carrying a STALE summary is also overridden by main's.
+    vi.advanceTimersByTime(300);
+    saveState({
+      ...DEFAULT_STATE,
+      preferences: { ...DEFAULT_STATE.preferences!, chromeImport: { ...summary, cookieCount: 1 } },
+    });
+    vi.advanceTimersByTime(300);
+    const written2 = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(written2.preferences.chromeImport).toEqual(summary);
+  });
 });
 
 describe('saveStateSync', () => {
   it('writes immediately without debounce', () => {
     saveStateSync(DEFAULT_STATE);
     expect(mockWriteSync).toHaveBeenCalledOnce();
+  });
+
+  // SA-P2-7: the sync branch (the beforeunload flush path) had the same graft
+  // as saveState but no test pinning it — the duplicated copy could drift silently.
+  it('grafts main-owned consent keys like saveState (SA-P2-7)', () => {
+    // Own fs state: no state file on disk (vi.clearAllMocks() keeps prior
+    // tests' mock implementations, so the SA-P2-2 mocks would otherwise
+    // persist and the graft would load THAT test's disk content).
+    mockExistsSync.mockReturnValue(false);
+    const withConsent: PersistedState = {
+      ...DEFAULT_STATE,
+      preferences: {
+        ...DEFAULT_STATE.preferences!,
+        statusLineConsent: 'declined' as const,
+        statusLineConsentCommand: 'foreign-cmd',
+        statusLineConsentByDir: { '/x': { consent: 'granted' as const, command: 'c' } },
+        chromeImport: { lastImportedAt: 5, profileId: 'Default', cookieCount: 7, skippedV11: 0 },
+      },
+    };
+    saveStateSync(withConsent);
+    const first = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
+    expect(first.preferences.statusLineConsent).toBe('declined');
+
+    // A second sync write from a stale payload keeps main's consent + summary.
+    saveStateSync({ ...DEFAULT_STATE });
+    const second = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(second.preferences.statusLineConsent).toBe('declined');
+    expect(second.preferences.statusLineConsentCommand).toBe('foreign-cmd');
+    expect(second.preferences.chromeImport).toEqual({ lastImportedAt: 5, profileId: 'Default', cookieCount: 7, skippedV11: 0 });
   });
 
   it('keeps writing after a short write instead of renaming a partial file', () => {
@@ -482,6 +584,11 @@ describe('gate root memo (PA-08)', () => {
   });
 
   it('re-validates a dropped path on every save while a cached sibling costs zero syscalls', () => {
+    // Own fs state: no state file, so the empty-cache graft in saveState
+    // skips loadState() — the previous test's persisted existsSync/readFileSync
+    // mocks would otherwise make it load and validate that test's project list
+    // (extra stats, extra drop warnings), inflating the counts asserted below.
+    mockExistsSync.mockReturnValue(false);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     missing('/mock/home/gone');
     const state = {
@@ -509,6 +616,11 @@ describe('gate root memo (PA-08)', () => {
   // B1: the memo was unbounded (only invalidateStateCache cleared it) — a
   // session that keeps gating on fresh project paths grew it forever.
   it('caps the per-path canonical memo at 200 entries, oldest evicted first', () => {
+    // Own fs state: no state file — an existsSync mock leaked from a prior
+    // test would make saveState's empty-cache graft run loadState(), whose
+    // project validation adds realpath calls for '/mock/home/projects/...'
+    // paths and breaks the memo-miss count below.
+    mockExistsSync.mockReturnValue(false);
     const paths = Array.from({ length: GATE_ROOT_CANONICAL_MAX }, (_, i) => `/mock/home/projects/p${i}`);
     saveState({ ...DEFAULT_STATE, projects: paths.map(projectAt) });
     // One realpath per project path. The lazily recomputed CLI-config-root
