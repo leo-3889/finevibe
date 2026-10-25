@@ -443,7 +443,7 @@ describe('cleanupCodexHooks', () => {
   // P2-61: cleanup is the inverse of install — installCodexHooks writes
   // `codex_hooks = true` into config.toml, and cleanup must strip it,
   // otherwise the user's remaining hooks.json entries keep firing on every
-  // Codex run outside Vibeyard with no in-app way to turn the feature off.
+  // Codex run outside FineVibe with no in-app way to turn the feature off.
   const finevibeHooks = JSON.stringify({
     hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: `echo ${CODEX_HOOK_MARKER}` }] }] },
   });

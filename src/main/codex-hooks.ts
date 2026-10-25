@@ -85,7 +85,7 @@ function ensureCodexHooksFeatureFlag(): void {
 }
 
 // Inverse of ensureCodexHooksFeatureFlag: `installCodexHooks` turns the
-// feature on, so `cleanupCodexHooks` must turn it off — with Vibeyard's
+// feature on, so `cleanupCodexHooks` must turn it off — with FineVibe's
 // hooks stripped, a lingering `codex_hooks = true` makes every remaining
 // user hooks.json entry fire on each Codex run outside the app, and the
 // user has no in-app way to switch the feature back off.

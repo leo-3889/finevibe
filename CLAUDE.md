@@ -1,6 +1,6 @@
-# Vibeyard contributor guide
+# FineVibe contributor guide
 
-Vibeyard is an Electron desktop IDE for seven CLI backends: Claude Code, Codex CLI, GitHub Copilot, Gemini CLI, Pi, Pi-Bolt, and Oh my Pi. Source builds use Node 24 (`.nvmrc`). The published npm launcher accepts Node 18+ and downloads a packaged app.
+FineVibe is an Electron desktop IDE for seven CLI backends: Claude Code, Codex CLI, GitHub Copilot, Gemini CLI, Pi, Pi-Bolt, and Oh my Pi. Source builds use Node 24 (`.nvmrc`). The published npm launcher accepts Node 18+ and downloads a packaged app.
 
 ## Build and checks
 

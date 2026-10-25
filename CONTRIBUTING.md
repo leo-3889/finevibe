@@ -1,4 +1,4 @@
-# Contributing to Vibeyard
+# Contributing to FineVibe
 
 Thanks for your interest in contributing! Here's how to get started.
 
@@ -94,7 +94,7 @@ ad-hoc Ubuntu package without releasing.
 
 We use [GitHub issue templates](https://github.com/elirantutia/vibeyard/issues/new/choose) to streamline reports. Pick the template that fits:
 
-- **Bug Report** — for something broken or not working as expected. The template asks for your OS, Vibeyard version, CLI provider/version, reproduction steps, and expected vs actual behavior.
+- **Bug Report** — for something broken or not working as expected. The template asks for your OS, FineVibe version, CLI provider/version, reproduction steps, and expected vs actual behavior.
 - **Feature Request** — for suggesting a new feature or improvement. Describe the idea, motivation, and any alternatives you've considered.
 - **Documentation Issue** — for reporting errors, gaps, or unclear sections in the docs.
 

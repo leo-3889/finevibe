@@ -1,4 +1,4 @@
-# Vibeyard feature reference
+# FineVibe feature reference
 
 Every feature of the app with its observable behavior, owning module(s), and the test files that cover it.
 Generated from a full audit of `src/` and `bin/` on 2026-10-18; update it when adding features, per the [contributor guide](../CLAUDE.md).
