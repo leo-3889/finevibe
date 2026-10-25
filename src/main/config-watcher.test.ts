@@ -151,6 +151,38 @@ describe('config-watcher', () => {
     expect(fs.watch).not.toHaveBeenCalled();
   });
 
+  it('rebinds to a recreated window without duplicating watchers (SA-P2-11)', () => {
+    const sendA = vi.fn();
+    const sendB = vi.fn();
+    const winA = { isDestroyed: () => destroyedA, webContents: { send: sendA } } as any;
+    const winB = { isDestroyed: () => false, webContents: { send: sendB } } as any;
+    let destroyedA = false;
+
+    startConfigWatcher(winA, '/projects/test');
+    vi.mocked(fs.watchFile).mockClear();
+    vi.mocked(fs.watch).mockClear();
+    vi.mocked(fs.unwatchFile).mockClear();
+    mockClose.mockClear();
+
+    // Window A is destroyed and recreated as B with the same project/provider.
+    destroyedA = true;
+    startConfigWatcher(winB, '/projects/test');
+
+    // No fs watchers torn down or duplicated by the rebind.
+    expect(fs.watchFile).not.toHaveBeenCalled();
+    expect(fs.watch).not.toHaveBeenCalled();
+    expect(fs.unwatchFile).not.toHaveBeenCalled();
+    expect(mockClose).not.toHaveBeenCalled();
+
+    watchFileCallbacks.get('/home/testuser/.claude.json')!();
+    vi.advanceTimersByTime(500);
+
+    // Reaches win B exactly once, never win A.
+    expect(sendB).toHaveBeenCalledTimes(1);
+    expect(sendB).toHaveBeenCalledWith('config:changed');
+    expect(sendA).not.toHaveBeenCalled();
+  });
+
   it('restarts watchers for new project', () => {
     const win = createMockWin();
     startConfigWatcher(win, '/projects/test');
