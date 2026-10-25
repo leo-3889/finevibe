@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -9,6 +9,21 @@ import {
   RETIRE_GRACE_MS,
   type MigrationLedgerRecord,
 } from './userdata-migration';
+
+// SA-P2-9 crash injection: the ESM fs namespace is not spy-able, so wrap
+// writeSync (the copy primitive the atomic copy exercises; writeFileSync
+// goes straight to native bindings and is untouched). $realWriteSync lets
+// the crash mock land a partial write before throwing.
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    $realWriteSync: actual.writeSync,
+    writeSync: vi.fn(actual.writeSync),
+  };
+});
+
+const $realWriteSync = (fs as unknown as { $realWriteSync: typeof fs.writeSync }).$realWriteSync;
 
 const dirs: string[] = [];
 function tmpRoot(): string {
@@ -146,6 +161,90 @@ describe('migrateLegacyUserData', () => {
 
     expect(['Vibeyard', 'vibeyard']).toContain(path.basename(String(report.appData.source)));
     expect(fs.readFileSync(path.join(userData, 'probe-cache.json'), 'utf8')).toBe('dev');
+  });
+});
+
+// --- SA-P2-9: migration crash window (atomic copy) -----------------------
+
+/** Make every copyFileAtomically payload write land one byte and then
+ * throw: simulates the process dying mid-copy. Returns a restore fn. */
+function crashMidTmpCopy(): () => void {
+  const writeMock = vi.mocked(fs.writeSync);
+  writeMock.mockImplementation(((fd, buffer) => {
+    // During a migration pass fs.writeSync is called ONLY by
+    // copyFileAtomically (writeFileSync bypasses the export), so scope by
+    // call site, not fd.
+    if (typeof buffer !== 'string') $realWriteSync(fd, buffer, 0, 1); // one durable byte
+    throw new Error('power loss mid-copy');
+  }) as typeof fs.writeSync);
+  return () => writeMock.mockReset();
+}
+
+function tmpResidues(dir: string): string[] {
+  return fs
+    .readdirSync(dir, { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith('.migrating.tmp'));
+}
+
+describe('migration crash window (SA-P2-9)', () => {
+  it('mid-copy crash leaves no truncated destination; legacy tree untouched', () => {
+    const root = tmpRoot();
+    const { home, appData, userData, legacyHome } = layout(root);
+
+    const restore = crashMidTmpCopy();
+    let report;
+    try {
+      report = migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+    } finally {
+      restore();
+    }
+
+    // Every copy failed mid-tmp-write and was recorded; the walk continued.
+    expect(report.home.errors.join('\n')).toContain('state.json');
+    // The dest tree exists but holds NO truncated state.json: dest-wins can
+    // never freeze a partial snapshot in place.
+    expect(fs.existsSync(path.join(home, '.finevibe', 'state.json'))).toBe(false);
+    // Legacy tree fully intact (copy, never move).
+    expect(fs.readFileSync(path.join(legacyHome, 'state.json'), 'utf8')).toBe('{"projects":[]}');
+    // No marker on a failed pass: the next launch re-walks and re-copies.
+    expect(fs.existsSync(path.join(home, '.finevibe', '.finevibe-migrated'))).toBe(false);
+  });
+
+  it('successful copy lands atomically: tmp renamed, no residue', () => {
+    const root = tmpRoot();
+    const { home, appData, userData } = layout(root);
+
+    migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+
+    expect(fs.readFileSync(path.join(home, '.finevibe', 'state.json'), 'utf8')).toBe('{"projects":[]}');
+    // The tmp sibling is consumed by the rename - a clean pass leaves none.
+    expect(tmpResidues(path.join(home, '.finevibe'))).toEqual([]);
+    expect(tmpResidues(userData)).toEqual([]);
+  });
+
+  it('restart after a mid-copy crash re-copies cleanly', () => {
+    const root = tmpRoot();
+    const { home, appData, userData } = layout(root);
+
+    const restore = crashMidTmpCopy();
+    try {
+      migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+    } finally {
+      restore();
+    }
+    expect(fs.existsSync(path.join(home, '.finevibe', 'state.json'))).toBe(false);
+
+    const second = migrateLegacyUserData({ homedir: home, appDataDir: appData, userDataDir: userData });
+
+    expect(second.home.errors).toEqual([]);
+    expect(second.home.alreadyMigrated).toBe(false);
+    expect(fs.readFileSync(path.join(home, '.finevibe', 'state.json'), 'utf8')).toBe('{"projects":[]}');
+    expect(fs.readFileSync(path.join(home, '.finevibe', 'profiles', 'work', 'mcp.json'), 'utf8')).toBe('{}');
+    // The crashed 1-byte tmp siblings were truncated by 'w' and consumed by
+    // the rename: none linger.
+    expect(tmpResidues(path.join(home, '.finevibe'))).toEqual([]);
+    expect(fs.existsSync(path.join(home, '.finevibe', '.finevibe-migrated'))).toBe(true);
   });
 });
 
