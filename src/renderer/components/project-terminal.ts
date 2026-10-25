@@ -8,6 +8,7 @@ import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
+import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
 import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { isWin } from '../platform.js';
 import { esc } from '../dom-utils.js';
@@ -95,6 +96,9 @@ function createShell(projectId: string): ShellTerminalInstance {
   // 9001 at spawn, so a Windows shell pane starts latched and Escape is
   // never written as a bare ESC to the armed PTY.
   const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty, { latchKey: sessionId, latched: isWin });
+  // Shell panes scroll the log of a fullscreen TUI the same way session terminals
+  // do (ConPTY never forwards its mouse modes to xterm).
+  attachAltScreenWheelScroll(terminal, writeToPty);
   attachClipboardCopyHandler(terminal, handleWin32Key);
   attachImagePasteHandler(terminal, element, writeToPty);
 

@@ -16,6 +16,7 @@ import { appState } from '../state.js';
 import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { openExternal } from '../open-external.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
+import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
 import { forwardResize } from '../sharing/share-manager.js';
@@ -133,6 +134,11 @@ export function createTerminalPane(
   // first output bytes at spawn, before this parser exists — latch it at
   // creation so Escape never goes out as a bare ESC to the armed ConPTY.
   const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty, { latchKey: sessionId, latched: isWin });
+  // ConPTY eats a VT-native app's mouse modes, so a fullscreen TUI (pi-bolt,
+  // Claude CLI) never gets wheel reports: xterm's alt-screen fallback turns each
+  // notch into an Up/Down arrow and the CLI browses prompt history instead of
+  // scrolling the log. Send the wheel reports the terminal would have sent.
+  attachAltScreenWheelScroll(terminal, writeToPty);
 
   // Send CSI u encoding for Shift+Enter so Claude CLI treats it as newline
   attachClipboardCopyHandler(terminal, (e) => {
