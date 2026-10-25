@@ -617,6 +617,14 @@
     "keepButton": "Keep current statusLine",
     "replaceButton": "Use FineVibe statusLine"
   },
+  "settingsGuard": {
+    "bothMissing": "FineVibe settings are missing from {provider}. Cost tracking and session activity may not work.",
+    "statusLineForeign": "Another tool has overwritten FineVibe's statusLine setting. Cost tracking is unavailable.",
+    "statusLineMissing": "Cost tracking is unavailable \u2014 FineVibe's statusLine setting is not configured in {provider}.",
+    "hooksMissing": "Some session tracking hooks are missing from {provider} settings. Activity tracking may not work.",
+    "fixButton": "Fix Settings",
+    "fixingButton": "Fixing\u2026"
+  },
   "help": {
     "tabStatusDot": "Tab Status Dot",
     "status": {

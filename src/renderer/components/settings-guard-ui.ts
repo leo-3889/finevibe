@@ -1,5 +1,7 @@
 import { showAlertBanner, removeAlertBanner } from './alert-banner.js';
 import { showStatusLineConflictModal } from './statusline-conflict-modal.js';
+import { t } from '../i18n.js';
+import { getProviderDisplayName } from '../provider-availability.js';
 import type { SettingsWarningData } from '../../shared/types';
 
 let initialized = false;
@@ -20,35 +22,40 @@ export function initSettingsGuard(): void {
 
     if (!hasStatusLineIssue && !hasHooksIssue) return;
 
+    // SA-P1-2: the banner is per-provider (codex/gemini/copilot all fire
+    // it) — the copy names the provider the validation came from.
+    const providerName = getProviderDisplayName(data.providerId);
     let message: string;
     if (hasStatusLineIssue && hasHooksIssue) {
-      message = 'FineVibe settings are missing from Claude Code. Cost tracking and session activity may not work.';
+      message = t('settingsGuard.bothMissing', { provider: providerName });
     } else if (hasStatusLineIssue) {
       message = data.statusLine === 'foreign'
-        ? 'Another tool has overwritten FineVibe\'s statusLine setting. Cost tracking is unavailable.'
-        : 'Cost tracking is unavailable \u2014 FineVibe\'s statusLine setting is not configured in Claude Code.';
+        ? t('settingsGuard.statusLineForeign')
+        : t('settingsGuard.statusLineMissing', { provider: providerName });
     } else {
-      message = 'Some session tracking hooks are missing from Claude Code settings. Activity tracking may not work.';
+      message = t('settingsGuard.hooksMissing', { provider: providerName });
     }
 
     showAlertBanner({
       icon: '\u26A0',
       message,
       cta: {
-        label: 'Fix Settings',
+        label: t('settingsGuard.fixButton'),
         onClick: async (btn) => {
           btn.disabled = true;
-          btn.textContent = 'Fixing\u2026';
+          btn.textContent = t('settingsGuard.fixingButton');
+          // SA-P1-2: repair the provider the banner was computed from —
+          // a codex/gemini/copilot banner must not run Claude's reinstall.
           // P2-127: repair the config dir the banner was computed from —
           // for a profile session that is the profile dir, not ~/.claude.
           // P2-55: and the project the banner was computed from — Copilot
           // hooks are project-scoped, the user scope is not the broken file.
-          const result = await window.finevibe.settings.reinstall(undefined, data.configDir, data.projectPath);
+          const result = await window.finevibe.settings.reinstall(data.providerId, data.configDir, data.projectPath);
           if (result.success) {
             removeAlertBanner();
           } else {
             btn.disabled = false;
-            btn.textContent = 'Fix Settings';
+            btn.textContent = t('settingsGuard.fixButton');
           }
         },
       },

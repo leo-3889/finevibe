@@ -994,6 +994,9 @@ export function registerIpcHandlers(): void {
       if (statusLineIssue || hooksIssue) {
         win.webContents.send('settings:warning', {
           sessionId,
+          // SA-P1-2: the banner belongs to THIS provider — the Fix Settings
+          // CTA must repair its settings, not Claude's default.
+          providerId: provider.meta.id,
           statusLine: statusLineIssue ? validation.statusLine : 'finevibe',
           hooks: validation.hooks,
           // P2-127: the banner was computed from THIS dir (the profiled

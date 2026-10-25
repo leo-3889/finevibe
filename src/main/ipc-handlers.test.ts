@@ -216,7 +216,7 @@ import { getAllProviders, getAvailableProviderIdsAsync } from './providers/regis
 function makeProvider(): CliProvider {
   return {
     // hookStatus off keeps the post-spawn settings-warning block out of the way.
-    meta: { capabilities: { hookStatus: false } },
+    meta: { id: 'claude', capabilities: { hookStatus: false } },
     onSessionStarted: vi.fn(() => { calls.push('started'); }),
     onSessionResumed: vi.fn(() => { calls.push('resumed'); }),
     onSessionExited: vi.fn(() => { calls.push('exited'); }),
@@ -2091,7 +2091,19 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
         statusLine: 'foreign',
         configDir: '/profiles/work',
         projectPath: '/proj',
+        providerId: 'claude',
       }),
+    );
+  });
+
+  // SA-P1-2: the payload names the provider the banner came from, so the
+  // Fix Settings CTA repairs codex/gemini/copilot, not Claude.
+  it('carries the provider id the validation was computed from', async () => {
+    provider.meta.id = 'codex';
+    await create('ui-1', null, { providerId: 'codex' });
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith(
+      'settings:warning',
+      expect.objectContaining({ sessionId: 'ui-1', providerId: 'codex' }),
     );
   });
 
