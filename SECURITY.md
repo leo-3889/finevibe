@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in Vibeyard, please report it through [GitHub Security Advisories](https://github.com/elirantutia/vibeyard/security/advisories/new).
+If you discover a security vulnerability in FineVibe, please report it through [GitHub Security Advisories](https://github.com/elirantutia/vibeyard/security/advisories/new).
 
 **Please do not open a public issue for security vulnerabilities.**
 
@@ -10,7 +10,7 @@ We will acknowledge your report within 72 hours and aim to release a fix within 
 
 ## Scope
 
-Vibeyard is a local Electron desktop application with privileged main-process access to local projects and terminal sessions. It also has opt-in WebRTC terminal sharing, an embedded webview, Chrome-cookie import, and outbound GitHub/MCP connections. Treat remote peers, web pages, CLI output, project files and imported browser data as separate trust domains.
+FineVibe is a local Electron desktop application with privileged main-process access to local projects and terminal sessions. It also has opt-in WebRTC terminal sharing, an embedded webview, Chrome-cookie import, and outbound GitHub/MCP connections. Treat remote peers, web pages, CLI output, project files and imported browser data as separate trust domains.
 
 ## Known Limitations
 

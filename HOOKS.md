@@ -2,7 +2,7 @@
 
 The Claude payload and installation details below were verified against Claude Code **2.1.238**. Recheck them for newer CLI versions. The cross-provider lifecycle contract lives in [session lifecycle](docs/session-lifecycle.md). The per-event payload schemas below come
 from the [hooks reference](https://code.claude.com/docs/en/hooks); every field name
-Vibeyard reads is in that reference. An invented field name costs nothing at write
+FineVibe reads is in that reference. An invented field name costs nothing at write
 time and renders a blank timeline row forever, so treat this file as the contract
 and re-check it against the docs whenever a hook changes.
 
