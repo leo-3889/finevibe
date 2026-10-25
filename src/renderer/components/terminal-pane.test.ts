@@ -28,6 +28,12 @@ class FakeTerminal {
   attachCustomKeyEventHandler(handler: (e: KeyboardEvent) => boolean): void {
     this.keyHandler = handler;
   }
+  // Alt-screen wheel forwarding (terminal-wheel-scroll) captures its handler
+  // here, mirroring how the win32 key adapter captures the key handler.
+  attachCustomWheelEventHandler(handler: (e: WheelEvent) => boolean): void {
+    this.wheelHandler = handler;
+  }
+  wheelHandler: ((e: WheelEvent) => boolean) | null = null;
   simulateKey(event: Partial<KeyboardEvent>): boolean {
     return this.keyHandler ? this.keyHandler(event as KeyboardEvent) : true;
   }
