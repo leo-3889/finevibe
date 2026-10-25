@@ -66,6 +66,9 @@ export interface WebviewElement extends HTMLElement {
 
 export interface BrowserTabInstance {
   sessionId: string;
+  // P2-68: async setup continuations (getPreloadPath) must not arm the guest
+  // after destroy; destroyBrowserTabPane sets this before tearing down.
+  destroyed: boolean;
   element: HTMLDivElement;
   webview: WebviewElement;
   viewportContainer: HTMLDivElement;

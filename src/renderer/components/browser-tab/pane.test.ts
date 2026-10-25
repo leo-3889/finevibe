@@ -248,3 +248,26 @@ describe('isolation toggle rebuild', () => {
     expect(newSend).toHaveBeenCalledWith('draw-load-strokes', strokes);
   });
 });
+
+describe('createBrowserTabPane destroy-during-preload race (P2-68)', () => {
+  it('a destroy landing during the getPreloadPath await blocks the guest arming', async () => {
+    // getPreloadPath caches module-wide; spy the module fn to stay in charge
+    // of the promise regardless of earlier tests.
+    let resolvePath!: (p: string) => void;
+    const instanceModule = await import('./instance.js');
+    const spy = vi.spyOn(instanceModule, 'getPreloadPath').mockImplementation(() => new Promise<string>((r) => { resolvePath = r; }));
+    createBrowserTabPane('sess-1', 'https://example.com');
+    const instance = instances.get('sess-1')!;
+    const webview = instance.webview as unknown as HTMLElement;
+
+    destroyBrowserTabPane('sess-1');
+    resolvePath('C:/app/browser-tab-preload.js');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The late continuation must not re-arm the detached guest.
+    expect(webview.getAttribute('preload')).toBeNull();
+    expect(webview.getAttribute('src')).not.toBe('https://example.com');
+    spy.mockRestore();
+  });
+});

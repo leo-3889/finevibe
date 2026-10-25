@@ -389,3 +389,21 @@ describe('board-view multi-instance (C5G-07)', () => {
     expect(columnTitles(paneB)).toEqual(['B Renamed', 'B Doing', 'B Done']);
   });
 });
+
+describe('board-view change key providerId (P2-65)', () => {
+  it('re-renders the card provider icon when only providerId changes', async () => {
+    const { hasMultipleAvailableProviders } = await import('../../provider-availability.js');
+    vi.mocked(hasMultipleAvailableProviders).mockReturnValue(true);
+    const container = setupKanban();
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-a' })!;
+    initBoard();
+    renderBoard();
+    const before = container.querySelector('.tab-provider-icon')!.getAttribute('alt');
+
+    // Provider-only edit: the modal persists task.providerId; the key used to
+    // omit it, so the early return kept the old icon.
+    updateTask(task.id, { providerId: before === 'codex' ? 'claude' : 'codex' });
+    const after = container.querySelector('.tab-provider-icon')!.getAttribute('alt');
+    expect(after).not.toBe(before);
+  });
+});

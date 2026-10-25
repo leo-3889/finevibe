@@ -22,6 +22,9 @@ vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
   cb(0);
   return 1;
 });
+// jsdom does not implement scrollIntoView; the P2-82 test opens a custom-select
+// dropdown whose updateActive() scrolls the active item.
+Element.prototype.scrollIntoView = vi.fn();
 
 // modal.ts grabs the overlay elements at module-load time, so this import
 // must run after the jsdom skeleton above exists — a static import cannot
@@ -97,5 +100,25 @@ describe('modal focus restoration', () => {
     // modal control (jsdom has no CSS, so a real browser's display:none
     // blur-to-body is the only difference and it matches today's behavior).
     expect(document.activeElement).toBe(document.getElementById('modal-y'));
+  });
+});
+
+describe('modal ESC with an open dropdown (P2-82)', () => {
+  it('the first ESC closes the dropdown, the second ESC cancels the dialog', () => {
+    showModal(
+      'T',
+      [{ label: 'S', id: 's', type: 'select', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] }],
+      () => {},
+    );
+    const trigger = overlay().querySelector('.custom-select-trigger') as HTMLElement;
+    trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(overlay().querySelector('.custom-select-dropdown.visible')).not.toBeNull();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(overlay().classList.contains('hidden')).toBe(false); // modal survives
+    expect(overlay().querySelector('.custom-select-dropdown.visible')).toBeNull(); // dropdown closed
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(overlay().classList.contains('hidden')).toBe(true); // second ESC cancels
   });
 });

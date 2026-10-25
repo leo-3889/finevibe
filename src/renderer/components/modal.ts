@@ -200,7 +200,20 @@ export function showModal(
 
   // ESC is handled by the centralized modal manager (capture phase) so it works
   // over a focused terminal and never leaks to the PTY.
-  const unregisterEsc = pushModal({ onEscape: handleCancel });
+  // P2-82: the manager swallows ESC wholesale (capture +
+  // stopImmediatePropagation), so a custom-select dropdown open INSIDE this
+  // modal never sees the key. canEscape closes the open dropdown and consumes
+  // the press (returns false); the next ESC cancels the dialog.
+  const unregisterEsc = pushModal({
+    onEscape: handleCancel,
+    canEscape: () => {
+      const open = overlay.querySelector('.custom-select-dropdown.visible');
+      if (!open) return true;
+      open.classList.remove('visible');
+      open.parentElement?.querySelector('.custom-select-trigger.open')?.classList.remove('open');
+      return false;
+    },
+  });
 
   btnConfirm.addEventListener('click', handleConfirm);
   btnCancel.addEventListener('click', handleCancel);

@@ -195,15 +195,21 @@ export function showSearchBar(sessionId: string, backend: SearchBackend): void {
   }
 
   const unsubscribe = backend.subscribe(renderResultState);
-  searchBars.set(sessionId, { bar, backend, unsubscribe });
+  // P2-81: handlers must read the backend through this entry, not the
+  // construction-time closure: showSearchBar's re-show branch swaps
+  // entry.backend for a freshly built one (keybindings construct one per
+  // press), and closure-captured handlers kept driving the stale backend
+  // while the count tracked the new one.
+  const entry = { bar, backend, unsubscribe };
+  searchBars.set(sessionId, entry);
 
   function doSearch() {
     if (!input.value) {
-      backend.clearDecorations();
-      renderResultState(backend.getResultState());
+      entry.backend.clearDecorations();
+      renderResultState(entry.backend.getResultState());
       return;
     }
-    backend.findNext(input.value, getOptions());
+    entry.backend.findNext(input.value, getOptions());
   }
 
   input.addEventListener('input', doSearch);
@@ -213,9 +219,9 @@ export function showSearchBar(sessionId: string, backend: SearchBackend): void {
       e.preventDefault();
       if (!input.value) return;
       if (e.shiftKey) {
-        backend.findPrevious(input.value, getOptions());
+        entry.backend.findPrevious(input.value, getOptions());
       } else {
-        backend.findNext(input.value, getOptions());
+        entry.backend.findNext(input.value, getOptions());
       }
     }
     if (e.key === 'Escape') {
@@ -242,11 +248,11 @@ export function showSearchBar(sessionId: string, backend: SearchBackend): void {
   });
 
   prevBtn.addEventListener('click', () => {
-    if (input.value) backend.findPrevious(input.value, getOptions());
+    if (input.value) entry.backend.findPrevious(input.value, getOptions());
   });
 
   nextBtn.addEventListener('click', () => {
-    if (input.value) backend.findNext(input.value, getOptions());
+    if (input.value) entry.backend.findNext(input.value, getOptions());
   });
 
   closeBtn.addEventListener('click', () => hideSearchBar(sessionId));
