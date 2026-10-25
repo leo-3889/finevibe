@@ -158,20 +158,41 @@ function stateFileIsNewer(candidate: string, reference: string): boolean {
   }
 }
 
-export function saveState(state: PersistedState): void {
-  // S1-02: main is the ONLY writer of the statusLine-consent preference
-  // keys (boot modal -> recordDirConsent / guardedInstall). The renderer
-  // serializes its WHOLE state - boot-time preferences included - on every
-  // mutation (tab click, title, board move), so a renderer persist used to
-  // erase a consent granted in the modal minutes later (declined users
-  // re-prompted every launch). Graft main's authoritative consent keys onto
-  // every incoming payload at the single disk writer. Main-side writers
-  // pass the cache itself, so the graft is identity for them.
-  if (state.preferences && stateCache?.preferences) {
-    state.preferences.statusLineConsent = stateCache.preferences.statusLineConsent;
-    state.preferences.statusLineConsentCommand = stateCache.preferences.statusLineConsentCommand;
-    state.preferences.statusLineConsentByDir = stateCache.preferences.statusLineConsentByDir;
+// SA-P2-7: single implementation of the S1-02 graft, shared by saveState and
+// saveStateSync (previously byte-identical copies, with the sync branch — the
+// beforeunload flush — untested). SA-P1-1: when the cache is empty (the B2
+// root-change hook calls invalidateStateCache() immediately before a persist),
+// load-then-graft: re-read disk so the renderer's stale payload cannot become
+// the new cache and permanently erase a main-side consent. SA-P2-2: chromeImport
+// joins the main-owned key set — chromeImport:run/clearCookies write it on the
+// main side and a renderer whole-state save used to clobber the mid-session summary.
+function graftMainOwnedPreferences(state: PersistedState): void {
+  if (!state.preferences) return;
+  if (!stateCache) {
+    // SA-P1-1: only reload when there IS a persisted state. With no cache and
+    // no file (fresh install) the payload itself is the first state — the old
+    // empty-cache skip is kept for that case so a main-side first write is
+    // never overwritten by the defaults loadState would return.
+    if (!fs.existsSync(STATE_FILE) && !fs.existsSync(`${STATE_FILE}.tmp`)) return;
+    loadState();
   }
+  const authoritative = stateCache?.preferences;
+  if (!authoritative) return;
+  state.preferences.statusLineConsent = authoritative.statusLineConsent;
+  state.preferences.statusLineConsentCommand = authoritative.statusLineConsentCommand;
+  state.preferences.statusLineConsentByDir = authoritative.statusLineConsentByDir;
+  if (authoritative.chromeImport) state.preferences.chromeImport = authoritative.chromeImport;
+  else delete state.preferences.chromeImport;
+}
+
+export function saveState(state: PersistedState): void {
+  // S1-02: main is the ONLY writer of the main-owned preference keys (see
+  // graftMainOwnedPreferences). The renderer serializes its WHOLE state -
+  // boot-time preferences included - on every mutation (tab click, title,
+  // board move), so a renderer persist used to erase a consent granted in the
+  // modal minutes later (declined users re-prompted every launch). Main-side
+  // writers pass the cache itself, so the graft is identity for them.
+  graftMainOwnedPreferences(state);
   lastState = state;
   // P2-84: the cache is LoadedState; a writer's raw state normalizes to
   // the loader's single documented default on the way in.
@@ -432,13 +453,9 @@ export function flushState(): void {
 }
 
 export function saveStateSync(state: PersistedState): void {
-  // S1-02: same consent-key graft as saveState — the renderer's
-  // beforeunload flush is a whole-state write too.
-  if (state.preferences && stateCache?.preferences) {
-    state.preferences.statusLineConsent = stateCache.preferences.statusLineConsent;
-    state.preferences.statusLineConsentCommand = stateCache.preferences.statusLineConsentCommand;
-    state.preferences.statusLineConsentByDir = stateCache.preferences.statusLineConsentByDir;
-  }
+  // S1-02: same graft as saveState via the shared helper (SA-P2-7) — the
+  // renderer's beforeunload flush is a whole-state write too.
+  graftMainOwnedPreferences(state);
   stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
   knownProjectPaths = deriveGateRoots(state.projects);
   // A synchronous write is a disk write: it opens the throttle window for
