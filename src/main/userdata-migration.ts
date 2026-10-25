@@ -13,7 +13,9 @@ import * as path from 'path';
 //
 // Contract (mirrors the f61453b-lineage migration this replaces):
 //   COPY first, never move: rollback stays possible and a partially copied
-//   tree is recoverable by re-running. Retirement (A3, retireLegacyUserData)
+//   tree is recoverable by re-running. Every file copy is atomic (SA-P2-9:
+//   tmp + fsync + rename), so a crash mid-copy leaves the destination file
+//   ABSENT - never truncated - and the next launch re-copies it. Retirement (A3, retireLegacyUserData)
 //   then closes the lifecycle - copy -> verify -> retire: every clean pass
 //   records the copy in a userData ledger (file count + bytes), and the
 //   legacy userData tree is deleted only after a 30-day grace, a
@@ -128,6 +130,47 @@ function walkFiles(root: string, rel: string, out: string[]): void {
   }
 }
 
+/**
+ * SA-P2-9: the crash-safe copy. A plain `copyFileSync` onto the destination
+ * leaves a truncated file when the process dies mid-write, dest-wins then
+ * skips it on every later launch, and the app boots on silent defaults
+ * while the intact legacy tree sits right there. This writes the payload
+ * fully into `<dst>.migrating.tmp` (write loop + fsync) and renames it onto
+ * the destination: after a crash the destination is either absent (the
+ * marker is only written on clean passes, so the next launch re-walks and
+ * re-copies) or complete.
+ *
+ * Mirrors store.ts performStateWrite (open 'w' -> writeFully -> fsyncSync ->
+ * rename); that helper is module-private in store.ts, so this small local
+ * copy is the repo idiom for cross-module reuse.
+ *
+ * ponytail: whole file in memory - legacy userData trees are MBs, not GBs;
+ * move to a chunked fd-to-fd copy if that ever stops being true.
+ */
+function copyFileAtomically(src: string, dst: string): void {
+  const payload = fs.readFileSync(src);
+  const tmp = `${dst}.migrating.tmp`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    // fs.writeSync may stop short of the full payload; renaming a partial
+    // tmp is exactly the truncation this exists to prevent, so keep writing
+    // from the offset the last call stopped at (same guard as store.ts).
+    let offset = 0;
+    while (offset < payload.length) {
+      const written = fs.writeSync(fd, payload, offset);
+      if (written <= 0) throw new Error(`copy stalled at ${offset}/${payload.length} bytes`);
+      offset += written;
+    }
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  // A failed rename leaves the tmp sibling behind on purpose: the next
+  // launch truncates it with 'w' and overwrites. A stray sibling is
+  // harmless; a truncated destination is not.
+  fs.renameSync(tmp, dst);
+}
+
 function copyMissingTree(srcRoot: string, dstRoot: string): TreeMigrationResult {
   const result = emptyResult(srcRoot);
   const files: string[] = [];
@@ -145,7 +188,7 @@ function copyMissingTree(srcRoot: string, dstRoot: string): TreeMigrationResult 
         continue;
       }
       fs.mkdirSync(path.dirname(dst), { recursive: true });
-      fs.copyFileSync(src, dst);
+      copyFileAtomically(src, dst);
       result.copied += 1;
       try {
         result.copiedBytes += fs.statSync(src).size;
