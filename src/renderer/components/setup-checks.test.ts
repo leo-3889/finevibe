@@ -130,4 +130,24 @@ describe('hasProviderIssue', () => {
     });
     expect(hasProviderIssue(status)).toBe(false);
   });
+
+  // Project-scope hooks (Copilot) with no project open are unvalidatable —
+  // the row renders neutral and must not light the badge.
+  it('returns false for a neutral project-scope hook row', () => {
+    const status = makeStatus({
+      meta: makeMeta({ hookStatus: true, hookScope: 'project' }),
+      validation: makeValidation({ hooks: 'missing' }),
+      hooksNeutral: true,
+    });
+    expect(hasProviderIssue(status)).toBe(false);
+  });
+
+  it('returns true for a project-scope provider validated against an open project', () => {
+    const status = makeStatus({
+      meta: makeMeta({ hookStatus: true, hookScope: 'project' }),
+      validation: makeValidation({ hooks: 'missing' }),
+      hooksNeutral: false,
+    });
+    expect(hasProviderIssue(status)).toBe(true);
+  });
 });

@@ -857,3 +857,11 @@ export type ClipboardPastePayload = {
  * by the disk-health preflight (src/main/disk-health.ts) on state
  * transitions only, and served on `disk-health:get` for the renderer. */
 export type DiskHealth = { state: 'ok' | 'low' | 'unknown'; availableBytes?: number; checkedAt: string };
+  /**
+   * Where `hookStatus` hooks live: 'user' (default) installs into the user
+   * config dir; 'project' (Copilot) writes `<project>/.github/hooks/` per
+   * project at PTY spawn and deletes them at quit, so a user-scope check is
+   * structurally always 'missing' â€” Setup validates them against the active
+   * project instead.
+   */
+  hookScope?: 'user' | 'project';

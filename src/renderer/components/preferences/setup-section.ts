@@ -1,5 +1,5 @@
 import { hasProviderIssue, type ProviderStatus } from '../setup-checks.js';
-import type { ProviderId } from '../../../shared/types.js';
+import type { ProviderId, SettingsValidationResult } from '../../../shared/types.js';
 import { t } from '../../i18n.js';
 import type { PreferencesContext, SectionController } from './section.js';
 
@@ -77,27 +77,38 @@ function renderProviderHeader(parent: HTMLElement, displayName: string) {
   parent.appendChild(header);
 }
 
-async function fetchProviderStatuses(): Promise<ProviderStatus[]> {
+async function fetchProviderStatuses(ctx: PreferencesContext): Promise<ProviderStatus[]> {
   const providers = await window.finevibe.provider.listProviders();
+  const activeProject = ctx.getActiveProject();
   return Promise.all(
-    providers.map(meta =>
-      Promise.all([
-        window.finevibe.settings.validate(meta.id),
-        window.finevibe.provider.checkBinary(meta.id),
-      ]).then(([validation, binaryOk]) => ({ meta, validation, binaryOk })),
-    ),
+    providers.map(meta => {
+      // Project-scope provider (Copilot) with no project open: a user-scope
+      // validation is structurally always 'missing' (hooks live per-project),
+      // so skip the IPC and mark the row neutral.
+      const projectScoped = meta.capabilities.hookScope === 'project';
+      const hooksNeutral = projectScoped && !activeProject;
+      const validation: Promise<SettingsValidationResult> = hooksNeutral
+        ? Promise.resolve({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} })
+        : window.finevibe.settings.validate(
+            meta.id,
+            projectScoped ? activeProject?.path : undefined,
+          );
+      return Promise.all([validation, window.finevibe.provider.checkBinary(meta.id)]).then(
+        ([validation, binaryOk]) => ({ meta, validation, binaryOk, hooksNeutral }),
+      );
+    }),
   );
 }
 
 /** On-open badge check — independent of rendering the Setup section. */
 export async function updateSetupBadge(ctx: PreferencesContext): Promise<void> {
-  const results = await fetchProviderStatuses();
+  const results = await fetchProviderStatuses(ctx);
   ctx.setSetupBadge(results.some(hasProviderIssue));
 }
 
 export function createSetupSection(ctx: PreferencesContext): SectionController {
-  async function fixAndRerender(providerId?: ProviderId) {
-    await window.finevibe.settings.reinstall(providerId);
+  async function fixAndRerender(providerId?: ProviderId, projectPath?: string) {
+    await window.finevibe.settings.reinstall(providerId, undefined, projectPath);
     ctx.rerenderSection('setup');
   }
 
@@ -112,7 +123,7 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
       section.appendChild(loading);
       container.appendChild(section);
 
-      const results = await fetchProviderStatuses();
+      const results = await fetchProviderStatuses(ctx);
 
       if (!ctx.isActiveSection('setup')) return;
 
@@ -120,7 +131,7 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
 
       section.innerHTML = '';
 
-      for (const { meta, validation, binaryOk } of results) {
+      for (const { meta, validation, binaryOk, hooksNeutral } of results) {
         renderProviderHeader(section, meta.displayName);
 
         renderCheckItem(section, {
@@ -156,18 +167,38 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
         }
 
         if (capabilities.hookStatus) {
-          const hooksOk = validation.hooks === 'complete';
-          let hooksStatus = t('setup.hooksComplete');
-          if (validation.hooks === 'missing') hooksStatus = t('setup.hooksMissing');
-          else if (validation.hooks === 'partial') hooksStatus = t('setup.hooksPartial');
+          const projectScoped = meta.capabilities.hookScope === 'project';
+          const activeProject = ctx.getActiveProject();
+          const hooksOk = hooksNeutral || validation.hooks === 'complete';
+          if (hooksNeutral) {
+            // No project open for a project-scope provider: neutral tier, no
+            // Fix — there is no project to install into from here.
+            renderCheckItem(section, {
+              label: t('setup.hooksLabel'),
+              description: t('setup.hooksProjectScopedDesc'),
+              ok: true,
+              kept: true,
+              statusText: t('setup.hooksProjectScoped'),
+            });
+          } else {
+            let hooksStatus = t('setup.hooksComplete');
+            if (validation.hooks === 'missing')
+              hooksStatus =
+                projectScoped && activeProject
+                  ? t('setup.hooksMissingProject', { project: activeProject.name })
+                  : t('setup.hooksMissing');
+            else if (validation.hooks === 'partial') hooksStatus = t('setup.hooksPartial');
 
-          renderCheckItem(section, {
-            label: t('setup.hooksLabel'),
-            description: t('setup.hooksDescription'),
-            ok: hooksOk,
-            statusText: hooksStatus,
-            onFix: hooksOk ? undefined : () => fixAndRerender(meta.id),
-          });
+            renderCheckItem(section, {
+              label: t('setup.hooksLabel'),
+              description: t('setup.hooksDescription'),
+              ok: hooksOk,
+              statusText: hooksStatus,
+              onFix: hooksOk
+                ? undefined
+                : () => fixAndRerender(meta.id, projectScoped ? activeProject?.path : undefined),
+            });
+          }
 
           const hookList = document.createElement('div');
           hookList.className = 'setup-hook-details';

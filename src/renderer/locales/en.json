@@ -812,3 +812,6 @@
     "skippedOther": "{count} were skipped — FineVibe already lists them."
   }
 }
+    "hooksMissingProject": "No hooks installed in {project}",
+    "hooksProjectScoped": "Per-project",
+    "hooksProjectScopedDesc": "Installed per project when a session starts; open a project to check or install.",
