@@ -2685,6 +2685,18 @@ export function registerIpcHandlers(): void {
   // broken project-scoped config is not reported `complete` from the
   // user-global file. No args = user-scope check (Preferences > Setup).
   ipcMain.handle('settings:validate', (_event, providerId: ProviderId = 'claude', projectPath?: string, configDir?: string): SettingsValidationResult => {
+    // SA-P3: validate read and echoed (foreignStatusLineCommand) files under
+    // any renderer-supplied dir — the same trust surface reinstall/decline
+    // gate. Refuse out-of-scope args with the all-clear shape the validators
+    // themselves return for non-applicable providers: no banner, no echo.
+    if (configDir && !isManagedMcpConfigDir(configDir)) {
+      console.warn(`settings:validate refused: ${configDir} is not a managed profile directory`);
+      return { statusLine: 'finevibe', hooks: 'complete', hookDetails: {} };
+    }
+    if (projectPath && !isWithinKnownProject(path.resolve(projectPath))) {
+      console.warn(`settings:validate refused: ${projectPath} is not within a known project`);
+      return { statusLine: 'finevibe', hooks: 'complete', hookDetails: {} };
+    }
     const result = getProvider(providerId).validateSettings(projectPath, configDir);
     // SA-P2-1: a declined consent covering the CURRENT foreign command is the
     // user's Keep — surface it so Setup renders a neutral tier and the badge
@@ -2708,6 +2720,12 @@ export function registerIpcHandlers(): void {
   // inert data with no filesystem effect.
   ipcMain.on('settings:declineStatusLine', safeOn('settings:declineStatusLine', (_event, configDir: string | undefined, foreignCommand: string | null) => {
     if (configDir && !isManagedMcpConfigDir(configDir)) return;
+    // SA-P3: a banner dismissal with NO dir is the global ~/.claude surface —
+    // recording it writes the global declined record and mutes the boot
+    // consent modal, which owns global consent. The banner is the consent
+    // surface only for PROFILE dirs (P1-14); a global decline goes through
+    // the modal.
+    if (!configDir) return;
     recordDirConsent(configDir, 'declined', foreignCommand ?? null);
   }));
 

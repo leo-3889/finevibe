@@ -2212,6 +2212,10 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
   // validation (pty:create passes (cwd, configDir)); the unscoped dispatch
   // read the user-global file and reported a broken project as `complete`.
   it('settings:validate scopes to the project and dir it was given', async () => {
+    // SA-P3: the handler now gates its scope args — this case exercises the
+    // IN-scope dispatch, so satisfy the gates (managed dir + known root).
+    vi.mocked(isManagedMcpConfigDir).mockReturnValue(true);
+    knownPaths.push('/proj');
     await handlers.get('settings:validate')!({}, 'copilot', '/proj', '/profiles/work');
     expect(provider.validateSettings).toHaveBeenCalledWith('/proj', '/profiles/work');
   });
@@ -2258,6 +2262,33 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
     vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
     handlers.get('settings:declineStatusLine')!({}, '/home/attacker/.claude', '/x');
     expect(recordDirConsent).toHaveBeenCalledTimes(1);
+  });
+
+  // SA-P3: a dir-less banner dismissal must NOT write the global declined
+  // record — that mutes the boot consent modal, which owns global consent.
+  it('settings:declineStatusLine refuses a dir-less global write (SA-P3)', () => {
+    handlers.get('settings:declineStatusLine')!({}, undefined, '/usr/bin/other-statusline');
+    expect(recordDirConsent).not.toHaveBeenCalled();
+  });
+
+  // SA-P3: validate read and echoed files under any renderer-supplied dir;
+  // the reinstall/decline gates now cover it — refused scopes return the
+  // all-clear shape (no banner, no echo of a foreign command).
+  it('settings:validate refuses unmanaged dirs and foreign projects (SA-P3)', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    const refusedDir = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/home/attacker/.claude')) as SettingsValidationResult;
+    expect(refusedDir).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
+
+    knownPaths.push('/proj');
+    const refusedPath = (await handlers.get('settings:validate')!({}, 'claude', '/home/attacker/victim')) as SettingsValidationResult;
+    expect(refusedPath).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
+    expect(provider.validateSettings).not.toHaveBeenCalled();
+
+    // In-scope args still dispatch normally (this describe's mock returns
+    // a foreign statusLine — the point is that validateSettings RAN).
+    const ok = (await handlers.get('settings:validate')!({}, 'copilot', '/proj/sub')) as SettingsValidationResult;
+    expect(provider.validateSettings).toHaveBeenCalledWith('/proj/sub', undefined);
+    expect(ok.statusLine).toBe('foreign');
   });
 });
 
