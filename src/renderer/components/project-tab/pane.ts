@@ -46,7 +46,10 @@ export function createProjectTabPane(sessionId: string, projectId: string): void
   }
 
   // Lazy-create the default layout — no migration code per the project rule.
-  if (!project.overviewLayout || project.overviewLayout.widgets.length === 0) {
+  // Only an ABSENT layout (fresh install) reseeds: a saved EMPTY widget list
+  // is a deliberate state (user removed every widget) and must render empty
+  // (SA-P2-12).
+  if (!project.overviewLayout) {
     appState.setProjectOverviewLayout(projectId, defaultLayout());
   }
   const layout = project.overviewLayout!;
