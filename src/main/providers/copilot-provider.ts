@@ -6,6 +6,7 @@ import type { BrowserWindow } from 'electron';
 import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { tokenizeArgs } from '../../shared/launch-args';
+import { removeEnvKey } from '../../shared/env-vars';
 import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { getCopilotConfig, AGENT_EXT } from '../copilot-config';
@@ -66,6 +67,12 @@ export class CopilotProvider implements CliProvider {
     const env = { ...baseEnv };
     env[SESSION_ID_VAR] = sessionId;
     env.PATH = getFullPath();
+    // P2-85: an ambient COPILOT_HOME in the app's own launch environment
+    // reached the child via baseEnv and relocated the CLI's data tree away
+    // from every consumer (transcript sync, search) — the inherited-value
+    // twin of the per-session drop in env-vars.ts (codex-provider's
+    // CODEX_HOME guard).
+    removeEnvKey(env, 'COPILOT_HOME');
     return env;
   }
 
@@ -199,8 +206,11 @@ export class CopilotProvider implements CliProvider {
         try {
           const entry = JSON.parse(line);
           if (entry.type !== 'user.message') continue;
+          // P2-56: index string content only. A non-string shape (array,
+          // object) threw into the best-effort catch and silently dropped
+          // the entry from the persistent index — guard, don't guess.
           const c = entry.data?.content;
-          budget.push(c);
+          if (typeof c === 'string' && c) budget.push(c);
         } catch {
           // partial-write tolerance
         }
