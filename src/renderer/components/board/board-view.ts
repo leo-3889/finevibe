@@ -285,7 +285,7 @@ export function boardChangeKey(board: BoardData): string {
     // run/resume glyph and gate the live status/metrics rows — a run or
     // resume (board-session-sync writes them) is invisible until the key
     // sees them.
-    .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}:${tk.sessionId ?? ''}:${tk.cliSessionId ?? ''}`)
+    .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}:${tk.sessionId ?? ''}:${tk.cliSessionId ?? ''}:${tk.providerId ?? ''}`)
     .join(',');
   const filters = `${getSearchQuery()}\u0000${[...getActiveTagFilters()].sort().join('+')}`;
   return `${cols}\u0001${tags}\u0001${tasks}\u0001${filters}\u0001${appState.preferences.boardCardMetrics ?? true}`;

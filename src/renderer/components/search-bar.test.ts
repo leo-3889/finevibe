@@ -242,3 +242,39 @@ describe('search-bar', () => {
     destroySearchBar('session-2');
   });
 });
+
+describe('search-bar re-show backend swap (P2-81)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('document', new FakeDocument());
+  });
+
+  it('drives the freshly supplied backend after a re-show', async () => {
+    const { showSearchBar, destroySearchBar } = await import('./search-bar.js');
+    const container = new FakeElement('div');
+    const b1 = new FakeBackend(container);
+    const b2 = new FakeBackend(container);
+    const calls: string[] = [];
+    (b1 as unknown as { findNext: () => void }).findNext = () => calls.push('b1');
+    (b2 as unknown as { findNext: () => void }).findNext = () => calls.push('b2');
+
+    showSearchBar('session-1', b1 as never);
+    const bar = container.children[0]!;
+    const input = bar.querySelector('input')!;
+    input.value = 'needle';
+
+    // keybindings construct a fresh backend per press; the re-show swaps it.
+    showSearchBar('session-1', b2 as never);
+
+    input.dispatch('keydown', {
+      key: 'Enter',
+      shiftKey: false,
+      preventDefault() {},
+      metaKey: false,
+      ctrlKey: false,
+    });
+    expect(calls).toEqual(['b2']);
+
+    destroySearchBar('session-1');
+  });
+});
