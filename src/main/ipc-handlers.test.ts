@@ -726,6 +726,60 @@ describe('store:save-sync (S1-03)', () => {
   });
 });
 
+// SA-P2-4: the store:save payload was unvalidated — gate-root validation
+// covered `projects[].path` only, so `preferences` reached disk verbatim and
+// an injected unknown key re-hydrated into every consumer on the next boot.
+describe('store:save preferences allowlist (SA-P2-4)', () => {
+  it('drops an unknown preferences key before it reaches the store', async () => {
+    const store = await import('./store');
+    handlers.get('store:save')!({}, {
+      projects: [],
+      preferences: { theme: 'dark', injectedKey: '<script>' },
+    } as never);
+    const passed = vi.mocked(store.saveState).mock.calls[0][0];
+    expect(passed.preferences).not.toHaveProperty('injectedKey');
+  });
+
+  it('keeps every known preferences key', async () => {
+    const store = await import('./store');
+    handlers.get('store:save')!({}, {
+      projects: [],
+      preferences: { theme: 'light', zoomFactor: 1.25, locale: 'zh-CN', keybindings: { 'a': 'b' } },
+    } as never);
+    expect(vi.mocked(store.saveState).mock.calls[0][0].preferences).toEqual({
+      theme: 'light', zoomFactor: 1.25, locale: 'zh-CN', keybindings: { 'a': 'b' },
+    });
+  });
+
+  // The store's graft (S1-02/SA-P1-1) runs inside saveState, AFTER this
+  // filter, and overwrites the main-owned keys with the authoritative cache —
+  // so the filter must pass them through untouched. The graft itself is pinned
+  // by store.test.ts 'grafts main-owned statusLine-consent keys onto every
+  // write (S1-02)'.
+  it('passes the main-owned consent keys through for the store graft', async () => {
+    const store = await import('./store');
+    handlers.get('store:save')!({}, {
+      projects: [],
+      preferences: { statusLineConsent: 'granted', chromeImport: { importedAt: 1 } },
+    } as never);
+    expect(vi.mocked(store.saveState).mock.calls[0][0].preferences).toEqual({
+      statusLineConsent: 'granted', chromeImport: { importedAt: 1 },
+    });
+  });
+
+  it('applies the same allowlist on the synchronous quit flush', async () => {
+    const store = await import('./store');
+    const event = { returnValue: undefined as unknown };
+    handlers.get('store:save-sync')!(event, {
+      projects: [],
+      preferences: { theme: 'dark', injectedKey: 1 },
+    } as never);
+    const passed = vi.mocked(store.saveStateSync).mock.calls[0][0];
+    expect(passed.preferences).not.toHaveProperty('injectedKey');
+    expect(passed.preferences).toMatchObject({ theme: 'dark' });
+  });
+});
+
 describe('readiness/github git-executing handlers share the root gate', () => {
   it('blocks a cwd the renderer invented before any git runs', async () => {
     // Both handlers shell out to git in the named cwd (`git ls-files`,
@@ -2132,8 +2186,26 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
   // P2-55: Copilot's hooks are project-scoped — the CTA must repair the
   // project the banner was validated against, not the user scope.
   it('settings:reinstall threads the banner project to project-scoped providers', async () => {
+    knownPaths.push('/proj');
     await handlers.get('settings:reinstall')!({}, 'copilot', undefined, '/proj');
     expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined, '/proj');
+  });
+
+  // SA-P2-5: projectPath reaches installCopilotHooks' mkdirSync+writeFileSync,
+  // so it carries the same known-project gate as mcp:removeServer — a project
+  // the board never registered is refused before any provider runs.
+  it('settings:reinstall refuses a projectPath outside the known project roots', async () => {
+    knownPaths.push('/proj');
+    const result = await handlers.get('settings:reinstall')!({}, 'copilot', undefined, '/home/attacker/victim');
+    expect(result).toMatchObject({ success: false });
+    expect(provider.reinstallSettings).not.toHaveBeenCalled();
+  });
+
+  it('settings:reinstall accepts a projectPath inside a known project root', async () => {
+    knownPaths.push('/proj');
+    const result = await handlers.get('settings:reinstall')!({}, 'copilot', undefined, '/proj/sub');
+    expect(result).toEqual({ success: true });
+    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined, '/proj/sub');
   });
 
   // P2-86: settings:validate must dispatch scoped like the post-spawn

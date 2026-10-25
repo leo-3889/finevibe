@@ -31,7 +31,7 @@ import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { detectGitCheckoutUrl } from '../shared/git-url';
-import type { ProviderId, Profile, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
+import type { ProviderId, Profile, Preferences, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { canonicalPath, canonicalRoot, expandUserPath, resolveUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
@@ -112,6 +112,46 @@ function requireGitFilePath(channel: string, root: string, filePath: string): st
 function isWithin(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+// SA-P2-4: `store:save` / `store:save-sync` take the renderer's PersistedState
+// verbatim. saveState validates the gate roots (P1-12) and grafts the
+// main-owned consent keys (S1-02), but `preferences` itself was never checked:
+// an injected unknown key persisted to disk and re-hydrated into every
+// consumer. Known-keys filter at the IPC boundary (no schema library). The
+// main-owned keys stay in the list on purpose — the store's graft runs AFTER
+// this (saveState → graftMainOwnedPreferences) and overwrites them with the
+// authoritative cache values, so filtering them out here would only erase the
+// payload the graft replaces. The `satisfies` is the drift guard: a Preferences
+// key missing from this object is a compile error, not a silent drop.
+const PREFERENCE_KEYS = {
+  soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: true,
+  sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true,
+  confirmCloseWorkingSession: true, zoomFactor: true, defaultProvider: true,
+  locale: true, defaultProfiles: true, planModeDefaults: true,
+  statusLineConsent: true, statusLineConsentCommand: true, statusLineConsentByDir: true,
+  copyOnSelect: true, askAiFocus: true, defaultProjectsFolder: true,
+  keybindings: true, theme: true, readinessExcludedProviders: true,
+  sidebarViews: true, boardCardMetrics: true, agentmemoryAutoStart: true,
+  chromeImport: true,
+} satisfies Record<keyof Preferences, true>;
+
+function sanitizePersistedState(state: PersistedState): PersistedState {
+  const prefs = state?.preferences;
+  if (!prefs || typeof prefs !== 'object') return state;
+  const clean: Record<string, unknown> = {};
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(prefs)) {
+    if (Object.hasOwn(PREFERENCE_KEYS, key)) clean[key] = value;
+    else dropped.push(key);
+  }
+  if (dropped.length > 0) {
+    console.warn(`store:save dropped ${dropped.length} unknown preferences key(s): ${dropped.join(', ')}`);
+  }
+  // SAFETY: every key of `clean` passed the PREFERENCE_KEYS allowlist, so the
+  // object is a Preferences-shaped subset by construction; TS cannot follow
+  // Object.entries' Record<string, unknown> widening back to the interface.
+  return { ...state, preferences: clean as unknown as Preferences };
 }
 /** Map an exit + transcript crash reason to the renderer's exitReason
  *  (crash reason wins over the exit code; undefined = clean exit). */
@@ -1332,7 +1372,9 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.warn('store:save root-cache hook failed:', err);
     }
-    saveState(state);
+    // SA-P2-4: preferences key allowlist at the boundary, before the store's
+    // gate-root validation and the main-owned graft (both run in saveState).
+    saveState(sanitizePersistedState(state));
   });
 
   // S1-03: synchronous quit flush. The renderer's beforeunload needs the
@@ -1351,7 +1393,8 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.warn('store:save-sync root-cache hook failed:', err);
     }
-    saveStateSync(state);
+    // SA-P2-4: same allowlist as store:save — same renderer payload class.
+    saveStateSync(sanitizePersistedState(state));
     event.returnValue = true;
   }, () => false));
 
@@ -2619,6 +2662,14 @@ export function registerIpcHandlers(): void {
     // target THAT project, not the user-scope / last-installed one.
     if (configDir && !isManagedMcpConfigDir(configDir)) {
       return { success: false, error: `Refused: ${configDir} is not a managed profile directory.` };
+    }
+    // SA-P2-5: projectPath is renderer-supplied and reaches a writer —
+    // installCopilotHooks does mkdirSync+writeFileSync under it. Same
+    // known-project gate as mcp:removeServer / config:watchProject: a project
+    // the board never registered is refused before any provider runs.
+    if (projectPath && !isWithinKnownProject(path.resolve(projectPath))) {
+      console.warn(`settings:reinstall blocked: ${projectPath} is not within a known project`);
+      return { success: false, error: 'Path is not within a known project' };
     }
     try {
       const provider = getProvider(providerId);
