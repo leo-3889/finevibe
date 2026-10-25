@@ -23,16 +23,16 @@ it was already partly committed. **Reconcile against git, then report.**
 Never quote a census you did not just measure — print it with the commands:
 
 ```bash
-P=todos/full-audit-2026-10-20-plan.md
+P=todos/archives/full-audit-2026-10-20-plan.md   # full 172-row history (live rows merged into AUDIT_STATUS.md 2026-10-25)
 grep -oE '\b(P[0-9]+-[0-9]+|C-[0-9]+)\b' $P | sort -u | wc -l   # distinct ids
-grep -cE '\| [A-Z] \| open \|' $P                               # rows still open
-grep -oE '\| [A-Z] \| [a-z-]+ \|' $P | awk '{print $4}' | sort | uniq -c | sort -rn
+grep -c '| open |' todos/AUDIT_STATUS.md                         # rows still open (Registry section)
+grep -oE '\| P[0-9] \| [A-Z] \| open \|' todos/AUDIT_STATUS.md | sort | uniq -c   # severity split
 ```
 
 Measured 2026-10-24: 172 distinct ids, 139 rows `open`, plus rows whose status column is
 prose (`**decided: FORK identity**`, `decision`, `approval`) — the histogram only counts
-machine-shaped statuses, so it under-counts decisions by design. Quote the numbers with
-the date.
+machine-shaped statuses, so it under-counts decisions by design. Measured 2026-10-25
+(post-merge): **12 open (9 P2 / 3 P3; 0 P1) + 4 SA rows**. Quote the numbers with the date.
 
 ## Recipe: truthful status snapshot
 
@@ -43,11 +43,15 @@ the date.
    `planModeStartupInput|pendingPromptTrigger` proves it never landed.
 3. Map plan → commits by subject: `git log --oneline -25` (subjects carry plan ids, e.g.
    `feat(projects): default projects folder + git-URL checkout (65-67)`).
-4. Registry rows: ids live in the **first table cell**, bolded or not —
-   `grep -oE '\b(P[0-9]+-[0-9]+|C-[0-9]+)\b' $P | sort -u` (172 ids). The bold-only pattern
-   `\*\*(P[0-9]-[0-9]+|C-[0-9]+)\*\*` matches 11 of them: it under-counts ~15×, so never use
-   it for a census. Statuses: `grep -cE '\| [A-Z] \| open \|' $P`.
-   Read §1.1 "Commit map" (one task per commit, mirrored in the session todo list) and §7
+4. Registry rows: since the 2026-10-25 merge the OPEN rows + census live in
+   `todos/AUDIT_STATUS.md` §"Registry — live census and open rows"; the full 172-row
+   history (every closed row with its `fixed (<sha>)` cell) is in
+   `todos/archives/full-audit-2026-10-20-plan.md`. Ids live in the **first table cell**,
+   bolded or not — `grep -oE '\b(P[0-9]+-[0-9]+|C-[0-9]+)\b' $P | sort -u` (172 ids).
+   The bold-only pattern `\*\*(P[0-9]-[0-9]+|C-[0-9]+)\*\*` matches 11 of them: it
+   under-counts ~15×, so never use it for a census.
+   Read the archived registry's §1.1 "Commit map" (one task per commit, mirrored in the
+   session todo list) and §7
    "Wave A/B/C/D" gates (12-task checklist, wave exit = 3 checks + the extras in §6). Rows
    are keyed by stable ids (`P1-19`, `C-5`) — cite the id, not the row number.
 5. Report in three buckets: **landed** (commit + test), **open code work** (anchored),

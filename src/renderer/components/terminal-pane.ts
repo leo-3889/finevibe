@@ -6,7 +6,6 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { initSession, removeSession } from '../session-activity.js';
-import { setSshStatus } from '../session-ssh.js';
 import { markFreshSession } from '../session-insights.js';
 import { removeSession as removeCostSession, formatTokens, getCost, type CostInfo } from '../session-cost.js';
 import { removeSession as removeContextSession, getContext, getContextSeverity, type ContextWindowInfo } from '../session-context.js';
@@ -332,9 +331,6 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
   // already true while `pty:create` was suspended (Copilot awaits a hook
   // install), and a file dropped into the pane was written to nothing.
   instance.ptyReady = true;
-  // A persisted ssh host means the session runs over that host (or is marked
-  // to): publish it as the live explicit state so the tab prefix appears.
-  if (instance.sshHost) setSshStatus(sessionId, { host: instance.sshHost, source: 'explicit' });
   instance.isResume = true; // subsequent spawns (e.g. Restart Session) should resume
 
   // Callers fire this un-awaited and fit the pane immediately after, so that fit

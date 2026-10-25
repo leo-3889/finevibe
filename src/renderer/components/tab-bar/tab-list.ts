@@ -3,7 +3,6 @@ import { parseSshHost } from '../../../shared/ssh-host.js';
 import type { ProviderId, TabGroupRecord } from '../../../shared/types.js';
 import { findGroupForSession, isGroupableTab, TAB_GROUP_DWELL_MS } from '../../state/tab-group-state.js';
 import { getStatus, STATUS_GLYPH, type SessionStatus } from '../../session-activity.js';
-import { getSshStatus, setSshStatus } from '../../session-ssh.js';
 import { isUnread } from '../../session-unread.js';
 import { hasUnreadInProject as hasGithubUnread } from '../../github-unread.js';
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW } from '../../icons.js';
@@ -83,12 +82,10 @@ function sweepGroupHighlights(): void {
   for (const el of tabListEl.querySelectorAll('.drag-over-group')) el.classList.remove('drag-over-group');
 }
 
-function buildTooltip(status: SessionStatus, cliSessionId?: string, sessionId?: string): string {
+function buildTooltip(status: SessionStatus, cliSessionId?: string): string {
   const statusLine = t('tab.tooltip.statusPrefix', { status });
   const lines = [statusLine];
   if (cliSessionId) lines.push(t('tab.tooltip.sessionPrefix', { cliSessionId }));
-  const ssh = sessionId ? getSshStatus(sessionId) : null;
-  if (ssh) lines.push(t('tab.tooltip.sshHost', { host: ssh.host }));
   return lines.join('\n');
 }
 
@@ -123,13 +120,6 @@ function tabNamePrefix(session: SessionRecord): string {
   }
 }
 
-/** The dynamic `ssh <host> - ` prefix (display-only, never part of session.name). */
-function sshPrefix(session: SessionRecord): string {
-  const ssh = getSshStatus(session.id);
-  if (!ssh) return '';
-  return `<span class="tab-ssh-prefix">ssh ${esc(ssh.host)} - </span>`;
-}
-
 function tabTitle(_project: ProjectRecord, session: SessionRecord, status: SessionStatus): string {
   switch (session.type) {
     case 'diff-viewer': return t('tab.tooltip.diff', { name: session.diffFilePath || session.name });
@@ -140,7 +130,7 @@ function tabTitle(_project: ProjectRecord, session: SessionRecord, status: Sessi
     case 'project-tab': return t('tab.tooltip.projectTools');
     case 'kanban': return t('tab.tooltip.kanbanBoard');
     case 'team': return t('tab.tooltip.team');
-    default: return buildTooltip(status, session.cliSessionId ?? undefined, session.id);
+    default: return buildTooltip(status, session.cliSessionId ?? undefined);
   }
 }
 
@@ -302,7 +292,6 @@ function promptSshHost(session: SessionRecord): void {
   const parsed = parseSshHost(raw);
   if (!parsed) return;
   if (!appState.setSessionSshHost(session.id, parsed.host)) return;
-  setSshStatus(session.id, { host: parsed.host, source: 'explicit' });
 }
 
 function showTabContextMenu(x: number, y: number, project: ProjectRecord, session: SessionRecord, tab: HTMLElement): void {
@@ -454,7 +443,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
       sshClearItem.addEventListener('click', (e) => {
         e.stopPropagation();
         hideTabContextMenu();
-        if (appState.setSessionSshHost(session.id, null)) setSshStatus(session.id, null);
+        appState.setSessionSshHost(session.id, null);
       });
       menu.appendChild(sshClearItem);
     }
@@ -644,7 +633,7 @@ export function render(): void {
     // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
     tab.innerHTML = `
       ${statusDot}
-      <span class="tab-name${status === 'working' && getSshStatus(session.id) ? ' ssh-inferred' : ''}">${sshPrefix(session) + namePrefix}${esc(displayName)}</span>
+      <span class="tab-name">${namePrefix}${esc(displayName)}</span>
       ${shareIndicator}
       <span class="tab-close" title="${esc(t('tab.closeTooltip'))}">&times;</span>
     `;
@@ -807,20 +796,9 @@ export function updateTabStatus(sessionId: string, status: SessionStatus): void 
     // it. Same reason the dot write above is guarded — render() omits the
     // .tab-status span for those tabs.
     if (!session || isCliSession(session)) {
-      tab.title = buildTooltip(status, session?.cliSessionId ?? undefined, sessionId);
+      tab.title = buildTooltip(status, session?.cliSessionId ?? undefined);
     }
-    tab.querySelector<HTMLElement>('.tab-name')?.classList.toggle('ssh-inferred', !!getSshStatus(sessionId) && status === 'working');
   }
-}
-
-/** Live ssh-state change: refresh one tab's prefix + inferred class, no full render. */
-export function updateTabSsh(sessionId: string): void {
-  const tab = tabListEl.querySelector(`.tab-item[data-session-id="${sessionId}"]`) as HTMLElement | null;
-  if (!tab) return;
-  const project = appState.activeProject;
-  const session = project?.sessions.find(s => s.id === sessionId);
-  if (!project || !session) { render(); return; }
-  patchTabMetadata(project, session, tab, true);
 }
 /**
  * PA-12: `session-changed` used to rebuild the whole strip (innerHTML='' +
@@ -863,9 +841,8 @@ function patchTabMetadata(project: ProjectRecord, session: SessionRecord, tab: H
   if (forceName || tab.dataset.tabName !== displayName) {
     tab.dataset.tabName = displayName;
     // pi-lens-ignore: xss-innerhtml, slop, no-inner-html — prefix is static markup, name is escaped
-    if (nameSpan) nameSpan.innerHTML = `${sshPrefix(session) + tabNamePrefix(session)}${esc(displayName)}`;
+    if (nameSpan) nameSpan.innerHTML = `${tabNamePrefix(session)}${esc(displayName)}`;
   }
-  nameSpan?.classList.toggle('ssh-inferred', !!getSshStatus(session.id) && getStatus(session.id) === 'working');
 }
 
 /** Activation: toggle .active/.unread across the strip, restore scroll plan. */

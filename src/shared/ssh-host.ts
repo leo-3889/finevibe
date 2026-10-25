@@ -1,15 +1,12 @@
-// SSH host parsing for the ssh session-name prefix
-// (todos/ssh-session-name-prefix-plan.md). Pure JS (no Node APIs): the renderer
-// validates for the UI, main re-validates before putting the value into `ssh`
-// argv or the tab DOM — a compromised value must not aim ssh at an option string
-// (`-oProxyCommand=…`) or inject HTML into the tab name.
+// SSH host parsing for the per-session `ssh <host>` launch wrap.
+// Pure JS (no Node APIs): the renderer validates for the UI, main re-validates
+// before putting the value into `ssh` argv — a compromised value must not aim
+// ssh at an option string (`-oProxyCommand=…`).
 //
 // Accepted forms: `host`, `user@host`. Rejected: whitespace, ports (`:22` —
 // the port belongs to `ssh -p`, the prefix shows the host), `ssh://` URLs,
 // leading `-` (option injection), characters outside the hostname/username
 // grammars, length > 253.
-
-export type SshSource = 'explicit' | 'spawned' | 'detected';
 
 export interface SshHostRef {
   /** Normalized `user@host` when a user is given, else `host`. */
