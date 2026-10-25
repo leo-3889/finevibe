@@ -7,6 +7,12 @@ export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '
 
 const STATE_DIR = path.join(os.homedir(), '.finevibe');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
+// SA-P2-8: last-known-good copy. Before it, a single corrupt state.json
+// (a bad hand-edit, a truncated file) meant a whole-state reset: the .tmp
+// sibling is a crash artifact that is consumed on recovery, so it is the
+// only copy exactly when it is missing. `performStateWrite` mirrors every
+// successful commit here, and `loadState` falls back to it.
+const STATE_FILE_GOOD = `${STATE_FILE}.good`;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** Leading-edge throttle window; see saveState. */
@@ -96,18 +102,50 @@ function parseStateJson(raw: string): PersistedState {
   return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw) as PersistedState;
 }
 
+/** SA-P2-8: the migration seam. Today version 1 passes through and any
+ * other version is REFUSED with a loud warn — the loader then falls back to
+ * the recovery chain below (never silently: the reset is the warn). A future
+ * version bump adds its step HERE (`if (parsed.version === 2) return
+ * migrateV2(parsed)`), not in loadState's control flow. Refusing, not
+ * booting on a shape this build cannot interpret, is the current contract. */
+function migrateState(parsed: PersistedState): PersistedState | null {
+  if (parsed.version === 1) return parsed;
+  console.warn(
+    `state.json version ${JSON.stringify((parsed as { version?: unknown }).version)} has no migration path in this build: refusing the file (see store.ts migrateState)`,
+  );
+  return null;
+}
+
+/** SA-P2-8: the last-known-good copy, version-checked and parse-guarded.
+ * Returns undefined when there is nothing usable (no file, torn copy). */
+function readGoodState(): PersistedState | undefined {
+  try {
+    if (!fs.existsSync(STATE_FILE_GOOD)) return undefined;
+    const parsed = parseStateJson(fs.readFileSync(STATE_FILE_GOOD, 'utf-8'));
+    return parsed.version === 1 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function loadState(): LoadedState {
   if (stateCache) return stateCache;
   const valid: { main?: PersistedState; tmp?: PersistedState } = {};
+  // Only a state.json that EXISTS and fails to PARSE opens the .good
+  // fallback: a missing file is a fresh install, and a refused version is a
+  // deliberate refusal, not damage to route around.
+  let mainCorrupt = false;
   for (const file of [STATE_FILE, `${STATE_FILE}.tmp`]) {
     try {
       if (!fs.existsSync(file)) continue;
       const raw = fs.readFileSync(file, 'utf-8');
       const parsed = parseStateJson(raw);
-      if (parsed.version !== 1) continue;
-      if (file === STATE_FILE) valid.main = parsed;
-      else valid.tmp = parsed;
+      if (file === STATE_FILE) valid.main = migrateState(parsed) ?? undefined;
+      // The .tmp sibling keeps the plain version-1 skip: it is a crash
+      // artifact of THIS build's writer, never a migration subject.
+      else if (parsed.version === 1) valid.tmp = parsed;
     } catch {
+      if (file === STATE_FILE) mainCorrupt = true;
       continue;
     }
   }
@@ -123,6 +161,13 @@ export function loadState(): LoadedState {
     } catch {
       // Vanished (or the file system refuses) — the next save truncates it.
     }
+  }
+  // SA-P2-8: corrupt state.json, no .tmp winner → the last-known-good copy.
+  // The warn names the source so a recovery is never mistaken for the
+  // plain 'using defaults' reset (the audit's bar: recovery is visible).
+  if (!picked && mainCorrupt) {
+    picked = readGoodState();
+    if (picked) console.warn('Recovered state from last-known-good copy (state.json is corrupt)');
   }
   if (picked) {
     // P1-12: the same root validation guards the disk path — a peer-written
@@ -604,6 +649,18 @@ function performStateWrite(state: PersistedState): void {
     fs.closeSync(fd);
   }
   renameWithRetry(tmpFile, STATE_FILE);
+  // SA-P2-8: mirror the committed payload to the last-known-good copy. One
+  // plain write of the buffer the rename just made durable — no second
+  // fsync: a torn .good is a parse failure in readGoodState, which falls
+  // through to the pre-SA-P2-8 behavior (defaults), never to a bad state.
+  // The mode matches state.json (P2-101: the payload can carry secrets).
+  // Best-effort: a .good failure must not report the successful commit as a
+  // write failure and arm the ENOSPC backoff for a write that worked.
+  try {
+    fs.writeFileSync(STATE_FILE_GOOD, payload, { mode: 0o600 });
+  } catch {
+    // Best-effort: the next successful write recreates it.
+  }
 }
 
 function writeStateAtomically(state: PersistedState): void {

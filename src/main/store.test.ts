@@ -10,6 +10,7 @@ vi.mock('fs', () => ({
   closeSync: vi.fn(),
   mkdirSync: vi.fn(),
   renameSync: vi.fn(),
+  writeFileSync: vi.fn(),
   statSync: vi.fn(),
   realpathSync: vi.fn(),
 }));
@@ -30,6 +31,7 @@ const mockFsyncSync = vi.mocked(fs.fsyncSync);
 const mockCloseSync = vi.mocked(fs.closeSync);
 const mockMkdirSync = vi.mocked(fs.mkdirSync);
 const mockRenameSync = vi.mocked(fs.renameSync);
+const mockWriteFileSync = vi.mocked(fs.writeFileSync);
 const mockStatSync = vi.mocked(fs.statSync);
 const mockRealpathSync = vi.mocked(fs.realpathSync);
 
@@ -726,5 +728,102 @@ describe('write-failure backoff (ENOSPC storm)', () => {
     expect(err).toHaveBeenCalledTimes(1);
     err.mockRestore();
     info.mockRestore();
+  });
+});
+
+// SA-P2-8: a corrupt state.json used to mean a silent whole-state reset (the
+// .tmp sibling is a consumed crash artifact, so it is missing exactly when it
+// is needed), and `version !== 1` reset to defaults with one generic warn and
+// no migration seam. Recovery order is .tmp → .good → defaults, each with a
+// distinct warn; the version path is the documented migrateState() seam.
+describe('state recovery and the migration seam (SA-P2-8)', () => {
+  const pathEnds = (p: unknown, suffix: string): boolean =>
+    String(p).replaceAll('\\', '/').endsWith(suffix);
+  const diskFiles = (files: Record<string, string>): void => {
+    mockExistsSync.mockImplementation((p) =>
+      Object.keys(files).some((suffix) => pathEnds(p, suffix)));
+    mockReadFileSync.mockImplementation((p) => {
+      const hit = Object.keys(files).find((suffix) => pathEnds(p, suffix));
+      if (!hit) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return files[hit]!;
+    });
+  };
+  const stateAt = (id: string): string =>
+    JSON.stringify({ ...DEFAULT_STATE, activeProjectId: id });
+
+  it('recovers a corrupt state.json from the last-known-good copy', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    diskFiles({
+      'state.json': '{corrupt',
+      'state.json.good': stateAt('from-good'),
+    });
+
+    expect(loadState().activeProjectId).toBe('from-good');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('last-known-good'),
+    );
+    warn.mockRestore();
+  });
+
+  it('prefers a valid .tmp over the good copy when state.json is corrupt', () => {
+    // Existing behavior pinned: the .tmp check runs first, and with no
+    // parseable state.json it wins on mtime by definition.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    diskFiles({
+      'state.json': '{corrupt',
+      'state.json.tmp': stateAt('from-tmp'),
+      'state.json.good': stateAt('from-good'),
+    });
+
+    expect(loadState().activeProjectId).toBe('from-tmp');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('temp file'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('last-known-good'));
+    warn.mockRestore();
+  });
+
+  it('falls back to defaults, loudly, when the good copy is gone too', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    diskFiles({ 'state.json': '{corrupt' });
+
+    expect(loadState()).toEqual(DEFAULT_STATE);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('No valid state file'));
+    warn.mockRestore();
+  });
+
+  it('refuses a future version through the migration seam: defaults + a version warn', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    diskFiles({ 'state.json': JSON.stringify({ ...DEFAULT_STATE, version: 2 }) });
+
+    expect(loadState()).toEqual(DEFAULT_STATE);
+    // Distinct from the corrupt/defaults warns: it names the version and the seam.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('version 2 has no migration path'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('last-known-good'));
+    warn.mockRestore();
+  });
+
+  it('mirrors every successful commit to state.json.good (0600)', () => {
+    saveStateSync({ ...DEFAULT_STATE, activeProjectId: 'committed' });
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(pathEnds(mockWriteFileSync.mock.calls[0]![0], 'state.json.good')).toBe(true);
+    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0]![1])).activeProjectId).toBe('committed');
+    expect(mockWriteFileSync.mock.calls[0]![2]).toEqual({ mode: 0o600 });
+    // The mirror runs after the commit rename, never before it.
+    expect(mockRenameSync.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockWriteFileSync.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('does not report a good-copy failure as a state write failure', () => {
+    // state.json committed; a .good write failure must not log the ENOSPC
+    // outage line nor arm the write backoff for a write that worked.
+    mockWriteFileSync.mockImplementation(() => { throw new Error('ENOSPC'); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    saveStateSync(DEFAULT_STATE);
+
+    expect(mockRenameSync).toHaveBeenCalledOnce();
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
   });
 });
