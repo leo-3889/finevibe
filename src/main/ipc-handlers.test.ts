@@ -3115,3 +3115,74 @@ describe('default projects folder in the enumerate gate', () => {
     await expect(handlers.get('fs:listDir')!({}, OUTSIDE_HOME)).resolves.toEqual([]);
   });
 });
+
+describe('P2-110: the five channels the coverage map overclaimed', () => {
+  it('git:openInEditor gates the root, keeps the file inside it, and opens the joined path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-openin-'));
+    try {
+      expect(() => handlers.get('git:openInEditor')!({}, root, 'a.ts')).toThrow(/not within a known project/);
+      expect(shell.openPath).not.toHaveBeenCalled();
+
+      knownPaths.push(root);
+      expect(() => handlers.get('git:openInEditor')!({}, root, '../escape.ts')).toThrow(/escapes the project/);
+      expect(() => handlers.get('git:openInEditor')!({}, root, '.')).toThrow(/not the project root/);
+      expect(shell.openPath).not.toHaveBeenCalled();
+
+      await handlers.get('git:openInEditor')!({}, root, path.join('src', 'a.ts'));
+      expect(shell.openPath).toHaveBeenCalledWith(path.join(root, 'src', 'a.ts'));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('app:openExternal opens only http(s) and rejects anything else', async () => {
+    const spy = vi.spyOn(shell, 'openExternal').mockResolvedValue(undefined);
+    expect(() => handlers.get('app:openExternal')!({}, 'file:///etc/passwd')).toThrow(/Only HTTP\(S\)/);
+    expect(() => handlers.get('app:openExternal')!({}, 'javascript:alert(1)')).toThrow(/Only HTTP\(S\)/);
+    expect(() => handlers.get('app:openExternal')!({}, 'not a url')).toThrow(/Invalid URL/);
+    expect(spy).not.toHaveBeenCalled();
+
+    await handlers.get('app:openExternal')!({}, 'https://example.com/x');
+    expect(spy).toHaveBeenCalledWith('https://example.com/x');
+  });
+
+  it('app:getBrowserPreloadPath resolves to the browser-tab preload next to the build', () => {
+    const p = handlers.get('app:getBrowserPreloadPath')!({}) as string;
+    expect(p.endsWith(path.join('preload', 'preload', 'browser-tab-preload.js'))).toBe(true);
+  });
+
+  it('browser:saveScreenshot validates the payload and sanitizes the session id', async () => {
+    await expect(handlers.get('browser:saveScreenshot')!({}, 's1', 'data:image/jpeg;base64,AAAA')).rejects.toThrow(/Invalid screenshot data URL/);
+    await expect(handlers.get('browser:saveScreenshot')!({}, 's1', 42 as never)).rejects.toThrow(/Invalid screenshot data URL/);
+    await expect(
+      handlers.get('browser:saveScreenshot')!({}, 's1', 'data:image/png;base64,' + 'A'.repeat(72_000_000)),
+    ).rejects.toThrow(/exceeds size limit/);
+
+    const written = await handlers.get('browser:saveScreenshot')!({}, '../evil', 'data:image/png;base64,iVBORw0KGgo=') as string;
+    try {
+      expect(path.dirname(written)).toBe(path.join(os.tmpdir(), 'finevibe-screenshots'));
+      expect(path.basename(written)).toMatch(/^draw-___evil-\d+\.png$/);
+      expect(fs.existsSync(written)).toBe(true);
+    } finally {
+      fs.rmSync(written, { force: true });
+    }
+  });
+
+  it('clipboard:saveImage answers null for malformed/mime/cap and saves a valid png', async () => {
+    await expect(handlers.get('clipboard:saveImage')!({}, 'not a data url')).resolves.toBeNull();
+    await expect(handlers.get('clipboard:saveImage')!({}, {} as never)).resolves.toBeNull();
+    await expect(handlers.get('clipboard:saveImage')!({}, 'data:text/plain;base64,AAAA')).resolves.toBeNull();
+    await expect(
+      handlers.get('clipboard:saveImage')!({}, 'data:image/png;base64,' + 'A'.repeat(35_000_000)),
+    ).resolves.toBeNull();
+
+    const saved = await handlers.get('clipboard:saveImage')!({}, 'data:image/png;base64,iVBORw0KGgo=') as string;
+    try {
+      expect(typeof saved).toBe('string');
+      expect(path.basename(saved)).toMatch(/^paste-\d+-[0-9a-f]{6,}\.png$/);
+      expect(fs.existsSync(saved)).toBe(true);
+    } finally {
+      fs.rmSync(saved, { force: true });
+    }
+  });
+});
