@@ -1,6 +1,5 @@
 import { appState } from './state.js';
 import { onChange, type SessionStatus } from './session-activity.js';
-import { getSshStatus, sshPrefixText } from './session-ssh.js';
 
 // C4S-09: per-session minimum spacing. A flapping status edge (working →
 // waiting → working …) used to stack a fresh OS banner every 2 s transition.
@@ -39,7 +38,7 @@ function showNotification(sessionId: string, status: SessionStatus): void {
   // is still sitting in Notification Center. Clicking it then does nothing but
   // raise the app. Without a tag each notification gets its own id and listener.
   const notification = new Notification(found?.project.name ?? 'FineVibe', {
-    body: bodyForStatus(sshPrefixText(getSshStatus(sessionId)) + (found?.session.name ?? 'Session'), status),
+    body: bodyForStatus(found?.session.name ?? 'Session', status),
     silent: true,
   });
   activeNotifications.set(sessionId, notification);

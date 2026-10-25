@@ -2,7 +2,6 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ImportableLegacyProject } from '../shared/types';
 import type { DiskHealth } from '../shared/types';
 import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession } from '../shared/types';
-import type { SshSource } from '../shared/ssh-host';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -33,7 +32,6 @@ export interface FineVibeApi {
     onCliSessionId(callback: (sessionId: string, cliSessionId: string) => void): () => void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
-    onSshStatus(callback: (sessionId: string, host: string | null, source: SshSource) => void): () => void;
     resyncStatus(): void;
     syncRestored(sessions: { sessionId: string; providerId: ProviderId; cliSessionId: string | null; cwd: string; configDir?: string; createdAt: string }[]): Promise<void>;
     release(sessionId: string): void;
@@ -251,9 +249,6 @@ const api: FineVibeApi = {
     onSessionName: (callback) =>
       onChannel('session:sessionName', (sessionId, name, cliSessionId) =>
         callback(sessionId as string, name as string, (cliSessionId as string) || '')),
-    onSshStatus: (callback) =>
-      onChannel('session:sshStatus', (sessionId, host, source) =>
-        callback(sessionId as string, (host as string) ?? null, source as SshSource)),
     resyncStatus: () => ipcRenderer.send('session:resyncStatus'),
     syncRestored: (sessions) => ipcRenderer.invoke('session:syncRestored', sessions),
     release: (sessionId) => ipcRenderer.send('session:release', sessionId),

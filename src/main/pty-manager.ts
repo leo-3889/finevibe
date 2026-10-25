@@ -10,8 +10,7 @@ import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from
 import { parseSshHost } from '../shared/ssh-host';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
-import { registerSession, unregisterSession, writeSshStatus } from './hook-status';
-import { observePtyOutput } from './ssh-detect';
+import { registerSession, unregisterSession } from './hook-status';
 import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
 import { isLinux, isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
@@ -553,7 +552,6 @@ export async function spawnPty(
     }
 
     registerSession(sessionId);
-    if (sshHost) writeSshStatus(sessionId, sshHost, 'spawned');
 
     const provider = getProvider(providerId);
 
@@ -628,12 +626,7 @@ export async function spawnPty(
       throw err;
     }
 
-    ptyProcess.onData((data) => {
-      // An explicit ssh launch already published its host; scanning its
-      // remote output could only echo the same value back.
-      if (!sshHost) observePtyOutput(sessionId, data);
-      onData(data);
-    });
+    ptyProcess.onData(onData);
     ptyProcess.onExit(({ exitCode, signal }) => {
       if (replacedPtys.delete(ptyProcess)) return;
       // Only remove from map if this PTY is still the active one for this session
@@ -776,10 +769,7 @@ export function spawnShellPty(
     env: shellEnv,
   });
 
-  ptyProcess.onData((data) => {
-    observePtyOutput(sessionId, data);
-    onData(data);
-  });
+  ptyProcess.onData(onData);
   ptyProcess.onExit(({ exitCode, signal }) => {
     if (replacedPtys.delete(ptyProcess)) return;
     // Only remove from map if this PTY is still the active one for this session

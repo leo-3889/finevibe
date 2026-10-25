@@ -103,8 +103,7 @@
       "browserNew": "New Tab",
       "projectTools": "Project tools",
       "kanbanBoard": "Kanban board",
-      "team": "Team",
-      "sshHost": "SSH: {host}"
+      "team": "Team"
     },
     "title": {
       "overview": "{name} - Overview",
@@ -605,7 +604,10 @@
     "statusLineDescription": "Required for cost tracking and context window monitoring.",
     "hooksComplete": "All hooks installed",
     "hooksMissing": "No hooks installed",
+    "hooksMissingProject": "No hooks installed in {project}",
     "hooksPartial": "Some hooks missing",
+    "hooksProjectScoped": "Per-project",
+    "hooksProjectScopedDesc": "Installed per project when a session starts; open a project to check or install.",
     "hooksLabel": "Session Hooks",
     "hooksDescription": "Required for session activity tracking.",
     "fixAllButton": "Fix All"
@@ -675,10 +677,7 @@
     "gitConflictedDesc": "Files with merge conflicts",
     "gitSampleAhead": "↑2 ↓3",
     "gitAheadLabel": "Ahead/Behind",
-    "gitAheadDesc": "Commits ahead/behind remote",
-    "sshPrefixSample": "ssh host - Name",
-    "sshPrefixLabel": "SSH host prefix",
-    "sshPrefixDesc": "A session connected over SSH shows its host as a prefix (ssh host - Name); while inference runs the name pulses like the working glyph."
+    "gitAheadDesc": "Commits ahead/behind remote"
   },
   "about": {
     "appName": "FineVibe",
@@ -812,6 +811,3 @@
     "skippedOther": "{count} were skipped — FineVibe already lists them."
   }
 }
-    "hooksMissingProject": "No hooks installed in {project}",
-    "hooksProjectScoped": "Per-project",
-    "hooksProjectScopedDesc": "Installed per project when a session starts; open a project to check or install.",

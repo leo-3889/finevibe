@@ -57,7 +57,6 @@ const { render, updateTabStatus, handleSessionChanged, patchUnread } = await imp
 const { isUnread } = await import('../../session-unread.js');
 const { setActiveContextMenu, getActiveContextMenu } = await import('./menu.js');
 const { _resetForTesting } = await import('./tab-scroll.js');
-const ssh = await import('../../session-ssh.js');
 const { t } = await import('../../i18n.js');
 
 const tabListEl = document.getElementById('tab-list')!;
@@ -96,7 +95,6 @@ function fireDrag(el: HTMLElement, type: string, clientX = 0, dataTransfer = fak
 beforeEach(() => {
   vi.clearAllMocks();
   _resetForTesting();
-  ssh._resetSshForTesting();
   tabListEl.innerHTML = '';
   stripScroll = 0;
   for (const m of document.body.querySelectorAll('.tab-context-menu')) m.remove();
@@ -120,45 +118,6 @@ describe('dblclick rename (P2-103)', () => {
   });
 });
 
-describe('ssh prefix + pulse (SSH-NAME-1)', () => {
-  it('renders the ssh prefix span before the name when connected', () => {
-    ssh.setSshStatus('s1', { host: 'lab.example.com', source: 'explicit' });
-    render();
-    const name = tabListEl.querySelector('.tab-item .tab-name')!;
-    expect(name.innerHTML).toContain('<span class="tab-ssh-prefix">ssh lab.example.com - </span>');
-  });
-
-  it('renders no prefix when the session is not connected', () => {
-    render();
-    const name = tabListEl.querySelector('.tab-item .tab-name')!;
-    expect(name.innerHTML).not.toContain('tab-ssh-prefix');
-  });
-
-  it('escapes a hostile host in the prefix (namePrefix is raw HTML)', () => {
-    ssh.setSshStatus('s1', { host: 'x"><img src=y>', source: 'detected' });
-    render();
-    const name = tabListEl.querySelector('.tab-item .tab-name')!;
-    expect(name.querySelector('.tab-ssh-prefix img')).toBeNull();
-    expect(name.innerHTML).toContain('ssh x"&gt;&lt;img src=y&gt; - ');
-  });
-
-  it('updateTabStatus toggles ssh-inferred only when connected AND working', () => {
-    ssh.setSshStatus('s1', { host: 'lab.example.com', source: 'explicit' });
-    render();
-    const name = tabListEl.querySelector('.tab-item .tab-name')!;
-    updateTabStatus('s1', 'working');
-    expect(name.classList.contains('ssh-inferred')).toBe(true);
-    updateTabStatus('s1', 'waiting');
-    expect(name.classList.contains('ssh-inferred')).toBe(false);
-  });
-
-  it('updateTabStatus does not pulse a non-ssh session even when working', () => {
-    render();
-    const name = tabListEl.querySelector('.tab-item .tab-name')!;
-    updateTabStatus('s1', 'working');
-    expect(name.classList.contains('ssh-inferred')).toBe(false);
-  });
-});
 
 describe('rename-time hand-scroll banking (P2-119)', () => {
   it('banks a scroll made during an open rename, so the project returns to it', () => {

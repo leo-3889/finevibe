@@ -103,8 +103,7 @@
       "browserNew": "新标签页",
       "projectTools": "项目工具",
       "kanbanBoard": "看板",
-      "team": "团队",
-      "sshHost": "SSH：{host}"
+      "team": "团队"
     },
     "title": {
       "overview": "{name} - 概览",
@@ -605,7 +604,10 @@
     "statusLineDescription": "用于成本跟踪和上下文窗口监控。",
     "hooksComplete": "所有钩子已安装",
     "hooksMissing": "未安装钩子",
+    "hooksMissingProject": "{project} 未安装钩子",
     "hooksPartial": "部分钩子缺失",
+    "hooksProjectScoped": "按项目安装",
+    "hooksProjectScopedDesc": "钩子在启动会话时按项目安装；打开项目即可检查或安装。",
     "hooksLabel": "会话钩子",
     "hooksDescription": "用于会话活动跟踪。",
     "fixAllButton": "一键修复"
@@ -675,10 +677,7 @@
     "gitConflictedDesc": "存在合并冲突的文件",
     "gitSampleAhead": "↑2 ↓3",
     "gitAheadLabel": "领先/落后",
-    "gitAheadDesc": "领先/落后于远程的提交数",
-    "sshPrefixSample": "ssh 主机 - 名称",
-    "sshPrefixLabel": "SSH 主机前缀",
-    "sshPrefixDesc": "通过 SSH 连接的会话会以主机为前缀显示（ssh 主机 - 名称）；推理进行时名称会像 working 字形一样脉动。"
+    "gitAheadDesc": "领先/落后于远程的提交数"
   },
   "about": {
     "appName": "FineVibe",
@@ -812,6 +811,3 @@
     "skippedOther": "已跳过 {count} 个——FineVibe 中已存在。"
   }
 }
-    "hooksMissingProject": "{project} 未安装钩子",
-    "hooksProjectScoped": "按项目安装",
-    "hooksProjectScopedDesc": "钩子在启动会话时按项目安装；打开项目即可检查或安装。",

@@ -2,7 +2,6 @@ export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, Gi
 import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession } from '../shared/types.js';
 import type { ImportableLegacyProject } from '../shared/types.js';
 import type { DiskHealth } from '../shared/types.js';
-import type { SshSource } from '../shared/ssh-host.js';
 
 export interface FinevibeApi {
   pty: {
@@ -26,7 +25,6 @@ export interface FinevibeApi {
     cancelDeepSearch(): void;
     onCostData(callback: (sessionId: string, costData: CostData) => void): () => void;
     onSessionName(callback: (sessionId: string, name: string, cliSessionId: string) => void): () => void;
-    onSshStatus(callback: (sessionId: string, host: string | null, source: SshSource) => void): () => void;
     onInspectorEvents(callback: (sessionId: string, events: InspectorEvent[]) => void): () => void;
     onToolFailure(callback: (sessionId: string, data: ToolFailureData) => void): () => void;
     resyncStatus(): void;

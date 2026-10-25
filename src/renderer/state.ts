@@ -5,7 +5,6 @@ import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './prov
 import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { basename } from '../shared/platform.js';
 import { parseSshHost } from '../shared/ssh-host.js';
-import { setSshStatus } from './session-ssh.js';
 import { isCliSession } from './session-utils.js';
 import {
   archiveSession as archiveSessionPure,
@@ -1419,7 +1418,7 @@ class AppState {
     this.persist();
   }
 
-  /** Set/clear the persisted SSH host of a session (display prefix source).
+  /** Set/clear the persisted SSH host a session launches through.
    * Returns false when `raw` is not a valid host; never touches `userRenamed`. */
   setSessionSshHost(sessionId: string, raw: string | null): boolean {
     const session = this.findSessionById(sessionId);
@@ -1429,7 +1428,6 @@ class AppState {
       session.sshHost = undefined;
       this.persist();
       this.emitSessionChanged({ sessionId, kind: 'metadata' });
-      setSshStatus(sessionId, null);
       return true;
     }
     const parsed = parseSshHost(raw);
@@ -1438,8 +1436,6 @@ class AppState {
     session.sshHost = parsed.host;
     this.persist();
     this.emitSessionChanged({ sessionId, kind: 'metadata' });
-    // The session exists, so its PTY is live: mark it connected now (plan §4-R2 S1).
-    setSshStatus(sessionId, { host: parsed.host, source: 'explicit' });
     return true;
   }
 

@@ -19,7 +19,6 @@ export function createHelpSection(): SectionController {
 
       helpContainer.appendChild(buildSection(t('help.tabBadges'), [
         { visual: () => badge(t('help.tabBadgeSample'), 'var(--accent)'), label: t('help.tabBadgeUnreadLabel'), description: t('help.tabBadgeUnreadDesc') },
-        { visual: () => mono(t('help.sshPrefixSample'), 'var(--text-muted)'), label: t('help.sshPrefixLabel'), description: t('help.sshPrefixDesc') },
       ]));
 
       helpContainer.appendChild(buildSection(t('help.statusBar'), [

@@ -375,7 +375,7 @@ Main→renderer push channels (for reference): `pty:data`, `pty:exit`, `settings
 | Session-id filename guard | UI session ids must match `^[A-Za-z0-9_-]{1,128}$` before becoming STATUS_DIR filenames. | `src/main/hook-status.ts:57-61` | `src/main/hook-status.test.ts` |
 | Profile id slug guard | `^[A-Za-z0-9._-]+$` and not `.`/`..` before any profile dir write. | `src/main/profiles.ts:12-20` | `src/main/profiles.test.ts` |
 | cmd.exe arg quoting | Quoting rule + hard rejection of embedded `"` prevents command injection through spawn argv on Windows. | `src/main/pty-manager.ts:210-248` (`quoteArgForCmdExe`, `resolveWindowsShell`) | `src/main/pty-manager.test.ts` |
-| SSH host validation | Every SSH host string — the session setting, the `pty:create` `sshHost` arg, and PTY-detected candidates — passes `parseSshHost` before entering `ssh` argv or the tab DOM: rejects ports (`:22`), `ssh://` URLs, leading `-` (argv option injection), whitespace, length > 253; the renderer `esc()`-escapes the value before the tab prefix renders it as HTML. | `src/shared/ssh-host.ts`, `src/main/ssh-detect.ts`, `src/renderer/session-ssh.ts` | `src/shared/ssh-host.test.ts`, `src/main/ssh-detect.test.ts`, `src/renderer/session-ssh.test.ts` |
+| SSH host validation | Every SSH host string — the persisted session setting and the `pty:create` `sshHost` arg — passes `parseSshHost` before entering `ssh` argv: rejects ports (`:22`), `ssh://` URLs, leading `-` (argv option injection), whitespace, length > 253. | `src/shared/ssh-host.ts` | `src/shared/ssh-host.test.ts` |
 | Web permission allowlists | Host and guest permission sets (see §2): host allowlist + handlers in main; guest allowlist resolved from the webview partition at attach time. | `src/main/main.ts:53-57,97-99,116-121`, `src/main/webview-guest-pin.ts` (`GUEST_PERMISSIONS`, `pinGuestPermissions`) | `src/main/webview-guest-pin.test.ts` |
 | Browser guest preload lock | Only the shipped browser-tab-preload (source `src/preload/browser-tab-preload.ts`) may be a webview preload (pinned in `will-attach-webview`; Node integration off, isolation/sandbox forced on). | `src/main/webview-guest-pin.ts` (`pinWebviewGuest`, `isBrowserGuestPreload`), `src/main/main.ts:47,116-121` | `src/main/webview-guest-pin.test.ts` |
 | Paste dir confinement | Pasted files always written to main-generated names inside `<tmp>/finevibe-paste`; 25 MiB cap. | `src/main/ipc-handlers.ts` (paste materialization: `PASTE_DIR`/`PASTE_MAX_BYTES`) | `src/main/ipc-handlers.test.ts` |
@@ -384,7 +384,6 @@ Main→renderer push channels (for reference): `pty:data`, `pty:exit`, `settings
 # Appendix A — Cross-cutting numeric limits
 
 - Session name ≤ 60, project name ≤ 80 (`state.ts:84-85`).
-- SSH scanner: 256 tracked sessions (FIFO), detected-connection TTL 1 h, OSC title corroboration window 10 s, partial-line buffer 8 Ki chars (`src/main/ssh-detect.ts`).
 - Tab group dwell 450 ms, max 12 members, 6-color palette (`state/tab-group-state.ts`); group name ≤ 60 (`MAX_SESSION_NAME_LENGTH`).
 - Session history cap 500, history panel shows 50 (`state/session-archive.ts:4`, `components/session-history.ts:8`).
 - Inspector events cap 2000 / 64 Ki chars event / 2 Mi chars session, JS string lengths (`session-inspector-state.ts:6-8`).

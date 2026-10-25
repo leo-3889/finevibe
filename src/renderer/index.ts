@@ -6,7 +6,6 @@ import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
 import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals, refreshProfileLabels } from './components/terminal-pane.js';
 import { setHookStatus, notifyInterrupt, noteInspectorEvents } from './session-activity.js';
-import { setSshStatus, removeSshSession } from './session-ssh.js';
 import { parseCost, setCostData, onChange as onCostChange } from './session-cost.js';
 import { applyCliSessionName } from './session-title.js';
 import { setContextData, onChange as onContextChange } from './session-context.js';
@@ -221,11 +220,6 @@ async function main(): Promise<void> {
     setHookStatus(sessionId, status, hookName);
   });
 
-  window.finevibe.session.onSshStatus((sessionId, host, source) => {
-    if (!appState.hasSession(sessionId)) return;
-    setSshStatus(sessionId, host ? { host, source } : null);
-  });
-
   window.finevibe.session.onInspectorEvents((sessionId, events) => {
     if (!appState.hasSession(sessionId)) return;
     logDebugEvent('inspectorEvents', sessionId, { count: events.length });
@@ -245,7 +239,6 @@ async function main(): Promise<void> {
 
   window.finevibe.pty.onExit((sessionId, exitCode, signal, exitReason, pid) => {
     logDebugEvent('ptyExit', sessionId, { exitCode, signal, exitReason, pid });
-    removeSshSession(sessionId);
     if (isShellSessionId(sessionId)) {
       handleShellPtyExit(sessionId, exitCode);
     } else if (!isMcpSession(sessionId) && !isQuitting) {

@@ -29,6 +29,14 @@ export interface CliProviderCapabilities {
   costTracking: boolean;
   contextWindow: boolean;
   hookStatus: boolean;
+  /**
+   * Where `hookStatus` hooks live: 'user' (default) installs into the user
+   * config dir; 'project' (Copilot) writes `<project>/.github/hooks/` per
+   * project at PTY spawn and deletes them at quit, so a user-scope check is
+   * structurally always 'missing' — Setup validates them against the active
+   * project instead.
+   */
+  hookScope?: 'user' | 'project';
   configReading: boolean;
   shiftEnterNewline: boolean;
   pendingPromptTrigger: PendingPromptTrigger;
@@ -135,7 +143,7 @@ export interface SessionRecord {
   cost?: CostInfo;
   contextWindow?: ContextWindowInfo;
   remoteHostName?: string;
-  /** Persisted: host this session runs over SSH (`user@host` or `host`), validated by shared/ssh-host.ts. Live connectivity is transient (session-ssh.ts), never persisted. */
+  /** Persisted: host this session launches through over SSH (`user@host` or `host`), validated by shared/ssh-host.ts. */
   sshHost?: string;
   shareMode?: ShareMode;
   browserTabUrl?: string;
@@ -857,11 +865,3 @@ export type ClipboardPastePayload = {
  * by the disk-health preflight (src/main/disk-health.ts) on state
  * transitions only, and served on `disk-health:get` for the renderer. */
 export type DiskHealth = { state: 'ok' | 'low' | 'unknown'; availableBytes?: number; checkedAt: string };
-  /**
-   * Where `hookStatus` hooks live: 'user' (default) installs into the user
-   * config dir; 'project' (Copilot) writes `<project>/.github/hooks/` per
-   * project at PTY spawn and deletes them at quit, so a user-scope check is
-   * structurally always 'missing' â€” Setup validates them against the active
-   * project instead.
-   */
-  hookScope?: 'user' | 'project';
