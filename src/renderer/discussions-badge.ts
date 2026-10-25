@@ -1,8 +1,9 @@
 import { appState } from './state.js';
 import { stopInterval, type IntervalHandle } from '../shared/async-utils.js';
 
-// legacy: the GitHub repo slug stays `vibeyard` — the repository is NOT renamed with the product.
-const DISCUSSIONS_BASE = 'https://github.com/leo-3889/vibeyard/discussions';
+// The GitHub repo slug follows the fork rename: the repository is `leo-3889/finevibe`
+// (GitHub redirects the old `leo-3889/vibeyard` URLs, but the live slug is finevibe).
+const DISCUSSIONS_BASE = 'https://github.com/leo-3889/finevibe/discussions';
 const SORT_QUERY = '?discussions_q=sort:date_created';
 export const DISCUSSIONS_URL = DISCUSSIONS_BASE + SORT_QUERY;
 const FEED_URL = DISCUSSIONS_BASE + '.atom' + SORT_QUERY;

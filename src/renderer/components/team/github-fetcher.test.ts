@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TeamMember } from '../../../shared/types';
 
 vi.mock('../../../shared/team-config.js', () => ({
-  buildContentsApiUrl: () => 'https://api.github.com/repos/leo-3889/vibeyard/contents/team',
+  buildContentsApiUrl: () => 'https://api.github.com/repos/leo-3889/finevibe/contents/team',
 }));
 vi.mock('./frontmatter.js', () => ({
   memberFromMarkdown: (raw: string, meta: { fallbackId: string }) => ({ id: meta.fallbackId, raw }),

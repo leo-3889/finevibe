@@ -5,7 +5,7 @@
 
 const TEAM_MEMBERS_REPO = {
   owner: 'leo-3889',
-  repo: 'vibeyard',
+  repo: 'finevibe',
   branch: 'main',
   path: 'personas',
 } as const;
