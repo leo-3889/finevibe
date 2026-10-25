@@ -91,6 +91,10 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
     setSetupBadge: (hasIssue) => {
       menuItems.get('setup')?.classList.toggle('has-badge', hasIssue);
     },
+    getActiveProject: () => {
+      const p = appState.activeProject;
+      return p ? { name: p.name, path: p.path } : null;
+    },
     beginRecorder: (recorder) => { activeRecorder = recorder; },
     endRecorder: () => {
       if (activeRecorder) {

@@ -812,3 +812,6 @@
     "skippedOther": "已跳过 {count} 个——FineVibe 中已存在。"
   }
 }
+    "hooksMissingProject": "{project} 未安装钩子",
+    "hooksProjectScoped": "按项目安装",
+    "hooksProjectScopedDesc": "钩子在启动会话时按项目安装；打开项目即可检查或安装。",

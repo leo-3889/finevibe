@@ -12,6 +12,12 @@ export interface PreferencesContext {
   rerenderSection(section: Section): void;
   /** Toggle the issue badge on the Setup menu item. */
   setSetupBadge(hasIssue: boolean): void;
+  /**
+   * The project active when read — Setup scopes project-scoped provider
+   * hooks (Copilot) against it. Getter (not a snapshot) so a re-render after
+   * the active project changed picks it up. Null when no project is open.
+   */
+  getActiveProject(): { name: string; path: string } | null;
   /** Register an active shortcut-key recorder (so Enter/Escape don't close the modal). */
   beginRecorder(recorder: { cleanup: () => void }): void;
   /** Tear down the active shortcut-key recorder, if any. */

@@ -38,6 +38,7 @@ export class CopilotProvider implements CliProvider {
       costTracking: false,
       contextWindow: false,
       hookStatus: true,
+      hookScope: 'project',
       configReading: true,
       shiftEnterNewline: false,
       pendingPromptTrigger: 'startup-arg',
