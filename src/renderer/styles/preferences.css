@@ -307,6 +307,8 @@
 
 .setup-check-icon.ok { color: #4caf50; }
 .setup-check-icon.error { color: #f44336; }
+/* SA-P2-1: neutral amber tier — a deliberate user choice (kept foreign statusLine). */
+.setup-check-icon.kept { color: #ff9800; }
 
 .setup-check-info {
   flex: 1;
@@ -333,6 +335,7 @@
 
 .setup-check-status.ok { color: #4caf50; }
 .setup-check-status.error { color: #f44336; }
+.setup-check-status.kept { color: #ff9800; }
 
 .setup-check-help {
   font-size: 11px;

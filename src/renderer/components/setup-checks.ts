@@ -8,7 +8,9 @@ export interface ProviderStatus {
 
 export function hasProviderIssue({ meta, validation, binaryOk }: ProviderStatus): boolean {
   if (!binaryOk) return false;
-  if ((meta.capabilities.costTracking || meta.capabilities.contextWindow) && validation.statusLine !== 'finevibe') return true;
+  // SA-P2-1: a foreign statusLine the user deliberately Kept (declined
+  // consent covering this command) is a choice, not an issue.
+  if ((meta.capabilities.costTracking || meta.capabilities.contextWindow) && validation.statusLine !== 'finevibe' && !validation.userKeptStatusLine) return true;
   if (meta.capabilities.hookStatus && validation.hooks !== 'complete') return true;
   return false;
 }

@@ -9,14 +9,16 @@ function renderCheckItem(parent: HTMLElement, opts: {
   ok: boolean;
   statusText: string;
   helpText?: string;
+  /** SA-P2-1: neutral amber tier — a deliberate user choice, not an error. */
+  kept?: boolean;
   onFix?: () => Promise<void>;
 }) {
   const row = document.createElement('div');
   row.className = 'setup-check-row';
 
   const icon = document.createElement('span');
-  icon.className = opts.ok ? 'setup-check-icon ok' : 'setup-check-icon error';
-  icon.textContent = opts.ok ? t('setup.iconOk') : t('setup.iconFail');
+  icon.className = opts.kept ? 'setup-check-icon kept' : opts.ok ? 'setup-check-icon ok' : 'setup-check-icon error';
+  icon.textContent = opts.ok || opts.kept ? t('setup.iconOk') : t('setup.iconFail');
 
   const info = document.createElement('div');
   info.className = 'setup-check-info';
@@ -40,7 +42,7 @@ function renderCheckItem(parent: HTMLElement, opts: {
   }
 
   const status = document.createElement('div');
-  status.className = opts.ok ? 'setup-check-status ok' : 'setup-check-status error';
+  status.className = opts.kept ? 'setup-check-status kept' : opts.ok ? 'setup-check-status ok' : 'setup-check-status error';
   status.textContent = opts.statusText;
 
   row.appendChild(icon);
@@ -134,17 +136,22 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
         const { capabilities } = meta;
 
         if (capabilities.costTracking || capabilities.contextWindow) {
+          // SA-P2-1: a Kept foreign statusLine renders the neutral amber tier
+          // with no Fix CTA — Fix would perform the Replace the user declined.
+          const kept = validation.statusLine === 'foreign' && validation.userKeptStatusLine === true;
           const slOk = validation.statusLine === 'finevibe';
           let slStatus = t('setup.statusLineConfigured');
           if (validation.statusLine === 'missing') slStatus = t('setup.statusLineMissing');
+          else if (kept) slStatus = t('setup.statusLineKept');
           else if (validation.statusLine === 'foreign') slStatus = t('setup.statusLineForeign');
 
           renderCheckItem(section, {
             label: t('setup.statusLineLabel'),
             description: t('setup.statusLineDescription'),
             ok: slOk,
+            kept,
             statusText: slStatus,
-            onFix: slOk ? undefined : () => fixAndRerender(meta.id),
+            onFix: slOk || kept ? undefined : () => fixAndRerender(meta.id),
           });
         }
 

@@ -40,6 +40,32 @@ function makeStatus(overrides: Partial<ProviderStatus> = {}): ProviderStatus {
 }
 
 describe('hasProviderIssue', () => {
+  // SA-P2-1: a declined consent covering the current foreign command is a
+  // deliberate Keep — not an issue, no red badge, no Fix CTA.
+  it('returns false for a foreign statusLine the user deliberately kept (SA-P2-1)', () => {
+    const status = makeStatus({
+      meta: makeMeta({ costTracking: true }),
+      validation: makeValidation({ statusLine: 'foreign', foreignStatusLineCommand: 'other-tool', userKeptStatusLine: true }),
+    });
+    expect(hasProviderIssue(status)).toBe(false);
+  });
+
+  it('returns true for a foreign statusLine with no matching Keep (SA-P2-1)', () => {
+    const status = makeStatus({
+      meta: makeMeta({ costTracking: true }),
+      validation: makeValidation({ statusLine: 'foreign', foreignStatusLineCommand: 'other-tool' }),
+    });
+    expect(hasProviderIssue(status)).toBe(true);
+  });
+
+  it('keeps hook issues red even when the statusLine was kept (SA-P2-1)', () => {
+    const status = makeStatus({
+      meta: makeMeta({ costTracking: true, hookStatus: true }),
+      validation: makeValidation({ statusLine: 'foreign', userKeptStatusLine: true, hooks: 'partial' }),
+    });
+    expect(hasProviderIssue(status)).toBe(true);
+  });
+
   it('returns false when binary is not installed', () => {
     const status = makeStatus({
       meta: makeMeta({ costTracking: true, hookStatus: true }),

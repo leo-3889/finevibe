@@ -600,6 +600,7 @@
     "statusLineConfigured": "Configured",
     "statusLineMissing": "Not configured",
     "statusLineForeign": "Overwritten by another tool",
+    "statusLineKept": "Kept your choice",
     "statusLineLabel": "Status Line",
     "statusLineDescription": "Required for cost tracking and context window monitoring.",
     "hooksComplete": "All hooks installed",
