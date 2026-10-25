@@ -617,6 +617,14 @@
     "keepButton": "保留当前 statusLine",
     "replaceButton": "使用 FineVibe statusLine"
   },
+  "settingsGuard": {
+    "bothMissing": "{provider} 中缺少 FineVibe 设置。成本跟踪和会话活动跟踪可能无法工作。",
+    "statusLineForeign": "其他工具覆盖了 FineVibe 的 statusLine 设置。成本跟踪不可用。",
+    "statusLineMissing": "成本跟踪不可用 —— {provider} 中未配置 FineVibe 的 statusLine 设置。",
+    "hooksMissing": "{provider} 设置中缺少部分会话跟踪钩子。活动跟踪可能无法工作。",
+    "fixButton": "修复设置",
+    "fixingButton": "修复中…"
+  },
   "help": {
     "tabStatusDot": "标签状态点",
     "status": {

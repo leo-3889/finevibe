@@ -571,6 +571,9 @@ export interface SettingsValidationResult {
 
 export interface SettingsWarningData {
   sessionId: string;
+  /** SA-P1-2: the provider the validation was computed from — the Fix
+   * Settings CTA must reinstall THIS provider's settings, not Claude's. */
+  providerId: ProviderId;
   statusLine: SettingsValidationResult['statusLine'];
   hooks: SettingsValidationResult['hooks'];
   /** P2-127: the profile config dir the validation was computed from;
