@@ -341,6 +341,29 @@ describe('codex rollout attribution (per-cwd FIFO)', () => {
     expect(mockWriteCliSessionId).toHaveBeenNthCalledWith(2, 'ui-new', 'zzz-second');
   });
 
+  it('pairs across a day boundary in chronological order (P2-99)', () => {
+    // The year/month/day walk is newest-first, so the new day's rollout was
+    // seen first and paired with the oldest tab: two tabs straddling midnight
+    // swapped transcripts, titles and resume targets. Candidates are now
+    // collected and paired by rollout name (chronological) across days.
+    vi.setSystemTime(NOW - 24 * 3600 * 1000); // the old tab opened yesterday
+    registerPendingCodexSession('ui-old', '/repo/alpha');
+    vi.setSystemTime(NOW);
+    registerPendingCodexSession('ui-new', '/repo/alpha');
+    startCodexSessionWatcher(fakeWin);
+    const prevDay = mkDay(new Date(NOW - 24 * 3600 * 1000));
+    const thisDay = mkDay(new Date(NOW));
+    // mkDay stamps new day dirs with NOW, so both days pass the mtime gate.
+    addRollout(prevDay, 'aaa-first', { cwd: '/repo/alpha', mtimeMs: NOW - 20 * 3600 * 1000 });
+    addRollout(thisDay, 'zzz-second', { cwd: '/repo/alpha' });
+
+    scanAll();
+
+    expect(mockWriteCliSessionId).toHaveBeenCalledTimes(2);
+    expect(mockWriteCliSessionId).toHaveBeenNthCalledWith(1, 'ui-old', 'aaa-first');
+    expect(mockWriteCliSessionId).toHaveBeenNthCalledWith(2, 'ui-new', 'zzz-second');
+  });
+
   it('prunes day directories older than the oldest registration by name', () => {
     // A stale day directory whose mtimes look brand new (a restore, a tool
     // touching it, a clock change): the mtime gate alone would re-enter it and

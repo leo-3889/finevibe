@@ -102,6 +102,21 @@ describe('CopilotProvider.indexTranscript()', () => {
     expect(r.text).toContain('good prompt');
   });
 
+  it('skips non-string content and keeps indexing later entries (P2-56)', async () => {
+    // Array/object content threw into the best-effort catch: the entry was
+    // silently dropped from the persistent index. Non-strings are skipped;
+    // the stream continues.
+    const jsonl = makeJsonl([
+      { type: 'user.message', data: { content: ['array', 'parts'] } },
+      { type: 'user.message', data: {} },
+      { type: 'user.message', data: { content: 'real prompt' } },
+    ]);
+    mockIndexFile(jsonl);
+    const r = await new CopilotProvider().indexTranscript('/p');
+    expect(r.text).toContain('real prompt');
+    expect(r.text).not.toContain('array');
+  });
+
   it('terminates the read loop when the budget fills (C3M-07)', async () => {
     // ~100 KiB of user text fills the 50 KiB budget mid-stream. The input
     // NEVER ends: the old `if (budget.full) continue` loop would await the

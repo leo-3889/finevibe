@@ -287,6 +287,17 @@ function scanRollouts(): void {
   const minMonth = pad2(minDate.getMonth() + 1);
   const minDay = pad2(minDate.getDate());
 
+  // P2-99: collect, then pair in chronological order. The walk must stay
+  // newest-first (the name pruning needs descending dirs); pairing must see
+  // rollouts oldest-first. Ascending files made that FIFO right WITHIN a
+  // day; across a day boundary it inverted — day 21 is visited before day
+  // 20, so the newest day's rollout met the oldest tab first and two tabs
+  // straddling midnight swapped transcripts, titles and resume targets.
+  // Codex names files `rollout-<ts>-<id>`, so a basename sort is
+  // chronological across days. The candidate set stays bounded by the same
+  // name pruning + day-mtime gate (recent days only).
+  const candidates: { filePath: string; tailId: string | undefined }[] = [];
+
   for (const year of readdirSortedDesc(SESSIONS_ROOT)) {
     if (year < minYear) break;
     const yearDir = path.join(SESSIONS_ROOT, year);
@@ -302,10 +313,6 @@ function scanRollouts(): void {
         try {
           // Day directory mtime: a day with no new rollouts can't match.
           if (fs.statSync(dayDir).mtimeMs < minMtime) continue;
-          // Oldest rollout first. Pending tabs are matched in registration
-          // order, so descending files paired the OLDEST tab with the NEWEST
-          // rollout: two Codex tabs in one repo (both rollouts created within
-          // one scan window) swapped transcripts, titles and resume targets.
           dayFiles = readdirSortedAsc(dayDir);
         } catch {
           continue;
@@ -318,44 +325,49 @@ function scanRollouts(): void {
           // `.zst`, fully decompressed - on every scan.
           const tailId = idFromFilename(file);
           if (tailId && assignedCodexIds.has(tailId)) continue;
-          const filePath = path.join(dayDir, file);
-          let mtimeMs: number;
-          let size: number;
-          try {
-            const st = fs.statSync(filePath);
-            mtimeMs = st.mtimeMs;
-            size = st.size;
-          } catch {
-            continue;
-          }
-          if (mtimeMs < minMtime) continue;
-          const meta = readCachedMeta(filePath, mtimeMs, size);
-          const codexId = meta?.id ?? tailId;
-          if (!codexId || assignedCodexIds.has(codexId)) continue;
-
-          // Oldest pending whose cwd matches the rollout. Unmatched rollouts
-          // (external runs, other cwds) are skipped and revisited: their id
-          // stays unassigned so a later registration in that cwd can match.
-          let match: string | null = null;
-          if (meta?.cwd) {
-            const rolloutCwd = normCwd(meta.cwd);
-            for (const [uiId, p] of pendingSessions) {
-              if (p.cwd === rolloutCwd) { match = uiId; break; }
-            }
-          } else if (pendingSessions.size === 1) {
-            // Meta unreadable (file mid-creation, exotic format): with exactly
-            // one pending tab the rollout is unambiguous. With several, stay
-            // hands-off — guessing is what hijacked tabs before.
-            match = pendingSessions.keys().next().value ?? null;
-          }
-          if (match) {
-            // A failed id write leaves the tab pending; keep scanning so a
-            // later registration in this cwd can still match this rollout.
-            if (!assign(match, codexId)) continue;
-            if (pendingSessions.size === 0) return;
-          }
+          candidates.push({ filePath: path.join(dayDir, file), tailId });
         }
       }
+    }
+  }
+
+  candidates.sort((a, b) => (path.basename(a.filePath) < path.basename(b.filePath) ? -1 : 1));
+
+  for (const { filePath, tailId } of candidates) {
+    let mtimeMs: number;
+    let size: number;
+    try {
+      const st = fs.statSync(filePath);
+      mtimeMs = st.mtimeMs;
+      size = st.size;
+    } catch {
+      continue;
+    }
+    if (mtimeMs < minMtime) continue;
+    const meta = readCachedMeta(filePath, mtimeMs, size);
+    const codexId = meta?.id ?? tailId;
+    if (!codexId || assignedCodexIds.has(codexId)) continue;
+
+    // Oldest pending whose cwd matches the rollout. Unmatched rollouts
+    // (external runs, other cwds) are skipped and revisited: their id
+    // stays unassigned so a later registration in that cwd can match.
+    let match: string | null = null;
+    if (meta?.cwd) {
+      const rolloutCwd = normCwd(meta.cwd);
+      for (const [uiId, p] of pendingSessions) {
+        if (p.cwd === rolloutCwd) { match = uiId; break; }
+      }
+    } else if (pendingSessions.size === 1) {
+      // Meta unreadable (file mid-creation, exotic format): with exactly
+      // one pending tab the rollout is unambiguous. With several, stay
+      // hands-off — guessing is what hijacked tabs before.
+      match = pendingSessions.keys().next().value ?? null;
+    }
+    if (match) {
+      // A failed id write leaves the tab pending; keep scanning so a
+      // later registration in this cwd can still match this rollout.
+      if (!assign(match, codexId)) continue;
+      if (pendingSessions.size === 0) return;
     }
   }
 }

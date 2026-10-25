@@ -188,6 +188,14 @@ describe('buildEnv', () => {
     expect(env.SOME_VAR).toBe('/custom');
     expect(env.OTHER).toBe('val');
   });
+
+  it('drops an inherited COPILOT_HOME (P2-85 ambient twin)', () => {
+    // The per-session drop in env-vars.ts gates renderer-supplied vars; an
+    // ambient COPILOT_HOME in the app's own environment reached the child
+    // via baseEnv and relocated the CLI data tree away from every consumer.
+    const env = provider.buildEnv('sess-123', { COPILOT_HOME: '/foreign' });
+    expect(env.COPILOT_HOME).toBeUndefined();
+  });
 });
 
 describe('buildArgs', () => {
