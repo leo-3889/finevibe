@@ -1,8 +1,7 @@
-export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, AgentmemoryStatus, AgentmemoryLog } from '../shared/types.js';
-import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types.js';
+export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload } from '../shared/types.js';
+import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession } from '../shared/types.js';
 import type { ImportableLegacyProject } from '../shared/types.js';
 import type { DiskHealth } from '../shared/types.js';
-import type { AgentmemoryLog } from '../shared/types.js';
 import type { SshSource } from '../shared/ssh-host.js';
 
 export interface FinevibeApi {
@@ -166,12 +165,6 @@ export interface FinevibeApi {
     write(text: string, source?: ClipboardSource): void;
     readForPaste(): Promise<ClipboardPastePayload>;
     saveImage(dataUrl: string): Promise<string | null>;
-  };
-  agentmemory: {
-    status(): Promise<AgentmemoryStatus>;
-    start(): Promise<AgentmemoryStatus>;
-    /** Tail of the daemon console log file (see main/agentmemory-manager.ts). */
-    log(): Promise<AgentmemoryLog>;
   };
   storage: {
     /** userData subtree sizes, descending; `truncated` on scan caps. */

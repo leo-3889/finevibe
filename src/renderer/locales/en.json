@@ -703,19 +703,6 @@
   "update": {
     "downloadFailed": "Update download failed"
   },
-  "agentmemory": {
-    "autoStart": "Start agent memory engine on launch",
-    "probing": "Checking…",
-    "running": "Running",
-    "stopped": "Not running",
-    "startButton": "Start Engine",
-    "starting": "Starting…",
-    "openConsole": "Open Console",
-    "consoleTitle": "Agent Memory Console",
-    "consoleEmpty": "No log output yet. Console output is captured only for engines FineVibe starts — it will show up here after the next start.",
-    "consoleWebUi": "Web UI",
-    "consoleClose": "Close"
-  },
   "preferencesNav": {
     "browser": "Browser",
     "shortcuts": "Shortcuts",
@@ -725,7 +712,6 @@
     "about": "About",
     "general": "General",
     "appearance": "Appearance",
-    "agentmemory": "Agent Memory",
     "storage": "Storage"
   },
   "storage": {

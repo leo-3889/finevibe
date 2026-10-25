@@ -104,17 +104,7 @@ vi.mock('./ipc-handlers', async (importOriginal) => {
 vi.mock('./pty-manager', () => ({ killAllPtys: vi.fn(), getFullPathAsync: vi.fn(async () => '/usr/bin') }));
 vi.mock('./store', () => ({
   flushState: vi.fn(),
-  // P1-6: `agentmemoryAutoStart: false` is load-bearing. main.ts:231 gates
-  // the fire-and-forget `void ensureAgentmemoryRunning().then(s =>
-  // console.log('[agentmemory] ...'))` on this pref; with a bare
-  // `{ preferences: {} }` the log fires once per import, and the user
-  // console log from the file's LAST import can still be in flight on the
-  // worker RPC when the file tears down — "Closing rpc while
-  // onUserConsoleLog was pending" → EnvironmentTeardownError, exit 1, all
-  // tests green (the audit's ~1/5 `npm test` flake). Skipping the call
-  // removes the only module-side console write in this suite without
-  // touching the chain's microtask timing (see importPrimaryInstance).
-  loadState: vi.fn(() => ({ preferences: { agentmemoryAutoStart: false } })),
+  loadState: vi.fn(() => ({ preferences: {} })),
 }));
 vi.mock('./menu', () => ({ createAppMenu: vi.fn() }));
 vi.mock('./hook-status', () => ({ restartAndResync: vi.fn() }));
@@ -126,12 +116,6 @@ vi.mock('./auto-updater', () => ({ initAutoUpdater: vi.fn() }));
 vi.mock('./git-watcher', () => ({ stopGitWatcher: vi.fn() }));
 vi.mock('./file-watcher', () => ({ stopAllFileWatchers: vi.fn() }));
 vi.mock('./config-watcher', () => ({ stopConfigWatcher: vi.fn() }));
-// The real module spawns/probes a daemon and logs when its promise lands;
-// a landing after environment teardown races the vitest worker RPC
-// ("Closing rpc while onUserConsoleLog was pending").
-vi.mock('./agentmemory-manager', () => ({
-  ensureAgentmemoryRunning: vi.fn(() => Promise.resolve({ running: false })),
-}));
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 // PA-01: main.ts wires the cross-launch probe cache to userData at boot;

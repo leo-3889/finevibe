@@ -88,9 +88,7 @@ vi.mock('./ipc-handlers', async (importOriginal) => {
 vi.mock('./pty-manager', () => ({ killAllPtys: vi.fn(), getFullPathAsync: vi.fn(async () => '/usr/bin') }));
 vi.mock('./store', () => ({
   flushState: vi.fn(),
-  // Same as main-single-instance.test.ts: keep the agentmemoryAutoStart gate
-  // closed so the boot chain emits no user console log (P1-6 teardown race).
-  loadState: vi.fn(() => ({ preferences: { agentmemoryAutoStart: false } })),
+  loadState: vi.fn(() => ({ preferences: {} })),
 }));
 vi.mock('./menu', () => ({ createAppMenu: vi.fn() }));
 vi.mock('./hook-status', () => ({ restartAndResync: vi.fn() }));
@@ -102,9 +100,6 @@ vi.mock('./auto-updater', () => ({ initAutoUpdater: vi.fn() }));
 vi.mock('./git-watcher', () => ({ stopGitWatcher: vi.fn() }));
 vi.mock('./file-watcher', () => ({ stopAllFileWatchers: vi.fn() }));
 vi.mock('./config-watcher', () => ({ stopConfigWatcher: vi.fn() }));
-vi.mock('./agentmemory-manager', () => ({
-  ensureAgentmemoryRunning: vi.fn(() => Promise.resolve({ running: false })),
-}));
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 // PA-01: main.ts wires the probe cache to userData at boot; stub the module.
