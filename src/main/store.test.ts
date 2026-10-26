@@ -89,8 +89,14 @@ describe('loadState', () => {
     };
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify(state));
-    // hosts normalizes to [] on load (multi-host Phase 1 contract).
-    expect(loadState()).toEqual({ ...state, hosts: [] });
+    // hosts normalizes to [] on load (multi-host Phase 1 contract); projects
+    // get hostId 'local' (audit T2 #4 — host-scoped gate roots, normalized
+    // once at load like sessions/profiles).
+    expect(loadState()).toEqual({
+      ...state,
+      hosts: [],
+      projects: [{ ...state.projects[0], hostId: 'local' }],
+    });
   });
 
   // per-host providers T1: pre-existing (hostId-less) records normalize to

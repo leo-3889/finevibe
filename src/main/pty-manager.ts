@@ -12,7 +12,8 @@ import { isRegistryHostTarget, parseSshHost } from '../shared/ssh-host';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
 import { getHost } from './hosts/host-registry';
-import { registerSession, unregisterSession } from './hook-status';
+import { remoteLaunchSessionDir } from './launch-session-dir';
+import { registerSession, registerRemoteStatus, unregisterSession } from './hook-status';
 import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
 import { isLinux, isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
@@ -431,8 +432,29 @@ export function resolveProviderBinary(providerId: ProviderId, hostId?: string): 
  * absolute path does not exist on the remote — the remote login shell's PATH
  * resolves the remote's own install.
  */
-function remoteCommand(bin: string, argv: string[]): string {
-  return [bin, ...argv].map(posixQuote).join(' ');
+function remoteCommand(bin: string, argv: string[], rawToken?: string): string {
+  // `rawToken` (the home-relative session dir) is emitted "…"-quoted so the
+  // remote login shell expands its leading `~` — single quotes (posixQuote)
+  // would hand the CLI a literal `~` directory. The token is the sanitized
+  // remoteLaunchSessionDir spelling ([A-Za-z0-9_./-] after `~/`), so double
+  // quoting carries no expansion risk.
+  return [bin, ...argv]
+    .map((t) => (rawToken !== undefined && t === rawToken ? `"${t.replace(/^~/, '$HOME')}"` : posixQuote(t)))
+    .join(' ');
+}
+
+/** Providers that steer their transcripts into a per-launch `--session-dir`. */
+function usesSessionDirArgv(providerId: ProviderId): providerId is 'pi' | 'pi-bolt' | 'omp' {
+  return providerId === 'pi' || providerId === 'pi-bolt' || providerId === 'omp';
+}
+
+/** Swap a locally-derived `--session-dir` value for the host-side spelling. */
+function remoteSessionDirArgv(argv: string[], hostDir: string): string[] {
+  const i = argv.indexOf('--session-dir');
+  if (i < 0 || i + 1 >= argv.length) return argv; // provider didn't add it — nothing to swap
+  const out = [...argv];
+  out[i + 1] = hostDir;
+  return out;
 }
 
 /**
@@ -445,9 +467,22 @@ function remoteCommand(bin: string, argv: string[]): string {
  * // ponytail: config-dir vars only; forward the rest when a concrete
  * consumer needs it (then move to ssh SendEnv, not string-prefixing).
  */
-const REMOTE_ENV_KEYS = ['PI_CODING_AGENT_DIR', 'CLAUDE_CONFIG_DIR'];
+const REMOTE_ENV_KEYS = ['PI_CODING_AGENT_DIR', 'CLAUDE_CONFIG_DIR', 'CLAUDE_IDE_SESSION_ID', 'FINEVIBE_SESSION_ID'];
+/**
+ * Session-id env values become FILE PATHS on the host (the merged hooks
+ * write `$HOME/.finevibe/run/$<ID>.status` — the id lands in a `mv` target),
+ * and the id is renderer-supplied. The poll side gates the same id with
+ * UI_SESSION_ID_RE (hook-status.ts); this is the spawn-side gate (audit T2
+ * #3): a hostile id is DROPPED — the session launches, hooks just no longer
+ * resolve a sidecar path (the host hook's `echo > "$.../<empty>.status"`
+ * targets the fixed dir; no attacker-controlled path component).
+ */
+const SESSION_ID_ENV_KEYS = new Set(['CLAUDE_IDE_SESSION_ID', 'FINEVIBE_SESSION_ID']);
+const SESSION_ID_VALUE_RE = /^[A-Za-z0-9_-]{1,128}$/;
 function remoteEnvPrefix(env: Record<string, string>): string {
-  return REMOTE_ENV_KEYS.filter((k) => env[k] !== undefined)
+  return REMOTE_ENV_KEYS.filter(
+    (k) => env[k] !== undefined && (!SESSION_ID_ENV_KEYS.has(k) || SESSION_ID_VALUE_RE.test(env[k])),
+  )
     .map((k) => `${k}=${posixQuote(env[k])}`)
     .join(' ');
 }
@@ -545,7 +580,21 @@ export function resolveLaunchSpec(params: {
       throw new LaunchSpecError(`Host ${JSON.stringify(record.name)} has an invalid user/host — re-save it in Settings → Hosts.`);
     }
     const prefix = remoteEnvPrefix(base.env);
-    const cmd = `${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, base.argv)}`;
+    // Host-side session dir (audit T2 #5): the same derivation the transcript
+    // mirror uses, swapped into the provider argv, plus a cheap mkdir guard
+    // (the CLI's local flow pre-creates the dir; the host's must exist too).
+    let argv = base.argv;
+    let mkdir = '';
+    let rawToken: string | undefined;
+    if (usesSessionDirArgv(providerId)) {
+      const hostDir = remoteLaunchSessionDir(providerId, sessionId);
+      argv = remoteSessionDirArgv(base.argv, hostDir);
+      if (argv !== base.argv) {
+        rawToken = hostDir;
+        mkdir = `mkdir -p "${hostDir.replace(/^~/, '$HOME')}" && `;
+      }
+    }
+    const cmd = `${mkdir}${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, argv, rawToken)}`;
     return { ...base, executable: 'ssh', argv: ['-tt', '-p', String(record.port), '--', `${record.user}@${record.host}`, cmd] };
   }
   if (sshHost === undefined || sshHost === '') return base;
@@ -619,7 +668,14 @@ export async function spawnPty(
       killPty(sessionId);
     }
 
-    registerSession(sessionId);
+    // Remote-host sessions poll their status sidecar on the host over the
+    // sftp seam (per-host providers plan §3); local ones keep the STATUS_DIR
+    // watcher. registerSession is implied by registerRemoteStatus.
+    if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
+      registerRemoteStatus(sessionId, hostId);
+    } else {
+      registerSession(sessionId);
+    }
 
     const provider = getProvider(providerId);
 

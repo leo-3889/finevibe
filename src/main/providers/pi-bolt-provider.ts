@@ -85,9 +85,13 @@ export class PiBoltProvider implements CliProvider {
     return validateBinaryExistsAsync('pi-bolt');
   }
 
-  buildEnv(_sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env.PATH = getFullPath();
+    // Host-side hook block (per-host providers plan §3): the merged on-host
+    // hooks read the FineVibe session id from this var. Inert on a local
+    // launch — pi-bolt has no local hook system.
+    env.FINEVIBE_SESSION_ID = sessionId;
     // Pi-Bolt shares Pi's env: PI_CODING_AGENT_DIR is Pi's agent-dir selector
     // (Pi-Bolt reuses ~/.pi/agent as-is). Strip inherited profile/storage
     // selectors case-insensitively so the pinned profile (below) is the single

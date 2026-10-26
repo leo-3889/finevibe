@@ -37,7 +37,13 @@ vi.mock('electron', () => ({
   BrowserWindow: {},
 }));
 
+// The sftp seam the remote sidecar poll reads through.
+vi.mock('./hosts/provider-fs', () => ({
+  readProviderFileWindow: vi.fn(),
+}));
+
 import * as fs from 'fs';
+import { readProviderFileWindow } from './hosts/provider-fs';
 import {
   buildStatusLinePython,
   installStatusLineScript,
@@ -47,6 +53,7 @@ import {
   cleanupSessionStatus,
   cleanupAll,
   registerSession,
+  registerRemoteStatus,
 } from './hook-status';
 
 let watchCallback: ((eventType: string, filename: string | null) => void) | null = null;
@@ -829,5 +836,105 @@ describe('getStatusDir (multi-user tmpdir)', () => {
         vi.resetModules();
       }
     }
+  });
+});
+
+describe('remote status sidecar poll (per-host providers T2)', () => {
+  it('delivers host-side status changes as session:hookStatus, content-gated', async () => {
+    const win = createMockWin();
+    startWatching(win);
+    registerRemoteStatus('sess-1', 'lab');
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
+    // Watcher is alive (watchImpl), so the poll runs at the watchdog cadence.
+    await vi.advanceTimersByTimeAsync(15_000);
+    // Windowed tail read (audit T2 #7): a fat sidecar is never slurped whole.
+    expect(readProviderFileWindow).toHaveBeenCalledWith(
+      'lab', '.finevibe/run/sess-1.status', 4096, { fromEnd: true },
+    );
+    expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-1', 'completed', 'Stop');
+    // Unchanged content on the next tick delivers nothing.
+    mockSend.mockClear();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(mockSend).not.toHaveBeenCalled();
+    // A change delivers once, with the hook name split out.
+    vi.mocked(readProviderFileWindow).mockResolvedValue('UserPromptSubmit:working');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-1', 'working', 'UserPromptSubmit');
+  });
+
+  it('drops out-of-set statuses with a log, delivers nothing', async () => {
+    const win = createMockWin();
+    startWatching(win);
+    registerRemoteStatus('sess-2', 'lab');
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:teleported');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('teleported'));
+  });
+
+  it('a failed read cools the host down for 30s: no reconnect storm, retries after', async () => {
+    const win = createMockWin();
+    startWatching(win);
+    registerRemoteStatus('sess-3', 'lab');
+    registerRemoteStatus('sess-3b', 'lab');
+    vi.mocked(readProviderFileWindow).mockRejectedValue(new Error('connection closed'));
+    await vi.advanceTimersByTimeAsync(15_000); // tick@15s: first failure cools the host, second entry skipped
+    expect(readProviderFileWindow).toHaveBeenCalledTimes(1);
+    readProviderFileWindow.mockClear();
+    // Audit T2 #2: ticks inside the cooldown window (30 s from the failure,
+    // i.e. until t=45 s) probe the host ZERO times (per session, per tick
+    // each used to re-pay a ~11 s connect).
+    await vi.advanceTimersByTimeAsync(15_000); // tick@30s: in-window
+    expect(readProviderFileWindow).not.toHaveBeenCalled();
+    // Past the cooldown the host is probed again and delivers.
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
+    await vi.advanceTimersByTimeAsync(15_000); // tick@45s: window expired → probe
+    expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-3', 'completed', 'Stop');
+  });
+
+  it('a cooling host never stalls the local sweep (audit T2 #2)', async () => {
+    const win = createMockWin();
+    let releaseRead: () => void = () => {};
+    vi.mocked(readProviderFileWindow).mockReturnValue(
+      new Promise<string>((resolve) => {
+        releaseRead = () => resolve('Stop:completed');
+      }),
+    );
+    // Local file the sweep should deliver while the remote read is in flight.
+    vi.mocked(fs.promises.readdir).mockResolvedValue(['local-1.status'] as any);
+    vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 5 } as any);
+    vi.mocked(fs.readFileSync).mockReturnValue('PostToolUse:working' as any);
+    startWatching(win); // watcher alive → watchdog cadence (15 s)
+    registerSession('local-1');
+    registerRemoteStatus('sess-hang', 'slowhost');
+    await vi.advanceTimersByTimeAsync(15_000); // tick fires; remote read hangs
+    // The local sweep is NOT awaited behind the remote read: it delivered.
+    expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'local-1', 'working', 'PostToolUse');
+    releaseRead();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it('cleanupSessionStatus stops polling the session', async () => {
+    const win = createMockWin();
+    startWatching(win);
+    registerRemoteStatus('sess-4', 'lab');
+    cleanupSessionStatus('sess-4');
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(readProviderFileWindow).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsafe session ids (the id becomes a sidecar path segment)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registerRemoteStatus('../evil', 'lab');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unsafe session id'));
+    // No entry was registered: a poll tick never touches the seam.
+    registerSession('real-session'); // keep the poll loop alive (PA-09 gate)
+    const win = createMockWin();
+    startWatching(win);
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(readProviderFileWindow).not.toHaveBeenCalled();
   });
 });

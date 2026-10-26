@@ -387,6 +387,10 @@ export interface ProjectRecord {
   id: string;
   name: string;
   path: string;
+  /** Persisted: host whose filesystem `path` lives on; absent means 'local'
+   * (normalized at load, per-host providers plan §2/audit T2 #4 — remote
+   * project-scope gates only accept roots recorded for the queried host). */
+  hostId?: string;
   sessions: SessionRecord[];
   activeSessionId: string | null;
   layout: {
