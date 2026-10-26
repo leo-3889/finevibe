@@ -1,5 +1,6 @@
 import { appState } from './state.js';
 import { onChange as onStatusChange } from './session-activity.js';
+import { isRemoteProject } from './host-scope.js';
 import type { GitWorktree } from './types.js';
 
 export interface GitStatus {
@@ -140,6 +141,15 @@ async function poll(): Promise<void> {
       // previous iteration was awaiting (that's why we looped).
       const project = appState.activeProject;
       if (!project) break;
+      if (isRemoteProject(project)) {
+        // Phase 3 coherence: git runs on this machine - the project lives on
+        // a host. Drop any cached status so no surface (bar, panel, worktree
+        // menu) keeps rendering a stale/local answer for the remote project.
+        for (const key of [...cache.keys()]) {
+          if (key === project.id || key.startsWith(`${project.id}:`)) cache.delete(key);
+        }
+        break;
+      }
 
       // Refresh worktree list every 3rd poll (~30s)
       worktreePollCounter++;
@@ -260,8 +270,9 @@ export function startPolling(): void {
     unwatchGitChanged = window.finevibe.git.onChanged(() => poll());
   }
 
-  // Start watcher for current project
-  if (appState.activeProject) {
+  // Start watcher for current project (remote projects have no local tree to
+  // watch - Phase 3 coherence; main also refuses remote-rooted git cwds).
+  if (appState.activeProject && !isRemoteProject(appState.activeProject)) {
     window.finevibe.git.watchProject(appState.activeProject.path);
   }
 
@@ -280,7 +291,7 @@ export function startPolling(): void {
   // the git panel would stay hidden until a session starts.
   const onActiveProjectChanged = () => {
     worktreePollCounter = 0; // Force worktree refresh on project switch
-    if (!appState.activeProject) {
+    if (!appState.activeProject || isRemoteProject(appState.activeProject)) {
       stopInterval();
       return;
     }

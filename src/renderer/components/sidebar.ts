@@ -603,7 +603,7 @@ export function promptNewProject(): void {
 
   // A new project has no sessions yet, so its coding tool is the global
   // default — scope the profile picker to that tool.
-  const profileOptions = providerProfileOptions(appState.preferences.defaultProvider ?? 'claude');
+  const profileOptions = providerProfileOptions(appState.preferences.defaultProvider ?? 'claude', remoteHostId);
 
   // Live-read so a General-section change while the modal is open is honored
   // on confirm; the pre-fill/sync uses the folder as it was at open.

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { PersistedState, Preferences, ProjectRecord, SessionRecord, Profile, HostRecord } from '../shared/types';
+import type { PersistedState, Preferences, ProjectRecord, Profile, HostRecord } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
 import { validateHostRecordShape, migrateLegacySessionSshHosts } from '../shared/ssh-host';
 
@@ -38,6 +38,7 @@ export function invalidateStateCache(): void {
   gateRootMemo = null;
   gateRootRawPaths = null;
   cliConfigRootsCanonical = null;
+  remoteProjectRoots = null;
   // The write-backoff machine (see writeStateAtomically) is module state
   // too: a forced-failure case must not leave an outage armed that would
   // suppress the next case's leading-edge write.
@@ -500,6 +501,22 @@ function deriveGateRoots(projects: ProjectRecord[]): string[] {
 }
 let knownProjectPaths: string[] | null = null;
 
+// Coherence Phase 3 (docs/hosts.md): remote project roots, for the main-side
+// belt that refuses local git/fs sinks on paths that belong to a host.
+function deriveRemoteProjectRoots(projects: PersistedState['projects']): Array<{ path: string; hostId: string }> {
+  return projects
+    .filter((p) => typeof p.hostId === 'string' && p.hostId && p.hostId !== 'local')
+    .map((p) => ({ path: p.path, hostId: p.hostId as string }));
+}
+let remoteProjectRoots: Array<{ path: string; hostId: string }> | null = null;
+
+export function getRemoteProjectRoots(): Array<{ path: string; hostId: string }> {
+  if (remoteProjectRoots === null) {
+    remoteProjectRoots = deriveRemoteProjectRoots(loadState().projects);
+  }
+  return remoteProjectRoots;
+}
+
 export function getKnownProjectPaths(): string[] {
   if (knownProjectPaths === null) {
     knownProjectPaths = deriveGateRoots(loadState().projects);
@@ -535,6 +552,7 @@ export function saveStateSync(state: PersistedState): void {
   graftMainOwnedPreferences(state);
   stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
   knownProjectPaths = deriveGateRoots(state.projects);
+  remoteProjectRoots = deriveRemoteProjectRoots(state.projects);
   // A synchronous write is a disk write: it opens the throttle window for
   // the leading-edge check in saveState.
   lastSaveAt = Date.now();

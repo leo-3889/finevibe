@@ -23,6 +23,7 @@ type ExitCallback = (exitCode: number, signal?: number, pid?: number, spawnRejec
 const calls = vi.hoisted(() => [] as string[]);
 const handlers = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
 const knownPaths = vi.hoisted(() => [] as string[]);
+const remoteRoots = vi.hoisted(() => [] as Array<{ path: string; hostId: string }>);
 const fakeWin = vi.hoisted(() => ({
   isDestroyed: () => false,
   webContents: { send: vi.fn() },
@@ -143,6 +144,7 @@ vi.mock('./store', () => ({
   saveState: vi.fn(),
   saveStateSync: vi.fn(),
   getKnownProjectPaths: () => knownPaths,
+  getRemoteProjectRoots: () => remoteRoots,
 }));
 
 vi.mock('./hook-status', () => ({
@@ -277,6 +279,7 @@ beforeEach(() => {
   _resetHomeOutsideConsentForTesting();
   handlers.clear();
   knownPaths.length = 0;
+  remoteRoots.length = 0;
   provider = makeProvider();
   mockGetProvider.mockReturnValue(provider);
   // pty:create gates a renderer-supplied configDir through the managed
@@ -573,6 +576,41 @@ describe('stats:getCache memoization (PA-24)', () => {
       osHomeOverride.value = '';
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// Phase 3 coherence belt: a remote project's path must never be served by
+// the LOCAL git/fs sinks. The belt compares raw posix strings (no local
+// canonicalization), so it fires exactly where the old shared-fiction gate
+// passed: a controller whose local paths mirror the host's (Linux/macOS).
+// On Windows a remote posix path canonicalizes to a phantom drive path that
+// fails on its own, so the belt is inert there - skip.
+describe.skipIf(process.platform === 'win32')('remote-scope belt (git/fs)', () => {
+  it('git:getStatus refuses a remote project root and its subtrees', () => {
+    remoteRoots.push({ path: '/srv/app', hostId: 'host-1' });
+    // Same-path LOCAL record (the mirror-path lie): the shared-fiction gate
+    // passes, the belt must catch it.
+    knownPaths.push('/srv/app');
+    expect(() => handlers.get('git:getStatus')!({}, '/srv/app')).toThrow(/remote host/);
+    expect(() => handlers.get('git:getStatus')!({}, '/srv/app/sub')).toThrow(/remote host/);
+    // Trailing slash on the record, deep path in the call - both normalize.
+    remoteRoots[0].path = '/srv/app/';
+    expect(() => handlers.get('git:getStatus')!({}, '/srv/app/a/b')).toThrow(/remote host/);
+  });
+
+  it('fs:listFiles refuses a remote-rooted cwd with a greppable warn', async () => {
+    remoteRoots.push({ path: '/srv/app', hostId: 'host-1' });
+    knownPaths.push('/srv/app');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const files = await handlers.get('fs:listFiles')!({}, '/srv/app', '');
+    expect(files).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:listFiles blocked'));
+    warn.mockRestore();
+  });
+
+  it('local projects are untouched by the belt', async () => {
+    knownPaths.push(path.resolve('/local/proj'));
+    expect(() => handlers.get('git:getStatus')!({}, path.resolve('/local/proj'))).not.toThrow();
   });
 });
 

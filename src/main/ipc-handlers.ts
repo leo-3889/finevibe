@@ -10,7 +10,7 @@ import { addMcpServer, removeMcpServer, isManagedMcpConfigDir } from './claude-c
 import type { McpServerConfig } from './claude-cli';
 import { fileURLToPath } from 'node:url';
 import { listImportableLegacyProjects } from './legacy-import';
-import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateStateCache, PersistedState } from './store';
+import { loadState, saveState, saveStateSync, getKnownProjectPaths, getRemoteProjectRoots, invalidateStateCache, PersistedState } from './store';
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
 import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
 import { syncSettingsToHost } from './hosts/settings-sync';
@@ -68,6 +68,23 @@ function isWithinKnownProject(resolvedPath: string): boolean {
 }
 
 /**
+ * Coherence Phase 3 belt (docs/hosts.md "never silently lie"): a path that
+ * belongs to a REMOTE project must never be served by the local sinks. On a
+ * Linux controller whose local paths mirror the host's, local canonicalization
+ * happily resolves the remote string to a real local directory - the gate
+ * above passes and git/fs read the WRONG machine. Compare the raw string
+ * (posix-normalized) against the remote project roots; no canonicalization.
+ */
+function remoteProjectOwnerOf(resolvedPath: string): string | undefined {
+  const posix = resolvedPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  for (const root of getRemoteProjectRoots()) {
+    const r = root.path.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (posix === r || posix.startsWith(`${r}/`)) return root.hostId;
+  }
+  return undefined;
+}
+
+/**
  * git:* handlers run real git (and `rm -r` on untracked discard) in an
  * IPC-supplied cwd. Bound every git root to a known project directory or a
  * root the git panel actively watches — worktrees live outside the project
@@ -85,6 +102,11 @@ const MAX_GIT_WATCHED_ROOTS = 200;
 function requireGitRoot(channel: string, projectPath: string): string {
   if (typeof projectPath !== 'string') throw new Error('Invalid project path');
   const resolved = path.resolve(projectPath);
+  const remoteOwner = remoteProjectOwnerOf(resolved);
+  if (remoteOwner) {
+    console.warn(`${channel} blocked: ${resolved} is a project on remote host ${remoteOwner} - git runs on this machine only`);
+    throw new Error('Project lives on a remote host');
+  }
   // Register and compare in canonical form. The renderer spells the same
   // directory differently (drive-letter case, separators, `..`, junctions) and
   // isWithinKnownProject canonicalizes on its side, so a raw-string set let one
@@ -2584,6 +2606,13 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('fs:listFiles', async (_event, cwd: string, query: string) => {
     try {
       const resolvedCwd = path.resolve(cwd);
+      const remoteOwner = remoteProjectOwnerOf(resolvedCwd);
+      if (remoteOwner) {
+        // Phase 3 belt: on mirror-path controllers the local gate below
+        // passes for a remote root; refuse before listing the wrong machine.
+        console.warn(`fs:listFiles blocked: ${resolvedCwd} is a project on remote host ${remoteOwner}`);
+        return [];
+      }
       if (!isWithinKnownProject(resolvedCwd)) {
         return [];
       }

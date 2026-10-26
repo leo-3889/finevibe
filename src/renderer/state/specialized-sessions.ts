@@ -1,5 +1,6 @@
 import type { CliProviderCapabilities, Preferences, Profile, ProjectRecord, ProviderId, SessionRecord } from '../../shared/types.js';
 import { isAbsolutePath } from '../../shared/platform.js';
+import { defaultProfileKey, profileHost } from '../../shared/profile-keys.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 
 /** Resolve the provider id for a plan session: override → active session's → default → claude. */
@@ -65,11 +66,17 @@ export function resolveProfile(
   prefs: Pick<Preferences, 'defaultProfiles'>,
   providerId: ProviderId,
   profiles: Profile[],
+  hostId?: string,
 ): Profile | undefined {
-  const id = session?.profileId ?? project?.defaultProfileId ?? prefs.defaultProfiles?.[providerId];
+  // Phase 1 host rule: the chain's default lives on the LAUNCH host
+  // (`<hostId>|<providerId>`; bare key = local), and a pinned profile from
+  // another machine is dropped, not booted — a profile is a directory on
+  // one filesystem.
+  const id = session?.profileId ?? project?.defaultProfileId ?? prefs.defaultProfiles?.[defaultProfileKey(hostId, providerId)];
   if (!id) return undefined;
   const profile = profiles.find((p) => p.id === id);
   if (!profile || profile.providerId !== providerId) return undefined;
+  if (hostId && profileHost(profile) !== hostId) return undefined;
   return profile;
 }
 

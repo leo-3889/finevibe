@@ -1,6 +1,8 @@
 import { appState } from './state.js';
 import { getProviderCapabilities, getProviderDisplayName } from './provider-availability.js';
 import { resolveProfile } from './state/specialized-sessions.js';
+import { profileHost } from '../shared/profile-keys.js';
+import { LOCAL_HOST_ID } from '../shared/types.js';
 import { t } from './i18n.js';
 import type { SelectOption } from './components/custom-select.js';
 import type { Profile, ProjectRecord, ProviderId } from '../shared/types.js';
@@ -14,11 +16,17 @@ export function profileCapableProfiles(): Profile[] {
  * Profile pick options for one coding tool: bare names, no provider suffix
  * (the tool is already known to the picker). Empty for providers without
  * profile support or with no profiles defined.
+ *
+ * `hostId` (coherence plan Phase 1): the machine the session will LAUNCH ON.
+ * A profile is a directory on one machine, so a remote launch must never be
+ * offered a local profile (its configDir fails the spawn gate) and a local
+ * launch must never be offered a host profile. The filter is the picker-side
+ * half of the rule; `resolveProfile` re-checks it at spawn.
  */
-export function providerProfileOptions(providerId: ProviderId): SelectOption[] {
+export function providerProfileOptions(providerId: ProviderId, hostId: string = LOCAL_HOST_ID): SelectOption[] {
   if (getProviderCapabilities(providerId)?.profiles !== true) return [];
   return appState.profiles
-    .filter((p) => p.providerId === providerId)
+    .filter((p) => p.providerId === providerId && profileHost(p) === hostId)
     .map((p) => ({ value: p.id, label: p.name }));
 }
 
@@ -52,7 +60,7 @@ export function projectProfileBadge(
   if (profileCapableProfiles().length <= 1) return undefined;
   const providerId = projectProviderId(project);
   if (getProviderCapabilities(providerId)?.profiles !== true) return undefined;
-  const profile = resolveProfile(undefined, project, appState.preferences, providerId, appState.profiles);
+  const profile = resolveProfile(undefined, project, appState.preferences, providerId, appState.profiles, project.hostId);
   return {
     tool: getProviderDisplayName(providerId),
     profile: profile?.name ?? t('sidebar.default'),

@@ -22,6 +22,16 @@ export function projectsForHost(
 }
 
 /**
+ * Phase 3 coherence (docs/hosts.md): true when the project lives on a
+ * registry host. Local-machine surfaces (git, quick-open, storage…) gate on
+ * this and render an explicit remote state instead of silently scanning the
+ * local filesystem at the remote path.
+ */
+export function isRemoteProject(project: { hostId?: string } | undefined): boolean {
+  return !!project?.hostId && project.hostId !== LOCAL_HOST_ID;
+}
+
+/**
  * Identity chip (6px square, plan §5): the host color in a style attribute.
  * The color passes the shared `#rrggbb` gate first (plan §7 — the renderer
  * never injects a raw string); hosts without a validated color (Local, drafts

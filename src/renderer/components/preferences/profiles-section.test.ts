@@ -36,6 +36,16 @@ const selectState = vi.hoisted(() => {
 
 const mockKeychainStatus = vi.hoisted(() => vi.fn());
 
+const mockHosts = vi.hoisted(() => ({
+  enrolled: [] as Array<{ id: string; name: string }>,
+}));
+
+vi.mock('../../host-registry.js', () => ({
+  getEnrolledHosts: () => mockHosts.enrolled,
+  getHostColor: (id: string | undefined) => (id === 'host-1' ? '#ff0000' : ''),
+  getHostName: (id: string | undefined) => mockHosts.enrolled.find((h) => h.id === id)?.name ?? id ?? 'host',
+}));
+
 vi.mock('../../state.js', () => ({ appState: mockState }));
 vi.mock('../modal.js', () => ({
   showModal: modalState.showModal,
@@ -61,13 +71,14 @@ vi.mock('../../provider-availability.js', () => ({
   }),
 }));
 vi.mock('../custom-select.js', () => ({
-  createCustomSelect: (id: string, options: Array<{ value: string; label: string }>, defaultValue: string) => {
+  createCustomSelect: (id: string, options: Array<{ value: string; label: string }>, defaultValue: string, onChange?: (value: string) => void) => {
     const element = makeElement('div');
     element.className = 'custom-select';
     const instance = {
       options,
       value: defaultValue,
       element,
+      onChange,
       getValue() { return instance.value; },
       setValue(value: string) { instance.value = value; },
       destroy() { selectState.destroyed.push(id); },
@@ -152,8 +163,8 @@ function click(el: Record<string, any>): void {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function makeProfile(id: string, name: string, providerId: string) {
-  return { id, name, providerId, configDir: `/cfg/${id}`, managed: true, createdAt: 0 };
+function makeProfile(id: string, name: string, providerId: string, hostId?: string) {
+  return { id, name, providerId, configDir: `/cfg/${id}`, managed: true, createdAt: 0, ...(hostId ? { hostId } : {}) };
 }
 
 const ctx = {
@@ -316,5 +327,89 @@ describe('createProfilesSection', () => {
 
     expect(mockState.addProfile).toHaveBeenCalledWith({ name: 'PiWork', providerId: 'pi', customPath: undefined });
     expect(modalState.setModalError).not.toHaveBeenCalled();
+  });
+
+  // ---- Phase 1 host coherence ----
+
+  it('host scope select offers Local + enrolled hosts and filters the list to the scope', async () => {
+    mockHosts.enrolled = [{ id: 'host-1', name: 'workbox' }];
+    mockState.profiles = [
+      makeProfile('work', 'Work', 'claude'),
+      makeProfile('rwork', 'Remote Work', 'claude', 'host-1'),
+    ];
+    const container = await render();
+
+    const scope = selectState.instances.get('profiles-host-scope')!;
+    expect(scope.options.map((o: any) => o.label)).toEqual(['Local', 'workbox']);
+    // Default scope = local: only the local profile is listed.
+    expect(collectInTree(container, (n) => n.className === 'profile-row-name').map((n) => n.textContent)).toEqual(['Work']);
+
+    // Switch scope to the host: list swaps (rerender requested, then applied).
+    scope.onChange!('host-1');
+    expect(ctx.rerenderSection).toHaveBeenCalledWith('profiles');
+    const container2 = makeElement('div');
+    const { createProfilesSection } = await import('./profiles-section.js');
+    createProfilesSection(ctx).render(container2);
+    expect(collectInTree(container2, (n) => n.className === 'profile-row-name').map((n) => n.textContent)).toEqual(['Remote Work']);
+  });
+
+  it('remote profile rows carry a host chip; local rows do not', async () => {
+    mockHosts.enrolled = [{ id: 'host-1', name: 'workbox' }];
+    mockState.profiles = [makeProfile('rwork', 'Remote Work', 'claude', 'host-1')];
+    const scopeRender = async () => {
+      const { createProfilesSection } = await import('./profiles-section.js');
+      const c = makeElement('div');
+      createProfilesSection(ctx).render(c);
+      return c;
+    };
+    // scope starts local (module var persists across the two renders in this file) -
+    // drive the scope first via the select's onChange.
+    await render();
+    selectState.instances.get('profiles-host-scope')!.onChange!('host-1');
+    const container = await scopeRender();
+    const chips = collectInTree(container, (n) => n.className === 'profile-row-tag').map((n) => n.textContent);
+    expect(chips).toContain('workbox');
+  });
+
+  it('Add-profile modal passes the chosen host to addProfile (remote = hostId, local = undefined)', async () => {
+    mockHosts.enrolled = [{ id: 'host-1', name: 'workbox' }];
+    const container = await render();
+    await flush();
+    click(findInTree(container, (n) => n.className === 'btn-primary')!);
+    await flush();
+
+    const fields = modalState.showModal.mock.calls[0][1];
+    const hostField = fields.find((f: any) => f.id === 'profile-host');
+    expect(hostField).toBeTruthy();
+    expect(hostField.options.map((o: any) => o.label)).toEqual(['Local', 'workbox']);
+
+    const onConfirm = modalState.showModal.mock.calls[0][2];
+    await onConfirm({ 'profile-name': 'R', 'profile-provider': 'claude', 'profile-host': 'host-1', 'profile-path': '' });
+    expect(mockState.addProfile).toHaveBeenCalledWith({ name: 'R', providerId: 'claude', customPath: undefined, hostId: 'host-1' });
+
+    // Local scope: no keychain probe for a remote claude profile (isMac mock = true,
+    // status unsupported - the guard must NOT fire for host profiles).
+    mockKeychainStatus.mockResolvedValue({ status: 'unsupported', version: '2.1.19' });
+    await onConfirm({ 'profile-name': 'L', 'profile-provider': 'claude', 'profile-host': 'local', 'profile-path': '' });
+    expect(mockState.addProfile).toHaveBeenCalledWith({ name: 'L', providerId: 'claude', customPath: undefined, hostId: undefined });
+  });
+
+  it('per-provider default selects read and write host-scoped keys', async () => {
+    mockHosts.enrolled = [{ id: 'host-1', name: 'workbox' }];
+    mockState.profiles = [makeProfile('rwork', 'Remote Work', 'claude', 'host-1')];
+    mockState.preferences.defaultProfiles = { claude: 'local-prof', 'host-1|claude': 'rwork' };
+
+    const { createProfilesSection } = await import('./profiles-section.js');
+    const c = makeElement('div');
+    createProfilesSection(ctx).render(c);
+    // Local scope: the default select is keyed to the bare key.
+    selectState.instances.get('profiles-host-scope')!.onChange!('host-1');
+    const c2 = makeElement('div');
+    createProfilesSection(ctx).render(c2);
+    const def = selectState.instances.get('pref-default-profile-claude')!;
+    expect(def.value).toBe('rwork');
+    expect(def.options.map((o: any) => o.value)).toEqual(['', 'rwork']); // host-scoped options only
+    def.onChange!('');
+    expect(mockState.setProviderDefaultProfile).toHaveBeenCalledWith('claude', undefined, 'host-1');
   });
 });

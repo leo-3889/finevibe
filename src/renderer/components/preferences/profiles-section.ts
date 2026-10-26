@@ -5,18 +5,27 @@ import { showModal, closeModal, setModalError, showConfirmDialog, type FieldDef 
 import { t } from '../../i18n.js';
 import { loadProviderAvailability, getAvailableProviderMetas, getCachedProviderMetas, getProviderDisplayName } from '../../provider-availability.js';
 import { profileCapableProfiles } from '../../profile-utils.js';
+import { profileHost, resolveDefaultProfileId } from '../../../shared/profile-keys.js';
+import { getEnrolledHosts, getHostColor, getHostName } from '../../host-registry.js';
+import { LOCAL_HOST_ID } from '../../../shared/types.js';
 import type { Profile, ProviderId } from '../../../shared/types.js';
 import type { PreferencesContext, SectionController } from './section.js';
 
+// Cached keychain-isolation status (macOS), fetched once per render and reused
+// by the Add Profile guard so it doesn't re-probe the keychain via IPC.
+// SR2-b sibling (C3RP-10): the modal's Enter keydown re-fires the confirm
+// handler even with the button disabled, so N re-triggers while the
+// keychain probe / addProfile await would spawn N provisions. The guard
+// arms synchronously at handler entry and disarms in the handler's finally.
+let provisioningProfile = false;
+// Coherence Phase 1: which machine this section edits. Profiles are
+// directories on ONE host; the scope select filters the list, keys the
+// per-provider defaults, and pre-fills the Add form. Module-scoped so the
+// chosen scope survives section re-renders and re-opens.
+let hostScope: string = LOCAL_HOST_ID;
+
 export function createProfilesSection(ctx: PreferencesContext): SectionController {
   let profileDefaultSelects: CustomSelectInstance[] = [];
-  // Cached keychain-isolation status (macOS), fetched once per render and reused
-  // by the Add Profile guard so it doesn't re-probe the keychain via IPC.
-  // SR2-b sibling (C3RP-10): the modal's Enter keydown re-fires the confirm
-  // handler even with the button disabled, so N re-triggers while the
-  // keychain probe / addProfile await would spawn N provisions. The guard
-  // arms synchronously at handler entry and disarms in the handler's finally.
-  let provisioningProfile = false;
   let cachedKeychainStatus: Awaited<ReturnType<typeof window.finevibe.profiles.keychainStatus>> | null = null;
 
   function render(container: HTMLElement) {
@@ -41,6 +50,24 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       container.appendChild(hint);
     }
 
+    // Coherence Phase 1: one host scope for the whole section (docs/hosts.md
+    // coherence principle) — list, defaults and Add-form all read it, so a
+    // remote profile can never be picked for a local launch by accident.
+    const hostRow = document.createElement('div');
+    hostRow.className = 'modal-toggle-field';
+    const hostLabel = document.createElement('label');
+    hostLabel.textContent = t('profiles.hostLabel');
+    const hostSelect = createCustomSelect(
+      'profiles-host-scope',
+      [{ value: LOCAL_HOST_ID, label: t('contextMenu.tab.sshHostLocal') }, ...getEnrolledHosts().map((h) => ({ value: h.id, label: h.name }))],
+      hostScope,
+      (value) => { hostScope = value; ctx.rerenderSection('profiles'); },
+    );
+    hostRow.appendChild(hostLabel);
+    hostRow.appendChild(hostSelect.element);
+    container.appendChild(hostRow);
+    profileDefaultSelects.push(hostSelect);
+
     // macOS-only guardrail notice: per-profile login isolation depends on Claude
     // Code namespacing its keychain entry per config dir. Older builds share one
     // entry, so logins would bleed across profiles. Surface the status inline.
@@ -59,8 +86,9 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       }).catch(() => { /* status check is best-effort */ });
     }
 
-    // All profile-capable providers (capabilities.profiles), not just Claude.
-    const profiles = profileCapableProfiles();
+    // All profile-capable providers (capabilities.profiles), not just Claude,
+    // scoped to the selected host (Phase 1).
+    const profiles = profileCapableProfiles().filter((p) => profileHost(p) === hostScope);
 
     // Group profiles by provider. Groups are ordered by the provider
     // registry (the same order the rest of the UI lists coding tools), so a
@@ -87,8 +115,8 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       const select = createCustomSelect(
         `pref-default-profile-${providerId}`,
         [{ value: '', label: t('sidebar.defaultProfileOption') }, ...providerProfiles.map((p) => ({ value: p.id, label: p.name }))],
-        appState.preferences.defaultProfiles?.[providerId] ?? '',
-        (value) => appState.setProviderDefaultProfile(providerId, value || undefined),
+        resolveDefaultProfileId(appState.preferences, providerId, hostScope) ?? '',
+        (value) => appState.setProviderDefaultProfile(providerId, value || undefined, hostScope),
       );
       profileDefaultSelects.push(select);
       row.appendChild(label);
@@ -111,6 +139,18 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       tag.className = 'profile-row-tag';
       tag.textContent = profile.managed ? t('profiles.tagManaged') : t('profiles.tagCustom');
       nameEl.appendChild(tag);
+      // Host chip on remote rows (the scope select filters the list, so this
+      // only appears when browsing shows the profile's own host - keeps the
+      // chip truthful next to copied/renamed entries).
+      const pHost = profileHost(profile);
+      if (pHost !== LOCAL_HOST_ID) {
+        const hostTag = document.createElement('span');
+        hostTag.className = 'profile-row-tag';
+        hostTag.textContent = getHostName(pHost);
+        const color = getHostColor(pHost);
+        if (color) hostTag.style.color = color;
+        nameEl.appendChild(hostTag);
+      }
       const pathEl = document.createElement('div');
       pathEl.className = 'profile-row-path';
       pathEl.textContent = profile.configDir;
@@ -177,6 +217,7 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
     addRow.className = 'profiles-add-row';
     const addBtn = document.createElement('button');
     addBtn.className = 'btn-primary';
+    // pi-lens-ignore: xss-innerhtml, slop, no-inner-html — static SVG + i18n label, no user data
     addBtn.innerHTML =
       '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
       'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' +
@@ -198,6 +239,15 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
         defaultValue: 'claude',
         options: profileCapable.map((p) => ({ value: p.id, label: p.displayName })),
       },
+      {
+        // The machine the profile directory is created on (profiles:provision
+        // is host-routed; Phase 1 coherence).
+        label: t('profiles.hostLabel'),
+        id: 'profile-host',
+        type: 'select',
+        defaultValue: hostScope,
+        options: [{ value: LOCAL_HOST_ID, label: t('contextMenu.tab.sshHostLocal') }, ...getEnrolledHosts().map((h) => ({ value: h.id, label: h.name }))],
+      },
       { label: t('profiles.addPathLabel'), id: 'profile-path', placeholder: t('profiles.addPathPlaceholder') },
     ];
     showModal(t('profiles.addModalTitle'), fields, async (values) => {
@@ -207,10 +257,13 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       const name = values['profile-name']?.trim();
       if (!name) { setModalError('profile-name', t('profiles.nameRequired')); return; }
       const providerId = (values['profile-provider'] || 'claude') as ProviderId;
+      const hostId = values['profile-host'] || LOCAL_HOST_ID;
       // Block creation when this Claude build can't isolate profile logins on
       // macOS — otherwise the new profile would silently share the default
-      // account's keychain login. Other providers have no keychain concern.
-      if (isMac && providerId === 'claude') {
+      // account's keychain login. Other providers have no keychain concern,
+      // and neither does a profile that lives on a remote host (Linux servers
+      // have no keychain) — the guard is about THIS machine only.
+      if (isMac && providerId === 'claude' && hostId === LOCAL_HOST_ID) {
         const { status, version } = cachedKeychainStatus ?? await window.finevibe.profiles.keychainStatus();
         if (status === 'unsupported') {
           setModalError('profile-name', t('profiles.unsupportedMacError', { version: version ? ` ${version}` : '' }));
@@ -219,7 +272,7 @@ export function createProfilesSection(ctx: PreferencesContext): SectionControlle
       }
       const customPath = values['profile-path']?.trim() || undefined;
       try {
-        await appState.addProfile({ name, providerId, customPath });
+        await appState.addProfile({ name, providerId, customPath, hostId: hostId === LOCAL_HOST_ID ? undefined : hostId });
       } catch (err) {
         setModalError('profile-path', t('profiles.createDirError', { err: err instanceof Error ? err.message : String(err) }));
         return;
