@@ -1,4 +1,5 @@
-import type { BoardColumn, BoardData, PersistedState, Preferences, ProjectRecord, SessionRecord, SidebarViews } from '../../shared/types.js';
+import type { BoardColumn, BoardData, HostRecord, PersistedState, Preferences, ProjectRecord, SessionRecord, SidebarViews } from '../../shared/types.js';
+import { validateHostRecordShape } from '../../shared/ssh-host.js';
 import { restoreCost } from '../session-cost.js';
 import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
@@ -24,6 +25,14 @@ export function createDefaultBoard(): BoardData {
  */
 export function hydrateLoadedState(state: PersistedState, defaultPreferences: Preferences): void {
   state.preferences = { ...defaultPreferences, ...state.preferences };
+  // Hosts normalize once here too (multi-host Phase 1): entries the shared
+  // validator rejects are dropped, never trusted (mirrors store.ts on main).
+  const hosts: HostRecord[] = [];
+  for (const host of state.hosts ?? []) {
+    const validated = validateHostRecordShape(host);
+    if (validated) hosts.push(validated);
+  }
+  state.hosts = hosts;
   // Per-key merge: a save written before a new sidebar section existed must
   // inherit its default instead of leaving the key undefined (the shallow
   // spread above replaces the whole object).

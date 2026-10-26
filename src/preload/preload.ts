@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ImportableLegacyProject } from '../shared/types';
 import type { DiskHealth } from '../shared/types';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, HostRecord } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -73,6 +73,13 @@ export interface FineVibeApi {
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
+  };
+  hosts: {
+    list(): Promise<HostRecord[]>;
+    create(draft: unknown): Promise<HostRecord>;
+    update(id: string, patch: Record<string, unknown>): Promise<HostRecord>;
+    delete(id: string): Promise<void>;
+    openShell(id: string, sessionId: string): Promise<void>;
   };
   provider: {
     getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
@@ -305,6 +312,13 @@ const api: FineVibeApi = {
   profiles: {
     provision: (profileId, customPath, providerId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId),
     keychainStatus: () => ipcRenderer.invoke('profiles:keychainStatus'),
+  },
+  hosts: {
+    list: () => ipcRenderer.invoke('hosts:list'),
+    create: (draft) => ipcRenderer.invoke('hosts:create', draft),
+    update: (id, patch) => ipcRenderer.invoke('hosts:update', id, patch),
+    delete: (id) => ipcRenderer.invoke('hosts:delete', id),
+    openShell: (id, sessionId) => ipcRenderer.invoke('hosts:openShell', id, sessionId),
   },
   git: {
     getStatus: (path) => ipcRenderer.invoke('git:getStatus', path),

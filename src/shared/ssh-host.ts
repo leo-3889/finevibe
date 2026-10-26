@@ -14,6 +14,8 @@ export interface SshHostRef {
   user?: string;
 }
 
+import type { HostRecord, HostAuthKind, HostEnrollmentStatus } from './types.js';
+
 const MAX_HOST_LENGTH = 253;
 
 /** RFC-1123-style hostname: labels alphanumeric with inner hyphens. */
@@ -48,4 +50,78 @@ export function parseSshHost(raw: string): SshHostRef | null {
   if (!HOSTNAME.test(host)) return null;
 
   return user ? { host: `${user}@${host}`, user } : { host };
+}
+
+// --- HostRecord validation (multi-host Phase 1) ---
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Bracketed IPv6 literal (the spelling ssh argv requires). */
+const IPV6_BRACKETED = /^\[[0-9A-Fa-f:.]+\]$/;
+
+const HOST_AUTH_KINDS = ['key', 'password'];
+const HOST_ENROLLMENT_STATUSES = ['draft', 'probing', 'auth-ok', 'enrolled', 'partial', 'failed'];
+
+/**
+ * Validate one raw `PersistedState.hosts` entry (or an IPC draft) and return
+ * the normalized record, or null. Pure JS, shared main+renderer: main
+ * re-validates everything the renderer sends (the registry is main-owned).
+ * Grammar mirrors parseSshHost: same USERNAME, HOSTNAME extended with the
+ * bracketed IPv6 form; port required 1..65535; uuid id. Zero secrets here —
+ * this record never carries a password or key body.
+ */
+export function validateHostRecordShape(raw: unknown): HostRecord | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== 'string' || !UUID.test(r.id)) return null;
+  if (typeof r.name !== 'string') return null;
+  const name = r.name.trim();
+  if (name.length < 1 || name.length > 64) return null;
+  if (typeof r.user !== 'string' || !USERNAME.test(r.user)) return null;
+  if (typeof r.host !== 'string') return null;
+  if (!(HOSTNAME.test(r.host) || IPV6_BRACKETED.test(r.host))) return null;
+  if (typeof r.port !== 'number' || !Number.isInteger(r.port) || r.port < 1 || r.port > 65535) return null;
+  if (typeof r.authKind !== 'string' || !HOST_AUTH_KINDS.includes(r.authKind)) return null;
+  if (typeof r.managedKey !== 'boolean') return null;
+  if (typeof r.enrollmentStatus !== 'string' || !HOST_ENROLLMENT_STATUSES.includes(r.enrollmentStatus)) return null;
+  if (r.privateKeyPath !== undefined && (typeof r.privateKeyPath !== 'string' || r.privateKeyPath.trim() === '')) return null;
+  if (r.authKind === 'key' && r.privateKeyPath === undefined) return null;
+  for (const key of ['enrollmentDetail', 'enrolledAt', 'lastProbeAt', 'hostKeyFingerprint', 'defaultFolder'] as const) {
+    const v = r[key];
+    if (v !== undefined && typeof v !== 'string') return null;
+  }
+  if (r.lastProbeOk !== undefined && typeof r.lastProbeOk !== 'boolean') return null;
+  if (r.memoryServer !== undefined && typeof r.memoryServer !== 'boolean') return null;
+  if (r.prerequisites !== undefined) {
+    if (typeof r.prerequisites !== 'object' || r.prerequisites === null || Array.isArray(r.prerequisites)) return null;
+    for (const value of Object.values(r.prerequisites as Record<string, unknown>)) {
+      if (typeof value !== 'object' || value === null) return null;
+      const v = value as Record<string, unknown>;
+      if (typeof v.ok !== 'boolean') return null;
+      if (v.version !== undefined && typeof v.version !== 'string') return null;
+      if (v.path !== undefined && typeof v.path !== 'string') return null;
+    }
+  }
+  // Normalized copy: known fields only, trimmed name — a hand-edited
+  // state.json cannot smuggle extra keys into the renderer.
+  const record: HostRecord = {
+    id: r.id.toLowerCase(),
+    name,
+    user: r.user,
+    host: r.host,
+    port: r.port,
+    authKind: r.authKind as HostAuthKind,
+    managedKey: r.managedKey,
+    enrollmentStatus: r.enrollmentStatus as HostEnrollmentStatus,
+  };
+  if (r.privateKeyPath !== undefined) record.privateKeyPath = r.privateKeyPath as string;
+  if (r.enrollmentDetail !== undefined) record.enrollmentDetail = r.enrollmentDetail as string;
+  if (r.enrolledAt !== undefined) record.enrolledAt = r.enrolledAt as string;
+  if (r.lastProbeAt !== undefined) record.lastProbeAt = r.lastProbeAt as string;
+  if (r.lastProbeOk !== undefined) record.lastProbeOk = r.lastProbeOk as boolean;
+  if (r.hostKeyFingerprint !== undefined) record.hostKeyFingerprint = r.hostKeyFingerprint as string;
+  if (r.prerequisites !== undefined) record.prerequisites = r.prerequisites as HostRecord['prerequisites'];
+  if (r.defaultFolder !== undefined) record.defaultFolder = r.defaultFolder as string;
+  if (r.memoryServer !== undefined) record.memoryServer = r.memoryServer as boolean;
+  return record;
 }

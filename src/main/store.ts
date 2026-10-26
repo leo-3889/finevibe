@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { PersistedState, Preferences, ProjectRecord } from '../shared/types';
+import type { PersistedState, Preferences, ProjectRecord, HostRecord } from '../shared/types';
+import { validateHostRecordShape } from '../shared/ssh-host';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
 
@@ -72,7 +73,7 @@ export const DEFAULT_PREFERENCES: Preferences = { soundOnSessionWaiting: true, n
 /** State returned by {@link loadState}: `preferences` is guaranteed present
  * by the loader's single normalization step, so main-side consumers never
  * need to guard it. */
-export type LoadedState = PersistedState & { preferences: Preferences };
+export type LoadedState = PersistedState & { preferences: Preferences; hosts: HostRecord[] };
 
 function defaultState(): LoadedState {
   return {
@@ -80,6 +81,7 @@ function defaultState(): LoadedState {
     projects: [],
     activeProjectId: null,
     preferences: { ...DEFAULT_PREFERENCES },
+    hosts: [],
   };
 }
 
@@ -182,9 +184,25 @@ export function loadState(): LoadedState {
       }
       projects.push(project);
     }
+    // Hosts normalize once here too (multi-host Phase 1): entries the shared
+    // validator rejects are dropped with a log, never trusted.
+    const hosts: HostRecord[] = [];
+    for (const host of picked.hosts ?? []) {
+      const validated = validateHostRecordShape(host);
+      if (!validated) {
+        console.warn(`Dropped persisted host ${JSON.stringify((host as { id?: string })?.id)}: failed validateHostRecordShape`);
+        continue;
+      }
+      hosts.push(validated);
+    }
     // Single documented default (P2-84): normalize once here, never at call
     // sites. Spread (not a cast) so the type system checks the result.
-    const normalized: LoadedState = { ...picked, projects, preferences: picked.preferences ?? { ...DEFAULT_PREFERENCES } };
+    const normalized: LoadedState = {
+      ...picked,
+      projects,
+      hosts,
+      preferences: picked.preferences ?? { ...DEFAULT_PREFERENCES },
+    };
     stateCache = normalized;
     return normalized;
   }
@@ -241,7 +259,7 @@ export function saveState(state: PersistedState): void {
   lastState = state;
   // P2-84: the cache is LoadedState; a writer's raw state normalizes to
   // the loader's single documented default on the way in.
-  stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
+  stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
   knownProjectPaths = deriveGateRoots(state.projects);
   // ENOSPC storm guard (workstation, 2026-10-23): the disk is failing, so
   // the single backoff timer (see writeStateAtomically) owns retries — no
@@ -501,7 +519,7 @@ export function saveStateSync(state: PersistedState): void {
   // S1-02: same graft as saveState via the shared helper (SA-P2-7) — the
   // renderer's beforeunload flush is a whole-state write too.
   graftMainOwnedPreferences(state);
-  stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
+  stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
   knownProjectPaths = deriveGateRoots(state.projects);
   // A synchronous write is a disk write: it opens the throttle window for
   // the leading-edge check in saveState.

@@ -744,7 +744,11 @@ export function spawnShellPty(
   sessionId: string,
   cwd: string,
   onData: (data: string) => void,
-  onExit: (exitCode: number, signal?: number) => void
+  onExit: (exitCode: number, signal?: number) => void,
+  /** Set = open the shell on a remote host via `ssh -tt -p <port> -- <host>`
+   * (multi-host Phase 1, council R-2): the local cwd is irrelevant (the
+   * remote cwd is `remote.defaultFolder`, falling back to the remote home). */
+  remote?: { host: string; port: number; defaultFolder?: string },
 ): void {
   if (ptys.has(sessionId)) {
     replacedPtys.add(ptys.get(sessionId)!.process);
@@ -761,7 +765,22 @@ export function spawnShellPty(
     ? (process.env.COMSPEC || 'cmd.exe')
     : interactiveShell();
   const shellEnv = withUtf8Locale({ ...process.env, PATH: getFullPath() });
-  const ptyProcess = pty.spawn(shell, [], {
+  // Remote branch: the PTY runs system ssh; the remote login shell answers
+  // there. `--` stops ssh from parsing the host token as an option (the
+  // registry grammar already gates it), matching the resolveLaunchSpec wrap.
+  const useRemote = remote !== undefined;
+  const executable = useRemote ? 'ssh' : shell;
+  const argv = useRemote
+    ? [
+        '-tt',
+        '-p',
+        String(remote.port),
+        '--',
+        remote.host,
+        ...(remote.defaultFolder ? [`cd ${posixQuote(remote.defaultFolder)} && exec $SHELL`] : []),
+      ]
+    : [];
+  const ptyProcess = pty.spawn(executable, argv, {
     name: 'xterm-256color',
     cols: 120,
     rows: 15,

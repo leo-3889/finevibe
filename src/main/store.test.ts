@@ -39,6 +39,7 @@ const DEFAULT_STATE: PersistedState = {
   version: 1,
   projects: [],
   activeProjectId: null,
+  hosts: [],
   preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', defaultProjectsFolder: '' },
 };
 
@@ -88,7 +89,8 @@ describe('loadState', () => {
     };
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify(state));
-    expect(loadState()).toEqual(state);
+    // hosts normalizes to [] on load (multi-host Phase 1 contract).
+    expect(loadState()).toEqual({ ...state, hosts: [] });
   });
 
   it('returns default state on invalid JSON', () => {
@@ -137,7 +139,7 @@ describe('loadState', () => {
     };
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(`\uFEFF${JSON.stringify(state)}`);
-    expect(loadState()).toEqual(state);
+    expect(loadState()).toEqual({ ...state, hosts: [] });
   });
 
   it('treats a BOM-only state file as corrupt: defaults, no crash', () => {

@@ -79,6 +79,7 @@ const ALLOWLIST: Record<string, string> = {
   'statusTailCache@providers/pi-compatible-transcripts.ts': 'capped:MAX_STATUS_TAIL_CACHE (FIFO evict oldest tail)',
   'textCache@session-deep-search.ts': 'capped:MAX_CACHE_ENTRIES + MAX_CACHE_CHARS (LRU evict oldest)',
   'gateRootCanonicalByPath@store.ts': 'capped:GATE_ROOT_CANONICAL_MAX (FIFO, PA-08 memo)',
+  'connections@hosts/ssh-client.ts': 'capped:MAX_CACHED_CONNECTIONS (FIFO evict oldest ssh2 client; closeConnection drops per host)',
 
   // teardown: cleared on watcher/file stop, session exit, store invalidate,
   // provider stop and app shutdown — every key has an owner-side drop.

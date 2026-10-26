@@ -70,7 +70,9 @@
   "build": {
     "appId": "com.finevibe.app",
     "productName": "FineVibe",
-    "directories": { "output": "out" },
+    "directories": {
+      "output": "out"
+    },
     "files": [
       "dist/main/**/*",
       "dist/preload/**/*",
@@ -108,7 +110,9 @@
       "icon": "build/icon.png"
     },
     "deb": {
-      "depends": ["libsecret-tools"]
+      "depends": [
+        "libsecret-tools"
+      ]
     },
     "win": {
       "artifactName": "FineVibe-${version}-win-${arch}.${ext}",
@@ -138,6 +142,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/dompurify": "^3.0.5",
     "@types/picomatch": "^4.0.2",
+    "@types/ssh2": "^1.15.6",
     "@vitest/coverage-v8": "^4.1.0",
     "electron": "^41.0.0",
     "electron-builder": "^26.8.1",
@@ -164,6 +169,7 @@
     "jszip": "^3.10.2",
     "marked": "^17.0.5",
     "node-pty": "^1.1.0",
-    "picomatch": "^4.0.3"
+    "picomatch": "^4.0.3",
+    "ssh2": "^1.17.0"
   }
 }
