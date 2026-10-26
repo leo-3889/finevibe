@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { isRegistryHostTarget, parseSshHost, validateHostRecordShape } from './ssh-host';
-import type { HostRecord } from './types';
+import { isRegistryHostTarget, migrateLegacySessionSshHosts, parseSshHost, validateHostRecordShape } from './ssh-host';
+import type { HostRecord, ProjectRecord, SessionRecord } from './types';
 
 const VALID_HOST: HostRecord = {
   id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
@@ -142,5 +142,40 @@ describe('validateHostRecordShape — settingsSync (T3)', () => {
       rec.settingsSync = { ...rec.settingsSync, lastSyncHashes: { [key]: 'ab' } } as typeof rec.settingsSync;
       expect(validateHostRecordShape(rec)).toBeNull();
     }
+  });
+});
+
+describe('migrateLegacySessionSshHosts (parent §11, sshHost retirement)', () => {
+  const host = (id: string, hostname: string): HostRecord => ({ ...VALID_HOST, id, host: hostname });
+  const session = (over: Partial<SessionRecord> = {}): SessionRecord =>
+    ({ id: 's1', name: 'S1', type: 'terminal', ...over }) as SessionRecord;
+  const project = (sessions: SessionRecord[]): ProjectRecord =>
+    ({ id: 'p1', path: '/p', sessions }) as ProjectRecord;
+
+  it('a unique hostname match adopts the registry host id and drops the free text', () => {
+    const projects = [project([session({ sshHost: 'lab.example.com' })])];
+    migrateLegacySessionSshHosts(projects, [host('h1', 'lab.example.com')]);
+    expect(projects[0].sessions[0].hostId).toBe('h1');
+    expect(projects[0].sessions[0].sshHost).toBeUndefined();
+  });
+
+  it('unregistered and AMBIGUOUS hostnames keep sshHost for the legacy wrap', () => {
+    const ghost = session({ sshHost: 'nowhere.example.com' });
+    const dupA = session({ sshHost: 'dup.example.com' });
+    const projects = [project([ghost, dupA])];
+    migrateLegacySessionSshHosts(projects, [
+      host('h1', 'dup.example.com'),
+      host('h2', 'dup.example.com'),
+    ]);
+    expect(ghost.sshHost).toBe('nowhere.example.com');
+    expect(ghost.hostId).toBeUndefined();
+    expect(dupA.sshHost).toBe('dup.example.com');
+    expect(dupA.hostId).toBeUndefined();
+  });
+
+  it('clean sessions are untouched', () => {
+    const plain = session({ hostId: 'local' });
+    migrateLegacySessionSshHosts([project([plain])], [host('h1', 'lab.example.com')]);
+    expect(plain.hostId).toBe('local');
   });
 });

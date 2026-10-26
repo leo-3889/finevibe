@@ -117,6 +117,27 @@ describe('loadState', () => {
     expect(loaded.profiles?.[0].hostId).toBe('local');
   });
 
+  // parent §11 sshHost retirement, step 1: legacy free-text hosts adopt the
+  // registry id at load; unregistered/ambiguous ones keep sshHost (the
+  // pty-manager legacy wrap honors them for the coexistence release).
+  it('migrates a legacy session sshHost to the matching registry hostId', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      version: 1,
+      projects: [{ id: 'p1', name: 'Test', path: '/test', activeSessionId: null, layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+        sessions: [{ id: 's1', createdAt: 1, sshHost: 'lab.example.com' }, { id: 's2', createdAt: 2, sshHost: 'nowhere' }] }],
+      activeProjectId: 'p1',
+      hosts: [{ id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301', name: 'lab', user: 'dev', host: 'lab.example.com', port: 22, authKind: 'key', privateKeyPath: '/home/finevibe/hosts/3f2504e0-4f89-41d3-9a0c-0305e82c3301/id_ed25519', managedKey: true, enrollmentStatus: 'enrolled' }],
+      preferences: { ...DEFAULT_PREFERENCES },
+    }));
+    const loaded = loadState();
+    const [s1, s2] = loaded.projects[0].sessions;
+    expect(s1.hostId).toBe('3f2504e0-4f89-41d3-9a0c-0305e82c3301');
+    expect(s1.sshHost).toBeUndefined();
+    expect(s2.hostId).toBe('local');
+    expect(s2.sshHost).toBe('nowhere');
+  });
+
   it('returns default state on invalid JSON', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue('not json');

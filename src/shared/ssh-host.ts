@@ -14,7 +14,7 @@ export interface SshHostRef {
   user?: string;
 }
 
-import type { HostRecord, HostAuthKind, HostEnrollmentStatus } from './types.js';
+import type { HostRecord, HostAuthKind, HostEnrollmentStatus, ProjectRecord } from './types.js';
 import { isValidHostColor } from './host-colors.js';
 
 const MAX_HOST_LENGTH = 253;
@@ -51,6 +51,36 @@ export function parseSshHost(raw: string): SshHostRef | null {
   if (!HOSTNAME.test(host)) return null;
 
   return user ? { host: `${user}@${host}`, user } : { host };
+}
+
+/**
+ * Legacy free-text `sshHost` migration (parent plan §11: "migrate, then
+ * retire", one release carrying both spellings). A session tagged with the
+ * hostname of a registry host adopts that host's id and drops the free
+ * text. An unregistered or AMBIGUOUS hostname keeps `sshHost` untouched —
+ * the pty-manager legacy wrap still honors it, so no session loses its
+ * launch target. Run at every load boundary (main store.ts, renderer
+ * hydrate), same once-at-load rule as the hostId normalization.
+ */
+export function migrateLegacySessionSshHosts(
+  projects: readonly ProjectRecord[],
+  hosts: readonly HostRecord[],
+): void {
+  const idsByHost = new Map<string, string[]>();
+  for (const h of hosts) {
+    idsByHost.set(h.host, [...(idsByHost.get(h.host) ?? []), h.id]);
+  }
+  for (const project of projects) {
+    for (const session of project.sessions) {
+      const legacy = session.sshHost;
+      if (!legacy) continue;
+      const ids = idsByHost.get(legacy);
+      if (ids && ids.length === 1) {
+        session.hostId = ids[0];
+        delete session.sshHost;
+      }
+    }
+  }
 }
 
 // --- HostRecord validation (multi-host Phase 1) ---

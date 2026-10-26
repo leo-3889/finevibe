@@ -1435,22 +1435,18 @@ class AppState {
     this.persist();
   }
 
-  /** Set/clear the persisted SSH host a session launches through.
-   * Returns false when `raw` is not a valid host; never touches `userRenamed`. */
-  setSessionSshHost(sessionId: string, raw: string | null): boolean {
+  /** Set/clear the registry host a session launches through (registry
+   * picker, parent §11 sshHost retirement). Null clears to local. The
+   * free-text `sshHost` field is legacy-read-only: the picker overwriting a
+   * session drops it, and load-time migration adopts registry-matching
+   * values; unregistered ones survive for the pty-manager legacy wrap. */
+  setSessionHost(sessionId: string, hostId: string | null): boolean {
     const session = this.findSessionById(sessionId);
     if (!session) return false;
-    if (raw === null) {
-      if (session.sshHost === undefined) return true;
-      session.sshHost = undefined;
-      this.persist();
-      this.emitSessionChanged({ sessionId, kind: 'metadata' });
-      return true;
-    }
-    const parsed = parseSshHost(raw);
-    if (!parsed) return false;
-    if (session.sshHost === parsed.host) return true;
-    session.sshHost = parsed.host;
+    const next = hostId ?? LOCAL_HOST_ID;
+    if (session.hostId === next && session.sshHost === undefined) return true;
+    session.hostId = next;
+    delete session.sshHost;
     this.persist();
     this.emitSessionChanged({ sessionId, kind: 'metadata' });
     return true;

@@ -211,7 +211,8 @@
       "sshHostSet": "Set SSH host…",
       "sshHostChange": "Change SSH host…",
       "sshHostClear": "Clear SSH host",
-      "sshHostPrompt": "SSH host (user@host or host):"
+      "sshHostPick": "Launch host",
+      "sshHostLocal": "Local"
     },
     "board": {
       "deleteTag": "Delete Tag"

@@ -1,6 +1,6 @@
 import type { BoardColumn, BoardData, HostRecord, PersistedState, Preferences, ProjectRecord, SessionRecord, SidebarViews } from '../../shared/types.js';
 import { LOCAL_HOST_ID } from '../../shared/types.js';
-import { validateHostRecordShape } from '../../shared/ssh-host.js';
+import { validateHostRecordShape, migrateLegacySessionSshHosts } from '../../shared/ssh-host.js';
 import { restoreCost } from '../session-cost.js';
 import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
@@ -34,6 +34,11 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
     if (validated) hosts.push(validated);
   }
   state.hosts = hosts;
+  // Legacy sshHost adoption runs before the hostId defaults (parent §11),
+  // mirroring store.ts on main: a session tagged with a registry hostname
+  // adopts the host id; unregistered/ambiguous targets keep sshHost for the
+  // legacy wrap, exactly one release carrying both spellings.
+  migrateLegacySessionSshHosts(state.projects, hosts);
   // Per-host providers plan §2: pre-existing profiles and sessions carry no
   // hostId — normalize 'local' once at load, mirroring store.ts on main.
   for (const profile of state.profiles ?? []) {
@@ -176,7 +181,7 @@ export function serializeForSave(state: PersistedState): PersistedState {
     ...state,
     projects: state.projects.map((p: ProjectRecord) => ({
       ...p,
-      sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, envVars, ...rest }: SessionRecord) => rest as SessionRecord),
+      sessions: p.sessions.map(({ pendingInitialPrompt: _pip, pendingSystemPrompt: _psp, envVars: _env, ...rest }: SessionRecord) => rest as SessionRecord),
     })),
   };
   const cache = state.team?.predefinedCache;

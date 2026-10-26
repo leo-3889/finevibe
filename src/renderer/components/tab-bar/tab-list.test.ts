@@ -23,6 +23,7 @@ vi.mock('../../state.js', () => ({
     groupSessions,
     renameTabGroup,
     ungroupTabGroup,
+    setSessionHost: vi.fn(),
     preferences: {},
   },
 }));
@@ -467,5 +468,43 @@ describe('patchUnread (PA-11)', () => {
     render();
     (activeProject as { sessions: unknown[] }).sessions.push(cliSession('s2', 'beta'));
     expect(patchUnread()).toBe(false);
+  });
+});
+
+describe('launch-host menu items (registry picker, parent §11)', () => {
+  function openTabMenu(sessionId: string): string[] {
+    tabListEl.querySelector(`[data-session-id="${sessionId}"]`)!
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    return [...getActiveContextMenu()!.querySelectorAll('.tab-context-menu-item')].map((i) => i.textContent);
+  }
+
+  it('a local cli tab offers Set; a host tab offers Change + Clear', () => {
+    const local = cliSession('s1', 'S1');
+    const remote = { ...cliSession('s2', 'S2'), hostId: 'h1' };
+    const p = project('p1', [local, remote]);
+    activeProject = p;
+    render();
+
+    openTabMenu('s1');
+    expect(openTabMenu('s1')).toContain(t('contextMenu.tab.sshHostSet'));
+    expect(openTabMenu('s1')).not.toContain(t('contextMenu.tab.sshHostClear'));
+    expect(openTabMenu('s2')).toContain(t('contextMenu.tab.sshHostChange'));
+    expect(openTabMenu('s2')).toContain(t('contextMenu.tab.sshHostClear'));
+    setActiveContextMenu(null);
+  });
+
+  it('Clear routes through setSessionHost(null)', async () => {
+    const remote = { ...cliSession('s3', 'S3'), hostId: 'h1' };
+    const p = project('p1', [remote]);
+    activeProject = p;
+    render();
+    tabListEl.querySelector('[data-session-id="s3"]')!
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    const clear = [...getActiveContextMenu()!.querySelectorAll('.tab-context-menu-item')]
+      .find((i) => i.textContent === t('contextMenu.tab.sshHostClear'))!;
+    clear.click();
+    const { appState } = await import('../../state.js');
+    expect((appState as unknown as { setSessionHost: ReturnType<typeof vi.fn> }).setSessionHost)
+      .toHaveBeenCalledWith('s3', null);
   });
 });
