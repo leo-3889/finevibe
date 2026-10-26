@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { HostRecord } from '../../shared/types';
 import { validateHostRecordShape } from '../../shared/ssh-host';
+import { pickHostColor } from '../../shared/host-colors';
 import { loadState, saveState } from '../store';
 import { deleteHostSecret } from './secrets';
 import { closeConnection } from './ssh-client';
@@ -46,6 +47,11 @@ export function createHost(draft: unknown): HostRecord {
   }
   if (raw.port === undefined) raw.port = 22;
   if (typeof raw.name === 'string') raw.name = raw.name.trim();
+  if (raw.color === undefined) {
+    // Per-host providers plan §2: identity color assigned at creation,
+    // round-robin over the shared palette (editable later via hosts:update).
+    raw.color = pickHostColor(loadState().hosts.map((h) => h.color));
+  }
   const record = validateHostRecordShape(raw);
   if (!record) throw new HostValidationError('failed validateHostRecordShape');
   const state = loadState();

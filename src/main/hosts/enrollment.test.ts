@@ -47,7 +47,7 @@ vi.mock('../providers/registry', () => ({
   ],
 }));
 
-import { enrollHost, probePrerequisites, testHost, unenrollHost } from './enrollment';
+import { enrollHost, probePrerequisites, provisionRemoteProfileDir, refreshHostTools, testHost, unenrollHost } from './enrollment';
 
 const PIN = 'SHA256:pinned123';
 const record: HostRecord = {
@@ -225,5 +225,51 @@ describe('unenrollHost', () => {
     const res = await unenrollHost(record);
     expect(res).toEqual({ ok: true, detail: 'no marker block present' });
     expect(execLog.some((c) => c.includes('base64 -d'))).toBe(false);
+  });
+});
+
+// Per-host providers T1: managed profile provisioning over the exec lane.
+describe('provisionRemoteProfileDir', () => {
+  it('mkdirs the unquoted managed dir (tilde must expand) and returns the absolute path', async () => {
+    execScript = script({ 'mkdir -p ~/.finevibe/profiles/': '/home/dev/.finevibe/profiles/abc' });
+    const dir = await provisionRemoteProfileDir(record, 'abc');
+    expect(dir).toBe('/home/dev/.finevibe/profiles/abc');
+    expect(execLog[0]).toBe(`mkdir -p ~/.finevibe/profiles/abc && printf '%s' ~/.finevibe/profiles/abc`);
+  });
+
+  it('refuses ids outside the managed-id charset', async () => {
+    await expect(provisionRemoteProfileDir(record, '../evil')).rejects.toThrow(/Invalid profile id/);
+    await expect(provisionRemoteProfileDir(record, 'a; rm -rf /')).rejects.toThrow(/Invalid profile id/);
+    expect(execLog).toHaveLength(0);
+  });
+
+  it('refuses a non-absolute echo-back (remote shell misbehaved)', async () => {
+    execScript = script({ 'mkdir -p': '~/.finevibe/profiles/abc' });
+    await expect(provisionRemoteProfileDir(record, 'abc')).rejects.toThrow(/returned/);
+  });
+});
+
+describe('refreshHostTools', () => {
+  it('probes once, persists the record, and shares the in-flight run', async () => {
+    execScript = script({ 'command -v pi': '/home/dev/.local/bin/pi' });
+    const a = refreshHostTools(record);
+    const b = refreshHostTools(record); // deduped: same promise, one probe
+    await Promise.all([a, b]);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ lastProbeOk: true });
+    expect((updates[0] as { prerequisites?: Record<string, { ok: boolean }> }).prerequisites?.pi?.ok).toBe(true);
+    // Settled runs are evicted: the next call probes again.
+    await refreshHostTools(record);
+    expect(updates).toHaveLength(2);
+  });
+
+  it('liveness gate: an unreachable host rejects and never rewrites the record (audit T1 #1)', async () => {
+    execScript = (command: string) => {
+      if (command === 'true') throw new Error('ECONNREFUSED');
+      return '';
+    };
+    await expect(refreshHostTools(record)).rejects.toThrow(/ECONNREFUSED/);
+    // The healthy record must survive: no prerequisites/lastProbeAt write.
+    expect(updates).toHaveLength(0);
   });
 });

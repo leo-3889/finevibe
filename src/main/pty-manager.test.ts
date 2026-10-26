@@ -13,6 +13,11 @@ const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefault
   mockNvmDefaultNodeBinDir: vi.fn(() => null as string | null),
 }));
 
+// Per-host providers T1: remote launches resolve the binary from the host
+// registry record — stub the registry, never the SSH stack.
+const mockGetHost = vi.hoisted(() => vi.fn(() => null as unknown));
+vi.mock('./hosts/host-registry', () => ({ getHost: mockGetHost }));
+
 vi.mock('node-pty', () => ({
   default: { spawn: mockSpawn },
   spawn: mockSpawn,
@@ -62,7 +67,7 @@ vi.mock('./settings-guard', () => ({
 
 import * as fs from 'fs';
 import * as child_process from 'child_process';
-import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, LaunchSpecError } from './pty-manager';
+import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, resolveProviderBinary, LaunchSpecError } from './pty-manager';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider, initProviders } from './providers/registry';
 
@@ -421,6 +426,57 @@ describe('resolveLaunchSpec (T2)', () => {
 
   it('rejects an invalid sshHost before spawning', () => {
     expect(() => resolveLaunchSpec({ ...base, sshHost: 'lab:22' })).toThrow(/Invalid SSH host/);
+  });
+
+  // --- per-host providers T1: registry-host launches (plan §9 golden) ------
+
+  const labRecord = {
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 2222,
+    prerequisites: { omp: { ok: true, path: '/home/dev/.local/bin/omp' } },
+  };
+
+  it('resolves the binary from the host prereq probe, never from local resolution', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    expect(resolveProviderBinary('omp', 'lab')).toBe('/home/dev/.local/bin/omp');
+    // 'local'/absent keep the existing local resolution (the mocked probe
+    // chain lands on the bare fallback name).
+    expect(resolveProviderBinary('omp')).toBe('omp');
+    expect(resolveProviderBinary('omp', 'local')).toBe('omp');
+  });
+
+  it('throws an actionable LaunchSpecError when the host lacks the tool', () => {
+    mockGetHost.mockReturnValue({ ...labRecord, prerequisites: {} });
+    expect(() => resolveProviderBinary('omp', 'lab')).toThrow(LaunchSpecError);
+    expect(() => resolveProviderBinary('omp', 'lab')).toThrow(/no omp binary/);
+    mockGetHost.mockReturnValue(null);
+    expect(() => resolveProviderBinary('omp', 'ghost')).toThrow(/Unknown host/);
+  });
+
+  it('golden: ssh-wraps a registry launch with -p, user@host, the remote bin path and the config-dir env prefix', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    const spec = resolveLaunchSpec({ ...base, hostId: 'lab', configDir: '/home/dev/.finevibe/profiles/p1' });
+    expect(spec.executable).toBe('ssh');
+    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']);
+    const cmd = spec.argv[5] as string;
+    // The remote binary is the prereq's ABSOLUTE path (used verbatim, not a
+    // basename); the profile's config dir rides in the command string because
+    // ssh does not forward the local child env.
+    expect(cmd).toMatch(/^PI_CODING_AGENT_DIR='\/home\/dev\/\.finevibe\/profiles\/p1' '\/home\/dev\/\.local\/bin\/omp' '--session-dir'/);
+    // The legacy local env is NOT how the remote sees the profile.
+    expect(spec.env.PI_CODING_AGENT_DIR).toBe('/home/dev/.finevibe/profiles/p1');
+  });
+
+  it('golden: bracketed IPv6 registry host reaches ssh argv intact (audit T1 #2)', () => {
+    mockGetHost.mockReturnValue({ ...labRecord, host: '[fd00::5]' });
+    const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
+    expect(spec.executable).toBe('ssh');
+    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@[fd00::5]']);
+  });
+
+  it('registry hostId wins over the legacy sshHost string', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    const spec = resolveLaunchSpec({ ...base, hostId: 'lab', sshHost: 'other' });
+    expect(spec.argv[4]).toBe('dev@192.168.1.50');
   });
 
   it('resolves the default agent dir (no configDir) with storage mode default', () => {

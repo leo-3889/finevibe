@@ -5,6 +5,7 @@ import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './prov
 import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { basename } from '../shared/platform.js';
 import { parseSshHost } from '../shared/ssh-host.js';
+import { LOCAL_HOST_ID } from '../shared/types.js';
 import { isCliSession } from './session-utils.js';
 import {
   archiveSession as archiveSessionPure,
@@ -855,15 +856,17 @@ class AppState {
    * Create a profile. Provisions its config dir in the main process first,
    * then records the resolved absolute path. Async because provisioning is IPC.
    */
-  async addProfile(input: { name: string; providerId: ProviderId; customPath?: string }): Promise<Profile> {
+  async addProfile(input: { name: string; providerId: ProviderId; customPath?: string; hostId?: string }): Promise<Profile> {
     const id = crypto.randomUUID();
-    const { configDir, managed } = await window.finevibe.profiles.provision(id, input.customPath, input.providerId);
+    const hostId = input.hostId ?? LOCAL_HOST_ID;
+    const { configDir, managed } = await window.finevibe.profiles.provision(id, input.customPath, input.providerId, hostId);
     const profile: Profile = {
       id,
       name: input.name.trim(),
       providerId: input.providerId,
       configDir,
       managed,
+      hostId,
       createdAt: Date.now(),
     };
     this.profiles.push(profile);

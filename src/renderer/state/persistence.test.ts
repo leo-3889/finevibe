@@ -151,6 +151,26 @@ describe('hydrateLoadedState', () => {
       activeSessions: true,
     });
   });
+
+  // per-host providers T1: renderer-side mirror of the store.ts load-time
+  // normalization — hostId-less sessions/profiles hydrate as 'local'.
+  it('normalizes hostId-less sessions and profiles to the local host', () => {
+    const state = baseState({});
+    state.profiles = [{ id: 'work', name: 'Work', providerId: 'pi', configDir: '/cfg/work', managed: true, createdAt: 0 }];
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].sessions[0].hostId).toBe('local');
+    expect(state.profiles[0].hostId).toBe('local');
+  });
+
+  it('keeps a persisted non-local hostId untouched', () => {
+    const state = baseState({ hostId: 'strix' });
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    expect(state.projects[0].sessions[0].hostId).toBe('strix');
+  });
 });
 
 describe('hydrateLoadedState active rows', () => {

@@ -93,6 +93,24 @@ describe('loadState', () => {
     expect(loadState()).toEqual({ ...state, hosts: [] });
   });
 
+  // per-host providers T1: pre-existing (hostId-less) records normalize to
+  // 'local' once at load — the channel/renderer code can then treat hostId
+  // as always present.
+  it('normalizes hostId-less sessions and profiles to the local host at load', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      version: 1,
+      projects: [{ id: 'p1', name: 'Test', path: '/test', activeSessionId: null, layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+        sessions: [{ id: 's1', createdAt: 1 }, { id: 's2', createdAt: 2, hostId: 'strix' }] }],
+      activeProjectId: 'p1',
+      profiles: [{ id: 'pr1', name: 'Work', providerId: 'claude', configDir: '/c', managed: true, createdAt: 1 }],
+      preferences: { ...DEFAULT_PREFERENCES },
+    }));
+    const loaded = loadState();
+    expect(loaded.projects[0].sessions.map((s) => s.hostId)).toEqual(['local', 'strix']);
+    expect(loaded.profiles?.[0].hostId).toBe('local');
+  });
+
   it('returns default state on invalid JSON', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue('not json');

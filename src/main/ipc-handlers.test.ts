@@ -198,6 +198,10 @@ vi.mock('./close-state', autoStub);
 vi.mock('./profiles', autoStub);
 vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
+// Per-host providers T1: the channel tests drive the host record lookup and
+// the shared tool refresh; the SSH stack must never load in this suite.
+vi.mock('./hosts/host-registry', autoStub);
+vi.mock('./hosts/enrollment', autoStub);
 
 import {
   registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
@@ -213,6 +217,8 @@ import { buildFineVibeIgnoreMatcher } from './finevibeignore';
 import { estimateTokens } from '../shared/token-estimate';
 
 import { getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
+import { getHost } from './hosts/host-registry';
+import { refreshHostTools, provisionRemoteProfileDir } from './hosts/enrollment';
 function makeProvider(): CliProvider {
   return {
     // hookStatus off keeps the post-spawn settings-warning block out of the way.
@@ -3184,5 +3190,73 @@ describe('P2-110: the five channels the coverage map overclaimed', () => {
     } finally {
       fs.rmSync(saved, { force: true });
     }
+  });
+});
+
+// Per-host providers T1 (plan §2, §9): the provider channels accept a hostId
+// and answer remote queries from the registry record — never by probing,
+// never by falling back to the local machine.
+describe('per-host provider channels (per-host providers T1)', () => {
+  const freshProbeAt = new Date().toISOString();
+  const lab = {
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 22,
+    prerequisites: { pi: { ok: true, path: '/home/dev/.local/bin/pi' } },
+    lastProbeAt: freshProbeAt,
+  };
+
+  it('provider:checkBinary answers a registry host from its record, without probing', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    provider.validatePrerequisitesAsync = vi.fn(async () => true);
+    provider.validatePrerequisites = vi.fn(() => { throw new Error('sync probe on a remote answer'); });
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi', 'lab')).resolves.toBe(true);
+    await expect(handlers.get('provider:checkBinary')!({}, 'codex', 'lab')).resolves.toBe(false);
+    expect(provider.validatePrerequisitesAsync).not.toHaveBeenCalled();
+    // Fresh record: no background refresh either.
+    expect(refreshHostTools).not.toHaveBeenCalled();
+  });
+
+  it('provider:checkBinary on a stale record answers AND fires the shared background refresh', async () => {
+    const stale = { ...lab, lastProbeAt: '2020-01-01T00:00:00.000Z' };
+    vi.mocked(getHost).mockReturnValue(stale as never);
+    vi.mocked(refreshHostTools).mockResolvedValue({} as never);
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi', 'lab')).resolves.toBe(true);
+    expect(refreshHostTools).toHaveBeenCalledWith(stale);
+  });
+
+  it('provider:checkBinary answers false for an unknown host', async () => {
+    vi.mocked(getHost).mockReturnValue(null as never);
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi', 'ghost')).resolves.toBe(false);
+  });
+
+  it('hosts:tools delegates to the shared refresh (one implementation, two callers)', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(refreshHostTools).mockResolvedValue({ pi: { ok: true } } as never);
+    await expect(handlers.get('hosts:tools')!({}, 'lab')).resolves.toEqual({ pi: { ok: true } });
+    expect(refreshHostTools).toHaveBeenCalledWith(lab);
+  });
+
+  it('provider:getConfig refuses a remote host loudly (remote reads land with T2)', async () => {
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj', undefined, 'lab'))
+      .rejects.toThrow(/T2/);
+  });
+
+  it('profiles:provision routes remote managed provisioning over the exec lane helper', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(provisionRemoteProfileDir).mockResolvedValue('/home/dev/.finevibe/profiles/p1');
+    const out = await handlers.get('profiles:provision')!({}, 'p1', undefined, 'pi', 'lab') as { configDir: string; managed: boolean };
+    expect(out).toEqual({ configDir: '/home/dev/.finevibe/profiles/p1', managed: true });
+    expect(provisionRemoteProfileDir).toHaveBeenCalledWith(lab, 'p1');
+    // Custom paths stay local-only: the renderer must never steer a remote mkdir.
+    await expect(handlers.get('profiles:provision')!({}, 'p1', '/custom', 'pi', 'lab')).rejects.toThrow(/local-only/);
+  });
+
+  it('pty:create threads the trailing hostId down to spawnPty', async () => {
+    knownPaths.push('/proj');
+    await handlers.get('pty:create')!(
+      {}, 'host-1', '/proj', null, false, '', 'pi', undefined, undefined, '',
+      undefined, undefined, 'lab',
+    );
+    expect(mockSpawnPty).toHaveBeenCalled();
+    expect(mockSpawnPty.mock.calls[0][13]).toBe('lab');
   });
 });

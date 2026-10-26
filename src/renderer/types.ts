@@ -5,7 +5,7 @@ import type { DiskHealth } from '../shared/types.js';
 
 export interface FinevibeApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, sshHost?: string): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, sshHost?: string, hostId?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -64,7 +64,7 @@ export interface FinevibeApi {
     listImportableProjects(): Promise<ImportableLegacyProject[]>;
   };
   profiles: {
-    provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
+    provision(profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
   };
   hosts: {
@@ -85,9 +85,9 @@ export interface FinevibeApi {
     onStatus(callback: (event: { id: string; status: string; detail?: string }) => void): () => void;
   };
   provider: {
-    getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
+    getConfig(providerId: ProviderId, projectPath: string, configDir?: string, hostId?: string): Promise<ProviderConfig>;
     listProviders(): Promise<CliProviderMeta[]>;
-    checkBinary(providerId?: ProviderId): Promise<boolean>;
+    checkBinary(providerId?: ProviderId, hostId?: string): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
     onConfigChanged(callback: () => void): () => void;
     installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;

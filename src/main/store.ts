@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { PersistedState, Preferences, ProjectRecord, HostRecord } from '../shared/types';
+import type { PersistedState, Preferences, ProjectRecord, SessionRecord, Profile, HostRecord } from '../shared/types';
+import { LOCAL_HOST_ID } from '../shared/types';
 import { validateHostRecordShape } from '../shared/ssh-host';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
@@ -195,12 +196,20 @@ export function loadState(): LoadedState {
       }
       hosts.push(validated);
     }
+    // Per-host providers plan §2: pre-existing records carry no hostId —
+    // normalize once at load, exactly once (mirrored in the renderer's
+    // hydrateLoadedState), never at call sites.
+    for (const project of projects) {
+      project.sessions = project.sessions.map((s) => (s.hostId ? s : { ...s, hostId: LOCAL_HOST_ID }));
+    }
+    const profiles: Profile[] | undefined = picked.profiles?.map((p) => (p.hostId ? p : { ...p, hostId: LOCAL_HOST_ID }));
     // Single documented default (P2-84): normalize once here, never at call
     // sites. Spread (not a cast) so the type system checks the result.
     const normalized: LoadedState = {
       ...picked,
       projects,
       hosts,
+      ...(profiles ? { profiles } : {}),
       preferences: picked.preferences ?? { ...DEFAULT_PREFERENCES },
     };
     stateCache = normalized;

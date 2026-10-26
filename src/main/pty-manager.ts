@@ -5,11 +5,13 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ProviderId } from '../shared/types';
+import { LOCAL_HOST_ID } from '../shared/types';
 import { parseEnvVars, partitionUserEnv, providerOwnedEnvReason } from '../shared/env-vars';
 import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from '../shared/launch-args';
-import { parseSshHost } from '../shared/ssh-host';
+import { isRegistryHostTarget, parseSshHost } from '../shared/ssh-host';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
+import { getHost } from './hosts/host-registry';
 import { registerSession, unregisterSession } from './hook-status';
 import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
@@ -399,15 +401,55 @@ function posixQuote(arg: string): string {
 }
 
 /**
+ * The provider binary for a launch, keyed per host (per-host providers plan
+ * §2). `hostId` absent/'local' → the existing local resolution (PATH/nvm
+ * probes + BinaryCache). A registry host resolves from the enrollment-time
+ * prereq probe — `HostRecord.prerequisites[providerId].path`, an absolute
+ * path ON THE HOST; local `resolveBinary` never runs for a remote session.
+ * Throws (LaunchSpecError → spawn-rejected pane message) when the host lacks
+ * the tool.
+ */
+export function resolveProviderBinary(providerId: ProviderId, hostId?: string): string {
+  if (hostId === undefined || hostId === LOCAL_HOST_ID) return getProvider(providerId).resolveBinaryPath();
+  const record = getHost(hostId);
+  if (!record) {
+    throw new LaunchSpecError(`Unknown host ${JSON.stringify(hostId)} — enroll it in Settings → Hosts first.`);
+  }
+  const prereq = record.prerequisites?.[providerId];
+  if (!prereq?.ok || !prereq.path) {
+    throw new LaunchSpecError(
+      `Host ${JSON.stringify(record.name)} has no ${providerId} binary (prereq probe: ${prereq ? 'missing' : 'never probed'}) — re-probe its tools in Settings → Hosts.`,
+    );
+  }
+  return prereq.path;
+}
+
+/**
  * The provider launch command as one string for the remote login shell:
  * the binary's basename (Windows `.CMD`/`.EXE` shims carry the same stem as
  * the POSIX command) plus every argument, each POSIX-quoted. The local
  * absolute path does not exist on the remote — the remote login shell's PATH
  * resolves the remote's own install.
  */
-function remoteCommand(spec: LaunchSpec): string {
-  const bin = path.basename(spec.executable).replace(/\.(cmd|bat|exe)$/i, '');
-  return [bin, ...spec.argv].map(posixQuote).join(' ');
+function remoteCommand(bin: string, argv: string[]): string {
+  return [bin, ...argv].map(posixQuote).join(' ');
+}
+
+/**
+ * Env assignments the remote command must carry. ssh runs the remote command
+ * under a fresh login shell — the local child env (pty.spawn's `env`)
+ * applies to the ssh client only, so a profile's config-dir pointer (Pi/OMP
+ * `PI_CODING_AGENT_DIR`, Claude `CLAUDE_CONFIG_DIR`) must ride inside the
+ * command string. Full env forwarding is a SendEnv/AcceptEnv contract
+ * (sshd-side allowlist) — out of T1 scope.
+ * // ponytail: config-dir vars only; forward the rest when a concrete
+ * consumer needs it (then move to ssh SendEnv, not string-prefixing).
+ */
+const REMOTE_ENV_KEYS = ['PI_CODING_AGENT_DIR', 'CLAUDE_CONFIG_DIR'];
+function remoteEnvPrefix(env: Record<string, string>): string {
+  return REMOTE_ENV_KEYS.filter((k) => env[k] !== undefined)
+    .map((k) => `${k}=${posixQuote(env[k])}`)
+    .join(' ');
 }
 
 /**
@@ -432,8 +474,16 @@ export function resolveLaunchSpec(params: {
   configDir?: string;
   /** Set = spawn the provider command through `ssh` on this host (P3). */
   sshHost?: string;
+  /**
+   * Registry host id (per-host providers plan §2). Absent/'local' → local
+   * binary resolution; a remote id resolves the binary from the host's
+   * prereq probe and ssh-wraps the launch through the registry record
+   * (user@host, port) — it wins over the legacy free-text `sshHost`.
+   */
+  hostId?: string;
 }): LaunchSpec {
-  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost } = params;
+  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost, hostId } = params;
+  const isRemoteHost = hostId !== undefined && hostId !== LOCAL_HOST_ID;
   const provider = getProvider(providerId);
   const issues: string[] = [];
 
@@ -475,13 +525,29 @@ export function resolveLaunchSpec(params: {
   }
 
   const base: LaunchSpec = {
-    executable: provider.resolveBinaryPath(),
+    executable: resolveProviderBinary(providerId, hostId),
     argv: provider.buildArgs({ sessionId, cliSessionId, isResume, extraArgs, initialPrompt, systemPrompt }),
     env,
     providerId,
     configDir,
     storageMode: 'default',
   };
+  if (isRemoteHost) {
+    // Registry-host launch (per-host providers plan §2): the binary is the
+    // host's prereq path (base.executable — an absolute path on the host,
+    // used verbatim, never a local basename), and the wrap targets the
+    // record's user@host:port. The record fields are registry-validated.
+    const record = getHost(hostId!)!;
+    // Registry-validated target: isRegistryHostTarget matches the record's
+    // own gate (incl. bracketed IPv6); parseSshHost's free-text grammar
+    // would reject the bracketed spelling (audit T1 #2).
+    if (!isRegistryHostTarget(record.user, record.host)) {
+      throw new LaunchSpecError(`Host ${JSON.stringify(record.name)} has an invalid user/host — re-save it in Settings → Hosts.`);
+    }
+    const prefix = remoteEnvPrefix(base.env);
+    const cmd = `${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, base.argv)}`;
+    return { ...base, executable: 'ssh', argv: ['-tt', '-p', String(record.port), '--', `${record.user}@${record.host}`, cmd] };
+  }
   if (sshHost === undefined || sshHost === '') return base;
 
   // SSH-wrapped launch (P3): the provider command runs on the remote host.
@@ -494,7 +560,8 @@ export function resolveLaunchSpec(params: {
       `Invalid SSH host "${sshHost}": expected [user@]host (no port, no URL, no options).`,
     );
   }
-  return { ...base, executable: 'ssh', argv: ['-tt', '--', ref.host, remoteCommand(base)] };
+  const bin = path.basename(base.executable).replace(/\.(cmd|bat|exe)$/i, '');
+  return { ...base, executable: 'ssh', argv: ['-tt', '--', ref.host, remoteCommand(bin, base.argv)] };
 }
 
 export async function spawnPty(
@@ -513,7 +580,8 @@ export async function spawnPty(
   // exits leave it undefined.
   onExit: (exitCode: number, signal?: number, pid?: number, spawnRejectedReason?: string) => void,
   configDir?: string,
-  sshHost?: string
+  sshHost?: string,
+  hostId?: string
 ): Promise<void> {
   // Register the in-flight spawn BEFORE any side effect: the window
   // between this request and the PTY landing in `ptys` is exactly where a
@@ -535,7 +603,7 @@ export async function spawnPty(
     // that never spawned.
     let spec: LaunchSpec;
     try {
-      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost });
+      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost, hostId });
     } catch (err) {
       // Nothing will spawn for this session; drop any kill that arrived for
       // it so a later re-spawn of the same id is not killed by a stale flag.

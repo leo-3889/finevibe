@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { listImportableLegacyProjects } from './legacy-import';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateStateCache, PersistedState } from './store';
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
-import { enrollHost, probePrerequisites, testHost, unenrollHost } from './hosts/enrollment';
+import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
 import { generateManagedKeypair } from './hosts/keys';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from './hosts/secrets';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
@@ -35,6 +35,7 @@ import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { detectGitCheckoutUrl } from '../shared/git-url';
 import type { ProviderId, Profile, Preferences, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
+import { LOCAL_HOST_ID } from '../shared/types';
 import { canonicalPath, canonicalRoot, expandUserPath, resolveUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
@@ -860,7 +861,7 @@ export function registerIpcHandlers(): void {
   // PA-07: invalidate the Quick Open enumeration cache on the same debounced
   // git:changed signal the renderer receives.
   onGitChanged(invalidateEnumerations);
-  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string, sshHost?: string) => {
+  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string, sshHost?: string, hostId?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
 
@@ -1004,7 +1005,8 @@ export function registerIpcHandlers(): void {
           }
         },
         configDir,
-        sshHost
+        sshHost,
+        hostId
       );
     } catch (err) {
       // spawnPty threw before installing the exit callback — cancel pending
@@ -1420,7 +1422,17 @@ export function registerIpcHandlers(): void {
 
   // Provision (create) a profile's config dir. Returns the resolved absolute
   // path and whether it is the auto-managed location.
-  ipcMain.handle('profiles:provision', (_event, profileId: string, customPath?: string, providerId?: ProviderId) => {
+  ipcMain.handle('profiles:provision', async (_event, profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string) => {
+    if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
+      // Remote managed provisioning (plan §2): mkdir the managed dir on the
+      // host over the exec lane; custom paths stay local-only (the renderer
+      // must never steer a remote mkdir).
+      if (customPath?.trim()) throw new Error('Custom profile dirs are local-only; remote profiles use the managed dir.');
+      const record = getHost(hostId);
+      if (!record) throw new Error(`Unknown host: ${JSON.stringify(hostId)}`);
+      const configDir = await provisionRemoteProfileDir(record, profileId);
+      return { configDir, managed: true };
+    }
     const configDir = provisionProfileDir(profileId, customPath, providerId, loadState().profiles ?? []);
     return { configDir, managed: !customPath?.trim() };
   });
@@ -1528,12 +1540,11 @@ export function registerIpcHandlers(): void {
   });
 
   // Live tool inventory for the UR-4 dropdown; also refreshes the record.
+  // Same implementation the checkBinary staleness refresh fires (§2, R-4).
   ipcMain.handle('hosts:tools', async (_event, id: string) => {
     const record = getHost(id);
     if (!record) return null;
-    const prerequisites = await probePrerequisites(record);
-    updateHost(id, { prerequisites, lastProbeAt: new Date().toISOString(), lastProbeOk: true });
-    return prerequisites;
+    return await refreshHostTools(record);
   });
 
   ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {
@@ -1923,7 +1934,13 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'provider:getConfig',
-    async (_event, providerId: ProviderId, projectPath: string, configDir?: string) => {
+    async (_event, providerId: ProviderId, projectPath: string, configDir?: string, hostId?: string) => {
+      if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
+        // Channel carries hostId now (plan §2); the remote config READ is T2
+        // (readProviderFile seam). Fail loud — never answer a remote query
+        // with the local machine's config.
+        throw new Error('provider:getConfig on a remote host lands with T2 (readProviderFile)');
+      }
       // SEC-03: both paths are renderer-supplied and reach provider config
       // reads - the gates every other config-reading channel enforces: the
       // configDir must be a managed profile dir (P2-113) and the project
@@ -2052,7 +2069,20 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('provider:checkBinary', async (_event, providerId: ProviderId = 'claude') => {
+  ipcMain.handle('provider:checkBinary', async (_event, providerId: ProviderId = 'claude', hostId?: string) => {
+    if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
+      // Per-host providers plan §2: a registry host answers from its record —
+      // no probing, no SSH on the request path. Stale (or never-probed)
+      // records answer anyway and refresh in the background over the exec
+      // lane (shared with hosts:tools; concurrent refreshes dedupe).
+      const record = getHost(hostId);
+      if (!record) return false;
+      const probedAt = record.lastProbeAt ? Date.parse(record.lastProbeAt) : 0;
+      if (Date.now() - probedAt > 24 * 60 * 60 * 1000) {
+        refreshHostTools(record).catch(() => { /* the next checkBinary retries */ });
+      }
+      return record.prerequisites?.[providerId]?.ok === true;
+    }
     const provider = getProvider(providerId);
     // S4-03: async twin (Wave E) — the sync probe chain (`where` 3 s,
     // `npm prefix -g` 5 s per missing binary) blocked main; Preferences→

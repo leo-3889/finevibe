@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSshHost, validateHostRecordShape } from './ssh-host';
+import { isRegistryHostTarget, parseSshHost, validateHostRecordShape } from './ssh-host';
 import type { HostRecord } from './types';
 
 const VALID_HOST: HostRecord = {
@@ -94,6 +94,12 @@ describe('validateHostRecordShape', () => {
     expect('smuggled' in (out as object)).toBe(false);
   });
 
+  it('gates the identity color (plan §7): valid #rrggbb survives, anything else drops the record', () => {
+    expect(validateHostRecordShape({ ...VALID_HOST, color: '#4c9aff' })?.color).toBe('#4c9aff');
+    expect(validateHostRecordShape({ ...VALID_HOST, color: 'url(evil)' })).toBeNull();
+    expect(validateHostRecordShape({ ...VALID_HOST, color: '#fff' })).toBeNull();
+  });
+
   it('accepts the full optional surface', () => {
     const full = {
       ...VALID_HOST,
@@ -107,5 +113,20 @@ describe('validateHostRecordShape', () => {
       memoryServer: true,
     };
     expect(validateHostRecordShape(full)).toEqual(full);
+  });
+});
+
+describe('isRegistryHostTarget', () => {
+  it('accepts what the registry stores, incl. bracketed IPv6 (audit T1 #2)', () => {
+    expect(isRegistryHostTarget('dev', '192.168.2.242')).toBe(true);
+    expect(isRegistryHostTarget('dev', 'host.example.com')).toBe(true);
+    expect(isRegistryHostTarget('dev', '[::1]')).toBe(true);
+  });
+
+  it('rejects argv/quoting smuggles in user or host', () => {
+    expect(isRegistryHostTarget('dev;rm', 'h')).toBe(false);
+    expect(isRegistryHostTarget('-oProxyJump=x', 'h')).toBe(false);
+    expect(isRegistryHostTarget('dev', 'h; rm -rf /')).toBe(false);
+    expect(isRegistryHostTarget('dev', '::1')).toBe(false); // unbracketed: not the ssh argv spelling
   });
 });

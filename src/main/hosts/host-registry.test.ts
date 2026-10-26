@@ -43,6 +43,18 @@ describe('createHost', () => {
     expect(rec.name).toBe('strix');
   });
 
+  // per-host providers T1: identity color assigned at creation, round-robin
+  // over the shared palette; an explicit color is kept as-is.
+  it('auto-assigns palette colors round-robin, honors an explicit color', () => {
+    const a = createHost(DRAFT);
+    const b = createHost({ ...DRAFT, id: undefined, name: 'nyx' });
+    expect(a.color).toBeDefined();
+    expect(b.color).toBeDefined();
+    expect(b.color).not.toBe(a.color);
+    const c = createHost({ ...DRAFT, name: 'kept', color: '#123456' });
+    expect(c.color).toBe('#123456');
+  });
+
   it('rejects invalid drafts', () => {
     expect(() => createHost(null)).toThrow(HostValidationError);
     expect(() => createHost({ ...DRAFT, host: '-oProxyCommand=evil' })).toThrow(HostValidationError);

@@ -6,6 +6,11 @@ import type { ShareMode } from './sharing-types.js';
 export const ZOOM_MIN = 0.75;
 export const ZOOM_MAX = 2.0;
 
+/** The implicit localhost host id. Every `hostId` param defaults to this
+ * (per-host providers plan §2): channels and loaders are full-back-compat —
+ * pre-existing records normalize to 'local' at load, never at call sites. */
+export const LOCAL_HOST_ID = 'local';
+
 // --- Provider ---
 
 export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi' | 'omp' | 'pi-bolt';
@@ -128,6 +133,9 @@ export interface SessionRecord {
   name: string;
   type?: SessionType;
   providerId?: ProviderId;
+  /** Persisted: host this session's provider runs on; absent means 'local'
+   * (normalized at load, per-host providers plan §2). */
+  hostId?: string;
   args?: string;
   /** Custom environment variables (raw `KEY=VALUE` lines) injected into the PTY on spawn. */
   envVars?: string;
@@ -208,6 +216,9 @@ export interface Profile {
   /** True when configDir is the auto-managed path; false when the user supplied a custom path. */
   managed: boolean;
   createdAt: number;
+  /** Persisted: host whose filesystem `configDir` lives on; absent means 'local'
+   * (normalized at load, per-host providers plan §2). */
+  hostId?: string;
 }
 
 // --- Multi-host (Phase 1: Hosts registry) ---
@@ -251,6 +262,9 @@ export interface HostRecord {
   defaultFolder?: string;
   /** True for the fleet memory server (UR-3): the daemon + forwards role, not a new type. */
   memoryServer?: boolean;
+  /** Identity color (validated `#rrggbb`, shared/host-colors.ts): auto-assigned
+   * round-robin from HOST_PALETTE at creation, editable per host (plan §5). */
+  color?: string;
 }
 
 export interface ArchivedSession {
