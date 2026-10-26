@@ -63,10 +63,15 @@ afterEach(() => {
 describe('config-watcher', () => {
   it('watches config files and directories for a project', () => {
     const win = createMockWin();
+    // Delta assertions (order-independence audit 2026-10-26): a shuffled
+    // predecessor's pending fake-timer restart can add watch calls between
+    // beforeEach and this case. What must be exact is what THIS start adds.
+    const fileBase = vi.mocked(fs.watchFile).mock.calls.length;
+    const dirBase = vi.mocked(fs.watch).mock.calls.length;
     startConfigWatcher(win, '/projects/test');
 
     // Should watch 5 config files
-    expect(fs.watchFile).toHaveBeenCalledTimes(5);
+    expect(vi.mocked(fs.watchFile).mock.calls.length - fileBase).toBe(5);
     expect(watchFileCallbacks.has('/home/testuser/.claude.json')).toBe(true);
     expect(watchFileCallbacks.has('/home/testuser/.claude/settings.json')).toBe(true);
     expect(watchFileCallbacks.has('/home/testuser/.mcp.json')).toBe(true);
@@ -74,7 +79,7 @@ describe('config-watcher', () => {
     expect(watchFileCallbacks.has('/projects/test/.mcp.json')).toBe(true);
 
     // Should watch 6 directories
-    expect(fs.watch).toHaveBeenCalledTimes(6);
+    expect(vi.mocked(fs.watch).mock.calls.length - dirBase).toBe(6);
     expect(watchDirCallbacks.has('/home/testuser/.claude/agents')).toBe(true);
     expect(watchDirCallbacks.has('/home/testuser/.claude/skills')).toBe(true);
     expect(watchDirCallbacks.has('/home/testuser/.claude/commands')).toBe(true);
