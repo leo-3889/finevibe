@@ -130,10 +130,20 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
     row.className = 'modal-toggle-field';
     const label = document.createElement('label');
     label.textContent = t('profiles.hostLabel');
+    const activeId = appState.activeHostId;
+    // An active scope that is not enrolled (draft/probing/failed selected
+    // from the sidebar) must still APPEAR in the select - the content below
+    // shows that host's enroll-first row, and a select silently reading
+    // "Local" over it is the coherence principle violating itself.
+    const scopeHosts = getEnrolledHosts();
+    if (activeId !== LOCAL_HOST_ID && !scopeHosts.some((h) => h.id === activeId)) {
+      const h = getHost(activeId);
+      if (h) scopeHosts.push(h);
+    }
     scopeSelect = createCustomSelect(
       'setup-host-scope',
-      [{ value: LOCAL_HOST_ID, label: t('contextMenu.tab.sshHostLocal') }, ...getEnrolledHosts().map((h) => ({ value: h.id, label: h.name }))],
-      appState.activeHostId,
+      [{ value: LOCAL_HOST_ID, label: t('contextMenu.tab.sshHostLocal') }, ...scopeHosts.map((h) => ({ value: h.id, label: h.name }))],
+      activeId,
       (value) => {
         appState.setActiveHost(value);
         ctx.rerenderSection('setup');

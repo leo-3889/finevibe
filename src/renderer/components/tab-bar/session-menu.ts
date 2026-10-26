@@ -114,7 +114,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     const providerWrapper = document.getElementById('modal-provider')?.closest('.modal-field') as HTMLElement | null;
     if (!providerWrapper) return;
     const member = memberId ? appState.getTeamMemberById(memberId) : undefined;
-    const pinned = member ? resolvePinnedTeamProfile(member, appState.profiles) : undefined;
+    const pinned = member ? resolvePinnedTeamProfile(member, appState.profiles, project?.hostId) : undefined;
     providerWrapper.title = pinned && member
       ? t('tab.newSessionModal.personaPinNote', { name: member.name, provider: getProviderDisplayName(pinned.providerId) })
       : '';

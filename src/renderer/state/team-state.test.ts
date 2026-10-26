@@ -38,7 +38,7 @@ vi.mock('../provider-availability.js', () => {
 });
 
 import { appState, _resetForTesting } from '../state';
-import { buildTeamChatSession, MAX_SYSTEM_PROMPT_BYTES, nextSessionOrdinal, systemPromptByteLength, uniqueMemberId } from './team-state';
+import { buildTeamChatSession, MAX_SYSTEM_PROMPT_BYTES, nextSessionOrdinal, resolvePinnedTeamProfile, systemPromptByteLength, uniqueMemberId } from './team-state';
 import { getTeamChatProviderMetas } from '../provider-availability.js';
 const mockGetTeamChatProviderMetas = vi.mocked(getTeamChatProviderMetas);
 import { getCost } from '../session-cost.js';
@@ -460,5 +460,25 @@ describe('system prompt size cap (C4TM-06)', () => {
     const exact = 'x'.repeat(MAX_SYSTEM_PROMPT_BYTES);
     const member = appState.addTeamMember({ name: 'A', role: 'r', systemPrompt: exact, source: 'custom' });
     expect(member?.systemPrompt).toBe(exact);
+  });
+});
+
+describe('resolvePinnedTeamProfile host scope (coherence Phase 1 + audit P3)', () => {
+  const profiles = [
+    { id: 'lp', name: 'L', providerId: 'claude', configDir: '/c', managed: true, createdAt: 0 },
+    { id: 'rp', name: 'R', providerId: 'claude', configDir: '/r', managed: true, createdAt: 0, hostId: 'host-1' },
+  ] as never;
+
+  it('unscoped (display) keeps the pin; scoped (launch) drops a cross-host pin', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([{ id: 'claude', displayName: 'Claude' }] as never);
+    const member = { profileId: 'lp' } as TeamMember;
+    expect(resolvePinnedTeamProfile(member, profiles)?.id).toBe('lp');
+    // Launch on host-1: the LOCAL profile pin cannot boot there.
+    expect(resolvePinnedTeamProfile(member, profiles, 'host-1')).toBeUndefined();
+    // Right host keeps it; a local launch drops the host profile.
+    const rmember = { profileId: 'rp' } as TeamMember;
+    expect(resolvePinnedTeamProfile(rmember, profiles, 'host-1')?.id).toBe('rp');
+    expect(resolvePinnedTeamProfile(rmember, profiles, 'local')).toBeUndefined();
+    mockGetTeamChatProviderMetas.mockReturnValue([] as never);
   });
 });

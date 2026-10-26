@@ -240,6 +240,30 @@ function refreshMounted(): void {
   const project = appState.activeProject;
   if (!project || project.id !== mountedProjectId) return;
 
+  // Phase 3 coherence (docs/hosts.md): the repo lives on the host; the
+  // local git sinks are main-side-refused. Checked FIRST - before the
+  // worktree selector - so stale local worktrees can never render above
+  // the remote state (audit 2026-10-26).
+  if (isRemoteProject(project)) {
+    loadGeneration++;
+    const staleSelector = gitPanelEl.querySelector('.git-worktree-selector');
+    if (staleSelector) staleSelector.remove();
+    let rbody = gitPanelEl.querySelector('.git-panel-body') as HTMLElement | null;
+    if (!rbody) {
+      rbody = document.createElement('div');
+      rbody.className = 'config-section-body git-panel-body';
+      gitPanelEl.appendChild(rbody);
+    }
+    rbody.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'config-empty';
+    empty.textContent = `Git runs on this machine — this project lives on “${getHostName(project.hostId)}”.`;
+    rbody.appendChild(empty);
+    lastFilesKey = '';
+    displayedGitPath = null;
+    return;
+  }
+
   const worktrees = getWorktrees(project.id);
   if (worktrees && worktrees.length > 1) {
     renderWorktreeSelector(gitPanelEl, project);
@@ -253,20 +277,6 @@ function refreshMounted(): void {
     body = document.createElement('div');
     body.className = 'config-section-body git-panel-body';
     gitPanelEl.appendChild(body);
-  }
-
-  if (isRemoteProject(project)) {
-    // Phase 3 coherence (docs/hosts.md): the repo lives on the host; the
-    // local git sinks are main-side-refused. Say so - never "clean tree".
-    loadGeneration++;
-    body.innerHTML = '';
-    const empty = document.createElement('div');
-    empty.className = 'config-empty';
-    empty.textContent = `Git runs on this machine — this project lives on “${getHostName(project.hostId)}”.`;
-    body.appendChild(empty);
-    lastFilesKey = '';
-    displayedGitPath = null;
-    return;
   }
 
   if (gitStatusErrored(project.id)) {
