@@ -11,6 +11,7 @@ import type { McpServerConfig } from './claude-cli';
 import { fileURLToPath } from 'node:url';
 import { listImportableLegacyProjects } from './legacy-import';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateStateCache, PersistedState } from './store';
+import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
@@ -1426,6 +1427,51 @@ export function registerIpcHandlers(): void {
   // guardrail in the UI.
   ipcMain.handle('profiles:keychainStatus', () => {
     return getKeychainIsolationStatus();
+  });
+
+  // ---- Multi-host Phase 1: hosts registry --------------------------------
+  // Secrets never cross these channels (secrets.ts is write-only over IPC);
+  // every mutation re-validates through the shared validateHostRecordShape.
+  ipcMain.handle('hosts:list', () => listHosts());
+
+  ipcMain.handle('hosts:create', (_event, draft: unknown) => createHost(draft));
+
+  ipcMain.handle('hosts:update', (_event, id: string, patch: Record<string, unknown>) =>
+    updateHost(id, patch),
+  );
+
+  ipcMain.handle('hosts:delete', (_event, id: string) => {
+    deleteHost(id);
+  });
+
+  // Open a plain `ssh -tt` shell tab on an enrolled host (Phase 1 verb).
+  // The remote gate is the enrolled HostRecord itself — the P1-15
+  // local-project check does not apply to remote cwds (council R-1); the
+  // remote cwd is the record's defaultFolder (fallback: remote home).
+  ipcMain.handle('hosts:openShell', (_event, id: string, sessionId: string) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) return;
+    const record = getHost(id);
+    if (!record || record.enrollmentStatus !== 'enrolled') {
+      console.warn(`hosts:openShell blocked: ${id} is not an enrolled host`);
+      win.webContents.send('pty:data', sessionId, '\r\n\x1b[31mRefused: host is not enrolled.\x1b[0m\r\n');
+      win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
+      return;
+    }
+    const dataSink = ptyDataSink(() => BrowserWindow.getAllWindows()[0], sessionId);
+    spawnShellPty(
+      sessionId,
+      process.cwd(),
+      dataSink,
+      (exitCode, signal) => {
+        dataSink.flush();
+        const w = BrowserWindow.getAllWindows()[0];
+        if (w && !w.isDestroyed()) {
+          w.webContents.send('pty:exit', sessionId, exitCode, signal);
+        }
+      },
+      { host: record.host, port: record.port, defaultFolder: record.defaultFolder },
+    );
   });
 
   ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {

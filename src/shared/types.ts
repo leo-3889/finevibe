@@ -210,6 +210,49 @@ export interface Profile {
   createdAt: number;
 }
 
+// --- Multi-host (Phase 1: Hosts registry) ---
+
+export type HostAuthKind = 'key' | 'password';
+
+export type HostEnrollmentStatus = 'draft' | 'probing' | 'auth-ok' | 'enrolled' | 'partial' | 'failed';
+
+/**
+ * A named SSH host from the registry (multi-host Phase 1). Zero secret
+ * material: passwords/passphrases live in the safeStorage-backed
+ * `host-secrets.json`, managed keys in `<userData>/hosts/<id>/` — this record
+ * is safe to log (redacted) and to send over IPC both ways.
+ */
+export interface HostRecord {
+  /** crypto.randomUUID(); the only handle the renderer ever sends. */
+  id: string;
+  /** Display name, 1..64 chars (escaped at render; never injected raw). */
+  name: string;
+  user: string;
+  /** RFC-1123 hostname or bracketed IPv6 literal (grammar in ssh-host.ts). */
+  host: string;
+  /** 1..65535; default 22. */
+  port: number;
+  authKind: HostAuthKind;
+  /** Managed keys: finevibe-generated, path derived from id. User keys: absolute path picked by the user. */
+  privateKeyPath?: string;
+  /** True → finevibe owns <userData>/hosts/<id>/id_ed25519. */
+  managedKey: boolean;
+  enrollmentStatus: HostEnrollmentStatus;
+  /** Last failure reason / partial summary (e.g. "provider X missing"). */
+  enrollmentDetail?: string;
+  enrolledAt?: string;
+  lastProbeAt?: string;
+  lastProbeOk?: boolean;
+  /** SHA256 fingerprint pinned at first successful connect (TOFU). Mismatch = hard refuse. */
+  hostKeyFingerprint?: string;
+  /** Prerequisite probe results from enrollment (Phase 2 consumers: provider CLIs, node, git). */
+  prerequisites?: Record<string, { ok: boolean; version?: string; path?: string }>;
+  /** Default folder for new projects on this host (remote-shell cwd, new-project prefill); absent = remote `~`. */
+  defaultFolder?: string;
+  /** True for the fleet memory server (UR-3): the daemon + forwards role, not a new type. */
+  memoryServer?: boolean;
+}
+
 export interface ArchivedSession {
   id: string;
   name: string;
@@ -598,6 +641,14 @@ export interface PersistedState {
   team?: TeamData;
   /** Global, provider-scoped CLI profiles (e.g. Claude work/personal config dirs). */
   profiles?: Profile[];
+  /**
+   * Named SSH hosts (multi-host Phase 1). Optional at the persistence
+   * boundary like `preferences`: normalized once by each loader
+   * (`store.ts` on the main side, `hydrateLoadedState` on the renderer side)
+   * via `validateHostRecordShape`; invalid entries are dropped with a log.
+   * Carries zero secret material (see `src/main/hosts/secrets.ts`).
+   */
+  hosts?: HostRecord[];
 }
 
 // --- AI Readiness ---
