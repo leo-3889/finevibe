@@ -39,6 +39,12 @@ function simulateExecFile(err: ExecFileException | null, stdout: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: clearAllMocks (mockClear) does NOT drain queued
+  // mockImplementationOnce entries. A shuffled predecessor's unconsumed
+  // version-probe Once shifted every simulateExecFile by one call, leaving
+  // a second git command against the bare vi.fn() (callback never fires ->
+  // 15s timeout). Drain the queue to the factory default every case.
+  mockExecFile.mockReset();
   // Spawns must use the plain 'git' the suites assert against, and the
   // git-binary probe (which would consume the simulateExecFile queue)
   // must never fire.
@@ -640,6 +646,9 @@ describe('GIT_NOT_FOUND mapping (spawn ENOENT)', () => {
   });
 
   it('gitStageFile rejects with a GIT_NOT_FOUND-coded error', async () => {
+    // TWO answers: this case makes two gitStageFile calls and must own both
+    // responses (it used to pass by consuming an implicit leaked Once).
+    simulateExecFile(enoent(), '');
     simulateExecFile(enoent(), '');
     await expect(gitStageFile('/test', 'a.ts')).rejects.toThrow(/GIT_NOT_FOUND/);
     await gitStageFile('/test', 'a.ts').catch((err: NodeJS.ErrnoException) => {
