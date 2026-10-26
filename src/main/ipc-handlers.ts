@@ -14,6 +14,7 @@ import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateSt
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
 import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
 import { syncSettingsToHost } from './hosts/settings-sync';
+import { cloneRemoteRepo, ensureRemoteDir, listRemoteDirs, statRemotePath } from './hosts/remote-fs';
 import { generateManagedKeypair } from './hosts/keys';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from './hosts/secrets';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
@@ -1569,6 +1570,32 @@ export function registerIpcHandlers(): void {
       confirmOverwrite: confirmOverwrite === true,
     });
   });
+
+  // Remote open/add folder (per-host providers T5, plan §6, UR-6): the
+  // Add-project modal's verbs under a non-local tab. Ids + strings only —
+  // remote-fs.ts owns the path normalization, the traversal gate, the argv
+  // and the quoting. NO enumerate-confirm here on purpose: the local
+  // fs:listDirs confirm (P1-19) is a LOCAL privacy concept (enumerating the
+  // user's own disk outside the home tree); on a registry host the consent is
+  // the enrolled HostRecord itself — the user created it, pinned its key and
+  // ran the enrollment — which is the same gate hosts:openShell and
+  // settings-sync run (council R-1). remote-fs.ts' gateHost is the single
+  // place that answers it (host exists + enrolled|partial).
+  ipcMain.handle('hosts:listDirs', (_event, id: unknown, dirPath: unknown, prefix?: unknown) =>
+    listRemoteDirs(id, dirPath, typeof prefix === 'string' ? prefix : undefined),
+  );
+
+  ipcMain.handle('hosts:stat', (_event, id: unknown, target: unknown) =>
+    statRemotePath(id, target),
+  );
+
+  ipcMain.handle('hosts:ensureDir', (_event, id: unknown, dirPath: unknown) =>
+    ensureRemoteDir(id, dirPath),
+  );
+
+  ipcMain.handle('hosts:cloneRepo', (_event, id: unknown, url: unknown, destPath: unknown) =>
+    cloneRemoteRepo(id, url, destPath),
+  );
 
   ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {
     createAppMenu(debugMode);

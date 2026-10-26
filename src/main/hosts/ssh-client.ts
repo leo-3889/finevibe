@@ -366,6 +366,48 @@ export function sftpListDir(record: HostRecord, remoteDir: string, opts?: { time
 }
 
 /**
+ * readdir with the dir-ness the file browser needs (readdir's attrs carry the
+ * mode; the name-only sftpListDir cannot answer "is this a directory").
+ * Null when the directory is gone.
+ */
+export function sftpListDirEntries(
+  record: HostRecord,
+  remoteDir: string,
+  opts?: { timeoutMs?: number },
+): Promise<Array<{ name: string; isDirectory: boolean }> | null> {
+  return sftpOp<Array<{ name: string; isDirectory: boolean }> | null>(
+    record,
+    `ls ${remoteDir}`,
+    (sftp, done) =>
+      sftp.readdir(remoteDir, (err, list) =>
+        err
+          ? done(isNotFound(err) ? null : err, null)
+          : done(null, list.map((e) => ({ name: e.filename, isDirectory: e.attrs.isDirectory() }))),
+      ),
+    opts,
+  );
+}
+
+/** Full stat for the remote file browser; null when the path does not exist. */
+export function sftpStat(
+  record: HostRecord,
+  remotePath: string,
+  opts?: { timeoutMs?: number },
+): Promise<{ size: number; mtimeMs: number; isDirectory: boolean } | null> {
+  return sftpOp<{ size: number; mtimeMs: number; isDirectory: boolean } | null>(
+    record,
+    `stat ${remotePath}`,
+    (sftp, done) =>
+      sftp.stat(remotePath, (err, stats) =>
+        err
+          ? done(isNotFound(err) ? null : err, null)
+          : done(null, { size: stats.size, mtimeMs: stats.mtime * 1000, isDirectory: stats.isDirectory() }),
+      ),
+    opts,
+  );
+}
+
+/**
  * Write a remote text file (create/truncate). Enrollment's settings merge is
  * the only writer; the parent dir must already exist (the exec lane owns
  * mkdir -p, per the enrollment idiom).

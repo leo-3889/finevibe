@@ -577,11 +577,14 @@ class AppState {
     this.emit('project-changed');
   }
 
-  addProject(name: string, path: string, defaultProfileId?: string): ProjectRecord {
+  /** `hostId` (T5, UR-6): the host the path lives on; absent = 'local' (the
+   * load-time normalization already defaults every pre-Phase-2 record). */
+  addProject(name: string, path: string, defaultProfileId?: string, hostId?: string): ProjectRecord {
     const project: ProjectRecord = {
       id: crypto.randomUUID(),
       name,
       path,
+      hostId,
       sessions: [],
       activeSessionId: null,
       layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
