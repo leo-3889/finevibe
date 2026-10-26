@@ -15,6 +15,7 @@ export interface SshHostRef {
 }
 
 import type { HostRecord, HostAuthKind, HostEnrollmentStatus } from './types.js';
+import { isValidHostColor } from './host-colors.js';
 
 const MAX_HOST_LENGTH = 253;
 
@@ -59,6 +60,17 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Bracketed IPv6 literal (the spelling ssh argv requires). */
 const IPV6_BRACKETED = /^\[[0-9A-Fa-f:.]+\]$/;
 
+/**
+ * Registry-target check: the record's user/host as they reach ssh argv.
+ * Broader than parseSshHost's free-text gate (which rejects brackets —
+ * the registry stores the bracketed IPv6 spelling on purpose). Callers get
+ * here only with a validateHostRecordShape-passed record; this is defense
+ * in depth for hand-edited state (per-host providers plan audit T1 #2).
+ */
+export function isRegistryHostTarget(user: string, host: string): boolean {
+  return USERNAME.test(user) && (HOSTNAME.test(host) || IPV6_BRACKETED.test(host));
+}
+
 const HOST_AUTH_KINDS = ['key', 'password'];
 const HOST_ENROLLMENT_STATUSES = ['draft', 'probing', 'auth-ok', 'enrolled', 'partial', 'failed'];
 
@@ -92,6 +104,9 @@ export function validateHostRecordShape(raw: unknown): HostRecord | null {
   }
   if (r.lastProbeOk !== undefined && typeof r.lastProbeOk !== 'boolean') return null;
   if (r.memoryServer !== undefined && typeof r.memoryServer !== 'boolean') return null;
+  // Identity color: the shared gate (plan §7) — a hand-edited state.json can
+  // never smuggle a raw string into a renderer style attribute.
+  if (r.color !== undefined && !isValidHostColor(r.color)) return null;
   if (r.prerequisites !== undefined) {
     if (typeof r.prerequisites !== 'object' || r.prerequisites === null || Array.isArray(r.prerequisites)) return null;
     for (const value of Object.values(r.prerequisites as Record<string, unknown>)) {
@@ -123,5 +138,6 @@ export function validateHostRecordShape(raw: unknown): HostRecord | null {
   if (r.prerequisites !== undefined) record.prerequisites = r.prerequisites as HostRecord['prerequisites'];
   if (r.defaultFolder !== undefined) record.defaultFolder = r.defaultFolder as string;
   if (r.memoryServer !== undefined) record.memoryServer = r.memoryServer as boolean;
+  if (r.color !== undefined) record.color = r.color as string;
   return record;
 }

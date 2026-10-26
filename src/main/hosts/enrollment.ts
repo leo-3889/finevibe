@@ -20,6 +20,7 @@ import {
   readPublicKeyLine,
 } from './keys';
 import { setEnrollmentStatus, updateHost } from './host-registry';
+import { isValidProfileId } from '../profiles';
 
 export interface EnrollStep {
   step: string;
@@ -100,6 +101,52 @@ export async function probePrerequisites(record: HostRecord): Promise<NonNullabl
     }
   }
   return result;
+}
+
+/**
+ * Shared tool-inventory refresh (per-host providers plan §2, council R-4):
+ * the `hosts:tools` probe and the `provider:checkBinary` staleness refresh
+ * are one implementation, two callers. Concurrent refreshes for the same
+ * host share the in-flight promise (bounded by the host registry size).
+ */
+export function refreshHostTools(record: HostRecord): Promise<NonNullable<HostRecord['prerequisites']>> {
+  const existing = toolRefreshInFlight.get(record.id);
+  if (existing) return existing;
+  // Liveness gate (T1 audit #1): an unreachable host must NOT overwrite a
+  // healthy record with all-ok:false — probePrerequisites swallows per-target
+  // transport failures, and the silent checkBinary staleness path would then
+  // hydrate zero providers for 24h. Fail fast, keep the record stale, retry.
+  const run = exec(record, 'true', { timeoutMs: PREREQ_TIMEOUT_MS })
+    .then(() => probePrerequisites(record))
+    .then((prerequisites) => {
+      updateHost(record.id, { prerequisites, lastProbeAt: new Date().toISOString(), lastProbeOk: true });
+      return prerequisites;
+    })
+    .finally(() => { toolRefreshInFlight.delete(record.id); });
+  toolRefreshInFlight.set(record.id, run);
+  return run;
+}
+
+/** hostIds with a tool-refresh in flight; keys are dropped by the work itself. */
+const toolRefreshInFlight = new Map<string, Promise<NonNullable<HostRecord['prerequisites']>>>();
+
+/**
+ * Provision a managed profile dir on the host (per-host providers plan §2):
+ * `mkdir -p ~/.finevibe/profiles/<id>` over the exec lane; the remote shell
+ * expands `~`, and the same command echoes the resolved absolute path back
+ * (configDir semantics unchanged — an absolute path, now possibly remote).
+ * Custom (non-managed) paths are refused: the renderer must never steer a
+ * remote mkdir.
+ */
+export async function provisionRemoteProfileDir(record: HostRecord, profileId: string): Promise<string> {
+  if (!isValidProfileId(profileId)) throw new Error(`Invalid profile id: ${JSON.stringify(profileId)}`);
+  const dir = `~/.finevibe/profiles/${profileId}`;
+  // Unquoted on purpose: quoting `~` would create a literal `~` directory.
+  // Safe because isValidProfileId fixes the interpolated charset.
+  const out = await exec(record, `mkdir -p ${dir} && printf '%s' ${dir}`, { timeoutMs: PREREQ_TIMEOUT_MS });
+  const resolved = out.trim();
+  if (!resolved.startsWith('/')) throw new Error(`remote profile provisioning returned ${JSON.stringify(resolved)}`);
+  return resolved;
 }
 
 /** Deploy finevibe's pubkey into the marker block (§4 step 5). */

@@ -11,6 +11,13 @@ export const PROFILES_ROOT = path.join(os.homedir(), '.finevibe', 'profiles');
  * root (`../../.claude` would provision a config dir the CLI reads). */
 const PROFILE_ID_RE = /^[A-Za-z0-9._-]+$/;
 
+/** True when `id` is safe to use as a managed profile dir name (and, with
+ * that charset guaranteed, safe to interpolate unquoted into a remote
+ * `mkdir -p ~/.finevibe/profiles/<id>`). */
+export function isValidProfileId(id: string): boolean {
+  return PROFILE_ID_RE.test(id) && id !== '..' && id !== '.';
+}
+
 /** Default managed config dir for a profile id. */
 export function managedProfileDir(profileId: string): string {
   if (!PROFILE_ID_RE.test(profileId) || profileId === '..' || profileId === '.') {

@@ -12,7 +12,7 @@ export type { CostData } from '../shared/types';
 
 export interface FineVibeApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, sshHost?: string): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, sshHost?: string, hostId?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -71,7 +71,7 @@ export interface FineVibeApi {
     listImportableProjects(): Promise<ImportableLegacyProject[]>;
   };
   profiles: {
-    provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
+    provision(profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
   };
   hosts: {
@@ -92,9 +92,9 @@ export interface FineVibeApi {
     onStatus(callback: (event: { id: string; status: string; detail?: string }) => void): () => void;
   };
   provider: {
-    getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
+    getConfig(providerId: ProviderId, projectPath: string, configDir?: string, hostId?: string): Promise<ProviderConfig>;
     listProviders(): Promise<CliProviderMeta[]>;
-    checkBinary(providerId?: ProviderId): Promise<boolean>;
+    checkBinary(providerId?: ProviderId, hostId?: string): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
     onConfigChanged(callback: () => void): () => void;
     installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
@@ -226,8 +226,8 @@ function onChannel(channel: string, callback: (...args: unknown[]) => void): () 
 
 const api: FineVibeApi = {
   pty: {
-    create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost) =>
-      ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt, systemPrompt, envVars || '', configDir, sshHost),
+    create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost, hostId) =>
+      ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt, systemPrompt, envVars || '', configDir, sshHost, hostId),
     createShell: (sessionId, cwd) =>
       ipcRenderer.invoke('pty:createShell', sessionId, cwd),
     write: (sessionId, data) =>
@@ -298,9 +298,9 @@ const api: FineVibeApi = {
     getDroppedFilePath: (file: File) => webUtils.getPathForFile(file),
   },
   provider: {
-    getConfig: (providerId, projectPath, configDir?) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath, configDir),
+    getConfig: (providerId, projectPath, configDir?, hostId?) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath, configDir, hostId),
     listProviders: () => ipcRenderer.invoke('provider:listProviders'),
-    checkBinary: (providerId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude'),
+    checkBinary: (providerId, hostId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude', hostId),
     watchProject: (providerId, projectPath) => ipcRenderer.send('config:watchProject', providerId, projectPath),
     onConfigChanged: (callback) => onChannel('config:changed', callback),
     installAgent: (slug, content) => ipcRenderer.invoke('provider:installAgent', slug, content),
@@ -320,7 +320,7 @@ const api: FineVibeApi = {
     listImportableProjects: () => ipcRenderer.invoke('vibeyard:listImportableProjects'),
   },
   profiles: {
-    provision: (profileId, customPath, providerId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId),
+    provision: (profileId, customPath, providerId, hostId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId, hostId),
     keychainStatus: () => ipcRenderer.invoke('profiles:keychainStatus'),
   },
   hosts: {

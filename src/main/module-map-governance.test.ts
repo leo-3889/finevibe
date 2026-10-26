@@ -114,6 +114,7 @@ const ALLOWLIST: Record<string, string> = {
   'topFilesScans@ipc-handlers.ts': 'transient: shared scan promise; deleted on settle',
   'pendingKills@pty-manager.ts': 'transient: spawn-completion marker; consumed on spawn (inline 100 safety cap)',
   'inFlight@session-deep-search.ts': 'transient: shared read promise; deleted on settle',
+  'toolRefreshInFlight@hosts/enrollment.ts': 'transient: shared host tool-refresh promise; key deleted when the probe settles',
 
   // bounded-by-construction: keys can only come from a small fixed set.
   'MAC_PACKAGE_EXTENSIONS@fs-utils.ts': 'bounded-by-construction: fixed extension list',

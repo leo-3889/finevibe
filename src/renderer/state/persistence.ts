@@ -1,4 +1,5 @@
 import type { BoardColumn, BoardData, HostRecord, PersistedState, Preferences, ProjectRecord, SessionRecord, SidebarViews } from '../../shared/types.js';
+import { LOCAL_HOST_ID } from '../../shared/types.js';
 import { validateHostRecordShape } from '../../shared/ssh-host.js';
 import { restoreCost } from '../session-cost.js';
 import { restoreContext } from '../session-context.js';
@@ -33,6 +34,16 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
     if (validated) hosts.push(validated);
   }
   state.hosts = hosts;
+  // Per-host providers plan §2: pre-existing profiles and sessions carry no
+  // hostId — normalize 'local' once at load, mirroring store.ts on main.
+  for (const profile of state.profiles ?? []) {
+    if (!profile.hostId) profile.hostId = LOCAL_HOST_ID;
+  }
+  for (const project of state.projects) {
+    for (const session of project.sessions) {
+      if (!session.hostId) session.hostId = LOCAL_HOST_ID;
+    }
+  }
   // Per-key merge: a save written before a new sidebar section existed must
   // inherit its default instead of leaving the key undefined (the shallow
   // spread above replaces the whole object).
