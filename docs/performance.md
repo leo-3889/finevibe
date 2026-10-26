@@ -136,6 +136,18 @@ for zero-indent collection declarations and fails on any collection without a
 bound-class allowlist entry, so a new module-level `Map`/`Set` cannot land
 without a reviewer recording its bound.
 
+## Remote host lanes (Phase 2, 2026-10-26)
+
+Bounds for the SSH/sftp surface (registry hosts; contracts in [hosts.md](hosts.md)):
+
+- **Connection cache** — `MAX_CACHED_CONNECTIONS = 32` (`ssh-client.ts:19`), FIFO-evicted, governance-allowlisted; one connection multiplexes the exec + sftp + shell channels (ssh2 per-connection channels), so per-verb lanes add no connections.
+- **Remote dir listing** — `MAX_REMOTE_LIST_DIRS = 500` (`remote-fs.ts:28`): one readdir payload ≈ 20 KB (the local `fs:listDirs` cap of 20 is a keystroke autocomplete; a browser page needs the directory). Lane timeouts: list/stat 10 s, `mkdir -p` 15 s, `git clone` 10 min (`CLONE_TIMEOUT_MS` mirrors the local `GIT_CLONE_TIMEOUT_MS` — same slow network operation).
+- **Status sidecar poll** — each remote `.status` read is a 4 KiB tail (`hook-status.ts:493`), on a sweep with its own in-flight flag (a slow sftp round trip never blocks the local fs poll); a failed host read arms a `REMOTE_HOST_COOLDOWN_MS = 30_000` cooldown, map capped at `REMOTE_HOST_COOLDOWN_MAX = 32` — a down host costs one connect timeout, not one per session per tick.
+- **Transcript / config windows** — every remote provider-file read is a paged window: head `HEADER_READ_BYTES = 8 KiB` (title), tail `TAIL_READ_BYTES = 16 KiB` (status), hard window cap `MAX_WINDOW_BYTES = 1 MiB` (`provider-fs.ts:22`); a pathological transcript is capped, never buffered whole. The seam is stateless by design (consumers gate on (mtime, size)); a bounded per-host tail cache is the recorded upgrade path if sftp latency ever shows (R1: the hot path stays the status sidecar, not the transcript).
+- **Settings sync** — bundle is the file-set allowlist (bounded per provider); writes are one file + one `.bak` per path; `npm install` runs on the host, not here.
+
+**Unmeasured:** sftp/exec round-trip latency on a real LAN host (dev box has no enrolled host); the rows above are bounds, not measurements. First live pass records: listDirs page time, sidecar poll tick under N remote sessions, transcript window read time.
+
 ## Measured runtime baseline (W2, 2026-10-19, Windows)
 
 The only measured runtime numbers this machine has for the app's hot paths, from the
