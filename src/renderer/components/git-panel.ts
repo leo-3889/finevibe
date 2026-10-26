@@ -3,6 +3,8 @@ import { onChange as onGitStatusChange, gitChangeCount, gitStatusErrored, getAct
 import { onChange as onStatusChange } from '../session-activity.js';
 import { showFileViewer } from './file-viewer.js';
 import { areaLabel } from '../dom-utils.js';
+import { isRemoteProject } from '../host-scope.js';
+import { getHostName } from '../host-registry.js';
 import type { GitFileEntry } from '../types.js';
 
 const MAX_FILES = 100;
@@ -251,6 +253,20 @@ function refreshMounted(): void {
     body = document.createElement('div');
     body.className = 'config-section-body git-panel-body';
     gitPanelEl.appendChild(body);
+  }
+
+  if (isRemoteProject(project)) {
+    // Phase 3 coherence (docs/hosts.md): the repo lives on the host; the
+    // local git sinks are main-side-refused. Say so - never "clean tree".
+    loadGeneration++;
+    body.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'config-empty';
+    empty.textContent = `Git runs on this machine — this project lives on “${getHostName(project.hostId)}”.`;
+    body.appendChild(empty);
+    lastFilesKey = '';
+    displayedGitPath = null;
+    return;
   }
 
   if (gitStatusErrored(project.id)) {

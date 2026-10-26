@@ -1338,6 +1338,25 @@ describe('removeProfile reference cleanup (P3-4)', () => {
     expect(project.defaultProfileId).toBeUndefined();
   });
 
+  it('drops host-prefixed defaultProfiles keys of the deleted profile (Phase 1 keying)', () => {
+    seedProfile('prof-1');
+    appState.preferences.defaultProfiles = { claude: 'prof-1', 'host-1|claude': 'prof-1', 'host-1|pi': 'other' };
+
+    appState.removeProfile('prof-1');
+
+    expect(appState.preferences.defaultProfiles).toEqual({ 'host-1|pi': 'other' });
+  });
+
+  it('setProviderDefaultProfile keys by host: bare local, prefixed remote (Phase 1)', () => {
+    appState.preferences.defaultProfiles = undefined;
+    appState.setProviderDefaultProfile('claude', 'p-local');
+    appState.setProviderDefaultProfile('claude', 'p-remote', 'host-1');
+    expect(appState.preferences.defaultProfiles).toEqual({ claude: 'p-local', 'host-1|claude': 'p-remote' });
+
+    appState.setProviderDefaultProfile('claude', undefined, 'host-1');
+    expect(appState.preferences.defaultProfiles).toEqual({ claude: 'p-local' });
+  });
+
   it('isProfileInUse counts live sessions only — the UI delete gate stays usable for history-only profiles', () => {
     const project = addProject();
     seedProfile('prof-1');

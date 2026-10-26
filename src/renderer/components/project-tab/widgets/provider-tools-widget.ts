@@ -65,7 +65,7 @@ export const createProviderToolsWidget: WidgetFactory = (host: WidgetHost): Widg
   const getEffectiveConfigDir = (providerId: ProviderId): string | undefined => {
     const project = appState.projects.find(pr => pr.id === projectId);
     if (!project) return undefined;
-    const profile = resolveProfile(undefined, project, appState.preferences, providerId, appState.profiles);
+    const profile = resolveProfile(undefined, project, appState.preferences, providerId, appState.profiles, project.hostId);
     return profile?.configDir;
   };
 

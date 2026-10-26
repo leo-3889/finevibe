@@ -144,7 +144,7 @@ export function resolveTeamChatBackend(
   if (pinned) return { providerId: pinned.providerId, profileId: pinned.id };
   const providerId = pickTeamChatProvider(activeSession, prefs.defaultProvider, overrideProviderId ?? project.defaultProvider);
   if (!providerId) return undefined;
-  const profile = resolveProfile(undefined, project, prefs, providerId, profiles);
+  const profile = resolveProfile(undefined, project, prefs, providerId, profiles, project.hostId);
   return { providerId, profileId: profile?.id };
 }
 

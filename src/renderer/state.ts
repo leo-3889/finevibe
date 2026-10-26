@@ -6,6 +6,7 @@ import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { basename } from '../shared/platform.js';
 import { parseSshHost } from '../shared/ssh-host.js';
 import { LOCAL_HOST_ID } from '../shared/types.js';
+import { defaultProfileKey, keyMatchesProvider } from '../shared/profile-keys.js';
 import { isCliSession } from './session-utils.js';
 import {
   archiveSession as archiveSessionPure,
@@ -655,7 +656,7 @@ class AppState {
     // Pin the effective profile (explicit > project default > global default,
     // provider-matched) onto the session at creation so it stays sticky — resume
     // must reuse the same config dir even if a default changes later.
-    const pinnedProfileId = resolveProfile({ profileId }, project, this.preferences, cliProviderId, this.profiles)?.id;
+    const pinnedProfileId = resolveProfile({ profileId }, project, this.preferences, cliProviderId, this.profiles, project?.hostId)?.id;
     const session = buildCliSession({
       name,
       providerId: cliProviderId,
@@ -916,6 +917,7 @@ class AppState {
   removeProfile(id: string): void {
     const idx = this.profiles.findIndex((p) => p.id === id);
     if (idx === -1) return;
+    const removedProviderId = this.profiles[idx].providerId;
     this.profiles.splice(idx, 1);
     // Don't orphan references: any session/project/preference pointing at the
     // deleted profile falls back to the provider default config dir and
@@ -935,8 +937,8 @@ class AppState {
     }
     const defaultProfiles = this.preferences.defaultProfiles;
     if (defaultProfiles) {
-      for (const providerId of Object.keys(defaultProfiles)) {
-        if (defaultProfiles[providerId as ProviderId] === id) delete defaultProfiles[providerId as ProviderId];
+      for (const key of Object.keys(defaultProfiles)) {
+        if (keyMatchesProvider(key, removedProviderId) && defaultProfiles[key] === id) delete defaultProfiles[key];
       }
     }
     for (const member of this.team.members) {
@@ -967,11 +969,12 @@ class AppState {
     this.emit('project-changed');
   }
 
-  /** Set (or clear) the global default profile for one provider. */
-  setProviderDefaultProfile(providerId: ProviderId, profileId: string | undefined): void {
+  /** Set (or clear) the default profile for one provider ON ONE HOST (default: local). */
+  setProviderDefaultProfile(providerId: ProviderId, profileId: string | undefined, hostId?: string): void {
     const map = { ...this.preferences.defaultProfiles };
-    if (profileId) map[providerId] = profileId;
-    else delete map[providerId];
+    const key = defaultProfileKey(hostId, providerId);
+    if (profileId) map[key] = profileId;
+    else delete map[key];
     this.setPreference('defaultProfiles', map);
   }
 

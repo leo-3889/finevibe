@@ -1,5 +1,7 @@
 import { appState } from '../state.js';
 import { openFileReaderChecked } from '../open-file-reader.js';
+import { isRemoteProject } from '../host-scope.js';
+import { getHostName } from '../host-registry.js';
 
 let overlay: HTMLElement | null = null;
 let input: HTMLInputElement | null = null;
@@ -55,6 +57,16 @@ async function searchFiles(): Promise<void> {
   const project = appState.activeProject;
   if (!project || !input) return;
 
+  // Phase 3 coherence (docs/hosts.md): the files live ON the host; main
+  // refuses remote-rooted listFiles. Say so instead of "No files found".
+  if (isRemoteProject(project)) {
+    latestSearchToken++;
+    results = [];
+    activeIndex = 0;
+    renderResults(`These files live on “${getHostName(project.hostId)}” — remote quick-open is not supported yet.`);
+    return;
+  }
+
   const { fileQuery } = parseQuery(input.value);
   const token = ++latestSearchToken;
   let files: string[];
@@ -72,14 +84,14 @@ async function searchFiles(): Promise<void> {
   renderResults();
 }
 
-function renderResults(): void {
+function renderResults(emptyText?: string): void {
   if (!resultsList) return;
   resultsList.replaceChildren();
 
   if (results.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'quick-open-empty';
-    empty.textContent = input?.value ? 'No files found' : 'Type to search files...';
+    empty.textContent = emptyText ?? (input?.value ? 'No files found' : 'Type to search files...');
     resultsList.appendChild(empty);
     return;
   }

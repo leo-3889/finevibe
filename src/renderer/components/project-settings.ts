@@ -11,7 +11,7 @@ export function promptProjectSettings(project: ProjectRecord): void {
   const effectiveProvider = (value: string) => (value || appState.preferences.defaultProvider || 'claude') as ProviderId;
   const profileOptions = (value: string) => [
     { value: '', label: t('sidebar.defaultProfileOption') },
-    ...providerProfileOptions(effectiveProvider(value)),
+    ...providerProfileOptions(effectiveProvider(value), project.hostId),
   ];
   showModal(t('sidebar.projectSettings.title'), [
     {

@@ -2,6 +2,18 @@
 
 FineVibe enrolls remote SSH hosts (Settings → Hosts), runs interactive shells on them, and — since Phase 2 (`todos/archives/per-host-providers-plan.md`, local-only) — runs coding-tool sessions, provider file reads, settings sync, and the Add-project verbs on them. Host-keyed provider behavior is in [provider contracts](provider-contracts.md); remote session status/transcripts in [session lifecycle](session-lifecycle.md).
 
+## Coherence principle (owner-ratified 2026-10-26)
+
+**Never silently lie.** For any remote-scope target (a host tab, a remote project, a remote session), every control must be exactly one of:
+
+- **(a) host-aware** — it operates against that host;
+- **(b) hidden** — the control is absent in remote scope (the host chip names the scope);
+- **(c) explicit-local** — one visible line says "this machine" and names the remote target where relevant.
+
+A silent local fallback on a remote-scope target — local git shown for a remote repo, local files in quick-open, a local profile offered to a remote session — is a **bug**, not a limitation: the user cannot distinguish "the host has nothing" from "FineVibe looked in the wrong machine". This rule binds every current and future feature; enforcement phases are tracked in `todos/audits/HOST_INTEGRATION_COHERENCE_2026-10-26.md` (local).
+
+Enforcement status — **Phase 1 (profiles)**: the Profiles section edits ONE host at a time (scope select drives list, defaults, Add-form); new-session/project pickers offer only launch-host profiles; `defaultProfiles` keys are `<hostId>|<providerId>` (bare key = local, zero migration, no cross-host inheritance); `resolveProfile` drops pins whose profile lives on another machine (`src/shared/profile-keys.ts`). **Phase 2 (Setup)**: a scope select (= `Preferences.activeHostId`, the sidebar's own control) chooses the machine; remote scope probes binaries via `provider:checkBinary(id, hostId)`, never runs local statusline/hooks validation (Settings-sync tiers shown instead), un-enrolled hosts get an enroll-first row, missing binary offers Re-check — the Setup badge stays local (app readiness). Phase 3 (git/quick-open/storage explicit states) follows. **Phase 3 (silent lies)**: git panel + quick-open render explicit remote-scope states naming the host (no local scan, no "clean tree"/"No files found" lies); `git-status.ts` skips polling/watching remote projects and drops their caches; main-side belt (`ipc-handlers.ts remoteProjectOwnerOf`, `store.getRemoteProjectRoots`) refuses remote-project-rooted cwds on every `git:*` channel (`requireGitRoot`) and `fs:listFiles`, with greppable `blocked: … remote host` log lines. Storage section needs nothing (it sizes userData subtrees only). The read-only remote git panel over the exec lane is the owner-promised next task.
+
 ## Registry
 
 `HostRecord` (`src/shared/types.ts`) lives in `PersistedState.hosts` (`src/main/store.ts`). Every load path (`loadState`, `saveState`, `saveStateSync`, `defaultState`) normalizes the array through `validateHostRecordShape` (`src/shared/ssh-host.ts`): entries that are not objects, miss required fields, carry an out-of-range port, or hold a non-POSIX `defaultFolder` are dropped, never repaired. The renderer hydrates the same shape (`hydrateLoadedState`, `src/renderer/state/persistence.ts`) but never writes hosts directly — all mutations go through `hosts:*` IPC into `src/main/hosts/host-registry.ts` (create/update/delete; create honors a draft `id` so a pre-generated keypair directory matches its host).

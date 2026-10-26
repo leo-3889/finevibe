@@ -518,8 +518,14 @@ export interface Preferences {
   defaultProvider?: ProviderId;
   /** UI language tag. See `Locale` for the supported set. */
   locale?: Locale;
-  /** Per-provider global fallback profile, applied when neither the session nor the project specifies one. */
-  defaultProfiles?: Partial<Record<ProviderId, string>>;
+  /**
+   * Per-provider fallback profile, applied when neither the session nor the
+   * project specifies one. Host-scoped keys (shared/profile-keys.ts): the
+   * bare `providerId` is the LOCAL host, `"<hostId>|<providerId>"` a remote
+   * host. A remote host with no key launches bare — it never inherits the
+   * local default, whose config dir does not exist on that machine.
+   */
+  defaultProfiles?: Record<string, string>;
   /**
    * Per-provider default for "Plan mode" on the checkbox-less quick-send
    * paths (Ask AI / Inspect / Draw / Flow "Send to AI", Kanban create) and
