@@ -14,7 +14,7 @@ import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateSt
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
 import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
 import { syncSettingsToHost } from './hosts/settings-sync';
-import { cloneRemoteRepo, ensureRemoteDir, listRemoteDirs, statRemotePath } from './hosts/remote-fs';
+import { cloneRemoteRepo, ensureRemoteDir, listRemoteDir, listRemoteDirs, readRemoteFile, statRemotePath } from './hosts/remote-fs';
 import { generateManagedKeypair } from './hosts/keys';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from './hosts/secrets';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
@@ -1172,8 +1172,18 @@ export function registerIpcHandlers(): void {
     killPty(sessionId);
   });
 
-  ipcMain.handle('fs:isDirectory', async (_event, filePath: string) => {
+  ipcMain.handle('fs:isDirectory', async (_event, filePath: string, hostId?: string) => {
     try {
+      // Remote rail (parent plan §11, per-host providers): a trailing hostId
+      // routes the probe over sftp. The gate is remote-fs' host-exists +
+      // enrolled|partial + path safety — no enumerate-confirm (council R-1),
+      // and no local consent gate: a remote path has no LOCAL spelling, so
+      // every local gate would reject it as a C:\home\... fallback (T5
+      // lesson, replicated on every fs rail here).
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const st = await statRemotePath(hostId, filePath);
+        return st.ok && st.isDirectory === true;
+      }
       // resolveUserPath: the renderer spells this path with `/` joins on
       // Windows (`E:\AI/Brillance`), and a mixed spelling must never reach
       // statSync, the gate, or the persisted project path.
@@ -1293,8 +1303,16 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
+  ipcMain.handle('fs:listDir', async (_event, dirPath: string, hostId?: string) => {
     try {
+      // Remote rail: the file tree's listing over sftp. Gated in remote-fs
+      // (host enrolled + path safety + project containment); failures answer
+      // [] exactly like the local catch, so the tree renders "empty" for a
+      // dead host instead of rejecting mid-expand.
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const res = await listRemoteDir(hostId, dirPath);
+        return res.ok ? res.entries : [];
+      }
       const expanded = expandUserPath(dirPath);
       if (!isAllowedReadPath(expanded)) return [];
       // PA-24: async body — ipcMain.handle, so the renderer API is unchanged;
@@ -2684,8 +2702,11 @@ export function registerIpcHandlers(): void {
     return result;
   }
 
-  ipcMain.handle('fs:exists', (_event, filePath: string): boolean => {
+  ipcMain.handle('fs:exists', async (_event, filePath: string, hostId?: string): Promise<boolean> => {
     try {
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        return (await statRemotePath(hostId, filePath)).ok;
+      }
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) return false;
       return fs.existsSync(resolved);
@@ -2694,8 +2715,14 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:stat', (_event, filePath: string): FileStatResult => {
+  ipcMain.handle('fs:stat', async (_event, filePath: string, hostId?: string): Promise<FileStatResult> => {
     try {
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const st = await statRemotePath(hostId, filePath);
+        return st.ok && st.size !== undefined && st.mtimeMs !== undefined
+          ? { ok: true, size: st.size, mtimeMs: st.mtimeMs }
+          : { ok: false };
+      }
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) {
         return { ok: false };
@@ -2707,8 +2734,13 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:readFile', async (_event, filePath: string): Promise<ReadFileResult> => {
+  ipcMain.handle('fs:readFile', async (_event, filePath: string, hostId?: string): Promise<ReadFileResult> => {
     try {
+      // Remote rail: the file preview over sftp (size-capped, head-sniffed
+      // for binary — the same ReadFileResult shape as the local lane).
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        return await readRemoteFile(hostId, filePath);
+      }
       // Security: resolve to absolute and check it's within a known project directory
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) {

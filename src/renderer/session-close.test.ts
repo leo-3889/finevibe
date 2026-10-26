@@ -499,7 +499,7 @@ describe('closeSessionIfFileMissing', () => {
 
     await expect(closeSessionIfFileMissing(sessions[0].id, '/p/S1.md')).resolves.toBe(false);
 
-    expect(mockFsExists).toHaveBeenCalledWith('/p/S1.md');
+    expect(mockFsExists).toHaveBeenCalledWith('/p/S1.md', undefined);
     expect(project.sessions).toHaveLength(1);
   });
 

@@ -16,6 +16,11 @@ import { slugifyHeading } from '../../shared/slug.js';
 interface FileReaderInstance {
   element: HTMLElement;
   filePath: string;
+  // Remote file preview (per-host providers, parent plan §11): set when the
+  // file's project lives on a registry host — reads ride the fs:readFile
+  // remote rail. Absent/'local' = local disk, unchanged. No watcher, no
+  // image preview over sftp in v1.
+  hostId?: string;
   resolvedPath: string | null;
   loaded: boolean;
   targetLine?: number;
@@ -202,8 +207,16 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
 
   try {
     const fullPath = resolveFilePath(instance);
-    if (await closeSessionIfFileMissing(sessionId, fullPath)) return;
+    if (await closeSessionIfFileMissing(sessionId, fullPath, instance.hostId)) return;
     if (instance.kind === 'image') {
+      // Remote image preview needs sftp + base64 (fs:readImage is local);
+      // v1 ships text preview only (parent plan §11).
+      if (instance.hostId) {
+        showFileReaderMessage(body, 'Image preview is not supported for remote files');
+        instance.unsupported = true;
+        instance.loaded = true;
+        return;
+      }
       const result = await window.finevibe.fs.readImage(fullPath);
       if (!result) {
         showFileReaderMessage(body, 'Failed to load file');
@@ -214,7 +227,7 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
       instance.loaded = true;
       return;
     }
-    const result = await window.finevibe.fs.readFile(fullPath);
+    const result = await window.finevibe.fs.readFile(fullPath, instance.hostId);
     if (!result.ok) {
       showFileReaderMessage(
         body,
@@ -285,7 +298,7 @@ export function reloadFileReader(sessionId: string): void {
   loadFile(instance, sessionId);
 }
 
-export function createFileReaderPane(sessionId: string, filePath: string, targetLine?: number): void {
+export function createFileReaderPane(sessionId: string, filePath: string, targetLine?: number, hostId?: string): void {
   if (instances.has(sessionId)) return;
 
   const el = document.createElement('div');
@@ -319,6 +332,7 @@ export function createFileReaderPane(sessionId: string, filePath: string, target
   const isImage = isImageFile(filePath);
   const instance: FileReaderInstance = {
     element: el, filePath, resolvedPath: null, loaded: false, targetLine,
+    hostId,
     viewMode: isMd ? 'rendered' : 'raw',
     kind: isImage ? 'image' : 'text',
     unsupported: false,
@@ -382,7 +396,7 @@ export function createFileReaderPane(sessionId: string, filePath: string, target
 export function destroyFileReaderPane(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
-  if (instance.resolvedPath) {
+  if (instance.resolvedPath && !instance.hostId) {
     window.finevibe.fs.unwatchDir(dirname(instance.resolvedPath));
   }
   destroySearchBar(sessionId);
@@ -404,7 +418,9 @@ export function showFileReaderPane(sessionId: string, isSplit: boolean): void {
     const fullPath = resolveFilePath(instance);
     instance.resolvedPath = fullPath;
     ensureFileChangedListener();
-    window.finevibe.fs.watchDir(dirname(fullPath));
+    // Remote files have no watcher (fs.watch is local): the pane reloads on
+    // reopen; agent writes land on the next open (parent plan §11 v1).
+    if (!instance.hostId) window.finevibe.fs.watchDir(dirname(fullPath));
   }
 
   loadFile(instance, sessionId);

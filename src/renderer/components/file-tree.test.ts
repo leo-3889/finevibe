@@ -13,7 +13,7 @@ vi.mock('./board/board-context-menu.js', () => ({ showContextMenu: vi.fn() }));
 vi.mock('./modal.js', () => ({ showConfirmModal: vi.fn(), showPropertiesDialog: vi.fn() }));
 vi.mock('../platform.js', () => ({ isMac: false, isWin: true, isLinux: false }));
 
-import { _cacheForTesting, _resetForTesting, type DirEntry } from './file-tree.js';
+import { _cacheForTesting, _keyForTesting, _resetForTesting, type DirEntry } from './file-tree.js';
 
 function entry(name: string): DirEntry {
   return { name, path: `/p/${name}`, isDirectory: false };
@@ -49,5 +49,18 @@ describe('entryCache LRU cap (PA-30)', () => {
     _cacheForTesting.set('/d', [entry('b')]);
     expect(_cacheForTesting.size()).toBe(1);
     expect(_cacheForTesting.get('/d')![0].name).toBe('b');
+  });
+});
+
+describe('remote cache keys (parent plan §11)', () => {
+  it('gives every host its own cache row for an identical absolute path', () => {
+    const { treeKey, keyPath } = _keyForTesting;
+    expect(treeKey(undefined, '/home/dev/dev')).toBe('/home/dev/dev');
+    expect(treeKey('h1', '/home/dev/dev')).not.toBe(treeKey('h2', '/home/dev/dev'));
+    expect(treeKey('h1', '/home/dev/dev')).not.toBe('/home/dev/dev');
+    // The subtree-eviction scans compare on the path part, host-agnostically:
+    // a per-project eviction over-evicts foreign-host rows at worst (re-read).
+    expect(keyPath(treeKey('h1', '/home/dev/dev/sub'))).toBe('/home/dev/dev/sub');
+    expect(keyPath('/home/dev/dev')).toBe('/home/dev/dev');
   });
 });

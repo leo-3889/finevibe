@@ -32,18 +32,18 @@ export interface FinevibeApi {
     release(sessionId: string): void;
   };
   fs: {
-    isDirectory(path: string): Promise<boolean>;
+    isDirectory(path: string, hostId?: string): Promise<boolean>;
     expandPath(path: string): Promise<string>;
-    listDir(dirPath: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
+    listDir(dirPath: string, hostId?: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
     listDirs(dirPath: string, prefix?: string): Promise<string[]>;
     browseDirectory(): Promise<string | null>;
     cloneRepo(url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
     ensureDirectory(dirPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
     listFiles(cwd: string, query: string): Promise<string[]>;
     topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
-    exists(filePath: string): Promise<boolean>;
-    readFile(filePath: string): Promise<ReadFileResult>;
-    stat(filePath: string): Promise<FileStatResult>;
+    exists(filePath: string, hostId?: string): Promise<boolean>;
+    readFile(filePath: string, hostId?: string): Promise<ReadFileResult>;
+    stat(filePath: string, hostId?: string): Promise<FileStatResult>;
     trashItem(filePath: string): Promise<{ ok: boolean; error?: string }>;
     readImage(filePath: string): Promise<{ dataUrl: string } | null>;
     showInFolder(targetPath: string): Promise<{ ok: boolean; error?: string }>;

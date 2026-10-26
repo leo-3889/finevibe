@@ -1,11 +1,21 @@
 import { appState, ProjectRecord } from '../state.js';
 import { isUnread, onChange as onUnreadChange } from '../session-unread.js';
 import type { ProviderId } from '../../shared/types.js';
+import { LOCAL_HOST_ID } from '../../shared/types.js';
 
 /** Config dir for a session's pinned profile (provider-matched), or undefined for default ~/.claude. */
 function sessionConfigDir(session: { profileId?: string }, providerId: ProviderId): string | undefined {
   if (!session.profileId) return undefined;
   return appState.profiles.find((p) => p.id === session.profileId && p.providerId === providerId)?.configDir;
+}
+
+/**
+ * Host id for a project's file-reader panes (parent plan §11): the registry
+ * host for a remote project, undefined for local — the pane treats a truthy
+ * hostId as "remote" (rail routing, no watcher), so 'local' normalizes away.
+ */
+function remoteProjectHostId(project: ProjectRecord): string | undefined {
+  return project.hostId && project.hostId !== LOCAL_HOST_ID ? project.hostId : undefined;
 }
 import {
   createTerminalPane,
@@ -213,7 +223,7 @@ function onSessionAdded(data: unknown): void {
   if (!project) return;
 
   if (session.type === 'file-reader') {
-    createFileReaderPane(session.id, session.fileReaderPath || '', session.fileReaderLine);
+    createFileReaderPane(session.id, session.fileReaderPath || '', session.fileReaderLine, remoteProjectHostId(project));
     renderLayout();
   } else if (session.type === 'diff-viewer') {
     createFileViewerPane(session.id, session.diffFilePath || '', session.diffArea || '', session.worktreePath);
@@ -314,7 +324,7 @@ export function renderLayout(): void {
   for (const session of project.sessions) {
     if (session.type === 'file-reader') {
       if (!getFileReaderInstance(session.id)) {
-        createFileReaderPane(session.id, session.fileReaderPath || '', session.fileReaderLine);
+        createFileReaderPane(session.id, session.fileReaderPath || '', session.fileReaderLine, remoteProjectHostId(project));
       }
     } else if (session.type === 'diff-viewer') {
       if (!getFileViewerInstance(session.id)) {
