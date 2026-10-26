@@ -367,6 +367,45 @@ function fitActiveShell(): void {
   }
 }
 
+/**
+ * Open an enrolled host's remote shell (`hosts:openShell`, multi-host Phase 1)
+ * as a terminal tab in the active project's panel. The pane is the ordinary
+ * shell machinery — same sessionId contract, pty:data/pty:exit flow — only
+ * the spawn channel differs. Phase 1 needs an active project for the panel
+ * (Phase 2's host tab row removes the constraint); returns false when none.
+ */
+export async function openRemoteShellTab(hostId: string, hostName: string): Promise<boolean> {
+  const project = appState.activeProject;
+  if (!project) return false;
+  if (getShellsFor(project.id).length >= MAX_SHELLS_PER_PROJECT) {
+    showShellLimitNote(project.id);
+    return false;
+  }
+  const instance = createShell(project.id);
+  instance.label = hostName;
+  activateAndRefresh(instance);
+
+  const spawnRemote = async (): Promise<void> => {
+    if (instance.spawned) return;
+    instance.spawned = true;
+    instance.element.querySelector('.terminal-exit-overlay')?.remove();
+    try {
+      await window.finevibe.hosts.openShell(hostId, instance.sessionId);
+      instance.lastSize = '';
+    } catch (err) {
+      instance.spawned = false;
+      appendExitOverlay(
+        instance,
+        `Failed to start remote shell: ${err instanceof Error ? err.message : String(err)}`,
+        'Retry',
+        () => void spawnRemote(),
+      );
+    }
+  };
+  void spawnRemote();
+  return true;
+}
+
 export function toggleProjectTerminal(): void {
   const project = appState.activeProject;
   if (!project) return;

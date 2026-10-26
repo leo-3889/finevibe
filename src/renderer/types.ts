@@ -1,5 +1,5 @@
 export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload } from '../shared/types.js';
-import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession } from '../shared/types.js';
+import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, HostRecord } from '../shared/types.js';
 import type { ImportableLegacyProject } from '../shared/types.js';
 import type { DiskHealth } from '../shared/types.js';
 
@@ -66,6 +66,23 @@ export interface FinevibeApi {
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
+  };
+  hosts: {
+    list(): Promise<HostRecord[]>;
+    create(draft: unknown): Promise<HostRecord>;
+    update(id: string, patch: Record<string, unknown>): Promise<HostRecord>;
+    delete(id: string): Promise<void>;
+    openShell(id: string, sessionId: string): Promise<void>;
+    generateKey(): Promise<{ id: string; privateKeyPath: string; publicKey: string }>;
+    secretsAvailable(): Promise<boolean>;
+    setSecret(id: string, kind: 'password' | 'keypass', secret: string): Promise<void>;
+    forgetPassword(id: string): Promise<void>;
+    test(id: string): Promise<{ ok: boolean; fingerprint?: string; newFingerprint?: string; hostKeyChanged: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    approveHostKey(id: string, fingerprint: string): Promise<HostRecord | null>;
+    enroll(id: string, opts?: { pin?: string }): Promise<{ ok: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    unenroll(id: string): Promise<{ ok: boolean; detail?: string }>;
+    tools(id: string): Promise<HostRecord['prerequisites'] | null>;
+    onStatus(callback: (event: { id: string; status: string; detail?: string }) => void): () => void;
   };
   provider: {
     getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;

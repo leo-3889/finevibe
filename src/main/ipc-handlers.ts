@@ -13,6 +13,7 @@ import { listImportableLegacyProjects } from './legacy-import';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateStateCache, PersistedState } from './store';
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
 import { enrollHost, probePrerequisites, testHost, unenrollHost } from './hosts/enrollment';
+import { generateManagedKeypair } from './hosts/keys';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from './hosts/secrets';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
@@ -1478,6 +1479,15 @@ export function registerIpcHandlers(): void {
 
   // Secret storage availability for the wizard (R1: key-auth-only banner).
   ipcMain.handle('hosts:secretsAvailable', () => secretsAvailable());
+
+  // Generate a finevibe-owned ed25519 pair under <userData>/hosts/<id>/ for
+  // a host the wizard is about to create; returns the draft seeds.
+  ipcMain.handle('hosts:generateKey', () => {
+    const id = crypto.randomUUID();
+    const { privateKeyPath, publicKeyPath } = generateManagedKeypair(app.getPath('userData'), id);
+    const publicKey = fs.readFileSync(publicKeyPath, 'utf8').trim();
+    return { id, privateKeyPath, publicKey };
+  });
 
   // Store a wizard-entered secret: password under <id>, key passphrase
   // under keypass:<id>. Write-only over IPC (never returned).

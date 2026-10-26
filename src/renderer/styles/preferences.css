@@ -494,3 +494,35 @@
   color: var(--text-primary);
   border-color: var(--border);
 }
+
+/* ── Hosts section (multi-host Phase 1) ─────────────────────────────── */
+.hosts-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.hosts-empty { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
+.hosts-card { border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; background: var(--bg-secondary); }
+.hosts-card-head { display: flex; align-items: center; gap: 8px; }
+.hosts-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.hosts-dot.enrolled { background: #34a853; }
+.hosts-dot.partial { background: #f4b400; }
+.hosts-dot.failed { background: var(--accent); }
+.hosts-dot.probing, .hosts-dot.auth-ok { background: #4285f4; }
+.hosts-card-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.hosts-card-target, .hosts-card-probe, .hosts-card-detail { font-size: 11px; color: var(--text-secondary); }
+.hosts-card-target { margin-left: auto; font-family: monospace; }
+.hosts-card-probe, .hosts-card-detail { margin-top: 4px; }
+.hosts-card-detail { color: #f4b400; }
+.hosts-card-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.hosts-steps, .hosts-prereqs { margin-top: 6px; }
+.hosts-prereqs summary { font-size: 11px; color: var(--text-secondary); cursor: pointer; }
+.hosts-step { font-size: 11px; color: var(--text-secondary); }
+.hosts-step.ok { color: #34a853; }
+.hosts-step.fail { color: var(--accent); }
+.hosts-r1-banner { margin: 8px 0; padding: 6px 10px; border: 1px solid #f4b400; border-radius: 4px; color: #f4b400; font-size: 11px; }
+.hosts-add-row { margin: 8px 0 16px; }
+.hosts-tools-heading { margin-top: 16px; }
+.hosts-tools-picker { margin: 6px 0; max-width: 240px; }
+.hosts-tools-list { display: flex; flex-direction: column; gap: 2px; }
+.hosts-tools-loading { font-size: 11px; color: var(--text-muted); }
+.hosts-tool-row { font-size: 11px; color: var(--text-secondary); }
+.hosts-tool-row.ok { color: #34a853; }
+.hosts-tool-row.fail { color: var(--accent); }
+.hosts-tool-version { color: var(--text-muted); }

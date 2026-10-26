@@ -80,6 +80,7 @@ export interface FineVibeApi {
     update(id: string, patch: Record<string, unknown>): Promise<HostRecord>;
     delete(id: string): Promise<void>;
     openShell(id: string, sessionId: string): Promise<void>;
+    generateKey(): Promise<{ id: string; privateKeyPath: string; publicKey: string }>;
     secretsAvailable(): Promise<boolean>;
     setSecret(id: string, kind: 'password' | 'keypass', secret: string): Promise<void>;
     forgetPassword(id: string): Promise<void>;
@@ -328,6 +329,7 @@ const api: FineVibeApi = {
     update: (id, patch) => ipcRenderer.invoke('hosts:update', id, patch),
     delete: (id) => ipcRenderer.invoke('hosts:delete', id),
     openShell: (id, sessionId) => ipcRenderer.invoke('hosts:openShell', id, sessionId),
+    generateKey: () => ipcRenderer.invoke('hosts:generateKey'),
     secretsAvailable: () => ipcRenderer.invoke('hosts:secretsAvailable'),
     setSecret: (id, kind, secret) => ipcRenderer.invoke('hosts:setSecret', id, kind, secret),
     forgetPassword: (id) => ipcRenderer.invoke('hosts:forgetPassword', id),
