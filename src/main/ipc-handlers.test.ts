@@ -2610,15 +2610,25 @@ describe('fs:listDirs keystroke path (S4-04)', () => {
   });
 
   it('asks home-outside consent at most once per directory — repeats never re-prompt', async () => {
-    // OUTSIDE_HOME fixture + the beforeEach baseline (showMessageBox factory
-    // default restored, Once-queues from predecessors dropped): the consent
-    // answer for THIS directory is the one the Once below provides.
-    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
-    const first = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
-    const second = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
-    expect(first.length).toBeGreaterThan(0);
-    expect(second).toEqual(first);
-    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    // Private fixture OUTSIDE the home tree, user-writable and
+    // machine-deterministic (C:\Windows\Temp on Windows, /tmp elsewhere) -
+    // enumerating C:\Windows itself depends on machine ACLs and flipped
+    // under shuffled order; C:\Users refuses creation (EPERM). Consent
+    // semantics are per-directory, so a private dir tests the same contract.
+    const base = process.platform === 'win32' && fs.existsSync('C:\\Windows\\Temp') ? 'C:\\Windows\\Temp' : fs.mkdtempSync(path.join(os.tmpdir(), 'fv-base-'));
+    const dir = fs.mkdtempSync(path.join(base, 'finevibe-consent-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'sub'));
+      vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+      const first = (await handlers.get('fs:listDirs')!({}, dir)) as string[];
+      const second = (await handlers.get('fs:listDirs')!({}, dir)) as string[];
+      expect(first.length).toBeGreaterThan(0);
+      expect(second).toEqual(first);
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (base !== 'C:\\Windows\\Temp') fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it('caches a Cancel too: every repeat on the declined directory returns empty with no new dialog', async () => {
