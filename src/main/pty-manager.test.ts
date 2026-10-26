@@ -92,6 +92,13 @@ function createMockPtyProcess() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: clearAllMocks keeps IMPLEMENTATIONS - a shuffled
+  // predecessor's statSync (binary probe answers, e.g. the npm claude.cmd
+  // fixture at :225) made the resolver hand spawnPty a full path where this
+  // case expects the bare binary. Also drop the module-level PATH/binary
+  // caches so every case resolves from scratch.
+  mockStatSync.mockReset();
+  resetPathCache();
   mockExistsSync.mockReturnValue(false);
   mockKeychainIsolation.mockReturnValue({ status: 'supported', version: null });
   initProviders();

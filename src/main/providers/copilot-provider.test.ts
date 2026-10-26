@@ -69,6 +69,11 @@ let provider: CopilotProvider;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: clearAllMocks keeps IMPLEMENTATIONS - a shuffled
+  // predecessor's statSync/execSync probe answers leaked into this case.
+  mockStatSync.mockReset();
+  mockExecSync.mockReset();
+  mockExistsSync.mockReset();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
   invalidateBinaryCache();

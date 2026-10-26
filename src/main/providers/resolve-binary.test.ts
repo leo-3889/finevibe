@@ -39,7 +39,7 @@ vi.mock('../pty-manager', () => ({
 }));
 
 import * as fs from 'fs';
-import { resolveBinary, validateBinaryExists, invalidateBinaryCache, validateBinaryExistsAsync, configureProbeCacheDir } from './resolve-binary';
+import { resolveBinary, validateBinaryExists, invalidateBinaryCache, validateBinaryExistsAsync, configureProbeCacheDir, _resetNpmPrefixMemoForTesting } from './resolve-binary';
 
 const mockStatSync = vi.mocked(fs.statSync);
 const mockStatAsync = vi.mocked(fs.promises.stat);
@@ -56,6 +56,10 @@ const flushAsync = () => new Promise((resolve) => setImmediate(resolve));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: the `npm prefix -g` memo is process state - a
+  // shuffled predecessor's negative probe (execSync throws -> memo null)
+  // silently skipped npm discovery for every later test in the file.
+  _resetNpmPrefixMemoForTesting();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   mockExecSync.mockImplementation(() => { throw new Error('not found'); });
   mockExecFile.mockImplementation(() => { throw new Error('not found'); });

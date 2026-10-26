@@ -60,6 +60,12 @@ function whichBinary(binaryName: string, envPath: string): string | null {
 // Cached result of `npm prefix -g` (Windows only, avoids repeated subprocess spawns)
 let cachedNpmPrefix: string | null | undefined;
 
+/** @internal Test-only: drop the `npm prefix -g` memo (order-independence
+ * audit - the memo is process state; test suites must own a clean probe). */
+export function _resetNpmPrefixMemoForTesting(): void {
+  cachedNpmPrefix = undefined;
+}
+
 function getNpmGlobalPrefix(fullPath: string): string | null {
   if (!isWin) return null;
   if (cachedNpmPrefix !== undefined) return cachedNpmPrefix;

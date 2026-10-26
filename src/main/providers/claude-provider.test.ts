@@ -73,6 +73,13 @@ let provider: ClaudeProvider;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: clearAllMocks clears CALLS but keeps mock
+  // IMPLEMENTATIONS — a shuffled predecessor's statSync/execSync impl
+  // (probe answers) leaked into this case and answered its resolution
+  // probes. Reset to factory defaults, then establish the shared baseline.
+  mockStatSync.mockReset();
+  mockExecSync.mockReset();
+  mockExistsSync.mockReset();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
   invalidateBinaryCache();
