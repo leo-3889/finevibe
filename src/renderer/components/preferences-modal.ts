@@ -9,6 +9,7 @@ import { createAppearanceSection } from './preferences/appearance-section.js';
 import { createBrowserSection } from './preferences/browser-section.js';
 import { createShortcutsSection } from './preferences/shortcuts-section.js';
 import { createProfilesSection } from './preferences/profiles-section.js';
+import { createHostsSection } from './preferences/hosts-section.js';
 import { createSetupSection, updateSetupBadge } from './preferences/setup-section.js';
 import { createStorageSection } from './preferences/storage-section.js';
 import { createAboutSection } from './preferences/about-section.js';
@@ -24,6 +25,7 @@ const SECTIONS: { id: Section; labelKey: string; create: (ctx: PreferencesContex
   { id: 'browser', labelKey: 'preferencesNav.browser', create: createBrowserSection },
   { id: 'shortcuts', labelKey: 'preferencesNav.shortcuts', create: createShortcutsSection },
   { id: 'profiles', labelKey: 'preferencesNav.profiles', create: createProfilesSection },
+  { id: 'hosts', labelKey: 'preferencesNav.hosts', create: createHostsSection },
   { id: 'setup', labelKey: 'preferencesNav.setup', create: createSetupSection },
   { id: 'storage', labelKey: 'preferencesNav.storage', create: createStorageSection },
   { id: 'help', labelKey: 'preferencesNav.help', create: createHelpSection },
