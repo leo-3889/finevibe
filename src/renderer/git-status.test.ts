@@ -297,9 +297,12 @@ describe('git-status session-changed payload gating (C2R-03)', () => {
 });
 
 describe('git-status project-removed cache prune (C2R-05)', () => {
+  // PRIVATE ids (order-independence audit): a shuffled predecessor's
+  // session-changed continuation re-sets sessionWorktreeMap['s1'] AFTER
+  // resetGit clears it; unique session/project ids make that leak inert.
   const projectP1 = () => ({
-    id: 'p1', name: 'p1', path: '/proj', activeSessionId: 's1',
-    sessions: [{ id: 's1', name: 'S1', providerId: 'claude', cliSessionId: null }],
+    id: 'p-c2r', name: 'p-c2r', path: '/c2r/proj', activeSessionId: 's-c2r',
+    sessions: [{ id: 's-c2r', name: 'S1', providerId: 'claude', cliSessionId: null }],
     layout,
   });
 
@@ -308,38 +311,43 @@ describe('git-status project-removed cache prune (C2R-05)', () => {
     // during the first phase and the poll runs under the composite `p1:/wt-b`
     // key. Removal then prunes the override (C5G-02), so the re-open below
     // polls the project's default path, not `/wt-b`.
+    // Delta window (order-independence audit): a shuffled predecessor's
+    // trailing debounce poll can straddle the test boundary; only polls
+    // started by THIS case are evidence.
+    const base = mockGetStatus.mock.calls.length;
+    const polls = () => mockGetStatus.mock.calls.slice(base).map((c) => c[0] as string);
     mockGetWorktrees.mockResolvedValue([
-      { path: '/proj', branch: 'main', isMain: true },
-      { path: '/wt-b', branch: 'feature', isMain: false },
+      { path: '/c2r/proj', branch: 'main', isMain: true },
+      { path: '/c2r/wt-b', branch: 'feature', isMain: false },
     ]);
-    mockLoad.mockResolvedValue(persisted([projectP1()], 'p1'));
+    mockLoad.mockResolvedValue(persisted([projectP1()], 'p-c2r'));
     startPolling();
     await appState.load();
-    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/proj'));
+    await vi.waitFor(() => expect(polls()).toContain('/c2r/proj'));
 
     // Polls cache under BOTH keys: the plain projectId and `${projectId}:${gitPath}`.
-    setActiveWorktree('p1', '/wt-b');
-    await vi.waitFor(() => expect(mockGetStatus).toHaveBeenCalledWith('/wt-b'));
+    setActiveWorktree('p-c2r', '/c2r/wt-b');
+    await vi.waitFor(() => expect(polls()).toContain('/c2r/wt-b'));
 
     const seen = vi.fn();
     onChange(seen);
 
-    appState.removeProject('p1');
-    expect(getGitStatus('p1')).toBeNull();
+    appState.removeProject('p-c2r');
+    expect(getGitStatus('p-c2r')).toBeNull();
 
     // Re-open the SAME project id (persisted ids survive a reload) with an
     // identical status. The listeners must fire again: that only happens when
     // no cache entry survived the removal. Pre-fix the composite `p1:/wt-b`
     // entry leaked, its JSON compared equal, and the project came back with a
     // silently dead git badge.
-    mockLoad.mockResolvedValue(persisted([projectP1()], 'p1'));
+    mockLoad.mockResolvedValue(persisted([projectP1()], 'p-c2r'));
     await appState.load();
 
-    await vi.waitFor(() => expect(seen).toHaveBeenCalledWith('p1', cleanStatus));
+    await vi.waitFor(() => expect(seen).toHaveBeenCalledWith('p-c2r', cleanStatus));
     // C5G-02: removal pruned the manualOverride, so the re-opened project no
     // longer pins `/wt-b` — the active path falls back to the project default.
-    expect(getActiveGitPath('p1')).toBe('/proj');
-    expect(mockGetStatus).toHaveBeenLastCalledWith('/proj');
+    expect(getActiveGitPath('p-c2r')).toBe('/c2r/proj');
+    expect(polls().at(-1)).toBe('/c2r/proj');
   });
 });
 

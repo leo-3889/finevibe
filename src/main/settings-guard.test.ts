@@ -197,6 +197,18 @@ describe('shouldWarnStatusLine', () => {
 // loading is an explicit dismissal — declined, no install — never a hang
 // and never an approval.
 describe('guardedInstall window lifecycle', () => {
+  beforeEach(() => {
+    // Order-independence (audit s8): this describe relies on the vi.mock
+    // FACTORY defaults (foreign statusLine, no recorded consent), but
+    // clearAllMocks keeps IMPLEMENTATIONS - a shuffled predecessor's
+    // loadState({granted consent}) / readJsonSafe override survived,
+    // guardedInstall installed without a dialog and the "no install,
+    // no send" assertions saw the leaked install.
+    vi.clearAllMocks();
+    vi.mocked(loadState).mockReturnValue({ preferences: {} } as never);
+    vi.mocked(readJsonSafe).mockReturnValue({ statusLine: { command: FOREIGN_STATUSLINE } } as never);
+  });
+
   function loadingWin() {
     const win: any = new EventEmitter();
     const webContents: any = new EventEmitter();
