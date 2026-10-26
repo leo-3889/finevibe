@@ -202,6 +202,7 @@ vi.mock('../shared/token-estimate', autoStub);
 // the shared tool refresh; the SSH stack must never load in this suite.
 vi.mock('./hosts/host-registry', autoStub);
 vi.mock('./hosts/enrollment', autoStub);
+vi.mock('./hosts/remote-provider-config', autoStub);
 
 import {
   registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
@@ -219,6 +220,7 @@ import { estimateTokens } from '../shared/token-estimate';
 import { getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 import { getHost } from './hosts/host-registry';
 import { refreshHostTools, provisionRemoteProfileDir } from './hosts/enrollment';
+import { getRemoteProviderConfig } from './hosts/remote-provider-config';
 function makeProvider(): CliProvider {
   return {
     // hookStatus off keeps the post-spawn settings-warning block out of the way.
@@ -3235,9 +3237,76 @@ describe('per-host provider channels (per-host providers T1)', () => {
     expect(refreshHostTools).toHaveBeenCalledWith(lab);
   });
 
-  it('provider:getConfig refuses a remote host loudly (remote reads land with T2)', async () => {
-    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj', undefined, 'lab'))
-      .rejects.toThrow(/T2/);
+  it('provider:getConfig answers a registry host through the seam (T2), host-gated', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    // Audit T2 #4: the containment roots are the project paths RECORDED FOR
+    // THIS HOST — never the local-disk gate roots.
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/home/dev/dev', hostId: 'lab' }],
+      preferences: {},
+    } as never);
+    const config = { mcpServers: [{ name: 'x', url: 'u', status: 'configured', scope: 'user', filePath: 'f' }], agents: [], skills: [], commands: [] };
+    vi.mocked(getRemoteProviderConfig).mockResolvedValue(config as never);
+    // posix containment against the host's project paths; '/home/dev/dev/x' is under it.
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/home/dev/dev/x', undefined, 'lab')).resolves.toBe(config);
+    expect(getRemoteProviderConfig).toHaveBeenCalledWith('pi', 'lab', '/home/dev/dev/x', undefined);
+  });
+
+  it('provider:getConfig refuses a remote host that is not registered', async () => {
+    vi.mocked(getHost).mockReturnValue(null as never);
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj', undefined, 'ghost'))
+      .rejects.toThrow(/Unknown host/);
+  });
+
+  it('provider:getConfig refuses a remote projectPath known only to the LOCAL disk (audit T2 #4)', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    knownPaths.push('/home/dev/dev'); // the local gate root — the exact escape the audit named
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/home/dev/dev', hostId: 'local' }],
+      preferences: {},
+    } as never);
+    // The same path string on the queried host must NOT pass: it is recorded
+    // for 'local', so reading it on 'lab' is refused (the host has no
+    // matching gate roots — the loud no-scope refusal).
+    await expect(handlers.get('provider:getConfig')!({}, 'claude', '/home/dev/dev', undefined, 'lab'))
+      .rejects.toThrow(/No projects are registered for host|not within a known project of host/);
+    // A host with no recorded projects of its own gets NO project scope.
+    vi.mocked(loadState).mockReset().mockReturnValue({ projects: [], preferences: {} } as never);
+    await expect(handlers.get('provider:getConfig')!({}, 'claude', '/home/dev/dev', undefined, 'lab'))
+      .rejects.toThrow(/No projects are registered for host/);
+  });
+
+  it('provider:getConfig gates remote configDir on that host\'s profiles (SEC-03 host scope)', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+      profiles: [{ id: 'p1', hostId: 'local', configDir: '/home/dev/.finevibe/profiles/p1', managed: true }],
+    } as never);
+    // A profile of the LOCAL host (or any host other than the queried one)
+    // must not unlock a remote read.
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj', '/home/dev/.finevibe/profiles/p1', 'lab'))
+      .rejects.toThrow(/managed profile config dir/);
+    // The same configDir recorded FOR THIS HOST passes.
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+      profiles: [{ id: 'p1', hostId: 'lab', configDir: '/home/dev/.finevibe/profiles/p1', managed: true }],
+    } as never);
+    vi.mocked(getRemoteProviderConfig).mockResolvedValue({ mcpServers: [], agents: [], skills: [], commands: [] } as never);
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj', '/home/dev/.finevibe/profiles/p1', 'lab')).resolves.toBeDefined();
+    expect(getRemoteProviderConfig).toHaveBeenLastCalledWith('pi', 'lab', '/proj', '/home/dev/.finevibe/profiles/p1');
+  });
+
+  it('provider:getConfig refuses a remote projectPath outside the host\'s projects', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }],
+      preferences: {},
+    } as never);
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/etc', undefined, 'lab'))
+      .rejects.toThrow(/not within a known project of host/);
+    // Sibling-prefix escape ('/project' is not under '/proj') stays refused.
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/project', undefined, 'lab'))
+      .rejects.toThrow(/not within a known project of host/);
   });
 
   it('profiles:provision routes remote managed provisioning over the exec lane helper', async () => {
@@ -3258,5 +3327,28 @@ describe('per-host provider channels (per-host providers T1)', () => {
     );
     expect(mockSpawnPty).toHaveBeenCalled();
     expect(mockSpawnPty.mock.calls[0][13]).toBe('lab');
+  });
+
+  it('pty:create registers a REMOTE transcript sync with the HOST session dir (audit T2 #5)', async () => {
+    knownPaths.push('/proj');
+    await handlers.get('pty:create')!(
+      {}, 'host-2', '/proj', 'cli-9', true, '', 'pi', undefined, undefined, '',
+      undefined, undefined, 'lab',
+    );
+    // The mirror resolves against the same host-side spelling the spawn argv
+    // carries — never the local userData path, which cannot exist on the host.
+    expect(mockRegisterSync).toHaveBeenCalledWith(
+      'host-2', 'pi', 'cli-9', '/proj', undefined,
+      { sessionDir: '~/.finevibe/sessions/pi/host-2', hostId: 'lab' },
+    );
+    // A LOCAL launch keeps the local launch-dir grammar untouched.
+    mockRegisterSync.mockClear();
+    await handlers.get('pty:create')!(
+      {}, 'host-3', '/proj', 'cli-9', true, '', 'pi', undefined, undefined, '',
+      undefined, undefined, undefined,
+    );
+    const localOpts = mockRegisterSync.mock.calls[0][5] as { sessionDir?: string; hostId?: string };
+    expect(localOpts.hostId).toBeUndefined();
+    expect(localOpts.sessionDir).not.toContain('~/.finevibe/sessions');
   });
 });

@@ -200,6 +200,7 @@ export function loadState(): LoadedState {
     // normalize once at load, exactly once (mirrored in the renderer's
     // hydrateLoadedState), never at call sites.
     for (const project of projects) {
+      if (!project.hostId) project.hostId = LOCAL_HOST_ID;
       project.sessions = project.sessions.map((s) => (s.hostId ? s : { ...s, hostId: LOCAL_HOST_ID }));
     }
     const profiles: Profile[] | undefined = picked.profiles?.map((p) => (p.hostId ? p : { ...p, hostId: LOCAL_HOST_ID }));

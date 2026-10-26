@@ -11,6 +11,8 @@ import { app } from 'electron';
 import type { HostRecord, ProviderId } from '../../shared/types';
 import { getAllProviderMetas } from '../providers/registry';
 import { connect, exec } from './ssh-client';
+import { readProviderFile, writeProviderFile } from './provider-fs';
+import { HOST_SETTINGS_PATH, hostHookEntries, mergeHookBlock, stripHookBlock } from './host-hooks';
 import { getHostSecret } from './secrets';
 import {
   authorizedKeysDeployCommands,
@@ -165,22 +167,94 @@ async function deployKey(record: HostRecord): Promise<EnrollStep> {
 
 /** Remove exactly the finevibe marker block (§4, unenroll). */
 export async function unenrollHost(record: HostRecord): Promise<{ ok: boolean; detail?: string }> {
+  let detail: string | undefined;
   try {
     const existing = await exec(record, 'cat ~/.ssh/authorized_keys 2>/dev/null || true', { timeoutMs: PREREQ_TIMEOUT_MS });
     const removed = authorizedKeysWithoutBlock(existing, record.id);
-    if (removed === null) return { ok: true, detail: 'no marker block present' };
-    // Rewrite the remaining content verbatim (ponytail: file sizes here are
-    // a handful of key lines; switch to sftp if huge files ever show up).
-    const b64 = Buffer.from(removed, 'utf8').toString('base64');
-    await exec(
-      record,
-      `printf '%s' '${b64}' | base64 -d > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`,
-      { timeoutMs: PREREQ_TIMEOUT_MS },
-    );
-    return { ok: true };
+    if (removed === null) detail = 'no marker block present';
+    else {
+      // Rewrite the remaining content verbatim (ponytail: file sizes here are
+      // a handful of key lines; switch to sftp if huge files ever show up).
+      const b64 = Buffer.from(removed, 'utf8').toString('base64');
+      await exec(
+        record,
+        `printf '%s' '${b64}' | base64 -d > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`,
+        { timeoutMs: PREREQ_TIMEOUT_MS },
+      );
+    }
   } catch (err) {
     return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   }
+  // Unenroll also removes exactly the hook block (§3): every settings file
+  // gets its FineVibe-marked handlers stripped; foreign hooks/keys untouched,
+  // corrupt files skipped (never overwritten).
+  for (const settingsPath of hostSettingsTargets(record)) {
+    try {
+      const raw = await readProviderFile(record.id, settingsPath, { timeoutMs: PREREQ_TIMEOUT_MS });
+      if (raw === null) continue;
+      const { json, changed } = stripHookBlock(raw);
+      if (changed) await writeProviderFile(record.id, settingsPath, json, { timeoutMs: PREREQ_TIMEOUT_MS });
+    } catch (err) {
+      detail = `${detail ? `${detail}; ` : ''}${settingsPath}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  return { ok: true, ...(detail ? { detail } : {}) };
+}
+
+/**
+ * The host settings files to merge hooks into (plan §3): the settings path
+ * of every tool the prereq probe found, de-duplicated (pi and pi-bolt share
+ * the `~/.pi/agent` tree — merging it twice would double the block). An
+ * unprobed record (unenroll of a never-enrolled host) takes every known path:
+ * stripHookBlock is a no-op when no block exists.
+ */
+function hostSettingsTargets(
+  record: HostRecord,
+  prereqs?: HostRecord['prerequisites'],
+): string[] {
+  const paths = new Set<string>();
+  const resolved = prereqs ?? record.prerequisites;
+  for (const [toolId, settingsPath] of Object.entries(HOST_SETTINGS_PATH)) {
+    if (!resolved || resolved[toolId]?.ok) paths.add(settingsPath);
+  }
+  return [...paths];
+}
+
+/**
+ * Enrollment step 5.5 (plan §3): merge the marker-scoped FineVibe hook block
+ * into the host's provider settings files, via the sftp read-modify-write
+ * seam. Per-file failures are collected, not fatal (a corrupt settings.json
+ * is never overwritten — P1-18 rule); the step reports them as partial.
+ */
+async function installHostHooks(
+  record: HostRecord,
+  prereqs?: HostRecord['prerequisites'],
+): Promise<EnrollStep> {
+  const targets = hostSettingsTargets(record, prereqs);
+  if (targets.length === 0) return { step: 'host-hooks', ok: true, detail: 'no supported tools' };
+  const failures: string[] = [];
+  let installed = 0;
+  for (const settingsPath of targets) {
+    try {
+      // Parent dir must exist for sftp writeFile; the exec lane owns mkdir
+      // (the enrollment idiom), one cheap call per settings file.
+      const dir = settingsPath.replace(/\/[^/]+$/, '');
+      await exec(record, `mkdir -p ${dir}`, { timeoutMs: PREREQ_TIMEOUT_MS });
+      const providerId = (Object.keys(HOST_SETTINGS_PATH) as ProviderId[]).find(
+        (p) => HOST_SETTINGS_PATH[p] === settingsPath,
+      )!;
+      const raw = await readProviderFile(record.id, settingsPath, { timeoutMs: PREREQ_TIMEOUT_MS });
+      const { json, changed } = mergeHookBlock(raw, hostHookEntries(providerId));
+      if (changed) await writeProviderFile(record.id, settingsPath, json, { timeoutMs: PREREQ_TIMEOUT_MS });
+      installed += 1;
+    } catch (err) {
+      failures.push(`${settingsPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (failures.length > 0) {
+    return { step: 'host-hooks', ok: false, detail: failures.join('; ') };
+  }
+  return { step: 'host-hooks', ok: true, detail: `${installed} settings file(s)` };
 }
 
 /**
@@ -243,8 +317,10 @@ export async function enrollHost(
 
   // Step 6: prereq probe (non-fatal → partial).
   let partial = false;
+  let probedPrereqs: HostRecord['prerequisites'];
   try {
     const prerequisites = await probePrerequisites(record);
+    probedPrereqs = prerequisites;
     updateHost(record.id, { prerequisites });
     const missing = prereqTargets().filter((t) => !prerequisites[t.key]?.ok).map((t) => t.key);
     partial = missing.length > 0;
@@ -254,9 +330,22 @@ export async function enrollHost(
     steps.push({ step: 'prereqs', ok: false, detail: err instanceof Error ? err.message : String(err) });
   }
 
-  // Step 7: base dirs.
+  // Hook merge (plan §3 "step 5.5" — runs HERE, after the step-6 probe, so
+  // the tool list decides the targets; the step keeps its `host-hooks` label.
+  // Non-fatal.)
   try {
-    await exec(record, 'mkdir -p ~/.finevibe', { timeoutMs: PREREQ_TIMEOUT_MS });
+    const hookStep = await installHostHooks(record, probedPrereqs);
+    steps.push(hookStep);
+    if (!hookStep.ok) partial = true;
+  } catch (err) {
+    partial = true;
+    steps.push({ step: 'host-hooks', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // Step 7: base dirs (+ the hook status sidecar dir, §3: hooks write
+  // ~/.finevibe/run on the host).
+  try {
+    await exec(record, 'mkdir -p ~/.finevibe ~/.finevibe/run', { timeoutMs: PREREQ_TIMEOUT_MS });
     steps.push({ step: 'dirs', ok: true });
   } catch (err) {
     partial = true;

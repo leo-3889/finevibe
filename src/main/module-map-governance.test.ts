@@ -94,6 +94,8 @@ const ALLOWLIST: Record<string, string> = {
   'eventReaders@hook-status.ts': 'teardown: cleared on stopHookStatus',
   'eventContinuations@hook-status.ts': 'teardown: cleared on stopHookStatus',
   'knownSessionIds@hook-status.ts': 'teardown: unregisterSession deletes; stop clears',
+  'remoteStatuses@hook-status.ts': 'teardown: unregisterSession deletes; cleanupAll clears (keyed by session, bounded by knownSessionIds)',
+  'remoteHostCooldown@hook-status.ts': 'capped:32 FIFO (REMOTE_HOST_COOLDOWN_MAX); cleanupAll clears',
   'outsideHomeConsent@ipc-handlers.ts': 'capped:OUTSIDE_HOME_CONSENT_MAX (FIFO evict oldest consent answer)',
   'enumerateCache@ipc-handlers.ts': 'capped:ENUMERATE_CACHE_MAX (LRU + TTL; cleared by invalidateEnumerations)',
   'topFilesCache@ipc-handlers.ts': 'capped:TOP_FILES_CACHE_MAX (LRU + TTL; cleared by invalidateEnumerations)',
@@ -119,6 +121,7 @@ const ALLOWLIST: Record<string, string> = {
   // bounded-by-construction: keys can only come from a small fixed set.
   'MAC_PACKAGE_EXTENSIONS@fs-utils.ts': 'bounded-by-construction: fixed extension list',
   'IGNORE_SEGMENTS@git-watcher.ts': 'bounded-by-construction: fixed segment list',
+  'SESSION_ID_ENV_KEYS@pty-manager.ts': 'bounded-by-construction: two literal env key names',
   'GIT_DIR_FILES@git-watcher.ts': 'bounded-by-construction: fixed file list',
   'prunedBases@launch-session-dir.ts': 'bounded-by-construction: one add per project base, sweep-once marker',
   'states@log-throttle.ts': 'bounded-by-construction: keyed by the 4-member ConsoleMethodName union',

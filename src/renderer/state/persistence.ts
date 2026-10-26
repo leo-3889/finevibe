@@ -40,6 +40,9 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
     if (!profile.hostId) profile.hostId = LOCAL_HOST_ID;
   }
   for (const project of state.projects) {
+    // Audit T2 #4: projects carry a hostId too (remote project-scope gates);
+    // normalize once, mirroring store.ts on main.
+    if (!project.hostId) project.hostId = LOCAL_HOST_ID;
     for (const session of project.sessions) {
       if (!session.hostId) session.hostId = LOCAL_HOST_ID;
     }

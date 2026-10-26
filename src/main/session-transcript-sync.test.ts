@@ -13,6 +13,13 @@ const filePresent = vi.hoisted(() => ({ value: true }));
 const watchRecs = vi.hoisted(() => [] as Array<{ fire: () => void; closed: boolean }>);
 
 vi.mock('./providers/registry', () => ({ getProvider: mockGetProvider }));
+// The sftp file plane the remote branch reads through (per-host providers T2).
+const mockSeam = vi.hoisted(() => ({
+  statProviderFileSize: vi.fn(),
+  readProviderFileWindow: vi.fn(),
+  listProviderDir: vi.fn(),
+}));
+vi.mock('./hosts/provider-fs', () => mockSeam);
 vi.mock('./hook-status', () => ({
   STATUS_DIR: '/tmp/finevibe',
   writeCliSessionName: mockWriteName,
@@ -594,5 +601,158 @@ describe('per-tick read gating (PA-02)', () => {
     vi.advanceTimersByTime(2000);
     expect(provider.readSessionTitle).toHaveBeenCalledTimes(1);
     expect(mockWriteName).toHaveBeenLastCalledWith('ui-1', 'New', 'cli-2');
+  });
+});
+
+describe('remote transcript sync (per-host providers T2)', () => {
+  const SESSION_DIR = '/home/dev/.finevibe/launch/ui-1';
+  const FILE = `${SESSION_DIR}/2026-01-01T00-00-00_cli-1.jsonl`;
+
+  /** A provider whose LOCAL readers throw: the remote branch must never call them. */
+  function remoteProvider(): void {
+    provider = {
+      meta: { capabilities: { selfTitles: true, polledStatus: true } },
+      getTranscriptPath: vi.fn(() => {
+        throw new Error('local path resolution on a remote entry');
+      }),
+      readSessionTitle: vi.fn(() => {
+        throw new Error('local title read on a remote entry');
+      }),
+      readSessionStatus: vi.fn(() => {
+        throw new Error('local status read on a remote entry');
+      }),
+    } as unknown as CliProvider;
+  }
+
+  function seamWindows(tail: string, head = ''): void {
+    mockSeam.listProviderDir.mockResolvedValue(['2026-01-01T00-00-00_cli-1.jsonl']);
+    mockSeam.statProviderFileSize.mockResolvedValue(500);
+    mockSeam.readProviderFileWindow.mockImplementation(async (_h, _p, _l, opts) =>
+      opts?.fromEnd ? tail : head,
+    );
+  }
+
+  function registerRemote(): void {
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', undefined, { sessionDir: SESSION_DIR, hostId: 'lab' });
+  }
+
+  it('resolves the transcript over sftp and mirrors status + title from paged windows', async () => {
+    remoteProvider();
+    seamWindows(
+      '{"type":"session_info","name":"Renamed"}\n{"type":"message","message":{"role":"assistant","stopReason":"stop"}}',
+    );
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mockSeam.listProviderDir).toHaveBeenCalledWith('lab', SESSION_DIR);
+    expect(mockSeam.readProviderFileWindow).toHaveBeenCalledWith('lab', FILE, 16 * 1024, { fromEnd: true });
+    expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'completed');
+    // The session_info name comes from the tail window — no head read needed.
+    expect(mockWriteName).toHaveBeenCalledWith('ui-1', 'Renamed', 'cli-1');
+    expect(mockSeam.readProviderFileWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the head window for an OMP-shaped title', async () => {
+    remoteProvider();
+    seamWindows('{"type":"message","message":{"role":"assistant","stopReason":"stop"}}', '{"type":"title","title":"Head"}');
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mockWriteName).toHaveBeenCalledWith('ui-1', 'Head', 'cli-1');
+    expect(mockSeam.readProviderFileWindow).toHaveBeenCalledWith('lab', FILE, 8 * 1024);
+  });
+
+  it('size gate: an unchanged remote size re-reads nothing; an append re-reads', async () => {
+    remoteProvider();
+    seamWindows('{"type":"message","message":{"role":"user"}}');
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(2000);
+    // tail (status + session_info probe) + head (title fallback) = 2 reads
+    expect(mockSeam.readProviderFileWindow).toHaveBeenCalledTimes(2);
+    expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'working');
+    mockWriteStatus.mockClear();
+    mockSeam.readProviderFileWindow.mockClear();
+    await vi.advanceTimersByTimeAsync(2000); // same size → zero reads
+    expect(mockSeam.readProviderFileWindow).not.toHaveBeenCalled();
+    // An append (size grows) re-reads and delivers the new status.
+    mockSeam.statProviderFileSize.mockResolvedValue(600);
+    mockSeam.readProviderFileWindow.mockImplementation(async (_h, _p, _l, opts) =>
+      opts?.fromEnd ? '{"type":"message","message":{"role":"assistant","stopReason":"stop"}}' : '',
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'completed');
+  });
+
+  it('a vanished transcript (stat null) re-resolves on the next tick', async () => {
+    remoteProvider();
+    seamWindows('{"type":"message","message":{"role":"user"}}');
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(2000);
+    mockSeam.listProviderDir.mockResolvedValue(['2026-02-02T00-00-00_cli-1.jsonl']);
+    mockSeam.statProviderFileSize.mockResolvedValueOnce(null); // file gone
+    await vi.advanceTimersByTimeAsync(2000); // sees the vanish, drops the path
+    expect(mockSeam.listProviderDir).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2000); // re-resolves on this tick
+    expect(mockSeam.listProviderDir).toHaveBeenCalledTimes(2);
+    expect(mockSeam.readProviderFileWindow).toHaveBeenCalledWith(
+      'lab', `${SESSION_DIR}/2026-02-02T00-00-00_cli-1.jsonl`, 16 * 1024, { fromEnd: true },
+    );
+  });
+
+  it('picks the newest matching file when the id repeats in the dir', async () => {
+    remoteProvider();
+    seamWindows('{"type":"message","message":{"role":"user"}}');
+    mockSeam.listProviderDir.mockResolvedValue([
+      '2026-01-01T00-00-00_cli-1.jsonl',
+      '2026-03-03T00-00-00_cli-1.jsonl',
+    ]);
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mockSeam.statProviderFileSize).toHaveBeenCalledWith('lab', `${SESSION_DIR}/2026-03-03T00-00-00_cli-1.jsonl`);
+  });
+
+  it('no sessionDir → never resolves (and never scans), with resolution backoff', async () => {
+    remoteProvider();
+    seamWindows('x');
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', undefined, { hostId: 'lab' });
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockSeam.listProviderDir).not.toHaveBeenCalled();
+    expect(mockSeam.statProviderFileSize).not.toHaveBeenCalled();
+  });
+
+  it('an unresolvable transcript backs off instead of listing every tick', async () => {
+    remoteProvider();
+    mockSeam.listProviderDir.mockResolvedValue([]);
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(2000); // failure 1 → +2s window
+    await vi.advanceTimersByTimeAsync(2000); // failure 2 → +4s window
+    expect(mockSeam.listProviderDir).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2000); // inside the +4s window: skipped
+    expect(mockSeam.listProviderDir).toHaveBeenCalledTimes(2);
+  });
+
+  it('establishes no fs.watch for remote entries (poll only)', async () => {
+    remoteProvider();
+    seamWindows('{"type":"message","message":{"role":"user"}}');
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(watchRecs).toHaveLength(0);
+  });
+
+  it('re-registering the same conversation (same hostId) keeps the cached entry', async () => {
+    remoteProvider();
+    seamWindows('{"type":"message","message":{"role":"user"}}');
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(2000);
+    mockSeam.listProviderDir.mockClear();
+    // Re-register identical: the cached transcript survives (no re-resolve).
+    registerRemote();
+    mockSeam.statProviderFileSize.mockResolvedValue(999);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mockSeam.listProviderDir).not.toHaveBeenCalled();
+    // A hostId change replaces the entry (fresh resolution against the new host).
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', undefined, { sessionDir: SESSION_DIR, hostId: 'other' });
+    mockSeam.listProviderDir.mockResolvedValue(['2026-01-01T00-00-00_cli-1.jsonl']);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mockSeam.listProviderDir).toHaveBeenCalledWith('other', SESSION_DIR);
   });
 });

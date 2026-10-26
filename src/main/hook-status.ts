@@ -6,6 +6,7 @@ import { BrowserWindow } from 'electron';
 import { isWin, pythonBin } from './platform';
 import { STDIN_UTF8_GUARD } from '../shared/python';
 import type { CliSessionStatus } from '../shared/types';
+import { readProviderFileWindow } from './hosts/provider-fs';
 
 /**
  * The status-data directory (the watcher's root; every `.status`/`.cost`/
@@ -47,8 +48,51 @@ const eventReaders = new Map<string, BoundedEventReader>();
 const eventContinuations = new Map<string, ReturnType<typeof setTimeout>>();
 const knownSessionIds = new Set<string>();
 
+/**
+ * Sessions whose provider runs on a registry host (per-host providers plan
+ * §3): their status sidecar lives on the HOST (`~/.finevibe/run/<id>.status`,
+ * written by the enrollment-merged host hooks), not in the local STATUS_DIR.
+ * The poll loop reads them through the sftp seam — no fs.watch exists for a
+ * remote file. Bounded by the session registry: every entry is added at PTY
+ * spawn (registerRemoteStatus) and dropped by unregisterSession/cleanupAll,
+ * exactly like knownSessionIds.
+ */
+const remoteStatuses = new Map<string, { hostId: string; last: string | null }>();
+
+/**
+ * Per-host cooldown after a failed remote read (audit T2 #2): a down host
+ * costs one connect timeout, then goes quiet for REMOTE_HOST_COOLDOWN_MS —
+ * every session on it used to re-pay the full connect budget every tick
+ * (N sessions × ~11 s), starving the local STATUS_DIR sweep. FIFO-capped
+ * at REMOTE_HOST_COOLDOWN_MAX (registry-scale; hosts churn far less than
+ * sessions) and cleared wholesale by cleanupAll.
+ */
+const remoteHostCooldown = new Map<string, number>();
+const REMOTE_HOST_COOLDOWN_MS = 30_000;
+const REMOTE_HOST_COOLDOWN_MAX = 32;
+
+function armHostCooldown(hostId: string): void {
+  if (!remoteHostCooldown.has(hostId) && remoteHostCooldown.size >= REMOTE_HOST_COOLDOWN_MAX) {
+    const oldest = remoteHostCooldown.keys().next().value;
+    if (oldest !== undefined) remoteHostCooldown.delete(oldest);
+  }
+  remoteHostCooldown.set(hostId, Date.now() + REMOTE_HOST_COOLDOWN_MS);
+}
+
 export function registerSession(sessionId: string): void {
   knownSessionIds.add(sessionId);
+}
+
+/** Register a session whose status sidecar lives on `hostId` (remote poll). */
+export function registerRemoteStatus(sessionId: string, hostId: string): void {
+  registerSession(sessionId);
+  // Same filename-injection gate as the local writers: the id becomes a
+  // path segment in the sidecar read.
+  if (!UI_SESSION_ID_RE.test(sessionId)) {
+    console.warn(`Refusing remote status poll for unsafe session id: ${JSON.stringify(sessionId)}`);
+    return;
+  }
+  remoteStatuses.set(sessionId, { hostId, last: null });
 }
 
 let statusDirEnsured = false;
@@ -128,6 +172,7 @@ export function writeStatus(uiSessionId: string, status: CliSessionStatus): void
 
 export function unregisterSession(sessionId: string): void {
   knownSessionIds.delete(sessionId);
+  remoteStatuses.delete(sessionId);
 }
 
 function isKnownExtension(filename: string): boolean {
@@ -373,6 +418,10 @@ async function pollForChanges(win: BrowserWindow): Promise<void> {
   // docs/performance.md already claimed every poller "is a no-op while its
   // registry is empty"; for this one the claim was false.
   if (knownSessionIds.size === 0) return;
+  // The remote sidecar sweep runs on its OWN in-flight flag (audit T2 #2):
+  // a slow/down host paces itself (per-host cooldown) and never stalls the
+  // local STATUS_DIR sweep that shares this tick.
+  if (remoteStatuses.size > 0) void sweepRemoteStatuses(win);
   pollInFlight = true;
 
   try {
@@ -422,6 +471,57 @@ async function statAndDeliver(win: BrowserWindow, filename: string): Promise<voi
   }
 }
 
+/** One remote sweep: sequential per session (one shared connection), with
+ * the per-host cooldown deciding participation. Never awaited by the local
+ * sweep — see pollForChanges. */
+let remoteSweepInFlight = false;
+async function sweepRemoteStatuses(win: BrowserWindow): Promise<void> {
+  if (remoteSweepInFlight || win.isDestroyed()) return;
+  remoteSweepInFlight = true;
+  try {
+    const now = Date.now();
+    for (const [sessionId, entry] of remoteStatuses) {
+      const until = remoteHostCooldown.get(entry.hostId);
+      if (until !== undefined) {
+        if (until > now) continue;
+        remoteHostCooldown.delete(entry.hostId); // expired: this tick probes again
+      }
+      let raw: string | null;
+      try {
+        // Windowed tail read (audit T2 #7): the payload is `<event>:<status>`
+        // — a fat sidecar file must never be slurped whole.
+        raw = await readProviderFileWindow(entry.hostId, `.finevibe/run/${sessionId}.status`, 4096, { fromEnd: true });
+      } catch {
+        // Connect/op failure: the whole host goes quiet for the cooldown
+        // window (every session on it shares the same dead connection).
+        armHostCooldown(entry.hostId);
+        continue;
+      }
+      if (raw === null) continue;
+      const content = raw.trim();
+      if (content === entry.last) continue;
+      entry.last = content;
+      deliverRemoteStatus(win, sessionId, content);
+    }
+  } finally {
+    remoteSweepInFlight = false;
+  }
+}
+
+/** Same content gate as the local `.status` branch of handleFileChange. */
+function deliverRemoteStatus(win: BrowserWindow, sessionId: string, raw: string): void {
+  const colonIdx = raw.indexOf(':');
+  const hookName = colonIdx !== -1 ? raw.slice(0, colonIdx) : '';
+  const content = colonIdx !== -1 ? raw.slice(colonIdx + 1) : raw;
+  if (content === 'working' || content === 'waiting' || content === 'completed' || content === 'input') {
+    if (!win.isDestroyed()) {
+      win.webContents.send('session:hookStatus', sessionId, content, hookName);
+    }
+  } else if (content) {
+    console.warn(`[hook-status] Dropped unknown remote session status "${content}" for session ${sessionId}`);
+  }
+}
+
 function startPolling(win: BrowserWindow): void {
   stopPolling();
   pollMs = watcher ? WATCHDOG_POLL_MS : POLL_MS;
@@ -448,6 +548,9 @@ function stopPolling(): void {
   }
   lastMtimes.clear();
 }
+
+/** Remote sidecar bookkeeping lives entirely in unregisterSession (the status
+ * file itself is the host's own state; unenroll cleans the sidecar dir). */
 
 function restartWatcher(win: BrowserWindow): void {
   if (watcher) {
@@ -536,6 +639,8 @@ export function cleanupAll(): void {
   eventReaders.clear();
   stopPolling();
   knownSessionIds.clear();
+  remoteStatuses.clear();
+  remoteHostCooldown.clear();
   if (watcher) {
     watcher.close();
     watcher = null;

@@ -459,11 +459,42 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']);
     const cmd = spec.argv[5] as string;
     // The remote binary is the prereq's ABSOLUTE path (used verbatim, not a
-    // basename); the profile's config dir rides in the command string because
-    // ssh does not forward the local child env.
-    expect(cmd).toMatch(/^PI_CODING_AGENT_DIR='\/home\/dev\/\.finevibe\/profiles\/p1' '\/home\/dev\/\.local\/bin\/omp' '--session-dir'/);
+    // basename); the profile's config dir AND the session id ride in the
+    // command string because ssh does not forward the local child env
+    // (FINEVIBE_SESSION_ID is what the enrollment-merged on-host hooks read).
+    // Audit T2 #5: the omp `--session-dir` is swapped for the HOST-side
+    // derivation ($HOME-expanded, double-quoted so the login shell expands
+    // it), pre-created by a mkdir guard — never the local userData path.
+    expect(cmd).toMatch(
+      /^mkdir -p "\$HOME\/\.finevibe\/sessions\/omp\/s1" && PI_CODING_AGENT_DIR='\/home\/dev\/\.finevibe\/profiles\/p1' FINEVIBE_SESSION_ID='s1' '\/home\/dev\/\.local\/bin\/omp' '--session-dir' "\$HOME\/\.finevibe\/sessions\/omp\/s1"$/,
+    );
     // The legacy local env is NOT how the remote sees the profile.
     expect(spec.env.PI_CODING_AGENT_DIR).toBe('/home/dev/.finevibe/profiles/p1');
+  });
+
+  it('drops a hostile session-id env value from the remote command (audit T2 #3)', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    // The id is renderer-supplied and becomes a host-side file path in the
+    // merged hooks' mv target — a traversal-shaped value never forwards.
+    const spec = resolveLaunchSpec({ ...base, sessionId: '../../../../tmp/evil', hostId: 'lab' });
+    const cmd = spec.argv[5] as string;
+    expect(cmd).not.toContain('FINEVIBE_SESSION_ID');
+    // The session-dir derivation sanitizes its own segment (never traversal).
+    expect(cmd).toContain('"$HOME/.finevibe/sessions/omp/');
+    expect(cmd).not.toContain('../');
+    // A clean id forwards normally.
+    const ok = resolveLaunchSpec({ ...base, sessionId: 'good_id-1', hostId: 'lab' });
+    expect(ok.argv[5]).toContain("FINEVIBE_SESSION_ID='good_id-1'");
+  });
+
+  it('claude (no --session-dir) gets no mkdir guard and no swapped arg (audit T2 #5)', () => {
+    mockGetHost.mockReturnValue({
+      ...labRecord,
+      prerequisites: { claude: { ok: true, path: '/home/dev/.local/bin/claude' } },
+    });
+    const spec = resolveLaunchSpec({ ...base, providerId: 'claude', hostId: 'lab' });
+    expect(spec.argv[5]).not.toContain('mkdir -p');
+    expect(spec.argv[5]).not.toContain('.finevibe/sessions');
   });
 
   it('golden: bracketed IPv6 registry host reaches ssh argv intact (audit T1 #2)', () => {

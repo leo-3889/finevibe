@@ -1,7 +1,16 @@
 import * as fs from 'fs';
 import type { ProviderId, CliSessionStatus } from '../shared/types';
+import { LOCAL_HOST_ID } from '../shared/types';
 import { getProvider } from './providers/registry';
 import { writeCliSessionName, writeStatus } from './hook-status';
+import { statProviderFileSize, readProviderFileWindow, listProviderDir } from './hosts/provider-fs';
+import {
+  TAIL_READ_BYTES,
+  HEADER_READ_BYTES,
+  transcriptStatusFromTail,
+  sessionInfoNameFromWindow,
+  transcriptTitleFromWindow,
+} from './providers/pi-compatible-transcripts';
 
 /**
  * Provider-agnostic transcript sync — the single poller for CLIs that have
@@ -95,6 +104,18 @@ interface TranscriptSyncEntry {
   watcher: fs.FSWatcher | null;
   /** Coalesces a burst of watch events into one re-sync. */
   debounce: ReturnType<typeof setTimeout> | null;
+  /**
+   * Registry host whose filesystem the transcript lives on (per-host
+   * providers plan §3); absent/'local' = local reads. Remote entries: no
+   * fs.watch, path resolved by listing the session dir over sftp, reads
+   * paged through the seam, and the gate is size-only (an sftp stat costs
+   * a round trip; the local `(mtime,size)` tuple needs no I/O).
+   */
+  hostId?: string;
+  /** Remote sync in flight; the 2s tick skips the entry while set. */
+  remoteInFlight?: boolean;
+  /** Remote gate: transcript size at the last completed read pair. */
+  lastRemoteSize?: number | null;
 }
 
 const entries = new Map<string, TranscriptSyncEntry>();
@@ -134,16 +155,17 @@ export function registerTranscriptSync(
   cliSessionId: string,
   cwd: string,
   configDir?: string,
-  opts?: { titleOnly?: boolean; sessionDir?: string }
+  opts?: { titleOnly?: boolean; sessionDir?: string; hostId?: string }
 ): boolean {
   const provider = getProvider(providerId);
   const titleOnly = opts?.titleOnly === true;
   const sessionDir = opts?.sessionDir;
+  const hostId = opts?.hostId !== undefined && opts.hostId !== LOCAL_HOST_ID ? opts.hostId : undefined;
   const wantTitle = provider.meta.capabilities.selfTitles === true && !!provider.readSessionTitle;
   const wantStatus = !titleOnly && provider.meta.capabilities.polledStatus === true && !!provider.readSessionStatus;
   if (!wantTitle && !wantStatus) return false;
   const prev = entries.get(sessionId);
-  if (prev && isSameSync(prev, providerId, cliSessionId, cwd, configDir, titleOnly, sessionDir)) {
+  if (prev && isSameSync(prev, providerId, cliSessionId, cwd, configDir, titleOnly, sessionDir, hostId)) {
     // Same conversation re-registered (e.g. a re-spawn of the same
     // session): the incumbent's cached path, last-written title/status and
     // live watch are all still valid. Replacing it would drop the watch and
@@ -177,6 +199,7 @@ export function registerTranscriptSync(
     lastStatSize: null,
     watcher: null,
     debounce: null,
+    ...(hostId !== undefined ? { hostId, lastRemoteSize: null } : {}),
   });
   ensurePolling();
   return true;
@@ -211,7 +234,8 @@ function isSameSync(
   cwd: string,
   configDir: string | undefined,
   titleOnly: boolean,
-  sessionDir: string | undefined
+  sessionDir: string | undefined,
+  hostId: string | undefined
 ): boolean {
   return (
     e.providerId === providerId &&
@@ -219,7 +243,8 @@ function isSameSync(
     e.cwd === cwd &&
     e.configDir === configDir &&
     e.sessionDir === sessionDir &&
-    e.titleOnly === titleOnly
+    e.titleOnly === titleOnly &&
+    e.hostId === hostId
   );
 }
 
@@ -394,12 +419,8 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
     e.lastStatSize = stat.size;
     e.readFailures = 0;
     e.nextReadAt = 0;
-  } else if (e.nextReadAt <= Date.now()) {
-    e.readFailures += 1;
-    e.nextReadAt = Date.now() + Math.min(
-      RESOLVE_BACKOFF_BASE_MS * 2 ** (e.readFailures - 1),
-      RESOLVE_BACKOFF_CAP_MS
-    );
+  } else {
+    armReadBackoff(e);
   }
 }
 
@@ -416,7 +437,145 @@ function statOrNull(p: string): { mtimeMs: number; size: number } | null {
 /** One pass per 2s; an idle entry costs exactly one statSync (PA-02). */
 function tick(): void {
   for (const [sessionId, e] of entries) {
+    if (e.hostId !== undefined) {
+      // Remote entries sync asynchronously over the sftp seam; one in flight
+      // per entry, the next tick skips it while running.
+      if (e.remoteInFlight) continue;
+      e.remoteInFlight = true;
+      void syncEntryRemote(sessionId, e).finally(() => {
+        e.remoteInFlight = false;
+      });
+      continue;
+    }
     syncEntry(sessionId, e);
+  }
+}
+
+/**
+ * Remote twin of syncEntry (per-host providers plan §3): resolve the
+ * transcript by listing the launch session dir on the host (the flat
+ * `<timestamp>_<cliSessionId>.jsonl` naming rule), gate on size, and feed
+ * the SAME pure parsers the local readers use — every provider that
+ * self-titles or polls status is pi-compatible-shaped, so the window
+ * parsers are provider-correct here. Reads are paged windows (head 8 KiB,
+ * tail 16 KiB), never whole files. The `.name`/`.status` outputs go through
+ * the local STATUS_DIR channels unchanged, so the renderer path is identical.
+ */
+async function syncEntryRemote(sessionId: string, e: TranscriptSyncEntry): Promise<void> {
+  if (entries.get(sessionId) !== e) return; // unregistered/replaced mid-flight
+  const hostId = e.hostId!;
+  if (e.transcriptPath === null) {
+    if (e.nextResolveAt > Date.now()) return;
+    e.transcriptPath = await resolveRemoteTranscriptPath(hostId, e).catch(() => null);
+    if (e.transcriptPath === null) {
+      noteResolveFailure(sessionId, e);
+      return;
+    }
+    e.resolveFailures = 0;
+    e.nextResolveAt = 0;
+    e.lastRemoteSize = null; // force the first content read
+  }
+  if (e.nextReadAt > Date.now()) return;
+  const filePath = e.transcriptPath;
+
+  // Size gate: an unchanged size means nothing was appended (transcripts are
+  // append-only). No mtime over sftp — the local (mtime,size) tuple's job is
+  // done by size alone at this cadence.
+  let size: number | null;
+  try {
+    size = await statProviderFileSize(hostId, filePath);
+  } catch {
+    armReadBackoff(e);
+    return;
+  }
+  if (size === null) {
+    // The file moved (a `/clear` re-adoption writes a new file): re-resolve.
+    e.transcriptPath = null;
+    e.lastRemoteSize = null;
+    return;
+  }
+  if (e.lastRemoteSize === size) return;
+
+  let deferred = false;
+  let tailWindow: string | null = null;
+  const tailNeeded = e.wantStatus || e.wantTitle;
+  if (tailNeeded) {
+    try {
+      tailWindow = await readProviderFileWindow(hostId, filePath, TAIL_READ_BYTES, { fromEnd: true });
+    } catch {
+      tailWindow = null;
+      deferred = true;
+    }
+  }
+
+  if (e.wantStatus && tailWindow !== null) {
+    const status = transcriptStatusFromTail(tailWindow);
+    if (status && status !== e.lastStatus) {
+      try {
+        writeStatus(sessionId, status);
+        e.lastStatus = status;
+      } catch {
+        deferred = true;
+      }
+    }
+  }
+
+  if (e.wantTitle) {
+    // Same precedence as readTranscriptTitleWithSessionInfoSync: newest
+    // session_info name from the tail, then the head window, then the
+    // OMP-shaped head title.
+    let title: string | null = sessionInfoNameFromWindow(tailWindow);
+    if (!title) {
+      try {
+        const head = await readProviderFileWindow(hostId, filePath, HEADER_READ_BYTES);
+        title = sessionInfoNameFromWindow(head) ?? transcriptTitleFromWindow(head);
+      } catch {
+        title = null;
+        deferred = true;
+      }
+    }
+    if (title && title !== e.lastTitle) {
+      try {
+        writeCliSessionName(sessionId, title, e.cliSessionId);
+        e.lastTitle = title;
+      } catch {
+        deferred = true;
+      }
+    }
+  }
+
+  if (!deferred) {
+    e.lastRemoteSize = size;
+    e.readFailures = 0;
+    e.nextReadAt = 0;
+  } else {
+    armReadBackoff(e);
+  }
+}
+
+/** The flat-dir naming rule (`<timestamp>_<cliSessionId>.jsonl`), over sftp.
+ * No header verification (that would read every candidate); the launch dir
+ * is per-session, so the suffix match is the discriminator. */
+async function resolveRemoteTranscriptPath(hostId: string, e: TranscriptSyncEntry): Promise<string | null> {
+  const dir = e.sessionDir;
+  if (!dir) return null; // ponytail: remote sessions-root discovery needs the
+  // host-side project-dir grammar; the launch dir covers every launched/resumed session.
+  const names = await listProviderDir(hostId, dir);
+  if (names === null) return null;
+  const suffix = `_${e.cliSessionId}.jsonl`;
+  const match = names.filter((n) => n.endsWith(suffix)).sort();
+  // Multiple matches (id reused across launches in one dir): newest by the
+  // ISO-timestamp filename prefix, which sorts chronologically.
+  return match.length > 0 ? `${dir.replace(/\/+$/, '')}/${match[match.length - 1]}` : null;
+}
+
+function armReadBackoff(e: TranscriptSyncEntry): void {
+  if (e.nextReadAt <= Date.now()) {
+    e.readFailures += 1;
+    e.nextReadAt = Date.now() + Math.min(
+      RESOLVE_BACKOFF_BASE_MS * 2 ** (e.readFailures - 1),
+      RESOLVE_BACKOFF_CAP_MS
+    );
   }
 }
 

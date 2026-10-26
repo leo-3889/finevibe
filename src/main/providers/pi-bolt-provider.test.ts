@@ -117,6 +117,9 @@ describe('buildEnv', () => {
     expect(env.PATH).toBe('/usr/local/bin:/usr/bin');
     expect(env.FOO).toBe('bar');
     expect(env.PI_CODING_AGENT_DIR).toBeUndefined();
+    // T2: the on-host hook block reads the session id from this var (inert
+    // locally; forwarded into the remote command by remoteEnvPrefix).
+    expect(env.FINEVIBE_SESSION_ID).toBe('sess-1');
   });
 
   it('sets PI_CODING_AGENT_DIR when a configDir is given', () => {

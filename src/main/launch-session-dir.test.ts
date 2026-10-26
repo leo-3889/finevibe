@@ -12,6 +12,7 @@ vi.mock('electron', () => ({
 import {
   launchSessionBaseDir,
   launchSessionDir,
+  remoteLaunchSessionDir,
   ensureLaunchSessionDir,
   writeLaunchSessionMeta,
   readLaunchSessionMeta,
@@ -108,6 +109,27 @@ describe('launchSessionBaseDir/launchSessionDir', () => {
     }
     // Deterministic: the same raw id always maps to the same dir.
     expect(launchSessionDir('pi', 'a:b')).toBe(a);
+  });
+});
+
+describe('remoteLaunchSessionDir (audit T2 #5: one derivation, both planes)', () => {
+  it('golden: home-relative host spelling per provider', () => {
+    expect(remoteLaunchSessionDir('pi', 'sess_1-2_x')).toBe('~/.finevibe/sessions/pi/sess_1-2_x');
+    expect(remoteLaunchSessionDir('pi-bolt', 'abc')).toBe('~/.finevibe/sessions/pi-bolt/abc');
+    expect(remoteLaunchSessionDir('omp', 'abc')).toBe('~/.finevibe/sessions/omp/abc');
+  });
+
+  it('sanitizes ids with the SAME rule as the local dir (never an escape)', () => {
+    const evil = remoteLaunchSessionDir('pi', '../../evil');
+    expect(evil.startsWith('~/.finevibe/sessions/pi/')).toBe(true);
+    expect(evil.split('/')).not.toContain('..');
+    // S1-10 collision guard mirrors the local one: collapsing spellings stay
+    // distinct, and the mapping is deterministic.
+    expect(remoteLaunchSessionDir('pi', 'a:b')).not.toBe(remoteLaunchSessionDir('pi', 'a/b'));
+    expect(remoteLaunchSessionDir('pi', 'a:b')).toBe(remoteLaunchSessionDir('pi', 'a:b'));
+    // The sanitized tail matches the LOCAL dir's basename: both planes
+    // derive the same per-session segment, only the base differs.
+    expect(evil.split('/').pop()).toBe(path.basename(launchSessionDir('pi', '../../evil')));
   });
 });
 

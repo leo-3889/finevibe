@@ -70,9 +70,13 @@ export class PiProvider implements CliProvider {
     return validateBinaryExistsAsync('pi');
   }
 
-  buildEnv(_sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env.PATH = getFullPath();
+    // Host-side hook block (per-host providers plan §3): the merged on-host
+    // hooks read the FineVibe session id from this var. Inert on a local
+    // launch — pi has no local hook system.
+    env.FINEVIBE_SESSION_ID = sessionId;
     // Strip inherited profile/storage selectors case-insensitively so the
     // pinned profile (below) is the single effective identity: a native
     // profile or relocated dir in the user's global environment must not

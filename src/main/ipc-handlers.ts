@@ -26,6 +26,7 @@ import { checkForUpdates, quitAndInstall } from './auto-updater';
 import { createAppMenu } from './menu';
 import { getProvider, getAllProviderMetas, getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
+import { remoteLaunchSessionDir } from './launch-session-dir';
 import type { CliProvider } from './providers/provider';
 import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
@@ -910,8 +911,16 @@ export function registerIpcHandlers(): void {
       // sessionDir (Pi/OMP) is the launch's exclusive transcript dir:
       // path resolution checks it first, so a post-`/clear` transcript is
       // found where the CLI wrote it, not only in the legacy trees.
-      const sessionDir = resolveLaunchSessionDir(providerId, sessionId);
-      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir });
+      // Audit T2 #5: a remote launch's dir is the HOST-side spelling (the
+      // same remoteLaunchSessionDir the spawn argv carries — one derivation,
+      // both planes; a local userData path can never exist on the host).
+      const sessionDir =
+        hostId !== undefined && hostId !== LOCAL_HOST_ID
+          ? providerId === 'pi' || providerId === 'pi-bolt' || providerId === 'omp'
+            ? remoteLaunchSessionDir(providerId, sessionId)
+            : undefined
+          : resolveLaunchSessionDir(providerId, sessionId);
+      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir, hostId });
       // ...and let the provider re-attach to its own on-disk state,
       // seeding the sessions watcher as an ADOPTED entry (known id +
       // existing transcript path) so a later `/clear` — a brand-new
@@ -1936,10 +1945,45 @@ export function registerIpcHandlers(): void {
     'provider:getConfig',
     async (_event, providerId: ProviderId, projectPath: string, configDir?: string, hostId?: string) => {
       if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
-        // Channel carries hostId now (plan §2); the remote config READ is T2
-        // (readProviderFile seam). Fail loud — never answer a remote query
-        // with the local machine's config.
-        throw new Error('provider:getConfig on a remote host lands with T2 (readProviderFile)');
+        // Remote branch (per-host providers plan §3): read the host's config
+        // through the sftp seam. SEC-03's shape preserved — the gates are the
+        // host-scope analogues of the local ones (paths are host-side posix;
+        // canonicalizing against the local disk would be meaningless).
+        if (!getHost(hostId)) throw new Error(`Unknown host: ${JSON.stringify(hostId)}`);
+        if (configDir !== undefined) {
+          // Managed-profile gate, host scope: configDir must be exactly a
+          // persisted profile's configDir recorded FOR THIS HOST — the same
+          // "never derived from the payload's path shape" rule as the local
+          // branch, without the local-fs canonicalization.
+          const profiles = loadState().profiles ?? [];
+          const isManagedRemote = profiles.some((p) => (p.hostId ?? LOCAL_HOST_ID) === hostId && p.configDir === configDir);
+          if (!isManagedRemote) throw new Error(`Not a managed profile config dir: ${JSON.stringify(configDir)}`);
+        }
+        // Audit T2 #4: project containment is HOST-scoped. The gate roots
+        // are the project paths RECORDED FOR THIS HOST (`ProjectRecord.hostId`,
+        // normalized 'local' at load) — never the local-disk roots, which
+        // canonicalize against the controller's filesystem and would let a
+        // locally-known path unlock a read of the same string on the host.
+        // Until T5 registers remote projects, a host with no recorded
+        // project of its own gets no remote project scope at all.
+        const hostProjects = (loadState().projects ?? []).filter(
+          (p) => (p.hostId ?? LOCAL_HOST_ID) === hostId,
+        );
+        const normPosix = (p: string) => p.replace(/\/+/g, '/').replace(/\/+$/, '');
+        const withinRemoteProject = hostProjects.some((root) => {
+          const r = normPosix(root.path);
+          const t = normPosix(projectPath);
+          return t === r || t.startsWith(`${r}/`);
+        });
+        if (!withinRemoteProject) {
+          throw new Error(
+            hostProjects.length === 0
+              ? `No projects are registered for host ${JSON.stringify(hostId)} — remote project-scope config is refused`
+              : `Path is not within a known project of host ${JSON.stringify(hostId)}: ${JSON.stringify(projectPath)}`,
+          );
+        }
+        const { getRemoteProviderConfig } = await import('./hosts/remote-provider-config');
+        return getRemoteProviderConfig(providerId, hostId, projectPath, configDir);
       }
       // SEC-03: both paths are renderer-supplied and reach provider config
       // reads - the gates every other config-reading channel enforces: the

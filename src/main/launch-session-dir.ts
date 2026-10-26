@@ -75,6 +75,26 @@ export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId:
 }
 
 /**
+ * The HOST-side spelling of the per-launch session dir (audit T2 #5): a
+ * registry-host launch cannot carry the local userData path — the primary
+ * deployment (Windows controller → Linux host) makes that path impossible
+ * on the host, and the transcript mirror silently backs off forever. ONE
+ * derivation serves both planes — the spawn argv (`--session-dir`) and
+ * transcript-sync resolution — so they can never disagree.
+ *
+ * Home-relative posix (`~/.finevibe/sessions/<provider>/<id>`): the file
+ * seam maps it to `~/…` over sftp; the enrollment dirs step owns `mkdir -p`
+ * of `~/.finevibe`. The id sanitizer mirrors launchSessionDir (same regex,
+ * same FNV-1a collision guard) so a weird id maps 1:1 across planes.
+ */
+export function remoteLaunchSessionDir(providerId: LaunchSessionProvider, uiSessionId: string): string {
+  const safe = UI_SESSION_ID_RE.test(uiSessionId)
+    ? uiSessionId
+    : `${uiSessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 119)}-${fnv1aHex(uiSessionId)}` || 'session';
+  return `~/.finevibe/sessions/${providerId}/${safe}`;
+}
+
+/**
  * Retention window for per-launch dirs. A launch's transcripts are the only
  * thing inside, and global search surfaces them by mtime, so a dir with no
  * activity for 30 days is dead weight: unbounded growth on disk plus ~2 sync

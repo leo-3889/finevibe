@@ -25,6 +25,16 @@ vi.mock('./keys', async (importOriginal) => {
 
 vi.mock('./secrets', () => ({ getHostSecret: vi.fn(() => null) }));
 
+// The file plane (sftp seam) the hook merge reads/writes through.
+const plane = vi.hoisted(() => ({
+  readProviderFile: vi.fn<(hostId: string | undefined, relPath: string) => Promise<string | null>>(async () => null),
+  writeProviderFile: vi.fn<(hostId: string | undefined, relPath: string, content: string) => Promise<void>>(async () => {}),
+}));
+vi.mock('./provider-fs', () => ({
+  readProviderFile: plane.readProviderFile,
+  writeProviderFile: plane.writeProviderFile,
+}));
+
 const updates: Record<string, unknown>[] = [];
 const statuses: [string, string, string | undefined][] = [];
 vi.mock('./host-registry', () => ({
@@ -48,6 +58,7 @@ vi.mock('../providers/registry', () => ({
 }));
 
 import { enrollHost, probePrerequisites, provisionRemoteProfileDir, refreshHostTools, testHost, unenrollHost } from './enrollment';
+import { HOST_HOOK_MARKER, hostHookEntries, mergeHookBlock } from './host-hooks';
 
 const PIN = 'SHA256:pinned123';
 const record: HostRecord = {
@@ -78,6 +89,8 @@ beforeEach(() => {
   statuses.length = 0;
   execScript = script({});
   connectImpl = async () => ({ fingerprint: PIN });
+  plane.readProviderFile.mockReset().mockResolvedValue(null);
+  plane.writeProviderFile.mockReset().mockResolvedValue(undefined);
 });
 
 describe('testHost', () => {
@@ -132,15 +145,15 @@ describe('enrollHost', () => {
     'command -v claude ': '/usr/bin/claude\t2.0\n',
     'command -v node ': '/usr/bin/node\tv24.0.0\n',
     'command -v git ': '/usr/bin/git\tgit version 2.45.0\n',
-    'mkdir -p ~/.finevibe': '',
+    'mkdir -p ~/.finevibe ~/.finevibe/run': '',
   };
 
-  it('golden path: enrolled, key deployed, all prereqs, dirs made', async () => {
+  it('golden path: enrolled, key deployed, all prereqs, hooks merged, dirs made', async () => {
     execScript = script(fullScript);
     const events: string[] = [];
     const res = await enrollHost(record, (e) => events.push(e.status));
     expect(res.ok).toBe(true);
-    expect(res.steps.map((s) => s.step)).toEqual(['connect', 'env', 'key-deploy', 'prereqs', 'dirs']);
+    expect(res.steps.map((s) => s.step)).toEqual(['connect', 'env', 'key-deploy', 'prereqs', 'host-hooks', 'dirs']);
     expect(res.steps.every((s) => s.ok)).toBe(true);
     expect(events).toEqual(['probing', 'enrolled']);
     // Deploy appended exactly one marker block for this id.
@@ -148,6 +161,65 @@ describe('enrollHost', () => {
     expect(deploy).toContain(`# finevibe:${record.id} begin`);
     expect(updates.some((u) => 'prerequisites' in u)).toBe(true);
     expect(updates.some((u) => u.enrollmentStatus === 'enrolled' && u.enrolledAt)).toBe(true);
+    // Step 5.5 merged the block into both probed tools' settings files (pi +
+    // claude), creating them from nothing (the plane reads null).
+    const written = plane.writeProviderFile.mock.calls.map(([hostId, p]) => [hostId, p]);
+    expect(written).toEqual([
+      [record.id, '~/.claude/settings.json'],
+      [record.id, '~/.pi/agent/settings.json'],
+    ]);
+    const claudeWrite = plane.writeProviderFile.mock.calls.find(([, p]) => p === '~/.claude/settings.json')!;
+    expect(JSON.parse(claudeWrite[2]).hooks.Stop[0].hooks[0].command).toContain(HOST_HOOK_MARKER);
+    // Parent dirs are exec-lane mkdirs (the seam never creates dirs).
+    expect(execLog).toContain('mkdir -p ~/.claude');
+    // Sidecar dir the hooks write into, created at the dirs step.
+    expect(execLog).toContain('mkdir -p ~/.finevibe ~/.finevibe/run');
+  });
+
+  it('host-hooks merge preserves a foreign settings file verbatim', async () => {
+    execScript = script(fullScript);
+    plane.readProviderFile.mockImplementation(async (_h, p) =>
+      p === '~/.claude/settings.json' ? JSON.stringify({ model: 'opus', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'foreign.sh' }] }] } }) : null,
+    );
+    await enrollHost(record, () => {});
+    const claudeWrite = plane.writeProviderFile.mock.calls.find(([, p]) => p === '~/.claude/settings.json')!;
+    const parsed = JSON.parse(claudeWrite[2]);
+    expect(parsed.model).toBe('opus');
+    expect(parsed.hooks.Stop).toHaveLength(2);
+    expect(parsed.hooks.Stop[0].hooks[0].command).toBe('foreign.sh');
+  });
+
+  it('host-hooks is idempotent: an already-merged file is not rewritten', async () => {
+    execScript = script(fullScript);
+    plane.readProviderFile.mockImplementation(async (_h, p) => {
+      const providerId = p.includes('claude') ? 'claude' : 'pi';
+      return mergeHookBlock(null, hostHookEntries(providerId)).json;
+    });
+    const res = await enrollHost(record, () => {});
+    expect(res.steps.find((s) => s.step === 'host-hooks')?.ok).toBe(true);
+    expect(plane.writeProviderFile).not.toHaveBeenCalled();
+  });
+
+  it('host-hooks partial: a corrupt settings.json is reported, never overwritten', async () => {
+    execScript = script(fullScript);
+    plane.readProviderFile.mockImplementation(async (_h, p) =>
+      p === '~/.claude/settings.json' ? '{corrupt' : null,
+    );
+    const res = await enrollHost(record, () => {});
+    const hookStep = res.steps.find((s) => s.step === 'host-hooks');
+    expect(hookStep?.ok).toBe(false);
+    expect(hookStep?.detail).toContain('~/.claude/settings.json');
+    expect(res.ok).toBe(true); // enrolled, partial: the rest of the steps ran
+    expect(res.steps.some((s) => s.step === 'dirs')).toBe(true);
+    // The pi file (readable) was still merged; the corrupt claude file was not.
+    expect(plane.writeProviderFile.mock.calls.map(([, p]) => p)).toEqual(['~/.pi/agent/settings.json']);
+  });
+
+  it('host-hooks skips settings files of tools the probe did not find', async () => {
+    execScript = script({ ...fullScript, 'command -v claude ': '' });
+    const res = await enrollHost(record, () => {});
+    expect(res.steps.find((s) => s.step === 'host-hooks')?.ok).toBe(true);
+    expect(plane.writeProviderFile.mock.calls.map(([, p]) => p)).toEqual(['~/.pi/agent/settings.json']);
   });
 
   it('pins the approved fingerprint when the record had none', async () => {
@@ -225,6 +297,23 @@ describe('unenrollHost', () => {
     const res = await unenrollHost(record);
     expect(res).toEqual({ ok: true, detail: 'no marker block present' });
     expect(execLog.some((c) => c.includes('base64 -d'))).toBe(false);
+  });
+
+  it('strips exactly the hook block from every settings target', async () => {
+    execScript = script({ 'cat ~/.ssh/authorized_keys': 'ssh-rsa AAAAforeign\n' });
+    // Unprobed record → every known settings path is inspected; only the pi
+    // file carries a FineVibe block (plus a foreign hook that must survive).
+    plane.readProviderFile.mockImplementation(async (_h, p) => {
+      if (p !== '~/.pi/agent/settings.json') return '{corrupt';
+      return mergeHookBlock('{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"foreign.sh"}]}]}}', hostHookEntries('pi')).json;
+    });
+    const res = await unenrollHost(record);
+    expect(res.ok).toBe(true);
+    expect(res.detail).toContain('corrupt'); // corrupt files are skipped, reported
+    const write = plane.writeProviderFile.mock.calls.find(([, p]) => p === '~/.pi/agent/settings.json')!;
+    const parsed = JSON.parse(write[2]);
+    expect(JSON.stringify(parsed.hooks).includes(HOST_HOOK_MARKER)).toBe(false);
+    expect(parsed.hooks.Stop[0].hooks[0].command).toBe('foreign.sh');
   });
 });
 
