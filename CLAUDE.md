@@ -19,6 +19,7 @@ Internal working docs (audit status, incident notes, work queue) live in the loc
 ## Current contracts
 
 - [Provider contracts](docs/provider-contracts.md) — registry, profiles, spawn arguments, transcripts and status sources.
+- [Hosts (multi-host SSH)](docs/hosts.md) — registry, enrollment lifecycle, secret storage, host-key pinning, shell channel and limits.
 - [Session lifecycle](docs/session-lifecycle.md) — PTY exit, title adoption, Kanban sync, persistence and watchers.
 - [Security boundaries](docs/security-boundaries.md) — renderer/main boundary, paths, sharing and browser data.
 - [Performance and resource limits](docs/performance.md) — search cancellation/cache storage, preview paging, event retention and remaining measurements.
