@@ -282,6 +282,12 @@ beforeEach(() => {
   // baselines; clipboard.writeText is a bare vi.fn (reset to default).
   vi.mocked(dialog.showMessageBox).mockReset().mockImplementation(() => Promise.resolve({ response: 0 } as never));
   vi.mocked(clipboard.writeText).mockReset();
+  // Same class on the store mock: the fs:listDirs enumerate gate reads
+  // preferences.defaultProjectsFolder via loadState; a shuffled predecessor's
+  // throwing loadState impl ("state cache corrupted" at the corrupt-store
+  // test) survived clearAllMocks and made the gate catch -> [] with NO
+  // dialog. Restore the factory default every case.
+  vi.mocked(loadState).mockReset().mockImplementation(() => ({ projects: [], preferences: {} } as never));
   calls.length = 0;
   // The home-outside consent Map is module state; each test starts fresh.
   _resetHomeOutsideConsentForTesting();
