@@ -159,10 +159,15 @@ describe('single-instance gate', () => {
   it('quits immediately when another instance holds the lock', async () => {
     vi.mocked(app.requestSingleInstanceLock).mockReturnValue(false);
 
+    // Delta (order-independence audit 2026-10-26): a shuffled predecessor's
+    // deferred boot-chain continuation (main.ts:476-481) can land a quit
+    // during this case. Exactly ONE quit must be attributable to THIS import.
+    const quitBase = app.quit.mock.calls.length;
+    const lockBase = app.requestSingleInstanceLock.mock.calls.length;
     await import('./main');
 
-    expect(app.requestSingleInstanceLock).toHaveBeenCalledTimes(1);
-    expect(app.quit).toHaveBeenCalledTimes(1);
+    expect(app.requestSingleInstanceLock.mock.calls.length - lockBase).toBe(1);
+    expect(app.quit.mock.calls.length - quitBase).toBe(1);
     // The loser must not start serving relaunches.
     expect(appHandlers['second-instance']).toBeUndefined();
 

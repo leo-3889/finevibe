@@ -72,6 +72,15 @@ export function resetWriteStateForTests(): void {
  * object. Keep in sync with the renderer's `defaultPreferences`. */
 export const DEFAULT_PREFERENCES: Preferences = { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', defaultProjectsFolder: '' };
 
+// Deep copy of the defaults (order-independence audit 2026-10-26): a shallow
+// spread shares nested pref objects (sidebarViews, planModeDefaults,
+// defaultProfiles), so one caller mutating a nested default poisoned the
+// module constant for every later default. Preferences are pure JSON data -
+// JSON round-trip is the clone (main's TS lib predates structuredClone).
+function cloneDefaultPreferences(): Preferences {
+  return JSON.parse(JSON.stringify(DEFAULT_PREFERENCES)) as Preferences;
+}
+
 /** State returned by {@link loadState}: `preferences` is guaranteed present
  * by the loader's single normalization step, so main-side consumers never
  * need to guard it. */
@@ -82,7 +91,13 @@ function defaultState(): LoadedState {
     version: 1,
     projects: [],
     activeProjectId: null,
-    preferences: { ...DEFAULT_PREFERENCES },
+    // Deep clone: DEFAULT_PREFERENCES nests objects (sidebarViews,
+    // planModeDefaults, defaultProfiles). A shallow spread shared the nested
+    // references, so ANY caller mutating a default nested pref mutated the
+    // module constant for every later default (observed as order-dependent
+    // deepEqual failures under shuffled tests; in production it meant two
+    // default-loads sharing mutated nested state).
+    preferences: cloneDefaultPreferences(),
     hosts: [],
   };
 }
@@ -216,7 +231,7 @@ export function loadState(): LoadedState {
       projects,
       hosts,
       ...(profiles ? { profiles } : {}),
-      preferences: picked.preferences ?? { ...DEFAULT_PREFERENCES },
+      preferences: picked.preferences ?? cloneDefaultPreferences(),
     };
     stateCache = normalized;
     return normalized;
@@ -274,7 +289,7 @@ export function saveState(state: PersistedState): void {
   lastState = state;
   // P2-84: the cache is LoadedState; a writer's raw state normalizes to
   // the loader's single documented default on the way in.
-  stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
+  stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? cloneDefaultPreferences() };
   knownProjectPaths = deriveGateRoots(state.projects);
   // ENOSPC storm guard (workstation, 2026-10-23): the disk is failing, so
   // the single backoff timer (see writeStateAtomically) owns retries — no
@@ -550,7 +565,7 @@ export function saveStateSync(state: PersistedState): void {
   // S1-02: same graft as saveState via the shared helper (SA-P2-7) — the
   // renderer's beforeunload flush is a whole-state write too.
   graftMainOwnedPreferences(state);
-  stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
+  stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? cloneDefaultPreferences() };
   knownProjectPaths = deriveGateRoots(state.projects);
   remoteProjectRoots = deriveRemoteProjectRoots(state.projects);
   // A synchronous write is a disk write: it opens the throttle window for
