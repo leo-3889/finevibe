@@ -79,10 +79,14 @@ export function authorizedKeysWithoutBlock(authorizedKeys: string, hostId: strin
   return out.join('\n').replace(/\s+$/, '') + '\n';
 }
 
-/** Build the remote command that deploys the block (mkdir/chmod idiom). */
+/**
+ * Build the remote command that deploys the block (mkdir/chmod idiom).
+ * `presentCheck` is a locally-computed literal — never remote output
+ * (audit T1 #3: it is embedded inside double quotes).
+ */
 export function authorizedKeysDeployCommands(
   block: string,
-  presentCheck: string,
+  presentCheck: 'yes' | 'no',
 ): string {
   // Single-quoted heredoc-free write: append via printf on the remote side.
   // `presentCheck` is the already-evaluated answer ('yes' when the key line

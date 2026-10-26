@@ -85,21 +85,31 @@ export function connectConfigFor(record: HostRecord): ConnectConfig {
 
 /**
  * Connect (or reuse a cached connection) to `record`. Resolves once `ready`
- * fires; rejects on error/timeout. The server fingerprint is returned via
- * the `hostkey` event (captured for TOFU).
+ * fires; rejects on error/timeout. The server fingerprint is captured via
+ * the `hostVerifier` seam (TOFU); `verifyHostKey` (enrollment, §4 step 2)
+ * rejects the connection when the captured fingerprint does not match the
+ * pinned one — the rejection is then the `host-key-changed` error.
  */
-export function connect(record: HostRecord, opts?: { timeoutMs?: number; forceNew?: boolean }): Promise<{ client: Client; fingerprint: string }> {
+export function connect(
+  record: HostRecord,
+  opts?: { timeoutMs?: number; forceNew?: boolean; verifyHostKey?: (fingerprint: string) => boolean },
+): Promise<{ client: Client; fingerprint: string }> {
   const existing = connections.get(record.id);
   if (existing && !opts?.forceNew) {
     return existing.ready.then(() => ({ client: existing.client, fingerprint: existingFingerprint(existing) ?? '' }));
   }
   const config = connectConfigFor(record);
   config.readyTimeout = opts?.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-  // TOFU capture: ssh2 hands the server key to hostVerifier before ready.
-  // Enrollment (§4 step 2) enforces the pin; here we only capture it.
   let fingerprint = '';
+  let refused = false;
+  let connRef: CachedConnection | null = null;
   config.hostVerifier = (key: Buffer) => {
     fingerprint = fingerprintOf(key);
+    if (connRef) setFingerprint(connRef, fingerprint);
+    if (opts?.verifyHostKey && !opts.verifyHostKey(fingerprint)) {
+      refused = true;
+      return false; // ssh2 refuses the connection
+    }
     return true;
   };
   const client = clientFactory(config);
@@ -111,15 +121,27 @@ export function connect(record: HostRecord, opts?: { timeoutMs?: number; forceNe
     });
     client.on('error', (err: Error) => {
       clearTimeout(timer);
-      reject(err);
+      reject(refused ? new Error('host-key-changed') : err);
     });
     client.on('close', () => {
       clearTimeout(timer);
-      reject(new Error('connection closed before ready'));
+      reject(refused ? new Error('host-key-changed') : new Error('connection closed before ready'));
     });
   });
   const conn: CachedConnection = { client, ready };
+  connRef = conn;
   setFingerprint(conn, fingerprint);
+  // forceNew replaces an existing entry: drop its FIFO slot (audit T1 #1) and
+  // close the old client so eviction accounting stays exact.
+  if (opts?.forceNew) {
+    const old = connections.get(record.id);
+    if (old) {
+      old.client.end();
+      connections.delete(record.id);
+    }
+    const dup = insertionOrder.indexOf(record.id);
+    if (dup >= 0) insertionOrder.splice(dup, 1);
+  }
   connections.set(record.id, conn);
   insertionOrder.push(record.id);
   evictOldestIfNeeded();

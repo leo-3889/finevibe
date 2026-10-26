@@ -84,6 +84,8 @@ export function deleteHost(hostId: string): void {
   const [record] = state.hosts.splice(idx, 1);
   saveState(state);
   deleteHostSecret(record.id);
+  // Key passphrases live under the keypass: key (audit T1 #2).
+  deleteHostSecret(`keypass:${record.id}`);
   if (record.managedKey && record.privateKeyPath) {
     // Managed key dir lives under userData/hosts/<id>; remove the pair.
     const dir = path.dirname(record.privateKeyPath);

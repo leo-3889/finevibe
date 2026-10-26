@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { listImportableLegacyProjects } from './legacy-import';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateStateCache, PersistedState } from './store';
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
+import { enrollHost, probePrerequisites, testHost, unenrollHost } from './hosts/enrollment';
+import { deleteHostSecret, setHostSecret, secretsAvailable } from './hosts/secrets';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
@@ -1472,6 +1474,56 @@ export function registerIpcHandlers(): void {
       },
       { host: record.host, port: record.port, defaultFolder: record.defaultFolder },
     );
+  });
+
+  // Secret storage availability for the wizard (R1: key-auth-only banner).
+  ipcMain.handle('hosts:secretsAvailable', () => secretsAvailable());
+
+  // Store a wizard-entered secret: password under <id>, key passphrase
+  // under keypass:<id>. Write-only over IPC (never returned).
+  ipcMain.handle('hosts:setSecret', (_event, id: string, kind: 'password' | 'keypass', secret: string) => {
+    setHostSecret(kind === 'keypass' ? `keypass:${id}` : id, secret);
+  });
+
+  ipcMain.handle('hosts:forgetPassword', (_event, id: string) => {
+    deleteHostSecret(id);
+  });
+
+  ipcMain.handle('hosts:test', async (_event, id: string) => {
+    const record = getHost(id);
+    if (!record) return { ok: false, hostKeyChanged: false, steps: [{ step: 'record', ok: false, detail: 'unknown host' }] };
+    return testHost(record);
+  });
+
+  // TOFU accept after the wizard showed the fingerprint (§4 step 2).
+  ipcMain.handle('hosts:approveHostKey', (_event, id: string, fingerprint: string) => {
+    if (!getHost(id)) return null;
+    return updateHost(id, { hostKeyFingerprint: fingerprint });
+  });
+
+  ipcMain.handle('hosts:enroll', async (_event, id: string, opts?: { pin?: string }) => {
+    const record = getHost(id);
+    if (!record) return { ok: false, steps: [{ step: 'record', ok: false, detail: 'unknown host' }] };
+    const emit = (event: { id: string; status: string; detail?: string }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      if (w && !w.isDestroyed()) w.webContents.send('hosts:status', event);
+    };
+    return enrollHost(record, emit, opts);
+  });
+
+  ipcMain.handle('hosts:unenroll', async (_event, id: string) => {
+    const record = getHost(id);
+    if (!record) return { ok: false, detail: 'unknown host' };
+    return unenrollHost(record);
+  });
+
+  // Live tool inventory for the UR-4 dropdown; also refreshes the record.
+  ipcMain.handle('hosts:tools', async (_event, id: string) => {
+    const record = getHost(id);
+    if (!record) return null;
+    const prerequisites = await probePrerequisites(record);
+    updateHost(id, { prerequisites, lastProbeAt: new Date().toISOString(), lastProbeOk: true });
+    return prerequisites;
   });
 
   ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {

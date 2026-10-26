@@ -1,0 +1,241 @@
+// Enrollment state machine (multi-host Phase 1, plan §4).
+//
+// Driven main-side; every step emits {step, ok, detail} so the wizard can
+// render a live checklist. Failures are per-step: a partial enrollment keeps
+// what succeeded (key deployed, dirs created) and reports what did not.
+//
+// The remote commands are built here from validated registry fields only —
+// the renderer never contributes argv. exec() output is bounded by ssh-client.
+
+import { app } from 'electron';
+import type { HostRecord, ProviderId } from '../../shared/types';
+import { getAllProviderMetas } from '../providers/registry';
+import { connect, exec } from './ssh-client';
+import { getHostSecret } from './secrets';
+import {
+  authorizedKeysDeployCommands,
+  authorizedKeysWithBlock,
+  authorizedKeysWithoutBlock,
+  markerBlock,
+  readPublicKeyLine,
+} from './keys';
+import { setEnrollmentStatus, updateHost } from './host-registry';
+
+export interface EnrollStep {
+  step: string;
+  ok: boolean;
+  detail?: string;
+}
+
+export type HostStatusEvent = { id: string; status: HostRecord['enrollmentStatus']; detail?: string };
+export type StatusEmitter = (event: HostStatusEvent) => void;
+
+const POSIX_SYSTEMS = ['Linux', 'Darwin'];
+const PREREQ_TIMEOUT_MS = 10_000;
+
+/** Provider ids plus the generic tools Phase 2 consumes (§4 step 6). */
+function prereqTargets(): { key: string; binary: string }[] {
+  const metas = getAllProviderMetas().map((m) => ({ key: m.id as string, binary: m.binaryName }));
+  return [...metas, { key: 'node', binary: 'node' }, { key: 'git', binary: 'git' }];
+}
+
+/** TOFU + auth test (§4 steps 1-3). Never mutates the record. */
+export async function testHost(
+  record: HostRecord,
+): Promise<{ ok: boolean; fingerprint?: string; newFingerprint?: string; hostKeyChanged: boolean; steps: EnrollStep[] }> {
+  const steps: EnrollStep[] = [];
+  let captured = '';
+  try {
+    // A pinned key must match; an unpinned host connects and reports its
+    // fingerprint for the wizard's Approve step (nothing is pinned here).
+    const { fingerprint } = await connect(record, {
+      verifyHostKey: record.hostKeyFingerprint
+        ? (fp) => fp === record.hostKeyFingerprint
+        : undefined,
+    });
+    captured = fingerprint;
+    steps.push({ step: 'connect', ok: true, detail: `SSH-${record.authKind} auth ok` });
+    if (record.hostKeyFingerprint && record.hostKeyFingerprint !== captured) {
+      return { ok: false, hostKeyChanged: true, steps, fingerprint: captured };
+    }
+    return {
+      ok: true,
+      fingerprint: captured,
+      newFingerprint: record.hostKeyFingerprint ? undefined : captured,
+      hostKeyChanged: false,
+      steps,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === 'host-key-changed') {
+      steps.push({ step: 'host-key', ok: false, detail: 'pinned fingerprint mismatch — rebuilt machine?' });
+      return { ok: false, hostKeyChanged: true, steps };
+    }
+    steps.push({ step: 'connect', ok: false, detail: msg });
+    void captured;
+    return { ok: false, hostKeyChanged: false, steps };
+  }
+}
+
+/** One-shot live probe of the host's tool inventory (UR-4, §4 step 6). */
+export async function probePrerequisites(record: HostRecord): Promise<NonNullable<HostRecord['prerequisites']>> {
+  const result: NonNullable<HostRecord['prerequisites']> = {};
+  for (const { key, binary } of prereqTargets()) {
+    try {
+      // `command -v` gate first; version is best-effort on one line.
+      const out = await exec(
+        record,
+        `command -v ${binary} >/dev/null 2>&1 && { printf '%s\\t' "$(command -v ${binary})"; ${binary} --version 2>/dev/null | head -n 1; } || true`,
+        { timeoutMs: PREREQ_TIMEOUT_MS },
+      );
+      const trimmed = out.trim();
+      if (!trimmed) {
+        result[key] = { ok: false };
+        continue;
+      }
+      const [path, version] = trimmed.split('\t');
+      result[key] = { ok: true, ...(path ? { path } : {}), ...(version ? { version: version.trim() } : {}) };
+    } catch {
+      result[key] = { ok: false };
+    }
+  }
+  return result;
+}
+
+/** Deploy finevibe's pubkey into the marker block (§4 step 5). */
+async function deployKey(record: HostRecord): Promise<EnrollStep> {
+  if (!record.privateKeyPath) return { step: 'key-deploy', ok: false, detail: 'no private key on record' };
+  const pubLine = readPublicKeyLine(record.privateKeyPath);
+  if (!pubLine) return { step: 'key-deploy', ok: false, detail: 'public key unreadable' };
+  const existing = await exec(record, 'cat ~/.ssh/authorized_keys 2>/dev/null || true', { timeoutMs: PREREQ_TIMEOUT_MS });
+  const present: 'yes' | 'no' = existing.split(/\r?\n/).some((l) => l.trim() === pubLine.trim()) ? 'yes' : 'no';
+  if (authorizedKeysWithBlock(existing, record.id, pubLine) === null) {
+    return { step: 'key-deploy', ok: true, detail: 'already present' };
+  }
+  await exec(record, authorizedKeysDeployCommands(markerBlock(record.id, pubLine), present), { timeoutMs: PREREQ_TIMEOUT_MS });
+  return { step: 'key-deploy', ok: true };
+}
+
+/** Remove exactly the finevibe marker block (§4, unenroll). */
+export async function unenrollHost(record: HostRecord): Promise<{ ok: boolean; detail?: string }> {
+  try {
+    const existing = await exec(record, 'cat ~/.ssh/authorized_keys 2>/dev/null || true', { timeoutMs: PREREQ_TIMEOUT_MS });
+    const removed = authorizedKeysWithoutBlock(existing, record.id);
+    if (removed === null) return { ok: true, detail: 'no marker block present' };
+    // Rewrite the remaining content verbatim (ponytail: file sizes here are
+    // a handful of key lines; switch to sftp if huge files ever show up).
+    const b64 = Buffer.from(removed, 'utf8').toString('base64');
+    await exec(
+      record,
+      `printf '%s' '${b64}' | base64 -d > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`,
+      { timeoutMs: PREREQ_TIMEOUT_MS },
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Full enrollment (§4 steps 1-8): connect with the pinned key, env probe,
+ * key deploy (managed keys), prereq probe, base dirs, persist. `opts.pin`
+ * carries the fingerprint the user approved in the wizard when the host was
+ * never pinned before.
+ */
+export async function enrollHost(
+  record: HostRecord,
+  emit: StatusEmitter,
+  opts?: { pin?: string },
+): Promise<{ ok: boolean; steps: EnrollStep[] }> {
+  const steps: EnrollStep[] = [];
+  const fail = (status: HostRecord['enrollmentStatus'], detail: string): { ok: boolean; steps: EnrollStep[] } => {
+    setEnrollmentStatus(record.id, status, detail);
+    emit({ id: record.id, status, detail });
+    return { ok: false, steps };
+  };
+
+  const pin = record.hostKeyFingerprint ?? opts?.pin;
+  if (!pin) return fail('failed', 'host key not pinned — run Test & Approve first');
+
+  emit({ id: record.id, status: 'probing' });
+  // Steps 1-3: TCP/banner/auth ride on connect; TOFU pin enforced here.
+  try {
+    await connect(record, { verifyHostKey: (fp) => fp === pin });
+    steps.push({ step: 'connect', ok: true });
+    if (!record.hostKeyFingerprint) updateHost(record.id, { hostKeyFingerprint: pin });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    steps.push({ step: 'connect', ok: false, detail: msg });
+    return fail(msg === 'host-key-changed' ? 'failed' : 'failed', msg);
+  }
+
+  // Step 4: env probe — POSIX targets only (R2).
+  try {
+    const uname = (await exec(record, 'uname -s', { timeoutMs: PREREQ_TIMEOUT_MS })).trim();
+    if (!POSIX_SYSTEMS.includes(uname)) {
+      steps.push({ step: 'env', ok: false, detail: `unsupported target system: ${uname}` });
+      return fail('failed', `Phase 1 enrolls POSIX targets only (got ${uname})`);
+    }
+    const shell = (await exec(record, 'echo "$SHELL"', { timeoutMs: PREREQ_TIMEOUT_MS })).trim();
+    steps.push({ step: 'env', ok: true, detail: `${uname}, $SHELL=${shell || 'unset'}` });
+  } catch (err) {
+    steps.push({ step: 'env', ok: false });
+    return fail('failed', `env probe failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Step 5: key deploy (managed keys; password enrollment bootstraps with it).
+  if (record.managedKey) {
+    try {
+      steps.push(await deployKey(record));
+      if (!steps[steps.length - 1].ok) return fail('partial', steps[steps.length - 1].detail ?? 'key deploy failed');
+    } catch (err) {
+      steps.push({ step: 'key-deploy', ok: false });
+      return fail('partial', `key deploy failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Step 6: prereq probe (non-fatal → partial).
+  let partial = false;
+  try {
+    const prerequisites = await probePrerequisites(record);
+    updateHost(record.id, { prerequisites });
+    const missing = prereqTargets().filter((t) => !prerequisites[t.key]?.ok).map((t) => t.key);
+    partial = missing.length > 0;
+    steps.push({ step: 'prereqs', ok: !partial, detail: partial ? `missing: ${missing.join(', ')}` : 'all present' });
+  } catch (err) {
+    partial = true;
+    steps.push({ step: 'prereqs', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // Step 7: base dirs.
+  try {
+    await exec(record, 'mkdir -p ~/.finevibe', { timeoutMs: PREREQ_TIMEOUT_MS });
+    steps.push({ step: 'dirs', ok: true });
+  } catch (err) {
+    partial = true;
+    steps.push({ step: 'dirs', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // Step 8: persist + offer "forget password" (UI acts on auth-ok password).
+  const status: HostRecord['enrollmentStatus'] = partial ? 'partial' : 'enrolled';
+  updateHost(record.id, {
+    enrollmentStatus: status,
+    enrolledAt: new Date().toISOString(),
+    lastProbeAt: new Date().toISOString(),
+    lastProbeOk: true,
+    ...(partial ? { enrollmentDetail: steps.find((s) => !s.ok)?.detail } : { enrollmentDetail: undefined }),
+  });
+  emit({ id: record.id, status });
+  const passwordUsable = record.authKind === 'password' && getHostSecret(record.id) !== null;
+  return { ok: true, steps: passwordUsable ? [...steps, { step: 'forget-password', ok: true, detail: 'available' }] : steps };
+}
+
+/** userData hosts dir helper (wizard calls it before create for managed keys). */
+export function managedKeyDir(hostId: string): string {
+  return `${app.getPath('userData')}/hosts/${hostId}`;
+}
+
+/** Provider ids surface for the §6 tool list (kept here: registry shape). */
+export function providerIds(): ProviderId[] {
+  return getAllProviderMetas().map((m) => m.id);
+}

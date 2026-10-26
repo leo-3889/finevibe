@@ -80,6 +80,15 @@ export interface FineVibeApi {
     update(id: string, patch: Record<string, unknown>): Promise<HostRecord>;
     delete(id: string): Promise<void>;
     openShell(id: string, sessionId: string): Promise<void>;
+    secretsAvailable(): Promise<boolean>;
+    setSecret(id: string, kind: 'password' | 'keypass', secret: string): Promise<void>;
+    forgetPassword(id: string): Promise<void>;
+    test(id: string): Promise<{ ok: boolean; fingerprint?: string; newFingerprint?: string; hostKeyChanged: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    approveHostKey(id: string, fingerprint: string): Promise<HostRecord | null>;
+    enroll(id: string, opts?: { pin?: string }): Promise<{ ok: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    unenroll(id: string): Promise<{ ok: boolean; detail?: string }>;
+    tools(id: string): Promise<HostRecord['prerequisites'] | null>;
+    onStatus(callback: (event: { id: string; status: string; detail?: string }) => void): () => void;
   };
   provider: {
     getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
@@ -319,6 +328,15 @@ const api: FineVibeApi = {
     update: (id, patch) => ipcRenderer.invoke('hosts:update', id, patch),
     delete: (id) => ipcRenderer.invoke('hosts:delete', id),
     openShell: (id, sessionId) => ipcRenderer.invoke('hosts:openShell', id, sessionId),
+    secretsAvailable: () => ipcRenderer.invoke('hosts:secretsAvailable'),
+    setSecret: (id, kind, secret) => ipcRenderer.invoke('hosts:setSecret', id, kind, secret),
+    forgetPassword: (id) => ipcRenderer.invoke('hosts:forgetPassword', id),
+    test: (id) => ipcRenderer.invoke('hosts:test', id),
+    approveHostKey: (id, fingerprint) => ipcRenderer.invoke('hosts:approveHostKey', id, fingerprint),
+    enroll: (id, opts) => ipcRenderer.invoke('hosts:enroll', id, opts),
+    unenroll: (id) => ipcRenderer.invoke('hosts:unenroll', id),
+    tools: (id) => ipcRenderer.invoke('hosts:tools', id),
+    onStatus: (callback) => onChannel('hosts:status', callback as (...args: unknown[]) => void),
   },
   git: {
     getStatus: (path) => ipcRenderer.invoke('git:getStatus', path),
