@@ -732,6 +732,16 @@
     "fingerprintPrompt": "首次连接此主机。请先核对指纹再继续信任：\n{fingerprint}",
     "approveKey": "信任并继续",
     "lastProbe": "最近检测：{at}",
+    "lastSync": "设置已同步：{at}",
+    "sync": "同步设置",
+    "driftTitle": "远程设置已变化",
+    "driftPrompt": "主机上的以下文件与上次同步不一致：\n{files}\n要用本地设置覆盖它们吗？",
+    "overwrite": "覆盖",
+    "syncProvider": {
+      "pi": "同步 Pi 设置",
+      "pi-bolt": "同步 Pi-Bolt 扩展",
+      "omp": "同步 Oh my Pi 设置"
+    },
     "prereqs": "远程工具",
     "empty": "暂无主机，添加一个开始使用。",
     "toolsHeading": "编码工具",
@@ -761,7 +771,9 @@
       "action": "操作",
       "host-key": "主机密钥",
       "forget-password": "忘记密码",
-      "record": "保存记录"
+      "record": "保存记录",
+      "sync": "同步设置",
+      "npm": "npm install（主机）"
     },
     "field": {
       "name": "名称",

@@ -732,6 +732,16 @@
     "fingerprintPrompt": "First connection to this host. Verify the fingerprint before trusting it:\n{fingerprint}",
     "approveKey": "Trust & continue",
     "lastProbe": "Last check: {at}",
+    "lastSync": "Settings synced: {at}",
+    "sync": "Sync settings",
+    "driftTitle": "Remote settings changed",
+    "driftPrompt": "These files on the host no longer match the last sync:\n{files}\nOverwrite them with the local settings?",
+    "overwrite": "Overwrite",
+    "syncProvider": {
+      "pi": "Sync Pi settings",
+      "pi-bolt": "Sync Pi-Bolt extensions",
+      "omp": "Sync Oh my Pi settings"
+    },
     "prereqs": "Remote tools",
     "empty": "No hosts yet. Add one to get started.",
     "toolsHeading": "Coding tools",
@@ -761,7 +771,9 @@
       "action": "Action",
       "host-key": "Host key",
       "forget-password": "Forget password",
-      "record": "Save record"
+      "record": "Save record",
+      "sync": "Sync settings",
+      "npm": "npm install (host)"
     },
     "field": {
       "name": "Name",

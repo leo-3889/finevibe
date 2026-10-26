@@ -265,6 +265,14 @@ export interface HostRecord {
   /** Identity color (validated `#rrggbb`, shared/host-colors.ts): auto-assigned
    * round-robin from HOST_PALETTE at creation, editable per host (plan §5). */
   color?: string;
+  /** Settings-sync bookkeeping (per-host providers plan §4): the providers
+   * pushed, the last push time, and the sha256 of every pushed file keyed by
+   * its `~/`-anchored relPath (drift = remote hash ≠ stored hash). */
+  settingsSync?: {
+    providers: ProviderId[];
+    lastSyncAt?: string;
+    lastSyncHashes?: Record<string, string>;
+  };
 }
 
 export interface ArchivedSession {

@@ -18,6 +18,8 @@ const api = vi.hoisted(() => ({
   enroll: vi.fn(),
   unenroll: vi.fn(),
   tools: vi.fn(),
+  syncSettings: vi.fn(),
+  syncStatus: vi.fn(),
   onStatus: vi.fn(),
 }));
 
@@ -29,7 +31,7 @@ const modal = vi.hoisted(() => ({
 }));
 
 const shellTab = vi.hoisted(() => vi.fn());
-const confirmCalls: Array<{ title: string; message: string; onConfirm: () => void }> = [];
+const confirmCalls: Array<{ title: string; message: string; confirmLabel?: string; onConfirm: () => void }> = [];
 
 vi.mock('../../i18n.js', () => ({
   t: (key: string, vars?: Record<string, string>) =>
@@ -39,8 +41,8 @@ vi.mock('../modal.js', () => ({
   showModal: (...args: unknown[]) => modal.showModal(...args),
   closeModal: (...args: unknown[]) => modal.closeModal(...args),
   setModalError: (...args: unknown[]) => modal.setModalError(...args),
-  showConfirmDialog: (title: string, message: string, opts: { onConfirm: () => void }) => {
-    confirmCalls.push({ title, message, onConfirm: opts.onConfirm });
+  showConfirmDialog: (title: string, message: string, opts: { confirmLabel?: string; onConfirm: () => void }) => {
+    confirmCalls.push({ title, message, ...(opts.confirmLabel !== undefined ? { confirmLabel: opts.confirmLabel } : {}), onConfirm: opts.onConfirm });
     modal.showConfirmDialog(title, message, opts);
   },
 }));
@@ -92,7 +94,7 @@ beforeEach(() => {
         openShell: api.openShell, generateKey: api.generateKey, secretsAvailable: api.secretsAvailable,
         setSecret: api.setSecret, forgetPassword: api.forgetPassword, test: api.test,
         approveHostKey: api.approveHostKey, enroll: api.enroll, unenroll: api.unenroll,
-        tools: api.tools, onStatus: api.onStatus,
+        tools: api.tools, syncSettings: api.syncSettings, syncStatus: api.syncStatus, onStatus: api.onStatus,
       },
       provider: { checkBinary: vi.fn().mockResolvedValue(true) },
       fs: { browseDirectory: vi.fn() },
@@ -168,6 +170,43 @@ describe('hosts-section', () => {
     await onConfirm({ name: 'a', user: 'u', host: 'h', port: '99999', authKind: 'key', keyPath: '/k', secret: '' });
     expect(modal.setModalError).toHaveBeenCalledWith('port', expect.any(String));
     expect(api.create).not.toHaveBeenCalled();
+  });
+
+  it('wizard: provider sync checkboxes persist as settingsSync.providers', async () => {
+    api.create.mockImplementation(async (draft: HostRecord) => ({ ...host(), ...draft }));
+    api.test.mockResolvedValue({ ok: true, hostKeyChanged: false, steps: steps(true) });
+    const { container } = await mount();
+    (container.querySelector('.hosts-add-btn') as HTMLButtonElement).click();
+    const fields = modal.showModal.mock.calls[0][1] as Array<{ id: string }>;
+    for (const id of ['sync_pi', 'sync_pi-bolt', 'sync_omp']) expect(fields.some((f) => f.id === id)).toBe(true);
+    const onConfirm = modal.showModal.mock.calls[0][2] as (v: Record<string, string>) => Promise<void>;
+    await onConfirm({ name: 'box', user: 'dev', host: 'h', port: '22', authKind: 'key', keyPath: '/k', secret: '', sync_pi: 'true', 'sync_pi-bolt': 'false', sync_omp: 'true' });
+    expect(api.create.mock.calls[0][0]).toMatchObject({ settingsSync: { providers: ['pi', 'omp'] } });
+  });
+
+  it('card: sync button + last-sync line; drift answer re-pushes with confirmOverwrite', async () => {
+    api.list.mockResolvedValue([host({ enrollmentStatus: 'enrolled', settingsSync: { providers: ['pi'], lastSyncAt: '2026-01-01T00:00:00.000Z' } })]);
+    api.syncSettings.mockResolvedValueOnce({ ok: false, drift: ['~/.pi/agent/settings.json'], steps: [] });
+    const { container } = await mount();
+    expect(texts(container, '.hosts-card-probe').some((s) => s.includes('2026-01-01'))).toBe(true);
+    const btn = container.querySelector('button[data-act="sync"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    btn.click();
+    await flush();
+    expect(api.syncSettings).toHaveBeenCalledWith('h1', ['pi'], false);
+    // Drift → Overwrite/Cancel confirm; Cancel leaves the host untouched.
+    expect(confirmCalls[0].confirmLabel).toBe('hosts.overwrite');
+    expect(confirmCalls[0].message).toContain('~/.pi/agent/settings.json');
+    api.syncSettings.mockResolvedValueOnce({ ok: true, steps: [{ step: 'sync', ok: true, detail: '2 file(s) pushed' }] });
+    confirmCalls[0].onConfirm();
+    await flush();
+    expect(api.syncSettings).toHaveBeenLastCalledWith('h1', ['pi'], true);
+  });
+
+  it('card: sync is disabled for a host without opted-in providers', async () => {
+    api.list.mockResolvedValue([host({ enrollmentStatus: 'enrolled' })]);
+    const { container } = await mount();
+    expect((container.querySelector('button[data-act="sync"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('open shell calls openRemoteShellTab and shows the needs-project note on false', async () => {

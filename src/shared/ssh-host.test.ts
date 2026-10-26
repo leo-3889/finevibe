@@ -130,3 +130,17 @@ describe('isRegistryHostTarget', () => {
     expect(isRegistryHostTarget('dev', '::1')).toBe(false); // unbracketed: not the ssh argv spelling
   });
 });
+
+describe('validateHostRecordShape — settingsSync (T3)', () => {
+  const base = () => ({ ...VALID_HOST, settingsSync: { providers: ['pi'], lastSyncAt: 'x', lastSyncHashes: { '~/.pi/agent/settings.json': 'ab' } } });
+  it('accepts the canonical shape', () => {
+    expect(validateHostRecordShape(base())).not.toBeNull();
+  });
+  it('drops records whose hash keys are not home-relative posix paths (audit T3 #4)', () => {
+    for (const key of ['../../etc/x', '/abs/path', 'win\\path', '~/.pi/../x']) {
+      const rec = base();
+      rec.settingsSync = { ...rec.settingsSync, lastSyncHashes: { [key]: 'ab' } } as typeof rec.settingsSync;
+      expect(validateHostRecordShape(rec)).toBeNull();
+    }
+  });
+});
