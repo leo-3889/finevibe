@@ -23,6 +23,8 @@ import { mountGitPanel, closeGitPanel } from './git-panel.js';
 import { gitChangeCount, onChange as onGitStatusChange } from '../git-status.js';
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW, ICON_SESSIONS, ICON_FILES, ICON_GIT } from '../icons.js';
 import { getLocale, onLocaleChange, t } from '../i18n.js';
+import { projectsForHost, hostChipHtml } from '../host-scope.js';
+import { getHostColor, getHostName, onHostsChange } from '../host-registry.js';
 import { promptProjectSettings } from './project-settings.js';
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './tab-bar/menu.js';
 
@@ -164,6 +166,9 @@ export function initSidebar(): void {
     applyDiscussionsVisibility();
     render();
   });
+  // Host colors/dots on cards come from the registry cache; repaint when it
+  // first loads or a `hosts:status` reload changes it.
+  onHostsChange(render);
   // Adding/removing a profile or changing a default flips the badge's
   // visibility/label on the active card.
   appState.on('profiles-changed', render);
@@ -205,7 +210,11 @@ function render(): void {
 
   // Projects keep their user-controlled order (drag-and-drop reorderable); the
   // active one is marked as a card in place rather than pinned to the top.
-  for (const { project, isActive } of projectRenderOrder(appState.projects, appState.activeProjectId)) {
+  // Host tab scope (parent §11): only the active host's projects show; with
+  // activeHostId absent/'local' this is the full (all-local) list — identical
+  // pre-Phase-2 behavior.
+  const visible = projectsForHost(appState.projects, appState.preferences.activeHostId);
+  for (const { project, isActive } of projectRenderOrder(visible, appState.activeProjectId)) {
     projectListEl.appendChild(buildProjectRow(project, isActive, opts));
   }
 }
@@ -338,11 +347,21 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   el.className = 'project-item' + (isActive ? ' active' : '');
   el.dataset.projectId = project.id;
   el.draggable = true;
+  // Host identity color (plan §5): 2px left border + dot on non-local
+  // projects; local projects carry no color (neutral, identical to before).
+  const hostColor = getHostColor(project.hostId);
+  if (hostColor) {
+    el.classList.add('project-host-accent');
+    // Style-attribute gate (plan §7): getHostColor returns only validated
+    // #rrggbb hexes, never a raw record string.
+    el.style.borderLeftColor = hostColor;
+  }
   // Leading glyph: the active project shows an avatar initial; others show a
   // status dot reflecting their aggregate session activity.
   const lead = isActive
     ? `<div class="project-avatar" aria-hidden="true">${esc(projectInitial(project.name))}</div>`
     : `<span class="project-status ${getProjectStatus(project)}" aria-hidden="true">${STATUS_GLYPH[getProjectStatus(project)]}</span>`;
+  const hostDot = hostChipHtml(hostColor, getHostName(project.hostId));
   const countPill = project.sessions.length
     ? `<span class="project-session-count">${project.sessions.length}</span>`
     : '';
@@ -354,6 +373,7 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   // pi-lens-ignore: xss-innerhtml, no-inner-html
   el.innerHTML = `
     ${lead}
+    ${hostDot}
     <div class="project-main">
       <div class="project-name${hasUnreadInProject(project.id) ? ' unread' : ''}">${esc(project.name)}</div>
       <div class="project-path">${esc(project.path)}</div>

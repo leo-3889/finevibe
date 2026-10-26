@@ -535,3 +535,10 @@
   position: relative;
   top: -1px;
 }
+
+/* Host identity chip on remote-session tab cards (per-host plan §5): the slot
+   the removed `ssh <host> - ` prefix used to occupy. Geometry-only — the
+   color lands inline from the validated palette (plan §7). */
+.tab-item .host-chip {
+  margin-right: 4px;
+}

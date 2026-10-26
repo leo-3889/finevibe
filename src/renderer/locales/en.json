@@ -83,7 +83,21 @@
       "kanbanTasksNounPlural": "tasks"
     },
     "activeSessions": {
-      "title": "Active Sessions"
+      "title": "Active Sessions",
+      "hostSeparator": "on {host}"
+    },
+    "hostTabs": {
+      "local": "Local",
+      "add": "Add host",
+      "scrollLeft": "Scroll hosts left",
+      "scrollRight": "Scroll hosts right",
+      "offline": "{name} is unreachable",
+      "reconnect": "Reconnect",
+      "menu": {
+        "settings": "Settings → Hosts",
+        "reenroll": "Re-enroll",
+        "remove": "Remove"
+      }
     },
     "discussions": {
       "tooltip": "FineVibe Discussions",
@@ -761,6 +775,7 @@
       "partial": "Partial",
       "failed": "Failed"
     },
+    "hostUnreachable": "Unreachable",
     "step": {
       "connect": "Connect",
       "env": "Environment",
@@ -787,7 +802,19 @@
       "keyPathPlaceholder": "Leave empty to generate a FineVibe key",
       "browse": "Browse",
       "secret": "Secret",
-      "secretPlaceholder": "Key passphrase or password (stored in the system keychain)"
+      "secretPlaceholder": "Key passphrase or password (stored in the system keychain)",
+      "color": "Color"
+    },
+    "color": {
+      "auto": "Auto",
+      "blue": "Blue",
+      "orange": "Orange",
+      "green": "Green",
+      "purple": "Purple",
+      "amber": "Amber",
+      "red": "Red",
+      "teal": "Teal",
+      "pink": "Pink"
     },
     "err": {
       "name": "Name is required",

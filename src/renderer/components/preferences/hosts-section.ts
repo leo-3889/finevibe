@@ -9,8 +9,12 @@ import { showModal, closeModal, setModalError, showConfirmDialog, type FieldDef 
 import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
 import { openRemoteShellTab } from '../project-terminal.js';
 import { getCachedProviderMetas, getProviderDisplayName } from '../../provider-availability.js';
+import { HOST_PALETTE } from '../../../shared/host-colors.js';
 import type { HostRecord, ProviderId } from '../../../shared/types.js';
 import type { PreferencesContext, SectionController } from './section.js';
+
+// Palette slot names for the wizard color select, HOST_PALETTE order.
+const COLOR_NAMES = ['blue', 'orange', 'green', 'purple', 'amber', 'red', 'teal', 'pink'] as const;
 
 interface StepResult {
   step: string;
@@ -207,6 +211,16 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
       { id: 'user', label: t('hosts.field.user'), type: 'text', defaultValue: existing?.user },
       { id: 'host', label: t('hosts.field.host'), type: 'text', defaultValue: existing?.host },
       { id: 'port', label: t('hosts.field.port'), type: 'text', defaultValue: String(existing?.port ?? 22) },
+      // Host identity color (plan §5): Auto assigns round-robin from
+      // HOST_PALETTE at creation; editable here.
+      {
+        id: 'color', label: t('hosts.field.color'), type: 'select',
+        options: [
+          { value: '', label: t('hosts.color.auto') },
+          ...HOST_PALETTE.map((hex, i) => ({ value: hex, label: t(`hosts.color.${COLOR_NAMES[i]}`) })),
+        ],
+        defaultValue: existing?.color ?? '',
+      },
       {
         id: 'authKind', label: t('hosts.field.authKind'), type: 'select',
         options: [
@@ -247,6 +261,9 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
         if (existing) {
           record = await window.finevibe.hosts.update(existing.id, {
             name: values.name.trim(), user: values.user.trim(), host: values.host.trim(), port, authKind,
+            // Explicit palette pick only — Auto on an existing host keeps its
+            // current color (re-roll has no user-visible meaning).
+            ...(values.color ? { color: values.color } : {}),
             ...(authKind === 'key' ? { privateKeyPath: keyPath || existing.privateKeyPath, managedKey: keyPath ? false : existing.managedKey } : {}),
             settingsSync: { ...existing.settingsSync, providers: pickedProviders },
           });
@@ -261,6 +278,8 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
             host: values.host.trim(),
             port,
             authKind,
+            // Empty (Auto) → omit: createHost assigns round-robin from HOST_PALETTE.
+            ...(values.color ? { color: values.color } : {}),
             enrollmentStatus: 'draft',
             settingsSync: { providers: pickedProviders },
           });

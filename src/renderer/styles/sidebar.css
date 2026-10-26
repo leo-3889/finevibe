@@ -730,3 +730,136 @@
 .update-banner-btn.hidden {
   display: none;
 }
+
+/* --- Sidebar host tab row (multi-host Phase 2 T4, parent §11 UR-1) --- */
+#sidebar-host-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+#sidebar.collapsed #sidebar-host-tabs {
+  display: none;
+}
+
+#sidebar-host-tabs-strip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+#sidebar-host-tabs-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.host-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.host-tab:hover {
+  background: var(--bg-hover);
+}
+
+.host-tab.active {
+  background: var(--bg-tertiary);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+/* Local is a neutral identity, not a palette peer (per-host plan §5). */
+.host-tab[data-host-id="local"] .host-tab-name {
+  color: var(--text-muted);
+}
+
+.host-tabs-arrow {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 13px;
+}
+
+.host-tabs-arrow.hidden {
+  display: none;
+}
+
+.host-tabs-add {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+  font-size: 13px;
+}
+
+/* Offline banner above the project list (parent §11: unreachable non-local
+   active host). */
+.host-offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 12px 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.host-offline-banner.hidden {
+  display: none;
+}
+
+.host-offline-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Host identity color on project cards (per-host plan §5): 2px left border
+   in the host color (color set inline, validated hex) + dot (.host-chip). */
+.project-item.project-host-accent {
+  border-left: 2px solid var(--border);
+}
+
+/* Shared host identity chip: 6px square in the host color (color set inline
+   by hostChipHtml, plan §7 gate). */
+.host-chip {
+  flex: none;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+/* Cross-host Active Sessions: host separator (plan §5, non-color redundancy). */
+.active-session-host-sep {
+  padding: 5px 8px 2px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}

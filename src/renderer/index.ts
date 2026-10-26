@@ -18,6 +18,7 @@ import { startPolling as startGitPolling } from './git-status.js';
 import { initDebugPanel, logDebugEvent } from './components/debug-panel.js';
 import { initGitPanel } from './components/git-panel.js';
 import { initActiveSessions } from './components/active-sessions-panel.js';
+import { initHostTabs } from './components/host-tabs.js';
 import { initUpdateBanner } from './components/update-banner.js';
 import { initDiskHealthBanner } from './components/disk-health-banner.js';
 import { initSessionHistory } from './components/session-history.js';
@@ -279,6 +280,7 @@ async function main(): Promise<void> {
   initDebugPanel();
   initGitPanel();
   initActiveSessions();
+  initHostTabs();
   initSessionHistory();
   initUpdateBanner();
   initDiskHealthBanner();

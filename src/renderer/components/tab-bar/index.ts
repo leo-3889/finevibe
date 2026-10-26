@@ -6,6 +6,7 @@ import { onChange as onGithubUnreadChange } from '../../github-unread.js';
 import { ICON_TERMINAL, ICON_MENU } from '../../icons.js';
 import { onShareChange } from '../../sharing/share-manager.js';
 import { loadProviderAvailability, hasMultipleAvailableProviders } from '../../provider-availability.js';
+import { onHostsChange } from '../../host-registry.js';
 import { getActiveContextMenu, hideTabContextMenu } from './menu.js';
 import { gitStatusEl, tabListEl } from './dom.js';
 import { render, updateTabStatus, handleSessionChanged, patchUnread } from './tab-list.js';
@@ -65,6 +66,8 @@ export function initTabBar(): void {
   loadProviderAvailability().then(() => {
     if (hasMultipleAvailableProviders()) render();
   }).catch(() => {});
+  // Host chips on remote-session tabs ride the registry cache (async load).
+  onHostsChange(render);
 
   appState.on('state-loaded', render);
   // SR2-a: add/close reach the strip through `session-changed` (kind
