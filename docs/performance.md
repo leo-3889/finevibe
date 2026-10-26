@@ -149,6 +149,8 @@ Bounds for the SSH/sftp surface (registry hosts; contracts in [hosts.md](hosts.m
 
 **Unmeasured:** sftp/exec round-trip latency on a real LAN host (dev box has no enrolled host); the rows above are bounds, not measurements. First live pass records: listDirs page time, sidecar poll tick under N remote sessions, transcript window read time.
 
+- Logging: every remote-lane failure writes one searchable line to the app log file — `<logs>/finevibe.log` (`app.getPath('logs')`; Windows `%USERPROFILE%\AppData\Roaming\FineVibe\logs`, macOS `~/Library/Logs/FineVibe`), capped 5 MiB with exactly ONE `.1` backup. The tee installs after the console throttle, so flood-collapse applies to the file too, and any write failure disables the file sink permanently (the 2026-10-23 ENOSPC rule: logging never amplifies a disk failure). Grep keys: `[hosts]` (ssh connect failures, prereq-probe failures, settings-sync write failures) and `fs:listDir remote` / `fs:readFile remote` / `fs:stat remote` / `fs:exists remote` / `fs:isDirectory remote` (rail gate refusals and lane failures — the UI shows "empty/failed" for these, the log carries the why).
+
 ## Measured runtime baseline (W2, 2026-10-19, Windows)
 
 The only measured runtime numbers this machine has for the app's hot paths, from the

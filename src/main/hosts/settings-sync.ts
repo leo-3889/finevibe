@@ -159,6 +159,7 @@ export async function syncSettingsToHost(
       await writeProviderFile(record.id, entry.relPath, entry.content);
       written.set(entry.relPath, sha256(entry.content));
     } catch (err) {
+      console.warn(`[hosts] settings sync write failed [${record.id}] ${entry.relPath}: ${err instanceof Error ? err.message : String(err)}`);
       failures.push(`${entry.relPath}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

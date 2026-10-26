@@ -3394,10 +3394,15 @@ describe('remote fs rails (per-host providers, parent plan §11)', () => {
   });
 
   it('rail failures answer the local failure shapes, never a rejection', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(listRemoteDir).mockRejectedValueOnce(new Error('host down'));
     await expect(handlers.get('fs:listDir')!({}, REMOTE, 'h1')).resolves.toEqual([]);
+    // Every swallowed rail failure must be greppable in <logs>/finevibe.log.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:listDir remote failed'));
     vi.mocked(readRemoteFile).mockResolvedValueOnce({ ok: false, reason: 'binary' });
     await expect(handlers.get('fs:readFile')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: false, reason: 'binary' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:readFile remote blocked'));
+    warn.mockRestore();
   });
 
   it('local and absent hostId never touch the remote lanes', async () => {
