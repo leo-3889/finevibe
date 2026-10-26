@@ -82,6 +82,7 @@ const okBtn = createModalButton('OK', true);   // primary=true → .btn-primary
 ```
 
 - **File**: `src/renderer/components/modal-shell.ts` — `createModalShell({id, title, wide?})` caches the overlay by `id` (re-open reuses the node), attaches a focus trap, focuses the first text input, and restores focus to the opener on hide.
+- **Consumer caches**: if you also cache the returned shell across opens (remote-dir-browser does), guard with `overlay.isConnected` and re-create when it is `false` — anything that wipes `document.body` (test teardown) orphans the cached node and every later open paints into detached DOM with no error.
 - **Shortcuts contract** (`docs/ui-conventions.md`): app shortcuts are suppressed while the shared `#modal-overlay` **or any visible `.modal-overlay` root** is open. A new overlay in that family must focus a text input on open, or shortcuts stay live behind it. Zoom + Help are the deliberate pass-through exceptions.
 
 ## Alert Banners
