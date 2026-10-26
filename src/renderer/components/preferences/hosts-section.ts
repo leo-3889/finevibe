@@ -9,7 +9,7 @@ import { showModal, closeModal, setModalError, showConfirmDialog, type FieldDef 
 import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
 import { openRemoteShellTab } from '../project-terminal.js';
 import { getCachedProviderMetas, getProviderDisplayName } from '../../provider-availability.js';
-import type { HostRecord } from '../../../shared/types.js';
+import type { HostRecord, ProviderId } from '../../../shared/types.js';
 import type { PreferencesContext, SectionController } from './section.js';
 
 interface StepResult {
@@ -17,6 +17,10 @@ interface StepResult {
   ok: boolean;
   detail?: string;
 }
+
+/** Settings sync is a pi/pi-bolt/omp feature (plan §4) — the wizard offers
+ * exactly these opt-ins, in this order. */
+const SYNCABLE: ProviderId[] = ['pi', 'pi-bolt', 'omp'];
 
 function el(tag: string, className?: string, text?: string): HTMLElement {
   const node = document.createElement(tag);
@@ -63,6 +67,9 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
     card.appendChild(head);
 
     if (h.lastProbeAt) card.appendChild(el('div', 'hosts-card-probe', t('hosts.lastProbe', { at: h.lastProbeAt })));
+    if (h.settingsSync?.lastSyncAt) {
+      card.appendChild(el('div', 'hosts-card-probe', t('hosts.lastSync', { at: h.settingsSync.lastSyncAt })));
+    }
     if (h.enrollmentDetail) card.appendChild(el('div', 'hosts-card-detail', h.enrollmentDetail));
 
     for (const s of lastResult.get(h.id) ?? []) stepLine(card, s.step, s.ok, s.detail);
@@ -90,6 +97,7 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
     addBtn('test', 'hosts.test');
     addBtn('enroll', h.enrollmentStatus === 'draft' ? 'hosts.enroll' : 'hosts.reenroll');
     addBtn('shell', 'hosts.openShell', h.enrollmentStatus !== 'enrolled');
+    addBtn('sync', 'hosts.sync', !(enrolled && (h.settingsSync?.providers.length ?? 0) > 0));
     addBtn('edit', 'hosts.edit');
     addBtn('remove', 'hosts.remove');
     if (enrolled && h.authKind === 'password') addBtn('forget', 'hosts.forgetPassword');
@@ -163,6 +171,36 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
     if (ctx.isActiveSection('hosts')) ctx.rerenderSection('hosts');
   }
 
+  /** Push the host's opted-in providers (§4). Drift answer (Overwrite) is
+   * decided HERE: the first call returns {drift} without touching the host,
+   * the confirm dialog re-invokes with confirmOverwrite. */
+  async function runSync(id: string, confirmOverwrite = false): Promise<void> {
+    const rec = hosts.find((h) => h.id === id);
+    const providers = rec?.settingsSync?.providers ?? [];
+    const res = await window.finevibe.hosts.syncSettings(id, providers, confirmOverwrite);
+    if (res.drift && res.drift.length > 0) {
+      showConfirmDialog(t('hosts.driftTitle'), t('hosts.driftPrompt', { files: res.drift.join('\n') }), {
+        confirmLabel: t('hosts.overwrite'),
+        onConfirm: () => {
+          closeModal();
+          void runSync(id, true)
+            .then(() => {
+              if (ctx.isActiveSection('hosts')) ctx.rerenderSection('hosts');
+            })
+            // Audit T3 #3: the outer onCardClick catch is gone by the time the
+            // confirm fires — a rejected re-sync needs its own feedback.
+            .catch((err: unknown) => {
+              lastResult.set(id, [{ step: 'sync', ok: false, detail: err instanceof Error ? err.message : String(err) }]);
+              if (ctx.isActiveSection('hosts')) ctx.rerenderSection('hosts');
+            });
+        },
+      });
+      return;
+    }
+    lastResult.set(id, res.steps);
+    await load();
+  }
+
   function wizard(existing: HostRecord | null): void {
     const fields: FieldDef[] = [
       { id: 'name', label: t('hosts.field.name'), type: 'text', defaultValue: existing?.name, maxLength: 64 },
@@ -184,6 +222,14 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
         if (picked) input.value = picked;
       } },
       { id: 'secret', label: t('hosts.field.secret'), type: 'text', placeholder: t('hosts.field.secretPlaceholder') },
+      // Settings-sync opt-ins (plan §4): persisted on the record, drive the
+      // card's Sync settings button. Opt-in: unchecked by default.
+      ...SYNCABLE.map((p): FieldDef => ({
+        id: `sync_${p}`,
+        label: t(`hosts.syncProvider.${p}`),
+        type: 'checkbox',
+        defaultValue: existing?.settingsSync?.providers.includes(p) ? 'true' : 'false',
+      })),
     ];
     showModal(t(existing ? 'hosts.editTitle' : 'hosts.addTitle'), fields, async (values) => {
       const port = parseInt(values.port || '22', 10);
@@ -191,6 +237,7 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
       if (!values.user?.trim()) { setModalError('user', t('hosts.err.user')); return; }
       if (!values.host?.trim()) { setModalError('host', t('hosts.err.host')); return; }
       if (!Number.isInteger(port) || port < 1 || port > 65535) { setModalError('port', t('hosts.err.port')); return; }
+      const pickedProviders = SYNCABLE.filter((p) => values[`sync_${p}`] === 'true');
       if (busy) return;
       busy = true;
       try {
@@ -201,6 +248,7 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
           record = await window.finevibe.hosts.update(existing.id, {
             name: values.name.trim(), user: values.user.trim(), host: values.host.trim(), port, authKind,
             ...(authKind === 'key' ? { privateKeyPath: keyPath || existing.privateKeyPath, managedKey: keyPath ? false : existing.managedKey } : {}),
+            settingsSync: { ...existing.settingsSync, providers: pickedProviders },
           });
         } else {
           // Generated key when key-auth and the user supplied no key path.
@@ -214,6 +262,7 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
             port,
             authKind,
             enrollmentStatus: 'draft',
+            settingsSync: { providers: pickedProviders },
           });
         }
         if (values.secret?.trim()) {
@@ -241,6 +290,7 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
       try {
         if (act === 'test') await runTest(id);
         else if (act === 'enroll') await runEnroll(id);
+        else if (act === 'sync') { await runSync(id); if (ctx.isActiveSection('hosts')) ctx.rerenderSection('hosts'); }
         else if (act === 'forget') { await window.finevibe.hosts.forgetPassword(id); if (ctx.isActiveSection('hosts')) ctx.rerenderSection('hosts'); }
         else if (act === 'edit') wizard(host ?? null);
         else if (act === 'shell') {

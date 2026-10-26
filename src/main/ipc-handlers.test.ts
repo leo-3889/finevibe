@@ -203,6 +203,7 @@ vi.mock('../shared/token-estimate', autoStub);
 vi.mock('./hosts/host-registry', autoStub);
 vi.mock('./hosts/enrollment', autoStub);
 vi.mock('./hosts/remote-provider-config', autoStub);
+vi.mock('./hosts/settings-sync', autoStub);
 
 import {
   registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
@@ -220,6 +221,7 @@ import { estimateTokens } from '../shared/token-estimate';
 import { getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 import { getHost } from './hosts/host-registry';
 import { refreshHostTools, provisionRemoteProfileDir } from './hosts/enrollment';
+import { syncSettingsToHost } from './hosts/settings-sync';
 import { getRemoteProviderConfig } from './hosts/remote-provider-config';
 function makeProvider(): CliProvider {
   return {
@@ -3235,6 +3237,17 @@ describe('per-host provider channels (per-host providers T1)', () => {
     vi.mocked(refreshHostTools).mockResolvedValue({ pi: { ok: true } } as never);
     await expect(handlers.get('hosts:tools')!({}, 'lab')).resolves.toEqual({ pi: { ok: true } });
     expect(refreshHostTools).toHaveBeenCalledWith(lab);
+  });
+
+  it('hosts:syncSettings gates the payload and delegates (ids only cross the bridge)', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(syncSettingsToHost).mockResolvedValue({ ok: true, steps: [] });
+    await expect(handlers.get('hosts:syncSettings')!({}, 'lab', ['pi', 42, 'omp'], true)).resolves.toEqual({ ok: true, steps: [] });
+    expect(syncSettingsToHost).toHaveBeenCalledWith(lab, ['pi', 'omp'], { confirmOverwrite: true });
+    vi.mocked(getHost).mockReturnValue(null as never);
+    await expect(handlers.get('hosts:syncSettings')!({}, 'ghost', ['pi'])).resolves.toMatchObject({ ok: false });
+    await expect(handlers.get('hosts:syncSettings')!({}, 'lab', 'pi')).resolves.toMatchObject({ ok: false });
+    expect(syncSettingsToHost).toHaveBeenCalledTimes(1); // gate rejects, engine untouched
   });
 
   it('provider:getConfig answers a registry host through the seam (T2), host-gated', async () => {

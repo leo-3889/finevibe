@@ -74,6 +74,9 @@ export function isRegistryHostTarget(user: string, host: string): boolean {
 const HOST_AUTH_KINDS = ['key', 'password'];
 const HOST_ENROLLMENT_STATUSES = ['draft', 'probing', 'auth-ok', 'enrolled', 'partial', 'failed'];
 
+/** The ProviderId union as a set (settingsSync.providers validation). */
+const PROVIDER_IDS = new Set(['claude', 'codex', 'copilot', 'gemini', 'pi', 'omp', 'pi-bolt']);
+
 /**
  * Validate one raw `PersistedState.hosts` entry (or an IPC draft) and return
  * the normalized record, or null. Pure JS, shared main+renderer: main
@@ -117,6 +120,23 @@ export function validateHostRecordShape(raw: unknown): HostRecord | null {
       if (v.path !== undefined && typeof v.path !== 'string') return null;
     }
   }
+  // Settings-sync bookkeeping (per-host providers T3): plain data only —
+  // provider-id strings, timestamps, and a string→string hash map.
+  if (r.settingsSync !== undefined) {
+    if (typeof r.settingsSync !== 'object' || r.settingsSync === null || Array.isArray(r.settingsSync)) return null;
+    const ss = r.settingsSync as Record<string, unknown>;
+    if (!Array.isArray(ss.providers) || !ss.providers.every((p) => typeof p === 'string' && PROVIDER_IDS.has(p))) return null;
+    if (ss.lastSyncAt !== undefined && typeof ss.lastSyncAt !== 'string') return null;
+    if (ss.lastSyncHashes !== undefined) {
+      if (typeof ss.lastSyncHashes !== 'object' || ss.lastSyncHashes === null || Array.isArray(ss.lastSyncHashes)) return null;
+      if (!Object.values(ss.lastSyncHashes as Record<string, unknown>).every((h) => typeof h === 'string')) return null;
+      // Audit T3 #4: keys become sftp paths in driftedPaths — same shape the
+      // builder emits (home-relative posix, no traversal). A hand-edited
+      // `../../x` key must drop the record, not aim the seam at `..`.
+      const hashKeys = Object.keys(ss.lastSyncHashes as Record<string, unknown>);
+      if (!hashKeys.every((k) => k.startsWith('~/') && !k.includes('\\') && !k.split('/').includes('..'))) return null;
+    }
+  }
   // Normalized copy: known fields only, trimmed name — a hand-edited
   // state.json cannot smuggle extra keys into the renderer.
   const record: HostRecord = {
@@ -139,5 +159,6 @@ export function validateHostRecordShape(raw: unknown): HostRecord | null {
   if (r.defaultFolder !== undefined) record.defaultFolder = r.defaultFolder as string;
   if (r.memoryServer !== undefined) record.memoryServer = r.memoryServer as boolean;
   if (r.color !== undefined) record.color = r.color as string;
+  if (r.settingsSync !== undefined) record.settingsSync = r.settingsSync as HostRecord['settingsSync'];
   return record;
 }

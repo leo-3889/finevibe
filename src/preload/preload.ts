@@ -89,6 +89,7 @@ export interface FineVibeApi {
     enroll(id: string, opts?: { pin?: string }): Promise<{ ok: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
     unenroll(id: string): Promise<{ ok: boolean; detail?: string }>;
     tools(id: string): Promise<HostRecord['prerequisites'] | null>;
+    syncSettings(id: string, providerIds: ProviderId[], confirmOverwrite?: boolean): Promise<{ ok: boolean; drift?: string[]; steps: { step: string; ok: boolean; detail?: string }[] }>;
     onStatus(callback: (event: { id: string; status: string; detail?: string }) => void): () => void;
   };
   provider: {
@@ -338,6 +339,7 @@ const api: FineVibeApi = {
     enroll: (id, opts) => ipcRenderer.invoke('hosts:enroll', id, opts),
     unenroll: (id) => ipcRenderer.invoke('hosts:unenroll', id),
     tools: (id) => ipcRenderer.invoke('hosts:tools', id),
+    syncSettings: (id, providerIds, confirmOverwrite) => ipcRenderer.invoke('hosts:syncSettings', id, providerIds, confirmOverwrite),
     onStatus: (callback) => onChannel('hosts:status', callback as (...args: unknown[]) => void),
   },
   git: {

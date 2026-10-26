@@ -13,6 +13,7 @@ import { listImportableLegacyProjects } from './legacy-import';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, invalidateStateCache, PersistedState } from './store';
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
 import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
+import { syncSettingsToHost } from './hosts/settings-sync';
 import { generateManagedKeypair } from './hosts/keys';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from './hosts/secrets';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
@@ -1554,6 +1555,18 @@ export function registerIpcHandlers(): void {
     const record = getHost(id);
     if (!record) return null;
     return await refreshHostTools(record);
+  });
+
+  // Settings push (per-host providers T3, UR-5): the renderer sends ids
+  // only — the bundle builder owns the file set, main owns every read/write.
+  // `confirmOverwrite` is the drift dialog's Overwrite answer (plan §4).
+  ipcMain.handle('hosts:syncSettings', async (_event, id: string, providerIds: unknown, confirmOverwrite?: boolean) => {
+    const record = getHost(id);
+    if (!record) return { ok: false, steps: [{ step: 'record', ok: false, detail: 'unknown host' }] };
+    if (!Array.isArray(providerIds)) return { ok: false, steps: [{ step: 'sync', ok: false, detail: 'providerIds must be an array' }] };
+    return await syncSettingsToHost(record, providerIds.filter((p): p is ProviderId => typeof p === 'string'), {
+      confirmOverwrite: confirmOverwrite === true,
+    });
   });
 
   ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {
