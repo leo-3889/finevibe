@@ -95,10 +95,10 @@ export async function probePrerequisites(record: HostRecord): Promise<NonNullabl
       if (!trimmed) {
         result[key] = { ok: false };
         continue;
-      }
-      const [path, version] = trimmed.split('\t');
+      }      const [path, version] = trimmed.split('\t');
       result[key] = { ok: true, ...(path ? { path } : {}), ...(version ? { version: version.trim() } : {}) };
-    } catch {
+    } catch (err) {
+      console.warn(`[hosts] prereq probe failed for ${binary} on ${record.host}: ${err instanceof Error ? err.message : String(err)}`);
       result[key] = { ok: false };
     }
   }

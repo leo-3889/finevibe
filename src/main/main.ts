@@ -24,6 +24,7 @@ import { migrateLegacyUserData, retireLegacyUserData } from './userdata-migratio
 import { startSessionRetentionSweeps } from './launch-session-dir';
 
 import { installConsoleThrottle } from './log-throttle';
+import { installLogFile } from './log-file';
 import { startDiskHealthPreflight } from './disk-health';
 
 // 2026-10-23 ENOSPC incident: the state writer logged a full stack on every
@@ -321,6 +322,11 @@ function startMainProcess(): void {
   });
 
   app.whenReady().then(async () => {
+    // Tee the (already throttled) console into <logs>/finevibe.log FIRST, so
+    // every boot sweep and every later failure is on disk — packaged apps
+    // have no console the user can read (owner request 2026-10-26). VITEST
+    // gate mirrors the throttle above: test console spies stay pristine.
+    if (!process.env.VITEST) installLogFile(app.getPath('logs'));
     // P2-47 pin (boot call site; the after-import sweep lives in
     // ipc-handlers.ts chromeImport:run): quit/crash mid-import used to
     // leave the Chrome cookie snapshot in the OS temp dir for the

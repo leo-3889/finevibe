@@ -1182,6 +1182,7 @@ export function registerIpcHandlers(): void {
       // lesson, replicated on every fs rail here).
       if (hostId && hostId !== LOCAL_HOST_ID) {
         const st = await statRemotePath(hostId, filePath);
+        if (st.error) console.warn(`fs:isDirectory remote failed [${hostId}] ${filePath}: ${st.error}`);
         return st.ok && st.isDirectory === true;
       }
       // resolveUserPath: the renderer spells this path with `/` joins on
@@ -1310,8 +1311,17 @@ export function registerIpcHandlers(): void {
       // [] exactly like the local catch, so the tree renders "empty" for a
       // dead host instead of rejecting mid-expand.
       if (hostId && hostId !== LOCAL_HOST_ID) {
-        const res = await listRemoteDir(hostId, dirPath);
-        return res.ok ? res.entries : [];
+        try {
+          const res = await listRemoteDir(hostId, dirPath);
+          if (!res.ok) {
+            console.warn(`fs:listDir remote blocked [${hostId}] ${dirPath}: ${res.error}`);
+            return [];
+          }
+          return res.entries;
+        } catch (err) {
+          console.warn(`fs:listDir remote failed [${hostId}] ${dirPath}: ${err instanceof Error ? err.message : String(err)}`);
+          return [];
+        }
       }
       const expanded = expandUserPath(dirPath);
       if (!isAllowedReadPath(expanded)) return [];
@@ -2705,7 +2715,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('fs:exists', async (_event, filePath: string, hostId?: string): Promise<boolean> => {
     try {
       if (hostId && hostId !== LOCAL_HOST_ID) {
-        return (await statRemotePath(hostId, filePath)).ok;
+        const st = await statRemotePath(hostId, filePath);
+        if (st.error) console.warn(`fs:exists remote failed [${hostId}] ${filePath}: ${st.error}`);
+        return st.ok;
       }
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) return false;
@@ -2719,6 +2731,7 @@ export function registerIpcHandlers(): void {
     try {
       if (hostId && hostId !== LOCAL_HOST_ID) {
         const st = await statRemotePath(hostId, filePath);
+        if (st.error) console.warn(`fs:stat remote failed [${hostId}] ${filePath}: ${st.error}`);
         return st.ok && st.size !== undefined && st.mtimeMs !== undefined
           ? { ok: true, size: st.size, mtimeMs: st.mtimeMs }
           : { ok: false };
@@ -2739,7 +2752,9 @@ export function registerIpcHandlers(): void {
       // Remote rail: the file preview over sftp (size-capped, head-sniffed
       // for binary — the same ReadFileResult shape as the local lane).
       if (hostId && hostId !== LOCAL_HOST_ID) {
-        return await readRemoteFile(hostId, filePath);
+        const res = await readRemoteFile(hostId, filePath);
+        if (!res.ok) console.warn(`fs:readFile remote blocked [${hostId}] ${filePath}: ${res.reason}${res.reason === 'binary' ? ' (size/sniff)' : ''}`);
+        return res;
       }
       // Security: resolve to absolute and check it's within a known project directory
       const resolved = path.resolve(filePath);

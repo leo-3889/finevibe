@@ -150,7 +150,12 @@ export function connect(
   insertionOrder.push(record.id);
   evictOldestIfNeeded();
   // On failure, drop the cache entry so the next call retries fresh.
-  ready.catch(() => {
+  ready.catch((err: unknown) => {
+    // Every remote lane's failure funnels through here — one searchable
+    // line per failed connect in <logs>/finevibe.log (owner gate: "check
+    // FineVibe logs for issues"). Consumers may ALSO log their own context
+    // (fs rails do); this is the lane-level net.
+    console.warn(`[hosts] ssh connect failed ${record.user}@${record.host}:${record.port}: ${err instanceof Error ? err.message : String(err)}`);
     if (connections.get(record.id) === conn) {
       connections.delete(record.id);
       const idx = insertionOrder.indexOf(record.id);
