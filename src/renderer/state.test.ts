@@ -239,39 +239,36 @@ describe('persist()', () => {
   });
 });
 
-describe('setSessionSshHost()', () => {
-  it('persists a valid host', () => {
+describe('setSessionHost()', () => {
+  it('persists the registry host id (parent §11 picker write)', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
-    expect(appState.setSessionSshHost(session.id, 'lab.example.com')).toBe(true);
+    expect(appState.setSessionHost(session.id, 'h1')).toBe(true);
     appState.flushPersist();
-    expect(mockSave.mock.calls.at(-1)![0].projects[0].sessions[0].sshHost).toBe('lab.example.com');
+    expect(mockSave.mock.calls.at(-1)![0].projects[0].sessions[0].hostId).toBe('h1');
   });
 
-  it('normalizes user@host and stores the full reference', () => {
+  it('null clears to local and drops a legacy sshHost', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
-    expect(appState.setSessionSshHost(session.id, 'root@lab.example.com')).toBe(true);
-    expect(session.sshHost).toBe('root@lab.example.com');
-  });
-
-  it('rejects an invalid host without touching state', () => {
-    const project = addProject();
-    const session = appState.addSession(project.id, 'S1')!;
-    expect(appState.setSessionSshHost(session.id, 'bad host!')).toBe(false);
+    session.sshHost = 'lab.example.com';
+    session.hostId = 'h1';
+    expect(appState.setSessionHost(session.id, null)).toBe(true);
+    expect(session.hostId).toBe('local');
     expect(session.sshHost).toBeUndefined();
   });
 
-  it('clearing removes the field', () => {
+  it('picking a host overwrites a legacy sshHost (no coexisting spellings by hand)', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
-    appState.setSessionSshHost(session.id, 'lab.example.com');
-    expect(appState.setSessionSshHost(session.id, null)).toBe(true);
+    session.sshHost = 'lab.example.com';
+    appState.setSessionHost(session.id, 'h2');
+    expect(session.hostId).toBe('h2');
     expect(session.sshHost).toBeUndefined();
   });
 
   it('returns false for an unknown session id', () => {
-    expect(appState.setSessionSshHost('nope', 'lab.example.com')).toBe(false);
+    expect(appState.setSessionHost('nope', 'h1')).toBe(false);
   });
 });
 

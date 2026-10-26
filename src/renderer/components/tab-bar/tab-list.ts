@@ -1,15 +1,15 @@
 import { appState, MAX_SESSION_NAME_LENGTH, type ProjectRecord, type SessionRecord } from '../../state.js';
-import { parseSshHost } from '../../../shared/ssh-host.js';
 import type { ProviderId, TabGroupRecord } from '../../../shared/types.js';
 import { LOCAL_HOST_ID } from '../../../shared/types.js';
 import { hostChipHtml } from '../../host-scope.js';
-import { getHostColor, getHostName } from '../../host-registry.js';
+import { getHostColor, getHostName, getEnrolledHosts } from '../../host-registry.js';
 import { findGroupForSession, isGroupableTab, TAB_GROUP_DWELL_MS } from '../../state/tab-group-state.js';
 import { getStatus, STATUS_GLYPH, type SessionStatus } from '../../session-activity.js';
 import { isUnread } from '../../session-unread.js';
 import { hasUnreadInProject as hasGithubUnread } from '../../github-unread.js';
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW } from '../../icons.js';
 import { showShareDialog } from '../share-dialog.js';
+import { showModal } from '../modal.js';
 import { isSharing } from '../../sharing/peer-host.js';
 import { endShare } from '../../sharing/share-manager.js';
 import { openInspector, isInspectorOpen, getInspectedSessionId, closeInspector } from '../session-inspector.js';
@@ -293,13 +293,20 @@ function showGroupContextMenu(x: number, y: number, project: ProjectRecord, grou
   positionMenu(menu);
 }
 
-// Prompt for the session's ssh host (context menu). Invalid input is a no-op.
-function promptSshHost(session: SessionRecord): void {
-  const raw = window.prompt(t('contextMenu.tab.sshHostPrompt'), session.sshHost ?? '');
-  if (raw === null) return;
-  const parsed = parseSshHost(raw);
-  if (!parsed) return;
-  if (!appState.setSessionSshHost(session.id, parsed.host)) return;
+// Pick the session's launch host from the registry (context menu; the
+// retired free-text prompt accepted any string and persisted a field the
+// spawn path never read — parent §11). The write is metadata-only, exactly
+// like the old setter: it takes effect on the session's next spawn.
+function pickSessionHost(session: SessionRecord): void {
+  const options = [
+    { value: LOCAL_HOST_ID, label: t('contextMenu.tab.sshHostLocal') },
+    ...getEnrolledHosts().map((h) => ({ value: h.id, label: h.name })),
+  ];
+  showModal(
+    t('contextMenu.tab.sshHostSet'),
+    [{ id: 'host', label: t('contextMenu.tab.sshHostPick'), type: 'select', options, defaultValue: session.hostId ?? LOCAL_HOST_ID }],
+    (values) => { appState.setSessionHost(session.id, values.host === LOCAL_HOST_ID ? null : values.host); },
+  );
 }
 
 function showTabContextMenu(x: number, y: number, project: ProjectRecord, session: SessionRecord, tab: HTMLElement): void {
@@ -435,23 +442,26 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
 
   menu.appendChild(renameItem);
   if (isCli) {
+    // Registry picker (parent §11): the remote spellings are the adopted
+    // hostId (migration) or a legacy sshHost the picker overwrites on write.
+    const sessionRemote = !!session.hostId && session.hostId !== LOCAL_HOST_ID;
     const sshItem = document.createElement('div');
     sshItem.className = 'tab-context-menu-item';
-    sshItem.textContent = t(session.sshHost ? 'contextMenu.tab.sshHostChange' : 'contextMenu.tab.sshHostSet');
+    sshItem.textContent = t(sessionRemote ? 'contextMenu.tab.sshHostChange' : 'contextMenu.tab.sshHostSet');
     sshItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideTabContextMenu();
-      promptSshHost(session);
+      pickSessionHost(session);
     });
     menu.appendChild(sshItem);
-    if (session.sshHost) {
+    if (sessionRemote || session.sshHost) {
       const sshClearItem = document.createElement('div');
       sshClearItem.className = 'tab-context-menu-item';
       sshClearItem.textContent = t('contextMenu.tab.sshHostClear');
       sshClearItem.addEventListener('click', (e) => {
         e.stopPropagation();
         hideTabContextMenu();
-        appState.setSessionSshHost(session.id, null);
+        appState.setSessionHost(session.id, null);
       });
       menu.appendChild(sshClearItem);
     }

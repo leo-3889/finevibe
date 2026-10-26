@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { PersistedState, Preferences, ProjectRecord, SessionRecord, Profile, HostRecord } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
-import { validateHostRecordShape } from '../shared/ssh-host';
+import { validateHostRecordShape, migrateLegacySessionSshHosts } from '../shared/ssh-host';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
 
@@ -199,6 +199,10 @@ export function loadState(): LoadedState {
     // Per-host providers plan §2: pre-existing records carry no hostId —
     // normalize once at load, exactly once (mirrored in the renderer's
     // hydrateLoadedState), never at call sites.
+    // Legacy sshHost adoption runs FIRST (parent §11, one release carrying
+    // both): a session tagged with a registry hostname adopts the host id;
+    // unregistered/ambiguous targets keep sshHost for the legacy wrap.
+    migrateLegacySessionSshHosts(projects, hosts);
     for (const project of projects) {
       if (!project.hostId) project.hostId = LOCAL_HOST_ID;
       project.sessions = project.sessions.map((s) => (s.hostId ? s : { ...s, hostId: LOCAL_HOST_ID }));
