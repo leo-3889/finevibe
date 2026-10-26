@@ -8,6 +8,12 @@ const lastNotifiedAt = new Map<string, number>();
 const previousStatus = new Map<string, SessionStatus>();
 let audioCtx: AudioContext | null = null;
 
+/** Test-only: clear the per-session gate maps (module state persists across cases). */
+export function _resetForTesting(): void {
+  lastNotifiedAt.clear();
+  previousStatus.clear();
+}
+
 function playNotificationSound(): void {
   try {
     if (!audioCtx) {
