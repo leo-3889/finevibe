@@ -1,6 +1,6 @@
 # Hosts (multi-host SSH)
 
-FineVibe enrolls remote SSH hosts (Settings → Hosts), runs interactive shells on them, and — since Phase 2 (`todos/features/per-host-providers-plan.md`, local-only) — runs coding-tool sessions, provider file reads, settings sync, and the Add-project verbs on them. Host-keyed provider behavior is in [provider contracts](provider-contracts.md); remote session status/transcripts in [session lifecycle](session-lifecycle.md).
+FineVibe enrolls remote SSH hosts (Settings → Hosts), runs interactive shells on them, and — since Phase 2 (`todos/archives/per-host-providers-plan.md`, local-only) — runs coding-tool sessions, provider file reads, settings sync, and the Add-project verbs on them. Host-keyed provider behavior is in [provider contracts](provider-contracts.md); remote session status/transcripts in [session lifecycle](session-lifecycle.md).
 
 ## Registry
 
