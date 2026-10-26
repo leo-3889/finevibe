@@ -16,11 +16,21 @@ import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unen
 import { syncSettingsToHost } from './hosts/settings-sync';
 import { cloneRemoteRepo, ensureRemoteDir, listRemoteDir, listRemoteDirs, readRemoteFile, statRemotePath } from './hosts/remote-fs';
 import { generateManagedKeypair } from './hosts/keys';
+import {
+  gitOnStatus,
+  gitOnFiles,
+  gitOnDiff,
+  gitOnWorktrees,
+  gitOnRemoteUrl,
+  gitOnBranches,
+  refuseRemoteMutation,
+  type GitTarget,
+} from './git-on';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from './hosts/secrets';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
-import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
+import { gitStageFile, gitUnstageFile, gitDiscardFile, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, notifyGitChanged, onGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
@@ -118,6 +128,42 @@ function requireGitRoot(channel: string, projectPath: string): string {
     throw new Error('Path is not within a known project');
   }
   return resolved;
+}
+
+/**
+ * Phase 3.5 R2 routing: a remote-owned path resolves to its host record and
+ * the exec lane; everything else goes through the local requireGitRoot gate
+ * (a remote root whose host record was deleted keeps the belt refusal).
+ */
+function requireGitTarget(channel: string, projectPath: string): GitTarget {
+  if (typeof projectPath !== 'string') throw new Error('Invalid project path');
+  // R3: the remote compare runs on the RAW string. path.resolve on the
+  // controller turns posix `/srv/app` into `C:\srv\app` on Windows and the
+  // match is lost there - the old belt only fired cross-platform because it
+  // compared the resolved form (and was inert on Windows, per its own test).
+  const owner = remoteProjectOwnerOf(projectPath);
+  const record = owner ? getHost(owner) : null;
+  if (owner && record) {
+    const posix = projectPath.replace(/\\/g, '/');
+    return { kind: 'remote', record, cwd: posix.replace(/\/+$/, '') || '/' };
+  }
+  return { kind: 'local', cwd: requireGitRoot(channel, projectPath) };
+}
+
+/**
+ * filePath for a REMOTE project: git's own relative spelling (from the
+ * porcelain list). No path.resolve on the controller - a posix string
+ * canonicalized on Windows is the R3 shared-fiction bug - so validate
+ * structurally: relative, no `..` segments, no NUL.
+ */
+function requireRemoteRelPath(channel: string, filePath: string): string {
+  if (typeof filePath !== 'string' || filePath.trim() === '') throw new Error('Invalid file path');
+  const posix = filePath.replace(/\\/g, '/');
+  if (posix.includes('\0') || path.posix.isAbsolute(posix) || posix.split('/').includes('..')) {
+    console.warn(`${channel} blocked: ${filePath} is not a path inside the project`);
+    throw new Error('Invalid file path');
+  }
+  return posix;
 }
 
 /** filePath arrives from the renderer; keep the joined target inside the root. */
@@ -2523,34 +2569,40 @@ export function registerIpcHandlers(): void {
     return shell.openExternal(url);
   });
 
-  ipcMain.handle('git:getStatus', (_event, projectPath: string) => getGitStatus(requireGitRoot('git:getStatus', projectPath)));
+  ipcMain.handle('git:getStatus', (_event, projectPath: string) => gitOnStatus(requireGitTarget('git:getStatus', projectPath)));
 
-  ipcMain.handle('git:getRemoteUrl', (_event, projectPath: string) => getGitRemoteUrl(requireGitRoot('git:getRemoteUrl', projectPath)));
+  ipcMain.handle('git:getRemoteUrl', (_event, projectPath: string) => gitOnRemoteUrl(requireGitTarget('git:getRemoteUrl', projectPath)));
 
-  ipcMain.handle('git:getFiles', (_event, projectPath: string) => getGitFiles(requireGitRoot('git:getFiles', projectPath)));
+  ipcMain.handle('git:getFiles', (_event, projectPath: string) => gitOnFiles(requireGitTarget('git:getFiles', projectPath)));
 
   ipcMain.handle('git:getDiff', (_event, projectPath: string, filePath: string, area: string) => {
-    const root = requireGitRoot('git:getDiff', projectPath);
-    return getGitDiff(root, requireGitFilePath('git:getDiff', root, filePath), area);
+    const target = requireGitTarget('git:getDiff', projectPath);
+    const rel = target.kind === 'remote'
+      ? requireRemoteRelPath('git:getDiff', filePath)
+      : requireGitFilePath('git:getDiff', target.cwd, filePath);
+    return gitOnDiff(target, rel, area);
   });
 
-  ipcMain.handle('git:getWorktrees', (_event, projectPath: string) => getGitWorktrees(requireGitRoot('git:getWorktrees', projectPath)));
+  ipcMain.handle('git:getWorktrees', (_event, projectPath: string) => gitOnWorktrees(requireGitTarget('git:getWorktrees', projectPath)));
 
   ipcMain.handle('git:stageFile', async (_event, projectPath: string, filePath: string) => {
-    const root = requireGitRoot('git:stageFile', projectPath);
-    await gitStageFile(root, requireGitFilePath('git:stageFile', root, filePath));
+    const target = requireGitTarget('git:stageFile', projectPath);
+    refuseRemoteMutation('git:stageFile', target);
+    await gitStageFile(target.cwd, requireGitFilePath('git:stageFile', target.cwd, filePath));
     notifyGitChanged();
   });
 
   ipcMain.handle('git:unstageFile', async (_event, projectPath: string, filePath: string) => {
-    const root = requireGitRoot('git:unstageFile', projectPath);
-    await gitUnstageFile(root, requireGitFilePath('git:unstageFile', root, filePath));
+    const target = requireGitTarget('git:unstageFile', projectPath);
+    refuseRemoteMutation('git:unstageFile', target);
+    await gitUnstageFile(target.cwd, requireGitFilePath('git:unstageFile', target.cwd, filePath));
     notifyGitChanged();
   });
 
   ipcMain.handle('git:discardFile', async (_event, projectPath: string, filePath: string, area: string) => {
-    const root = requireGitRoot('git:discardFile', projectPath);
-    await gitDiscardFile(root, requireGitFilePath('git:discardFile', root, filePath), area as GitFileEntry['area']);
+    const target = requireGitTarget('git:discardFile', projectPath);
+    refuseRemoteMutation('git:discardFile', target);
+    await gitDiscardFile(target.cwd, requireGitFilePath('git:discardFile', target.cwd, filePath), area as GitFileEntry['area']);
     notifyGitChanged();
   });
 
@@ -2583,15 +2635,19 @@ export function registerIpcHandlers(): void {
     startGitWatcher(win, resolved);
   }));
 
-  ipcMain.handle('git:listBranches', (_event, projectPath: string) => listGitBranches(requireGitRoot('git:listBranches', projectPath)));
+  ipcMain.handle('git:listBranches', (_event, projectPath: string) => gitOnBranches(requireGitTarget('git:listBranches', projectPath)));
 
   ipcMain.handle('git:checkoutBranch', async (_event, projectPath: string, branch: string) => {
-    await checkoutGitBranch(requireGitRoot('git:checkoutBranch', projectPath), branch);
+    const target = requireGitTarget('git:checkoutBranch', projectPath);
+    refuseRemoteMutation('git:checkoutBranch', target);
+    await checkoutGitBranch(target.cwd, branch);
     notifyGitChanged();
   });
 
   ipcMain.handle('git:createBranch', async (_event, projectPath: string, branch: string) => {
-    await createGitBranch(requireGitRoot('git:createBranch', projectPath), branch);
+    const target = requireGitTarget('git:createBranch', projectPath);
+    refuseRemoteMutation('git:createBranch', target);
+    await createGitBranch(target.cwd, branch);
     notifyGitChanged();
   });
 

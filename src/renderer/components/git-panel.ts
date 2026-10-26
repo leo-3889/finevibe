@@ -3,8 +3,6 @@ import { onChange as onGitStatusChange, gitChangeCount, gitStatusErrored, getAct
 import { onChange as onStatusChange } from '../session-activity.js';
 import { showFileViewer } from './file-viewer.js';
 import { areaLabel } from '../dom-utils.js';
-import { isRemoteProject } from '../host-scope.js';
-import { getHostName } from '../host-registry.js';
 import type { GitFileEntry } from '../types.js';
 
 const MAX_FILES = 100;
@@ -240,29 +238,11 @@ function refreshMounted(): void {
   const project = appState.activeProject;
   if (!project || project.id !== mountedProjectId) return;
 
-  // Phase 3 coherence (docs/hosts.md): the repo lives on the host; the
-  // local git sinks are main-side-refused. Checked FIRST - before the
-  // worktree selector - so stale local worktrees can never render above
-  // the remote state (audit 2026-10-26).
-  if (isRemoteProject(project)) {
-    loadGeneration++;
-    const staleSelector = gitPanelEl.querySelector('.git-worktree-selector');
-    if (staleSelector) staleSelector.remove();
-    let rbody = gitPanelEl.querySelector('.git-panel-body') as HTMLElement | null;
-    if (!rbody) {
-      rbody = document.createElement('div');
-      rbody.className = 'config-section-body git-panel-body';
-      gitPanelEl.appendChild(rbody);
-    }
-    rbody.innerHTML = '';
-    const empty = document.createElement('div');
-    empty.className = 'config-empty';
-    empty.textContent = `Git runs on this machine — this project lives on “${getHostName(project.hostId)}”.`;
-    rbody.appendChild(empty);
-    lastFilesKey = '';
-    displayedGitPath = null;
-    return;
-  }
+  // Phase 3.5 (docs/hosts.md gitOn): remote projects render REAL data - every
+  // git read routes to the host's git over the exec lane, so the panel needs
+  // no remote-specific branch. The old empty state ("Git runs on this
+  // machine") and its stale-worktree teardown lived here; the poll-side
+  // cache drop retired with it (git-status.ts).
 
   const worktrees = getWorktrees(project.id);
   if (worktrees && worktrees.length > 1) {

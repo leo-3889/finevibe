@@ -203,6 +203,11 @@ vi.mock('../shared/token-estimate', autoStub);
 // Per-host providers T1: the channel tests drive the host record lookup and
 // the shared tool refresh; the SSH stack must never load in this suite.
 vi.mock('./hosts/host-registry', autoStub);
+const sshExec = vi.hoisted(() => vi.fn());
+vi.mock('./hosts/ssh-client', () => ({
+  exec: (...args: unknown[]) => sshExec(...args),
+  sftpRead: vi.fn(),
+}));
 vi.mock('./hosts/enrollment', autoStub);
 vi.mock('./hosts/remote-provider-config', autoStub);
 vi.mock('./hosts/settings-sync', autoStub);
@@ -625,6 +630,38 @@ describe.skipIf(process.platform === 'win32')('remote-scope belt (git/fs)', () =
   it('local projects are untouched by the belt', async () => {
     knownPaths.push(path.resolve('/local/proj'));
     expect(() => handlers.get('git:getStatus')!({}, path.resolve('/local/proj'))).not.toThrow();
+  });
+});
+
+// Phase 3.5 (git-on.ts): a remote project with a live host record ROUTES to
+// the exec lane instead of the belt refusal; mutations still refuse (the
+// panel is read-only until the remote write-side lands in Phase 4).
+describe('git:* remote routing (Phase 3.5)', () => {
+  it('git:getStatus routes a remote project to the exec lane', async () => {
+    remoteRoots.push({ path: '/srv/rout', hostId: 'host-1' });
+    const record = { id: 'host-1', name: 'h', host: 'h.example' } as never;
+    vi.mocked(getHost).mockReturnValueOnce(record);
+    sshExec.mockResolvedValueOnce('# branch.head main\n# branch.ab +1 -0\n');
+    const gitStatus = await import('./git-status');
+    await handlers.get('git:getStatus')!({}, '/srv/rout');
+    // The exec command is the routing contract; parsing itself is pinned in
+    // git-on.test.ts (here git-status is autoStubbed, so the parsed value is stub noise).
+    expect(sshExec).toHaveBeenCalledWith(
+      record,
+      "git -C '/srv/rout' status --porcelain=v2 --branch --untracked-files=all",
+      { timeoutMs: 5000 },
+    );
+    expect(vi.mocked(gitStatus.getGitStatus)).not.toHaveBeenCalled();
+  });
+
+  it('git:stageFile on a remote project still refuses (read-only Phase 3.5)', async () => {
+    remoteRoots.push({ path: '/srv/rout2', hostId: 'host-1' });
+    const record = { id: 'host-1', name: 'h', host: 'h.example' } as never;
+    vi.mocked(getHost).mockReturnValueOnce(record);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(handlers.get('git:stageFile')!({}, '/srv/rout2', 'x.ts')).rejects.toThrow(/remote host/);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('git:stageFile blocked'));
+    warn.mockRestore();
   });
 });
 

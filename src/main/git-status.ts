@@ -186,6 +186,45 @@ const NOT_A_REPO: GitStatus = {
   untracked: 0,
   conflicted: 0,
 };
+export { NOT_A_REPO };
+
+/** Pure porcelain-v2 branch-section parser (shared by the local sink and the remote sibling, R2 gitOn). */
+export function parseStatusOutput(stdout: string): GitStatus {
+  let branch: string | null = null;
+  let ahead = 0;
+  let behind = 0;
+  let staged = 0;
+  let modified = 0;
+  let untracked = 0;
+  let conflicted = 0;
+
+  for (const line of stdout.split('\n')) {
+    if (line.startsWith('# branch.head ')) {
+      branch = line.slice('# branch.head '.length);
+    } else if (line.startsWith('# branch.ab ')) {
+      const match = line.match(/\+(\d+) -(\d+)/);
+      if (match) {
+        ahead = parseInt(match[1], 10);
+        behind = parseInt(match[2], 10);
+      }
+    } else if (line.startsWith('1 ') || line.startsWith('2 ')) {
+      // Ordinary/rename entries: XY field is at index 2 (after the type char and space)
+      const xy = line.split(' ')[1];
+      if (xy && xy.length >= 2) {
+        const x = xy[0]; // staged
+        const y = xy[1]; // working tree
+        if (x !== '.') staged++;
+        if (y !== '.') modified++;
+      }
+    } else if (line.startsWith('u ')) {
+      conflicted++;
+    } else if (line.startsWith('? ')) {
+      untracked++;
+    }
+  }
+
+  return { isGitRepo: true, branch, ahead, behind, staged, modified, untracked, conflicted };
+}
 
 export function getGitStatus(cwd: string): Promise<GitStatus> {
   return new Promise((resolve) => {
@@ -216,49 +255,7 @@ export function getGitStatus(cwd: string): Promise<GitStatus> {
           return;
         }
 
-        let branch: string | null = null;
-        let ahead = 0;
-        let behind = 0;
-        let staged = 0;
-        let modified = 0;
-        let untracked = 0;
-        let conflicted = 0;
-
-        for (const line of stdout.split('\n')) {
-          if (line.startsWith('# branch.head ')) {
-            branch = line.slice('# branch.head '.length);
-          } else if (line.startsWith('# branch.ab ')) {
-            const match = line.match(/\+(\d+) -(\d+)/);
-            if (match) {
-              ahead = parseInt(match[1], 10);
-              behind = parseInt(match[2], 10);
-            }
-          } else if (line.startsWith('1 ') || line.startsWith('2 ')) {
-            // Ordinary/rename entries: XY field is at index 2 (after the type char and space)
-            const xy = line.split(' ')[1];
-            if (xy && xy.length >= 2) {
-              const x = xy[0]; // staged
-              const y = xy[1]; // working tree
-              if (x !== '.') staged++;
-              if (y !== '.') modified++;
-            }
-          } else if (line.startsWith('u ')) {
-            conflicted++;
-          } else if (line.startsWith('? ')) {
-            untracked++;
-          }
-        }
-
-        resolve({
-          isGitRepo: true,
-          branch,
-          ahead,
-          behind,
-          staged,
-          modified,
-          untracked,
-          conflicted,
-        });
+        resolve(parseStatusOutput(stdout));
       }
     );
   });
@@ -307,6 +304,45 @@ function pathAfterFields(line: string, fieldCount: number): string | null {
   return line.slice(cursor) || null;
 }
 
+/** Pure porcelain-v2 -z record parser (shared by the local sink and the remote sibling, R2 gitOn). */
+export function parseFilesOutput(stdout: string): GitFileEntry[] {
+  const entries: GitFileEntry[] = [];
+  // -z output is NUL-terminated; paths are raw bytes, never C-quoted.
+  // A rename record is followed by a separate NUL chunk holding the
+  // original path, which is informational and not part of GitFileEntry.
+  const records = stdout.split('\0');
+
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (record.startsWith('1 ') || record.startsWith('2 ')) {
+      const xy = record.slice(2, 4);
+      // Type 2 (rename) has 9 fields before the current path; type 1 has 8.
+      const path = pathAfterFields(record, record.startsWith('2 ') ? 9 : 8);
+      if (record.startsWith('2 ')) {
+        i++; // skip the original-path chunk
+      }
+      if (path && xy.length >= 2) {
+        const x = xy[0]; // staged
+        const y = xy[1]; // working tree
+        if (x !== '.') {
+          entries.push({ path, status: xyToStatus(x), area: 'staged' });
+        }
+        if (y !== '.') {
+          entries.push({ path, status: xyToStatus(y), area: 'working' });
+        }
+      }
+    } else if (record.startsWith('u ')) {
+      // Unmerged entry
+      const path = pathAfterFields(record, 10);
+      if (path) entries.push({ path, status: 'conflicted', area: 'conflicted' });
+    } else if (record.startsWith('? ')) {
+      const path = record.slice(2);
+      if (path) entries.push({ path, status: 'untracked', area: 'untracked' });
+    }
+  }
+  return entries;
+}
+
 export function getGitFiles(cwd: string): Promise<GitFileEntry[]> {
   return new Promise((resolve) => {
     execFile(
@@ -318,43 +354,7 @@ export function getGitFiles(cwd: string): Promise<GitFileEntry[]> {
           resolve([]);
           return;
         }
-
-        const entries: GitFileEntry[] = [];
-        // -z output is NUL-terminated; paths are raw bytes, never C-quoted.
-        // A rename record is followed by a separate NUL chunk holding the
-        // original path, which is informational and not part of GitFileEntry.
-        const records = stdout.split('\0');
-
-        for (let i = 0; i < records.length; i++) {
-          const record = records[i];
-          if (record.startsWith('1 ') || record.startsWith('2 ')) {
-            const xy = record.slice(2, 4);
-            // Type 2 (rename) has 9 fields before the current path; type 1 has 8.
-            const path = pathAfterFields(record, record.startsWith('2 ') ? 9 : 8);
-            if (record.startsWith('2 ')) {
-              i++; // skip the original-path chunk
-            }
-            if (path && xy.length >= 2) {
-              const x = xy[0]; // staged
-              const y = xy[1]; // working tree
-              if (x !== '.') {
-                entries.push({ path, status: xyToStatus(x), area: 'staged' });
-              }
-              if (y !== '.') {
-                entries.push({ path, status: xyToStatus(y), area: 'working' });
-              }
-            }
-          } else if (record.startsWith('u ')) {
-            // Unmerged entry
-            const path = pathAfterFields(record, 10);
-            if (path) entries.push({ path, status: 'conflicted', area: 'conflicted' });
-          } else if (record.startsWith('? ')) {
-            const path = record.slice(2);
-            if (path) entries.push({ path, status: 'untracked', area: 'untracked' });
-          }
-        }
-
-        resolve(entries);
+        resolve(parseFilesOutput(stdout));
       }
     );
   });
@@ -383,8 +383,8 @@ export interface GitBranch {
   current: boolean;
 }
 
-export async function listGitBranches(cwd: string): Promise<GitBranch[]> {
-  const stdout = await execGitWithOutput(cwd, ['branch', '--list']);
+/** Pure `branch --list` parser (shared by the local sink and the remote sibling, R2 gitOn). */
+export function parseBranchOutput(stdout: string): GitBranch[] {
   const branches: GitBranch[] = [];
   for (const line of stdout.split('\n')) {
     const trimmed = line.trimEnd();
@@ -396,6 +396,11 @@ export async function listGitBranches(cwd: string): Promise<GitBranch[]> {
     branches.push({ name, current });
   }
   return branches;
+}
+
+export async function listGitBranches(cwd: string): Promise<GitBranch[]> {
+  const stdout = await execGitWithOutput(cwd, ['branch', '--list']);
+  return parseBranchOutput(stdout);
 }
 
 /**
@@ -499,6 +504,50 @@ export async function gitDiscardFile(cwd: string, filePath: string, area: GitFil
   }
 }
 
+/**
+ * Pure `worktree list --porcelain` block parser. `normalizePath` lets the
+ * local sink canonicalize macOS symlinked paths (C5G-10) while the remote
+ * sibling keeps the host's spelling verbatim (R2: no local fs call touches
+ * a remote path).
+ */
+export function parseWorktreeOutput(
+  stdout: string,
+  normalizePath: (p: string) => string = (p) => p,
+): GitWorktree[] {
+  const worktrees: GitWorktree[] = [];
+  const blocks = stdout.split('\n\n');
+
+  for (const block of blocks) {
+    const lines = block.trim().split('\n');
+    if (lines.length === 0 || !lines[0]) continue;
+
+    let path = '';
+    let head = '';
+    let branch: string | null = null;
+    let isBare = false;
+
+    for (const line of lines) {
+      if (line.startsWith('worktree ')) {
+        path = line.slice('worktree '.length);
+      } else if (line.startsWith('HEAD ')) {
+        head = line.slice('HEAD '.length);
+      } else if (line.startsWith('branch ')) {
+        const ref = line.slice('branch '.length);
+        branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+      } else if (line === 'bare') {
+        isBare = true;
+      } else if (line === 'detached') {
+        branch = null;
+      }
+    }
+
+    if (path) {
+      worktrees.push({ path: normalizePath(path), head, branch, isBare });
+    }
+  }
+  return worktrees;
+}
+
 export function getGitWorktrees(cwd: string): Promise<GitWorktree[]> {
   return new Promise((resolve) => {
     execFile(
@@ -510,46 +559,22 @@ export function getGitWorktrees(cwd: string): Promise<GitWorktree[]> {
           resolve([]);
           return;
         }
-
-        const worktrees: GitWorktree[] = [];
-        const blocks = stdout.split('\n\n');
-
-        for (const block of blocks) {
-          const lines = block.trim().split('\n');
-          if (lines.length === 0 || !lines[0]) continue;
-
-          let path = '';
-          let head = '';
-          let branch: string | null = null;
-          let isBare = false;
-
-          for (const line of lines) {
-            if (line.startsWith('worktree ')) {
-              path = line.slice('worktree '.length);
-            } else if (line.startsWith('HEAD ')) {
-              head = line.slice('HEAD '.length);
-            } else if (line.startsWith('branch ')) {
-              const ref = line.slice('branch '.length);
-              branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
-            } else if (line === 'bare') {
-              isBare = true;
-            } else if (line === 'detached') {
-              branch = null;
-            }
-          }
-
-          if (path) {
-            // C5G-10: macOS lsof returns symlink-resolved cwd (/private/tmp...);
-            // canonicalize both sides so the renderer's prefix match hits /tmp worktrees.
-            if (isMac) path = canonicalPath(path);
-            worktrees.push({ path, head, branch, isBare });
-          }
-        }
-
-        resolve(worktrees);
+        // C5G-10: macOS lsof returns symlink-resolved cwd (/private/tmp...);
+        // canonicalize both sides so the renderer's prefix match hits /tmp worktrees.
+        resolve(parseWorktreeOutput(stdout, isMac ? canonicalPath : (p) => p));
       }
     );
   });
+}
+
+/** Pure remote-URL normalizer: SSH git@host:owner/repo.git → https://host/owner/repo. */
+export function normalizeRemoteUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  // Normalize SSH (git@github.com:owner/repo.git) to HTTPS
+  const ssh = trimmed.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (ssh) return `https://${ssh[1]}/${ssh[2]}`;
+  // Strip trailing .git from HTTPS URLs
+  return trimmed.replace(/\.git$/, '') || null;
 }
 
 export function getGitRemoteUrl(cwd: string): Promise<string | null> {
@@ -560,12 +585,7 @@ export function getGitRemoteUrl(cwd: string): Promise<string | null> {
     // forever. The failure shape is unchanged: err (incl. ETIMEDOUT) → null.
     execFile(gitBinary(), ['remote', 'get-url', 'origin'], { cwd, timeout: 5000 }, (err, stdout) => {
       if (err) { resolve(null); return; }
-      const raw = stdout.trim();
-      // Normalize SSH (git@github.com:owner/repo.git) to HTTPS
-      const ssh = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
-      if (ssh) { resolve(`https://${ssh[1]}/${ssh[2]}`); return; }
-      // Strip trailing .git from HTTPS URLs
-      resolve(raw.replace(/\.git$/, '') || null);
+      resolve(normalizeRemoteUrl(stdout));
     });
   });
 }
@@ -585,12 +605,17 @@ async function readUntrackedDiff(fullPath: string, filePath: string): Promise<st
       length += bytesRead;
     }
     if (length > limit) return '(file too large to preview; limit 256 KiB)';
-    if (buffer.subarray(0, length).includes(0)) return '(binary file; no text preview)';
-    // CRLF/CR → LF before counting: the renderer splits rendered content on
-    // LF only, so the hunk header must count the lines the viewer shows.
-    const lines = normalizeNewlines(buffer.toString('utf8', 0, length)).split('\n');
-    if (lines.length > 5000) return '(too many lines to preview; limit 5,000 lines)';
-    return '--- /dev/null\n+++ b/' + filePath + '\n@@ -0,0 +1,' + lines.length + ' @@\n' + lines.map(line => '+' + line).join('\n');
+    return formatUntrackedDiff(buffer.subarray(0, length).toString('utf8'), filePath);
   } catch { return '(unable to read file)'; }
   finally { await handle?.close().catch(() => {}); }
+}
+
+/** Pure untracked-file diff body (shared with the remote sibling, R2 gitOn). */
+export function formatUntrackedDiff(raw: string, filePath: string): string {
+  if (raw.includes('\u0000')) return '(binary file; no text preview)';
+  // CRLF/CR → LF before counting: the renderer splits rendered content on
+  // LF only, so the hunk header must count the lines the viewer shows.
+  const lines = normalizeNewlines(raw).split('\n');
+  if (lines.length > 5000) return '(too many lines to preview; limit 5,000 lines)';
+  return '--- /dev/null\n+++ b/' + filePath + '\n@@ -0,0 +1,' + lines.length + ' @@\n' + lines.map(line => '+' + line).join('\n');
 }
