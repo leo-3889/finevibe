@@ -58,9 +58,15 @@ beforeEach(() => {
 // gemini-hooks) aborts the install and leaves the file untouched.
 describe('install over a corrupt hooks.json (P2-60)', () => {
   const TOML = '[features]\ncodex_hooks = true\n';
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-  afterEach(() => warn.mockClear());
+  // Spy PER TEST: the P1-6 console-guard afterEach mockRestores every console
+  // spy after each test, so a describe-scope spy (created once at collection)
+  // is inert for every test after the file's first - shuffled order made the
+  // warn assertion see 0 calls. Fresh spy per case, restored after.
+  let warn: MockedFunction<(...args: unknown[]) => void>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {}) as MockedFunction<(...args: unknown[]) => void>;
+  });
+  afterEach(() => warn.mockRestore());
 
   it('syntax-broken hooks.json: no write to hooks.json, warning logged', () => {
     mockFiles({ [CONFIG_TOML]: TOML, [HOOKS_JSON]: '{"hooks": {"Stop": [' });

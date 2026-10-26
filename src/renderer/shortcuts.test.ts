@@ -21,6 +21,10 @@ describe('shortcut focus/modal guard', () => {
 
   beforeEach(() => {
     manager = new ShortcutManager();
+    // appState is a module-level mock (file lifetime); the keybinding
+    // rebind test sets a global 'close-session' override - every dispatch
+    // describe must start from the empty default, not a shuffled neighbor.
+    appState.preferences.keybindings = {};
     closeCalls = 0;
     zoomCalls = 0;
     manager.registerHandler('close-session', () => { closeCalls++; return true; });
@@ -133,6 +137,7 @@ describe('shortcut overlay guard (overlays outside modal-shell)', () => {
 
   beforeEach(() => {
     manager = new ShortcutManager();
+    appState.preferences.keybindings = {}; // module-level mock - see guard describe
     closeCalls = 0;
     manager.registerHandler('close-session', () => { closeCalls++; return true; });
     document.body.innerHTML = '';

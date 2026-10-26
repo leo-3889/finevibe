@@ -69,6 +69,7 @@ vi.mock('./store', () => ({
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { invalidateCanonicalPathCache } from './fs-utils';
 import { addMcpServer, getClaudeConfig, getSupportedHookEvents, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
 import { isFineVibeStatusLine } from './settings-guard';
 import { installEventScript, stopStatusCmd } from './hook-commands';
@@ -124,6 +125,19 @@ const enoent = () => Object.assign(new Error('ENOENT: no such file or directory'
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence (coherence pass): clearAllMocks clears CALLS but keeps
+  // IMPLEMENTATIONS - a shuffled predecessor's fs mocks (realpathSync casing
+  // fixtures at the tree tests, write-capture stubs) answered this case.
+  // Reset the whole surface to factory defaults, then set the baseline.
+  for (const m of [mockReadFileSync, mockReaddirSync, mockWriteFileSync, mockMkdirSync, mockOpenSync, mockWriteSync, mockFsyncSync, mockCloseSync, mockRenameSync, vi.mocked(fs.realpathSync), vi.mocked(getClaudeVersion)]) m.mockReset();
+  // mockReset strips even the vi.fn(impl) constructor implementation (Vitest>=1),
+  // so re-establish the factory default the whole suite assumes: identity realpath.
+  vi.mocked(fs.realpathSync).mockImplementation((p) => p);
+  // The fs-utils canonical caches (root: process-lifetime; target: 5s TTL)
+  // persist across cases: a predecessor's canonical form - computed under a
+  // DIFFERENT realpath mock (identity vs case-folded) - served this case and
+  // broke the allowlist compare. Every case starts with empty caches.
+  invalidateCanonicalPathCache();
   storeProfiles.length = 0;
   storeProjects.length = 0;
   // Default: all reads/dirs fail (empty state)

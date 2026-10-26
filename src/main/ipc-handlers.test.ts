@@ -274,6 +274,14 @@ function exitCallback(): ExitCallback {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: clearAllMocks clears CALLS but keeps implementations
+  // and leaked mockResolvedValueOnce chains. Several tests document and rely
+  // on the factory default "showMessageBox resolves response 0 (Cancel)" -
+  // a shuffled predecessor's mockResolvedValueOnce({response:1}) survived and
+  // made a denied-consent test enumerate the directory. Restore the factory
+  // baselines; clipboard.writeText is a bare vi.fn (reset to default).
+  vi.mocked(dialog.showMessageBox).mockReset().mockImplementation(() => Promise.resolve({ response: 0 } as never));
+  vi.mocked(clipboard.writeText).mockReset();
   calls.length = 0;
   // The home-outside consent Map is module state; each test starts fresh.
   _resetHomeOutsideConsentForTesting();
@@ -2602,6 +2610,9 @@ describe('fs:listDirs keystroke path (S4-04)', () => {
   });
 
   it('asks home-outside consent at most once per directory — repeats never re-prompt', async () => {
+    // OUTSIDE_HOME fixture + the beforeEach baseline (showMessageBox factory
+    // default restored, Once-queues from predecessors dropped): the consent
+    // answer for THIS directory is the one the Once below provides.
     vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
     const first = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
     const second = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
