@@ -8,20 +8,33 @@ import type { HostRecord } from '../../shared/types';
 const sftp = vi.hoisted(() => ({
   entries: vi.fn(),
   stat: vi.fn(),
+  read: vi.fn(),
+  readRange: vi.fn(),
 }));
 vi.mock('./ssh-client', () => ({
   sftpListDirEntries: (record: unknown, dir: string, opts?: unknown) => sftp.entries(record, dir, opts),
   sftpStat: (record: unknown, p: string, opts?: unknown) => sftp.stat(record, p, opts),
+  sftpRead: (record: unknown, p: string, opts?: unknown) => sftp.read(record, p, opts),
+  sftpReadRange: (record: unknown, p: string, pos: number, len: number, opts?: unknown) =>
+    sftp.readRange(record, p, pos, len, opts),
   exec: vi.fn(),
 }));
+
+// Project containment reads the persisted store (parent plan §11): the file
+// lanes only answer inside known project roots of the same host.
+const store = vi.hoisted(() => ({ projects: [] as Array<{ path: string; hostId?: string }> }));
+vi.mock('../store', () => ({ loadState: () => ({ projects: store.projects }) }));
 
 import { exec } from './ssh-client';
 import { getHost } from './host-registry';
 import {
   cloneRemoteRepo,
   ensureRemoteDir,
+  isRemotePathInKnownProject,
+  listRemoteDir,
   listRemoteDirs,
   normalizeRemotePath,
+  readRemoteFile,
   statRemotePath,
 } from './remote-fs';
 
@@ -39,7 +52,10 @@ beforeEach(() => {
   vi.mocked(getHost).mockReset().mockImplementation((id) => (id === 'h1' ? enrolled : null));
   sftp.entries.mockReset();
   sftp.stat.mockReset();
+  sftp.read.mockReset();
+  sftp.readRange.mockReset();
   vi.mocked(exec).mockReset();
+  store.projects = [{ path: '/home/dev/dev/app', hostId: 'h1' }];
 });
 
 describe('normalizeRemotePath', () => {
@@ -195,5 +211,90 @@ describe('cloneRemoteRepo', () => {
     await expect(cloneRemoteRepo('h1', 'https://github.com/o/r', '~/r'))
       .resolves.toMatchObject({ ok: false, error: expect.stringContaining('git is not installed') });
     expect(exec).not.toHaveBeenCalled();
+  });
+});
+
+describe('isRemotePathInKnownProject (file-lane containment, §11)', () => {
+  it('answers inside a project root of the same host, tolerating trailing slashes', () => {
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app')).toBe(true);
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app/src/main.ts')).toBe(true);
+    store.projects = [{ path: '/home/dev/dev/app/', hostId: 'h1' }];
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app/x')).toBe(true);
+  });
+
+  it('rejects siblings, parents, and other hosts', () => {
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app2')).toBe(false);
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev')).toBe(false);
+    expect(isRemotePathInKnownProject('h2', '/home/dev/dev/app')).toBe(false);
+    // A project with no hostId is a local project (store normalizes, the
+    // helper must not lean on that): never a root for a remote lane.
+    store.projects = [{ path: '/home/dev/dev/app' }];
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app')).toBe(false);
+  });
+});
+
+describe('listRemoteDir (fs:listDir rail)', () => {
+  it('lists files and dirs with joined paths', async () => {
+    sftp.entries.mockResolvedValue([dirEntry('src', true), dirEntry('README.md', false)]);
+    const res = await listRemoteDir('h1', '/home/dev/dev/app');
+    expect(res).toEqual({
+      ok: true,
+      entries: [
+        { name: 'src', path: '/home/dev/dev/app/src', isDirectory: true },
+        { name: 'README.md', path: '/home/dev/dev/app/README.md', isDirectory: false },
+      ],
+    });
+  });
+
+  it('caps one listing at MAX_REMOTE_LIST_ENTRIES', async () => {
+    sftp.entries.mockResolvedValue(
+      Array.from({ length: 2500 }, (_, i) => dirEntry(`f${i}`, false)),
+    );
+    const res = await listRemoteDir('h1', '/home/dev/dev/app');
+    expect(res.ok && res.entries).toHaveLength(2000);
+  });
+
+  it('refuses outside the host project roots before touching sftp', async () => {
+    const res = await listRemoteDir('h1', '/home/dev/etc');
+    expect(res.ok).toBe(false);
+    expect(sftp.entries).not.toHaveBeenCalled();
+  });
+
+  it('refuses unenrolled hosts, traversal, and dead dirs', async () => {
+    vi.mocked(getHost).mockReturnValue({ ...enrolled, enrollmentStatus: 'draft' });
+    expect((await listRemoteDir('h1', '/home/dev/dev/app')).ok).toBe(false);
+    vi.mocked(getHost).mockReturnValue(enrolled);
+    expect((await listRemoteDir('h1', '/home/dev/dev/app/../../etc')).ok).toBe(false);
+    sftp.entries.mockResolvedValue(null);
+    expect((await listRemoteDir('h1', '/home/dev/dev/app')).ok).toBe(false);
+  });
+});
+
+describe('readRemoteFile (fs:readFile rail)', () => {
+  it('reads a text file after the head sniff', async () => {
+    sftp.stat.mockResolvedValue({ isDirectory: false, size: 12, mtimeMs: 0 });
+    sftp.readRange.mockResolvedValue(Buffer.from('hello world\n'));
+    sftp.read.mockResolvedValue('hello world\n');
+    await expect(readRemoteFile('h1', '/home/dev/dev/app/x.txt'))
+      .resolves.toEqual({ ok: true, content: 'hello world\n' });
+  });
+
+  it('sniffs NUL as binary before the full read', async () => {
+    sftp.stat.mockResolvedValue({ isDirectory: false, size: 100, mtimeMs: 0 });
+    sftp.readRange.mockResolvedValue(Buffer.from([104, 105, 0, 33]));
+    await expect(readRemoteFile('h1', '/home/dev/dev/app/bin'))
+      .resolves.toEqual({ ok: false, reason: 'binary' });
+    expect(sftp.read).not.toHaveBeenCalled();
+  });
+
+  it('refuses over-cap sizes, dirs, missing files, and off-project paths', async () => {
+    sftp.stat.mockResolvedValue({ isDirectory: false, size: 9 * 1024 * 1024, mtimeMs: 0 });
+    expect(await readRemoteFile('h1', '/home/dev/dev/app/big')).toEqual({ ok: false, reason: 'error' });
+    sftp.stat.mockResolvedValue({ isDirectory: true, size: 0, mtimeMs: 0 });
+    expect(await readRemoteFile('h1', '/home/dev/dev/app/dir')).toEqual({ ok: false, reason: 'error' });
+    sftp.stat.mockResolvedValue(null);
+    expect(await readRemoteFile('h1', '/home/dev/dev/app/ghost')).toEqual({ ok: false, reason: 'error' });
+    expect(await readRemoteFile('h1', '/etc/passwd')).toEqual({ ok: false, reason: 'error' });
+    expect(sftp.read).not.toHaveBeenCalled();
   });
 });

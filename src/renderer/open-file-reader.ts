@@ -38,12 +38,14 @@ export async function openFileReaderChecked(
     // Sequential, never `Promise.all`: `fs:isDirectory` is the consent-gated
     // stat in main, so a path that does not exist must resolve on `exists`
     // alone — a parallel probe would ask the user to consent on a dead path.
-    const exists = await window.finevibe.fs.exists(fullPath);
+    // Remote projects (parent plan §11): project.hostId routes both probes
+    // over sftp in main ('local' rides the local rails untouched).
+    const exists = await window.finevibe.fs.exists(fullPath, project.hostId);
     if (!exists) {
       console.warn(`[open-file] not an openable file: ${fullPath}`);
       return;
     }
-    const isDir = await window.finevibe.fs.isDirectory(fullPath);
+    const isDir = await window.finevibe.fs.isDirectory(fullPath, project.hostId);
     if (isDir) {
       console.warn(`[open-file] not an openable file: ${fullPath}`);
       return;

@@ -79,7 +79,7 @@ describe('renderMarkdownContent link handling', () => {
   it('does not open a tab for a directory link', async () => {
     isDirectory.mockResolvedValue(true);
     clickFirstLink('[x](../guides)', '/repo/docs');
-    await vi.waitFor(() => expect(isDirectory).toHaveBeenCalledWith('/repo/guides'));
+    await vi.waitFor(() => expect(isDirectory).toHaveBeenCalledWith('/repo/guides', undefined));
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
@@ -248,6 +248,48 @@ describe('CRLF rendering (raw file reader)', () => {
       expect(rows[2].querySelector('.file-reader-line-text')?.textContent).toBe('c');
     } finally {
       destroyFileReaderPane('lf');
+    }
+  });
+});
+
+describe('remote file preview (per-host providers, parent plan §11)', () => {
+  it('routes the read through the host rail and registers no local watcher', async () => {
+    const readFile = vi.fn().mockResolvedValue({ ok: true, content: 'from the host' });
+    const watchDir = vi.fn();
+    Object.assign((globalThis as unknown as { window: { finevibe: { fs: unknown } } }).window.finevibe.fs, {
+      readFile, watchDir,
+    });
+    createFileReaderPane('remote-pane', '/home/dev/dev/app/x.ts', undefined, 'h1');
+    const instance = getFileReaderInstance('remote-pane')!;
+    document.body.appendChild(instance.element);
+    try {
+      showFileReaderPane('remote-pane', false);
+      await vi.waitFor(() => expect(instance.loaded).toBe(true));
+      expect(readFile).toHaveBeenCalledWith('/home/dev/dev/app/x.ts', 'h1');
+      expect(instance.element.textContent).toContain('from the host');
+      // No fs.watch over a remote path: the watcher is the local disk's.
+      expect(watchDir).not.toHaveBeenCalled();
+    } finally {
+      destroyFileReaderPane('remote-pane');
+    }
+  });
+
+  it('local panes keep the 2-arg read and the watcher', async () => {
+    const readFile = vi.fn().mockResolvedValue({ ok: true, content: 'local' });
+    const watchDir = vi.fn();
+    Object.assign((globalThis as unknown as { window: { finevibe: { fs: unknown } } }).window.finevibe.fs, {
+      readFile, watchDir,
+    });
+    createFileReaderPane('local-pane', '/repo/local.ts');
+    const instance = getFileReaderInstance('local-pane')!;
+    document.body.appendChild(instance.element);
+    try {
+      showFileReaderPane('local-pane', false);
+      await vi.waitFor(() => expect(instance.loaded).toBe(true));
+      expect(readFile).toHaveBeenCalledWith('/repo/local.ts', undefined);
+      expect(watchDir).toHaveBeenCalled();
+    } finally {
+      destroyFileReaderPane('local-pane');
     }
   });
 });

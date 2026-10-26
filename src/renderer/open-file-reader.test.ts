@@ -33,7 +33,7 @@ describe('openFileReaderChecked', () => {
 
   it('resolves relative paths against the project path and leaves absolute ones alone', async () => {
     await openFileReaderChecked('p1', '/elsewhere/foo.ts');
-    expect(exists).toHaveBeenCalledWith('/elsewhere/foo.ts');
+    expect(exists).toHaveBeenCalledWith('/elsewhere/foo.ts', undefined);
     expect(addFileReaderSession).toHaveBeenCalledWith('p1', '/elsewhere/foo.ts', undefined);
   });
 
@@ -49,7 +49,7 @@ describe('openFileReaderChecked', () => {
     // on a path that does not even exist.
     exists.mockResolvedValue(false);
     await openFileReaderChecked('p1', 'src/gone.ts');
-    expect(exists).toHaveBeenCalledWith('/repo/src/gone.ts');
+    expect(exists).toHaveBeenCalledWith('/repo/src/gone.ts', undefined);
     expect(isDirectory).not.toHaveBeenCalled();
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
@@ -87,5 +87,15 @@ describe('openFileReaderChecked', () => {
     activeProject = null;
     await openFileReaderChecked('p1', 'src/foo.ts');
     expect(addFileReaderSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('remote projects (per-host providers, parent plan §11)', () => {
+  it('threads the project hostId through both open probes', async () => {
+    activeProject = { id: 'p1', path: '/home/dev/dev/app', hostId: 'h1' } as never;
+    await openFileReaderChecked('p1', 'src/foo.ts');
+    expect(exists).toHaveBeenCalledWith('/home/dev/dev/app/src/foo.ts', 'h1');
+    expect(isDirectory).toHaveBeenCalledWith('/home/dev/dev/app/src/foo.ts', 'h1');
+    expect(addFileReaderSession).toHaveBeenCalledWith('p1', '/home/dev/dev/app/src/foo.ts', undefined);
   });
 });

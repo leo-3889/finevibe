@@ -18,8 +18,10 @@
 import * as path from 'path';
 import type { HostRecord } from '../../shared/types';
 import { detectGitCheckoutUrl } from '../../shared/git-url';
+import { isBinaryBuffer } from '../fs-utils';
+import { loadState } from '../store';
 import { getHost } from './host-registry';
-import { exec, sftpListDirEntries, sftpStat } from './ssh-client';
+import { exec, sftpListDirEntries, sftpRead, sftpReadRange, sftpStat } from './ssh-client';
 import { remotePathArg } from './settings-sync';
 
 /** Listing cap for the dir browser — bounds one readdir payload (the local
@@ -27,7 +29,20 @@ import { remotePathArg } from './settings-sync';
  * page needs the directory, and 500 names is ~20 KB). */
 export const MAX_REMOTE_LIST_DIRS = 500;
 
+/** Listing cap for the remote FILE tree — bounds one readdir payload like
+ * MAX_REMOTE_LIST_DIRS bounds the dir browser. 2000 names is ~80 KB over
+ * sftp; a project root that overflows it renders truncated (the local
+ * fs:listDir is uncapped, the watcher keeps it honest; a remote tree has no
+ * watcher and a bounded payload is the whole point). */
+export const MAX_REMOTE_LIST_ENTRIES = 2000;
+
+/** Read cap for the remote file preview — parity with the local
+ * MAX_READ_FILE_BYTES (ipc-handlers), so a tree open behaves the same on
+ * both sides of the wire. */
+export const MAX_REMOTE_READ_BYTES = 8 * 1024 * 1024;
+
 const LIST_TIMEOUT_MS = 10_000;
+const READ_TIMEOUT_MS = 30_000;
 const STAT_TIMEOUT_MS = 10_000;
 const MKDIR_TIMEOUT_MS = 15_000;
 /** Mirrors the local GIT_CLONE_TIMEOUT_MS (ipc-handlers.ts): a clone on a
@@ -131,6 +146,91 @@ export async function statRemotePath(hostId: unknown, target: unknown): Promise<
     return { ok: true, isDirectory: stat.isDirectory, size: stat.size, mtimeMs: stat.mtimeMs };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Project containment for the remote FILE lanes (parent plan §11: "gated by
+ * the same project containment rules as local fs:*"). The local analogue is
+ * `isAllowedReadPath`: a file read must sit under a known project root. The
+ * remote root set is the persisted ProjectRecords whose `hostId` is this
+ * host (paths stored posix at add-time; trailing separators tolerated).
+ * The dir-browser lanes (listDirs/stat/ensureDir/cloneRepo) are NOT gated
+ * by this — the HostRecord is their consent (council R-1, T5); this gate
+ * narrows the always-on tree/preview rails to what the user opened.
+ */
+export function isRemotePathInKnownProject(hostId: string, target: string): boolean {
+  for (const p of loadState().projects) {
+    if ((p.hostId ?? 'local') !== hostId) continue;
+    const root = p.path.replace(/\/+$/, '');
+    if (!root) continue;
+    if (target === root || target.startsWith(root + '/')) return true;
+  }
+  return false;
+}
+
+export interface RemoteDirEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+}
+
+/**
+ * The `fs:listDir` answer for a remote directory: files AND dirs, dotfiles
+ * included (parity with the local channel — the renderer sorts/filters).
+ * Gated: host enrolled|partial + path safety + project containment.
+ * Every failure answers as an empty listing would not — the caller (the
+ * IPC handler) maps errors to `[]` like the local channel's catch.
+ */
+export async function listRemoteDir(
+  hostId: unknown,
+  dirPath: unknown,
+): Promise<{ ok: true; entries: RemoteDirEntry[] } | { ok: false; error: string }> {
+  const gate = gateHost(hostId);
+  if ('error' in gate) return { ok: false, error: gate.error };
+  const dir = normalizeRemotePath(dirPath);
+  if (dir === null) return { ok: false, error: `Unsafe remote path: ${JSON.stringify(dirPath)}` };
+  if (!isRemotePathInKnownProject(gate.record.id, dir)) {
+    return { ok: false, error: `Not a known project path: ${dir}` };
+  }
+  try {
+    const entries = await sftpListDirEntries(gate.record, dir, { timeoutMs: LIST_TIMEOUT_MS });
+    if (entries === null) return { ok: false, error: `No such directory: ${dir}` };
+    const out = entries
+      .slice(0, MAX_REMOTE_LIST_ENTRIES)
+      .map((e) => ({ name: e.name, path: remoteJoin(dir, e.name), isDirectory: e.isDirectory }));
+    return { ok: true, entries: out };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * The `fs:readFile` answer for a remote file: size-capped, head-sniffed for
+ * binary (NUL in the first 8 KiB, the `isBinaryBuffer` rule), then the whole
+ * file over sftp. Shape-mirrors the local channel's ReadFileResult.
+ */
+export async function readRemoteFile(
+  hostId: unknown,
+  target: unknown,
+): Promise<{ ok: true; content: string } | { ok: false; reason: 'binary' | 'error' }> {
+  const gate = gateHost(hostId);
+  if ('error' in gate) return { ok: false, reason: 'error' };
+  const p = normalizeRemotePath(target);
+  if (p === null) return { ok: false, reason: 'error' };
+  if (!isRemotePathInKnownProject(gate.record.id, p)) return { ok: false, reason: 'error' };
+  try {
+    const stat = await sftpStat(gate.record, p, { timeoutMs: STAT_TIMEOUT_MS });
+    if (stat === null || stat.isDirectory) return { ok: false, reason: 'error' };
+    if (stat.size > MAX_REMOTE_READ_BYTES) return { ok: false, reason: 'error' };
+    const head = await sftpReadRange(gate.record, p, 0, 8192, { timeoutMs: READ_TIMEOUT_MS });
+    if (head === null) return { ok: false, reason: 'error' };
+    if (isBinaryBuffer(head)) return { ok: false, reason: 'binary' };
+    const content = await sftpRead(gate.record, p, { timeoutMs: READ_TIMEOUT_MS });
+    if (content === null) return { ok: false, reason: 'error' };
+    return { ok: true, content };
+  } catch {
+    return { ok: false, reason: 'error' };
   }
 }
 

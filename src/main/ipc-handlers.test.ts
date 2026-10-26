@@ -204,6 +204,7 @@ vi.mock('./hosts/host-registry', autoStub);
 vi.mock('./hosts/enrollment', autoStub);
 vi.mock('./hosts/remote-provider-config', autoStub);
 vi.mock('./hosts/settings-sync', autoStub);
+vi.mock('./hosts/remote-fs', autoStub);
 
 import {
   registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
@@ -223,6 +224,7 @@ import { getHost } from './hosts/host-registry';
 import { refreshHostTools, provisionRemoteProfileDir } from './hosts/enrollment';
 import { syncSettingsToHost } from './hosts/settings-sync';
 import { getRemoteProviderConfig } from './hosts/remote-provider-config';
+import { listRemoteDir, readRemoteFile, statRemotePath } from './hosts/remote-fs';
 function makeProvider(): CliProvider {
   return {
     // hookStatus off keeps the post-spawn settings-warning block out of the way.
@@ -3363,5 +3365,48 @@ describe('per-host provider channels (per-host providers T1)', () => {
     const localOpts = mockRegisterSync.mock.calls[0][5] as { sessionDir?: string; hostId?: string };
     expect(localOpts.hostId).toBeUndefined();
     expect(localOpts.sessionDir).not.toContain('~/.finevibe/sessions');
+  });
+});
+
+describe('remote fs rails (per-host providers, parent plan §11)', () => {
+  const REMOTE = '/home/dev/dev/app';
+
+  it('routes a registry hostId to the sftp lanes and keeps their shapes', async () => {
+    vi.mocked(listRemoteDir).mockResolvedValueOnce({
+      ok: true,
+      entries: [{ name: 'a.ts', path: `${REMOTE}/a.ts`, isDirectory: false }],
+    });
+    await expect(handlers.get('fs:listDir')!({}, REMOTE, 'h1')).resolves.toEqual([
+      { name: 'a.ts', path: `${REMOTE}/a.ts`, isDirectory: false },
+    ]);
+    expect(listRemoteDir).toHaveBeenCalledWith('h1', REMOTE);
+
+    vi.mocked(readRemoteFile).mockResolvedValueOnce({ ok: true, content: 'x' });
+    await expect(handlers.get('fs:readFile')!({}, `${REMOTE}/a.ts`, 'h1')).resolves.toEqual({ ok: true, content: 'x' });
+
+    vi.mocked(statRemotePath).mockResolvedValue({ ok: true, isDirectory: true, size: 0, mtimeMs: 5 });
+    await expect(handlers.get('fs:isDirectory')!({}, REMOTE, 'h1')).resolves.toBe(true);
+    await expect(handlers.get('fs:exists')!({}, REMOTE, 'h1')).resolves.toBe(true);
+    await expect(handlers.get('fs:stat')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: true, size: 0, mtimeMs: 5 });
+    vi.mocked(statRemotePath).mockResolvedValue({ ok: false });
+    await expect(handlers.get('fs:exists')!({}, REMOTE, 'h1')).resolves.toBe(false);
+    await expect(handlers.get('fs:stat')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: false });
+  });
+
+  it('rail failures answer the local failure shapes, never a rejection', async () => {
+    vi.mocked(listRemoteDir).mockRejectedValueOnce(new Error('host down'));
+    await expect(handlers.get('fs:listDir')!({}, REMOTE, 'h1')).resolves.toEqual([]);
+    vi.mocked(readRemoteFile).mockResolvedValueOnce({ ok: false, reason: 'binary' });
+    await expect(handlers.get('fs:readFile')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: false, reason: 'binary' });
+  });
+
+  it('local and absent hostId never touch the remote lanes', async () => {
+    vi.mocked(listRemoteDir).mockClear();
+    vi.mocked(statRemotePath).mockClear();
+    await handlers.get('fs:listDir')!({}, OUTSIDE_HOME, 'local');
+    await handlers.get('fs:listDir')!({}, OUTSIDE_HOME);
+    await handlers.get('fs:exists')!({}, OUTSIDE_HOME, 'local');
+    expect(listRemoteDir).not.toHaveBeenCalled();
+    expect(statRemotePath).not.toHaveBeenCalled();
   });
 });
