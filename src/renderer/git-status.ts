@@ -143,11 +143,14 @@ async function poll(): Promise<void> {
       if (!project) break;
       if (isRemoteProject(project)) {
         // Phase 3 coherence: git runs on this machine - the project lives on
-        // a host. Drop any cached status so no surface (bar, panel, worktree
-        // menu) keeps rendering a stale/local answer for the remote project.
+        // a host. Drop every cached answer (status, worktrees, manual
+        // overrides) so no surface - bar, panel, worktree selector - keeps
+        // rendering a stale/local answer for the remote project.
         for (const key of [...cache.keys()]) {
           if (key === project.id || key.startsWith(`${project.id}:`)) cache.delete(key);
         }
+        worktreeCache.delete(project.id);
+        manualOverride.delete(project.id);
         break;
       }
 

@@ -4,6 +4,7 @@ import { buildAgentMarkdown } from '../components/team/agent-markdown.js';
 import { getTeamCapableProviderIds } from '../provider-availability.js';
 import { isCliSession } from '../session-utils.js';
 import { resolveProfile } from './specialized-sessions.js';
+import { profileHost } from '../../shared/profile-keys.js';
 import { buildCliSession } from './session-factory.js';
 
 /**
@@ -116,10 +117,15 @@ export function pickTeamChatProvider(
 export function resolvePinnedTeamProfile(
   member: TeamMember,
   profiles: Profile[],
+  hostId?: string,
 ): Profile | undefined {
   if (!member.profileId) return undefined;
   const pinned = profiles.find((p) => p.id === member.profileId);
   if (!pinned) return undefined;
+  // A profile is a directory on ONE machine (Phase 1 rule): a launch on a
+  // remote project can never run a local profile's config dir, so a
+  // cross-host pin resolves to no-pin - exactly what startTeamChat spawns.
+  if (hostId && profileHost(pinned) !== hostId) return undefined;
   return getTeamCapableProviderIds().has(pinned.providerId) ? pinned : undefined;
 }
 
@@ -140,7 +146,7 @@ export function resolveTeamChatBackend(
   profiles: Profile[],
   overrideProviderId: ProviderId | undefined,
 ): { providerId: ProviderId; profileId?: string } | undefined {
-  const pinned = resolvePinnedTeamProfile(member, profiles);
+  const pinned = resolvePinnedTeamProfile(member, profiles, project.hostId);
   if (pinned) return { providerId: pinned.providerId, profileId: pinned.id };
   const providerId = pickTeamChatProvider(activeSession, prefs.defaultProvider, overrideProviderId ?? project.defaultProvider);
   if (!providerId) return undefined;

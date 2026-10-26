@@ -327,4 +327,22 @@ describe('git-panel file rows — path rendering (P2-102)', () => {
     expect(badge.textContent).toBe('M');
     expect(badge.className).toBe('git-file-badge modified');
   });
+
+  // Coherence Phase 3 + audit 2026-10-26: a remote project must render the
+  // explicit remote state FIRST - a stale local worktree list must never
+  // appear above it (the audit's P2: selector rendered before the remote
+  // branch consumed the panel).
+  it('remote project: remote state renders and a stale worktree selector never appears', () => {
+    vi.mocked(getWorktrees).mockReturnValue([
+      { path: '/wt/main', branch: 'main' },
+      { path: '/wt/x', branch: 'x' },
+    ] as never);
+    const remoteProject = { id: 'p1', path: '/srv/app', hostId: 'host-1' } as never;
+    (appState as { activeProject: unknown }).activeProject = remoteProject;
+    const container = makeContainer();
+    mountGitPanel(remoteProject, container);
+    expect(container.querySelector('.git-worktree-selector')).toBeNull();
+    expect(container.querySelector('.config-empty')?.textContent).toContain('Git runs on this machine');
+    expect(getFiles).not.toHaveBeenCalled();
+  });
 });

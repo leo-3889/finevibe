@@ -14,6 +14,24 @@ A silent local fallback on a remote-scope target — local git shown for a remot
 
 Enforcement status — **Phase 1 (profiles)**: the Profiles section edits ONE host at a time (scope select drives list, defaults, Add-form); new-session/project pickers offer only launch-host profiles; `defaultProfiles` keys are `<hostId>|<providerId>` (bare key = local, zero migration, no cross-host inheritance); `resolveProfile` drops pins whose profile lives on another machine (`src/shared/profile-keys.ts`). **Phase 2 (Setup)**: a scope select (= `Preferences.activeHostId`, the sidebar's own control) chooses the machine; remote scope probes binaries via `provider:checkBinary(id, hostId)`, never runs local statusline/hooks validation (Settings-sync tiers shown instead), un-enrolled hosts get an enroll-first row, missing binary offers Re-check — the Setup badge stays local (app readiness). Phase 3 (git/quick-open/storage explicit states) follows. **Phase 3 (silent lies)**: git panel + quick-open render explicit remote-scope states naming the host (no local scan, no "clean tree"/"No files found" lies); `git-status.ts` skips polling/watching remote projects and drops their caches; main-side belt (`ipc-handlers.ts remoteProjectOwnerOf`, `store.getRemoteProjectRoots`) refuses remote-project-rooted cwds on every `git:*` channel (`requireGitRoot`) and `fs:listFiles`, with greppable `blocked: … remote host` log lines. Storage section needs nothing (it sizes userData subtrees only). The read-only remote git panel over the exec lane is the owner-promised next task.
 
+## Host-first-class architecture (owner-ratified 2026-10-26)
+
+The coding tools are scoped to hosts; the architecture must reflect that — **host is a dimension of the contract, not a bolt-on parameter**. Binding rules for every provider-plane capability:
+
+- **R1 — operation contract.** Every provider-plane operation is shaped `(hostId, providerId, …)`. Local is a VALUE of `hostId`, never the parameter-less code path. Wire formats may keep trailing-optional `hostId` for compatibility (Local wire byte-identical), but module APIs take the host explicitly.
+- **R2 — sibling lanes.** Each host-routed capability is one lane abstraction with one signature: `execOn(hostId)` / `fsOn(hostId)` / `gitOn(hostId)` — the LOCAL implementation (child_process, fs, local git) is a SIBLING selected by hostId, never a fallback that remote degrades into. Existing instances: `remote-fs.ts` rails, `checkBinary(id, hostId)`, `profiles:provision`. Retrofit backlog: `git:*` channels (Phase 3.5 — the read-only remote git panel IS `gitOn(hostId)`: status/diff over the exec lane, local git behind the same signature; the refuse-bolt retires), then `fs:listFiles` (sftp walk).
+- **R3 — host-scoped gates.** Path containment is evaluated against THAT host's project records (posix for remote), never by canonicalizing a remote string on the local filesystem — phantom-path equality is the shared-fiction bug the Phase 3 belt patches. The launch gate's host-aware form is the Phase 0 acceptance contract (concurrent lane).
+- **R4 — host-scoped identity.** Profiles, config dirs, project roots and default-profile keys belong to exactly one host (`src/shared/profile-keys.ts`); pickers filter by host, resolvers (`resolveProfile`, `resolvePinnedTeamProfile`) drop cross-host pins at launch scope.
+
+Per-operation scoping matrix (2026-10-26, audit §6):
+
+| Plane | Host-scoped | Local-only (belt-refused / tiered per the coherence principle) |
+|---|---|---|
+| Runtime: spawn, shell, `checkBinary` (7/7), status sidecars, transcripts, Add-project verbs, profile provision | ✅ via SSH lanes (spawn hostId = Phase 0 lane, in flight) | — |
+| FS rails: `listDir`/`readFile`/`stat`/`exists`/`isDirectory` | ✅ `remote-fs.ts` siblings | `fs:listFiles` (belt-refused; R2 retrofit = sftp walk) |
+| Config plane: settings sync 3/7, `getConfig` 3/7 | ✅ | hooks/statusline validation (Setup tier, sync-routed) |
+| Git: status/files/diff/worktrees/branches | 0/7 → Phase 3.5 `gitOn(hostId)` | all `git:*` (belt-refused) |
+
 ## Registry
 
 `HostRecord` (`src/shared/types.ts`) lives in `PersistedState.hosts` (`src/main/store.ts`). Every load path (`loadState`, `saveState`, `saveStateSync`, `defaultState`) normalizes the array through `validateHostRecordShape` (`src/shared/ssh-host.ts`): entries that are not objects, miss required fields, carry an out-of-range port, or hold a non-POSIX `defaultFolder` are dropped, never repaired. The renderer hydrates the same shape (`hydrateLoadedState`, `src/renderer/state/persistence.ts`) but never writes hosts directly — all mutations go through `hosts:*` IPC into `src/main/hosts/host-registry.ts` (create/update/delete; create honors a draft `id` so a pre-generated keypair directory matches its host).

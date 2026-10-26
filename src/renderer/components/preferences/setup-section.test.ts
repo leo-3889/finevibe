@@ -179,4 +179,15 @@ describe('Setup section host scope', () => {
     expect(mockState.setActiveHost).toHaveBeenCalledWith('local');
     expect(ctx.rerenderSection).toHaveBeenCalledWith('setup');
   });
+
+  it('scope select includes the active NON-enrolled host (audit P3: select must not silently read Local)', async () => {
+    mockRegistry.hosts = [{ id: 'host-2', name: 'labbox', enrollmentStatus: 'failed' }];
+    mockState.activeHostId = 'host-2';
+    const container = await render();
+    const scope = selectState.instances.get('setup-host-scope')!;
+    expect(scope.options.map((o) => o.label)).toEqual(['Local', 'labbox']);
+    // And the content is the honest enroll-first row, no probes.
+    expect(checkBinary).not.toHaveBeenCalled();
+    expect(collect(container, 'setup-check-label').map((n) => n.textContent)).toEqual(['Enroll this host first']);
+  });
 });
