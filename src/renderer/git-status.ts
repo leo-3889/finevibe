@@ -141,18 +141,9 @@ async function poll(): Promise<void> {
       // previous iteration was awaiting (that's why we looped).
       const project = appState.activeProject;
       if (!project) break;
-      if (isRemoteProject(project)) {
-        // Phase 3 coherence: git runs on this machine - the project lives on
-        // a host. Drop every cached answer (status, worktrees, manual
-        // overrides) so no surface - bar, panel, worktree selector - keeps
-        // rendering a stale/local answer for the remote project.
-        for (const key of [...cache.keys()]) {
-          if (key === project.id || key.startsWith(`${project.id}:`)) cache.delete(key);
-        }
-        worktreeCache.delete(project.id);
-        manualOverride.delete(project.id);
-        break;
-      }
+      // Phase 3.5: remote projects poll too - git:getStatus routes to the
+      // host's git over the exec lane (git-on.ts), so the same fetch serves
+      // both siblings. The old belt dropped every cached answer here instead.
 
       // Refresh worktree list every 3rd poll (~30s)
       worktreePollCounter++;
@@ -294,11 +285,15 @@ export function startPolling(): void {
   // the git panel would stay hidden until a session starts.
   const onActiveProjectChanged = () => {
     worktreePollCounter = 0; // Force worktree refresh on project switch
-    if (!appState.activeProject || isRemoteProject(appState.activeProject)) {
+    if (!appState.activeProject) {
       stopInterval();
       return;
     }
-    window.finevibe.git.watchProject(appState.activeProject.path);
+    // Phase 3.5: remote projects poll (git answers over the exec lane) but
+    // never start a local watcher - there is no local tree to watch.
+    if (!isRemoteProject(appState.activeProject)) {
+      window.finevibe.git.watchProject(appState.activeProject.path);
+    }
     startInterval(); // ensure the periodic timer is running
     poll(); // immediate refresh — startInterval() no-ops when a timer already exists
   };
