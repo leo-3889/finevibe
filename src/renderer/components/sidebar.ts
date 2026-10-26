@@ -24,7 +24,9 @@ import { gitChangeCount, onChange as onGitStatusChange } from '../git-status.js'
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW, ICON_SESSIONS, ICON_FILES, ICON_GIT } from '../icons.js';
 import { getLocale, onLocaleChange, t } from '../i18n.js';
 import { projectsForHost, hostChipHtml } from '../host-scope.js';
-import { getHostColor, getHostName, onHostsChange } from '../host-registry.js';
+import { getHost, getHostColor, getHostName, onHostsChange } from '../host-registry.js';
+import { showRemoteDirBrowser } from './remote-dir-browser.js';
+import { LOCAL_HOST_ID } from '../../shared/types.js';
 import { promptProjectSettings } from './project-settings.js';
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './tab-bar/menu.js';
 
@@ -591,13 +593,23 @@ export function toggleGitPanel(): void {
 }
 
 export function promptNewProject(): void {
+  // T5 (plan §6, UR-6): the SINGLE branch point. Under a non-local active tab
+  // every path verb (Browse, probe, create, clone) runs on the host over the
+  // hosts:* lanes; the local branches below are untouched. `remoteHome` is
+  // the prefill root (HostRecord.defaultFolder, fallback remote `~`).
+  const remoteHostId = appState.activeHostId;
+  const remote = remoteHostId !== LOCAL_HOST_ID;
+  const remoteHome = getHost(remoteHostId)?.defaultFolder?.trim() || '~';
+
   // A new project has no sessions yet, so its coding tool is the global
   // default — scope the profile picker to that tool.
   const profileOptions = providerProfileOptions(appState.preferences.defaultProvider ?? 'claude');
 
   // Live-read so a General-section change while the modal is open is honored
   // on confirm; the pre-fill/sync uses the folder as it was at open.
-  const currentFolder = () => appState.preferences.defaultProjectsFolder?.trim() ?? '';
+  const currentFolder = () => (remote
+    ? remoteHome
+    : appState.preferences.defaultProjectsFolder?.trim() ?? '');
   const initialFolder = currentFolder();
   let pathManuallyEdited = false;
   let cloning = false;
@@ -613,6 +625,21 @@ export function promptNewProject(): void {
       defaultValue: initialFolder || undefined,
       buttonLabel: t('sidebar.newProject.browseButton'),
       onButtonClick: async (input) => {
+        if (remote) {
+          // The local dialog is NEVER constructed under a non-local tab.
+          showRemoteDirBrowser({
+            hostId: remoteHostId,
+            title: t('sidebar.remoteBrowser.title', { name: getHostName(remoteHostId) }),
+            startPath: input.value.trim() || remoteHome,
+            onSelect: (dir) => {
+              input.value = dir;
+              pathManuallyEdited = true;
+              autoFillName(dir);
+              probeDirExists(dir);
+            },
+          });
+          return;
+        }
         const dir = await window.finevibe.fs.browseDirectory();
         if (!dir) return;
         input.value = dir;
@@ -656,7 +683,9 @@ export function promptNewProject(): void {
       // allowlisted roots that stat is a confirm-gated call (P2-38), so a
       // cancelled dialog answered "Directory does not exist" for a folder
       // that exists — and the Create verb created nothing.
-      const ensured = await window.finevibe.fs.ensureDirectory(rawPath);
+      const ensured = remote
+        ? await window.finevibe.hosts.ensureDir(remoteHostId, rawPath)
+        : await window.finevibe.fs.ensureDirectory(rawPath);
       if (!ensured.ok) {
         setModalError('project-path', t('sidebar.newProject.directoryNotCreated') + (ensured.error ? `: ${ensured.error}` : ''));
         return;
@@ -664,7 +693,9 @@ export function promptNewProject(): void {
       closeModal();
       // Main's resolved/canonical spelling, never the typed string: the
       // project record must carry the path main itself answers for.
-      appState.addProject(name, ensured.path!, values['profile'] || undefined);
+      // Local keeps its exact pre-T5 3-arg call; `hostId` is passed only
+      // when a host tab owns the path ('local' is the load-time default).
+      appState.addProject(name, ensured.path!, values['profile'] || undefined, ...(remote ? [remoteHostId] as const : []));
       return;
     }
 
@@ -672,15 +703,19 @@ export function promptNewProject(): void {
     // folder, browsed for when unset (plan item 2's friendlier fallback; a
     // cancelled browse leaves the modal open with the URL in place).
     const projectName = name || checkout.repoName;
+    // The remote parent is never empty (remoteHome defaults to `~`), so the
+    // browse-for-parent fallback below stays the local flow it always was.
     let parent = currentFolder();
     if (!parent) {
       const picked = await window.finevibe.fs.browseDirectory();
       if (!picked) return;
       parent = picked;
     }
-    const targetPath = await window.finevibe.fs.expandPath(
-      joinChildPath(parent, checkout.repoName)
-    );
+    // fs:expandPath resolves against the LOCAL disk — remote paths must never
+    // be canonicalized here; the hosts:cloneRepo handler normalizes.
+    const targetPath = remote
+      ? joinChildPath(parent, checkout.repoName)
+      : await window.finevibe.fs.expandPath(joinChildPath(parent, checkout.repoName));
 
     // Clone is the slow step: the confirm button carries the progress state
     // while it runs (the busy guard armed at entry swallows re-triggers).
@@ -691,7 +726,9 @@ export function promptNewProject(): void {
         confirmBtn.textContent = t('sidebar.newProject.cloning');
         confirmBtn.disabled = true;
       }
-      res = await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
+      res = remote
+        ? await window.finevibe.hosts.cloneRepo(remoteHostId, checkout.url, targetPath)
+        : await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
     } finally {
       if (confirmBtn) {
         confirmBtn.disabled = false;
@@ -703,7 +740,7 @@ export function promptNewProject(): void {
       return;
     }
       closeModal();
-      appState.addProject(projectName, targetPath, values['profile'] || undefined);
+      appState.addProject(projectName, targetPath, values['profile'] || undefined, ...(remote ? [remoteHostId] as const : []));
     } finally {
       cloning = false;
     }
@@ -747,9 +784,16 @@ export function promptNewProject(): void {
       apply(false);
       return;
     }
+    const probeChain = async (value: string): Promise<boolean> => {
+      if (remote) {
+        const res = await window.finevibe.hosts.stat(remoteHostId, value);
+        return res.ok && res.isDirectory === true;
+      }
+      const expanded = await window.finevibe.fs.expandPath(value);
+      return await window.finevibe.fs.isDirectory(expanded);
+    };
     try {
-      const expanded = await window.finevibe.fs.expandPath(trimmed);
-      apply(await window.finevibe.fs.isDirectory(expanded));
+      apply(await probeChain(trimmed));
     } catch {
       apply(false);
     }
@@ -876,7 +920,10 @@ export function promptNewProject(): void {
       if (suggestTimer !== null) clearTimeout(suggestTimer);
       suggestTimer = setTimeout(() => {
         suggestTimer = null;
-        window.finevibe.fs.listDirs(dirPart, namePart || undefined)
+        const listed = remote
+          ? window.finevibe.hosts.listDirs(remoteHostId, dirPart, namePart || undefined).then((r) => r.dirs ?? [])
+          : window.finevibe.fs.listDirs(dirPart, namePart || undefined);
+        listed
           .then((dirs) => { if (seq === suggestSeq) showSuggestions(dirs, dirPart); })
           .catch(() => {});
       }, 100);

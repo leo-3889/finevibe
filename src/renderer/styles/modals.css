@@ -664,3 +664,74 @@
 .vibeyard-import-skipped {
   color: var(--text-secondary);
 }
+
+/* Remote directory browser (per-host providers T5, UR-6): the Add-project
+   Browse pane for a non-local tab. Breadcrumb over a scrollable dir list. */
+.remote-browser-crumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+
+.remote-browser-crumb-item {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.remote-browser-crumb-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.remote-browser-crumb-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.remote-browser-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 160px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.remote-browser-item {
+  background: none;
+  border: none;
+  text-align: left;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.remote-browser-item:hover {
+  background: var(--bg-hover);
+}
+
+.remote-browser-empty,
+.remote-browser-error {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 6px;
+}
+
+.remote-browser-error {
+  color: var(--accent);
+  padding: 0 6px 6px;
+}

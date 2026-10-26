@@ -66,6 +66,13 @@
       "cloning": "正在克隆…",
       "cloneFailed": "克隆失败"
     },
+    "remoteBrowser": {
+      "title": "浏览 {name}",
+      "up": "上一层",
+      "loading": "加载中…",
+      "empty": "没有子文件夹",
+      "error": "无法列出该文件夹"
+    },
     "projectSettings": {
       "title": "项目设置",
       "defaultProfileLabel": "默认配置文件"

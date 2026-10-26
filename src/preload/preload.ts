@@ -90,6 +90,12 @@ export interface FineVibeApi {
     unenroll(id: string): Promise<{ ok: boolean; detail?: string }>;
     tools(id: string): Promise<HostRecord['prerequisites'] | null>;
     syncSettings(id: string, providerIds: ProviderId[], confirmOverwrite?: boolean): Promise<{ ok: boolean; drift?: string[]; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    /** Remote open/add folder (T5, UR-6): the Add-project verbs on the host.
+     * Main owns normalization/traversal/quoting; the record is the consent. */
+    listDirs(id: string, dirPath: string, prefix?: string): Promise<{ ok: boolean; dirs?: string[]; error?: string }>;
+    stat(id: string, path: string): Promise<{ ok: boolean; isDirectory?: boolean; size?: number; mtimeMs?: number; error?: string }>;
+    ensureDir(id: string, dirPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+    cloneRepo(id: string, url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
     onStatus(callback: (event: { id: string; status: string; detail?: string }) => void): () => void;
   };
   provider: {
@@ -340,6 +346,10 @@ const api: FineVibeApi = {
     unenroll: (id) => ipcRenderer.invoke('hosts:unenroll', id),
     tools: (id) => ipcRenderer.invoke('hosts:tools', id),
     syncSettings: (id, providerIds, confirmOverwrite) => ipcRenderer.invoke('hosts:syncSettings', id, providerIds, confirmOverwrite),
+    listDirs: (id, dirPath, prefix) => ipcRenderer.invoke('hosts:listDirs', id, dirPath, prefix),
+    stat: (id, target) => ipcRenderer.invoke('hosts:stat', id, target),
+    ensureDir: (id, dirPath) => ipcRenderer.invoke('hosts:ensureDir', id, dirPath),
+    cloneRepo: (id, url, destPath) => ipcRenderer.invoke('hosts:cloneRepo', id, url, destPath),
     onStatus: (callback) => onChannel('hosts:status', callback as (...args: unknown[]) => void),
   },
   git: {

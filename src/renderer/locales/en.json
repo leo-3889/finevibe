@@ -66,6 +66,13 @@
       "cloning": "Cloning…",
       "cloneFailed": "Clone failed"
     },
+    "remoteBrowser": {
+      "title": "Browse {name}",
+      "up": "Up one level",
+      "loading": "Loading…",
+      "empty": "No subfolders",
+      "error": "Cannot list this folder"
+    },
     "projectSettings": {
       "title": "Project Settings",
       "defaultProfileLabel": "Default profile"
