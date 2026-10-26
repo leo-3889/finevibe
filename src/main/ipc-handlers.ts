@@ -139,6 +139,7 @@ const PREFERENCE_KEYS = {
   copyOnSelect: true, askAiFocus: true, defaultProjectsFolder: true,
   keybindings: true, theme: true, readinessExcludedProviders: true,
   sidebarViews: true, boardCardMetrics: true,
+  activeHostId: true,
   chromeImport: true,
 } satisfies Record<keyof Preferences, true>;
 

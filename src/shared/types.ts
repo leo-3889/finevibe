@@ -555,6 +555,12 @@ export interface Preferences {
   defaultProjectsFolder?: string;
   keybindings?: Record<string, string>;
   theme?: 'dark' | 'light';
+  /**
+   * Active sidebar host tab (multi-host Phase 2, parent §11 UR-1): scopes the
+   * project list (Active Sessions stays cross-host, per-host plan §5).
+   * Absent = `LOCAL_HOST_ID`; a removed host falls back to Local at render.
+   */
+  activeHostId?: string;
   readinessExcludedProviders?: ProviderId[];
   sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;

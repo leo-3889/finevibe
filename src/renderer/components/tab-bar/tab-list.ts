@@ -1,6 +1,9 @@
 import { appState, MAX_SESSION_NAME_LENGTH, type ProjectRecord, type SessionRecord } from '../../state.js';
 import { parseSshHost } from '../../../shared/ssh-host.js';
 import type { ProviderId, TabGroupRecord } from '../../../shared/types.js';
+import { LOCAL_HOST_ID } from '../../../shared/types.js';
+import { hostChipHtml } from '../../host-scope.js';
+import { getHostColor, getHostName } from '../../host-registry.js';
 import { findGroupForSession, isGroupableTab, TAB_GROUP_DWELL_MS } from '../../state/tab-group-state.js';
 import { getStatus, STATUS_GLYPH, type SessionStatus } from '../../session-activity.js';
 import { isUnread } from '../../session-unread.js';
@@ -109,13 +112,18 @@ function tabNamePrefix(session: SessionRecord): string {
     case 'kanban': return `<span class="tab-kanban-badge">${ICON_KANBAN}</span> `;
     case 'team': return `<span class="tab-team-badge">${ICON_TEAM}</span> `;
     default: {
-      if (!hasMultipleAvailableProviders()) return '';
+      // Host identity chip (plan §5): the slot the removed `ssh <host> - `
+      // prefix used to occupy. Local sessions carry no chip (unchanged).
+      const chip = session.hostId && session.hostId !== LOCAL_HOST_ID
+        ? hostChipHtml(getHostColor(session.hostId), getHostName(session.hostId))
+        : '';
+      if (!hasMultipleAvailableProviders()) return chip;
       // The prefix lands in tab.innerHTML (line ~375 escapes only the name).
       // providerId comes from persisted state.json, which is user-editable,
       // so only registry-known ids may reach the img attributes.
       const rawId = session.providerId || 'claude';
       const providerId = getCachedProviderMetas().some(m => m.id === rawId) ? rawId : 'claude';
-      return `<img class="tab-provider-icon" src="assets/providers/${providerId}.png" alt="${providerId}" onerror="this.style.display='none'"> `;
+      return `${chip}<img class="tab-provider-icon" src="assets/providers/${providerId}.png" alt="${providerId}" onerror="this.style.display='none'"> `;
     }
   }
 }

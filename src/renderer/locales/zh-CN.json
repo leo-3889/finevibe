@@ -83,7 +83,21 @@
       "kanbanTasksNounPlural": "个"
     },
     "activeSessions": {
-      "title": "活动会话"
+      "title": "活动会话",
+      "hostSeparator": "位于 {host}"
+    },
+    "hostTabs": {
+      "local": "本地",
+      "add": "添加主机",
+      "scrollLeft": "向左滚动主机",
+      "scrollRight": "向右滚动主机",
+      "offline": "无法连接 {name}",
+      "reconnect": "重新连接",
+      "menu": {
+        "settings": "设置 → 主机",
+        "reenroll": "重新注册",
+        "remove": "移除"
+      }
     },
     "discussions": {
       "tooltip": "FineVibe 讨论",
@@ -761,6 +775,7 @@
       "partial": "部分完成",
       "failed": "失败"
     },
+    "hostUnreachable": "无法连接",
     "step": {
       "connect": "连接",
       "env": "环境",
@@ -787,7 +802,19 @@
       "keyPathPlaceholder": "留空则生成 FineVibe 密钥",
       "browse": "浏览",
       "secret": "密钥",
-      "secretPlaceholder": "密钥口令或密码（存储在系统钥匙串）"
+      "secretPlaceholder": "密钥口令或密码（存储在系统钥匙串）",
+      "color": "颜色"
+    },
+    "color": {
+      "auto": "自动",
+      "blue": "蓝色",
+      "orange": "橙色",
+      "green": "绿色",
+      "purple": "紫色",
+      "amber": "琥珀",
+      "red": "红色",
+      "teal": "青绿",
+      "pink": "粉色"
     },
     "err": {
       "name": "名称必填",

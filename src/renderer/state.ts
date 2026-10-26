@@ -526,6 +526,17 @@ class AppState {
     return this.state.preferences;
   }
 
+  /** Active host tab (parent §11 UR-1). Absent = 'local'; the host-tabs
+   * component owns the removed-host fallback, this getter never mutates. */
+  get activeHostId(): string {
+    return this.preferences.activeHostId ?? LOCAL_HOST_ID;
+  }
+
+  /** Persist the active host tab; 'local' stores undefined (absent = local). */
+  setActiveHost(hostId: string): void {
+    this.setPreference('activeHostId', hostId === LOCAL_HOST_ID ? undefined : hostId);
+  }
+
   /** Sidebar-section lookup with the default-on fallback baked in. */
   sidebarView(key: keyof SidebarViews): boolean {
     return this.preferences.sidebarViews?.[key] ?? true;
