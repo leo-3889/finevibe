@@ -18,6 +18,16 @@ Global search discovery accepts an optional abort signal and stops scheduling wo
 
 See [performance and resource limits](performance.md) for the exact cache budgets, plaintext disk-index lifecycle, cancellation boundaries, and remaining discovery costs. The four-operation indexing budget is not a global limit for all discovery filesystem work.
 
+## StatusLine consent (settings-guard)
+
+Hooks install without asking; the **statusLine** does not. Overwriting a foreign (non-FineVibe) statusLine command in a config dir requires a recorded consent decision, and every path that writes a statusLine into a dir it does not own — every provider, new ones included — must go through that gate. The contract lives in `src/main/settings-guard.ts` and is documented in full in [HOOKS.md → StatusLine consent](../HOOKS.md); what the provider layer owes it:
+
+- The record is `Preferences.statusLineConsent` + `statusLineConsentCommand` for the default Claude dir, and `statusLineConsentByDir[consentDirKey(dir)]` for every managed profile dir (P1-14) — a provider never reads or writes another dir's record, and `recordDirConsent` is the map's only write site.
+- `granted` binds to the exact foreign command it was asked about; a new/unknown foreign command is a new conflict and re-prompts. `declined` freezes the foreign command: `validateSettings` reports fine, and the Setup badge and Fix Settings CTA leave the provider alone (SA-P2-1) — a repair path must never perform the Replace the user declined.
+- `settings:reinstall` / `settings:declineStatusLine` gate their `configDir` through `isManagedMcpConfigDir` before touching disk; a `configDir=undefined` decline writes the global record only for the default dir (SA-P3, settings audit).
+- Consent is main-owned state: the renderer's whole-state persist load-then-grafts it (SA-P1-1), so a renderer save can never erase a decision made post-load in the boot modal.
+- Per-host: the guards stay local-only (a remote session's settings were installed by FineVibe itself) — see Per-host providers above and [security boundaries](security-boundaries.md).
+
 ## Per-host providers (Phase 2)
 
 Every provider fact is a fact **about one machine**. `Profile.hostId`, `ProjectRecord.hostId` and `SessionRecord.hostId` carry it (normalized to `'local'` at every load boundary, same idiom as `HostRecord` validation); channels take a trailing optional `hostId` defaulting to `'local'`, so every pre-Phase-2 call site is byte-identical. The spawn plane and the file plane are keyed separately (plan `todos/archives/per-host-providers-plan.md` §2, local-only).
