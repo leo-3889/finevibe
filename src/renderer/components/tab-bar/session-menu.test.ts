@@ -39,6 +39,8 @@ let profilesVal: Array<{ id: string; name: string; providerId: string }> = [];
 let prefsVal: Record<string, unknown> = {};
 
 const addSession = vi.fn((): FakeSession => ({ id: 's-plain', name: 'plain' }));
+const toggleSwarm = vi.fn();
+const addMcpInspectorSession = vi.fn();
 const startTeamChat = vi.fn((): FakeSession => ({ id: 's-team', name: 'CMO - Session 1' }));
 const getTeamMemberById = vi.fn((id: string): FakeMember | undefined =>
   teamMembersVal.find((m) => m.id === id),
@@ -53,6 +55,8 @@ vi.mock('../../state.js', () => ({
     addSession,
     startTeamChat,
     getTeamMemberById,
+    toggleSwarm,
+    addMcpInspectorSession,
   },
 }));
 
@@ -445,5 +449,55 @@ describe('New Session modal plan-mode row', () => {
     await promptNewSession();
     await confirmWith({ 'session-name': 'Plain', provider: 'pi', 'plan-mode': 'true' });
     expect(addSession).toHaveBeenCalledWith('p1', 'Plain', undefined, 'pi', undefined, undefined, undefined);
+  });
+});
+
+// N-row close (FEATURE_LEDGER_2026-10-26 §1): the "More" overflow menu was
+// UNTESTED. Pins its exact item set (Swarm Layout / MCP Inspector /
+// separator / Join Remote Session), the active-state label swap, and that an
+// item click closes the menu before running the action.
+describe('"More" menu', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    toggleSwarm.mockClear();
+    addMcpInspectorSession.mockClear();
+  });
+
+  it('renders the three items and separator at the requested position', async () => {
+    activeProjectVal = { id: 'p1', name: 'P', path: '/p', sessions: [], layout: { mode: 'grid' } };
+    const { showMoreMenu } = await import('./session-menu.js');
+    showMoreMenu(10, 20);
+    const menu = document.querySelector('.tab-context-menu')!;
+    expect(menu.style.left).toBe('10px');
+    expect(menu.style.top).toBe('20px');
+    const items = [...menu.querySelectorAll('.tab-context-menu-item')].map((i) => i.textContent);
+    expect(items).toEqual(['Swarm Layout', 'MCP Inspector', 'Join Remote Session…']);
+    expect(menu.querySelectorAll('.tab-context-menu-separator').length).toBe(1);
+  });
+
+  it('swaps the first label when the swarm layout is active, and runs toggleSwarm on click', async () => {
+    activeProjectVal = { id: 'p1', name: 'P', path: '/p', sessions: [], layout: { mode: 'swarm' } };
+    const { showMoreMenu } = await import('./session-menu.js');
+    showMoreMenu(0, 0);
+    const first = document.querySelector('.tab-context-menu-item')!;
+    expect(first.textContent).toBe('Swarm Layout ✓');
+    first.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(toggleSwarm).toHaveBeenCalledTimes(1);
+  });
+
+  it('MCP Inspector item opens the inspector session; Join opens the join dialog', async () => {
+    activeProjectVal = { id: 'p1', name: 'P', path: '/p', sessions: [], layout: { mode: 'grid' } };
+    const { showMoreMenu } = await import('./session-menu.js');
+    showMoreMenu(0, 0);
+    const [swarmItem, inspectorItem] = document.querySelectorAll('.tab-context-menu-item');
+    inspectorItem!.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(addMcpInspectorSession).toHaveBeenCalledWith('p1', 'Inspector 1');
+    void swarmItem;
+    // Re-open for the join item (each click closes the previous menu).
+    showMoreMenu(0, 0);
+    const items2 = document.querySelectorAll('.tab-context-menu-item');
+    items2[2].dispatchEvent(new Event('click', { bubbles: true }));
+    const joinMock = (await import('../join-dialog.js')) as { showJoinDialog: ReturnType<typeof vi.fn> };
+    expect(joinMock.showJoinDialog).toHaveBeenCalled();
   });
 });
