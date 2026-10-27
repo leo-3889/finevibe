@@ -96,7 +96,7 @@ export interface FinevibeApi {
     checkBinary(providerId?: ProviderId, hostId?: string): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
     onConfigChanged(callback: () => void): () => void;
-    installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
+    installAgent(slug: string, content: string, configDir?: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
     removeAgent(slug: string): Promise<void>;
   };
   git: {

@@ -804,7 +804,12 @@ class AppState {
     this.team.members.push(member);
     this.emit('team-changed');
     if (member.installAsAgent) {
-      void syncAgentInstallPure(window.finevibe.provider, this.team, member, () => this.persist());
+      // P2-116: target the pinned profile's config dir (the tree the profiled
+      // CLI actually reads), mirroring the MCP channel's configDir threading.
+      const configDir = member.profileId
+        ? this.profiles.find((p) => p.id === member.profileId)?.configDir
+        : undefined;
+      void syncAgentInstallPure(window.finevibe.provider, this.team, member, () => this.persist(), configDir);
     }
     return member;
   }
@@ -819,7 +824,10 @@ class AppState {
     // A rename/role edit changes the assignee badge on any board task assigned
     // to this member; board views key off board-changed, so announce it here.
     if (this.boardReferencesMember(id)) this.notifyBoardChanged();
-    void reconcileAgentPure(window.finevibe.provider, this.team, result.before, result.after, () => this.persist());
+    const configDir = result.after.profileId
+      ? this.profiles.find((p) => p.id === result.after.profileId)?.configDir
+      : undefined;
+    void reconcileAgentPure(window.finevibe.provider, this.team, result.before, result.after, () => this.persist(), configDir);
     return result.after;
   }
 

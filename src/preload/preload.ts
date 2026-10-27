@@ -104,7 +104,7 @@ export interface FineVibeApi {
     checkBinary(providerId?: ProviderId, hostId?: string): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
     onConfigChanged(callback: () => void): () => void;
-    installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
+    installAgent(slug: string, content: string, configDir?: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
     removeAgent(slug: string): Promise<void>;
   };
   git: {
@@ -310,7 +310,7 @@ const api: FineVibeApi = {
     checkBinary: (providerId, hostId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude', hostId),
     watchProject: (providerId, projectPath) => ipcRenderer.send('config:watchProject', providerId, projectPath),
     onConfigChanged: (callback) => onChannel('config:changed', callback),
-    installAgent: (slug, content) => ipcRenderer.invoke('provider:installAgent', slug, content),
+    installAgent: (slug, content, configDir) => ipcRenderer.invoke('provider:installAgent', slug, content, configDir),
     removeAgent: (slug) => ipcRenderer.invoke('provider:removeAgent', slug),
   },
   store: {
