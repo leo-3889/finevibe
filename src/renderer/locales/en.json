@@ -6,6 +6,7 @@
   },
   "preferences": {
     "title": "Preferences",
+    "applyHint": "✓ Some settings apply immediately",
     "cancel": "Cancel",
     "done": "Done"
   },

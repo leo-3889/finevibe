@@ -48,6 +48,15 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
   bodyEl.innerHTML = '';
   actions.innerHTML = '';
 
+  // SA-P2-10: zoom/locale/plan-mode/shortcut rows persist on change while
+  // theme restores on Cancel - the audit's prescribed fix is to say so in the
+  // modal instead of pretending every control is deferred.
+  const applyHint = document.createElement('span');
+  applyHint.className = 'modal-actions-hint';
+  applyHint.id = 'preferences-apply-hint';
+  applyHint.textContent = t('preferences.applyHint');
+  actions.appendChild(applyHint);
+
   const btnCancel = createModalButton(t('preferences.cancel'), false);
   btnCancel.id = 'preferences-cancel';
   actions.appendChild(btnCancel);
@@ -198,6 +207,7 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
   openModal = () => {
     // Refresh the modal title and footer buttons (in case they were re-translated).
     titleEl.textContent = t('preferences.title');
+    applyHint.textContent = t('preferences.applyHint');
     btnCancel.textContent = t('preferences.cancel');
     btnConfirm.textContent = t('preferences.done');
     // Refresh the sidebar menu labels.

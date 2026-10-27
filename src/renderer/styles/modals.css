@@ -307,8 +307,18 @@
 #modal-actions, .modal-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* SA-P2-10: the "Some settings apply immediately" hint sits left of the
+   buttons and fills the free space so the buttons stay right-aligned. */
+.modal-actions-hint {
+  flex: 1;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 /* Config sections */

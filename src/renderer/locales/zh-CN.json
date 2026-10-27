@@ -6,6 +6,7 @@
   },
   "preferences": {
     "title": "偏好设置",
+    "applyHint": "✓ 部分设置会立即生效",
     "cancel": "取消",
     "done": "完成"
   },
