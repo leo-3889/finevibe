@@ -52,7 +52,7 @@ describe('renderer boot echo', () => {
     const lines = (console.log as ReturnType<typeof vi.fn>).mock.calls
       .map((c) => String(c[0]))
       .filter((l) => l.startsWith('[boot] renderer'));
-    expect(lines).toEqual(['[boot] renderer firstPaint=413ms']);
+    expect(lines).toEqual(['[boot] renderer init=413ms']);
   });
 });
 
