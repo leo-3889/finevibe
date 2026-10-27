@@ -1419,6 +1419,96 @@ describe('resolveWindowsShell', () => {
     const r = resolveWindowsShell('C:\\tools\\claude.cmd', ['--help', 'plain.txt']);
     expect(r.args).toEqual(['/c', 'C:\\tools\\claude.cmd', '--help', 'plain.txt']);
   });
+
+  // npm-shim direct spawn: cmd.exe truncates multi-line args at the first
+  // newline and word-splits quoted ones (the Ask-AI fragmentation), so
+  // resolveWindowsShell parses the shim and spawns its real target.
+  describe('npm shim direct spawn', () => {
+    const mockReadFileSync = vi.mocked(fs.readFileSync);
+    const NPM_DIR = 'C:\\Users\\test\\AppData\\Roaming\\npm';
+    const npmShim = `${NPM_DIR}\\codex.cmd`;
+    const codexJs = `${NPM_DIR}\\node_modules\\@openai\\codex\\bin\\codex.js`;
+    // The real npm cmd-shim template.
+    const npmShimBody = [
+      '@ECHO off',
+      'GOTO start',
+      ':find_dp0',
+      'SET dp0=%~dp0',
+      'EXIT /b',
+      ':start',
+      'SETLOCAL',
+      'CALL :find_dp0',
+      'IF EXIST "%dp0%\\node.exe" (',
+      '  SET "_prog=%dp0%\\node.exe"',
+      ') ELSE (',
+      '  SET "_prog=node"',
+      '  SET PATHEXT=%PATHEXT:;.JS;=;%',
+      ')',
+      'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
+    ].join('\r\n');
+
+    /** Only the given files exist; readFileSync serves only the listed shims. */
+    const withFiles = (shims: Record<string, string>, existing: string[]) => {
+      const lower = existing.map((p) => p.toLowerCase());
+      mockExistsSync.mockImplementation((p) => lower.includes(String(p).toLowerCase()));
+      mockReadFileSync.mockImplementation((p) => {
+        const body = shims[String(p)];
+        if (body === undefined) throw new Error('ENOENT');
+        return body as never;
+      });
+    };
+
+    afterEach(() => {
+      mockExistsSync.mockImplementation(() => false);
+      mockReadFileSync.mockImplementation(() => {
+        throw new Error('ENOENT');
+      });
+    });
+
+    it('spawns node + script directly; multi-line/quote prompts survive raw', () => {
+      withFiles({ [npmShim]: npmShimBody }, [codexJs]); // no node.exe beside the shim
+      const prompt = 'Regarding the following diff snippet from `a.ts`:\n\n```diff\n- x\n```\n\nfix "this"';
+      const r = resolveWindowsShell(npmShim, ['--help', prompt]);
+      expect(r.shell).toBe('node');
+      expect(r.args).toEqual([codexJs, '--help', prompt]);
+    });
+
+    it('prefers the node.exe beside the shim', () => {
+      const localNode = path.join(NPM_DIR, 'node.exe');
+      withFiles({ [npmShim]: npmShimBody }, [codexJs, localNode]);
+      const r = resolveWindowsShell(npmShim, ['x']);
+      expect(r.shell).toBe(localNode);
+    });
+
+    it('spawns a quoted exe shim directly', () => {
+      const bat = 'C:\\tools\\tool.bat';
+      withFiles({ [bat]: '@echo off\r\n"C:\\tools\\mytool.exe" %*\r\n' }, ['C:\\tools\\mytool.exe']);
+      const r = resolveWindowsShell(bat, ['a b']);
+      expect(r).toEqual({ shell: 'C:\\tools\\mytool.exe', args: ['a b'] });
+    });
+
+    it('resolves the extensionless npm launcher through its .cmd sibling', () => {
+      const bare = `${NPM_DIR}\\codex`;
+      withFiles({ [`${bare}.cmd`]: npmShimBody }, [codexJs]);
+      const r = resolveWindowsShell(bare, ['go']);
+      expect(r).toEqual({ shell: 'node', args: [codexJs, 'go'] });
+    });
+
+    it('falls back to cmd.exe for a shim without a %* launch line', () => {
+      const bat = 'C:\\tools\\weird.bat';
+      withFiles({ [bat]: '@echo off\r\necho hi\r\n' }, []);
+      const r = resolveWindowsShell(bat, ['--help']);
+      expect(r.shell).toBe('cmd.exe');
+    });
+
+    it('falls back on an unknown variable, and never on a missing script', () => {
+      const bat = 'C:\\tools\\vars.bat';
+      withFiles({ [bat]: '"%FOO%\\tool.exe" %*\r\n' }, []);
+      expect(resolveWindowsShell(bat, ['--help']).shell).toBe('cmd.exe');
+      withFiles({ [npmShim]: npmShimBody }, []); // codex.js missing → fallback
+      expect(resolveWindowsShell(npmShim, ['--help']).shell).toBe('cmd.exe');
+    });
+  });
   } else {
     it('passes through unchanged on non-Windows', () => {
       const result = resolveWindowsShell('/usr/local/bin/claude', ['--help']);
