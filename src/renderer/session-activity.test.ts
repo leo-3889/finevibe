@@ -130,6 +130,23 @@ describe('notifyInterrupt', () => {
     expect(getStatus('s1')).toBe('working');
   });
 
+  it('lets polled (Transcript) working override interrupted state', () => {
+    // pi/pi-bolt/omp have no UserPromptSubmit hook: the polled tail re-emitting
+    // 'working' after an append IS the new-prompt signal and must refresh.
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    notifyInterrupt('s1');
+    expect(getStatus('s1')).toBe('waiting');
+
+    setHookStatus('s1', 'working', 'Transcript');
+    expect(getStatus('s1')).toBe('working');
+
+    // A fresh interrupt still wins; stale non-polled 'working' hooks stay swallowed.
+    notifyInterrupt('s1');
+    setHookStatus('s1', 'working', 'PostToolUse');
+    expect(getStatus('s1')).toBe('waiting');
+  });
+
   it('clears interrupted flag on non-working hook status', () => {
     initSession('s1');
     setHookStatus('s1', 'working');

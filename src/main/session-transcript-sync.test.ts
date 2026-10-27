@@ -246,6 +246,20 @@ describe('status mirroring', () => {
     expect(mockWriteStatus).toHaveBeenCalledTimes(2);
   });
 
+  it('re-emits an unchanged status on a new append (post-interrupt refresh)', () => {
+    // After an Escape the renderer shows 'waiting' while the tail still reads
+    // 'working'. The user's new prompt appends a user entry — the tail value
+    // is unchanged, and a value-dedupe here would swallow the refresh, so
+    // every append must re-emit (the renderer dedupes identical statuses).
+    provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: '/t.jsonl' });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000); // initial mirror → write #1
+    writeTranscript(); // the new prompt appends; the status value stays 'working'
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteStatus).toHaveBeenCalledTimes(2);
+    expect(mockWriteStatus).toHaveBeenLastCalledWith('ui-1', 'working');
+  });
+
   it('writes nothing while the provider has no status yet', () => {
     provider = makeProvider({ polledStatus: true, status: { value: null }, path: '/t.jsonl' });
     registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');

@@ -160,7 +160,9 @@ export function writeCliSessionName(uiSessionId: string, name: string, cliSessio
  * write): the STATUS_DIR watcher forwards it as `session:hookStatus`. Used
  * by providers without hooks (omp, pi) that derive status from their
  * transcript. Callers write only the `CliSessionStatus` values the renderer
- * understands, and only when the status actually changed.
+ * understands; the poller re-emits on every transcript append (a repeated
+ * identical status is a no-op in the renderer, and the re-emit is what
+ * refreshes a post-interrupt 'waiting' when the user submits a new prompt).
  */
 export function writeStatus(uiSessionId: string, status: CliSessionStatus): void {
   const filePath = statusFilePath(uiSessionId, 'status');
