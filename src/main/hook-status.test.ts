@@ -622,6 +622,26 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       expect(() => cleanupSessionStatus('sess-1')).not.toThrow();
     });
+
+    // P2-20: the writer emits `sess-1-<6 random>.toolfailure`, not the plain
+    // name; the plain-name loop alone left pending records behind.
+    it('unlinks the suffixed toolfailure variants the writer emits', () => {
+      vi.mocked(fs.readdirSync).mockReturnValue([
+        'sess-1.status',
+        'sess-1-abc123.toolfailure',
+        'sess-1-xyz789.toolfailure',
+        'sess-1-other.json',
+        'sess-1x-abc123.toolfailure',
+      ] as any);
+
+      cleanupSessionStatus('sess-1');
+
+      const unlinked = vi.mocked(fs.unlinkSync).mock.calls.map((c) => String(c[0]));
+      expect(unlinked).toContain(path.join(STATUS_DIR, 'sess-1-abc123.toolfailure'));
+      expect(unlinked).toContain(path.join(STATUS_DIR, 'sess-1-xyz789.toolfailure'));
+      expect(unlinked).not.toContain(path.join(STATUS_DIR, 'sess-1-other.json'));
+      expect(unlinked).not.toContain(path.join(STATUS_DIR, 'sess-1x-abc123.toolfailure'));
+    });
   });
 
   describe('polling fallback', () => {

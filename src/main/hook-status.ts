@@ -627,6 +627,25 @@ export function cleanupSessionStatus(sessionId: string): void {
       // Already gone
     }
   }
+  // P2-20: the toolfailure writer emits `${sessionId}-${6 random}.toolfailure`,
+  // never the plain name the loop above covers - a record pending at session
+  // close used to survive until the quit-time sweep (or forever after a crash,
+  // where resyncAllSessions replays it into a restored tab). Enumerate and
+  // unlink the suffixed variants too.
+  try {
+    for (const name of fs.readdirSync(STATUS_DIR)) {
+      if (name.startsWith(`${sessionId}-`) && name.endsWith('.toolfailure')) {
+        lastMtimes.delete(name);
+        try {
+          fs.unlinkSync(path.join(STATUS_DIR, name));
+        } catch {
+          // Raced with another unlink
+        }
+      }
+    }
+  } catch {
+    // Directory gone - the plain-name unlinks above already ENOENTed.
+  }
   eventReaders.delete(sessionId);
   clearTimeout(eventContinuations.get(sessionId));
   eventContinuations.delete(sessionId);
