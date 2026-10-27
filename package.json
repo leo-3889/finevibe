@@ -45,8 +45,8 @@
   "scripts": {
     "build": "npm run build:core && npm run build:renderer && npm run copy-assets",
     "build:core": "tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json",
-    "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=iife --target=es2022 --minify --loader:.ts=ts",
-    "dev:renderer": "npm run build:renderer -- --sourcemap",
+    "build:renderer": "node scripts/build-renderer.mjs",
+    "dev:renderer": "node scripts/build-renderer.mjs --dev",
     "copy-assets": "node scripts/copy-assets.js",
     "icons": "node scripts/build-icons.mjs",
     "prestart": "node scripts/require-built.js",

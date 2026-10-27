@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ImportableLegacyProject } from '../shared/types';
-import type { DiskHealth } from '../shared/types';
+import type { DiskHealth, PerfStats } from '../shared/types';
 import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, HostRecord } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
@@ -133,6 +133,10 @@ export interface FineVibeApi {
   disk: {
     get(): Promise<DiskHealth | null>;
     onStatus(callback: (status: DiskHealth) => void): () => void;
+  };
+  perf: {
+    reportBoot(ms: number): void;
+    onStats(callback: (sample: PerfStats) => void): () => void;
   };
   app: {
     focus(): void;
@@ -377,6 +381,11 @@ const api: FineVibeApi = {
   disk: {
     get: () => ipcRenderer.invoke('disk-health:get'),
     onStatus: (cb) => onChannel('disk-health:status', (status) => cb(status as DiskHealth)),
+  },
+  perf: {
+    /** Echo of the renderer's own parse+first-paint time into the boot log. */
+    reportBoot: (ms: number) => { ipcRenderer.send('perf:reportBoot', ms); },
+    onStats: (cb) => onChannel('perf:stats', (sample) => cb(sample as PerfStats)),
   },
   app: {
     focus: () => { ipcRenderer.send('app:focus'); },

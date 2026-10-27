@@ -26,6 +26,8 @@ import { startSessionRetentionSweeps } from './launch-session-dir';
 import { installConsoleThrottle } from './log-throttle';
 import { installLogFile } from './log-file';
 import { startDiskHealthPreflight } from './disk-health';
+import { finishBoot, finishBootPhase, markBoot, reportRendererBoot, startPerfSampler, stopPerfSampler } from './boot-timing';
+import { getMainWindow } from './main-window';
 
 // 2026-10-23 ENOSPC incident: the state writer logged a full stack on every
 // renderer save against a full disk — 160 409 journal lines in 30 min,
@@ -60,8 +62,8 @@ function clearCloseConfirmWatchdog(): void {
 }
 
 function requestConfirmClose(): void {
-  const win = BrowserWindow.getAllWindows()[0];
-  if (win && !win.isDestroyed()) {
+  const win = getMainWindow();
+  if (win) {
     win.webContents.send('app:confirmClose');
     clearCloseConfirmWatchdog();
     closeConfirmTimer = setTimeout(() => {
@@ -308,13 +310,14 @@ function startMainProcess(): void {
   } catch (error) {
     console.error('[userdata-retirement] failed; legacy data left untouched', error);
   }
+  markBoot('identity+migrate');
 
   // Winner-only: a relaunch while the app runs focuses the existing
   // window, so launching again behaves like "focus FineVibe".
   app.on('second-instance', () => {
     const win = mainWindow && !mainWindow.isDestroyed()
       ? mainWindow
-      : BrowserWindow.getAllWindows()[0];
+      : getMainWindow();
     if (win && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
       win.focus();
@@ -327,6 +330,7 @@ function startMainProcess(): void {
     // have no console the user can read (owner request 2026-10-26). VITEST
     // gate mirrors the throttle above: test console spies stay pristine.
     if (!process.env.VITEST) installLogFile(app.getPath('logs'));
+    markBoot('ready');
     // P2-47 pin (boot call site; the after-import sweep lives in
     // ipc-handlers.ts chromeImport:run): quit/crash mid-import used to
     // leave the Chrome cookie snapshot in the OS temp dir for the
@@ -349,6 +353,7 @@ function startMainProcess(): void {
     // enumeration-cache TTL sweep on every daily tick.
     startSessionRetentionSweeps(sweepEnumerationCaches);
     initProviders();
+    markBoot('sweeps');
 
     // PA-01: the all-missing guard used to run BEFORE the window existed —
     // six serial spawn-bound probes (up to 2.4 s of `which`/`npm prefix -g`
@@ -387,6 +392,7 @@ function startMainProcess(): void {
     registerIpcHandlers();
     const state = loadState();
     createAppMenu(state.preferences?.debugMode ?? false);
+    markBoot('ipc');
     // Boot guard (rendererIsBuilt): an unbuilt tree fails with the
     // not-built dialog, never a silent window death. Quit BEFORE the first
     // window — the close-confirm watchdog, the disk-health preflight and
@@ -414,21 +420,30 @@ function startMainProcess(): void {
     // rejection (Electron: crash dialog). They gate on nothing: register
     // them the moment the window exists.
     disposeAutoUpdater = initAutoUpdater();
+    // Audit P1: first-paint is the boot number a user feels; everything after
+    // it reports as a post-window phase. The sampler pushes RSS/heap/handle
+    // counts to the renderer debug ring (Ctrl+Shift+D) every minute.
+    markBoot('window');
+    finishBoot('window-shown');
+    startPerfSampler(() => mainWindow);
+    // The renderer echoes its own parse+paint time on this channel; the
+    // summary lands in the same log stream, so one launch reads top-to-bottom.
+    ipcMain.on('perf:reportBoot', (_event, ms: unknown) => reportRendererBoot(ms));
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
       } else {
-        const win = BrowserWindow.getAllWindows()[0];
-        if (win && !win.isDestroyed()) {
+        const win = getMainWindow();
+        if (win) {
           restartAndResync(win);
         }
       }
     });
 
     powerMonitor.on('resume', () => {
-      const win = BrowserWindow.getAllWindows()[0];
-      if (win && !win.isDestroyed()) {
+      const win = getMainWindow();
+      if (win) {
         restartAndResync(win);
       }
     });
@@ -490,6 +505,8 @@ function startMainProcess(): void {
     // re-pointed (setPythonBin mutates it in place; nothing synchronous
     // gates on it) before the installs run.
     const pythonWarning = await checkPythonAvailable();
+    markBoot('python');
+    finishBootPhase('post-window');
     if (pythonWarning) {
       console.warn(pythonWarning);
       const owner = mainWindow;
@@ -548,9 +565,10 @@ function startMainProcess(): void {
     }
     disposeAutoUpdater?.();
     flushState();
+    stopPerfSampler();
     stopDiskHealthPreflight?.();
     stopDiskHealthPreflight = null;
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (win && !win.isDestroyed()) {
       win.webContents.send('app:quitting');
     }
