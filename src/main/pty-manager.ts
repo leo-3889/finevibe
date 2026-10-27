@@ -8,7 +8,7 @@ import type { ProviderId } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
 import { parseEnvVars, partitionUserEnv, providerOwnedEnvReason } from '../shared/env-vars';
 import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from '../shared/launch-args';
-import { isRegistryHostTarget, parseSshHost } from '../shared/ssh-host';
+import { isRegistryHostTarget } from '../shared/ssh-host';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
 import { getHost } from './hosts/host-registry';
@@ -596,17 +596,16 @@ export function resolveLaunchSpec(params: {
   systemPrompt?: string;
   envVars: string;
   configDir?: string;
-  /** Set = spawn the provider command through `ssh` on this host (P3). */
-  sshHost?: string;
   /**
    * Registry host id (per-host providers plan §2). Absent/'local' → local
    * binary resolution; a remote id resolves the binary from the host's
    * prereq probe and ssh-wraps the launch through the registry record
-   * (user@host, port) — it wins over the legacy free-text `sshHost`.
+   * (user@host, port). The legacy free-text `sshHost` wire was retired
+   * 2026-10-28 (parent §11) — the registry is the only remote spelling.
    */
   hostId?: string;
 }): LaunchSpec {
-  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost, hostId } = params;
+  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId } = params;
   const isRemoteHost = hostId !== undefined && hostId !== LOCAL_HOST_ID;
   const provider = getProvider(providerId);
   const issues: string[] = [];
@@ -660,7 +659,7 @@ export function resolveLaunchSpec(params: {
       extraArgs,
       initialPrompt,
       systemPrompt,
-      remote: isRemoteHost || (sshHost !== undefined && sshHost !== ''),
+      remote: isRemoteHost,
     }),
     env,
     providerId,
@@ -697,20 +696,7 @@ export function resolveLaunchSpec(params: {
     const cmd = `${mkdir}${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, argv, rawToken)}`;
     return { ...base, executable: 'ssh', argv: ['-tt', '-p', String(record.port), '--', `${record.user}@${record.host}`, cmd] };
   }
-  if (sshHost === undefined || sshHost === '') return base;
-
-  // SSH-wrapped launch (P3): the provider command runs on the remote host.
-  // `ssh -tt` allocates a PTY so the TUI renders; `--` stops ssh from parsing
-  // a hostile host token as an option (parseSshHost already rejects leading
-  // `-`, so this is defense in depth, matching execGit's git-status idiom).
-  const ref = parseSshHost(sshHost);
-  if (!ref) {
-    throw new LaunchSpecError(
-      `Invalid SSH host "${sshHost}": expected [user@]host (no port, no URL, no options).`,
-    );
-  }
-  const bin = path.basename(base.executable).replace(/\.(cmd|bat|exe)$/i, '');
-  return { ...base, executable: 'ssh', argv: ['-tt', '--', ref.host, remoteCommand(bin, base.argv)] };
+  return base;
 }
 
 export async function spawnPty(
@@ -729,7 +715,6 @@ export async function spawnPty(
   // exits leave it undefined.
   onExit: (exitCode: number, signal?: number, pid?: number, spawnRejectedReason?: string) => void,
   configDir?: string,
-  sshHost?: string,
   hostId?: string
 ): Promise<void> {
   // Register the in-flight spawn BEFORE any side effect: the window
@@ -752,7 +737,7 @@ export async function spawnPty(
     // that never spawned.
     let spec: LaunchSpec;
     try {
-      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, sshHost, hostId });
+      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId });
     } catch (err) {
       // Nothing will spawn for this session; drop any kill that arrived for
       // it so a later re-spawn of the same id is not killed by a stale flag.

@@ -968,7 +968,7 @@ export function registerIpcHandlers(): void {
   // PA-07: invalidate the Quick Open enumeration cache on the same debounced
   // git:changed signal the renderer receives.
   onGitChanged(invalidateEnumerations);
-  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string, sshHost?: string, hostId?: string) => {
+  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string, hostId?: string) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) return;
 
@@ -1120,7 +1120,6 @@ export function registerIpcHandlers(): void {
           }
         },
         configDir,
-        sshHost,
         hostId
       );
     } catch (err) {

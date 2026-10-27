@@ -421,19 +421,9 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.storageMode).toBe('default');
   });
 
-  it('wraps the provider command in ssh when sshHost is set', () => {
-    const spec = resolveLaunchSpec({ ...base, sshHost: 'lab' });
-    expect(spec.executable).toBe('ssh');
-    expect(spec.argv[0]).toBe('-tt');
-    expect(spec.argv[1]).toBe('--');
-    expect(spec.argv[2]).toBe('lab');
-    expect(spec.argv[3]).toMatch(/^'omp' '--session-dir'/);
-    expect(spec.providerId).toBe('omp');
-  });
-
-  it('rejects an invalid sshHost before spawning', () => {
-    expect(() => resolveLaunchSpec({ ...base, sshHost: 'lab:22' })).toThrow(/Invalid SSH host/);
-  });
+  // The legacy free-text `sshHost` wrap was retired 2026-10-28 (parent §11):
+  // the registry hostId is the only remote spelling, so the two old
+  // sshHost-wrap tests are gone with the field.
 
   // --- per-host providers T1: registry-host launches (plan §9 golden) ------
 
@@ -509,12 +499,6 @@ describe('resolveLaunchSpec (T2)', () => {
     const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
     expect(spec.executable).toBe('ssh');
     expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@[fd00::5]']);
-  });
-
-  it('registry hostId wins over the legacy sshHost string', () => {
-    mockGetHost.mockReturnValue(labRecord);
-    const spec = resolveLaunchSpec({ ...base, hostId: 'lab', sshHost: 'other' });
-    expect(spec.argv[4]).toBe('dev@192.168.1.50');
   });
 
   it('resolves the default agent dir (no configDir) with storage mode default', () => {

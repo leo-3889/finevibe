@@ -34,7 +34,6 @@ interface TerminalInstance {
   envVars: string;
   /** Resolved profile config dir (CLAUDE_CONFIG_DIR), or undefined for the default ~/.claude. */
   configDir?: string;
-  sshHost?: string;
   isResume: boolean;
   wasResumed: boolean;
   spawned: boolean;
@@ -70,8 +69,7 @@ export function createTerminalPane(
   providerId: ProviderId = 'claude',
   projectId?: string,
   envVars: string = '',
-  configDir?: string,
-  sshHost?: string
+  configDir?: string
 ): TerminalInstance {
   if (instances.has(sessionId)) {
     return instances.get(sessionId)!;
@@ -163,7 +161,6 @@ export function createTerminalPane(
     args,
     envVars,
     configDir,
-    sshHost,
     isResume,
     wasResumed: isResume,
     spawned: false,
@@ -307,7 +304,7 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
     instance.pendingSystemPrompt = null;
   }
   try {
-    await window.finevibe.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir, instance.sshHost);
+    await window.finevibe.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
   } catch (err) {
     // pty:create rejected (missing binary, ConPTY failure, provider spawn
     // error). Callers fire spawnTerminal un-awaited, so a throw here becomes
