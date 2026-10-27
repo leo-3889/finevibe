@@ -1379,8 +1379,12 @@ class AppState {
     // If session already had a different cliSessionId (e.g., /clear was used),
     // archive the previous session (only if its transcript exists) and reset the tab name.
     // isArchivable is checked while session.cliSessionId still holds the OLD id.
+    // P2-87: the archive must honor the "Record session history" preference like
+    // every other archive site (:687 close, :1078 create) - with the pref OFF the
+    // sidebar hides the rows, so an unasked archive is undeletable and its
+    // profileId keeps the profile's Delete button disabled.
     if (session.cliSessionId) {
-      if (this.isArchivable(session)) {
+      if (this.preferences.sessionHistoryEnabled && this.isArchivable(session)) {
         this.archiveSession(project, session);
       }
       session.name = defaultSessionName(project);
