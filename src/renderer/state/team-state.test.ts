@@ -359,6 +359,33 @@ describe('updateTeamMember unpin', () => {
   });
 });
 
+// P2-116: "Install as agent" must target the pinned profile's config dir (the
+// tree a profiled CLAUDE_CONFIG_DIR run actually reads), not the hardcoded
+// ~/.claude/agents the pre-fix chain dropped it for.
+describe('installAgent configDir threading (P2-116)', () => {
+  it('addTeamMember with installAsAgent passes the pinned profile configDir', async () => {
+    const profile = await appState.addProfile({ name: 'P116', providerId: 'claude' });
+    const installAgent = vi.fn(async () => []);
+    const prev = (window as { finevibe: { provider: unknown } }).finevibe.provider;
+    (window as { finevibe: { provider: unknown } }).finevibe.provider = { installAgent, removeAgent: vi.fn() };
+    try {
+      appState.addTeamMember({
+        name: 'P116',
+        role: 'Engineering',
+        systemPrompt: 'x',
+        source: 'custom',
+        installAsAgent: true,
+        profileId: profile.id,
+      });
+      await Promise.resolve();
+      expect(installAgent).toHaveBeenCalled();
+      expect(installAgent.mock.calls[0][2]).toBe(profile.configDir);
+    } finally {
+      (window as { finevibe: { provider: unknown } }).finevibe.provider = prev;
+    }
+  });
+});
+
 describe('nextSessionOrdinal (C4T-01)', () => {
   it('takes one past the highest matching suffix', () => {
     expect(nextSessionOrdinal('Dev', [])).toBe(1);

@@ -218,23 +218,27 @@ export function buildTeamChatSession(
 }
 
 export interface AgentApi {
-  installAgent(slug: string, content: string): Promise<unknown>;
+  installAgent(slug: string, content: string, configDir?: string): Promise<unknown>;
   removeAgent(slug: string): Promise<unknown>;
 }
 
 /**
  * Assign a slug if needed, then write the agent markdown to all installed providers.
  * `persistSlug` is invoked when a new slug is assigned so the caller can persist state.
+ * `configDir` (P2-116) is the member's pinned profile config dir - a profiled
+ * Claude run reads agents from CLAUDE_CONFIG_DIR, so the install must target
+ * that tree, not the hardcoded ~/.claude/agents.
  */
 export async function syncAgentInstall(
   api: AgentApi,
   team: TeamData,
   member: TeamMember,
   persistSlug: () => void,
+  configDir?: string,
 ): Promise<void> {
   if (ensureAgentSlug(team, member)) persistSlug();
   try {
-    await api.installAgent(member.agentSlug!, buildAgentMarkdown(member.agentSlug!, member));
+    await api.installAgent(member.agentSlug!, buildAgentMarkdown(member.agentSlug!, member), configDir);
   } catch (err) {
     console.warn('installAgent failed:', err);
   }
@@ -247,12 +251,13 @@ export async function reconcileAgent(
   before: TeamMember,
   after: TeamMember,
   persistSlug: () => void,
+  configDir?: string,
 ): Promise<void> {
   const wasOn = !!before.installAsAgent;
   const isOn = !!after.installAsAgent;
   if (!wasOn && !isOn) return;
   if (!wasOn && isOn) {
-    await syncAgentInstall(api, team, after, persistSlug);
+    await syncAgentInstall(api, team, after, persistSlug, configDir);
     return;
   }
   if (wasOn && !isOn) {
