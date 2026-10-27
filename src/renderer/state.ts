@@ -6,6 +6,7 @@ import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { basename } from '../shared/platform.js';
 import { parseSshHost } from '../shared/ssh-host.js';
 import { LOCAL_HOST_ID } from '../shared/types.js';
+import { DEFAULT_PREFERENCES as defaultPreferences } from '../shared/default-preferences.js';
 import { defaultProfileKey, keyMatchesProvider } from '../shared/profile-keys.js';
 import { isCliSession } from './session-utils.js';
 import {
@@ -150,22 +151,9 @@ function scheduleFrame(cb: () => void): void {
   else setTimeout(cb, 16);
 }
 
-const defaultPreferences: Preferences = {
-  soundOnSessionWaiting: true,
-  notificationsDesktop: true,
-  debugMode: false,
-  sessionHistoryEnabled: true,
-  insightsEnabled: true,
-  autoTitleEnabled: true,
-  confirmCloseWorkingSession: true,
-  copyOnSelect: false,
-  zoomFactor: 1.0,
-  readinessExcludedProviders: [],
-  sidebarViews: { gitPanel: true, sessionHistory: true, discussions: true, fileTree: true, activeSessions: true },
-  boardCardMetrics: true,
-  locale: 'en',
-  defaultProjectsFolder: '',
-};
+// SA-P2-6: the defaults come from the shared reconciled object (import above);
+// the old local copy drifted from main's DEFAULT_PREFERENCES (SA-P2-3 removed
+// the dead `locale: 'en'` from both).
 
 class AppState {
   /** Leading-edge persist throttle window; see persist(). */
