@@ -26,8 +26,8 @@ export interface BundleSourceFs {
   listDir(relDir: string): Promise<string[] | null>;
 }
 
-/** The providers settings sync supports (UR-5 scope). */
-export const SYNCABLE_PROVIDER_IDS: ProviderId[] = ['pi', 'pi-bolt', 'omp'];
+/** The providers settings sync supports (UR-5 scope; Phase 4c 7/7). */
+export const SYNCABLE_PROVIDER_IDS: ProviderId[] = ['pi', 'pi-bolt', 'omp', 'claude', 'codex', 'copilot', 'gemini'];
 
 /** The pi tree — shared by pi and pi-bolt (pi-bolt-provider.ts:25,151).
  * Per-provider synced file sets (§4 table — THE contract). Paths are
@@ -36,7 +36,7 @@ export const SYNCABLE_PROVIDER_IDS: ProviderId[] = ['pi', 'pi-bolt', 'omp'];
  * sets is out of scope by construction. */
 const PI_FILE_SET = ['~/.pi/agent/settings.json', '~/.pi/agent/AGENTS.md', '~/.pi/agent/mcp.json', '~/.pi/agent/skills/'];
 
-export const PROVIDER_FILE_SETS: Record<'pi' | 'pi-bolt' | 'omp', string[]> = {
+export const PROVIDER_FILE_SETS: Record<ProviderId, string[]> = {
   pi: PI_FILE_SET,
   'pi-bolt': [
     // Shares the whole pi tree (R-4 dedupe composes this with `pi`). The
@@ -53,6 +53,34 @@ export const PROVIDER_FILE_SETS: Record<'pi' | 'pi-bolt' | 'omp', string[]> = {
     // in the §4 set; the host installs from package.json + omp-plugins.lock.
     '~/.omp/plugins/package.json',
     '~/.omp/plugins/omp-plugins.lock.json',
+  ],
+  // Phase 4c 7/7: the four remaining families, each set = the files the
+  // provider's own local getConfig reads (user scope only — project-scope
+  // files travel with the project tree, not with host settings). Claude's
+  // settings.json is hook-stripped by the O-1 rule like every settings.json;
+  // secrets (oauth tokens, .credentials) are NOT in any set.
+  claude: [
+    '~/.claude/settings.json',
+    '~/.claude/CLAUDE.md',
+    '~/.claude.json',
+    '~/.claude/agents/',
+    '~/.claude/skills/',
+    '~/.claude/commands/',
+  ],
+  codex: [
+    '~/.codex/config.toml',
+    '~/.codex/AGENTS.md',
+    '~/.codex/agents/',
+    '~/.codex/skills/',
+  ],
+  copilot: [
+    '~/.copilot/mcp-config.json',
+    '~/.copilot/agents/',
+    '~/.copilot/skills/',
+  ],
+  gemini: [
+    '~/.gemini/settings.json',
+    '~/.gemini/agents/',
   ],
 };
 

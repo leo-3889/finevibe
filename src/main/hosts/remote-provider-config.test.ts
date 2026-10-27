@@ -79,12 +79,58 @@ describe('getRemoteProviderConfig — claude', () => {
 });
 
 describe('getRemoteProviderConfig — providers without a JSON surface', () => {
-  it('omp/codex/gemini/copilot answer the empty config and read nothing', async () => {
-    for (const id of ['omp', 'codex', 'gemini', 'copilot'] as const) {
-      expect(await getRemoteProviderConfig(id, 'lab', '/x')).toEqual({
-        mcpServers: [], agents: [], skills: [], commands: [],
-      });
-    }
+  it('omp answers the empty config and reads nothing (YAML, like the local twin)', async () => {
+    expect(await getRemoteProviderConfig('omp', 'lab', '/x')).toEqual({
+      mcpServers: [], agents: [], skills: [], commands: [],
+    });
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+// Phase 4c: the config plane reaches 7/7 — codex (TOML), copilot and gemini
+// (JSON) join pi/pi-bolt/omp/claude.
+describe('getRemoteProviderConfig — codex (Phase 4c)', () => {
+  it('parses [mcp_servers.*] from config.toml, user + project, project wins', async () => {
+    read.mockImplementation(async (_h, p) => {
+      if (p === '~/.codex/config.toml') return '[mcp_servers.shared]\ncommand = "user-cmd"\n[mcp_servers.uonly]\nurl = "https://u/mcp"\n';
+      if (p === '/x/.codex/config.toml') return '[mcp_servers.shared]\ncommand = "project-cmd"\n';
+      return null;
+    });
+    const cfg = await getRemoteProviderConfig('codex', 'lab', '/x');
+    const byName = new Map(cfg.mcpServers.map((s) => [s.name, s]));
+    expect(byName.get('shared')).toMatchObject({ url: 'project-cmd', scope: 'project' });
+    expect(byName.get('uonly')).toMatchObject({ url: 'https://u/mcp', scope: 'user' });
+  });
+
+  it('a profile configDir redirects the user-scope toml read', async () => {
+    await getRemoteProviderConfig('codex', 'lab', '/x', '/home/dev/.finevibe/profiles/x1');
+    expect(read).toHaveBeenCalledWith('lab', '/home/dev/.finevibe/profiles/x1/config.toml');
+  });
+});
+
+describe('getRemoteProviderConfig — copilot (Phase 4c)', () => {
+  it('merges mcp-config.json pair; USER wins on collision (local rule)', async () => {
+    read.mockImplementation(async (_h, p) => {
+      if (p === '~/.copilot/mcp-config.json') return mcpJson({ shared: { url: 'user-url' } });
+      if (p === '/x/.copilot/mcp-config.json') return mcpJson({ shared: { url: 'project-url' }, pj: { url: 'p' } });
+      return null;
+    });
+    const cfg = await getRemoteProviderConfig('copilot', 'lab', '/x');
+    const byName = new Map(cfg.mcpServers.map((s) => [s.name, s]));
+    expect(byName.get('shared')).toMatchObject({ url: 'user-url', scope: 'user' });
+    expect(byName.get('pj')).toMatchObject({ scope: 'project' });
+  });
+});
+
+describe('getRemoteProviderConfig — gemini (Phase 4c)', () => {
+  it('merges settings.json pair; project overrides by name (local order)', async () => {
+    read.mockImplementation(async (_h, p) => {
+      if (p === '~/.gemini/settings.json') return mcpJson({ shared: { url: 'user-url' } });
+      if (p === '/x/.gemini/settings.json') return mcpJson({ shared: { url: 'project-url' } });
+      return null;
+    });
+    const cfg = await getRemoteProviderConfig('gemini', 'lab', '/x');
+    const byName = new Map(cfg.mcpServers.map((s) => [s.name, s]));
+    expect(byName.get('shared')).toMatchObject({ url: 'project-url', scope: 'project' });
   });
 });

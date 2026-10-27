@@ -35,10 +35,16 @@ function parseTomlString(rawValue: string): string {
   return value;
 }
 
-function readMcpServersFromToml(filePath: string, scope: 'user' | 'project'): McpServer[] {
-  const content = readFileSafe(filePath);
-  if (!content) return [];
-
+/**
+ * Parse the `[mcp_servers.*]` entries of a codex config.toml BODY (exported
+ * for the remote twin: `remote-provider-config.ts` reads the file over the
+ * provider-fs seam and parses the same content without a local file).
+ */
+export function parseMcpServersFromTomlContent(
+  content: string,
+  filePath: string,
+  scope: 'user' | 'project',
+): McpServer[] {
   const servers = new Map<string, McpServer>();
   let currentServerName: string | null = null;
 
@@ -78,6 +84,12 @@ function readMcpServersFromToml(filePath: string, scope: 'user' | 'project'): Mc
   }
 
   return Array.from(servers.values()).filter(server => server.url);
+}
+
+function readMcpServersFromToml(filePath: string, scope: 'user' | 'project'): McpServer[] {
+  const content = readFileSafe(filePath);
+  if (!content) return [];
+  return parseMcpServersFromTomlContent(content, filePath, scope);
 }
 
 export async function getCodexConfig(projectPath: string): Promise<ProviderConfig> {
