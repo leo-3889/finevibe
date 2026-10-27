@@ -47,8 +47,8 @@ export interface FinevibeApi {
     trashItem(filePath: string): Promise<{ ok: boolean; error?: string }>;
     readImage(filePath: string): Promise<{ dataUrl: string } | null>;
     showInFolder(targetPath: string): Promise<{ ok: boolean; error?: string }>;
-    watchDir(dirPath: string): void;
-    unwatchDir(dirPath: string): void;
+    watchDir(dirPath: string, hostId?: string): void;
+    unwatchDir(dirPath: string, hostId?: string): void;
     getDroppedFilePath(file: File): string;
     onFsChange(callback: (changes: FsChange[]) => void): () => void;
   };

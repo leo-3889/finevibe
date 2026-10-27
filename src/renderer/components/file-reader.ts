@@ -396,8 +396,8 @@ export function createFileReaderPane(sessionId: string, filePath: string, target
 export function destroyFileReaderPane(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
-  if (instance.resolvedPath && !instance.hostId) {
-    window.finevibe.fs.unwatchDir(dirname(instance.resolvedPath));
+  if (instance.resolvedPath) {
+    window.finevibe.fs.unwatchDir(dirname(instance.resolvedPath), instance.hostId);
   }
   destroySearchBar(sessionId);
   destroyGoToLineBar(sessionId);
@@ -418,9 +418,9 @@ export function showFileReaderPane(sessionId: string, isSplit: boolean): void {
     const fullPath = resolveFilePath(instance);
     instance.resolvedPath = fullPath;
     ensureFileChangedListener();
-    // Remote files have no watcher (fs.watch is local): the pane reloads on
-    // reopen; agent writes land on the next open (parent plan §11 v1).
-    if (!instance.hostId) window.finevibe.fs.watchDir(dirname(fullPath));
+    // Local dirs ride chokidar; remote dirs the sftp poller (Phase 4) — the
+    // main side routes by hostId and both emit the same fs:changed events.
+    window.finevibe.fs.watchDir(dirname(fullPath), instance.hostId);
   }
 
   loadFile(instance, sessionId);

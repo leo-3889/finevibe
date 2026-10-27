@@ -15,6 +15,7 @@ import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/
 import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
 import { syncSettingsToHost } from './hosts/settings-sync';
 import { cloneRemoteRepo, ensureRemoteDir, listRemoteDir, listRemoteDirs, readRemoteFile, statRemotePath, walkRemoteFiles } from './hosts/remote-fs';
+import { setRemoteWatchWindow, unwatchRemoteDir, watchRemoteDir } from './hosts/remote-watch';
 import { generateManagedKeypair } from './hosts/keys';
 import {
   gitOnStatus,
@@ -2966,15 +2967,27 @@ export function registerIpcHandlers(): void {
       shell.showItemInFolder(resolved);
     }));
 
-  ipcMain.on('fs:watchDir', safeOn('fs:watchDir', (event, dirPath: string) => {
+  ipcMain.on('fs:watchDir', safeOn('fs:watchDir', (event, dirPath: string, hostId?: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    // Remote rail (Phase 4 watcher): path.resolve would mangle a POSIX path
+    // on this Windows controller, so the host branch skips the local gate —
+    // remote-watch validates via normalizeRemotePath and the poll fails safe.
+    if (hostId && hostId !== LOCAL_HOST_ID) {
+      if (win) setRemoteWatchWindow(win);
+      watchRemoteDir(hostId, dirPath);
+      return;
+    }
     const resolved = path.resolve(dirPath);
     if (!isAllowedReadPath(resolved)) return;
-    const win = BrowserWindow.fromWebContents(event.sender);
     if (win) setFileWatcherWindow(win);
     watchDir(resolved);
   }));
 
-  ipcMain.on('fs:unwatchDir', safeOn('fs:unwatchDir', (_event, dirPath: string) => {
+  ipcMain.on('fs:unwatchDir', safeOn('fs:unwatchDir', (_event, dirPath: string, hostId?: string) => {
+    if (hostId && hostId !== LOCAL_HOST_ID) {
+      unwatchRemoteDir(hostId, dirPath);
+      return;
+    }
     const resolved = path.resolve(dirPath);
     // P2-30: mirror fs:watchDir's gate. Unwatch is destructive — the watcher
     // refcounts by path alone, so any frame naming a watched dir silently

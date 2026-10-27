@@ -111,6 +111,7 @@ const ALLOWLIST: Record<string, string> = {
 
   // transient: keys mark work in flight and are deleted by the work itself.
   'REMOTE_WALK_IGNORE@hosts/remote-fs.ts': 'bounded-by-construction: const walk ignore-set, never mutated',
+  'watches@hosts/remote-watch.ts': 'capped:MAX_REMOTE_WATCHES (FIFO evict oldest poll)',
   'fullDecodes@codex-session-watcher.ts': 'transient: decode in flight; deleted in finally',
   'outsideHomeConsentInFlight@ipc-handlers.ts': 'transient: shared dialog promise; deleted on settle',
   'enumerateInFlight@ipc-handlers.ts': 'transient: shared walk promise; deleted by its owner run',
