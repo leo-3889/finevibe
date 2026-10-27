@@ -267,6 +267,64 @@ All five phases shipped behind automated, mocked-clipboard coverage. Rows that n
 
 **Pending runtime checks (not runnable on this box):** P4's < 50 ms main-thread freeze target for a real 1080p/1440p screenshot paste (`dev/perf/clipboard-bench.js`), P5's ≥ 5× messages/sec reduction on the echo (`dev/perf/pty-paste-probe.js`), and the plan's §3 interactive rows — Explorer/Finder/Nautilus file copies, Linux middle-click, Wayland permission denial — on macOS, X11, Wayland, and packaged Windows. Recorded as coverage gaps in [FEATURES](FEATURES.md) §24.
 
+## Boot, bundle and runtime instrumentation (2026-10-28 architecture audit)
+
+Everything in this section is now *measured in the source tree*; the packaged
+app is still unmeasured (see "Evidence and open measurement").
+
+**Boot timeline.** `src/main/boot-timing.ts` stamps each boot step and main logs
+one line to `<logs>/finevibe.log`:
+
+```text
+[boot] identity+migrate=..ms ready=..ms sweeps=..ms ipc=..ms window=..ms total=..ms window-shown
+[boot] post-window python=..ms total=..ms
+[boot] renderer=..ms
+```
+
+`identity+migrate` (userData identity + state migration) → `ready` (app.whenReady)
+→ `sweeps` (startup cleanup) → `ipc` (handler registration) → `window`
+(create + loadFile) → `window-shown`, then the deferred post-window probes
+(Python availability) in a second line. The renderer answers on `perf:reportBoot`
+with its own `performance.now()` (ms from renderer script start), so a slow
+launch reads main-side and renderer-side cost in one stream. The two lines above
+are the boot-tests' own output (a headless harness): they prove the wiring, not
+the app's real timings.
+
+**Runtime sample.** `startPerfSampler` (same module) pushes `PerfStats` on
+`perf:stats` every 60 s (`PERF_SAMPLE_INTERVAL_MS`): `rss`, `heapUsed`,
+`heapTotal`, `external` and `process.getActiveResourcesInfo().length` — the
+handle count is the leak signal the static audit could not produce, since every
+structure in main is bounded by a constant (see "Static footprint audit"). The
+renderer mirrors each sample into the debug ring (Ctrl+Shift+D, type `perfStats`).
+This is the instrument for protocol rows S1/S3/S4 below: read the ring, or grep
+the log, instead of attaching `--inspect`.
+
+**Renderer bundle.** `npm run build:renderer` is now
+`scripts/build-renderer.mjs`: esbuild + metafile report + a hard budget. Measured
+on the 2026-10-28 tree (minified, single IIFE entry):
+
+| Owner | Minified size |
+| --- | --- |
+| `src` (app code) | 592.6 KiB |
+| `@xterm/xterm` | 336.8 KiB |
+| `@xterm/addon-webgl` | 123.1 KiB |
+| `gridstack` | 82.3 KiB |
+| `marked` | 40.5 KiB |
+| `@xterm/addon-search` | 37.5 KiB |
+| **entry `dist/renderer/index.js`** | **1279.1 KiB** (budget 1400 KiB) |
+
+The budget fails the build when the entry grows past it; raising it is a commit
+that has to explain the growth. Splitting the entry is *blocked by the
+`file://` load*: Chromium refuses ES-module scripts on that scheme in Electron,
+so `--format=esm --splitting` needs a privileged `app://` scheme first, and the
+measurable payoff is only ~160 KiB (gridstack + marked + dompurify) — xterm and
+the app code are needed at first paint. Recorded as an open improvement in
+[`todos/AUDIT_STATUS.md`](../todos/AUDIT_STATUS.md) rather than done blind.
+
+Sourcemaps are built for every production render (`index.js.map`, ~6 MB) and are
+**not shipped**: `build.files` excludes `dist/**/*.map`, so a packaged app pays
+nothing while a pasted renderer stack trace stays symbolizable off-device.
+
 ## Measurement protocol for the live run
 
 The static audit defines what the numbers must confirm. Launch with `--js-flags="--expose-gc"`; sample `process.memoryUsage()` (main, via `--inspect`) and `Get-Process FineVibe` working set (PowerShell, 60 s cadence, per-process rows) plus heap snapshots. Scenarios: **S1** 10 idle tabs → expect ≈ +0.2–0.4 MB/tab renderer, flat main; **S2** a ~100 MB output burst → renderer plateaus at scrollback capacity, main heap must not scale with the burst; **S3** 1 h idle with 10 live PTYs → growth < 5 MB/h (a linear rise implicates the 2 s pollers' per-file maps, `lastMtimes` first); **S4** open 50 sessions and close all → retained `Terminal`/`TranscriptSyncEntry`/reader counts return to baseline; **S5** state seeded with 5,000 history rows → time one persist, < 250 ms; **S6** export a session with a ≥50 MB `.events` sidecar → the main heap transient equals the buffered sidecar bytes (and collapses to chunk size once streaming lands). Record CSVs and snapshots under `bench/memory/<date>/`. Pass criteria: S3 < 5 MB/h, S4 within 10% of baseline, per-tab renderer cost within 2× the 240 KB estimate, S5 < 250 ms.
@@ -275,6 +333,10 @@ The static audit defines what the numbers must confirm. Launch with `--js-flags=
 
 Automated tests cover repeated search beyond the memory-cache budget, shared indexing/cancellation, growing diff files, split UTF-8 event records, oversized events, navigation within a 200,000-line file, and directory-cache invalidation.
 
+The boot timeline, the perf sampler and the bundle budget are covered by
+`src/main/boot-timing.test.ts` and `scripts/build-renderer.mjs` (the build fails
+over budget); the write path they exercise is covered by
+`src/renderer/state/persist-engine.ts` + `src/renderer/state.test.ts`.
 The persist throttle (`ffcd283`) is covered by `src/renderer/state.test.ts`. Measurement note: mutations inside one 200 ms window coalesce to a single serialize + IPC (leading edge fires the first mutation immediately), so S5-style persist timing counts one persist per burst, not per mutation; a lone mutation never waits behind the window.
 
 Still needed: run the measurement protocol above (S1–S6) in a packaged app, plus packaged preview/navigation checks and sustained terminal-output profiling. Passing unit tests does not establish a speedup percentage or complete the broader Pi/OMP integration audit.
