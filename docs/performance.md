@@ -321,7 +321,8 @@ that has to explain the growth. Splitting the entry is *blocked by the
 so `--format=esm --splitting` needs a privileged `app://` scheme first, and the
 measurable payoff is only ~160 KiB (gridstack + marked + dompurify) out of the
 1280.3 KiB entry — xterm and the app code are needed at first paint. Recorded as an open improvement in
-[`todos/AUDIT_STATUS.md`](../todos/AUDIT_STATUS.md) rather than done blind.
+[`todos/AUDIT_STATUS.md`](../todos/AUDIT_STATUS.md) (the local-only work queue, gitignored —
+absent on a fresh clone) rather than done blind.
 
 Sourcemaps are built for every production render (`index.js.map`, ~6 MB) and are
 **not shipped**: `build.files` excludes `dist/**/*.map`, so a packaged app pays

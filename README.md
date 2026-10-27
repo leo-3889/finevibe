@@ -73,6 +73,12 @@ The complete per-feature reference â€” behavior, owning module, numeric limits â
 [`docs/FEATURES.md`](docs/FEATURES.md); provider spawn contracts in
 [`docs/provider-contracts.md`](docs/provider-contracts.md).
 
+## Documentation
+
+All eight contract docs (providers, hosts, session lifecycle, security boundaries,
+performance, UI conventions, packaging, feature reference) are indexed in
+[`docs/README.md`](docs/README.md).
+
 ## What it does *not* do
 
 - **The product is FineVibe, the fork's rebrand of Vibeyard.** Upstream keeps the Vibeyard name, its UI copy, and its data format; the fork renames the product and its artifacts (`FineVibe-â€¦` installers, the `finevibe` npm package) and migrates `~/.vibeyard` data on first launch.
@@ -94,6 +100,9 @@ The complete per-feature reference â€” behavior, owning module, numeric limits â
 Requires at least one supported CLI installed and authenticated; `pi`, `omp` and `pi-bolt` must be on `PATH` to appear.
 
 ### npm (macOS, Linux & Windows)
+
+> **Not on npm yet.** The `finevibe` launcher publishes with the `4.0` cut; until then use
+> the [installers below](#desktop-installers). `npm i -g finevibe` returns 404 today.
 
 ```bash
 npm i -g finevibe

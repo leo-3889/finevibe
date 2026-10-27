@@ -2,11 +2,16 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in FineVibe, please report it through [GitHub Security Advisories](https://github.com/elirantutia/vibeyard/security/advisories/new).
+This repository ships fork-only code, so report a vulnerability in FineVibe through this
+repository's [GitHub Security Advisories](https://github.com/leo-3889/finevibe/security/advisories/new) —
+the fork's commits are not code upstream can patch.
 
 **Please do not open a public issue for security vulnerabilities.**
 
-We will acknowledge your report within 72 hours and aim to release a fix within 7 days for critical issues.
+The fork is maintained part-time by one person: expect an acknowledgement within a week. There is no
+fixed-ship commitment — fixes ride the fork's release cadence, and a flaw that lives in upstream code
+is reported to [upstream advisories](https://github.com/elirantutia/vibeyard/security/advisories/new)
+so its maintainers can fix it for everyone.
 
 ## Scope
 
@@ -20,4 +25,4 @@ FineVibe is a local Electron desktop application with privileged main-process ac
 - **Electron sandbox** — The main window runs with `contextIsolation: true` and `sandbox: true`; the preload is restricted to sandbox-safe Electron modules (`webPreferences` in `src/main/main.ts`, `sandbox`), so it cannot import local CommonJS helpers. Keep both flags on and preserve the sandbox-safe preload when changing the Electron privilege boundary; see [security boundaries](docs/security-boundaries.md).
 // pi-lens-ignore: MD013/line-length
 - **Search index** — The current source build stores extracted user text and working directories as plaintext JSON under Electron user data in `search-index-v3` (`searchIndexDir` in `src/main/session-search-index.ts`). Hashed filenames do not encrypt contents. Treat this directory as local conversation data. Close the app before removing it to rebuild the index; see [storage and limits](docs/performance.md).
-- **Hook files** — Inter-process hook data is written below `os.tmpdir()/vibeyard`, which resolves differently on each OS. Keep the directory and session-file validation in place.
+- **Hook files** — Inter-process hook data is written below `os.tmpdir()/finevibe` (`finevibe-<uid>` on POSIX, `getStatusDir()` in `src/main/hook-status.ts`), which resolves differently on each OS. Keep the directory and session-file validation in place.
