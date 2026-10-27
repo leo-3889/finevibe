@@ -402,7 +402,15 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
         status = null;
         deferred = true;
       }
-      if (status && status !== e.lastStatus) {
+      // Emit on every append, even when the value equals `lastStatus`: the
+      // renderer tracks states the transcript tail cannot express — 'waiting'
+      // after an Escape, with no UserPromptSubmit hook on pi/pi-bolt/omp to
+      // flip it back. The user's next prompt appends a user entry that reads
+      // back as the SAME 'working' this entry already mirrors, so deduping on
+      // value swallows the refresh and the glyph stays '?' for the whole
+      // turn. The (mtime,size) gate above scopes this to real appends, and
+      // the renderer's setStatus is a no-op on an identical status.
+      if (status) {
         try {
           writeStatus(sessionId, status);
           e.lastStatus = status;
@@ -510,7 +518,9 @@ async function syncEntryRemote(sessionId: string, e: TranscriptSyncEntry): Promi
 
   if (e.wantStatus && tailWindow !== null) {
     const status = transcriptStatusFromTail(tailWindow);
-    if (status && status !== e.lastStatus) {
+    // Re-emit on every append, same as the local twin: the size gate scopes
+    // this to real appends and the renderer dedupes identical statuses.
+    if (status) {
       try {
         writeStatus(sessionId, status);
         e.lastStatus = status;

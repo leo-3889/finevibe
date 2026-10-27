@@ -146,7 +146,11 @@ export function setHookStatus(sessionId: string, status: CliSessionStatus, hookN
 
   // Ignore stale 'working' hooks that arrive after an interrupt (e.g. PostToolUse
   // firing after the user pressed Escape and we already transitioned to 'waiting').
-  if (status === 'working' && state.interrupted) return;
+  // NOT applied to polled (Transcript) status: pi/pi-bolt/omp have no
+  // UserPromptSubmit hook to clear the flag, so a fresh polled 'working' IS the
+  // evidence of the user's new prompt (the poller only re-emits on transcript
+  // appends). Same rationale as the Transcript exemption above.
+  if (status === 'working' && state.interrupted && hookName !== 'Transcript') return;
 
   // Any non-working hook clears the interrupt flag (CLI reached a definitive state).
   if (status !== 'working') state.interrupted = false;
