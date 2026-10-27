@@ -1,6 +1,6 @@
 param([int]$Ms = 2500, [string]$Flag = '')
 # Holds the Win32 clipboard open for $Ms ms, modelling rdprclip.exe-style
-# contention (todos/clipboard-paste-latency-plan.md section 7, P0-2 Windows).
+# contention (todos/archives/plans/clipboard-paste-latency-plan.md section 7, P0-2 Windows).
 # A6 temp discipline: writes no fixed %TEMP% paths - the only artifact is the
 # caller-supplied -Flag sentinel (clipbench.ps1 keeps it inside its own scratch
 # dir); release + flag removal are guaranteed by the finally below.

@@ -1,4 +1,4 @@
-// P0 clipboard measurement harness (todos/clipboard-paste-latency-plan.md §7 P0-1).
+// P0 clipboard measurement harness (todos/archives/plans/clipboard-paste-latency-plan.md §7 P0-1).
 // Electron main + hidden window; times every clipboard:readForPaste sub-op
 // (src/main/ipc-handlers.ts:833-853) per scenario, p50/max over >=11 passes.
 // Run: npx electron dev/perf/clipboard-bench.js [--smoke]
