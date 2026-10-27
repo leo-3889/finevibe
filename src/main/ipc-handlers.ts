@@ -1897,7 +1897,7 @@ export function registerIpcHandlers(): void {
       }
     });
   }
-  // P2 (todos/clipboard-paste-latency-plan.md): probe a file-list format
+  // P2 (todos/archives/plans/clipboard-paste-latency-plan.md): probe a file-list format
   // only on the platform that defines it AND when `availableFormats()`
   // (already fetched by the caller for free) lists it on this clipboard.
   // A plain-text paste then costs two acquisitions — formats + text — down

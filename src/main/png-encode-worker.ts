@@ -1,7 +1,7 @@
 import * as zlib from 'zlib';
 
 /**
- * P4 off-main PNG encoder (todos/clipboard-paste-latency-plan.md).
+ * P4 off-main PNG encoder (todos/archives/plans/clipboard-paste-latency-plan.md).
  *
  * P0 measured `toPNG` as the dominant main-thread freeze of a screenshot
  * paste — 192 ms p50 at 1080p, 307 ms at 1440p (docs/performance.md) — on
