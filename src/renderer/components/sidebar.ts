@@ -347,6 +347,7 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
 
   const el = document.createElement('div');
   el.className = 'project-item' + (isActive ? ' active' : '');
+  el.setAttribute('role', 'listitem');
   el.dataset.projectId = project.id;
   el.draggable = true;
   // Host identity color (plan §5): 2px left border + dot on non-local

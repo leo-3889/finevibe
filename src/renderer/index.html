@@ -2,7 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' http: https:; frame-src *;">
+  <!--
+    CSP (audit 2026-10-28: tightened after measuring the renderer's real network
+    surface — 4 fetch() call sites, all https: GitHub API/feeds + './CHANGELOG.md'
+    on 'self'; no ws:, no http:, no XHR, no service worker).
+      connect-src  'self' https: — http: dropped: nothing in the renderer fetches cleartext.
+                     WebRTC sharing (sharing/peer-guest.ts) is not governed by connect-src.
+      frame-src *  — required by the in-app browser tab: guests load arbitrary sites.
+      style-src 'unsafe-inline' — components set inline style attributes through innerHTML.
+      script-src 'self' — no inline scripts, which is also why renderer crash capture
+                     installs from the bundle (index.ts) instead of an inline handler.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' https:; frame-src *;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FineVibe</title>
   <link rel="icon" type="image/png" href="icon.png">
@@ -18,37 +29,37 @@
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2.4"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
         </button>
         <div class="sidebar-header-actions">
-          <button id="btn-preferences" class="icon-btn" title="Preferences">
+          <button id="btn-preferences" class="icon-btn" title="Preferences" aria-label="Preferences">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
-          <button id="btn-import-vibeyard" class="icon-btn hidden" title="Import projects from Vibeyard">
+          <button id="btn-import-vibeyard" class="icon-btn hidden" title="Import projects from Vibeyard" aria-label="Import projects from Vibeyard">
             <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v6.5"/><path d="M5.2 6.2 8 9l2.8-2.8"/><path d="M2.8 10.8v2.4h10.4v-2.4"/></svg>
           </button>
-          <button id="btn-add-project" class="icon-btn primary" title="New Project (Ctrl+Shift+P)">
+          <button id="btn-add-project" class="icon-btn primary" title="New Project (Ctrl+Shift+P)" aria-label="New Project">
             <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="3.5" x2="8" y2="12.5"/><line x1="3.5" y1="8" x2="12.5" y2="8"/></svg>
           </button>
         </div>
       </div>
       <div id="sidebar-host-tabs">
         <button id="host-tabs-scroll-left" class="icon-btn host-tabs-arrow hidden" aria-label="Scroll hosts left">&#x2039;</button>
-        <div id="sidebar-host-tabs-strip"></div>
+        <div id="sidebar-host-tabs-strip" role="tablist" aria-label="Hosts"></div>
         <button id="host-tabs-scroll-right" class="icon-btn host-tabs-arrow hidden" aria-label="Scroll hosts right">&#x203A;</button>
         <button id="host-tabs-add" class="icon-btn host-tabs-add" aria-label="Add host">+</button>
       </div>
       <div id="sidebar-content">
-        <div id="project-list"></div>
+        <div id="project-list" role="list" aria-label="Projects"></div>
       </div>
-      <div id="sidebar-active-sessions"></div>
-      <div id="sidebar-discussions"></div>
+      <div id="sidebar-active-sessions" aria-label="Active sessions"></div>
+      <div id="sidebar-discussions" aria-label="Discussions"></div>
     </div>
     <div id="sidebar-resize-handle"></div>
-    <div id="main-area">
+    <div id="main-area" role="main">
       <div id="tab-bar">
         <div id="tab-scroll-arrows" class="hidden">
           <button id="tab-scroll-left" class="icon-btn tab-scroll-arrow" aria-label="Scroll tabs left">&#x2039;</button>
           <button id="tab-scroll-right" class="icon-btn tab-scroll-arrow" aria-label="Scroll tabs right">&#x203A;</button>
         </div>
-        <div id="tab-list"></div>
+        <div id="tab-list" role="tablist" aria-label="Sessions"></div>
         <div id="git-status"></div>
         <div id="tab-actions">
           <button id="btn-toggle-terminal" class="icon-btn" title="Toggle Terminal (Ctrl+`)" aria-label="Toggle Terminal"></button>

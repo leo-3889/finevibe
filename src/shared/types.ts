@@ -954,3 +954,19 @@ export type ClipboardPastePayload = {
  * by the disk-health preflight (src/main/disk-health.ts) on state
  * transitions only, and served on `disk-health:get` for the renderer. */
 export type DiskHealth = { state: 'ok' | 'low' | 'unknown'; availableBytes?: number; checkedAt: string };
+
+/**
+ * One runtime sample from main (`src/main/boot-timing.ts`), pushed to the
+ * renderer's debug ring every `PERF_SAMPLE_INTERVAL_MS`. Bytes are Node
+ * `process.memoryUsage()` values; `resources` is the live libuv handle count
+ * (`process.getActiveResourcesInfo().length`) — the watcher/timer/socket
+ * total the performance doc asked to have measured.
+ */
+export interface PerfStats {
+  ms: number;
+  rss: number;
+  heapUsed: number;
+  external: number;
+  resources: number;
+  windows: number;
+}

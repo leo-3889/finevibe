@@ -66,6 +66,7 @@ import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
 import { getKeychainIsolationStatus } from './claude-keychain';
 import { getLastDiskHealth } from './disk-health';
+import { getMainWindow } from './main-window';
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
 // "Checkout and create": a full clone of a large allowlisted repo over a slow
 // link is minutes, not seconds; the modal shows a progress state, so this
@@ -969,7 +970,7 @@ export function registerIpcHandlers(): void {
   // git:changed signal the renderer receives.
   onGitChanged(invalidateEnumerations);
   ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string, hostId?: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win) return;
 
     // Start hook status watcher on first PTY creation (window is guaranteed to exist)
@@ -1066,7 +1067,7 @@ export function registerIpcHandlers(): void {
             unregisterTranscriptSync(sessionId);
             cleanupSessionStatus(sessionId);
             provider.onSessionExited?.(sessionId);
-            const rejectedWin = BrowserWindow.getAllWindows()[0];
+            const rejectedWin = getMainWindow();
             if (rejectedWin && !rejectedWin.isDestroyed()) {
               rejectedWin.webContents.send('pty:exit', sessionId, exitCode, signal, spawnRejectedReason, pid);
             }
@@ -1114,7 +1115,7 @@ export function registerIpcHandlers(): void {
           unregisterTranscriptSync(sessionId);
           cleanupSessionStatus(sessionId);
           provider.onSessionExited?.(sessionId);
-          const w = BrowserWindow.getAllWindows()[0];
+          const w = getMainWindow();
           if (w && !w.isDestroyed()) {
             w.webContents.send('pty:exit', sessionId, exitCode, signal, exitReason, pid);
           }
@@ -1173,7 +1174,7 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('pty:createShell', (_event, sessionId: string, cwd: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win) return;
 
     // P1-15: same launch gate as pty:create — the shell runs in a
@@ -1185,14 +1186,14 @@ export function registerIpcHandlers(): void {
       win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
       return;
     }
-    const dataSink = ptyDataSink(() => BrowserWindow.getAllWindows()[0], sessionId);
+    const dataSink = ptyDataSink(() => getMainWindow(), sessionId);
     spawnShellPty(
       sessionId,
       cwd,
       dataSink,
       (exitCode, signal) => {
         dataSink.flush();
-        const w = BrowserWindow.getAllWindows()[0];
+        const w = getMainWindow();
         if (w && !w.isDestroyed()) {
           w.webContents.send('pty:exit', sessionId, exitCode, signal);
         }
@@ -1224,7 +1225,7 @@ export function registerIpcHandlers(): void {
    *  exit-time flush bound to the outbox THIS sink registered (C2M-04). */
   type PtyDataSink = ((data: string) => void) & { flush(): void };
 
-  function ptyDataSink(getWindow: () => BrowserWindow | undefined, sessionId: string): PtyDataSink {
+  function ptyDataSink(getWindow: () => BrowserWindow | null | undefined, sessionId: string): PtyDataSink {
     const outbox = {
       parts: [] as string[],
       bytes: 0,
@@ -1312,6 +1313,9 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('fs:expandPath', (_event, filePath: string): string => {
+    // The only string-taking fs channel with no try/catch: a non-string from a
+    // renderer bug would throw a raw TypeError straight out of the channel.
+    if (typeof filePath !== 'string') return '';
     return resolveUserPath(filePath);
   });
 
@@ -1606,7 +1610,7 @@ export function registerIpcHandlers(): void {
   // local-project check does not apply to remote cwds (council R-1); the
   // remote cwd is the record's defaultFolder (fallback: remote home).
   ipcMain.handle('hosts:openShell', (_event, id: string, sessionId: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win) return;
     const record = getHost(id);
     if (!record || record.enrollmentStatus !== 'enrolled') {
@@ -1615,14 +1619,14 @@ export function registerIpcHandlers(): void {
       win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
       return;
     }
-    const dataSink = ptyDataSink(() => BrowserWindow.getAllWindows()[0], sessionId);
+    const dataSink = ptyDataSink(() => getMainWindow(), sessionId);
     spawnShellPty(
       sessionId,
       process.cwd(),
       dataSink,
       (exitCode, signal) => {
         dataSink.flush();
-        const w = BrowserWindow.getAllWindows()[0];
+        const w = getMainWindow();
         if (w && !w.isDestroyed()) {
           w.webContents.send('pty:exit', sessionId, exitCode, signal);
         }
@@ -1669,7 +1673,7 @@ export function registerIpcHandlers(): void {
     const record = getHost(id);
     if (!record) return { ok: false, steps: [{ step: 'record', ok: false, detail: 'unknown host' }] };
     const emit = (event: { id: string; status: string; detail?: string }) => {
-      const w = BrowserWindow.getAllWindows()[0];
+      const w = getMainWindow();
       if (w && !w.isDestroyed()) w.webContents.send('hosts:status', event);
     };
     return enrollHost(record, emit, opts);
@@ -2164,7 +2168,7 @@ export function registerIpcHandlers(): void {
   );
 
   ipcMain.on('config:watchProject', safeOn('config:watchProject', (_event, providerId: ProviderId, projectPath: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win) return;
     // getProvider stays first: an unknown provider id must keep throwing into
     // safeOn (P2-108), and the gate below only guards the path.
@@ -2250,7 +2254,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('session:transcriptExists', (_event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string) =>
     transcriptExists(providerId, cliSessionId, projectPath, configDir, liveSessionId));
   ipcMain.handle('session:exportArchive', async (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file') => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    const win = BrowserWindow.fromWebContents(event.sender) ?? getMainWindow();
     if (!win) throw new Error('no window');
     if (configDir && !isManagedMcpConfigDir(configDir)) throw new Error('Not a managed profile config dir');
     // C3A-03: same gate as provider:getConfig; exportArchive reads the
@@ -2340,7 +2344,7 @@ export function registerIpcHandlers(): void {
     // The focused window, mirroring confirmHomeOutsideListing: with several
     // windows open, getAllWindows()[0] attaches the sheet to an arbitrary
     // (possibly hidden) one.
-    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const win = BrowserWindow.getFocusedWindow() ?? getMainWindow();
     if (!win) return null;
     // Open where the user's projects live. Without defaultPath the native
     // picker starts wherever the OS last was — Documents on a fresh Windows
@@ -2375,7 +2379,7 @@ export function registerIpcHandlers(): void {
   // "Auto-name sessions" back on would leave existing tabs unnamed until their
   // title happened to change.
   ipcMain.on('session:resyncStatus', safeOn('session:resyncStatus', () => {
-    const w = BrowserWindow.getAllWindows()[0];
+    const w = getMainWindow();
     if (w) resyncAllSessions(w);
   }));
 
@@ -2390,7 +2394,7 @@ export function registerIpcHandlers(): void {
   // can assign an unrelated conversation and persist it), so the tab keeps its
   // default name until it is resumed.
   ipcMain.handle('session:syncRestored', (_event, sessions: RestoredSession[]) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win || win.isDestroyed() || !Array.isArray(sessions)) return;
     // transcript-sync writes `.name` into STATUS_DIR for the watcher to forward,
     // but the watcher only starts on the first `pty:create` — start it now.
@@ -2451,7 +2455,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.on('app:focus', safeOn('app:focus', () => {
     app.focus({ steal: true });
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (win && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
       win.focus();
@@ -2643,7 +2647,7 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.on('git:watchProject', safeOn('git:watchProject', (_event, projectPath: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win) return;
     const resolved = path.resolve(projectPath);
     // P1-17: watched roots become git-capable roots (requireGitRoot admits

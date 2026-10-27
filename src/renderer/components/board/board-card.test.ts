@@ -46,10 +46,12 @@ type StubEl = {
   title: string;
   draggable: boolean;
   dataset: Record<string, string>;
+  attrs: Record<string, string>;
   children: StubEl[];
   _listeners: Record<string, Function[]>;
   appendChild(child: StubEl): StubEl;
   addEventListener(event: string, cb: Function): void;
+  setAttribute(name: string, value: string): void;
   querySelector(): null;
 };
 
@@ -62,9 +64,11 @@ function makeEl(tag = 'div'): StubEl {
     title: '',
     draggable: false,
     dataset: {},
+    attrs: {},
     children: [],
     _listeners: {},
     appendChild(child) { this.children.push(child); return child; },
+    setAttribute(name, value) { this.attrs[name] = value; },
     addEventListener(event, cb) {
       if (!this._listeners[event]) this._listeners[event] = [];
       this._listeners[event].push(cb);

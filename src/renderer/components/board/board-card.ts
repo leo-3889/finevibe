@@ -24,6 +24,11 @@ export function statusLabel(status: SessionStatus): string {
 export function createCardElement(task: BoardTask): HTMLElement {
   const el = document.createElement('div');
   el.className = 'board-card';
+  // Announces the card and its title (audit a11y pass). Keyboard activation is
+  // deliberately NOT claimed: the card is mouse/drag only today, and a
+  // focusable element that ignores Enter/Space is worse than none.
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', task.title);
   el.dataset.taskId = task.id;
   el.draggable = true;
 

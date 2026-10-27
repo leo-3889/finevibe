@@ -40,6 +40,8 @@ function buildTab(hostId: string): HTMLElement {
   tab.type = 'button';
   tab.dataset.hostId = hostId;
   tab.classList.toggle('active', appState.activeHostId === hostId);
+  tab.setAttribute('role', 'tab');
+  tab.setAttribute('aria-selected', appState.activeHostId === hostId ? 'true' : 'false');
 
   // Local has no record and no dot (always reachable, neutral identity —
   // plan §5); enrolled hosts reuse the Settings→Hosts dot colors, with the

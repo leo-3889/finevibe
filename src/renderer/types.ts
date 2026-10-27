@@ -1,7 +1,7 @@
 export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload } from '../shared/types.js';
 import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, HostRecord } from '../shared/types.js';
 import type { ImportableLegacyProject } from '../shared/types.js';
-import type { DiskHealth } from '../shared/types.js';
+import type { DiskHealth, PerfStats } from '../shared/types.js';
 
 export interface FinevibeApi {
   pty: {
@@ -125,6 +125,10 @@ export interface FinevibeApi {
   disk: {
     get(): Promise<DiskHealth | null>;
     onStatus(callback: (status: DiskHealth) => void): () => void;
+  };
+  perf: {
+    reportBoot(ms: number): void;
+    onStats(callback: (sample: PerfStats) => void): () => void;
   };
   app: {
     focus(): void;

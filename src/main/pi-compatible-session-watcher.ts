@@ -3,6 +3,7 @@ import * as path from 'path';
 import { BrowserWindow } from 'electron';
 import { writeCliSessionId } from './hook-status';
 import { readSessionHeaderSync } from './providers/pi-compatible-transcripts';
+import { getMainWindow } from './main-window';
 
 /**
  * Shared transcript-ownership watcher for Pi-compatible providers (Pi,
@@ -391,7 +392,7 @@ export function createCompatibleSessionWatcher(
     // dock re-activate) must not kill the polling fallback for good.
     pollInterval = setInterval(() => {
       if (watchedSessions.size === 0) return;
-      const win = BrowserWindow.getAllWindows()[0];
+      const win = getMainWindow();
       if (win && !win.isDestroyed()) runScan();
     }, POLL_INTERVAL_MS);
   }

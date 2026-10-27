@@ -638,6 +638,8 @@ export function render(): void {
     const sharing = isSharing(session.id);
     const displayName = tabDisplayName(project, session);
     tab.className = `tab-item${isActive ? ' active' : ''}${unread ? ' unread' : ''}${sharing ? ' tab-sharing' : ''}${isRemoteTab ? ' tab-remote' : ''}${sessionGroup ? ' in-group' : ''}`;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
     tab.dataset.sessionId = session.id;
     tab.dataset.tabName = displayName;
     tab.dataset.cliSessionId = session.cliSessionId ?? '';

@@ -40,6 +40,7 @@ import {
 import { NavHistory } from './state/nav-history.js';
 import { defaultSessionName } from './state/session-naming.js';
 import { createDefaultBoard, ensureProjectDefaults, hydrateLoadedState, serializeForSave } from './state/persistence.js';
+import { PersistEngine } from './state/persist-engine.js';
 import {
   applyMemberPatch,
   buildNewMember,
@@ -141,23 +142,11 @@ export interface SessionChangedPayload {
   deferRender?: boolean;
 }
 
-/**
- * Run `cb` on the coming frame. `requestAnimationFrame` in the renderer; a
- * 16 ms timer in hosts without a DOM (the node-env renderer tests), so the
- * coalescing semantics under test are the semantics shipped.
- */
-function scheduleFrame(cb: () => void): void {
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(cb);
-  else setTimeout(cb, 16);
-}
-
 // SA-P2-6: the defaults come from the shared reconciled object (import above);
 // the old local copy drifted from main's DEFAULT_PREFERENCES (SA-P2-3 removed
 // the dead `locale: 'en'` from both).
 
 class AppState {
-  /** Leading-edge persist throttle window; see persist(). */
-  static readonly PERSIST_THROTTLE_MS = 200;
   private state: PersistedState = { version: 1, projects: [], activeProjectId: null, preferences: { ...defaultPreferences } };
   private listeners = new Map<EventType, Set<EventCallback>>();
   private nav = new NavHistory();
@@ -165,16 +154,12 @@ class AppState {
   private sessionIndex = new Map<string, { project: ProjectRecord; session: SessionRecord }>();
   /** False until load() completes; see the `loaded` getter. */
   private loadedFlag = false;
-  private warnedPrematurePersist = false;
-  /** Coalesced persist for high-frequency cost/context ticks (see scheduleCostFlush). */
-  private costFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Leading-edge persist throttle (see persist). */
-  private persistTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastPersistAt = 0;
-  /** PA-15: a write is scheduled on the coming frame; see persist(). */
-  private persistFrameScheduled = false;
-  /** Bumped by flushPersist so the cancelled frame callback cannot write later. */
-  private persistFrameToken = 0;
+  /**
+   * The write path (frame-coalesced, throttled, quit-flush) lives in
+   * `state/persist-engine.ts` (2026-10-28 architecture audit extraction).
+   * Payload and load gate are read lazily, so the engine sees every mutation.
+   */
+  private persistEngine = new PersistEngine(() => this.state, () => this.loadedFlag);
   /**
    * PA-25: transcript availability prefetched asynchronously, keyed
    * sessionId → `providerId|cliSessionId` → exists. The archive gate used to
@@ -291,128 +276,28 @@ class AppState {
   }
 
   private persist(): void {
-    // Persisting before load() would write the default in-memory state over the
-    // real state.json, which is how saved preferences silently vanish. Reads
-    // before load are fine — components initialize pre-load and re-apply on
-    // `state-loaded` (see docs/ui-conventions.md) — writes are not, so the
-    // write itself is dropped, not just warned about.
-    if (!this.loadedFlag) {
-      if (!this.warnedPrematurePersist) {
-        this.warnedPrematurePersist = true;
-        console.warn('[state] persist before appState.load() dropped; defaults would overwrite saved state');
-      }
-      return;
-    }
-    // PA-15: schedule the write on the coming frame instead of running it
-    // inside the mutation that triggered it. Every persist serializes the
-    // whole state and structured-clones it over IPC, and the old leading edge
-    // paid that synchronously in the tab click / rename / cli-id adoption that
-    // caused it — a burst cloned per mutation, and even ONE isolated mutation
-    // cloned inside the interaction. Frame coalescing makes a burst (and an
-    // isolated mutation) clone once per frame; `throttledWrite` keeps the
-    // leading-edge 200 ms throttle, so a mutation lands at most one frame
-    // after the action instead of a full throttle window (what a pure
-    // trailing debounce would cost), and `flushPersist` — the beforeunload
-    // hook in index.ts — keeps the quit-path flush semantics.
-    if (this.persistFrameScheduled) return;
-    this.persistFrameScheduled = true;
-    const token = this.persistFrameToken;
-    const run = (): void => {
-      // flushPersist() bumped the token: this state is already on disk.
-      if (token !== this.persistFrameToken) return;
-      this.persistFrameScheduled = false;
-      this.throttledWrite();
-    };
-    // S3-03: Chromium never runs animation-frame callbacks for a hidden
-    // document — with the window minimized (the app's designed operating
-    // mode for agent swarms: git-status and the discussions badge both
-    // gate on document.hidden) the frame callback never fired, the latch
-    // above never cleared, and ZERO state writes reached disk for the
-    // whole hidden period; a crash then lost every session/rename/cost
-    // change. Timers keep running while hidden: fall back to one on the
-    // throttle window.
-    if (typeof document !== 'undefined' && document.hidden) {
-      setTimeout(run, AppState.PERSIST_THROTTLE_MS);
-    } else {
-      scheduleFrame(run);
-    }
-  }
-
-  /**
-   * The leading-edge 200 ms throttle, driven by the frame callback, by its own
-   * trailing timer, and by nothing else: `persist()` is the only caller above
-   * it, so the whole state is serialized at most once per frame.
-   * Clamped at zero: a backwards wall-clock jump (resume-from-suspend NTP
-   * correction, restored VM snapshot) makes `elapsed` negative, arming the
-   * trailing save for `PERSIST_THROTTLE_MS - elapsed` — minutes/hours —
-   * while the armed-timer guard below drops every write, so mutations stay
-   * memory-only for that whole window. Clamping bounds the worst case to one
-   * throttle window.
-   */
-  private throttledWrite(): void {
-    const elapsed = Math.max(0, Date.now() - this.lastPersistAt);
-    if (elapsed >= AppState.PERSIST_THROTTLE_MS && this.persistTimer === null) {
-      this.writeStateNow();
-      return;
-    }
-    if (this.persistTimer !== null) return; // trailing save already armed
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      this.writeStateNow();
-    }, AppState.PERSIST_THROTTLE_MS - elapsed);
-  }
-
-  /** Serialize + ship right now; the only writer of the store. */
-  private writeStateNow(): void {
-    this.lastPersistAt = Date.now();
-    window.finevibe.store.save(serializeForSave(this.state));
+    this.persistEngine.persist();
   }
 
   /**
    * Drop the pending frame and the armed trailing save, write immediately
-   * (quit paths, tests). Cancelling the frame is what keeps the beforeunload
-   * flush the LAST write: a frame callback that fired afterwards would arm a
-   * trailing save for 200 ms past teardown.
+   * (quit paths, tests). Semantics: state/persist-engine.ts.
    */
   flushPersist(): void {
-    this.persistFrameToken++;
-    this.persistFrameScheduled = false;
-    if (this.persistTimer !== null) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
-    this.writeStateNow();
+    this.persistEngine.flush();
   }
 
   /**
-   * S1-03: the beforeunload flush. store:save's async write can lose the
-   * race with process exit; saveSync blocks this renderer until main has
-   * written state.json synchronously (store.saveStateSync), so the window
-   * can only tear down after the write is on disk.
+   * S1-03: the beforeunload flush — blocks until main has written state.json
+   * synchronously. Semantics: state/persist-engine.ts.
    */
   flushPersistSync(): void {
-    this.persistFrameToken++;
-    this.persistFrameScheduled = false;
-    if (this.persistTimer !== null) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
-    this.lastPersistAt = Date.now();
-    window.finevibe.store.saveSync(serializeForSave(this.state));
+    this.persistEngine.flushSync();
   }
 
-  /**
-   * Coalesce high-frequency cost/context ticks into a single persist ~1s later.
-   * Each tick costs a full serialize + structured clone over IPC; the 1s window
-   * is short enough that a quit at any point loses at most ~1s of cost data
-   * (the main-side store flushes on quit).
-   */
+  /** Coalesce high-frequency cost/context ticks into one persist ~1s later. */
   private scheduleCostFlush(): void {
-    if (this.costFlushTimer !== null) return;
-    this.costFlushTimer = setTimeout(() => {
-      this.costFlushTimer = null;
-      this.persist();
-    }, 1000);
+    this.persistEngine.scheduleCostFlush();
   }
 
   get projects(): ProjectRecord[] {
@@ -1677,10 +1562,9 @@ export function _resetForTesting(): void {
     clearTimeout((appState as any)['persistTimer']);
     (appState as any)['persistTimer'] = null;
   }
-  (appState as any)['lastPersistAt'] = 0;
-  // PA-15: a frame scheduled in a previous case must not write into this one.
-  (appState as any)['persistFrameToken']++;
-  (appState as any)['persistFrameScheduled'] = false;
+  // The engine owns the write path: drop its armed timers and latches so a
+  // frame scheduled in a previous case cannot write into this one.
+  (appState as any)['persistEngine'].resetForTesting();
   (appState as any)['transcriptFlags'] = new Map();
   // startTeamChat's ordinal scan (C4T-01) reads the whole index: a previous
   // case's entries must not leak into this one.

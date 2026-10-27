@@ -63,6 +63,31 @@ import { initTeamView } from './components/team/team-view.js';
 import { getZoomFactor } from './zoom.js';
 import { confirmAppClose } from './session-close.js';
 
+// Renderer crash capture (architecture audit 2026-10-28, P2). Main deliberately
+// installs no uncaughtException handler; the renderer had NO capture at all, so
+// an uncaught error left a dead UI with no trace. `console.error` is the
+// transport: main tees the renderer console into <logs>/finevibe.log, and the
+// debug ring keeps it readable in-app (Ctrl+Shift+D). Installed at module top
+// level — CSP forbids the inline script that would also cover import-time
+// failures, so import-evaluation crashes stay out of reach by design.
+let rendererErrorsReported = 0;
+function reportRendererError(kind: string, detail: string): void {
+  // A render loop throwing every frame must not flood the log file.
+  if (rendererErrorsReported++ >= 5) return;
+  console.error(`[renderer:${kind}] ${detail}`);
+  logDebugEvent('rendererError', detail);
+}
+window.addEventListener('error', (event) => {
+  reportRendererError(
+    'error',
+    event.message ? `${event.message} @ ${event.filename}:${event.lineno}:${event.colno}` : 'uncaught error (no detail)',
+  );
+});
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = (event as PromiseRejectionEvent).reason;
+  reportRendererError('rejection', String((reason as Error | undefined)?.stack ?? reason ?? 'unknown'));
+});
+
 // Theme and zoom live in persisted preferences, but `appState.load()` is an
 // async IPC round-trip: waiting on it painted the default dark theme at 1.0
 // zoom for the first frames before the saved values landed. Read the small
@@ -284,6 +309,7 @@ async function main(): Promise<void> {
   initSessionHistory();
   initUpdateBanner();
   initDiskHealthBanner();
+  initPerfRing();
   initInsightAlert();
   initToolDetector();
   initToolAlert();
@@ -419,6 +445,28 @@ window.addEventListener('beforeunload', () => appState.flushPersistSync());
 
   checkWhatsNew();
   checkStarPrompt();
+
+  // Audit P1: main logs the boot timeline to the log file; this echoes the
+  // renderer's own parse+init time (its `performance.now()` is measured from
+  // the renderer's timeOrigin, i.e. script start) so a slow launch reads
+  // main-side and renderer-side cost in one stream.
+  window.finevibe.perf.reportBoot(Math.round(performance.now()));
+}
+
+/**
+ * Mirror main's runtime sample (RSS/heap/live handles, `boot-timing.ts`) into
+ * the debug ring so runtime growth is visible in the running app — the audit
+ * found the app bounded everything by constants and measured nothing.
+ */
+function initPerfRing(): void {
+  window.finevibe.perf.onStats((s) => {
+    logDebugEvent('perfStats', '', {
+      rssMiB: +(s.rss / 1048576).toFixed(1),
+      heapMiB: +(s.heapUsed / 1048576).toFixed(1),
+      externalMiB: +(s.external / 1048576).toFixed(1),
+      resources: s.resources,
+    });
+  });
 }
 
 main().catch(console.error);
