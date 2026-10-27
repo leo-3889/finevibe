@@ -10,6 +10,7 @@
 
 import type { McpServer, ProviderConfig, ProviderId } from '../../shared/types';
 import { readProviderFile } from './provider-fs';
+import { parseMcpServersFromTomlContent } from '../codex-config';
 
 const EMPTY: ProviderConfig = { mcpServers: [], agents: [], skills: [], commands: [] };
 
@@ -44,6 +45,19 @@ function mcpServersFromJson(raw: unknown, filePath: string, scope: 'user' | 'pro
 }
 
 /** Parse a seam-read JSON file; malformed/missing reads contribute no servers. */
+/** Parse a seam-read config.toml; malformed/missing reads contribute no servers. */
+async function serversFromToml(hostId: string, relPath: string, scope: 'user' | 'project'): Promise<McpServer[]> {
+  let raw: string | null;
+  try {
+    raw = await readProviderFile(hostId, relPath);
+  } catch (err) {
+    console.warn(`remote config read failed for ${relPath}:`, err);
+    return [];
+  }
+  if (raw === null) return [];
+  return parseMcpServersFromTomlContent(raw, relPath, scope);
+}
+
 async function serversFrom(hostId: string, relPath: string, scope: 'user' | 'project'): Promise<McpServer[]> {
   let raw: string | null;
   try {
@@ -104,10 +118,44 @@ export async function getRemoteProviderConfig(
       for (const s of [...userServers, ...projectServers]) byName.set(s.name, s);
       return { ...EMPTY, mcpServers: [...byName.values()] };
     }
+    case 'codex': {
+      // User scope: <configDir|~/.codex>/config.toml; project scope:
+      // <project>/.codex/config.toml (the local getCodexConfig file pair;
+      // agents/skills stay empty per the v1 rule in the header).
+      const userServers = await serversFromToml(hostId, joinPosix(configDir ?? '~/.codex', 'config.toml'), 'user');
+      const projectServers = projectPath
+        ? await serversFromToml(hostId, joinPosix(projectPath, '.codex/config.toml'), 'project')
+        : [];
+      const byName = new Map<string, McpServer>();
+      for (const s of [...userServers, ...projectServers]) byName.set(s.name, s);
+      return { ...EMPTY, mcpServers: [...byName.values()] };
+    }
+    case 'copilot': {
+      // The local getCopilotConfig pair: <configDir|~/.copilot>/mcp-config.json
+      // + <project>/.copilot/mcp-config.json. User entries win on collision
+      // (the local comment's rule), so project goes first in the map build.
+      const userServers = await serversFrom(hostId, joinPosix(configDir ?? '~/.copilot', 'mcp-config.json'), 'user');
+      const projectServers = projectPath
+        ? await serversFrom(hostId, joinPosix(projectPath, '.copilot/mcp-config.json'), 'project')
+        : [];
+      const byName = new Map<string, McpServer>();
+      for (const s of [...projectServers, ...userServers]) byName.set(s.name, s);
+      return { ...EMPTY, mcpServers: [...byName.values()] };
+    }
+    case 'gemini': {
+      // The local getGeminiConfig pair: <configDir|~/.gemini>/settings.json +
+      // <project>/.gemini/settings.json; project overrides by name (local order).
+      const userServers = await serversFrom(hostId, joinPosix(configDir ?? '~/.gemini', 'settings.json'), 'user');
+      const projectServers = projectPath
+        ? await serversFrom(hostId, joinPosix(projectPath, '.gemini/settings.json'), 'project')
+        : [];
+      const byName = new Map<string, McpServer>();
+      for (const s of [...userServers, ...projectServers]) byName.set(s.name, s);
+      return { ...EMPTY, mcpServers: [...byName.values()] };
+    }
     default:
-      // omp (config.yml), codex (config.toml), copilot/gemini (own trees):
-      // no JSON-over-sftp surface to mirror in v1 — the same answer the
-      // local omp getConfig gives.
+      // omp (config.yml): nothing the ProviderConfig shape can surface
+      // without a YAML parser — the same answer the local omp getConfig gives.
       return { ...EMPTY };
   }
 }
