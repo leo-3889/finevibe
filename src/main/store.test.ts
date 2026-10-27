@@ -46,7 +46,7 @@ function makeDefaultState(): PersistedState {
     projects: [],
     activeProjectId: null,
     hosts: [],
-    preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', defaultProjectsFolder: '' },
+    preferences: DEFAULT_PREFERENCES,
   })) as PersistedState;
 }
 
@@ -181,6 +181,9 @@ describe('loadState', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, projects: [], activeProjectId: null }));
     const loaded = loadState();
     expect(loaded.preferences).toEqual(DEFAULT_PREFERENCES);
+    // SA-P2-3: the defaults must NOT carry `locale` - a default 'en' made the
+    // `saved ?? resolveSystemLocale(...)` boot fallback dead code.
+    expect(loaded.preferences.locale).toBeUndefined();
     // Cached reads carry the same normalized object (single fill, not per call).
     expect(loadState()).toBe(loaded);
   });

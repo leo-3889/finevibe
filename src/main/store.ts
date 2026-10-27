@@ -4,6 +4,7 @@ import * as os from 'os';
 import type { PersistedState, Preferences, ProjectRecord, Profile, HostRecord } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
 import { validateHostRecordShape, migrateLegacySessionSshHosts } from '../shared/ssh-host';
+import { DEFAULT_PREFERENCES } from '../shared/default-preferences';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
 
@@ -67,10 +68,10 @@ export function resetWriteStateForTests(): void {
 }
 
 /** The single documented default for a state file that omits `preferences`
- * (P2-84): a `version: 1` file without the field parses verbatim, and
- * `loadState` fills this in exactly once so every consumer reads a present
- * object. Keep in sync with the renderer's `defaultPreferences`. */
-export const DEFAULT_PREFERENCES: Preferences = { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', defaultProjectsFolder: '' };
+ * (P2-84, SA-P2-6): the shared `src/shared/default-preferences.ts` object,
+ * now the one source for both main and the renderer. Re-exported so main-side
+ * importers keep the same path. */
+export { DEFAULT_PREFERENCES };
 
 // Deep copy of the defaults (order-independence audit 2026-10-26): a shallow
 // spread shares nested pref objects (sidebarViews, planModeDefaults,
@@ -78,7 +79,12 @@ export const DEFAULT_PREFERENCES: Preferences = { soundOnSessionWaiting: true, n
 // module constant for every later default. Preferences are pure JSON data -
 // JSON round-trip is the clone (main's TS lib predates structuredClone).
 function cloneDefaultPreferences(): Preferences {
-  return JSON.parse(JSON.stringify(DEFAULT_PREFERENCES)) as Preferences;
+  try {
+    return JSON.parse(JSON.stringify(DEFAULT_PREFERENCES)) as Preferences;
+  } catch {
+    // Unreachable for a literal constant; a shallow spread keeps callers typed.
+    return { ...DEFAULT_PREFERENCES };
+  }
 }
 
 /** State returned by {@link loadState}: `preferences` is guaranteed present
