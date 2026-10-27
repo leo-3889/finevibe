@@ -28,9 +28,9 @@ Per-operation scoping matrix (2026-10-26, audit §6):
 | Plane | Host-scoped | Local-only (belt-refused / tiered per the coherence principle) |
 |---|---|---|
 | Runtime: spawn, shell, `checkBinary` (7/7), status sidecars, transcripts, Add-project verbs, profile provision | ✅ via SSH lanes (spawn hostId = Phase 0 lane, in flight) | — |
-| FS rails: `listDir`/`readFile`/`stat`/`exists`/`isDirectory` | ✅ `remote-fs.ts` siblings | `fs:listFiles` (belt-refused; R2 retrofit = sftp walk) |
-| Config plane: settings sync 3/7, `getConfig` 3/7 | ✅ | hooks/statusline validation (Setup tier, sync-routed) |
-| Git: status/files/diff/worktrees/branches | 0/7 → Phase 3.5 `gitOn(hostId)` | all `git:*` (belt-refused) |
+| FS rails: `listDir`/`readFile`/`stat`/`exists`/`isDirectory` | ✅ `remote-fs.ts` siblings | — (`fs:listFiles` R2 retrofit landed: sftp walk, Phase 4a) |
+| Config plane: settings sync 7/7, `getConfig` 7/7 | ✅ (Phase 4c: codex/copilot/gemini twins + file sets joined pi/pi-bolt/omp/claude) | hooks/statusline validation (Setup tier, sync-routed) |
+| Git: status/files/diff/worktrees/branches | 7/7 `gitOn(hostId)` — reads (Phase 3.5) + write-side stage/unstage/discard/checkout/create (Phase 4b) | — (refuse-belt retired) |
 
 ## Registry
 
