@@ -65,10 +65,11 @@ export function bootElapsedMs(): number {
   return Math.round(performance.now() - t0);
 }
 
-/** The renderer's own parse+first-paint time, echoed into the boot log. */
+/** The renderer's own parse+init time (its `performance.now()` at the end of
+ * `main()`), echoed into the boot log. Not a paint measurement. */
 export function reportRendererBoot(ms: unknown): void {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0 || ms > MAX_REPORTED_BOOT_MS) return;
-  console.log(`[boot] renderer firstPaint=${Math.round(ms)}ms`);
+  console.log(`[boot] renderer init=${Math.round(ms)}ms`);
 }
 
 /**

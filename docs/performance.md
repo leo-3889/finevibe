@@ -278,15 +278,17 @@ one line to `<logs>/finevibe.log`:
 ```text
 [boot] identity+migrate=..ms ready=..ms sweeps=..ms ipc=..ms window=..ms total=..ms window-shown
 [boot] post-window python=..ms total=..ms
-[boot] renderer=..ms
+[boot] renderer init=..ms
 ```
 
 `identity+migrate` (userData identity + state migration) → `ready` (app.whenReady)
 → `sweeps` (startup cleanup) → `ipc` (handler registration) → `window`
 (create + loadFile) → `window-shown`, then the deferred post-window probes
 (Python availability) in a second line. The renderer answers on `perf:reportBoot`
-with its own `performance.now()` (ms from renderer script start), so a slow
-launch reads main-side and renderer-side cost in one stream. The two lines above
+with its own `performance.now()` measured at the end of its `main()` (ms from
+renderer script start to init complete - a label of the init phase, not a paint
+measurement), so a slow launch reads main-side and renderer-side cost in one
+stream. The two lines above
 are the boot-tests' own output (a headless harness): they prove the wiring, not
 the app's real timings.
 
@@ -305,20 +307,20 @@ on the 2026-10-28 tree (minified, single IIFE entry):
 
 | Owner | Minified size |
 | --- | --- |
-| `src` (app code) | 592.6 KiB |
+| `src` (app code) | 593.8 KiB |
 | `@xterm/xterm` | 336.8 KiB |
 | `@xterm/addon-webgl` | 123.1 KiB |
 | `gridstack` | 82.3 KiB |
 | `marked` | 40.5 KiB |
 | `@xterm/addon-search` | 37.5 KiB |
-| **entry `dist/renderer/index.js`** | **1279.1 KiB** (budget 1400 KiB) |
+| **entry `dist/renderer/index.js`** | **1280.3 KiB** (budget 1400 KiB) |
 
 The budget fails the build when the entry grows past it; raising it is a commit
 that has to explain the growth. Splitting the entry is *blocked by the
 `file://` load*: Chromium refuses ES-module scripts on that scheme in Electron,
 so `--format=esm --splitting` needs a privileged `app://` scheme first, and the
-measurable payoff is only ~160 KiB (gridstack + marked + dompurify) — xterm and
-the app code are needed at first paint. Recorded as an open improvement in
+measurable payoff is only ~160 KiB (gridstack + marked + dompurify) out of the
+1280.3 KiB entry — xterm and the app code are needed at first paint. Recorded as an open improvement in
 [`todos/AUDIT_STATUS.md`](../todos/AUDIT_STATUS.md) rather than done blind.
 
 Sourcemaps are built for every production render (`index.js.map`, ~6 MB) and are
