@@ -17,7 +17,6 @@ const api = vi.hoisted(() => ({
   approveHostKey: vi.fn(),
   enroll: vi.fn(),
   unenroll: vi.fn(),
-  tools: vi.fn(),
   syncSettings: vi.fn(),
   syncStatus: vi.fn(),
   onStatus: vi.fn(),
@@ -46,14 +45,7 @@ vi.mock('../modal.js', () => ({
     modal.showConfirmDialog(title, message, opts);
   },
 }));
-vi.mock('../custom-select.js', () => ({
-  createCustomSelect: vi.fn(() => ({ destroy: vi.fn(), getValue: () => 'local', setValue: vi.fn(), setOptions: vi.fn() })),
-}));
 vi.mock('../project-terminal.js', () => ({ openRemoteShellTab: (id: string, name: string) => shellTab(id, name) }));
-vi.mock('../../provider-availability.js', () => ({
-  getCachedProviderMetas: () => [{ id: 'claude' }, { id: 'pi' }],
-  getProviderDisplayName: (id: string) => id,
-}));
 
 function host(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
@@ -94,9 +86,8 @@ beforeEach(() => {
         openShell: api.openShell, generateKey: api.generateKey, secretsAvailable: api.secretsAvailable,
         setSecret: api.setSecret, forgetPassword: api.forgetPassword, test: api.test,
         approveHostKey: api.approveHostKey, enroll: api.enroll, unenroll: api.unenroll,
-        tools: api.tools, syncSettings: api.syncSettings, syncStatus: api.syncStatus, onStatus: api.onStatus,
+        syncSettings: api.syncSettings, syncStatus: api.syncStatus, onStatus: api.onStatus,
       },
-      provider: { checkBinary: vi.fn().mockResolvedValue(true) },
       fs: { browseDirectory: vi.fn() },
     },
   });
@@ -230,11 +221,4 @@ describe('hosts-section', () => {
     expect(api.del).toHaveBeenCalledWith('h1');
   });
 
-  it('tools panel probes local binaries', async () => {
-    await mount();
-    await flush();
-    const rows = texts(document, '.hosts-tool-row');
-    expect(rows.length).toBe(2);
-    expect(rows[0]).toContain('claude');
-  });
 });

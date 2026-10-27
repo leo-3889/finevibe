@@ -1681,14 +1681,6 @@ export function registerIpcHandlers(): void {
     return unenrollHost(record);
   });
 
-  // Live tool inventory for the UR-4 dropdown; also refreshes the record.
-  // Same implementation the checkBinary staleness refresh fires (§2, R-4).
-  ipcMain.handle('hosts:tools', async (_event, id: string) => {
-    const record = getHost(id);
-    if (!record) return null;
-    return await refreshHostTools(record);
-  });
-
   // Settings push (per-host providers T3, UR-5): the renderer sends ids
   // only — the bundle builder owns the file set, main owns every read/write.
   // `confirmOverwrite` is the drift dialog's Overwrite answer (plan §4).
@@ -2289,7 +2281,7 @@ export function registerIpcHandlers(): void {
       // Per-host providers plan §2: a registry host answers from its record —
       // no probing, no SSH on the request path. Stale (or never-probed)
       // records answer anyway and refresh in the background over the exec
-      // lane (shared with hosts:tools; concurrent refreshes dedupe).
+      // lane (concurrent refreshes dedupe).
       const record = getHost(hostId);
       if (!record) return false;
       const probedAt = record.lastProbeAt ? Date.parse(record.lastProbeAt) : 0;

@@ -71,7 +71,9 @@ describe('createHost', () => {
 describe('updateHost / setEnrollmentStatus', () => {
   it('patches fields and keeps the id immutable', () => {
     const rec = createHost(DRAFT);
-    const updated = updateHost(rec.id, { name: 'strix-2', id: 'evil' as never });
+    // The smuggled `id` models a hostile/caller-side patch: the type forbids it,
+    // the registry must still keep the record's own id.
+    const updated = updateHost(rec.id, { name: 'strix-2', id: 'evil' } as unknown as Parameters<typeof updateHost>[1]);
     expect(updated.name).toBe('strix-2');
     expect(updated.id).toBe(rec.id);
   });

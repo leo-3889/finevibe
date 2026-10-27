@@ -107,9 +107,10 @@ export async function probePrerequisites(record: HostRecord): Promise<NonNullabl
 
 /**
  * Shared tool-inventory refresh (per-host providers plan §2, council R-4):
- * the `hosts:tools` probe and the `provider:checkBinary` staleness refresh
- * are one implementation, two callers. Concurrent refreshes for the same
- * host share the in-flight promise (bounded by the host registry size).
+ * the `provider:checkBinary` staleness refresh is its only caller (Settings →
+ * Setup owns the per-host tool list; Settings → Hosts does not probe tools).
+ * Concurrent refreshes for the same host share the in-flight promise (bounded
+ * by the host registry size).
  */
 export function refreshHostTools(record: HostRecord): Promise<NonNullable<HostRecord['prerequisites']>> {
   const existing = toolRefreshInFlight.get(record.id);

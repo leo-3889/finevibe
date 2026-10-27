@@ -518,11 +518,3 @@
 .hosts-step.fail { color: var(--accent); }
 .hosts-r1-banner { margin: 8px 0; padding: 6px 10px; border: 1px solid #f4b400; border-radius: 4px; color: #f4b400; font-size: 11px; }
 .hosts-add-row { margin: 8px 0 16px; }
-.hosts-tools-heading { margin-top: 16px; }
-.hosts-tools-picker { margin: 6px 0; max-width: 240px; }
-.hosts-tools-list { display: flex; flex-direction: column; gap: 2px; }
-.hosts-tools-loading { font-size: 11px; color: var(--text-muted); }
-.hosts-tool-row { font-size: 11px; color: var(--text-secondary); }
-.hosts-tool-row.ok { color: #34a853; }
-.hosts-tool-row.fail { color: var(--accent); }
-.hosts-tool-version { color: var(--text-muted); }

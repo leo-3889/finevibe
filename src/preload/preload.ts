@@ -88,7 +88,6 @@ export interface FineVibeApi {
     approveHostKey(id: string, fingerprint: string): Promise<HostRecord | null>;
     enroll(id: string, opts?: { pin?: string }): Promise<{ ok: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
     unenroll(id: string): Promise<{ ok: boolean; detail?: string }>;
-    tools(id: string): Promise<HostRecord['prerequisites'] | null>;
     syncSettings(id: string, providerIds: ProviderId[], confirmOverwrite?: boolean): Promise<{ ok: boolean; drift?: string[]; steps: { step: string; ok: boolean; detail?: string }[] }>;
     /** Remote open/add folder (T5, UR-6): the Add-project verbs on the host.
      * Main owns normalization/traversal/quoting; the record is the consent. */
@@ -344,7 +343,6 @@ const api: FineVibeApi = {
     approveHostKey: (id, fingerprint) => ipcRenderer.invoke('hosts:approveHostKey', id, fingerprint),
     enroll: (id, opts) => ipcRenderer.invoke('hosts:enroll', id, opts),
     unenroll: (id) => ipcRenderer.invoke('hosts:unenroll', id),
-    tools: (id) => ipcRenderer.invoke('hosts:tools', id),
     syncSettings: (id, providerIds, confirmOverwrite) => ipcRenderer.invoke('hosts:syncSettings', id, providerIds, confirmOverwrite),
     listDirs: (id, dirPath, prefix) => ipcRenderer.invoke('hosts:listDirs', id, dirPath, prefix),
     stat: (id, target) => ipcRenderer.invoke('hosts:stat', id, target),
