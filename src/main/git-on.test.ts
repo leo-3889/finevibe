@@ -20,7 +20,11 @@ import {
   gitOnWorktrees,
   gitOnRemoteUrl,
   gitOnBranches,
-  refuseRemoteMutation,
+  gitOnStageFile,
+  gitOnUnstageFile,
+  gitOnDiscardFile,
+  gitOnCheckoutBranch,
+  gitOnCreateBranch,
   type GitTarget,
 } from './git-on';
 import { NOT_A_REPO, primeGitBinaryForTesting } from './git-status';
@@ -146,14 +150,50 @@ describe('gitOn local sibling dispatch', () => {
   });
 });
 
-describe('refuseRemoteMutation', () => {
-  it('remote targets refuse with the belt message', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(() => refuseRemoteMutation('git:stageFile', REMOTE)).toThrow(/remote host/);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('git:stageFile blocked'));
-    warn.mockRestore();
+describe('write-side lanes (Phase 4b)', () => {
+  it('remote stage/unstage quote the path and hit the exec lane', async () => {
+    exec.mockResolvedValue('');
+    await gitOnStageFile(REMOTE, 'src/a b.ts');
+    expect(exec).toHaveBeenCalledWith(RECORD, "git -C '/srv/app' add -- 'src/a b.ts'", { timeoutMs: 5000 });
+    await gitOnUnstageFile(REMOTE, 'src/a.ts');
+    expect(exec).toHaveBeenLastCalledWith(RECORD, "git -C '/srv/app' reset HEAD -- 'src/a.ts'", { timeoutMs: 5000 });
   });
-  it('local targets pass', () => {
-    expect(() => refuseRemoteMutation('git:stageFile', LOCAL)).not.toThrow();
+
+  it('remote discard uses clean -fd for untracked, checkout for tracked', async () => {
+    exec.mockResolvedValue('');
+    await gitOnDiscardFile(REMOTE, 'new.txt', 'untracked');
+    expect(exec).toHaveBeenLastCalledWith(RECORD, "git -C '/srv/app' clean -fd -- 'new.txt'", { timeoutMs: 5000 });
+    await gitOnDiscardFile(REMOTE, 'mod.txt', 'modified');
+    expect(exec).toHaveBeenLastCalledWith(RECORD, "git -C '/srv/app' checkout -- 'mod.txt'", { timeoutMs: 5000 });
+  });
+
+  it('remote checkout validates the ref via git before switching', async () => {
+    exec.mockResolvedValue('');
+    await gitOnCheckoutBranch(REMOTE, 'feature/x');
+    expect(exec).toHaveBeenNthCalledWith(1, RECORD, "git -C '/srv/app' check-ref-format --branch 'feature/x'", { timeoutMs: 5000 });
+    expect(exec).toHaveBeenNthCalledWith(2, RECORD, "git -C '/srv/app' checkout 'feature/x'", { timeoutMs: 5000 });
+  });
+
+  it('remote create branches via checkout -b after validation', async () => {
+    exec.mockResolvedValue('');
+    await gitOnCreateBranch(REMOTE, 'feat');
+    expect(exec).toHaveBeenNthCalledWith(2, RECORD, "git -C '/srv/app' checkout -b 'feat'", { timeoutMs: 5000 });
+  });
+
+  it('rejects unsafe remote paths and flag-like branches', async () => {
+    await expect(gitOnStageFile(REMOTE, '../escape')).rejects.toThrow(/not a path inside/);
+    await expect(gitOnStageFile(REMOTE, '/abs')).rejects.toThrow(/not a path inside/);
+    await expect(gitOnCheckoutBranch(REMOTE, '-f')).rejects.toThrow(/Invalid branch name/);
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('local mutations dispatch to the local sink (execFile), never ssh exec', async () => {
+    mockExecFile.mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null) => void;
+      cb(null);
+    }) as never);
+    await gitOnStageFile(LOCAL, 'a.ts');
+    expect(exec).not.toHaveBeenCalled();
+    expect(mockExecFile).toHaveBeenCalled();
   });
 });

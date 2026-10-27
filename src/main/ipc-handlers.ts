@@ -23,14 +23,17 @@ import {
   gitOnWorktrees,
   gitOnRemoteUrl,
   gitOnBranches,
-  refuseRemoteMutation,
+  gitOnStageFile,
+  gitOnUnstageFile,
+  gitOnDiscardFile,
+  gitOnCheckoutBranch,
+  gitOnCreateBranch,
   type GitTarget,
 } from './git-on';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from './hosts/secrets';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
-import { gitStageFile, gitUnstageFile, gitDiscardFile, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, notifyGitChanged, onGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
@@ -47,7 +50,7 @@ import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { analyzeReadiness } from './readiness/analyzer';
 import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { detectGitCheckoutUrl } from '../shared/git-url';
-import type { ProviderId, Profile, Preferences, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
+import type { ProviderId, Profile, Preferences, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
 import { canonicalPath, canonicalRoot, expandUserPath, resolveUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
@@ -2618,22 +2621,32 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('git:stageFile', async (_event, projectPath: string, filePath: string) => {
     const target = requireGitTarget('git:stageFile', projectPath);
-    refuseRemoteMutation('git:stageFile', target);
-    await gitStageFile(target.cwd, requireGitFilePath('git:stageFile', target.cwd, filePath));
+    // Phase 4b: the write routes through the gitOn lane; the local sibling
+    // keeps the requireGitFilePath gate, the remote one validates internally
+    // (path.resolve on a controller would mangle a remote posix path).
+    await gitOnStageFile(
+      target,
+      target.kind === 'local' ? requireGitFilePath('git:stageFile', target.cwd, filePath) : filePath,
+    );
     notifyGitChanged();
   });
 
   ipcMain.handle('git:unstageFile', async (_event, projectPath: string, filePath: string) => {
     const target = requireGitTarget('git:unstageFile', projectPath);
-    refuseRemoteMutation('git:unstageFile', target);
-    await gitUnstageFile(target.cwd, requireGitFilePath('git:unstageFile', target.cwd, filePath));
+    await gitOnUnstageFile(
+      target,
+      target.kind === 'local' ? requireGitFilePath('git:unstageFile', target.cwd, filePath) : filePath,
+    );
     notifyGitChanged();
   });
 
   ipcMain.handle('git:discardFile', async (_event, projectPath: string, filePath: string, area: string) => {
     const target = requireGitTarget('git:discardFile', projectPath);
-    refuseRemoteMutation('git:discardFile', target);
-    await gitDiscardFile(target.cwd, requireGitFilePath('git:discardFile', target.cwd, filePath), area as GitFileEntry['area']);
+    await gitOnDiscardFile(
+      target,
+      target.kind === 'local' ? requireGitFilePath('git:discardFile', target.cwd, filePath) : filePath,
+      area,
+    );
     notifyGitChanged();
   });
 
@@ -2670,15 +2683,13 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('git:checkoutBranch', async (_event, projectPath: string, branch: string) => {
     const target = requireGitTarget('git:checkoutBranch', projectPath);
-    refuseRemoteMutation('git:checkoutBranch', target);
-    await checkoutGitBranch(target.cwd, branch);
+    await gitOnCheckoutBranch(target, branch);
     notifyGitChanged();
   });
 
   ipcMain.handle('git:createBranch', async (_event, projectPath: string, branch: string) => {
     const target = requireGitTarget('git:createBranch', projectPath);
-    refuseRemoteMutation('git:createBranch', target);
-    await createGitBranch(target.cwd, branch);
+    await gitOnCreateBranch(target, branch);
     notifyGitChanged();
   });
 

@@ -9,9 +9,10 @@
  * reads: `git:getStatus` on a remote project now answers from the host
  * instead of throwing.
  *
- * Scope is READ-ONLY (Phase 3.5 contract): stage/unstage/discard/checkout/
- * create stay local-only and refuse remote paths — a remote mutation needs
- * the write-side design (mtime races, lock files), tracked as Phase 4.
+ * Scope: Phase 3.5 delivered the reads; Phase 4b adds the write side
+ * (stage/unstage/discard/checkout/create) over the same exec lane, with the
+ * same argument safety (single-quote every renderer-supplied argument before
+ * it reaches the remote shell). The old `refuseRemoteMutation` belt is retired.
  */
 import { exec, sftpRead } from './hosts/ssh-client';
 import type { HostRecord } from '../shared/types';
@@ -22,6 +23,11 @@ import {
   getGitWorktrees,
   getGitRemoteUrl,
   listGitBranches,
+  gitStageFile,
+  gitUnstageFile,
+  gitDiscardFile,
+  checkoutGitBranch,
+  createGitBranch,
   parseStatusOutput,
   parseFilesOutput,
   parseWorktreeOutput,
@@ -117,14 +123,6 @@ async function remoteBranches(target: RemoteTarget): Promise<GitBranch[]> {
   }
 }
 
-/** A remote project has no local tree to mutate; every git write channel calls this first. */
-export function refuseRemoteMutation(channel: string, target: GitTarget): void {
-  if (target.kind === 'remote') {
-    console.warn(`${channel} blocked: git is read-only for remote projects (Phase 3.5)`);
-    throw new Error('Project lives on a remote host');
-  }
-}
-
 // ---- The lane: one entry point per git read, dispatched on the target ----
 
 export function gitOnStatus(target: GitTarget): Promise<GitStatus> {
@@ -149,4 +147,82 @@ export function gitOnRemoteUrl(target: GitTarget): Promise<string | null> {
 
 export function gitOnBranches(target: GitTarget): Promise<GitBranch[]> {
   return target.kind === 'local' ? listGitBranches(target.cwd) : remoteBranches(target);
+}
+
+// ---- Phase 4b: the write side ----
+//
+// One entry point per git mutation, dispatched on the target like the reads.
+// The remote siblings single-quote every renderer-supplied argument (shq) —
+// the exec lane runs the command through the remote shell, so an unquoted
+// `;`, space or backtick in a path/branch is remote command injection, not
+// just a broken argv. Path safety mirrors the local requireGitFilePath rules
+// (relative posix path, no `..`, non-empty); the remote sibling joins onto
+// the target cwd, so a `..` could otherwise reach outside the project.
+
+/** Local requireGitFilePath rules, applied to the raw posix spelling (no
+ * local path.resolve — a remote path must never be resolved on the
+ * controller's OS). */
+function requireRemoteRelPath(channel: string, filePath: string): string {
+  if (typeof filePath !== 'string' || filePath.trim() === '') {
+    throw new Error(`${channel}: invalid file path`);
+  }
+  if (filePath.includes('\0') || filePath.startsWith('/') || filePath.split('/').includes('..')) {
+    throw new Error(`${channel}: ${JSON.stringify(filePath)} is not a path inside the project`);
+  }
+  return filePath;
+}
+
+async function remoteStage(target: RemoteTarget, filePath: string): Promise<void> {
+  await gitExec(target, ['add', '--', shq(requireRemoteRelPath('git:stageFile', filePath))]);
+}
+
+async function remoteUnstage(target: RemoteTarget, filePath: string): Promise<void> {
+  await gitExec(target, ['reset', 'HEAD', '--', shq(requireRemoteRelPath('git:unstageFile', filePath))]);
+}
+
+/**
+ * Untracked discard uses `git clean -fd -- <path>`: git's own guarantee that
+ * only untracked content is removed (the local sink reaches the same promise
+ * through explicit ls-files verification before its rm -r). Tracked discard
+ * is `git checkout -- <path>`, identical to the local command.
+ */
+async function remoteDiscard(target: RemoteTarget, filePath: string, area: string): Promise<void> {
+  const rel = shq(requireRemoteRelPath('git:discardFile', filePath));
+  if (area === 'untracked') {
+    await gitExec(target, ['clean', '-fd', '--', rel]);
+    return;
+  }
+  await gitExec(target, ['checkout', '--', rel]);
+}
+
+/** Branch names are validated by git itself (check-ref-format), exactly like
+ * the local checkoutGitBranch/createGitBranch do before their spawn. */
+async function remoteCheckout(target: RemoteTarget, branch: string, create: boolean): Promise<void> {
+  if (typeof branch !== 'string' || branch === '' || branch.startsWith('-')) {
+    throw new Error(`Invalid branch name: ${JSON.stringify(branch)}`);
+  }
+  await gitExec(target, ['check-ref-format', '--branch', shq(branch)]);
+  await gitExec(target, create ? ['checkout', '-b', shq(branch)] : ['checkout', shq(branch)]);
+}
+
+export function gitOnStageFile(target: GitTarget, filePath: string): Promise<void> {
+  return target.kind === 'local' ? gitStageFile(target.cwd, filePath) : remoteStage(target, filePath);
+}
+
+export function gitOnUnstageFile(target: GitTarget, filePath: string): Promise<void> {
+  return target.kind === 'local' ? gitUnstageFile(target.cwd, filePath) : remoteUnstage(target, filePath);
+}
+
+export function gitOnDiscardFile(target: GitTarget, filePath: string, area: string): Promise<void> {
+  return target.kind === 'local'
+    ? gitDiscardFile(target.cwd, filePath, area as GitFileEntry['area'])
+    : remoteDiscard(target, filePath, area);
+}
+
+export function gitOnCheckoutBranch(target: GitTarget, branch: string): Promise<void> {
+  return target.kind === 'local' ? checkoutGitBranch(target.cwd, branch) : remoteCheckout(target, branch, false);
+}
+
+export function gitOnCreateBranch(target: GitTarget, branch: string): Promise<void> {
+  return target.kind === 'local' ? createGitBranch(target.cwd, branch) : remoteCheckout(target, branch, true);
 }
