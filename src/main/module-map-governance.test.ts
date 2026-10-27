@@ -110,6 +110,7 @@ const ALLOWLIST: Record<string, string> = {
   'profileInstallMemo@settings-guard.ts': 'teardown: per-profile mtime memo; cleared on consent/settings reset',
 
   // transient: keys mark work in flight and are deleted by the work itself.
+  'REMOTE_WALK_IGNORE@hosts/remote-fs.ts': 'bounded-by-construction: const walk ignore-set, never mutated',
   'fullDecodes@codex-session-watcher.ts': 'transient: decode in flight; deleted in finally',
   'outsideHomeConsentInFlight@ipc-handlers.ts': 'transient: shared dialog promise; deleted on settle',
   'enumerateInFlight@ipc-handlers.ts': 'transient: shared walk promise; deleted by its owner run',

@@ -663,14 +663,15 @@ describe('git:* remote routing (Phase 3.5)', () => {
     expect(vi.mocked(gitStatus.getGitStatus)).not.toHaveBeenCalled();
   });
 
-  it('git:stageFile on a remote project still refuses (read-only Phase 3.5)', async () => {
+  // Phase 4b retired the read-only refusal: remote stage now routes to the
+  // exec lane sibling instead of throwing.
+  it('git:stageFile on a remote project routes to the exec lane (Phase 4b)', async () => {
     remoteRoots.push({ path: '/srv/rout2', hostId: 'host-1' });
     const record = { id: 'host-1', name: 'h', host: 'h.example' } as never;
     vi.mocked(getHost).mockReturnValueOnce(record);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await expect(handlers.get('git:stageFile')!({}, '/srv/rout2', 'x.ts')).rejects.toThrow(/remote host/);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('git:stageFile blocked'));
-    warn.mockRestore();
+    sshExec.mockResolvedValueOnce('');
+    await expect(handlers.get('git:stageFile')!({}, '/srv/rout2', 'x.ts')).resolves.toBeUndefined();
+    expect(sshExec).toHaveBeenCalledWith(record, "git -C '/srv/rout2' add -- 'x.ts'", { timeoutMs: 5000 });
   });
 });
 
