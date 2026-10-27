@@ -851,6 +851,24 @@ describe('updateSessionCliId()', () => {
     expect(sessions[0].userRenamed).toBe(false);
     expect(cleared).toHaveBeenCalledWith({ sessionId: sessions[0].id });
   });
+
+  // P2-87: the /clear archive branch must honor "Record session history" like
+  // every other archive site. With the pref OFF nothing may be recorded (the
+  // rows would be invisible in the sidebar yet keep their profile "in use").
+  it('P2-87: /clear archives only when sessionHistoryEnabled is on', () => {
+    const { project, sessions } = addProjectWithSessions(1);
+    appState.setPreference('sessionHistoryEnabled', false);
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-1');
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-2');
+    const offRows = (project.sessionHistory ?? []).map((h) => h.cliSessionId);
+    expect(offRows).not.toContain('cli-1');
+    expect(offRows).not.toContain('cli-2');
+
+    appState.setPreference('sessionHistoryEnabled', true);
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-3');
+    const rows = (project.sessionHistory ?? []).map((h) => h.cliSessionId);
+    expect(rows).toContain('cli-2');
+  });
 });
 
 // --- Session History Tests ---
