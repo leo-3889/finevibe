@@ -196,8 +196,12 @@ export function createTerminalPane(
   }
 
   // Register GitHub #123 link provider
+  // P2-22: the async getRemoteUrl resolves after destroyTerminal may already
+  // have disposed this terminal (or createTerminalPane replaced it). Register
+  // only while the map still holds THIS instance - xterm-6 tolerates it, but
+  // a provider on a disposed terminal is a dead closure holding the tree.
   window.finevibe.git.getRemoteUrl(projectPath).then((repoUrl) => {
-    if (repoUrl) {
+    if (repoUrl && instances.get(sessionId)?.terminal === terminal) {
       terminal.registerLinkProvider(new GithubLinkProvider(repoUrl, terminal));
     }
   });

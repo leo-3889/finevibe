@@ -322,6 +322,55 @@ describe('terminal pending prompt injection', () => {
   });
 });
 
+describe('P2-22 GithubLinkProvider late-registration guard', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  /** Window stub whose getRemoteUrl resolves a repo URL on a controllable tick. */
+  function stubRemoteUrl() {
+    let resolveUrl!: (v: string) => void;
+    const promise = new Promise<string>((res) => { resolveUrl = res; });
+    vi.stubGlobal('window', {
+      finevibe: {
+        pty: { write: mockPtyWrite, kill: mockPtyKill, resize: vi.fn(), create: vi.fn() },
+        git: { getRemoteUrl: () => promise },
+        clipboard: { write: mockFineVibeClipboardWrite },
+        app: { openExternal: vi.fn() },
+      },
+    });
+    return resolveUrl;
+  }
+
+  it('registers on the terminal while the pane is alive', async () => {
+    const { createTerminalPane, getTerminalInstance } = await import('./terminal-pane.js');
+    const resolveUrl = stubRemoteUrl();
+    createTerminalPane('claude-g1', '/project', null, false, '', 'claude');
+    const instance = getTerminalInstance('claude-g1')!;
+    const spy = vi.spyOn(instance.terminal as object, 'registerLinkProvider');
+    resolveUrl('https://github.com/o/r');
+    await Promise.resolve();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('P2-22: a destroy before the getRemoteUrl answer skips the registration (no provider on a disposed terminal)', async () => {
+    const { createTerminalPane, destroyTerminal, getTerminalInstance } = await import('./terminal-pane.js');
+    const resolveUrl = stubRemoteUrl();
+    createTerminalPane('claude-g2', '/project', null, false, '', 'claude');
+    const instance = getTerminalInstance('claude-g2')!;
+    const spy = vi.spyOn(instance.terminal as object, 'registerLinkProvider');
+    destroyTerminal('claude-g2');
+    resolveUrl('https://github.com/o/r');
+    await Promise.resolve();
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
 describe('terminal focus tracking', () => {
   beforeEach(() => {
     vi.resetModules();
