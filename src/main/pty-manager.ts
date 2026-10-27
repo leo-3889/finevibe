@@ -329,15 +329,97 @@ function quoteArgForCmdExe(arg: string): string {
     throw new Error(
       'Cannot pass an argument containing a double quote through cmd.exe: cmd ' +
         'has no escape for a literal quote, so it cannot be quoted safely. ' +
+        'A provider whose binary is a native .exe (no cmd.exe wrapper) accepts ' +
+        'the same argument; so does a Pi-compatible provider (Pi/Pi-Bolt/OMP), ' +
+        'which loads a prompt file instead of prompt text. ' +
         `Offending argument: ${JSON.stringify(shown)}`
     );
   }
   return CMDEXE_METACHARS.test(arg) ? `"${arg}"` : arg;
 }
 
+/** The launch target parsed out of an npm-style .cmd/.bat shim. */
+interface ShimTarget {
+  executable: string;
+  /** Shim-side argv that precedes the caller's args (the node script path). */
+  prefixArgs: string[];
+}
+
+/**
+ * Recover the real launch target from an npm-style .cmd/.bat shim so the
+ * spawn can skip cmd.exe entirely.
+ *
+ * cmd.exe cannot transport a multi-line argument: it ends its command at the
+ * first newline (the prompt is truncated to line 1), strips wrapper quotes
+ * and word-splits, and runs leftover fragments as commands. That breaks every
+ * multi-line startup prompt — Ask AI embeds the selected code in fences, so
+ * npm-shimmed CLIs (codex.cmd, pi-bolt.cmd, …) received only the first line.
+ * The target is a native exe (node.exe / tool.exe), so spawning it directly
+ * carries argv intact: CreateProcess + CommandLineToArgvW preserve newlines
+ * and escaped quotes inside a quoted token.
+ *
+ * Parsing is deliberately narrow — only the npm cmd-shim template
+ * `"%_prog%" "%dp0%\…\cli.js" %*` and the hand-written `"target.exe" %*`
+ * form, expanding only `%dp0%`/`%~dp0%` (shim dir) and `%_prog%` (node.exe
+ * beside the shim, else bare `node`, mirroring the shim's IF EXIST). Any
+ * unreadable shim, unknown variable, non-exe target, missing script, or
+ * unexpected token count returns null and the caller falls back to the
+ * cmd.exe wrapper (the previous behavior).
+ */
+function resolveCmdShimTarget(shimPath: string): ShimTarget | null {
+  let body: string;
+  try {
+    body = fs.readFileSync(shimPath, 'utf8');
+  } catch {
+    return null;
+  }
+  // Shims are tiny one-liners; anything larger is not a shim (or is binary).
+  if (body.length > 64 * 1024) return null;
+  const launchLine = body.split(/\r?\n/).filter((l) => l.includes('%*')).pop();
+  if (!launchLine) return null;
+  const quoted = [...launchLine.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  if (quoted.length === 0 || quoted.length > 2) return null;
+  // All quoted tokens must sit on the launch, before the %* passthrough.
+  if (launchLine.lastIndexOf('"') > launchLine.lastIndexOf('%*')) return null;
+
+  const shimDir = path.dirname(shimPath);
+  const expand = (token: string): string | null => {
+    if (/%_prog%/i.test(token)) {
+      if (token.toLowerCase() !== '%_prog%') return null; // %_prog% with a suffix — don't guess
+      const local = path.join(shimDir, 'node.exe');
+      return fs.existsSync(local) ? local : 'node';
+    }
+    const t = path.normalize(token.replace(/%~?dp0%?/gi, shimDir + path.sep));
+    if (/%[^%]*%/.test(t)) return null; // unknown cmd variable — don't guess
+    return t;
+  };
+
+  const executable = expand(quoted[0]);
+  if (!executable) return null;
+  const ext = path.extname(executable).toLowerCase();
+  if (ext !== '' && ext !== '.exe') return null;
+  let resolved = executable;
+  if (/[\\/]/.test(resolved)) {
+    if (!fs.existsSync(resolved)) return null;
+  } else {
+    // Bare name: cmd resolved it against the shim dir first — honour that.
+    const beside = path.join(shimDir, executable);
+    if (fs.existsSync(beside)) resolved = beside;
+  }
+  const prefixArgs: string[] = [];
+  if (quoted.length === 2) {
+    const script = expand(quoted[1]);
+    if (!script || !/\.(?:js|mjs|cjs)$/i.test(script)) return null;
+    if (!fs.existsSync(script)) return null;
+    prefixArgs.push(script);
+  }
+  return { executable, prefixArgs };
+}
+
 /**
  * On Windows, .cmd/.bat and .ps1 files cannot be spawned directly by node-pty
- * (CreateProcess returns error 193). Wrap them via cmd.exe or powershell.exe.
+ * (CreateProcess returns error 193). Prefer spawning the shim's real target
+ * directly (see resolveCmdShimTarget); fall back to cmd.exe or powershell.exe.
  */
 export function resolveWindowsShell(
   shell: string,
@@ -354,7 +436,14 @@ export function resolveWindowsShell(
       args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', shell, ...args],
     };
   }
-  // Everything else (.cmd, .bat, bare names, extensionless paths):
+  // .cmd/.bat shims carry their real target; an extensionless npm launcher
+  // resolves via PATHEXT to the <name>.cmd beside it — parse the same file.
+  const shimPath = ext === '.cmd' || ext === '.bat' ? shell : ext === '' ? `${shell}.cmd` : '';
+  if (shimPath) {
+    const target = resolveCmdShimTarget(shimPath);
+    if (target) return { shell: target.executable, args: [...target.prefixArgs, ...args] };
+  }
+  // Everything else (unparseable shims, bare names, extensionless paths):
   // wrap with cmd.exe so CreateProcess doesn't choke on non-PE binaries.
   // Every token must be quoted for cmd.exe — see quoteArgForCmdExe.
   return {
@@ -561,7 +650,18 @@ export function resolveLaunchSpec(params: {
 
   const base: LaunchSpec = {
     executable: resolveProviderBinary(providerId, hostId),
-    argv: provider.buildArgs({ sessionId, cliSessionId, isResume, extraArgs, initialPrompt, systemPrompt }),
+    // `remote` reaches the providers that can hand a quote-bearing prompt to
+    // the CLI as a FILE (see systemPromptArg): on an SSH host a local path is
+    // unreadable, so the value must stay a literal argument there.
+    argv: provider.buildArgs({
+      sessionId,
+      cliSessionId,
+      isResume,
+      extraArgs,
+      initialPrompt,
+      systemPrompt,
+      remote: isRemoteHost || (sshHost !== undefined && sshHost !== ''),
+    }),
     env,
     providerId,
     configDir,
