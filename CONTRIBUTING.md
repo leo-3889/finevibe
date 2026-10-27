@@ -71,6 +71,13 @@ scope. The generator strips only the leading keyword, so a message like
 `feat : thing - description` would appear in the changelog with the `:` and scope
 still attached.
 
+## Documentation
+
+The contract docs (providers, hosts, session lifecycle, security boundaries, performance,
+UI conventions, packaging, feature reference) are indexed in
+[docs/README.md](docs/README.md). A change that invalidates a claim in one of them updates
+that doc in the same commit.
+
 ## Releases and Packaging
 
 Releases are cut by the `Release` workflow (`workflow_dispatch` on

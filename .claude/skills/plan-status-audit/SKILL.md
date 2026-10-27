@@ -162,7 +162,7 @@ passing, and say which leg produced each number.
   it was 111 when this skill was written, and the 2026-10-19/20 program's history was
   re-hashed by the rewrite). No push without asking.
 - Remotes today: `fork` = `https://github.com/leo-3889/finevibe.git` (push), `origin` =
-  `https://github.com/elirantantia/vibeyard.git` (fetch; push is refused by config).
+  `https://github.com/elirantutia/vibeyard.git` (fetch; push is refused by config).
 - `todos/archives/fork-rebuildable-on-origin.md` (local-only, gitignored): upstream's PR #167 breaks if the
   `feature/*` branches under it are rebuilt — rebuilding is allowed **only** as a
   force-push plus a coordinated PR #167 update.
