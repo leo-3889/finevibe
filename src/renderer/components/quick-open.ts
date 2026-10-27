@@ -1,7 +1,5 @@
 import { appState } from '../state.js';
 import { openFileReaderChecked } from '../open-file-reader.js';
-import { isRemoteProject } from '../host-scope.js';
-import { getHostName } from '../host-registry.js';
 
 let overlay: HTMLElement | null = null;
 let input: HTMLInputElement | null = null;
@@ -57,21 +55,15 @@ async function searchFiles(): Promise<void> {
   const project = appState.activeProject;
   if (!project || !input) return;
 
-  // Phase 3 coherence (docs/hosts.md): the files live ON the host; main
-  // refuses remote-rooted listFiles. Say so instead of "No files found".
-  if (isRemoteProject(project)) {
-    latestSearchToken++;
-    results = [];
-    activeIndex = 0;
-    renderResults(`These files live on “${getHostName(project.hostId)}” — remote quick-open is not supported yet.`);
-    return;
-  }
-
+  // R2 Phase 4a: remote projects now list for real — main routes the query to
+  // the sftp walk sibling (`remote-fs.ts walkRemoteFiles`) when the project
+  // names a host. The old "not supported yet" notice is retired with the
+  // belt-only behavior it described.
   const { fileQuery } = parseQuery(input.value);
   const token = ++latestSearchToken;
   let files: string[];
   try {
-    files = await window.finevibe.fs.listFiles(project.path, fileQuery);
+    files = await window.finevibe.fs.listFiles(project.path, fileQuery, project.hostId);
   } catch {
     files = [];
   }
