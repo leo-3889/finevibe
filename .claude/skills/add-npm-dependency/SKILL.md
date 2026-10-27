@@ -41,7 +41,7 @@ esbuild only has the `.ts` loader configured. **It will not bundle any CSS the p
 1. Add a copy step in `scripts/copy-assets.js` — `copyFile(node_modules/<pkg>/.../file.css, dist/renderer/<target>)`, where `dist` in that script is `dist/renderer`. Mirror the two existing precedents (`scripts/copy-assets.js:39-46`): **gridstack** → `dist/renderer/vendor/gridstack.min.css`, **xterm** → `dist/renderer/xterm.css`. `vendor/` is gridstack's choice, not a rule — pick the layout the component expects.
 2. Add a `<link rel="stylesheet" href="…">` to `src/renderer/index.html` to match the copy target (see the existing `styles.css` / `xterm.css` / `vendor/gridstack.min.css` links at `:9-11`).
 
-If you skip step 2, the JS bundles fine but the component renders unstyled. (This is a property of the `build:renderer` script — `esbuild … --loader:.ts=ts`, no CSS loader — not of `CLAUDE.md`; verify with `node -p "require('./package.json').scripts['build:renderer']"`.)
+If you skip step 2, the JS bundles fine but the component renders unstyled. (This is a property of the renderer build, not of `CLAUDE.md`: `npm run build:renderer` runs `scripts/build-renderer.mjs`, which configures esbuild with the `.ts` loader only — no CSS loader — prints the per-owner size breakdown, and fails the build over its `BUDGET_KIB` entry budget. Read that script, not `package.json`, for the esbuild options.)
 
 ## Step 3 — Native module gotcha (`.node` binaries)
 
