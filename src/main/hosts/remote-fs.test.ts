@@ -298,3 +298,44 @@ describe('readRemoteFile (fs:readFile rail)', () => {
     expect(sftp.read).not.toHaveBeenCalled();
   });
 });
+
+// R2 Phase 4a: the fs:listFiles sibling. Mirrors the local non-git walk:
+// DFS, depth cap, ignore set, dotfiles skipped, posix-relative output.
+describe('walkRemoteFiles (fs:listFiles rail, Phase 4a)', () => {
+  it('walks the tree and returns posix-relative file paths', async () => {
+    const { walkRemoteFiles } = await import('./remote-fs.js');
+    sftp.entries.mockImplementation((_r: unknown, dir: string) =>
+      Promise.resolve(
+        dir === '/home/dev/dev/app'
+          ? [dirEntry('src', true), dirEntry('README.md', false), dirEntry('node_modules', true), dirEntry('.hidden', false)]
+          : dir === '/home/dev/dev/app/src'
+            ? [dirEntry('main.ts', false), dirEntry('util.ts', false)]
+            : [],
+      ),
+    );
+    const files = await walkRemoteFiles('h1', '/home/dev/dev/app');
+    // DFS in readdir order (the local walk's contract): src is listed before
+    // README.md, so its children land first.
+    expect(files).toEqual(['src/main.ts', 'src/util.ts', 'README.md']);
+  });
+
+  it('stops recursing at depth 5', async () => {
+    const { walkRemoteFiles } = await import('./remote-fs.js');
+    // A chain of nested dirs, each named d: root/d/d/d/d/d/d/file
+    sftp.entries.mockImplementation((_r: unknown, dir: string) => {
+      const depth = dir.split('/').length - 5; // 0 at root, 1 at root/d, ...
+      return Promise.resolve(depth < 6 ? [dirEntry('d', true)] : [dirEntry('file', false)]);
+    });
+    const files = await walkRemoteFiles('h1', '/home/dev/dev/app');
+    // Dirs exist through depth 6; the walk stops at depth 5 (MAX_DEPTH), so
+    // the depth-6 file is never listed.
+    expect(files).toEqual([]);
+  });
+
+  it('answers empty for an unsafe path and for an unreadable root', async () => {
+    const { walkRemoteFiles } = await import('./remote-fs.js');
+    expect(await walkRemoteFiles('h1', 'relative/path')).toEqual([]);
+    sftp.entries.mockResolvedValue(null); // no such dir
+    expect(await walkRemoteFiles('h1', '/home/dev/dev/app')).toEqual([]);
+  });
+});

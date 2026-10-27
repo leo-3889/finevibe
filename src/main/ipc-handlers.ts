@@ -14,7 +14,7 @@ import { loadState, saveState, saveStateSync, getKnownProjectPaths, getRemotePro
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
 import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
 import { syncSettingsToHost } from './hosts/settings-sync';
-import { cloneRemoteRepo, ensureRemoteDir, listRemoteDir, listRemoteDirs, readRemoteFile, statRemotePath } from './hosts/remote-fs';
+import { cloneRemoteRepo, ensureRemoteDir, listRemoteDir, listRemoteDirs, readRemoteFile, statRemotePath, walkRemoteFiles } from './hosts/remote-fs';
 import { generateManagedKeypair } from './hosts/keys';
 import {
   gitOnStatus,
@@ -546,20 +546,51 @@ export function sweepEnumerationCaches(): void {
 }
 
 async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
-  const hit = enumerateCache.get(resolvedCwd);
+  return getCachedFiles(resolvedCwd, () => enumerateProjectFiles(resolvedCwd));
+}
+
+// Query ranking shared by both fs:listFiles branches (local + R2 remote walk):
+// exact basename > prefix > name-substring > path-substring, capped by the
+// caller. Paths are posix-relative, so basename is a plain '/' split (the
+// previous path.basename call behaved identically on both platforms).
+function rankFilesByQuery(files: string[], _cwd: string, query: string): string[] {
+  if (!query) return files;
+  const lower = query.toLowerCase();
+  const exact: string[] = [];
+  const startsWith: string[] = [];
+  const nameContains: string[] = [];
+  const pathContains: string[] = [];
+  for (const f of files) {
+    const fileName = (f.split('/').pop() ?? f).toLowerCase();
+    if (fileName === lower) exact.push(f);
+    else if (fileName.startsWith(lower)) startsWith.push(f);
+    else if (fileName.includes(lower)) nameContains.push(f);
+    else if (f.toLowerCase().includes(lower)) pathContains.push(f);
+  }
+  return [...exact, ...startsWith, ...nameContains, ...pathContains];
+}
+
+// R2 Phase 4a: the same cache serves remote enumerations under the key
+// `${hostId}|${cwd}` (a remote cwd must never share a key with the local
+// mirror-path string). The generation counter is local-git-driven; a local
+// git:changed bump merely costs a remote project one extra re-walk after its
+// TTL — cheaper than a second cache family, and remote trees have no watcher
+// anyway (docs/hosts.md).
+async function getCachedFiles(key: string, loader: () => Promise<string[]>): Promise<string[]> {
+  const hit = enumerateCache.get(key);
   if (hit && Date.now() - hit.at < ENUMERATE_TTL_MS) {
-    enumerateCache.delete(resolvedCwd);
-    enumerateCache.set(resolvedCwd, hit);
+    enumerateCache.delete(key);
+    enumerateCache.set(key, hit);
     return hit.files;
   }
-  const pending = enumerateInFlight.get(resolvedCwd);
+  const pending = enumerateInFlight.get(key);
   if (pending) return pending;
   const gen = enumerateGeneration;
   const run = async (): Promise<string[]> => {
     try {
-      const files = await enumerateProjectFiles(resolvedCwd);
+      const files = await loader();
       if (gen === enumerateGeneration) {
-        enumerateCache.set(resolvedCwd, { at: Date.now(), files });
+        enumerateCache.set(key, { at: Date.now(), files });
         if (enumerateCache.size > ENUMERATE_CACHE_MAX) {
           const oldest = enumerateCache.keys().next().value;
           if (oldest !== undefined) enumerateCache.delete(oldest);
@@ -569,11 +600,11 @@ async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
     } finally {
       // Only the run that still owns the slot clears it; an invalidation may
       // have handed this cwd to a newer enumeration already.
-      if (enumerateInFlight.get(resolvedCwd) === work) enumerateInFlight.delete(resolvedCwd);
+      if (enumerateInFlight.get(key) === work) enumerateInFlight.delete(key);
     }
   };
   const work = run();
-  enumerateInFlight.set(resolvedCwd, work);
+  enumerateInFlight.set(key, work);
   return work;
 }
 
@@ -2659,37 +2690,28 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('pty:getCwd', (_event, sessionId: string) => getPtyCwd(sessionId));
 
-  ipcMain.handle('fs:listFiles', async (_event, cwd: string, query: string) => {
+  ipcMain.handle('fs:listFiles', async (_event, cwd: string, query: string, hostId?: string) => {
     try {
+      // R2 Phase 4a: a registry hostId routes to the sftp walk sibling; the
+      // local branch and its Phase 3 belt below stay untouched for 'local'.
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const remoteFiles = await getCachedFiles(`${hostId}|${cwd}`, () => walkRemoteFiles(hostId, cwd));
+        return rankFilesByQuery(remoteFiles, cwd, query).slice(0, 50);
+      }
       const resolvedCwd = path.resolve(cwd);
       const remoteOwner = remoteProjectOwnerOf(resolvedCwd);
       if (remoteOwner) {
         // Phase 3 belt: on mirror-path controllers the local gate below
         // passes for a remote root; refuse before listing the wrong machine.
+        // A caller that names the host now reaches the sftp branch above.
         console.warn(`fs:listFiles blocked: ${resolvedCwd} is a project on remote host ${remoteOwner}`);
         return [];
       }
       if (!isWithinKnownProject(resolvedCwd)) {
         return [];
       }
-      let files = await getCachedProjectFiles(resolvedCwd);
-
-      if (query) {
-        const lower = query.toLowerCase();
-        const exact: string[] = [];
-        const startsWith: string[] = [];
-        const nameContains: string[] = [];
-        const pathContains: string[] = [];
-        for (const f of files) {
-          const fileName = path.basename(f).toLowerCase();
-          if (fileName === lower) exact.push(f);
-          else if (fileName.startsWith(lower)) startsWith.push(f);
-          else if (fileName.includes(lower)) nameContains.push(f);
-          else if (f.toLowerCase().includes(lower)) pathContains.push(f);
-        }
-        files = [...exact, ...startsWith, ...nameContains, ...pathContains];
-      }
-      return files.slice(0, 50);
+      const files = await getCachedProjectFiles(resolvedCwd);
+      return rankFilesByQuery(files, resolvedCwd, query).slice(0, 50);
     } catch (err) {
       console.warn('fs:listFiles failed:', err);
       return [];

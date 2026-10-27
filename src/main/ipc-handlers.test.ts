@@ -231,7 +231,7 @@ import { getHost } from './hosts/host-registry';
 import { refreshHostTools, provisionRemoteProfileDir } from './hosts/enrollment';
 import { syncSettingsToHost } from './hosts/settings-sync';
 import { getRemoteProviderConfig } from './hosts/remote-provider-config';
-import { listRemoteDir, readRemoteFile, statRemotePath } from './hosts/remote-fs';
+import { listRemoteDir, readRemoteFile, statRemotePath, walkRemoteFiles } from './hosts/remote-fs';
 function makeProvider(): CliProvider {
   return {
     // hookStatus off keeps the post-spawn settings-warning block out of the way.
@@ -625,6 +625,15 @@ describe.skipIf(process.platform === 'win32')('remote-scope belt (git/fs)', () =
     expect(files).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:listFiles blocked'));
     warn.mockRestore();
+  });
+
+  // R2 Phase 4a: naming the host routes to the sftp walk sibling instead of
+  // the belt refusal above.
+  it('fs:listFiles with a remote hostId answers from the sftp walk (Phase 4a)', async () => {
+    vi.mocked(walkRemoteFiles).mockReset().mockResolvedValue(['src/a.ts', 'src/b.ts', 'README.md']);
+    const files = await handlers.get('fs:listFiles')!({}, '/home/u/app', 'src/', 'host-1') as string[];
+    expect(walkRemoteFiles).toHaveBeenCalledWith('host-1', '/home/u/app');
+    expect(files).toEqual(['src/a.ts', 'src/b.ts']);
   });
 
   it('local projects are untouched by the belt', async () => {

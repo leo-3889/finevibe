@@ -39,7 +39,7 @@ export interface FinevibeApi {
     browseDirectory(): Promise<string | null>;
     cloneRepo(url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
     ensureDirectory(dirPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
-    listFiles(cwd: string, query: string): Promise<string[]>;
+    listFiles(cwd: string, query: string, hostId?: string): Promise<string[]>;
     topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
     exists(filePath: string, hostId?: string): Promise<boolean>;
     readFile(filePath: string, hostId?: string): Promise<ReadFileResult>;
