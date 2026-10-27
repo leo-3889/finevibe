@@ -379,15 +379,22 @@ export function sftpListDirEntries(
   record: HostRecord,
   remoteDir: string,
   opts?: { timeoutMs?: number },
-): Promise<Array<{ name: string; isDirectory: boolean }> | null> {
-  return sftpOp<Array<{ name: string; isDirectory: boolean }> | null>(
+): Promise<Array<{ name: string; isDirectory: boolean; mtimeMs: number }> | null> {
+  return sftpOp<Array<{ name: string; isDirectory: boolean; mtimeMs: number }> | null>(
     record,
     `ls ${remoteDir}`,
     (sftp, done) =>
       sftp.readdir(remoteDir, (err, list) =>
         err
           ? done(isNotFound(err) ? null : err, null)
-          : done(null, list.map((e) => ({ name: e.filename, isDirectory: e.attrs.isDirectory() }))),
+          : done(
+              null,
+              list.map((e) => ({
+                name: e.filename,
+                isDirectory: e.attrs.isDirectory(),
+                mtimeMs: (e.attrs.mtime ?? 0) * 1000,
+              })),
+            ),
       ),
     opts,
   );

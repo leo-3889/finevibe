@@ -253,7 +253,7 @@ describe('CRLF rendering (raw file reader)', () => {
 });
 
 describe('remote file preview (per-host providers, parent plan §11)', () => {
-  it('routes the read through the host rail and registers no local watcher', async () => {
+  it('routes the read through the host rail and watches via the host id', async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: true, content: 'from the host' });
     const watchDir = vi.fn();
     Object.assign((globalThis as unknown as { window: { finevibe: { fs: unknown } } }).window.finevibe.fs, {
@@ -267,8 +267,9 @@ describe('remote file preview (per-host providers, parent plan §11)', () => {
       await vi.waitFor(() => expect(instance.loaded).toBe(true));
       expect(readFile).toHaveBeenCalledWith('/home/dev/dev/app/x.ts', 'h1');
       expect(instance.element.textContent).toContain('from the host');
-      // No fs.watch over a remote path: the watcher is the local disk's.
-      expect(watchDir).not.toHaveBeenCalled();
+      // Phase 4 remote watcher: the parent dir is watched through the host
+      // rail (main polls it over sftp), never as a local path.
+      expect(watchDir).toHaveBeenCalledWith('/home/dev/dev/app', 'h1');
     } finally {
       destroyFileReaderPane('remote-pane');
     }

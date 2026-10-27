@@ -78,14 +78,15 @@ function getWatchedSet(projectId: string): Set<string> {
 }
 
 function watchFolder(projectId: string, folderPath: string): void {
-  // Remote projects have no watcher (fs.watch is local; parent plan §11
-  // ships tree+preview, not remote watching): listings refresh on expand
-  // and panel re-render, and agent writes appear on the next expand.
-  if (remoteHostOf(projectId)) return;
+  // Remote folders ride the poll-based remote watcher (Phase 4): fs.watch is
+  // local, so the main side polls the dir over sftp and emits the same
+  // fs:changed events. The local branch is unchanged.
+  const hostId = remoteHostOf(projectId);
   const set = getWatchedSet(projectId);
-  if (set.has(folderPath)) return;
-  set.add(folderPath);
-  window.finevibe.fs.watchDir(folderPath);
+  const key = treeKey(hostId, folderPath);
+  if (set.has(key)) return;
+  set.add(key);
+  window.finevibe.fs.watchDir(folderPath, hostId);
 }
 
 /**
@@ -96,10 +97,11 @@ function watchFolder(projectId: string, folderPath: string): void {
 function unwatchSubtree(projectId: string, folderPath: string, clearExpanded = false): void {
   const set = watchedByProject.get(projectId);
   if (set) {
+    const hostId = remoteHostOf(projectId);
     for (const p of [...set]) {
-      if (!isPathUnder(p, folderPath)) continue;
+      if (!isPathUnder(keyPath(p), folderPath)) continue;
       set.delete(p);
-      window.finevibe.fs.unwatchDir(p);
+      window.finevibe.fs.unwatchDir(keyPath(p), hostId);
     }
   }
   for (const p of [...entryCache.keys()]) {
