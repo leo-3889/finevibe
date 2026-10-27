@@ -901,7 +901,7 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     vi.mocked(readProviderFileWindow).mockRejectedValue(new Error('connection closed'));
     await vi.advanceTimersByTimeAsync(15_000); // tick@15s: first failure cools the host, second entry skipped
     expect(readProviderFileWindow).toHaveBeenCalledTimes(1);
-    readProviderFileWindow.mockClear();
+    vi.mocked(readProviderFileWindow).mockClear();
     // Audit T2 #2: ticks inside the cooldown window (30 s from the failure,
     // i.e. until t=45 s) probe the host ZERO times (per session, per tick
     // each used to re-pay a ~11 s connect).

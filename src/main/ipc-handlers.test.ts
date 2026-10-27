@@ -3346,13 +3346,6 @@ describe('per-host provider channels (per-host providers T1)', () => {
     await expect(handlers.get('provider:checkBinary')!({}, 'pi', 'ghost')).resolves.toBe(false);
   });
 
-  it('hosts:tools delegates to the shared refresh (one implementation, two callers)', async () => {
-    vi.mocked(getHost).mockReturnValue(lab as never);
-    vi.mocked(refreshHostTools).mockResolvedValue({ pi: { ok: true } } as never);
-    await expect(handlers.get('hosts:tools')!({}, 'lab')).resolves.toEqual({ pi: { ok: true } });
-    expect(refreshHostTools).toHaveBeenCalledWith(lab);
-  });
-
   it('hosts:syncSettings gates the payload and delegates (ids only cross the bridge)', async () => {
     vi.mocked(getHost).mockReturnValue(lab as never);
     vi.mocked(syncSettingsToHost).mockResolvedValue({ ok: true, steps: [] });

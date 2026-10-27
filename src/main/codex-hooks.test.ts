@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { vi, type MockedFunction } from 'vitest';
 
 vi.mock('fs', () => ({
   existsSync: vi.fn(),

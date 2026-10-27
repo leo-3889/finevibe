@@ -1,14 +1,14 @@
 // Settings → Hosts (multi-host Phase 1, plan §6). Host cards with live
-// status, add/edit wizard (connection → auth → test/TOFU → enroll),
-// per-card actions, and the UR-4 host-scoped coding-tools panel.
+// status, add/edit wizard (connection → auth → test/TOFU → enroll), and
+// per-card actions (test/enroll/shell/sync/edit/credentials/remove).
+// Tool availability per machine lives in Settings → Setup (its own host
+// scope) — this section owns hosts and credentials only.
 // The registry is main-owned: everything flows through window.finevibe.hosts.
 // All DOM is built with createElement/textContent (no innerHTML).
 
 import { t } from '../../i18n.js';
 import { showModal, closeModal, setModalError, showConfirmDialog, type FieldDef } from '../modal.js';
-import { createCustomSelect, type CustomSelectInstance } from '../custom-select.js';
 import { openRemoteShellTab } from '../project-terminal.js';
-import { getCachedProviderMetas, getProviderDisplayName } from '../../provider-availability.js';
 import { HOST_PALETTE } from '../../../shared/host-colors.js';
 import type { HostRecord, ProviderId } from '../../../shared/types.js';
 import type { PreferencesContext, SectionController } from './section.js';
@@ -37,7 +37,6 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
   let hosts: HostRecord[] = [];
   let secretsOk = true;
   let busy = false;
-  let toolSelect: CustomSelectInstance | null = null;
   let statusUnsub: (() => void) | null = null;
   // Last per-card outcome (test/enroll steps), keyed by host id.
   const lastResult = new Map<string, StepResult[]>();
@@ -107,35 +106,6 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
     if (enrolled && h.authKind === 'password') addBtn('forget', 'hosts.forgetPassword');
     card.appendChild(actions);
     return card;
-  }
-
-  function toolRow(parent: Node, name: string, ok: boolean, version?: string): void {
-    const row = el('div', `hosts-tool-row ${ok ? 'ok' : 'fail'}`, ok ? '✓' : '✗');
-    row.appendChild(el('span', 'hosts-tool-name', ` ${name}`));
-    if (ok && version) row.appendChild(el('span', 'hosts-tool-version', ` ${version}`));
-    if (!ok) row.appendChild(el('span', 'hosts-tool-missing', ` ${t('hosts.toolMissing')}`));
-    parent.appendChild(row);
-  }
-
-  async function renderTools(hostId: string): Promise<void> {
-    const list = document.getElementById('hosts-tools-list');
-    if (!list) return;
-    list.replaceChildren(el('div', 'hosts-tools-loading', t('hosts.toolsLoading')));
-    const metas = getCachedProviderMetas();
-    const rows: { name: string; ok: boolean; version?: string }[] = [];
-    if (hostId === 'local') {
-      for (const m of metas) rows.push({ name: getProviderDisplayName(m.id), ok: await window.finevibe.provider.checkBinary(m.id) });
-    } else {
-      const tools = await window.finevibe.hosts.tools(hostId);
-      for (const m of metas) {
-        const hit = tools?.[m.id];
-        rows.push({ name: getProviderDisplayName(m.id), ok: hit?.ok === true, ...(hit?.version ? { version: hit.version } : {}) });
-      }
-    }
-    if (!ctx.isActiveSection('hosts')) return;
-    const frag = document.createDocumentFragment();
-    for (const r of rows) toolRow(frag, r.name, r.ok, r.version);
-    list.replaceChildren(frag);
   }
 
   async function runTest(id: string): Promise<void> {
@@ -337,8 +307,6 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
   }
 
   function render(container: HTMLElement): void {
-    toolSelect?.destroy();
-    toolSelect = null;
     void (async () => {
       secretsOk = await window.finevibe.hosts.secretsAvailable();
       await load();
@@ -357,17 +325,6 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
       addBtn.addEventListener('click', () => wizard(null));
       addRow.appendChild(addBtn);
       container.appendChild(addRow);
-      container.appendChild(el('div', 'preferences-subheading hosts-tools-heading', t('hosts.toolsHeading')));
-      const picker = el('div', 'hosts-tools-picker');
-      const selectEl = document.createElement('select');
-      selectEl.id = 'hosts-tool-host';
-      picker.appendChild(selectEl);
-      container.appendChild(picker);
-      const toolsList = el('div', 'hosts-tools-list');
-      toolsList.id = 'hosts-tools-list';
-      container.appendChild(toolsList);
-      toolSelect = createCustomSelect('hosts-tool-host', [{ value: 'local', label: t('hosts.toolsLocal') }, ...hosts.map((h) => ({ value: h.id, label: h.name }))], 'local', (v) => void renderTools(String(v)));
-      void renderTools('local');
     })();
     if (!statusUnsub) {
       statusUnsub = window.finevibe.hosts.onStatus(() => {
@@ -379,8 +336,6 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
   }
 
   function destroy(): void {
-    toolSelect?.destroy();
-    toolSelect = null;
     statusUnsub?.();
     statusUnsub = null;
   }

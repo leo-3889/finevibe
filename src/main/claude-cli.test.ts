@@ -132,7 +132,7 @@ beforeEach(() => {
   for (const m of [mockReadFileSync, mockReaddirSync, mockWriteFileSync, mockMkdirSync, mockOpenSync, mockWriteSync, mockFsyncSync, mockCloseSync, mockRenameSync, vi.mocked(fs.realpathSync), vi.mocked(getClaudeVersion)]) m.mockReset();
   // mockReset strips even the vi.fn(impl) constructor implementation (Vitest>=1),
   // so re-establish the factory default the whole suite assumes: identity realpath.
-  vi.mocked(fs.realpathSync).mockImplementation((p) => p);
+  vi.mocked(fs.realpathSync).mockImplementation((p) => p as string);
   // The fs-utils canonical caches (root: process-lifetime; target: 5s TTL)
   // persist across cases: a predecessor's canonical form - computed under a
   // DIFFERENT realpath mock (identity vs case-folded) - served this case and
