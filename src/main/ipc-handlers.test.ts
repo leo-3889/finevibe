@@ -3450,17 +3450,17 @@ describe('per-host provider channels (per-host providers T1)', () => {
     knownPaths.push('/proj');
     await handlers.get('pty:create')!(
       {}, 'host-1', '/proj', null, false, '', 'pi', undefined, undefined, '',
-      undefined, undefined, 'lab',
+      undefined, 'lab',
     );
     expect(mockSpawnPty).toHaveBeenCalled();
-    expect(mockSpawnPty.mock.calls[0][13]).toBe('lab');
+    expect(mockSpawnPty.mock.calls[0][12]).toBe('lab');
   });
 
   it('pty:create registers a REMOTE transcript sync with the HOST session dir (audit T2 #5)', async () => {
     knownPaths.push('/proj');
     await handlers.get('pty:create')!(
       {}, 'host-2', '/proj', 'cli-9', true, '', 'pi', undefined, undefined, '',
-      undefined, undefined, 'lab',
+      undefined, 'lab',
     );
     // The mirror resolves against the same host-side spelling the spawn argv
     // carries — never the local userData path, which cannot exist on the host.
