@@ -4,6 +4,7 @@ import { getProviderCapabilities, getProviderDisplayName, getTeamCapableProvider
 import { showModal, closeModal, setModalError, type FieldDef } from '../modal.js';
 import { MAX_SYSTEM_PROMPT_BYTES, systemPromptByteLength } from '../../state/team-state.js';
 import { t } from '../../i18n.js';
+import { rlog } from '../../log.js';
 
 export async function showTeamMemberModal(mode: 'create' | 'edit', existing?: TeamMember): Promise<void> {
   const fields: FieldDef[] = [
@@ -46,7 +47,7 @@ export async function showTeamMemberModal(mode: 'create' | 'edit', existing?: Te
       await loadProviderAvailability();
       teamCapable = getTeamCapableProviderIds();
     } catch (err) {
-      console.warn('provider availability check failed; showing all backend options:', err);
+      rlog('warn', 'provider availability check failed; showing all backend options:', err);
     }
     const pinnedStillExists = !!existing?.profileId && profiles.some((p) => p.id === existing.profileId);
     fields.push({

@@ -1,5 +1,6 @@
 import { appState } from './state.js';
 import { resolveProjectFilePath } from './state/specialized-sessions.js';
+import { rlog } from './log.js';
 
 /**
  * Open a path in a file-reader tab, but only once the path is known to be an
@@ -28,7 +29,7 @@ export async function openFileReaderChecked(
 ): Promise<void> {
   const project = appState.activeProject;
   if (project?.id !== projectId) {
-    console.warn(`[open-file] ${projectId} is not the active project: ${filePath}`);
+    rlog('warn', `[open-file] ${projectId} is not the active project: ${filePath}`);
     return;
   }
 
@@ -42,18 +43,18 @@ export async function openFileReaderChecked(
     // over sftp in main ('local' rides the local rails untouched).
     const exists = await window.finevibe.fs.exists(fullPath, project.hostId);
     if (!exists) {
-      console.warn(`[open-file] not an openable file: ${fullPath}`);
+      rlog('warn', `[open-file] not an openable file: ${fullPath}`);
       return;
     }
     const isDir = await window.finevibe.fs.isDirectory(fullPath, project.hostId);
     if (isDir) {
-      console.warn(`[open-file] not an openable file: ${fullPath}`);
+      rlog('warn', `[open-file] not an openable file: ${fullPath}`);
       return;
     }
   } catch (err: unknown) {
     // An invoke rejects when the window is tearing down mid-click.
     // pi-lens-ignore: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring
-    console.warn(`[open-file] could not check ${fullPath}`, err);
+    rlog('warn', `[open-file] could not check ${fullPath}`, err);
     return;
   }
 
@@ -61,7 +62,7 @@ export async function openFileReaderChecked(
   // was in flight, and appending to the one they left would silently steal its
   // tab selection.
   if (appState.activeProject?.id !== projectId) {
-    console.warn(`[open-file] active project changed mid-lookup, dropping ${fullPath}`);
+    rlog('warn', `[open-file] active project changed mid-lookup, dropping ${fullPath}`);
     return;
   }
 

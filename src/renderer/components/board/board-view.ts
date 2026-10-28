@@ -17,6 +17,7 @@ import { onChange as onStatusChange, STATUS_GLYPH } from '../../session-activity
 import { onChange as onCostChange, getCost } from '../../session-cost.js';
 import { onChange as onContextChange, getContext } from '../../session-context.js';
 import { statusLabel, updateMetricsRow } from './board-card.js';
+import { rlog } from '../../log.js';
 
 const svgIcon = (inner: string): string =>
   `<svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
@@ -139,7 +140,31 @@ export function createBoardView(): HTMLElement {
 
   const searchIcon = document.createElement('span');
   searchIcon.className = 'board-search-icon';
-  searchIcon.innerHTML = svgIcon('<circle cx="6" cy="6" r="4.25"/><line x1="9.25" y1="9.25" x2="12.5" y2="12.5"/>');
+  // Row 31 review: built with createElementNS — no innerHTML, no parser, no
+  // string-to-DOM sink at all. Same geometry as the svgIcon() literal.
+  {
+    const NS = 'http://www.w3.org/2000/svg';
+    const glyph = document.createElementNS(NS, 'svg');
+    glyph.setAttribute('viewBox', '0 0 14 14');
+    glyph.setAttribute('width', '14');
+    glyph.setAttribute('height', '14');
+    glyph.setAttribute('fill', 'none');
+    glyph.setAttribute('stroke', 'currentColor');
+    glyph.setAttribute('stroke-width', '1.5');
+    glyph.setAttribute('stroke-linecap', 'round');
+    glyph.setAttribute('stroke-linejoin', 'round');
+    const circle = document.createElementNS(NS, 'circle');
+    circle.setAttribute('cx', '6');
+    circle.setAttribute('cy', '6');
+    circle.setAttribute('r', '4.25');
+    const bar = document.createElementNS(NS, 'line');
+    bar.setAttribute('x1', '9.25');
+    bar.setAttribute('y1', '9.25');
+    bar.setAttribute('x2', '12.5');
+    bar.setAttribute('y2', '12.5');
+    glyph.append(circle, bar);
+    searchIcon.append(glyph);
+  }
 
   const searchInput = document.createElement('input');
   searchInput.className = 'board-search-input';
@@ -205,12 +230,12 @@ function renderPaneBoard(pane: HTMLElement): void {
 
   const projectId = getKanbanProjectIdForElement(pane);
   if (!projectId) {
-    console.warn('[kanban] renderBoard called for a pane with no kanban instance');
+    rlog('warn', '[kanban] renderBoard called for a pane with no kanban instance');
     return;
   }
   const board = getBoard(projectId);
   if (!board) {
-    console.warn(`[kanban] renderBoard called with no board for project ${projectId}`);
+    rlog('warn', `[kanban] renderBoard called with no board for project ${projectId}`);
     return;
   }
 

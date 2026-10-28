@@ -10,6 +10,7 @@
 import en from './locales/en.json';
 import zhCN from './locales/zh-CN.json';
 import type { Locale } from '../shared/types.js';
+import { rlog } from './log.js';
 
 export const SUPPORTED_LOCALES: readonly Locale[] = ['en', 'zh-CN'] as const;
 
@@ -61,7 +62,7 @@ export function t(key: string, vars?: Record<string, string | number>): string {
   }
   if (!warnedKeys.has(key)) {
     warnedKeys.add(key);
-    console.warn('[i18n] missing key:', key);
+    rlog('warn', '[i18n] missing key:', key);
   }
   return key;
 }
@@ -100,7 +101,7 @@ export function getLocale(): Locale {
  */
 export function setLocale(locale: Locale): void {
   if (!SUPPORTED_LOCALES.includes(locale)) {
-    console.warn('[i18n] unknown locale:', locale);
+    rlog('warn', '[i18n] unknown locale:', locale);
     return;
   }
   if (locale === currentLocale) return;

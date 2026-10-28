@@ -6,6 +6,7 @@ import { appState } from '../state.js';
 import type { ClipboardSource } from '../../shared/types.js';
 import { FILE_PATH_DRAG_TYPE, NATIVE_FILES_DRAG_TYPE } from '../drag-types.js';
 import { showAlertBanner } from './alert-banner.js';
+import { rlog } from '../log.js';
 
 type ExtraKeyHandler = (e: KeyboardEvent) => boolean | undefined;
 
@@ -181,7 +182,7 @@ export async function pasteIntoTerminal(
       if (refused.length > 0) showQuoteRejection(refused);
       if (text !== '') {
         writeToPty(wrapBracketedPaste(terminal, text + ' '));
-        if (t0) console.log(`[paste-timing] renderer paste-event files +${(performance.now() - t0).toFixed(1)} ms`);
+        if (t0) rlog('log', `[paste-timing] renderer paste-event files +${(performance.now() - t0).toFixed(1)} ms`);
       }
       return 'files';
     }
@@ -194,7 +195,7 @@ export async function pasteIntoTerminal(
     const html = data.getData('text/html').trim();
     if (html !== '') {
       writeToPty(wrapBracketedPaste(terminal, html));
-      if (t0) console.log(`[paste-timing] renderer paste-event html +${(performance.now() - t0).toFixed(1)} ms`);
+      if (t0) rlog('log', `[paste-timing] renderer paste-event html +${(performance.now() - t0).toFixed(1)} ms`);
       return 'text';
     }
     // P1 fallback (docs/ui-conventions.md): the event carries no text, no
@@ -207,17 +208,17 @@ export async function pasteIntoTerminal(
 
   const payload = await window.finevibe.clipboard.readForPaste();
   if (payload.textTruncated) showTextTruncationNotice();
-  if (t0) console.log(`[paste-timing] renderer readForPaste +${(performance.now() - t0).toFixed(1)} ms (since paste request)`);
+  if (t0) rlog('log', `[paste-timing] renderer readForPaste +${(performance.now() - t0).toFixed(1)} ms (since paste request)`);
   // Wrapped so every main-read send stamps itself; the off path keeps the
   // original writeToPty reference.
   let outSub: { dispose(): void } | null = null;
   const send = t0
     ? (d: string) => {
         writeToPty(d);
-        console.log(`[paste-timing] renderer pty:write sent +${(performance.now() - t0).toFixed(1)} ms`);
+        rlog('log', `[paste-timing] renderer pty:write sent +${(performance.now() - t0).toFixed(1)} ms`);
         if (!outSub && terminal.onWriteParsed) {
           const sub = terminal.onWriteParsed(() => {
-            console.log(`[paste-timing] renderer first pty output +${(performance.now() - t0).toFixed(1)} ms`);
+            rlog('log', `[paste-timing] renderer first pty output +${(performance.now() - t0).toFixed(1)} ms`);
             sub.dispose();
           });
           outSub = sub;
@@ -225,7 +226,7 @@ export async function pasteIntoTerminal(
       }
     : writeToPty;
   const counts = () => {
-    if (t0) console.log('[paste-timing] counts clipboardRead=1 clipboardWrite=0');
+    if (t0) rlog('log', '[paste-timing] counts clipboardRead=1 clipboardWrite=0');
   };
   const paths = payload.imagePath ? [...payload.files, payload.imagePath] : payload.files;
   // Files first, exactly as the native paste-event path above does: a file
@@ -353,19 +354,19 @@ export function copyText(text: string, source: ClipboardSource = 'explicit'): vo
   if (!text) return;
   const t0 = clipboardTimingOn() ? performance.now() : 0;
   if (source === 'selection' && text.length > SELECTION_COPY_BUDGET_CHARS) {
-    if (t0) console.log(`[copy-timing] renderer clipboard write deferred past ${SELECTION_COPY_BUDGET_CHARS}-char budget (source=selection) counts clipboardWrite=0`);
+    if (t0) rlog('log', `[copy-timing] renderer clipboard write deferred past ${SELECTION_COPY_BUDGET_CHARS}-char budget (source=selection) counts clipboardWrite=0`);
     return;
   }
   if (lastCopied !== null && lastCopied.text === text && lastCopied.source === source) {
-    if (t0) console.log(`[copy-timing] renderer clipboard write skipped unchanged (source=${source}) counts clipboardWrite=0`);
+    if (t0) rlog('log', `[copy-timing] renderer clipboard write skipped unchanged (source=${source}) counts clipboardWrite=0`);
     return;
   }
   lastCopied = { text, source };
   try {
     window.finevibe.clipboard.write(text, source);
-    if (t0) console.log(`[copy-timing] renderer clipboard write sent +${(performance.now() - t0).toFixed(1)} ms (source=${source}) counts clipboardWrite=1`);
+    if (t0) rlog('log', `[copy-timing] renderer clipboard write sent +${(performance.now() - t0).toFixed(1)} ms (source=${source}) counts clipboardWrite=1`);
   } catch (err) {
-    console.warn('clipboard write failed', err);
+    rlog('warn', 'clipboard write failed', err);
   }
 }
 
@@ -376,7 +377,7 @@ export function copySelection(terminal: Terminal, source?: ClipboardSource): voi
 // Call after terminal.open(); the selection service doesn't fire before then.
 export function attachCopyOnSelect(terminal: Terminal): void {
   terminal.onSelectionChange(() => {
-    if (clipboardTimingOn()) console.log('[copy-timing] renderer selection-change fired');
+    if (clipboardTimingOn()) rlog('log', '[copy-timing] renderer selection-change fired');
     if (!appState.preferences.copyOnSelect) return;
     copySelection(terminal, 'selection');
   });

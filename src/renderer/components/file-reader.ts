@@ -10,6 +10,7 @@ import { pathToFileURL } from '../file-url.js';
 import { resolveMarkdownLink } from '../markdown-link.js';
 import { openFileReaderChecked } from '../open-file-reader.js';
 import { slugifyHeading } from '../../shared/slug.js';
+import { rlog } from '../log.js';
 
 interface FileReaderInstance {
   element: HTMLElement;
@@ -77,7 +78,7 @@ function scrollToHeading(wrapper: HTMLElement, slug: string): void {
   const headings = [...wrapper.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')];
   const heading = headings.find((h) => slugifyHeading(h.textContent ?? '') === slug);
   if (!heading) {
-    console.warn(`[markdown-link] no heading matches anchor #${slug}`);
+    rlog('warn', `[markdown-link] no heading matches anchor #${slug}`);
     return;
   }
   heading.scrollIntoView({ block: 'start' });
@@ -114,7 +115,7 @@ function handleMarkdownClick(wrapper: HTMLElement, baseDir: string | undefined, 
       break;
     }
     case 'ignore':
-      console.warn(`[markdown-link] not a routable link: ${href}`);
+      rlog('warn', `[markdown-link] not a routable link: ${href}`);
       break;
   }
 }
@@ -150,7 +151,7 @@ export function renderMarkdownContent(content: string, baseDir?: string): HTMLEl
       // replaceChildren — no innerHTML assignment on rendered content at all.
       wrapper.replaceChildren(DOMPurify.sanitize(rawHtml, { RETURN_DOM_FRAGMENT: true }));
     })
-    .catch((err: unknown) => console.warn('[markdown] renderer libs unavailable; showing raw text', err));
+    .catch((err: unknown) => rlog('warn', '[markdown] renderer libs unavailable; showing raw text', err));
   wrapper.addEventListener('click', (event) => handleMarkdownClick(wrapper, baseDir, event));
   return wrapper;
 }
@@ -215,7 +216,19 @@ function resolveFilePath(instance: FileReaderInstance): string {
 }
 
 function showFileReaderMessage(body: Element, message: string): void {
-  body.innerHTML = `<div class="file-reader-content"><div class="file-reader-line"><span class="file-reader-line-text">${message}</span></div></div>`;
+  // Row 31 review: built with DOM nodes, not an innerHTML string — `message`
+  // carries file-system text (paths, provider errors) and textContent makes
+  // the escaping question disappear entirely.
+  const content = document.createElement('div');
+  content.className = 'file-reader-content';
+  const line = document.createElement('div');
+  line.className = 'file-reader-line';
+  const text = document.createElement('span');
+  text.className = 'file-reader-line-text';
+  text.textContent = message;
+  line.append(text);
+  content.append(line);
+  body.replaceChildren(content);
 }
 
 async function loadFile(instance: FileReaderInstance, sessionId: string): Promise<void> {

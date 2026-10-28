@@ -11,12 +11,13 @@
  * callers fire it off with a bare `void`. The boolean return lets callers that
  * care branch on success.
  */
+import { rlog } from './log.js';
 export async function openExternal(url: string): Promise<boolean> {
   try {
     await window.finevibe.app.openExternal(url);
     return true;
   } catch (err: unknown) {
-    console.warn(`[open-external] could not open ${url}`, err);
+    rlog('warn', `[open-external] could not open ${url}`, err);
     return false;
   }
 }

@@ -6,6 +6,7 @@ import { promptNewSession } from '../../tab-bar/session-menu.js';
 import { attachHoverCard, hideHoverCard } from '../../hover-card.js';
 import type { ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ReadinessResult, ReadinessEffort } from '../../../../shared/types.js';
 import type { WidgetFactory, WidgetHost, WidgetInstance } from './widget-host.js';
+import { rlog } from '../../../log.js';
 
 // C3RP-14: cross-instance in-flight scans. The closure `scanning` flag dies
 // with a widget instance; remounting the same project's tab spawns a second
@@ -533,7 +534,7 @@ export const createReadinessWidget: WidgetFactory = (host: WidgetHost): WidgetIn
       const result = await window.finevibe.readiness.analyze(project.path, excluded.length > 0 ? excluded : undefined);
       appState.setProjectReadiness(project.id, result);
     } catch (err) {
-      console.warn('Readiness scan failed:', err);
+      rlog('warn', 'Readiness scan failed:', err);
     } finally {
       scanning = false;
       scansInFlight.delete(projectId);

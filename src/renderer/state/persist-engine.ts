@@ -1,5 +1,6 @@
 import type { PersistedState } from '../../shared/types.js';
 import { serializeForSave } from './persistence.js';
+import { rlog } from '../log.js';
 
 /** Leading-edge persist throttle window. */
 export const PERSIST_THROTTLE_MS = 200;
@@ -47,7 +48,7 @@ export class PersistEngine {
     if (!this.isLoaded()) {
       if (!this.warnedPrematurePersist) {
         this.warnedPrematurePersist = true;
-        console.warn('[state] persist before appState.load() dropped; defaults would overwrite saved state');
+        rlog('warn', '[state] persist before appState.load() dropped; defaults would overwrite saved state');
       }
       return;
     }

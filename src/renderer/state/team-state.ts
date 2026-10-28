@@ -6,6 +6,7 @@ import { isCliSession } from '../session-utils.js';
 import { resolveProfile } from './specialized-sessions.js';
 import { profileHost } from '../../shared/profile-keys.js';
 import { buildCliSession } from './session-factory.js';
+import { rlog } from '../log.js';
 
 /**
  * C4TM-06: hard cap on a member's system prompt. The prompt ships to the
@@ -240,7 +241,7 @@ export async function syncAgentInstall(
   try {
     await api.installAgent(member.agentSlug!, buildAgentMarkdown(member.agentSlug!, member), configDir);
   } catch (err) {
-    console.warn('installAgent failed:', err);
+    rlog('warn', 'installAgent failed:', err);
   }
 }
 
@@ -266,7 +267,7 @@ export async function reconcileAgent(
     persistSlug();
     if (slug) {
       try { await api.removeAgent(slug); }
-      catch (err) { console.warn('removeAgent failed:', err); }
+      catch (err) { rlog('warn', 'removeAgent failed:', err); }
     }
     return;
   }
@@ -280,6 +281,6 @@ export async function reconcileAgent(
 
 export function fireAndForgetRemoveAgent(api: AgentApi, slug: string): void {
   void api.removeAgent(slug).catch((err) => {
-    console.warn('removeAgent failed:', err);
+    rlog('warn', 'removeAgent failed:', err);
   });
 }

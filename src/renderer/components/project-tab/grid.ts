@@ -2,6 +2,7 @@ import { GridStack, type GridStackNode, type GridItemHTMLElement } from 'gridsta
 import type { OverviewLayout, OverviewWidget, OverviewWidgetType } from '../../../shared/types.js';
 import type { WidgetInstance, WidgetHost } from './widgets/widget-host.js';
 import { getWidgetMeta } from './widgets/widget-registry.js';
+import { rlog } from '../../log.js';
 
 interface MountedWidget {
   record: OverviewWidget;
@@ -182,12 +183,12 @@ export function createProjectTabGrid(opts: ProjectTabGridOptions): ProjectTabGri
     }
     const itemEl = grid.addWidget(widgetOpts as never);
     if (!itemEl) {
-      console.warn('[project-tab] gridstack failed to add widget', record);
+      rlog('warn', '[project-tab] gridstack failed to add widget', record);
       return false;
     }
     const contentSlot = itemEl.querySelector('.grid-stack-item-content') as HTMLElement | null;
     if (!contentSlot) {
-      console.warn('[project-tab] grid-stack-item-content not found on new tile', record);
+      rlog('warn', '[project-tab] grid-stack-item-content not found on new tile', record);
       return false;
     }
     contentSlot.appendChild(wrapper);

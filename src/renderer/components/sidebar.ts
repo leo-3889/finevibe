@@ -29,6 +29,7 @@ import { showRemoteDirBrowser } from './remote-dir-browser.js';
 import { LOCAL_HOST_ID } from '../../shared/types.js';
 import { promptProjectSettings } from './project-settings.js';
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './tab-bar/menu.js';
+import { rlog } from '../log.js';
 
 type ProjectPanel = 'history' | 'files' | 'git' | null;
 const projectPanelOpen = new Map<string, ProjectPanel>();
@@ -1132,9 +1133,9 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
     hideTabContextMenu();
     void window.finevibe.fs.showInFolder(project.path)
       .then((result) => {
-        if (!result.ok) console.warn(`Failed to open ${project.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
+        if (!result.ok) rlog('warn', `Failed to open ${project.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
       })
-      .catch((err) => console.warn(`Failed to open ${project.path} in ${FILE_MANAGER}:`, err));
+      .catch((err) => rlog('warn', `Failed to open ${project.path} in ${FILE_MANAGER}:`, err));
   });
 
   const copyPathItem = document.createElement('div');
@@ -1143,7 +1144,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   copyPathItem.addEventListener('click', (e) => {
     e.stopPropagation();
     hideTabContextMenu();
-    navigator.clipboard.writeText(project.path).catch((err) => console.warn('clipboard write failed', err));
+    navigator.clipboard.writeText(project.path).catch((err) => rlog('warn', 'clipboard write failed', err));
   });
 
   const separator = document.createElement('div');
