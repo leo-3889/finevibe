@@ -1,17 +1,14 @@
 import type { SearchBackend, SearchResultState } from './search-bar.js';
 import { escapeRegExp } from '../../shared/regex.js';
+import { escapeHtml } from './escape-html.js';
 
 // Re-exported for the existing importers of this module.
-export { escapeRegExp };
+export { escapeRegExp, escapeHtml };
 
 interface MatchInfo {
   element: HTMLElement;
   startOffset: number;
   length: number;
-}
-
-export function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 

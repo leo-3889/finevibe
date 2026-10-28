@@ -2,7 +2,7 @@
 
 The Claude payload and installation details below were verified against Claude Code **2.1.238**. Recheck them for newer CLI versions. The cross-provider lifecycle contract lives in [session lifecycle](docs/session-lifecycle.md). The per-event payload schemas below come
 from the [hooks reference](https://code.claude.com/docs/en/hooks); every field name
-Vibeyard reads is in that reference. An invented field name costs nothing at write
+FineVibe reads is in that reference. An invented field name costs nothing at write
 time and renders a blank timeline row forever, so treat this file as the contract
 and re-check it against the docs whenever a hook changes.
 
@@ -131,10 +131,18 @@ guarantee of eventual completion. Any later hook event cancels it.
 1. **Hook installation** (`claude-cli.ts`) — each event gets a status writer, and
    `SessionStart`/`UserPromptSubmit` also get a session-id capture,
    `PostToolUseFailure` a failure capture, and every event an inspector event
-   capture. Commands carry the `# vibeyard-hook` marker so reinstallation is
+   capture. Commands carry the `# finevibe-hook` marker so reinstallation is
    idempotent and never touches a user's own hooks.
 2. **File watching** (`hook-status.ts`) — the main process watches `STATUS_DIR`
-   (`<tmpdir>/vibeyard`) via `fs.watch()` plus a 2s polling fallback.
+   (`getStatusDir()`: `<tmpdir>/finevibe-<uid>` on POSIX — the uid suffix gives
+   each user a private directory on the shared `/tmp`, mode `0700`; bare
+   `<tmpdir>\finevibe` on Windows, where `%TEMP%` is already per-user) via
+   `fs.watch()` plus a 2s polling fallback.
+   Every generated Python script reads stdin as UTF-8: the body carries a
+   `sys.stdin.reconfigure(encoding="utf-8")` guard and every Windows
+   invocation passes `-X utf8` — Python <3.15 decodes stdin with the ANSI
+   code page, so a non-ASCII payload would otherwise raise
+   `UnicodeDecodeError` and silently drop the capture.
 3. **IPC broadcast** — main sends `session:hookStatus`, `session:costData`,
    `session:sessionName`, `session:toolFailure`, `session:inspectorEvents`, …
 4. **State update** (`session-activity.ts`) — the renderer applies the rules above.
@@ -238,3 +246,30 @@ on arrival. Elicitation's real discriminator is `mode` (`'form' | 'url'`).
 On each PTY creation the app validates that the core hooks are installed and the
 statusLine is configured, returning `'missing'`, `'partial'`, or `'complete'` and
 showing a warning banner if incomplete. Inspector-only hooks are not validated.
+
+## StatusLine consent (`settings-guard.ts`)
+
+Hooks are additive and install without asking. The **statusLine** is not: overwriting a
+foreign (non-FineVibe) statusLine command requires the user's consent, recorded per config
+dir. Every code path that writes a statusLine into a dir it does not own must go through
+this gate — new providers included.
+
+- **Record**: `Preferences.statusLineConsent` (`'granted' | 'declined' | null`) +
+  `statusLineConsentCommand`, the foreign command the decision was about. The default
+  Claude dir uses these global fields; every profile dir gets its own record in
+  `statusLineConsentByDir[consentDirKey(dir)]` (P1-14) — a Keep/Replace decided for one
+  dir never governs another, in either direction.
+- **Key**: `consentDirKey` = canonical path, `/`-joined, case-folded only on
+  case-insensitive filesystems. A dir reached through a symlink resolves to a new key, so
+  its old record is not found and the dir is asked about once more — consent re-prompt is
+  the safe direction.
+- **Consent binds to the command, not the dir**: `granted` installs only while the current
+  foreign command equals the recorded one; any other (or unknown) foreign command is a new
+  conflict and re-prompts. `declined` with no recorded command (legacy) freezes the
+  current foreign as the kept command. A `declined` decision makes the Setup badge and the
+  Fix Settings CTA leave that provider alone (SA-P2-1) — repair paths must honor Keep.
+- **Writes**: `recordDirConsent` is the map's only write site; it prunes records whose dir
+  no longer exists and caps the map FIFO at 200 (C3M-05).
+- **Persistence**: consent is main-owned state. The renderer's root-change persist
+  load-then-grafts it (SA-P1-1, `4c9e429f`), so a B2 root change can never erase granted
+  or declined decisions.

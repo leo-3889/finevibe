@@ -5,9 +5,11 @@ import { hasUnreadInProject, onChange as onUnreadChange } from '../session-unrea
 import { onChange as onActivityChange, STATUS_GLYPH } from '../session-activity.js';
 import { getProjectStatus, projectInitial } from '../project-status.js';
 import { init as initDiscussionsBadge, getNewCount as getDiscussionsNewCount, markSeen as markDiscussionsSeen, onChange as onDiscussionsChange, DISCUSSIONS_URL } from '../discussions-badge.js';
+import { openExternal } from '../open-external.js';
 import { basename, lastSeparatorIndex } from '../../shared/platform.js';
 import { deriveProjectName } from '../../shared/project-name.js';
 import { detectGitCheckoutUrl } from '../../shared/git-url.js';
+import { joinChildPath } from '../path-join.js';
 import { esc } from '../dom-utils.js';
 import { projectProfileBadge, providerProfileOptions } from '../profile-utils.js';
 import { renderFileTree, clearProjectState as clearFileTreeState, closeFileTree, FILE_MANAGER } from './file-tree.js';
@@ -21,8 +23,13 @@ import { mountGitPanel, closeGitPanel } from './git-panel.js';
 import { gitChangeCount, onChange as onGitStatusChange } from '../git-status.js';
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW, ICON_SESSIONS, ICON_FILES, ICON_GIT } from '../icons.js';
 import { getLocale, onLocaleChange, t } from '../i18n.js';
+import { projectsForHost, hostChipHtml } from '../host-scope.js';
+import { getHost, getHostColor, getHostName, onHostsChange } from '../host-registry.js';
+import { showRemoteDirBrowser } from './remote-dir-browser.js';
+import { LOCAL_HOST_ID } from '../../shared/types.js';
 import { promptProjectSettings } from './project-settings.js';
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './tab-bar/menu.js';
+import { rlog } from '../log.js';
 
 type ProjectPanel = 'history' | 'files' | 'git' | null;
 const projectPanelOpen = new Map<string, ProjectPanel>();
@@ -64,7 +71,7 @@ export function initSidebar(): void {
   applyDiscussionsVisibility();
   sidebarDiscussionsEl.addEventListener('click', () => {
     markDiscussionsSeen();
-    window.finevibe.app.openExternal(DISCUSSIONS_URL);
+    void openExternal(DISCUSSIONS_URL);
   });
   initDiscussionsBadge();
   onDiscussionsChange(renderDiscussions);
@@ -162,6 +169,9 @@ export function initSidebar(): void {
     applyDiscussionsVisibility();
     render();
   });
+  // Host colors/dots on cards come from the registry cache; repaint when it
+  // first loads or a `hosts:status` reload changes it.
+  onHostsChange(render);
   // Adding/removing a profile or changing a default flips the badge's
   // visibility/label on the active card.
   appState.on('profiles-changed', render);
@@ -203,7 +213,11 @@ function render(): void {
 
   // Projects keep their user-controlled order (drag-and-drop reorderable); the
   // active one is marked as a card in place rather than pinned to the top.
-  for (const { project, isActive } of projectRenderOrder(appState.projects, appState.activeProjectId)) {
+  // Host tab scope (parent §11): only the active host's projects show; with
+  // activeHostId absent/'local' this is the full (all-local) list — identical
+  // pre-Phase-2 behavior.
+  const visible = projectsForHost(appState.projects, appState.preferences.activeHostId);
+  for (const { project, isActive } of projectRenderOrder(visible, appState.activeProjectId)) {
     projectListEl.appendChild(buildProjectRow(project, isActive, opts));
   }
 }
@@ -334,13 +348,24 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
 
   const el = document.createElement('div');
   el.className = 'project-item' + (isActive ? ' active' : '');
+  el.setAttribute('role', 'listitem');
   el.dataset.projectId = project.id;
   el.draggable = true;
+  // Host identity color (plan §5): 2px left border + dot on non-local
+  // projects; local projects carry no color (neutral, identical to before).
+  const hostColor = getHostColor(project.hostId);
+  if (hostColor) {
+    el.classList.add('project-host-accent');
+    // Style-attribute gate (plan §7): getHostColor returns only validated
+    // #rrggbb hexes, never a raw record string.
+    el.style.borderLeftColor = hostColor;
+  }
   // Leading glyph: the active project shows an avatar initial; others show a
   // status dot reflecting their aggregate session activity.
   const lead = isActive
     ? `<div class="project-avatar" aria-hidden="true">${esc(projectInitial(project.name))}</div>`
     : `<span class="project-status ${getProjectStatus(project)}" aria-hidden="true">${STATUS_GLYPH[getProjectStatus(project)]}</span>`;
+  const hostDot = hostChipHtml(hostColor, getHostName(project.hostId));
   const countPill = project.sessions.length
     ? `<span class="project-session-count">${project.sessions.length}</span>`
     : '';
@@ -349,9 +374,10 @@ function buildProjectRow(project: ProjectRecord, isActive: boolean, opts: Render
   // Content is filled in below from DOM nodes, never interpolated here.
   const profileBadge =
     `<span class="project-profile-badge" title="${esc(t('sidebar.profileTooltip'))}"></span>`;
-  // pi-lens-ignore: xss-innerhtml
+  // pi-lens-ignore: xss-innerhtml, no-inner-html
   el.innerHTML = `
     ${lead}
+    ${hostDot}
     <div class="project-main">
       <div class="project-name${hasUnreadInProject(project.id) ? ' unread' : ''}">${esc(project.name)}</div>
       <div class="project-path">${esc(project.path)}</div>
@@ -538,8 +564,8 @@ function buildProjectActions(
 function makeActionButton(label: string, iconSvg: string, active: boolean, hint?: string): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
-  // pi-lens-ignore: xss-innerhtml
   btn.className = 'project-action-btn' + (active ? ' active' : '');
+  // pi-lens-ignore: xss-innerhtml, no-inner-html
   btn.innerHTML = `<span class="action-icon" aria-hidden="true">${iconSvg}</span><span class="action-label">${esc(label)}</span>`;
   attachHoverCard(btn, hint ?? label);
   return btn;
@@ -569,16 +595,30 @@ export function toggleGitPanel(): void {
 }
 
 export function promptNewProject(): void {
+  // T5 (plan §6, UR-6): the SINGLE branch point. Under a non-local active tab
+  // every path verb (Browse, probe, create, clone) runs on the host over the
+  // hosts:* lanes; the local branches below are untouched. `remoteHome` is
+  // the prefill root (HostRecord.defaultFolder, fallback remote `~`).
+  const remoteHostId = appState.activeHostId;
+  const remote = remoteHostId !== LOCAL_HOST_ID;
+  const remoteHome = getHost(remoteHostId)?.defaultFolder?.trim() || '~';
+
   // A new project has no sessions yet, so its coding tool is the global
   // default — scope the profile picker to that tool.
-  const profileOptions = providerProfileOptions(appState.preferences.defaultProvider ?? 'claude');
+  const profileOptions = providerProfileOptions(appState.preferences.defaultProvider ?? 'claude', remoteHostId);
 
   // Live-read so a General-section change while the modal is open is honored
   // on confirm; the pre-fill/sync uses the folder as it was at open.
-  const currentFolder = () => appState.preferences.defaultProjectsFolder?.trim() ?? '';
+  const currentFolder = () => (remote
+    ? remoteHome
+    : appState.preferences.defaultProjectsFolder?.trim() ?? '');
   const initialFolder = currentFolder();
   let pathManuallyEdited = false;
   let cloning = false;
+  // The probe gate: fs:isDirectory is a consent-gated stat in main, so no
+  // probe may start unless this modal is actually on screen. Armed right
+  // after showModal renders, closed by the modal-cleanup funnel below.
+  let modalOpen = false;
   const fields: FieldDef[] = [
     { label: t('sidebar.newProject.nameLabel'), id: 'project-name', placeholder: t('sidebar.newProject.namePlaceholder') },
     {
@@ -587,11 +627,27 @@ export function promptNewProject(): void {
       defaultValue: initialFolder || undefined,
       buttonLabel: t('sidebar.newProject.browseButton'),
       onButtonClick: async (input) => {
+        if (remote) {
+          // The local dialog is NEVER constructed under a non-local tab.
+          showRemoteDirBrowser({
+            hostId: remoteHostId,
+            title: t('sidebar.remoteBrowser.title', { name: getHostName(remoteHostId) }),
+            startPath: input.value.trim() || remoteHome,
+            onSelect: (dir) => {
+              input.value = dir;
+              pathManuallyEdited = true;
+              autoFillName(dir);
+              probeDirExists(dir);
+            },
+          });
+          return;
+        }
         const dir = await window.finevibe.fs.browseDirectory();
         if (!dir) return;
         input.value = dir;
         pathManuallyEdited = true;
         autoFillName(dir);
+        probeDirExists(dir);
       },
     },
   ];
@@ -623,14 +679,25 @@ export function promptNewProject(): void {
     const checkout = detectGitCheckoutUrl(rawPath);
     if (!checkout) {
       if (!name) return;
-      const projectPath = await window.finevibe.fs.expandPath(rawPath);
-      const isDir = await window.finevibe.fs.isDirectory(projectPath);
-      if (!isDir) {
-        setModalError('project-path', t('sidebar.newProject.directoryNotExist'));
+      // Create means create. Main resolves the raw path (`~`, relative),
+      // applies its own consent gate and makes the directory when it is
+      // missing. Gating on `fs:isDirectory` here was the bug: outside the
+      // allowlisted roots that stat is a confirm-gated call (P2-38), so a
+      // cancelled dialog answered "Directory does not exist" for a folder
+      // that exists — and the Create verb created nothing.
+      const ensured = remote
+        ? await window.finevibe.hosts.ensureDir(remoteHostId, rawPath)
+        : await window.finevibe.fs.ensureDirectory(rawPath);
+      if (!ensured.ok) {
+        setModalError('project-path', t('sidebar.newProject.directoryNotCreated') + (ensured.error ? `: ${ensured.error}` : ''));
         return;
       }
       closeModal();
-      appState.addProject(name, projectPath, values['profile'] || undefined);
+      // Main's resolved/canonical spelling, never the typed string: the
+      // project record must carry the path main itself answers for.
+      // Local keeps its exact pre-T5 3-arg call; `hostId` is passed only
+      // when a host tab owns the path ('local' is the load-time default).
+      appState.addProject(name, ensured.path!, values['profile'] || undefined, ...(remote ? [remoteHostId] as const : []));
       return;
     }
 
@@ -638,15 +705,19 @@ export function promptNewProject(): void {
     // folder, browsed for when unset (plan item 2's friendlier fallback; a
     // cancelled browse leaves the modal open with the URL in place).
     const projectName = name || checkout.repoName;
+    // The remote parent is never empty (remoteHome defaults to `~`), so the
+    // browse-for-parent fallback below stays the local flow it always was.
     let parent = currentFolder();
     if (!parent) {
       const picked = await window.finevibe.fs.browseDirectory();
       if (!picked) return;
       parent = picked;
     }
-    const targetPath = await window.finevibe.fs.expandPath(
-      parent.replace(/[\\/]+$/, '') + '/' + checkout.repoName
-    );
+    // fs:expandPath resolves against the LOCAL disk — remote paths must never
+    // be canonicalized here; the hosts:cloneRepo handler normalizes.
+    const targetPath = remote
+      ? joinChildPath(parent, checkout.repoName)
+      : await window.finevibe.fs.expandPath(joinChildPath(parent, checkout.repoName));
 
     // Clone is the slow step: the confirm button carries the progress state
     // while it runs (the busy guard armed at entry swallows re-triggers).
@@ -657,11 +728,13 @@ export function promptNewProject(): void {
         confirmBtn.textContent = t('sidebar.newProject.cloning');
         confirmBtn.disabled = true;
       }
-      res = await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
+      res = remote
+        ? await window.finevibe.hosts.cloneRepo(remoteHostId, checkout.url, targetPath)
+        : await window.finevibe.fs.cloneRepo(checkout.url, targetPath);
     } finally {
       if (confirmBtn) {
         confirmBtn.disabled = false;
-        confirmBtn.textContent = t('sidebar.newProject.checkoutAndCreate');
+        updateConfirmLabel();
       }
     }
     if (!res?.ok) {
@@ -669,19 +742,77 @@ export function promptNewProject(): void {
       return;
     }
       closeModal();
-      appState.addProject(projectName, targetPath, values['profile'] || undefined);
+      appState.addProject(projectName, targetPath, values['profile'] || undefined, ...(remote ? [remoteHostId] as const : []));
     } finally {
       cloning = false;
     }
   });
 
-  // The confirm label is swapped in place while a URL owns the path field —
-  // showModal's label is fixed at open, the URL arrives on input.
+  modalOpen = true;
+
+  // The confirm label is a three-state machine owned by updateConfirmLabel:
+  // a git URL owns the path field → "Checkout and create"; the field points
+  // at an existing directory → "Select"; else showModal's fixed label.
   const confirmBtnEl = document.getElementById('modal-confirm');
   const baseConfirmLabel = confirmBtnEl?.textContent ?? '';
-  const setCheckoutLabel = (on: boolean) => {
-    if (confirmBtnEl) confirmBtnEl.textContent = on ? t('sidebar.newProject.checkoutAndCreate') : baseConfirmLabel;
+  let isCheckoutLabel = false;
+  let dirExists = false;
+  const updateConfirmLabel = () => {
+    if (!confirmBtnEl) return;
+    confirmBtnEl.textContent = isCheckoutLabel
+      ? t('sidebar.newProject.checkoutAndCreate')
+      : dirExists
+        ? t('sidebar.newProject.selectButton')
+        : baseConfirmLabel;
   };
+
+  // The directory probe runs at open for the prefill only, then on blur,
+  // Browse, autocomplete selection and the name→path rewrite — never on the
+  // keystroke path (S4-04 precedent: a probe behind a consent-style gate
+  // must not fire per keystroke on an arbitrary typed path).
+  // Generation counter as in the suggest burst: a stale reply must never
+  // paint over the state the current value already earned.
+  let dirProbeSeq = 0;
+  const probeDirExists = async (value: string) => {
+    if (!modalOpen) return;
+    const seq = ++dirProbeSeq;
+    const apply = (exists: boolean) => {
+      if (seq !== dirProbeSeq) return;
+      dirExists = exists;
+      updateConfirmLabel();
+    };
+    const trimmed = value.trim();
+    if (!trimmed || detectGitCheckoutUrl(trimmed)) {
+      apply(false);
+      return;
+    }
+    const probeChain = async (value: string): Promise<boolean> => {
+      if (remote) {
+        const res = await window.finevibe.hosts.stat(remoteHostId, value);
+        return res.ok && res.isDirectory === true;
+      }
+      const expanded = await window.finevibe.fs.expandPath(value);
+      return await window.finevibe.fs.isDirectory(expanded);
+    };
+    try {
+      apply(await probeChain(trimmed));
+    } catch {
+      apply(false);
+    }
+  };
+  // Mirror of the suggest-debounce teardown: a probe in flight when the modal
+  // closes must not paint the label of an already-closed modal, and the gate
+  // closes with it — Esc/Cancel/Create all funnel through here.
+  registerModalCleanup(() => {
+    modalOpen = false;
+    dirProbeSeq++;
+  });
+
+  // The prefill is the one value this modal can answer for without a
+  // dialog: the default projects folder is an allowlisted root in main, so
+  // probing it can never raise the native confirm. It is what makes the
+  // label right for a folder the user never tabbed through.
+  probeDirExists(initialFolder);
 
   const nameInput = document.getElementById('modal-project-name') as HTMLInputElement | null;
   let nameManuallyEdited = false;
@@ -703,7 +834,12 @@ export function promptNewProject(): void {
     const pathEl = document.getElementById('modal-project-path') as HTMLInputElement | null;
     if (!initialFolder || !pathEl || pathManuallyEdited) return;
     if (detectGitCheckoutUrl(pathEl.value)) return;
-    pathEl.value = initialFolder.replace(/[\\/]+$/, '') + '/' + (nameInput?.value.trim() ?? '');
+    pathEl.value = joinChildPath(initialFolder, nameInput?.value.trim() ?? '');
+    // The field was rewritten programmatically, so probe the new value: it
+    // is `<default projects folder>/<name>`, a child of an allowlisted
+    // root, so the probe is dialog-free too. The generation guard inside
+    // drops any reply a probe for the old value has in flight.
+    probeDirExists(pathEl.value);
   };
 
   // Attach path autocomplete to the rendered input
@@ -738,6 +874,7 @@ export function promptNewProject(): void {
           pathInput.value = item.textContent!;
           hideDropdown();
           autoFillName(pathInput.value);
+          probeDirExists(pathInput.value);
         });
         dropdown.appendChild(item);
       }
@@ -753,7 +890,8 @@ export function promptNewProject(): void {
       pathManuallyEdited = true;
       const value = pathInput.value;
       const checkout = detectGitCheckoutUrl(value);
-      setCheckoutLabel(!!checkout);
+      isCheckoutLabel = Boolean(checkout);
+      updateConfirmLabel();
       if (checkout) {
         // The URL owns the field: name from the repo, and no path
         // autocomplete — a URL's dirPart is not a filesystem path to enumerate.
@@ -763,6 +901,12 @@ export function promptNewProject(): void {
         hideDropdown();
         return;
       }
+      // Keystroke rewrite: same invalidation as the programmatic one. The
+      // keystroke path itself never probes — the label stays plain until the
+      // next blur/Browse/autocomplete probe earns Select again.
+      dirExists = false;
+      dirProbeSeq++;
+      updateConfirmLabel();
       autoFillName(value);
       const lastSlash = lastSeparatorIndex(value);
       if (lastSlash === -1) {
@@ -778,7 +922,10 @@ export function promptNewProject(): void {
       if (suggestTimer !== null) clearTimeout(suggestTimer);
       suggestTimer = setTimeout(() => {
         suggestTimer = null;
-        window.finevibe.fs.listDirs(dirPart, namePart || undefined)
+        const listed = remote
+          ? window.finevibe.hosts.listDirs(remoteHostId, dirPart, namePart || undefined).then((r) => r.dirs ?? [])
+          : window.finevibe.fs.listDirs(dirPart, namePart || undefined);
+        listed
           .then((dirs) => { if (seq === suggestSeq) showSuggestions(dirs, dirPart); })
           .catch(() => {});
       }, 100);
@@ -814,14 +961,22 @@ export function promptNewProject(): void {
         pathInput.value = items[activeIndex].textContent!;
         hideDropdown();
         autoFillName(pathInput.value);
+        probeDirExists(pathInput.value);
       } else if (e.key === 'Escape') {
         hideDropdown();
       }
     });
 
-    pathInput.addEventListener('blur', () => {
+    pathInput.addEventListener('blur', (e) => {
       setTimeout(hideDropdown, 100);
       autoFillName(pathInput.value);
+      // Probe only on a real focus move. A null relatedTarget is the overlay
+      // being hidden (Esc/Cancel dismissal) or plain focus loss, and a move
+      // into the modal footer is Cancel/Confirm — Cancel must never probe, and
+      // the confirm handler re-checks the directory on its own.
+      const to = e.relatedTarget as HTMLElement | null;
+      if (!to || to.closest('#modal-actions')) return;
+      probeDirExists(pathInput.value);
     });
   }
 }
@@ -978,9 +1133,9 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
     hideTabContextMenu();
     void window.finevibe.fs.showInFolder(project.path)
       .then((result) => {
-        if (!result.ok) console.warn(`Failed to open ${project.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
+        if (!result.ok) rlog('warn', `Failed to open ${project.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
       })
-      .catch((err) => console.warn(`Failed to open ${project.path} in ${FILE_MANAGER}:`, err));
+      .catch((err) => rlog('warn', `Failed to open ${project.path} in ${FILE_MANAGER}:`, err));
   });
 
   const copyPathItem = document.createElement('div');
@@ -989,7 +1144,7 @@ function showProjectContextMenu(x: number, y: number, project: ProjectRecord): v
   copyPathItem.addEventListener('click', (e) => {
     e.stopPropagation();
     hideTabContextMenu();
-    navigator.clipboard.writeText(project.path).catch((err) => console.warn('clipboard write failed', err));
+    navigator.clipboard.writeText(project.path).catch((err) => rlog('warn', 'clipboard write failed', err));
   });
 
   const separator = document.createElement('div');
@@ -1039,8 +1194,8 @@ function renderDiscussions(): void {
   // inline badge is shown only when expanded (text visible). CSS picks one per mode.
   const dot = count > 0 ? '<span class="discussions-icon-dot"></span>' : '';
   const inlineBadge = count > 0 ? ` <span class="discussions-badge">${count}</span>` : '';
-  // pi-lens-ignore: xss-innerhtml
   sidebarDiscussionsEl.title = t('sidebar.discussions.tooltip');
+  // pi-lens-ignore: xss-innerhtml, no-inner-html
   sidebarDiscussionsEl.innerHTML =
     `<span class="action-icon" aria-hidden="true">${ICON_DISCUSSIONS}${dot}</span>` +
     `<div class="discussions-text">` +

@@ -9,7 +9,7 @@ import { getProvider } from './providers/registry.js';
 import { launchSessionDir, type LaunchSessionProvider } from './launch-session-dir.js';
 import { statusFilePath } from './hook-status.js';
 
-export type SessionExportFormat = 'zip' | 'file';
+type SessionExportFormat = 'zip' | 'file';
 
 export interface SessionExportParams {
   providerId: ProviderId;
@@ -26,12 +26,12 @@ export interface SessionExportParams {
  * ONLY in that dir — the provider tree scan never sees them.
  */
 export function resolveLaunchSessionDir(providerId: ProviderId, liveSessionId?: string): string | undefined {
-  if ((providerId !== 'pi' && providerId !== 'omp') || !liveSessionId) return undefined;
+  if ((providerId !== 'pi' && providerId !== 'omp' && providerId !== 'pi-bolt') || !liveSessionId) return undefined;
   return launchSessionDir(providerId as LaunchSessionProvider, liveSessionId);
 }
 
 /** Resolve the provider-native transcript file for an export/resume request. */
-export function resolveExportTranscript(
+function resolveExportTranscript(
   providerId: ProviderId,
   cliSessionId: string | null,
   projectPath: string,

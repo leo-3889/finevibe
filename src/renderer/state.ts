@@ -4,6 +4,10 @@ import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { basename } from '../shared/platform.js';
+import { parseSshHost } from '../shared/ssh-host.js';
+import { LOCAL_HOST_ID } from '../shared/types.js';
+import { DEFAULT_PREFERENCES as defaultPreferences } from '../shared/default-preferences.js';
+import { defaultProfileKey, keyMatchesProvider } from '../shared/profile-keys.js';
 import { isCliSession } from './session-utils.js';
 import {
   archiveSession as archiveSessionPure,
@@ -36,6 +40,7 @@ import {
 import { NavHistory } from './state/nav-history.js';
 import { defaultSessionName } from './state/session-naming.js';
 import { createDefaultBoard, ensureProjectDefaults, hydrateLoadedState, serializeForSave } from './state/persistence.js';
+import { PersistEngine } from './state/persist-engine.js';
 import {
   applyMemberPatch,
   buildNewMember,
@@ -116,7 +121,7 @@ type EventType =
 type EventCallback = (data?: unknown) => void;
 
 /** What a `session-changed` fan-out was caused by; see {@link SessionChangedPayload}. */
-export type SessionChangeKind = 'activate' | 'add' | 'remove' | 'reorder' | 'metadata';
+type SessionChangeKind = 'activate' | 'add' | 'remove' | 'reorder' | 'metadata';
 
 /**
  * `session-changed` payload. The event used to be emitted payload-less, so
@@ -137,36 +142,11 @@ export interface SessionChangedPayload {
   deferRender?: boolean;
 }
 
-/**
- * Run `cb` on the coming frame. `requestAnimationFrame` in the renderer; a
- * 16 ms timer in hosts without a DOM (the node-env renderer tests), so the
- * coalescing semantics under test are the semantics shipped.
- */
-function scheduleFrame(cb: () => void): void {
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(cb);
-  else setTimeout(cb, 16);
-}
-
-const defaultPreferences: Preferences = {
-  soundOnSessionWaiting: true,
-  notificationsDesktop: true,
-  debugMode: false,
-  sessionHistoryEnabled: true,
-  insightsEnabled: true,
-  autoTitleEnabled: true,
-  confirmCloseWorkingSession: true,
-  copyOnSelect: false,
-  zoomFactor: 1.0,
-  readinessExcludedProviders: [],
-  sidebarViews: { gitPanel: true, sessionHistory: true, discussions: true, fileTree: true, activeSessions: true },
-  boardCardMetrics: true,
-  locale: 'en',
-  defaultProjectsFolder: '',
-};
+// SA-P2-6: the defaults come from the shared reconciled object (import above);
+// the old local copy drifted from main's DEFAULT_PREFERENCES (SA-P2-3 removed
+// the dead `locale: 'en'` from both).
 
 class AppState {
-  /** Leading-edge persist throttle window; see persist(). */
-  static readonly PERSIST_THROTTLE_MS = 200;
   private state: PersistedState = { version: 1, projects: [], activeProjectId: null, preferences: { ...defaultPreferences } };
   private listeners = new Map<EventType, Set<EventCallback>>();
   private nav = new NavHistory();
@@ -174,16 +154,12 @@ class AppState {
   private sessionIndex = new Map<string, { project: ProjectRecord; session: SessionRecord }>();
   /** False until load() completes; see the `loaded` getter. */
   private loadedFlag = false;
-  private warnedPrematurePersist = false;
-  /** Coalesced persist for high-frequency cost/context ticks (see scheduleCostFlush). */
-  private costFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Leading-edge persist throttle (see persist). */
-  private persistTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastPersistAt = 0;
-  /** PA-15: a write is scheduled on the coming frame; see persist(). */
-  private persistFrameScheduled = false;
-  /** Bumped by flushPersist so the cancelled frame callback cannot write later. */
-  private persistFrameToken = 0;
+  /**
+   * The write path (frame-coalesced, throttled, quit-flush) lives in
+   * `state/persist-engine.ts` (2026-10-28 architecture audit extraction).
+   * Payload and load gate are read lazily, so the engine sees every mutation.
+   */
+  private persistEngine = new PersistEngine(() => this.state, () => this.loadedFlag);
   /**
    * PA-25: transcript availability prefetched asynchronously, keyed
    * sessionId → `providerId|cliSessionId` → exists. The archive gate used to
@@ -300,128 +276,28 @@ class AppState {
   }
 
   private persist(): void {
-    // Persisting before load() would write the default in-memory state over the
-    // real state.json, which is how saved preferences silently vanish. Reads
-    // before load are fine — components initialize pre-load and re-apply on
-    // `state-loaded` (see docs/ui-conventions.md) — writes are not, so the
-    // write itself is dropped, not just warned about.
-    if (!this.loadedFlag) {
-      if (!this.warnedPrematurePersist) {
-        this.warnedPrematurePersist = true;
-        console.warn('[state] persist before appState.load() dropped; defaults would overwrite saved state');
-      }
-      return;
-    }
-    // PA-15: schedule the write on the coming frame instead of running it
-    // inside the mutation that triggered it. Every persist serializes the
-    // whole state and structured-clones it over IPC, and the old leading edge
-    // paid that synchronously in the tab click / rename / cli-id adoption that
-    // caused it — a burst cloned per mutation, and even ONE isolated mutation
-    // cloned inside the interaction. Frame coalescing makes a burst (and an
-    // isolated mutation) clone once per frame; `throttledWrite` keeps the
-    // leading-edge 200 ms throttle, so a mutation lands at most one frame
-    // after the action instead of a full throttle window (what a pure
-    // trailing debounce would cost), and `flushPersist` — the beforeunload
-    // hook in index.ts — keeps the quit-path flush semantics.
-    if (this.persistFrameScheduled) return;
-    this.persistFrameScheduled = true;
-    const token = this.persistFrameToken;
-    const run = (): void => {
-      // flushPersist() bumped the token: this state is already on disk.
-      if (token !== this.persistFrameToken) return;
-      this.persistFrameScheduled = false;
-      this.throttledWrite();
-    };
-    // S3-03: Chromium never runs animation-frame callbacks for a hidden
-    // document — with the window minimized (the app's designed operating
-    // mode for agent swarms: git-status and the discussions badge both
-    // gate on document.hidden) the frame callback never fired, the latch
-    // above never cleared, and ZERO state writes reached disk for the
-    // whole hidden period; a crash then lost every session/rename/cost
-    // change. Timers keep running while hidden: fall back to one on the
-    // throttle window.
-    if (typeof document !== 'undefined' && document.hidden) {
-      setTimeout(run, AppState.PERSIST_THROTTLE_MS);
-    } else {
-      scheduleFrame(run);
-    }
-  }
-
-  /**
-   * The leading-edge 200 ms throttle, driven by the frame callback, by its own
-   * trailing timer, and by nothing else: `persist()` is the only caller above
-   * it, so the whole state is serialized at most once per frame.
-   * Clamped at zero: a backwards wall-clock jump (resume-from-suspend NTP
-   * correction, restored VM snapshot) makes `elapsed` negative, arming the
-   * trailing save for `PERSIST_THROTTLE_MS - elapsed` — minutes/hours —
-   * while the armed-timer guard below drops every write, so mutations stay
-   * memory-only for that whole window. Clamping bounds the worst case to one
-   * throttle window.
-   */
-  private throttledWrite(): void {
-    const elapsed = Math.max(0, Date.now() - this.lastPersistAt);
-    if (elapsed >= AppState.PERSIST_THROTTLE_MS && this.persistTimer === null) {
-      this.writeStateNow();
-      return;
-    }
-    if (this.persistTimer !== null) return; // trailing save already armed
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      this.writeStateNow();
-    }, AppState.PERSIST_THROTTLE_MS - elapsed);
-  }
-
-  /** Serialize + ship right now; the only writer of the store. */
-  private writeStateNow(): void {
-    this.lastPersistAt = Date.now();
-    window.finevibe.store.save(serializeForSave(this.state));
+    this.persistEngine.persist();
   }
 
   /**
    * Drop the pending frame and the armed trailing save, write immediately
-   * (quit paths, tests). Cancelling the frame is what keeps the beforeunload
-   * flush the LAST write: a frame callback that fired afterwards would arm a
-   * trailing save for 200 ms past teardown.
+   * (quit paths, tests). Semantics: state/persist-engine.ts.
    */
   flushPersist(): void {
-    this.persistFrameToken++;
-    this.persistFrameScheduled = false;
-    if (this.persistTimer !== null) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
-    this.writeStateNow();
+    this.persistEngine.flush();
   }
 
   /**
-   * S1-03: the beforeunload flush. store:save's async write can lose the
-   * race with process exit; saveSync blocks this renderer until main has
-   * written state.json synchronously (store.saveStateSync), so the window
-   * can only tear down after the write is on disk.
+   * S1-03: the beforeunload flush — blocks until main has written state.json
+   * synchronously. Semantics: state/persist-engine.ts.
    */
   flushPersistSync(): void {
-    this.persistFrameToken++;
-    this.persistFrameScheduled = false;
-    if (this.persistTimer !== null) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
-    this.lastPersistAt = Date.now();
-    window.finevibe.store.saveSync(serializeForSave(this.state));
+    this.persistEngine.flushSync();
   }
 
-  /**
-   * Coalesce high-frequency cost/context ticks into a single persist ~1s later.
-   * Each tick costs a full serialize + structured clone over IPC; the 1s window
-   * is short enough that a quit at any point loses at most ~1s of cost data
-   * (the main-side store flushes on quit).
-   */
+  /** Coalesce high-frequency cost/context ticks into one persist ~1s later. */
   private scheduleCostFlush(): void {
-    if (this.costFlushTimer !== null) return;
-    this.costFlushTimer = setTimeout(() => {
-      this.costFlushTimer = null;
-      this.persist();
-    }, 1000);
+    this.persistEngine.scheduleCostFlush();
   }
 
   get projects(): ProjectRecord[] {
@@ -524,6 +400,17 @@ class AppState {
     return this.state.preferences;
   }
 
+  /** Active host tab (parent §11 UR-1). Absent = 'local'; the host-tabs
+   * component owns the removed-host fallback, this getter never mutates. */
+  get activeHostId(): string {
+    return this.preferences.activeHostId ?? LOCAL_HOST_ID;
+  }
+
+  /** Persist the active host tab; 'local' stores undefined (absent = local). */
+  setActiveHost(hostId: string): void {
+    this.setPreference('activeHostId', hostId === LOCAL_HOST_ID ? undefined : hostId);
+  }
+
   /** Sidebar-section lookup with the default-on fallback baked in. */
   sidebarView(key: keyof SidebarViews): boolean {
     return this.preferences.sidebarViews?.[key] ?? true;
@@ -564,11 +451,14 @@ class AppState {
     this.emit('project-changed');
   }
 
-  addProject(name: string, path: string, defaultProfileId?: string): ProjectRecord {
+  /** `hostId` (T5, UR-6): the host the path lives on; absent = 'local' (the
+   * load-time normalization already defaults every pre-Phase-2 record). */
+  addProject(name: string, path: string, defaultProfileId?: string, hostId?: string): ProjectRecord {
     const project: ProjectRecord = {
       id: crypto.randomUUID(),
       name,
       path,
+      hostId,
       sessions: [],
       activeSessionId: null,
       layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
@@ -639,7 +529,7 @@ class AppState {
     // Pin the effective profile (explicit > project default > global default,
     // provider-matched) onto the session at creation so it stays sticky — resume
     // must reuse the same config dir even if a default changes later.
-    const pinnedProfileId = resolveProfile({ profileId }, project, this.preferences, cliProviderId, this.profiles)?.id;
+    const pinnedProfileId = resolveProfile({ profileId }, project, this.preferences, cliProviderId, this.profiles, project?.hostId)?.id;
     const session = buildCliSession({
       name,
       providerId: cliProviderId,
@@ -787,7 +677,12 @@ class AppState {
     this.team.members.push(member);
     this.emit('team-changed');
     if (member.installAsAgent) {
-      void syncAgentInstallPure(window.finevibe.provider, this.team, member, () => this.persist());
+      // P2-116: target the pinned profile's config dir (the tree the profiled
+      // CLI actually reads), mirroring the MCP channel's configDir threading.
+      const configDir = member.profileId
+        ? this.profiles.find((p) => p.id === member.profileId)?.configDir
+        : undefined;
+      void syncAgentInstallPure(window.finevibe.provider, this.team, member, () => this.persist(), configDir);
     }
     return member;
   }
@@ -802,7 +697,10 @@ class AppState {
     // A rename/role edit changes the assignee badge on any board task assigned
     // to this member; board views key off board-changed, so announce it here.
     if (this.boardReferencesMember(id)) this.notifyBoardChanged();
-    void reconcileAgentPure(window.finevibe.provider, this.team, result.before, result.after, () => this.persist());
+    const configDir = result.after.profileId
+      ? this.profiles.find((p) => p.id === result.after.profileId)?.configDir
+      : undefined;
+    void reconcileAgentPure(window.finevibe.provider, this.team, result.before, result.after, () => this.persist(), configDir);
     return result.after;
   }
 
@@ -854,15 +752,17 @@ class AppState {
    * Create a profile. Provisions its config dir in the main process first,
    * then records the resolved absolute path. Async because provisioning is IPC.
    */
-  async addProfile(input: { name: string; providerId: ProviderId; customPath?: string }): Promise<Profile> {
+  async addProfile(input: { name: string; providerId: ProviderId; customPath?: string; hostId?: string }): Promise<Profile> {
     const id = crypto.randomUUID();
-    const { configDir, managed } = await window.finevibe.profiles.provision(id, input.customPath, input.providerId);
+    const hostId = input.hostId ?? LOCAL_HOST_ID;
+    const { configDir, managed } = await window.finevibe.profiles.provision(id, input.customPath, input.providerId, hostId);
     const profile: Profile = {
       id,
       name: input.name.trim(),
       providerId: input.providerId,
       configDir,
       managed,
+      hostId,
       createdAt: Date.now(),
     };
     this.profiles.push(profile);
@@ -898,6 +798,7 @@ class AppState {
   removeProfile(id: string): void {
     const idx = this.profiles.findIndex((p) => p.id === id);
     if (idx === -1) return;
+    const removedProviderId = this.profiles[idx].providerId;
     this.profiles.splice(idx, 1);
     // Don't orphan references: any session/project/preference pointing at the
     // deleted profile falls back to the provider default config dir and
@@ -917,8 +818,8 @@ class AppState {
     }
     const defaultProfiles = this.preferences.defaultProfiles;
     if (defaultProfiles) {
-      for (const providerId of Object.keys(defaultProfiles)) {
-        if (defaultProfiles[providerId as ProviderId] === id) delete defaultProfiles[providerId as ProviderId];
+      for (const key of Object.keys(defaultProfiles)) {
+        if (keyMatchesProvider(key, removedProviderId) && defaultProfiles[key] === id) delete defaultProfiles[key];
       }
     }
     for (const member of this.team.members) {
@@ -949,11 +850,12 @@ class AppState {
     this.emit('project-changed');
   }
 
-  /** Set (or clear) the global default profile for one provider. */
-  setProviderDefaultProfile(providerId: ProviderId, profileId: string | undefined): void {
+  /** Set (or clear) the default profile for one provider ON ONE HOST (default: local). */
+  setProviderDefaultProfile(providerId: ProviderId, profileId: string | undefined, hostId?: string): void {
     const map = { ...this.preferences.defaultProfiles };
-    if (profileId) map[providerId] = profileId;
-    else delete map[providerId];
+    const key = defaultProfileKey(hostId, providerId);
+    if (profileId) map[key] = profileId;
+    else delete map[key];
     this.setPreference('defaultProfiles', map);
   }
 
@@ -1358,8 +1260,12 @@ class AppState {
     // If session already had a different cliSessionId (e.g., /clear was used),
     // archive the previous session (only if its transcript exists) and reset the tab name.
     // isArchivable is checked while session.cliSessionId still holds the OLD id.
+    // P2-87: the archive must honor the "Record session history" preference like
+    // every other archive site (:687 close, :1078 create) - with the pref OFF the
+    // sidebar hides the rows, so an unasked archive is undeletable and its
+    // profileId keeps the profile's Delete button disabled.
     if (session.cliSessionId) {
-      if (this.isArchivable(session)) {
+      if (this.preferences.sessionHistoryEnabled && this.isArchivable(session)) {
         this.archiveSession(project, session);
       }
       session.name = defaultSessionName(project);
@@ -1415,6 +1321,23 @@ class AppState {
     if ((session.browserIsolated ?? false) === isolated) return;
     session.browserIsolated = isolated || undefined;
     this.persist();
+  }
+
+  /** Set/clear the registry host a session launches through (registry
+   * picker, parent §11 sshHost retirement). Null clears to local. The
+   * free-text `sshHost` field is legacy-read-only: the picker overwriting a
+   * session drops it, and load-time migration adopts registry-matching
+   * values; unregistered ones survive for the pty-manager legacy wrap. */
+  setSessionHost(sessionId: string, hostId: string | null): boolean {
+    const session = this.findSessionById(sessionId);
+    if (!session) return false;
+    const next = hostId ?? LOCAL_HOST_ID;
+    if (session.hostId === next && session.sshHost === undefined) return true;
+    session.hostId = next;
+    delete session.sshHost;
+    this.persist();
+    this.emitSessionChanged({ sessionId, kind: 'metadata' });
+    return true;
   }
 
   renameSession(projectId: string, sessionId: string, name: string, userRenamed?: boolean): void {
@@ -1639,10 +1562,9 @@ export function _resetForTesting(): void {
     clearTimeout((appState as any)['persistTimer']);
     (appState as any)['persistTimer'] = null;
   }
-  (appState as any)['lastPersistAt'] = 0;
-  // PA-15: a frame scheduled in a previous case must not write into this one.
-  (appState as any)['persistFrameToken']++;
-  (appState as any)['persistFrameScheduled'] = false;
+  // The engine owns the write path: drop its armed timers and latches so a
+  // frame scheduled in a previous case cannot write into this one.
+  (appState as any)['persistEngine'].resetForTesting();
   (appState as any)['transcriptFlags'] = new Map();
   // startTeamChat's ordinal scan (C4T-01) reads the whole index: a previous
   // case's entries must not leak into this one.

@@ -10,7 +10,7 @@ import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { collectProfileRoots, TranscriptDiscoveryScan } from './transcript-utils';
 import { piAgentDir, piSessionsRoot } from './pi-transcripts';
-import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync, readTranscriptTitleWithSessionInfoSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession, stopPiSessionWatcher } from '../pi-session-watcher';
 import { writeCliSessionId } from '../hook-status';
@@ -51,7 +51,7 @@ export class PiProvider implements CliProvider {
       pendingPromptTrigger: 'startup-arg',
       systemPromptInjection: true,
       profiles: true,
-      selfTitles: false,
+      selfTitles: true,
       polledStatus: true,
     },
     defaultContextWindowSize: 200_000,
@@ -70,9 +70,13 @@ export class PiProvider implements CliProvider {
     return validateBinaryExistsAsync('pi');
   }
 
-  buildEnv(_sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env.PATH = getFullPath();
+    // Host-side hook block (per-host providers plan §3): the merged on-host
+    // hooks read the FineVibe session id from this var. Inert on a local
+    // launch — pi has no local hook system.
+    env.FINEVIBE_SESSION_ID = sessionId;
     // Strip inherited profile/storage selectors case-insensitively so the
     // pinned profile (below) is the single effective identity: a native
     // profile or relocated dir in the user's global environment must not
@@ -226,6 +230,16 @@ export class PiProvider implements CliProvider {
     // threads a configDir it resolved from app state (pty:create gates its
     // own at the launch; the sessionDir branch above is main-derived).
     return findTranscriptPathSync(piSessionsRoot, cliSessionId, projectPath, configDir);
+  }
+
+  /**
+   * The CLI's own session name from a resolved transcript path: the newest
+   * `session_info` entry (set via `--name`, `/name`, or extensions calling
+   * `pi.setSessionName()`), scanned from the tail first (recent renames land
+   * at the end of the append-only file), then the head.
+   */
+  readSessionTitle(transcriptPath: string): string | null {
+    return readTranscriptTitleWithSessionInfoSync(transcriptPath);
   }
 
   /**

@@ -19,7 +19,7 @@ const LEGACY_HOME_DIR = '.vibeyard';
 /** Bound the import picker: a state.json can carry a decade of projects. */
 const MAX_IMPORTABLE = 500;
 
-export interface ListImportableOptions {
+interface ListImportableOptions {
   /** Injected for testability (same shape as UserDataMigrationOptions). */
   homedir: string;
   /** Normalized-equal project paths already in the live state; they never reappear as importable. */

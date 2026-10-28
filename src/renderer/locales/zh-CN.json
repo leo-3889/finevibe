@@ -6,6 +6,7 @@
   },
   "preferences": {
     "title": "偏好设置",
+    "applyHint": "✓ 部分设置会立即生效",
     "cancel": "取消",
     "done": "完成"
   },
@@ -16,7 +17,7 @@
     "desktopNotifications": "会话需要关注时显示桌面通知",
     "recordSessionHistory": "会话关闭时记录会话历史",
     "showInsightAlerts": "显示洞察提醒",
-    "autoNameSessions": "根据 CLI 的会话标题自动命名会话（仅限 Claude）",
+    "autoNameSessions": "根据 CLI 的会话标题自动命名会话（Claude、OMP、Pi、Pi-Bolt）",
     "confirmClosingActiveSession": "关闭活动会话前进行确认",
     "copyOnSelect": "选中即复制",
     "askAiFocus": "Ask AI 在何处打开新会话",
@@ -60,10 +61,18 @@
       "urlPlaceholder": "现有目录 —— 或粘贴 GitHub/Codeberg URL",
       "browseButton": "浏览",
       "defaultProfileLabel": "默认配置文件",
-      "directoryNotExist": "目录不存在",
+      "directoryNotCreated": "无法创建该目录",
       "checkoutAndCreate": "检出并创建",
+      "selectButton": "选择",
       "cloning": "正在克隆…",
       "cloneFailed": "克隆失败"
+    },
+    "remoteBrowser": {
+      "title": "浏览 {name}",
+      "up": "上一层",
+      "loading": "加载中…",
+      "empty": "没有子文件夹",
+      "error": "无法列出该文件夹"
     },
     "projectSettings": {
       "title": "项目设置",
@@ -82,7 +91,21 @@
       "kanbanTasksNounPlural": "个"
     },
     "activeSessions": {
-      "title": "活动会话"
+      "title": "活动会话",
+      "hostSeparator": "位于 {host}"
+    },
+    "hostTabs": {
+      "local": "本地",
+      "add": "添加主机",
+      "scrollLeft": "向左滚动主机",
+      "scrollRight": "向右滚动主机",
+      "offline": "无法连接 {name}",
+      "reconnect": "重新连接",
+      "menu": {
+        "settings": "设置 → 主机",
+        "reenroll": "重新注册",
+        "remove": "移除"
+      }
     },
     "discussions": {
       "tooltip": "FineVibe 讨论",
@@ -148,7 +171,8 @@
       "promptLabel": "提示词",
       "promptPlaceholder": "为该角色添加自定义提示词…",
       "title": "新建会话",
-      "envError": "请使用 KEY=VALUE 格式——非法行：{line}"
+      "envError": "请使用 KEY=VALUE 格式——非法行：{line}",
+      "envOwnedError": "{keys} 由固定的 Provider Profile 管理，启动时会被忽略。请删除这些行；如需选择 Profile 或配置目录，请使用“Profile”下拉框。"
     },
     "newMcpInspector": {
       "defaultName": "检查器 {num}"
@@ -184,7 +208,12 @@
       "closeInspector": "关闭检查器",
       "inspect": "检查",
       "renameGroup": "重命名分组",
-      "ungroup": "取消分组"
+      "ungroup": "取消分组",
+      "sshHostSet": "设置 SSH 主机…",
+      "sshHostChange": "更改 SSH 主机…",
+      "sshHostClear": "清除 SSH 主机",
+      "sshHostPick": "启动主机",
+      "sshHostLocal": "本机"
     },
     "board": {
       "deleteTag": "删除标签"
@@ -447,46 +476,115 @@
       "View": "视图",
       "Browser": "浏览器"
     },
-    "new-session": { "label": "新建会话" },
-    "new-session-alt": { "label": "新建会话（Alt）" },
-    "new-project": { "label": "新建项目" },
-    "goto-session-1": { "label": "转到会话 1" },
-    "goto-session-2": { "label": "转到会话 2" },
-    "goto-session-3": { "label": "转到会话 3" },
-    "goto-session-4": { "label": "转到会话 4" },
-    "goto-session-5": { "label": "转到会话 5" },
-    "goto-session-6": { "label": "转到会话 6" },
-    "goto-session-7": { "label": "转到会话 7" },
-    "goto-session-8": { "label": "转到会话 8" },
-    "goto-session-9": { "label": "转到会话 9" },
-    "next-session": { "label": "下一个会话" },
-    "prev-session": { "label": "上一个会话" },
-    "tab-back": { "label": "后退（标签历史）" },
-    "tab-forward": { "label": "前进（标签历史）" },
-    "toggle-sidebar": { "label": "切换侧边栏" },
-    "toggle-split": { "label": "切换分屏模式" },
-    "project-terminal": { "label": "项目终端" },
-    "project-terminal-alt": { "label": "项目终端（Alt）" },
-    "debug-panel": { "label": "调试面板" },
-    "git-panel": { "label": "Git 面板" },
-    "quick-open": { "label": "快速打开文件" },
-    "session-search": { "label": "搜索所有会话" },
-    "find-in-terminal": { "label": "查找" },
-    "goto-line": { "label": "跳转到行" },
-    "help": { "label": "帮助" },
-    "close-session": { "label": "关闭会话" },
-    "toggle-inspector": { "label": "切换会话检查器" },
-    "zoom-in": { "label": "放大" },
-    "zoom-out": { "label": "缩小" },
-    "zoom-reset": { "label": "重置缩放" },
-    "browser-reload": { "label": "重新加载页面" },
-    "browser-hard-reload": { "label": "强制重新加载（绕过缓存）" }
+    "new-session": {
+      "label": "新建会话"
+    },
+    "new-session-alt": {
+      "label": "新建会话（Alt）"
+    },
+    "new-project": {
+      "label": "新建项目"
+    },
+    "goto-session-1": {
+      "label": "转到会话 1"
+    },
+    "goto-session-2": {
+      "label": "转到会话 2"
+    },
+    "goto-session-3": {
+      "label": "转到会话 3"
+    },
+    "goto-session-4": {
+      "label": "转到会话 4"
+    },
+    "goto-session-5": {
+      "label": "转到会话 5"
+    },
+    "goto-session-6": {
+      "label": "转到会话 6"
+    },
+    "goto-session-7": {
+      "label": "转到会话 7"
+    },
+    "goto-session-8": {
+      "label": "转到会话 8"
+    },
+    "goto-session-9": {
+      "label": "转到会话 9"
+    },
+    "next-session": {
+      "label": "下一个会话"
+    },
+    "prev-session": {
+      "label": "上一个会话"
+    },
+    "tab-back": {
+      "label": "后退（标签历史）"
+    },
+    "tab-forward": {
+      "label": "前进（标签历史）"
+    },
+    "toggle-sidebar": {
+      "label": "切换侧边栏"
+    },
+    "toggle-split": {
+      "label": "切换分屏模式"
+    },
+    "project-terminal": {
+      "label": "项目终端"
+    },
+    "project-terminal-alt": {
+      "label": "项目终端（Alt）"
+    },
+    "debug-panel": {
+      "label": "调试面板"
+    },
+    "git-panel": {
+      "label": "Git 面板"
+    },
+    "quick-open": {
+      "label": "快速打开文件"
+    },
+    "session-search": {
+      "label": "搜索所有会话"
+    },
+    "find-in-terminal": {
+      "label": "查找"
+    },
+    "goto-line": {
+      "label": "跳转到行"
+    },
+    "help": {
+      "label": "帮助"
+    },
+    "close-session": {
+      "label": "关闭会话"
+    },
+    "toggle-inspector": {
+      "label": "切换会话检查器"
+    },
+    "zoom-in": {
+      "label": "放大"
+    },
+    "zoom-out": {
+      "label": "缩小"
+    },
+    "zoom-reset": {
+      "label": "重置缩放"
+    },
+    "browser-reload": {
+      "label": "重新加载页面"
+    },
+    "browser-hard-reload": {
+      "label": "强制重新加载（绕过缓存）"
+    }
   },
   "profiles": {
     "heading": "CLI 配置文件",
     "description": "每个配置文件让 CLI 在独立的配置目录下运行，可隔离登录、设置和历史记录——非常适合工作和个人许可证分开使用。",
     "descriptionClaude": "Claude Code：配置目录通过 CLAUDE_CONFIG_DIR 注入。创建配置文件后，使用它启动一个会话并运行一次 /login 进行登录。",
     "descriptionPi": "Pi：配置目录通过 PI_CODING_AGENT_DIR 注入。创建配置文件后，请在该配置目录中完成认证和模型配置。",
+    "descriptionPiBolt": "Pi-Bolt：由 Pi 编译而来的 Pi 分支。配置目录通过 PI_CODING_AGENT_DIR 注入（与 Pi 相同的 agent dir 机制）。请确保已安装 pi-bolt CLI，创建配置文件后，请在该配置目录中完成认证和模型配置。",
     "descriptionOmp": "Oh my Pi：配置目录通过 PI_CODING_AGENT_DIR 注入（与 Pi 相同的 omp agent dir 机制）。请确保已安装 omp CLI，创建配置文件后，请在该配置目录中完成认证和模型配置。",
     "keychainUnsupported": "此版本的 Claude Code{version} 将所有登录信息存储在同一个 macOS 钥匙串条目中，因此配置文件无法保持账号隔离。请更新 Claude Code 后再创建并使用配置文件。",
     "keychainUnknown": "FineVibe 还无法确认此 Claude Code 版本是否在 macOS 钥匙串中隔离配置文件登录。请登录一次配置文件，隔离状态将自动验证。",
@@ -503,6 +601,7 @@
     "addNameLabel": "名称",
     "addNamePlaceholder": "例如：工作",
     "addProviderLabel": "提供商",
+    "hostLabel": "主机",
     "addPathLabel": "自定义配置路径（可选）",
     "addPathPlaceholder": "留空则使用托管目录",
     "nameRequired": "名称不能为空",
@@ -517,6 +616,15 @@
     "fixButton": "修复",
     "fixingButton": "修复中…",
     "checking": "正在检查配置…",
+    "remoteScopeDesc": "检查通过 SSH 通道在 “{host}” 上实时运行。",
+    "enrollFirstLabel": "请先注册此主机",
+    "enrollFirstDesc": "FineVibe 无法在 “{host}” 上运行检查（状态：{status}）。请在侧边栏主机页完成注册。",
+    "remoteNotFoundHelp": "未在 “{host}” 上找到 {binaryName}。请在该主机安装 CLI 后重新检查。",
+    "recheckButton": "重新检查",
+    "settingsSyncLabel": "设置同步",
+    "settingsSyncRemoteDesc": "状态行和钩子位于主机上；FineVibe 通过设置同步推送（侧边栏 → 主机）。",
+    "settingsSyncOn": "已同步",
+    "settingsSyncOff": "未同步",
     "binaryDescription": "必须安装 {binaryName} 二进制文件，会话才能正常工作。",
     "installed": "已安装",
     "notFound": "未找到",
@@ -524,14 +632,34 @@
     "statusLineConfigured": "已配置",
     "statusLineMissing": "未配置",
     "statusLineForeign": "已被其他工具覆盖",
+    "statusLineKept": "已保留你的选择",
     "statusLineLabel": "状态行",
     "statusLineDescription": "用于成本跟踪和上下文窗口监控。",
     "hooksComplete": "所有钩子已安装",
     "hooksMissing": "未安装钩子",
+    "hooksMissingProject": "{project} 未安装钩子",
     "hooksPartial": "部分钩子缺失",
+    "hooksProjectScoped": "按项目安装",
+    "hooksProjectScopedDesc": "钩子在启动会话时按项目安装；打开项目即可检查或安装。",
     "hooksLabel": "会话钩子",
     "hooksDescription": "用于会话活动跟踪。",
     "fixAllButton": "一键修复"
+  },
+  "statuslineConflict": {
+    "title": "设置冲突",
+    "intro": "Claude Code 已由其他工具配置了 <strong>statusLine</strong> 设置。",
+    "currentLabel": "当前 statusLine",
+    "warning": "FineVibe 需要自己的 statusLine 来实现成本跟踪和上下文窗口监控。如果保留当前 statusLine，这些功能将不可用。",
+    "keepButton": "保留当前 statusLine",
+    "replaceButton": "使用 FineVibe statusLine"
+  },
+  "settingsGuard": {
+    "bothMissing": "{provider} 中缺少 FineVibe 设置。成本跟踪和会话活动跟踪可能无法工作。",
+    "statusLineForeign": "其他工具覆盖了 FineVibe 的 statusLine 设置。成本跟踪不可用。",
+    "statusLineMissing": "成本跟踪不可用 —— {provider} 中未配置 FineVibe 的 statusLine 设置。",
+    "hooksMissing": "{provider} 设置中缺少部分会话跟踪钩子。活动跟踪可能无法工作。",
+    "fixButton": "修复设置",
+    "fixingButton": "修复中…"
   },
   "help": {
     "tabStatusDot": "标签状态点",
@@ -600,32 +728,139 @@
     "debugModeLabel": "调试模式",
     "versionLoaded": "版本：{ver}"
   },
+  "disk": {
+    "lowSpace": "磁盘空间不足——剩余 {available}。请释放空间，以免 FineVibe 无法继续保存您的工作。",
+    "lowSpaceUnknown": "磁盘空间不足。请释放空间，以免 FineVibe 无法继续保存您的工作。"
+  },
   "update": {
     "downloadFailed": "更新下载失败"
-  },
-  "agentmemory": {
-    "autoStart": "启动应用时自动启动智能体记忆引擎",
-    "probing": "检测中…",
-    "running": "运行中",
-    "stopped": "未运行",
-    "startButton": "启动引擎",
-    "starting": "启动中…",
-    "openConsole": "打开控制台",
-    "consoleTitle": "智能体记忆控制台",
-    "consoleEmpty": "暂无日志输出。仅 FineVibe 启动的引擎会捕获控制台输出，将在下次启动后显示在这里。",
-    "consoleWebUi": "Web 界面",
-    "consoleClose": "关闭"
   },
   "preferencesNav": {
     "browser": "浏览器",
     "shortcuts": "快捷键",
     "profiles": "配置文件",
+    "hosts": "主机",
     "setup": "设置",
     "help": "帮助",
     "about": "关于",
     "general": "通用",
     "appearance": "外观",
-    "agentmemory": "智能体记忆"
+    "storage": "存储"
+  },
+  "hosts": {
+    "heading": "远程主机",
+    "description": "注册 SSH 主机，在远程机器上运行 shell（后续支持编码代理）。",
+    "add": "添加主机",
+    "addTitle": "添加主机",
+    "editTitle": "编辑主机",
+    "edit": "保存",
+    "remove": "移除",
+    "test": "测试",
+    "enroll": "注册",
+    "reenroll": "重新注册",
+    "openShell": "打开终端",
+    "forgetPassword": "忘记密码",
+    "forgetPasswordPrompt": "密钥登录已可用，是否忘记已保存的密码？",
+    "fingerprintTitle": "确认主机密钥",
+    "fingerprintPrompt": "首次连接此主机。请先核对指纹再继续信任：\n{fingerprint}",
+    "approveKey": "信任并继续",
+    "lastProbe": "最近检测：{at}",
+    "lastSync": "设置已同步：{at}",
+    "sync": "同步设置",
+    "driftTitle": "远程设置已变化",
+    "driftPrompt": "主机上的以下文件与上次同步不一致：\n{files}\n要用本地设置覆盖它们吗？",
+    "overwrite": "覆盖",
+    "syncProvider": {
+      "pi": "同步 Pi 设置",
+      "pi-bolt": "同步 Pi-Bolt 扩展",
+      "omp": "同步 Oh my Pi 设置"
+    },
+    "prereqs": "远程工具",
+    "empty": "暂无主机，添加一个开始使用。",
+    "hostKeyChanged": "警告：主机密钥已变化，可能存在中间人攻击，已拒绝连接。",
+    "shellNeedsProject": "请先打开项目——远程终端标签位于项目终端面板中。",
+    "confirmRemove": "移除主机“{name}”？",
+    "confirmRemoveEnrolled": "移除主机“{name}”？这将撤销远程机器上的 FineVibe 访问密钥。",
+    "r1Banner": "安全存储不可用，无法保存密码。请使用密钥认证。",
+    "status": {
+      "draft": "草稿",
+      "probing": "连接中…",
+      "auth-ok": "认证通过（未注册）",
+      "enrolled": "已注册",
+      "partial": "部分完成",
+      "failed": "失败"
+    },
+    "hostUnreachable": "无法连接",
+    "step": {
+      "connect": "连接",
+      "env": "环境",
+      "key-deploy": "部署密钥",
+      "prereqs": "前置条件",
+      "dirs": "目录",
+      "shell": "终端",
+      "action": "操作",
+      "host-key": "主机密钥",
+      "forget-password": "忘记密码",
+      "record": "保存记录",
+      "sync": "同步设置",
+      "npm": "npm install（主机）"
+    },
+    "field": {
+      "name": "名称",
+      "user": "用户",
+      "host": "主机",
+      "port": "端口",
+      "authKind": "认证方式",
+      "authKey": "SSH 密钥",
+      "authPassword": "密码",
+      "keyPath": "私钥路径",
+      "keyPathPlaceholder": "留空则生成 FineVibe 密钥",
+      "browse": "浏览",
+      "secret": "密钥",
+      "secretPlaceholder": "密钥口令或密码（存储在系统钥匙串）",
+      "color": "颜色"
+    },
+    "color": {
+      "auto": "自动",
+      "blue": "蓝色",
+      "orange": "橙色",
+      "green": "绿色",
+      "purple": "紫色",
+      "amber": "琥珀",
+      "red": "红色",
+      "teal": "青绿",
+      "pink": "粉色"
+    },
+    "err": {
+      "name": "名称必填",
+      "user": "用户必填",
+      "host": "主机必填",
+      "port": "端口须为 1-65535"
+    }
+  },
+  "storage": {
+    "usageHeading": "磁盘占用（应用数据）",
+    "scanning": "扫描中…",
+    "scanFailed": "扫描失败",
+    "truncated": "结果不完整 — 已达扫描上限",
+    "subPi": "Pi 会话",
+    "subOmp": "OMP 会话",
+    "subPiBolt": "Pi-Bolt 会话",
+    "subPartitions": "浏览器配置文件",
+    "subCache": "缓存",
+    "subMisc": "其他应用数据",
+    "clearButton": "清理缓存",
+    "clearConfirm": "删除浏览器与应用缓存（Cache、GPUCache、Code Cache、Dawn 缓存）及 Chrome 导入临时文件？会话、转录与浏览器配置文件登录信息不受影响。",
+    "clearing": "清理中…",
+    "cleared": "缓存已清理",
+    "clearFailed": "清理失败",
+    "retirementHeading": "旧版数据退役",
+    "retirementNone": "无待退役的旧版数据",
+    "retirementEntry": "{from}：{outcome}",
+    "outcomeRemoved": "已删除",
+    "outcomeKept": "保留（宽限期）",
+    "outcomeUnverified": "未验证",
+    "outcomeError": "错误"
   },
   "session": {
     "crashedTitle": "会话异常结束",

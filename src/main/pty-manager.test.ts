@@ -1,7 +1,7 @@
 import { vi } from 'vitest';
 import * as path from 'path';
 import type * as PlatformModule from './platform';
-import { isMac, isWin } from './platform';
+import { isLinux, isMac, isWin } from './platform';
 
 const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
@@ -12,6 +12,11 @@ const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefault
   mockKeychainIsolation: vi.fn(() => ({ status: 'supported' as 'supported' | 'unsupported' | 'unknown', version: null as string | null })),
   mockNvmDefaultNodeBinDir: vi.fn(() => null as string | null),
 }));
+
+// Per-host providers T1: remote launches resolve the binary from the host
+// registry record — stub the registry, never the SSH stack.
+const mockGetHost = vi.hoisted(() => vi.fn(() => null as unknown));
+vi.mock('./hosts/host-registry', () => ({ getHost: mockGetHost }));
 
 vi.mock('node-pty', () => ({
   default: { spawn: mockSpawn },
@@ -35,6 +40,7 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn(),
   readFileSync: vi.fn(() => { throw new Error('ENOENT'); }),
   readdirSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  readlinkSync: vi.fn(() => { throw new Error('ENOENT'); }),
 }));
 
 vi.mock('./providers/nvm', () => ({
@@ -61,7 +67,7 @@ vi.mock('./settings-guard', () => ({
 
 import * as fs from 'fs';
 import * as child_process from 'child_process';
-import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, LaunchSpecError } from './pty-manager';
+import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, resolveProviderBinary, LaunchSpecError } from './pty-manager';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider, initProviders } from './providers/registry';
 
@@ -86,6 +92,13 @@ function createMockPtyProcess() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: clearAllMocks keeps IMPLEMENTATIONS - a shuffled
+  // predecessor's statSync (binary probe answers, e.g. the npm claude.cmd
+  // fixture at :225) made the resolver hand spawnPty a full path where this
+  // case expects the bare binary. Also drop the module-level PATH/binary
+  // caches so every case resolves from scratch.
+  mockStatSync.mockReset();
+  resetPathCache();
   mockExistsSync.mockReturnValue(false);
   mockKeychainIsolation.mockReturnValue({ status: 'supported', version: null });
   initProviders();
@@ -408,6 +421,86 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.storageMode).toBe('default');
   });
 
+  // The legacy free-text `sshHost` wrap was retired 2026-10-28 (parent §11):
+  // the registry hostId is the only remote spelling, so the two old
+  // sshHost-wrap tests are gone with the field.
+
+  // --- per-host providers T1: registry-host launches (plan §9 golden) ------
+
+  const labRecord = {
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 2222,
+    prerequisites: { omp: { ok: true, path: '/home/dev/.local/bin/omp' } },
+  };
+
+  it('resolves the binary from the host prereq probe, never from local resolution', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    expect(resolveProviderBinary('omp', 'lab')).toBe('/home/dev/.local/bin/omp');
+    // 'local'/absent keep the existing local resolution (the mocked probe
+    // chain lands on the bare fallback name).
+    expect(resolveProviderBinary('omp')).toBe('omp');
+    expect(resolveProviderBinary('omp', 'local')).toBe('omp');
+  });
+
+  it('throws an actionable LaunchSpecError when the host lacks the tool', () => {
+    mockGetHost.mockReturnValue({ ...labRecord, prerequisites: {} });
+    expect(() => resolveProviderBinary('omp', 'lab')).toThrow(LaunchSpecError);
+    expect(() => resolveProviderBinary('omp', 'lab')).toThrow(/no omp binary/);
+    mockGetHost.mockReturnValue(null);
+    expect(() => resolveProviderBinary('omp', 'ghost')).toThrow(/Unknown host/);
+  });
+
+  it('golden: ssh-wraps a registry launch with -p, user@host, the remote bin path and the config-dir env prefix', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    const spec = resolveLaunchSpec({ ...base, hostId: 'lab', configDir: '/home/dev/.finevibe/profiles/p1' });
+    expect(spec.executable).toBe('ssh');
+    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']);
+    const cmd = spec.argv[5] as string;
+    // The remote binary is the prereq's ABSOLUTE path (used verbatim, not a
+    // basename); the profile's config dir AND the session id ride in the
+    // command string because ssh does not forward the local child env
+    // (FINEVIBE_SESSION_ID is what the enrollment-merged on-host hooks read).
+    // Audit T2 #5: the omp `--session-dir` is swapped for the HOST-side
+    // derivation ($HOME-expanded, double-quoted so the login shell expands
+    // it), pre-created by a mkdir guard — never the local userData path.
+    expect(cmd).toMatch(
+      /^mkdir -p "\$HOME\/\.finevibe\/sessions\/omp\/s1" && PI_CODING_AGENT_DIR='\/home\/dev\/\.finevibe\/profiles\/p1' FINEVIBE_SESSION_ID='s1' '\/home\/dev\/\.local\/bin\/omp' '--session-dir' "\$HOME\/\.finevibe\/sessions\/omp\/s1"$/,
+    );
+    // The legacy local env is NOT how the remote sees the profile.
+    expect(spec.env.PI_CODING_AGENT_DIR).toBe('/home/dev/.finevibe/profiles/p1');
+  });
+
+  it('drops a hostile session-id env value from the remote command (audit T2 #3)', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    // The id is renderer-supplied and becomes a host-side file path in the
+    // merged hooks' mv target — a traversal-shaped value never forwards.
+    const spec = resolveLaunchSpec({ ...base, sessionId: '../../../../tmp/evil', hostId: 'lab' });
+    const cmd = spec.argv[5] as string;
+    expect(cmd).not.toContain('FINEVIBE_SESSION_ID');
+    // The session-dir derivation sanitizes its own segment (never traversal).
+    expect(cmd).toContain('"$HOME/.finevibe/sessions/omp/');
+    expect(cmd).not.toContain('../');
+    // A clean id forwards normally.
+    const ok = resolveLaunchSpec({ ...base, sessionId: 'good_id-1', hostId: 'lab' });
+    expect(ok.argv[5]).toContain("FINEVIBE_SESSION_ID='good_id-1'");
+  });
+
+  it('claude (no --session-dir) gets no mkdir guard and no swapped arg (audit T2 #5)', () => {
+    mockGetHost.mockReturnValue({
+      ...labRecord,
+      prerequisites: { claude: { ok: true, path: '/home/dev/.local/bin/claude' } },
+    });
+    const spec = resolveLaunchSpec({ ...base, providerId: 'claude', hostId: 'lab' });
+    expect(spec.argv[5]).not.toContain('mkdir -p');
+    expect(spec.argv[5]).not.toContain('.finevibe/sessions');
+  });
+
+  it('golden: bracketed IPv6 registry host reaches ssh argv intact (audit T1 #2)', () => {
+    mockGetHost.mockReturnValue({ ...labRecord, host: '[fd00::5]' });
+    const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
+    expect(spec.executable).toBe('ssh');
+    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@[fd00::5]']);
+  });
+
   it('resolves the default agent dir (no configDir) with storage mode default', () => {
     const spec = resolveLaunchSpec(base);
     expect(spec.configDir).toBeUndefined();
@@ -430,6 +523,30 @@ describe('resolveLaunchSpec (T2)', () => {
     const spec = resolveLaunchSpec({ ...base, envVars: 'PI_CODING_AGENT_DIR=/other\nOMP_PROFILE=intruder', configDir: '/profiles/work' });
     expect(spec.env.PI_CODING_AGENT_DIR).toBe('/profiles/work');
     expect(spec.env.OMP_PROFILE).toBeUndefined();
+  });
+
+  it('reports each dropped provider-owned var with what it controls and where to set it', () => {
+    // The drop is silent in a packaged app (no main console), so the one
+    // signal must name the key AND be actionable.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      resolveLaunchSpec({ ...base, envVars: 'CLAUDE_CONFIG_DIR=/other\nOMP_PROFILE=intruder\nANTHROPIC_API_KEY=sk', configDir: '/profiles/work' });
+      const line = warn.mock.calls.map(c => String(c[0])).join('\n');
+      expect(line).toContain('CLAUDE_CONFIG_DIR (relocates the Claude config tree');
+      expect(line).toContain('OMP_PROFILE (selects an Oh my Pi profile');
+      expect(line).toContain('remove them from the session environment');
+      expect(line).not.toContain('ANTHROPIC_API_KEY');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves an inert lowercase provider-owned var alone on POSIX', () => {
+    // S1-08: the POSIX child env is case-sensitive, so `pi_profile` reaches
+    // nothing; folding it into the drop list warned on every session start
+    // about a variable with no effect.
+    const spec = resolveLaunchSpec({ ...base, envVars: 'pi_profile=lowercase' });
+    expect(spec.env.pi_profile).toBe(isWin ? undefined : 'lowercase');
   });
 
   it('strips an inherited native profile selector from the child environment', () => {
@@ -782,6 +899,24 @@ describe('getPtyCwd', () => {
       return undefined as never;
     });
 
+    if (isLinux) {
+      // The Linux implementation reads `/proc/<pid>/cwd` — it never calls lsof, so
+      // the mocks below (the macOS shape) can never satisfy it: on the Linux
+      // runner the readlink hit a real ENOENT, the implementation logged
+      // `[pty-manager] /proc cwd readlink failed for pid 2000` and answered null.
+      // Stub the readlink seam so the assertion exercises the real Linux path.
+      const readlink = vi.spyOn(fs, 'readlinkSync').mockImplementation((target) => {
+        if (String(target) === '/proc/2000/cwd') return '/some/worktree/path';
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+      try {
+        expect(await getPtyCwd('s1')).toBe('/some/worktree/path');
+      } finally {
+        readlink.mockRestore();
+      }
+      return;
+    }
+
     const result = await getPtyCwd('s1');
     expect(result).toBe('/some/worktree/path');
   });
@@ -1038,6 +1173,147 @@ describe('getFullPath (macOS)', () => {
   });
 });
 
+describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
+  // Platform constants are baked at module load, so the linux/darwin builds
+  // need a fresh module registry with './platform' pinned — same seam as the
+  // darwin getFullPath suite above (test-case exception to static imports).
+  async function importPosixPtyManager(platform: 'linux' | 'darwin') {
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => ({
+      ...(await importOriginal<typeof PlatformModule>()),
+      isWin: false,
+      isMac: platform === 'darwin',
+      isLinux: platform === 'linux',
+      pathSep: ':',
+      whichCmd: 'which',
+      utf8LocaleEnv: platform === 'darwin' ? { LC_CTYPE: 'UTF-8' } : { LANG: 'C.UTF-8' },
+    }));
+    // canonicalPath is host-path-sensitive (Windows path.resolve turns '/x'
+    // into 'C:\x'); stub the seam so cwd assertions stay native.
+    vi.doMock('./fs-utils', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('./fs-utils')>()),
+      canonicalPath: (p: string) => p,
+    }));
+    const cp = await import('child_process');
+    const fsp = await import('fs');
+    const pm = await import('./pty-manager');
+    return {
+      pm,
+      execSync: vi.mocked(cp.execSync),
+      execFile: vi.mocked(cp.execFile),
+      readlinkSync: vi.mocked(fsp.readlinkSync),
+      existsSync: vi.mocked(fsp.existsSync),
+    };
+  }
+
+  afterEach(() => {
+    vi.doUnmock('./platform');
+    vi.doUnmock('./fs-utils');
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    mockExecSync.mockImplementation(() => {
+      throw new Error('not found');
+    });
+  });
+
+  beforeEach(() => {
+    vi.stubEnv('SHELL', '');
+    vi.stubEnv('PATH', '/usr/bin:/bin');
+    mockNvmDefaultNodeBinDir.mockReturnValue(null);
+  });
+
+  it('probes /bin/sh on Linux when $SHELL is unset', async () => {
+    const { pm, execSync } = await importPosixPtyManager('linux');
+    execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
+    expect(pm.getFullPath()).toBe('/usr/bin');
+    // Not calls[0]: on a Linux host the imported module graph runs its own
+    // `python3 --version` probe first, so index 0 was that probe in CI
+    // (`expected 'python3 --version' to match /^\/bin\/sh -ilc /`). The assertion
+    // is about WHICH login shell was probed, so select the probe by shape.
+    const probe = execSync.mock.calls.map((call) => String(call[0])).find((call) => / -ilc /.test(call));
+    expect(probe).toMatch(/^\/bin\/sh -ilc /);
+  });
+
+  it('keeps the /bin/zsh probe on macOS when $SHELL is unset', async () => {
+    const { pm, execSync } = await importPosixPtyManager('darwin');
+    execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
+    expect(pm.getFullPath()).toBe('/usr/bin');
+    const probe = execSync.mock.calls.map((call) => String(call[0])).find((call) => / -ilc /.test(call));
+    expect(probe).toMatch(/^\/bin\/zsh -ilc /);
+  });
+
+  it('spawns /bin/bash for the shell tab on Linux when $SHELL is unset and bash exists', async () => {
+    const { pm, existsSync } = await importPosixPtyManager('linux');
+    existsSync.mockImplementation((p) => String(p) === '/bin/bash');
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    pm.spawnShellPty('sh-bash', '/project', vi.fn(), vi.fn());
+    expect(mockSpawn.mock.calls[0][0]).toBe('/bin/bash');
+  });
+
+  it('falls back to /bin/sh for the shell tab on Linux without bash', async () => {
+    const { pm, existsSync } = await importPosixPtyManager('linux');
+    existsSync.mockReturnValue(false);
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    pm.spawnShellPty('sh-plain', '/project', vi.fn(), vi.fn());
+    expect(mockSpawn.mock.calls[0][0]).toBe('/bin/sh');
+  });
+
+  it('keeps /bin/zsh for the shell tab on macOS when $SHELL is unset', async () => {
+    const { pm } = await importPosixPtyManager('darwin');
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    pm.spawnShellPty('sh-mac', '/project', vi.fn(), vi.fn());
+    expect(mockSpawn.mock.calls[0][0]).toBe('/bin/zsh');
+  });
+
+  it('reads /proc/<pid>/cwd for getPtyCwd on Linux and never spawns lsof', async () => {
+    const { pm, execFile, readlinkSync } = await importPosixPtyManager('linux');
+    // mockClear (clearAllMocks) does not drop queued mockImplementationOnce
+    // entries; suites that early-return on this host can leave stale ones.
+    execFile.mockReset();
+    const proc = createMockPtyProcess();
+    (proc as unknown as { pid: number }).pid = 1000;
+    mockSpawn.mockReturnValue(proc);
+    pm.spawnShellPty('cwd-linux', '/project', vi.fn(), vi.fn());
+
+    // pgrep: pid 1000 has child 2000, which has no children of its own.
+    execFile
+      .mockImplementationOnce(((_cmd: string, args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
+        cb(null, args[1] === '1000' ? '2000\n' : '');
+        return undefined as never;
+      }) as never)
+      .mockImplementationOnce(((_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
+        cb(new Error('no children'), '');
+        return undefined as never;
+      }) as never);
+    readlinkSync.mockReturnValue('/some/worktree/path');
+
+    expect(await pm.getPtyCwd('cwd-linux')).toBe('/some/worktree/path');
+    expect(readlinkSync).toHaveBeenCalledWith('/proc/2000/cwd');
+    expect(execFile.mock.calls.every(([cmd]) => cmd !== 'lsof')).toBe(true);
+  });
+
+  it('returns null for getPtyCwd on Linux when the /proc readlink fails', async () => {
+    const { pm, execFile, readlinkSync } = await importPosixPtyManager('linux');
+    execFile.mockReset();
+
+    const proc = createMockPtyProcess();
+    (proc as unknown as { pid: number }).pid = 1000;
+    mockSpawn.mockReturnValue(proc);
+    pm.spawnShellPty('cwd-fail', '/project', vi.fn(), vi.fn());
+
+    execFile.mockImplementationOnce(((_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
+      cb(new Error('no children'), '');
+      return undefined as never;
+    }) as never);
+    readlinkSync.mockImplementation(() => {
+      throw new Error('ENOENT');
+    });
+
+    expect(await pm.getPtyCwd('cwd-fail')).toBeNull();
+    expect(execFile.mock.calls.every(([cmd]) => cmd !== 'lsof')).toBe(true);
+  });
+});
+
 describe('resolveWindowsShell', () => {
   if (isWin) {
     it('wraps .cmd files with cmd.exe /c', () => {
@@ -1150,6 +1426,96 @@ describe('resolveWindowsShell', () => {
   it('does not over-quote metachar-free args', () => {
     const r = resolveWindowsShell('C:\\tools\\claude.cmd', ['--help', 'plain.txt']);
     expect(r.args).toEqual(['/c', 'C:\\tools\\claude.cmd', '--help', 'plain.txt']);
+  });
+
+  // npm-shim direct spawn: cmd.exe truncates multi-line args at the first
+  // newline and word-splits quoted ones (the Ask-AI fragmentation), so
+  // resolveWindowsShell parses the shim and spawns its real target.
+  describe('npm shim direct spawn', () => {
+    const mockReadFileSync = vi.mocked(fs.readFileSync);
+    const NPM_DIR = 'C:\\Users\\test\\AppData\\Roaming\\npm';
+    const npmShim = `${NPM_DIR}\\codex.cmd`;
+    const codexJs = `${NPM_DIR}\\node_modules\\@openai\\codex\\bin\\codex.js`;
+    // The real npm cmd-shim template.
+    const npmShimBody = [
+      '@ECHO off',
+      'GOTO start',
+      ':find_dp0',
+      'SET dp0=%~dp0',
+      'EXIT /b',
+      ':start',
+      'SETLOCAL',
+      'CALL :find_dp0',
+      'IF EXIST "%dp0%\\node.exe" (',
+      '  SET "_prog=%dp0%\\node.exe"',
+      ') ELSE (',
+      '  SET "_prog=node"',
+      '  SET PATHEXT=%PATHEXT:;.JS;=;%',
+      ')',
+      'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
+    ].join('\r\n');
+
+    /** Only the given files exist; readFileSync serves only the listed shims. */
+    const withFiles = (shims: Record<string, string>, existing: string[]) => {
+      const lower = existing.map((p) => p.toLowerCase());
+      mockExistsSync.mockImplementation((p) => lower.includes(String(p).toLowerCase()));
+      mockReadFileSync.mockImplementation((p) => {
+        const body = shims[String(p)];
+        if (body === undefined) throw new Error('ENOENT');
+        return body as never;
+      });
+    };
+
+    afterEach(() => {
+      mockExistsSync.mockImplementation(() => false);
+      mockReadFileSync.mockImplementation(() => {
+        throw new Error('ENOENT');
+      });
+    });
+
+    it('spawns node + script directly; multi-line/quote prompts survive raw', () => {
+      withFiles({ [npmShim]: npmShimBody }, [codexJs]); // no node.exe beside the shim
+      const prompt = 'Regarding the following diff snippet from `a.ts`:\n\n```diff\n- x\n```\n\nfix "this"';
+      const r = resolveWindowsShell(npmShim, ['--help', prompt]);
+      expect(r.shell).toBe('node');
+      expect(r.args).toEqual([codexJs, '--help', prompt]);
+    });
+
+    it('prefers the node.exe beside the shim', () => {
+      const localNode = path.join(NPM_DIR, 'node.exe');
+      withFiles({ [npmShim]: npmShimBody }, [codexJs, localNode]);
+      const r = resolveWindowsShell(npmShim, ['x']);
+      expect(r.shell).toBe(localNode);
+    });
+
+    it('spawns a quoted exe shim directly', () => {
+      const bat = 'C:\\tools\\tool.bat';
+      withFiles({ [bat]: '@echo off\r\n"C:\\tools\\mytool.exe" %*\r\n' }, ['C:\\tools\\mytool.exe']);
+      const r = resolveWindowsShell(bat, ['a b']);
+      expect(r).toEqual({ shell: 'C:\\tools\\mytool.exe', args: ['a b'] });
+    });
+
+    it('resolves the extensionless npm launcher through its .cmd sibling', () => {
+      const bare = `${NPM_DIR}\\codex`;
+      withFiles({ [`${bare}.cmd`]: npmShimBody }, [codexJs]);
+      const r = resolveWindowsShell(bare, ['go']);
+      expect(r).toEqual({ shell: 'node', args: [codexJs, 'go'] });
+    });
+
+    it('falls back to cmd.exe for a shim without a %* launch line', () => {
+      const bat = 'C:\\tools\\weird.bat';
+      withFiles({ [bat]: '@echo off\r\necho hi\r\n' }, []);
+      const r = resolveWindowsShell(bat, ['--help']);
+      expect(r.shell).toBe('cmd.exe');
+    });
+
+    it('falls back on an unknown variable, and never on a missing script', () => {
+      const bat = 'C:\\tools\\vars.bat';
+      withFiles({ [bat]: '"%FOO%\\tool.exe" %*\r\n' }, []);
+      expect(resolveWindowsShell(bat, ['--help']).shell).toBe('cmd.exe');
+      withFiles({ [npmShim]: npmShimBody }, []); // codex.js missing → fallback
+      expect(resolveWindowsShell(npmShim, ['--help']).shell).toBe('cmd.exe');
+    });
   });
   } else {
     it('passes through unchanged on non-Windows', () => {

@@ -2,9 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as crypto from 'crypto';
 
 vi.mock('child_process', () => ({ execFileSync: vi.fn() }));
+// The decrypt.ts pipeline branches on the platform flags at call time;
+// force the Linux path so decryptChromeValue is testable on any host.
+vi.mock('../platform', () => ({ isMac: false, isWin: false, isLinux: true }));
 
 import { execFileSync } from 'child_process';
 import { decryptValue, getKeyError, _resetCache } from './decrypt-linux';
+import { decryptChromeValue } from './decrypt';
 
 const mockExec = vi.mocked(execFileSync);
 const FALLBACK_PASS = 'peanuts';
@@ -57,5 +61,24 @@ describe('decrypt-linux', () => {
     });
     decryptValue(encryptValue('abc', FALLBACK_PASS));
     expect(getKeyError()).toMatch(/timed out|keyring/i);
+  });
+});
+
+// P2-49: the real Linux failure mode — secret-tool missing (keyringError
+// recorded, peanuts fallback key derived) while the cookies are encrypted
+// with the keyring key. The throw must carry BOTH the actionable keyring
+// diagnosis and the raw decrypt failure; it used to carry only 'bad decrypt'.
+describe('decryptChromeValue (Linux pipeline, keyring fallback)', () => {
+  it('keeps the keyring diagnosis alongside the bad-decrypt reason', () => {
+    mockExec.mockImplementation(() => {
+      throw Object.assign(new Error('spawn secret-tool ENOENT'), { code: 'ENOENT' });
+    });
+    // 'abcd' (16-byte payload): the peanuts-key decryption of a
+    // keyring-key ciphertext deterministically fails PKCS#7 padding — a
+    // 3-byte plaintext's payload happened to pass the padding check.
+    const res = decryptChromeValue(encryptValue('abcd', 'keyring-passphrase'), false);
+    expect(res.text).toBeNull();
+    expect(res.keyError).toMatch(/keyring password not found/i);
+    expect(res.keyError).toMatch(/bad decrypt/i);
   });
 });

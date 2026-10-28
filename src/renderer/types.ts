@@ -1,11 +1,11 @@
-export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, AgentmemoryStatus, AgentmemoryLog } from '../shared/types.js';
-import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, AgentmemoryStatus } from '../shared/types.js';
+export type { McpServer, Agent, Skill, Command, ProviderConfig, ClaudeConfig, GitWorktree, GitFileEntry, CostData, McpResult, ProviderId, CliProviderMeta, CliProviderCapabilities, StatsCache, ReadinessResult, ReadinessCategory, ReadinessCheck, ReadinessCheckStatus, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload } from '../shared/types.js';
+import type { CostData, ProviderConfig, GitWorktree, McpResult, CliSessionStatus, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, TopFilesResult, FsChange, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, InspectorEvent, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, ReadFileResult, FileStatResult, DeepSearchResult, GithubFetchResult, GithubRepo, StartupPrefs, ArchivedSession, HostRecord } from '../shared/types.js';
 import type { ImportableLegacyProject } from '../shared/types.js';
-import type { AgentmemoryLog } from '../shared/types.js';
+import type { DiskHealth, PerfStats } from '../shared/types.js';
 
 export interface FinevibeApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, hostId?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -32,22 +32,23 @@ export interface FinevibeApi {
     release(sessionId: string): void;
   };
   fs: {
-    isDirectory(path: string): Promise<boolean>;
+    isDirectory(path: string, hostId?: string): Promise<boolean>;
     expandPath(path: string): Promise<string>;
-    listDir(dirPath: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
+    listDir(dirPath: string, hostId?: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
     listDirs(dirPath: string, prefix?: string): Promise<string[]>;
     browseDirectory(): Promise<string | null>;
     cloneRepo(url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
-    listFiles(cwd: string, query: string): Promise<string[]>;
+    ensureDirectory(dirPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+    listFiles(cwd: string, query: string, hostId?: string): Promise<string[]>;
     topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
-    exists(filePath: string): Promise<boolean>;
-    readFile(filePath: string): Promise<ReadFileResult>;
-    stat(filePath: string): Promise<FileStatResult>;
+    exists(filePath: string, hostId?: string): Promise<boolean>;
+    readFile(filePath: string, hostId?: string): Promise<ReadFileResult>;
+    stat(filePath: string, hostId?: string): Promise<FileStatResult>;
     trashItem(filePath: string): Promise<{ ok: boolean; error?: string }>;
     readImage(filePath: string): Promise<{ dataUrl: string } | null>;
     showInFolder(targetPath: string): Promise<{ ok: boolean; error?: string }>;
-    watchDir(dirPath: string): void;
-    unwatchDir(dirPath: string): void;
+    watchDir(dirPath: string, hostId?: string): void;
+    unwatchDir(dirPath: string, hostId?: string): void;
     getDroppedFilePath(file: File): string;
     onFsChange(callback: (changes: FsChange[]) => void): () => void;
   };
@@ -62,17 +63,43 @@ export interface FinevibeApi {
     /** Projects the legacy `~/.vibeyard/state.json` lists that FineVibe does not. Never rejects: main reads the legacy file defensively and answers [] when there is nothing importable. */
     listImportableProjects(): Promise<ImportableLegacyProject[]>;
   };
+  log: {
+    /** Row 31: fire-and-forget ship of one renderer line into main's log tee (`finevibe.log`). Never rejects, never throws: use `rlog()` from `src/renderer/log.ts`, not this directly. */
+    write(level: 'log' | 'info' | 'warn' | 'error', message: string): void;
+  };
   profiles: {
-    provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
+    provision(profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
   };
+  hosts: {
+    list(): Promise<HostRecord[]>;
+    create(draft: unknown): Promise<HostRecord>;
+    update(id: string, patch: Record<string, unknown>): Promise<HostRecord>;
+    delete(id: string): Promise<void>;
+    openShell(id: string, sessionId: string): Promise<void>;
+    generateKey(): Promise<{ id: string; privateKeyPath: string; publicKey: string }>;
+    secretsAvailable(): Promise<boolean>;
+    setSecret(id: string, kind: 'password' | 'keypass', secret: string): Promise<void>;
+    forgetPassword(id: string): Promise<void>;
+    test(id: string): Promise<{ ok: boolean; fingerprint?: string; newFingerprint?: string; hostKeyChanged: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    approveHostKey(id: string, fingerprint: string): Promise<HostRecord | null>;
+    enroll(id: string, opts?: { pin?: string }): Promise<{ ok: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    unenroll(id: string): Promise<{ ok: boolean; detail?: string }>;
+    syncSettings(id: string, providerIds: ProviderId[], confirmOverwrite?: boolean): Promise<{ ok: boolean; drift?: string[]; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    /** Remote open/add folder (T5, UR-6): the Add-project verbs on the host. */
+    listDirs(id: string, dirPath: string, prefix?: string): Promise<{ ok: boolean; dirs?: string[]; error?: string }>;
+    stat(id: string, path: string): Promise<{ ok: boolean; isDirectory?: boolean; size?: number; mtimeMs?: number; error?: string }>;
+    ensureDir(id: string, dirPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+    cloneRepo(id: string, url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
+    onStatus(callback: (event: { id: string; status: string; detail?: string }) => void): () => void;
+  };
   provider: {
-    getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
+    getConfig(providerId: ProviderId, projectPath: string, configDir?: string, hostId?: string): Promise<ProviderConfig>;
     listProviders(): Promise<CliProviderMeta[]>;
-    checkBinary(providerId?: ProviderId): Promise<boolean>;
+    checkBinary(providerId?: ProviderId, hostId?: string): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
     onConfigChanged(callback: () => void): () => void;
-    installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
+    installAgent(slug: string, content: string, configDir?: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
     removeAgent(slug: string): Promise<void>;
   };
   git: {
@@ -98,6 +125,14 @@ export interface FinevibeApi {
     onDownloadProgress(cb: (info: { percent: number }) => void): () => void;
     onDownloaded(cb: (info: { version: string }) => void): () => void;
     onError(cb: (info: { message: string }) => void): () => void;
+  };
+  disk: {
+    get(): Promise<DiskHealth | null>;
+    onStatus(callback: (status: DiskHealth) => void): () => void;
+  };
+  perf: {
+    reportBoot(ms: number): void;
+    onStats(callback: (sample: PerfStats) => void): () => void;
   };
   app: {
     focus(): void;
@@ -159,11 +194,20 @@ export interface FinevibeApi {
     readForPaste(): Promise<ClipboardPastePayload>;
     saveImage(dataUrl: string): Promise<string | null>;
   };
-  agentmemory: {
-    status(): Promise<AgentmemoryStatus>;
-    start(): Promise<AgentmemoryStatus>;
-    /** Tail of the daemon console log file (see main/agentmemory-manager.ts). */
-    log(): Promise<AgentmemoryLog>;
+  storage: {
+    /** userData subtree sizes, descending; `truncated` on scan caps. */
+    scan(): Promise<{ entries: Array<{ name: string; bytes: number }>; truncated: boolean }>;
+    /** Clear caches ONLY (see clearSafeCaches in main/ipc-handlers.ts). */
+    clear(): Promise<{ tempDirsSwept: number }>;
+    /** Read-only A3 retirement audit log. */
+    retirement(): Promise<Array<{
+      id: string;
+      from: string;
+      at: string;
+      outcome: 'removed' | 'kept' | 'unverified' | 'error';
+      bytesFreed?: number;
+      reason?: string;
+    }>>;
   };
   menu: {
     onNewProject(callback: () => void): () => void;

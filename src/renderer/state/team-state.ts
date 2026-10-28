@@ -4,7 +4,9 @@ import { buildAgentMarkdown } from '../components/team/agent-markdown.js';
 import { getTeamCapableProviderIds } from '../provider-availability.js';
 import { isCliSession } from '../session-utils.js';
 import { resolveProfile } from './specialized-sessions.js';
+import { profileHost } from '../../shared/profile-keys.js';
 import { buildCliSession } from './session-factory.js';
+import { rlog } from '../log.js';
 
 /**
  * C4TM-06: hard cap on a member's system prompt. The prompt ships to the
@@ -80,7 +82,7 @@ export function removeMember(team: TeamData, id: string): TeamMember | undefined
 }
 
 /** Assign a unique agentSlug to a member if it doesn't already have one. Returns true if a slug was assigned. */
-export function ensureAgentSlug(team: TeamData, member: TeamMember): boolean {
+function ensureAgentSlug(team: TeamData, member: TeamMember): boolean {
   if (member.agentSlug) return false;
   const taken = new Set(team.members.filter((m) => m !== member && m.agentSlug).map((m) => m.agentSlug!));
   member.agentSlug = ensureUniqueSlug(nameToSlug(member.name), taken);
@@ -91,7 +93,7 @@ export function ensureAgentSlug(team: TeamData, member: TeamMember): boolean {
  * Pick the provider for a team chat session: override → active CLI session's provider → default → claude,
  * filtered by which providers actually support team chat.
  */
-export function pickTeamChatProvider(
+function pickTeamChatProvider(
   activeSession: SessionRecord | undefined,
   defaultProvider: ProviderId | undefined,
   override: ProviderId | undefined,
@@ -116,10 +118,15 @@ export function pickTeamChatProvider(
 export function resolvePinnedTeamProfile(
   member: TeamMember,
   profiles: Profile[],
+  hostId?: string,
 ): Profile | undefined {
   if (!member.profileId) return undefined;
   const pinned = profiles.find((p) => p.id === member.profileId);
   if (!pinned) return undefined;
+  // A profile is a directory on ONE machine (Phase 1 rule): a launch on a
+  // remote project can never run a local profile's config dir, so a
+  // cross-host pin resolves to no-pin - exactly what startTeamChat spawns.
+  if (hostId && profileHost(pinned) !== hostId) return undefined;
   return getTeamCapableProviderIds().has(pinned.providerId) ? pinned : undefined;
 }
 
@@ -140,11 +147,11 @@ export function resolveTeamChatBackend(
   profiles: Profile[],
   overrideProviderId: ProviderId | undefined,
 ): { providerId: ProviderId; profileId?: string } | undefined {
-  const pinned = resolvePinnedTeamProfile(member, profiles);
+  const pinned = resolvePinnedTeamProfile(member, profiles, project.hostId);
   if (pinned) return { providerId: pinned.providerId, profileId: pinned.id };
   const providerId = pickTeamChatProvider(activeSession, prefs.defaultProvider, overrideProviderId ?? project.defaultProvider);
   if (!providerId) return undefined;
-  const profile = resolveProfile(undefined, project, prefs, providerId, profiles);
+  const profile = resolveProfile(undefined, project, prefs, providerId, profiles, project.hostId);
   return { providerId, profileId: profile?.id };
 }
 
@@ -211,26 +218,30 @@ export function buildTeamChatSession(
   };
 }
 
-export interface AgentApi {
-  installAgent(slug: string, content: string): Promise<unknown>;
+interface AgentApi {
+  installAgent(slug: string, content: string, configDir?: string): Promise<unknown>;
   removeAgent(slug: string): Promise<unknown>;
 }
 
 /**
  * Assign a slug if needed, then write the agent markdown to all installed providers.
  * `persistSlug` is invoked when a new slug is assigned so the caller can persist state.
+ * `configDir` (P2-116) is the member's pinned profile config dir - a profiled
+ * Claude run reads agents from CLAUDE_CONFIG_DIR, so the install must target
+ * that tree, not the hardcoded ~/.claude/agents.
  */
 export async function syncAgentInstall(
   api: AgentApi,
   team: TeamData,
   member: TeamMember,
   persistSlug: () => void,
+  configDir?: string,
 ): Promise<void> {
   if (ensureAgentSlug(team, member)) persistSlug();
   try {
-    await api.installAgent(member.agentSlug!, buildAgentMarkdown(member.agentSlug!, member));
+    await api.installAgent(member.agentSlug!, buildAgentMarkdown(member.agentSlug!, member), configDir);
   } catch (err) {
-    console.warn('installAgent failed:', err);
+    rlog('warn', 'installAgent failed:', err);
   }
 }
 
@@ -241,12 +252,13 @@ export async function reconcileAgent(
   before: TeamMember,
   after: TeamMember,
   persistSlug: () => void,
+  configDir?: string,
 ): Promise<void> {
   const wasOn = !!before.installAsAgent;
   const isOn = !!after.installAsAgent;
   if (!wasOn && !isOn) return;
   if (!wasOn && isOn) {
-    await syncAgentInstall(api, team, after, persistSlug);
+    await syncAgentInstall(api, team, after, persistSlug, configDir);
     return;
   }
   if (wasOn && !isOn) {
@@ -255,7 +267,7 @@ export async function reconcileAgent(
     persistSlug();
     if (slug) {
       try { await api.removeAgent(slug); }
-      catch (err) { console.warn('removeAgent failed:', err); }
+      catch (err) { rlog('warn', 'removeAgent failed:', err); }
     }
     return;
   }
@@ -269,6 +281,6 @@ export async function reconcileAgent(
 
 export function fireAndForgetRemoveAgent(api: AgentApi, slug: string): void {
   void api.removeAgent(slug).catch((err) => {
-    console.warn('removeAgent failed:', err);
+    rlog('warn', 'removeAgent failed:', err);
   });
 }

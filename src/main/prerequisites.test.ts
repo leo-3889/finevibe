@@ -57,13 +57,52 @@ afterEach(() => {
 });
 
 describe('checkPythonAvailable()', () => {
-  it('returns null without probing on non-Windows', async () => {
+  it('POSIX: probes the platform.ts candidates in order and pins the winner', async () => {
+    // The POSIX probe mirrors platform.ts's module-load re-point: python3
+    // first (PATH installs are the common case), absolute distro path, then
+    // bare python. Finding one is silent (null); the pin lets hook commands
+    // spawn the interpreter that actually answers.
     const setPythonBin = mockPlatform(false);
-    execFile.mockImplementation(() => {
-      throw new Error('must not probe on POSIX — pythonBin is already pinned');
+    execFile.mockImplementation((cmd: string, _args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      if (cmd === 'python3') cb(null, 'Python 3.12.4\n');
+      else cb(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     });
     expect(await (await loadCheck())()).toBeNull();
-    expect(execFile).not.toHaveBeenCalled();
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(execFile).toHaveBeenCalledWith(
+      'python3', ['--version'],
+      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
+      expect.any(Function),
+    );
+    expect(setPythonBin).toHaveBeenCalledTimes(1);
+    expect(setPythonBin).toHaveBeenCalledWith('python3');
+  });
+
+  it('POSIX: falls through to /usr/bin/python3 when PATH python3 is missing', async () => {
+    const setPythonBin = mockPlatform(false);
+    execFile.mockImplementation((cmd: string, _args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      if (cmd === '/usr/bin/python3') cb(null, 'Python 3.11.2\n');
+      else cb(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    });
+    expect(await (await loadCheck())()).toBeNull();
+    expect(execFile.mock.calls.map(([cmd]) => cmd)).toEqual(['python3', '/usr/bin/python3']);
+    expect(setPythonBin).toHaveBeenCalledWith('/usr/bin/python3');
+  });
+
+  it('POSIX: surfaces the non-fatal warning when nothing answers', async () => {
+    // The whole point of extending the probe: a box without python3 used to
+    // bake a dead interpreter into every hook command and die silently. The
+    // caller (main.ts) shows this text in the same warning dialog Windows
+    // uses; hook installs stay fail-closed (P1-13/P2-53).
+    const setPythonBin = mockPlatform(false);
+    execFile.mockImplementation((_cmd: string, _args: readonly string[], _opts: unknown, cb: (err: unknown) => void) => {
+      cb(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    });
+    const warning = await (await loadCheck())();
+    expect(warning).toContain('Python not found.');
+    expect(warning).toContain('python3');
+    expect(warning).toContain('apt install python3');
+    expect(execFile.mock.calls.map(([cmd]) => cmd)).toEqual(['python3', '/usr/bin/python3', 'python']);
     expect(setPythonBin).not.toHaveBeenCalled();
   });
 

@@ -1,11 +1,15 @@
 import { appState, MAX_SESSION_NAME_LENGTH, type ProjectRecord, type SessionRecord } from '../../state.js';
 import type { ProviderId, TabGroupRecord } from '../../../shared/types.js';
+import { LOCAL_HOST_ID } from '../../../shared/types.js';
+import { hostChipHtml } from '../../host-scope.js';
+import { getHostColor, getHostName, getEnrolledHosts } from '../../host-registry.js';
 import { findGroupForSession, isGroupableTab, TAB_GROUP_DWELL_MS } from '../../state/tab-group-state.js';
 import { getStatus, STATUS_GLYPH, type SessionStatus } from '../../session-activity.js';
 import { isUnread } from '../../session-unread.js';
 import { hasUnreadInProject as hasGithubUnread } from '../../github-unread.js';
 import { ICON_KANBAN, ICON_TEAM, ICON_OVERVIEW } from '../../icons.js';
 import { showShareDialog } from '../share-dialog.js';
+import { showModal } from '../modal.js';
 import { isSharing } from '../../sharing/peer-host.js';
 import { endShare } from '../../sharing/share-manager.js';
 import { openInspector, isInspectorOpen, getInspectedSessionId, closeInspector } from '../session-inspector.js';
@@ -83,7 +87,9 @@ function sweepGroupHighlights(): void {
 
 function buildTooltip(status: SessionStatus, cliSessionId?: string): string {
   const statusLine = t('tab.tooltip.statusPrefix', { status });
-  return cliSessionId ? `${statusLine}\n${t('tab.tooltip.sessionPrefix', { cliSessionId })}` : statusLine;
+  const lines = [statusLine];
+  if (cliSessionId) lines.push(t('tab.tooltip.sessionPrefix', { cliSessionId }));
+  return lines.join('\n');
 }
 
 function tabDisplayName(project: ProjectRecord, session: SessionRecord): string {
@@ -106,13 +112,18 @@ function tabNamePrefix(session: SessionRecord): string {
     case 'kanban': return `<span class="tab-kanban-badge">${ICON_KANBAN}</span> `;
     case 'team': return `<span class="tab-team-badge">${ICON_TEAM}</span> `;
     default: {
-      if (!hasMultipleAvailableProviders()) return '';
+      // Host identity chip (plan §5): the slot the removed `ssh <host> - `
+      // prefix used to occupy. Local sessions carry no chip (unchanged).
+      const chip = session.hostId && session.hostId !== LOCAL_HOST_ID
+        ? hostChipHtml(getHostColor(session.hostId), getHostName(session.hostId))
+        : '';
+      if (!hasMultipleAvailableProviders()) return chip;
       // The prefix lands in tab.innerHTML (line ~375 escapes only the name).
       // providerId comes from persisted state.json, which is user-editable,
       // so only registry-known ids may reach the img attributes.
       const rawId = session.providerId || 'claude';
       const providerId = getCachedProviderMetas().some(m => m.id === rawId) ? rawId : 'claude';
-      return `<img class="tab-provider-icon" src="assets/providers/${providerId}.png" alt="${providerId}" onerror="this.style.display='none'"> `;
+      return `${chip}<img class="tab-provider-icon" src="assets/providers/${providerId}.png" alt="${providerId}" onerror="this.style.display='none'"> `;
     }
   }
 }
@@ -282,6 +293,22 @@ function showGroupContextMenu(x: number, y: number, project: ProjectRecord, grou
   positionMenu(menu);
 }
 
+// Pick the session's launch host from the registry (context menu; the
+// retired free-text prompt accepted any string and persisted a field the
+// spawn path never read — parent §11). The write is metadata-only, exactly
+// like the old setter: it takes effect on the session's next spawn.
+function pickSessionHost(session: SessionRecord): void {
+  const options = [
+    { value: LOCAL_HOST_ID, label: t('contextMenu.tab.sshHostLocal') },
+    ...getEnrolledHosts().map((h) => ({ value: h.id, label: h.name })),
+  ];
+  showModal(
+    t('contextMenu.tab.sshHostSet'),
+    [{ id: 'host', label: t('contextMenu.tab.sshHostPick'), type: 'select', options, defaultValue: session.hostId ?? LOCAL_HOST_ID }],
+    (values) => { appState.setSessionHost(session.id, values.host === LOCAL_HOST_ID ? null : values.host); },
+  );
+}
+
 function showTabContextMenu(x: number, y: number, project: ProjectRecord, session: SessionRecord, tab: HTMLElement): void {
   hideTabContextMenu();
 
@@ -414,6 +441,31 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
   }
 
   menu.appendChild(renameItem);
+  if (isCli) {
+    // Registry picker (parent §11): the remote spellings are the adopted
+    // hostId (migration) or a legacy sshHost the picker overwrites on write.
+    const sessionRemote = !!session.hostId && session.hostId !== LOCAL_HOST_ID;
+    const sshItem = document.createElement('div');
+    sshItem.className = 'tab-context-menu-item';
+    sshItem.textContent = t(sessionRemote ? 'contextMenu.tab.sshHostChange' : 'contextMenu.tab.sshHostSet');
+    sshItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideTabContextMenu();
+      pickSessionHost(session);
+    });
+    menu.appendChild(sshItem);
+    if (sessionRemote || session.sshHost) {
+      const sshClearItem = document.createElement('div');
+      sshClearItem.className = 'tab-context-menu-item';
+      sshClearItem.textContent = t('contextMenu.tab.sshHostClear');
+      sshClearItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hideTabContextMenu();
+        appState.setSessionHost(session.id, null);
+      });
+      menu.appendChild(sshClearItem);
+    }
+  }
   menu.appendChild(moveLeftItem);
   menu.appendChild(moveRightItem);
 
@@ -586,6 +638,8 @@ export function render(): void {
     const sharing = isSharing(session.id);
     const displayName = tabDisplayName(project, session);
     tab.className = `tab-item${isActive ? ' active' : ''}${unread ? ' unread' : ''}${sharing ? ' tab-sharing' : ''}${isRemoteTab ? ' tab-remote' : ''}${sessionGroup ? ' in-group' : ''}`;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
     tab.dataset.sessionId = session.id;
     tab.dataset.tabName = displayName;
     tab.dataset.cliSessionId = session.cliSessionId ?? '';
@@ -766,7 +820,6 @@ export function updateTabStatus(sessionId: string, status: SessionStatus): void 
     }
   }
 }
-
 /**
  * PA-12: `session-changed` used to rebuild the whole strip (innerHTML='' +
  * n tabs × 8 listeners × i18n lookups) on every tab click and every CLI-id
@@ -797,16 +850,16 @@ export function handleSessionChanged(data?: unknown): void {
 }
 
 /** Title / CLI-id adoption: refresh name, tooltip, dataset — no DOM wipe. */
-function patchTabMetadata(project: ProjectRecord, session: SessionRecord, tab: HTMLElement): void {
+function patchTabMetadata(project: ProjectRecord, session: SessionRecord, tab: HTMLElement, forceName = false): void {
   const groupId = findGroupForSession(project, session.id)?.id ?? '';
   // Group membership is strip structure, not tab content: that's a rebuild.
   if ((tab.dataset.groupId ?? '') !== groupId) { render(); return; }
   tab.dataset.cliSessionId = session.cliSessionId ?? '';
   tab.title = tabTitle(project, session, getStatus(session.id));
   const displayName = tabDisplayName(project, session);
-  if (tab.dataset.tabName !== displayName) {
+  const nameSpan = tab.querySelector<HTMLElement>('.tab-name');
+  if (forceName || tab.dataset.tabName !== displayName) {
     tab.dataset.tabName = displayName;
-    const nameSpan = tab.querySelector<HTMLElement>('.tab-name');
     // pi-lens-ignore: xss-innerhtml, slop, no-inner-html — prefix is static markup, name is escaped
     if (nameSpan) nameSpan.innerHTML = `${tabNamePrefix(session)}${esc(displayName)}`;
   }

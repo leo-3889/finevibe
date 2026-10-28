@@ -7,7 +7,7 @@ import { isHttpUrl } from '../shared/url.js';
  * safely resolves to `ignore` — rendered content must never be able to navigate
  * the app document itself.
  */
-export type MarkdownLinkTarget =
+type MarkdownLinkTarget =
   | { kind: 'anchor'; slug: string }
   | { kind: 'external'; url: string }
   | { kind: 'file'; path: string }

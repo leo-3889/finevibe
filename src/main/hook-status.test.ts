@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
 import { isWin } from './platform';
 
-const STATUS_DIR = path.join('/tmp', 'finevibe');
+// Mirrors getStatusDir(): on POSIX the module suffixes the uid (shared
+// world-writable /tmp); Windows keeps the bare name under per-user %TEMP%.
+const STATUS_DIR = path.join('/tmp', !isWin && process.getuid ? `finevibe-${process.getuid()}` : 'finevibe');
 const SCRIPT_DIR = path.join('/home/test', '.finevibe', 'run');
 const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'statusline.sh');
 
@@ -35,7 +37,13 @@ vi.mock('electron', () => ({
   BrowserWindow: {},
 }));
 
+// The sftp seam the remote sidecar poll reads through.
+vi.mock('./hosts/provider-fs', () => ({
+  readProviderFileWindow: vi.fn(),
+}));
+
 import * as fs from 'fs';
+import { readProviderFileWindow } from './hosts/provider-fs';
 import {
   buildStatusLinePython,
   installStatusLineScript,
@@ -45,6 +53,7 @@ import {
   cleanupSessionStatus,
   cleanupAll,
   registerSession,
+  registerRemoteStatus,
 } from './hook-status';
 
 let watchCallback: ((eventType: string, filename: string | null) => void) | null = null;
@@ -144,6 +153,19 @@ describe('hook-status', () => {
       }
     });
 
+    it('reconfigures stdin to UTF-8 before the first json.load(sys.stdin)', () => {
+      // Windows: Python <3.15 decodes sys.stdin with the ANSI code page, so
+      // a non-ASCII payload raises UnicodeDecodeError inside the try/except
+      // and the script exits at line ~5 — cost, context, title and session
+      // id all die silently (see STDIN_UTF8_GUARD in shared/python.ts).
+      const script = body();
+      const guard = script.indexOf('sys.stdin.reconfigure(encoding="utf-8")');
+      const read = script.indexOf('json.load(sys.stdin)');
+      expect(guard, 'no UTF-8 guard in the statusline body').not.toBe(-1);
+      expect(guard).toBeLessThan(read);
+      expect(script.startsWith('import sys'), 'guard precedes the sys import').toBe(true);
+    });
+
     it('builds every path with os.path.join off the status_dir literal', () => {
       const script = body();
       expect(script).toContain(`status_dir=${JSON.stringify(STATUS_DIR)}`);
@@ -180,9 +202,12 @@ describe('hook-status', () => {
     it('writes the name as ASCII-safe JSON', () => {
       // json.dumps defaults to ensure_ascii=True, so a CJK/emoji title never
       // hits Windows' locale codepage and raises UnicodeEncodeError — which
-      // would abort the script and take the .cost write down with it.
+      // would abort the script and take the .cost write down with it. The
+      // proxy is "no open() carries an encoding kwarg"; the UTF-8 stdin
+      // guard's reconfigure(encoding="utf-8") is a deliberate, scoped
+      // exception — it decodes INPUT, it never re-encodes these writes.
       expect(body()).toContain('json.dumps(');
-      expect(body()).not.toContain("encoding=");
+      expect(body()).not.toMatch(/open\([^)]*encoding/);
     });
 
     it('writes .sessionid only when the id changed', () => {
@@ -277,6 +302,14 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
         .find(([target]) => target === STATUSLINE_SCRIPT)![1] as string;
       expect(wrapper).toContain(`"${pyPath}"`);
       expect(wrapper).not.toContain('-c');
+    });
+
+    it('invokes python with -X utf8 on Windows, plain elsewhere', () => {
+      // UTF-8 stdin fix, invocation layer: paired with the body guard above.
+      installStatusLineScript();
+      const wrapper = vi.mocked(fs.writeFileSync).mock.calls
+        .find(([target]) => target === STATUSLINE_SCRIPT)![1] as string;
+      expect(wrapper.includes('-X utf8')).toBe(isWin);
     });
   });
 
@@ -589,6 +622,26 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       expect(() => cleanupSessionStatus('sess-1')).not.toThrow();
     });
+
+    // P2-20: the writer emits `sess-1-<6 random>.toolfailure`, not the plain
+    // name; the plain-name loop alone left pending records behind.
+    it('unlinks the suffixed toolfailure variants the writer emits', () => {
+      vi.mocked(fs.readdirSync).mockReturnValue([
+        'sess-1.status',
+        'sess-1-abc123.toolfailure',
+        'sess-1-xyz789.toolfailure',
+        'sess-1-other.json',
+        'sess-1x-abc123.toolfailure',
+      ] as any);
+
+      cleanupSessionStatus('sess-1');
+
+      const unlinked = vi.mocked(fs.unlinkSync).mock.calls.map((c) => String(c[0]));
+      expect(unlinked).toContain(path.join(STATUS_DIR, 'sess-1-abc123.toolfailure'));
+      expect(unlinked).toContain(path.join(STATUS_DIR, 'sess-1-xyz789.toolfailure'));
+      expect(unlinked).not.toContain(path.join(STATUS_DIR, 'sess-1-other.json'));
+      expect(unlinked).not.toContain(path.join(STATUS_DIR, 'sess-1x-abc123.toolfailure'));
+    });
   });
 
   describe('polling fallback', () => {
@@ -768,5 +821,140 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       expect(() => cleanupAll()).not.toThrow();
     });
+  });
+});
+
+describe('getStatusDir (multi-user tmpdir)', () => {
+  // POSIX /tmp is world-writable and shared: a fixed 'finevibe' name under
+  // mode 0700 belongs to whoever created it first, and every other user's
+  // hooks then fail to write their status files — silently. The uid suffix
+  // gives each user a private directory; Windows %TEMP% is already per-user.
+  it('suffixes the uid on POSIX and stays bare on Windows', async () => {
+    const cases = [
+      { win: false, uid: 1000, want: path.join('/tmp', 'finevibe-1000') },
+      { win: true, uid: 1000, want: path.join('/tmp', 'finevibe') },
+      { win: false, uid: undefined, want: path.join('/tmp', 'finevibe') },
+    ] as const;
+    for (const { win, uid, want } of cases) {
+      vi.resetModules();
+      vi.doMock('./platform', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('./platform')>();
+        return { ...actual, isWin: win };
+      });
+      const realGetuid = process.getuid;
+      if (uid === undefined) delete (process as { getuid?: unknown }).getuid;
+      else (process as { getuid?: unknown }).getuid = () => uid;
+      try {
+        const m = await import('./hook-status');
+        expect(m.getStatusDir(), `isWin=${win} uid=${uid}`).toBe(want);
+        // STATUS_DIR is the one constant every producer/consumer routes
+        // through (watcher, mkdirs, cleanup, generated scripts).
+        expect(m.STATUS_DIR).toBe(want);
+      } finally {
+        (process as { getuid?: unknown }).getuid = realGetuid;
+        vi.doUnmock('./platform');
+        vi.resetModules();
+      }
+    }
+  });
+});
+
+describe('remote status sidecar poll (per-host providers T2)', () => {
+  it('delivers host-side status changes as session:hookStatus, content-gated', async () => {
+    const win = createMockWin();
+    startWatching(win);
+    registerRemoteStatus('sess-1', 'lab');
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
+    // Watcher is alive (watchImpl), so the poll runs at the watchdog cadence.
+    await vi.advanceTimersByTimeAsync(15_000);
+    // Windowed tail read (audit T2 #7): a fat sidecar is never slurped whole.
+    expect(readProviderFileWindow).toHaveBeenCalledWith(
+      'lab', '.finevibe/run/sess-1.status', 4096, { fromEnd: true },
+    );
+    expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-1', 'completed', 'Stop');
+    // Unchanged content on the next tick delivers nothing.
+    mockSend.mockClear();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(mockSend).not.toHaveBeenCalled();
+    // A change delivers once, with the hook name split out.
+    vi.mocked(readProviderFileWindow).mockResolvedValue('UserPromptSubmit:working');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-1', 'working', 'UserPromptSubmit');
+  });
+
+  it('drops out-of-set statuses with a log, delivers nothing', async () => {
+    const win = createMockWin();
+    startWatching(win);
+    registerRemoteStatus('sess-2', 'lab');
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:teleported');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('teleported'));
+  });
+
+  it('a failed read cools the host down for 30s: no reconnect storm, retries after', async () => {
+    const win = createMockWin();
+    startWatching(win);
+    registerRemoteStatus('sess-3', 'lab');
+    registerRemoteStatus('sess-3b', 'lab');
+    vi.mocked(readProviderFileWindow).mockRejectedValue(new Error('connection closed'));
+    await vi.advanceTimersByTimeAsync(15_000); // tick@15s: first failure cools the host, second entry skipped
+    expect(readProviderFileWindow).toHaveBeenCalledTimes(1);
+    vi.mocked(readProviderFileWindow).mockClear();
+    // Audit T2 #2: ticks inside the cooldown window (30 s from the failure,
+    // i.e. until t=45 s) probe the host ZERO times (per session, per tick
+    // each used to re-pay a ~11 s connect).
+    await vi.advanceTimersByTimeAsync(15_000); // tick@30s: in-window
+    expect(readProviderFileWindow).not.toHaveBeenCalled();
+    // Past the cooldown the host is probed again and delivers.
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
+    await vi.advanceTimersByTimeAsync(15_000); // tick@45s: window expired → probe
+    expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-3', 'completed', 'Stop');
+  });
+
+  it('a cooling host never stalls the local sweep (audit T2 #2)', async () => {
+    const win = createMockWin();
+    let releaseRead: () => void = () => {};
+    vi.mocked(readProviderFileWindow).mockReturnValue(
+      new Promise<string>((resolve) => {
+        releaseRead = () => resolve('Stop:completed');
+      }),
+    );
+    // Local file the sweep should deliver while the remote read is in flight.
+    vi.mocked(fs.promises.readdir).mockResolvedValue(['local-1.status'] as any);
+    vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 5 } as any);
+    vi.mocked(fs.readFileSync).mockReturnValue('PostToolUse:working' as any);
+    startWatching(win); // watcher alive → watchdog cadence (15 s)
+    registerSession('local-1');
+    registerRemoteStatus('sess-hang', 'slowhost');
+    await vi.advanceTimersByTimeAsync(15_000); // tick fires; remote read hangs
+    // The local sweep is NOT awaited behind the remote read: it delivered.
+    expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'local-1', 'working', 'PostToolUse');
+    releaseRead();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it('cleanupSessionStatus stops polling the session', async () => {
+    const win = createMockWin();
+    startWatching(win);
+    registerRemoteStatus('sess-4', 'lab');
+    cleanupSessionStatus('sess-4');
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(readProviderFileWindow).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsafe session ids (the id becomes a sidecar path segment)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registerRemoteStatus('../evil', 'lab');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unsafe session id'));
+    // No entry was registered: a poll tick never touches the seam.
+    registerSession('real-session'); // keep the poll loop alive (PA-09 gate)
+    const win = createMockWin();
+    startWatching(win);
+    vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(readProviderFileWindow).not.toHaveBeenCalled();
   });
 });

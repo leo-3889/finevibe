@@ -239,6 +239,39 @@ describe('persist()', () => {
   });
 });
 
+describe('setSessionHost()', () => {
+  it('persists the registry host id (parent §11 picker write)', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    expect(appState.setSessionHost(session.id, 'h1')).toBe(true);
+    appState.flushPersist();
+    expect(mockSave.mock.calls.at(-1)![0].projects[0].sessions[0].hostId).toBe('h1');
+  });
+
+  it('null clears to local and drops a legacy sshHost', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    session.sshHost = 'lab.example.com';
+    session.hostId = 'h1';
+    expect(appState.setSessionHost(session.id, null)).toBe(true);
+    expect(session.hostId).toBe('local');
+    expect(session.sshHost).toBeUndefined();
+  });
+
+  it('picking a host overwrites a legacy sshHost (no coexisting spellings by hand)', () => {
+    const project = addProject();
+    const session = appState.addSession(project.id, 'S1')!;
+    session.sshHost = 'lab.example.com';
+    appState.setSessionHost(session.id, 'h2');
+    expect(session.hostId).toBe('h2');
+    expect(session.sshHost).toBeUndefined();
+  });
+
+  it('returns false for an unknown session id', () => {
+    expect(appState.setSessionHost('nope', 'h1')).toBe(false);
+  });
+});
+
 describe('getters', () => {
   it('projects returns empty array by default', () => {
     expect(appState.projects).toEqual([]);
@@ -818,6 +851,24 @@ describe('updateSessionCliId()', () => {
     expect(sessions[0].userRenamed).toBe(false);
     expect(cleared).toHaveBeenCalledWith({ sessionId: sessions[0].id });
   });
+
+  // P2-87: the /clear archive branch must honor "Record session history" like
+  // every other archive site. With the pref OFF nothing may be recorded (the
+  // rows would be invisible in the sidebar yet keep their profile "in use").
+  it('P2-87: /clear archives only when sessionHistoryEnabled is on', () => {
+    const { project, sessions } = addProjectWithSessions(1);
+    appState.setPreference('sessionHistoryEnabled', false);
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-1');
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-2');
+    const offRows = (project.sessionHistory ?? []).map((h) => h.cliSessionId);
+    expect(offRows).not.toContain('cli-1');
+    expect(offRows).not.toContain('cli-2');
+
+    appState.setPreference('sessionHistoryEnabled', true);
+    appState.updateSessionCliId(project.id, sessions[0].id, 'cli-3');
+    const rows = (project.sessionHistory ?? []).map((h) => h.cliSessionId);
+    expect(rows).toContain('cli-2');
+  });
 });
 
 // --- Session History Tests ---
@@ -1303,6 +1354,25 @@ describe('removeProfile reference cleanup (P3-4)', () => {
     expect(appState.getProfile('prof-1')).toBeUndefined();
     expect(session.profileId).toBeUndefined();
     expect(project.defaultProfileId).toBeUndefined();
+  });
+
+  it('drops host-prefixed defaultProfiles keys of the deleted profile (Phase 1 keying)', () => {
+    seedProfile('prof-1');
+    appState.preferences.defaultProfiles = { claude: 'prof-1', 'host-1|claude': 'prof-1', 'host-1|pi': 'other' };
+
+    appState.removeProfile('prof-1');
+
+    expect(appState.preferences.defaultProfiles).toEqual({ 'host-1|pi': 'other' });
+  });
+
+  it('setProviderDefaultProfile keys by host: bare local, prefixed remote (Phase 1)', () => {
+    appState.preferences.defaultProfiles = undefined;
+    appState.setProviderDefaultProfile('claude', 'p-local');
+    appState.setProviderDefaultProfile('claude', 'p-remote', 'host-1');
+    expect(appState.preferences.defaultProfiles).toEqual({ claude: 'p-local', 'host-1|claude': 'p-remote' });
+
+    appState.setProviderDefaultProfile('claude', undefined, 'host-1');
+    expect(appState.preferences.defaultProfiles).toEqual({ claude: 'p-local' });
   });
 
   it('isProfileInUse counts live sessions only — the UI delete gate stays usable for history-only profiles', () => {

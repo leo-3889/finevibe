@@ -124,7 +124,12 @@ function setupGeminiWatchers(projectPath: string): void {
 }
 
 export function startConfigWatcher(win: BrowserWindow, projectPath: string, providerId: ProviderId = 'claude'): void {
-  if (projectPath === currentProjectPath && providerId === currentProviderId) return;
+  if (projectPath === currentProjectPath && providerId === currentProviderId) {
+    // SA-P2-11: window recreation reuses the same (projectPath, providerId);
+    // rebind so notifications reach the live window, keep the fs watchers.
+    currentWin = win;
+    return;
+  }
   stopAll();
   currentWin = win;
   currentProjectPath = projectPath;

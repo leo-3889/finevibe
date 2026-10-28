@@ -5,12 +5,15 @@ import * as path from 'path';
 import {
   sessionHeaderFromWindow,
   transcriptTitleFromWindow,
+  sessionInfoNameFromWindow,
+  readTranscriptTitleWithSessionInfoSync,
   transcriptStatusFromTail,
   readTranscriptStatusSync,
   sessionExitReasonFromTail,
   readSessionExitReasonSync,
   findTranscriptPathSync,
   TAIL_READ_BYTES,
+  HEADER_READ_BYTES,
 } from './pi-compatible-transcripts';
 
 const header = (id: string, cwd: string, title?: string) =>
@@ -94,6 +97,123 @@ describe('transcriptTitleFromWindow', () => {
 
   it('trims surrounding whitespace from the title', () => {
     expect(transcriptTitleFromWindow(titleEntry('  Padded title  '))).toBe('Padded title');
+  });
+});
+
+const sessionInfo = (name: string) =>
+  JSON.stringify({ type: 'session_info', id: 'si', parentId: null, timestamp: 't', name });
+/** Padding entry: fills window bytes so entries land out of the head/tail windows. */
+const pad = (bytes: number) => JSON.stringify({ type: 'model_change', id: 'p', provider: 'x'.repeat(bytes) });
+
+describe('sessionInfoNameFromWindow', () => {
+  it('returns the LAST session_info name (append-only file order)', () => {
+    const window = [header('pi-1', '/proj'), sessionInfo('First name'), sessionInfo('Latest name')].join('\n');
+    expect(sessionInfoNameFromWindow(window)).toBe('Latest name');
+  });
+
+  it('ignores blank names and non-session_info entries', () => {
+    const window = [header('pi-1', '/proj'), sessionInfo('   '), sessionInfo(''), pad(10)].join('\n');
+    expect(sessionInfoNameFromWindow(window)).toBeNull();
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(sessionInfoNameFromWindow(sessionInfo('  Padded name  '))).toBe('Padded name');
+  });
+
+  it('skips a partial leading line (tail windows start mid-line)', () => {
+    const full = sessionInfo('Real name');
+    const partial = full.slice(20); // tail window cut mid-entry
+    expect(sessionInfoNameFromWindow(`${partial}\n${full}`)).toBe('Real name');
+  });
+
+  it('returns null for a null window, non-JSON lines, and Pi transcripts without names', () => {
+    expect(sessionInfoNameFromWindow(null)).toBeNull();
+    expect(sessionInfoNameFromWindow('not json')).toBeNull();
+    expect(sessionInfoNameFromWindow(header('pi-1', '/proj'))).toBeNull();
+  });
+});
+
+describe('readTranscriptTitleWithSessionInfoSync', () => {
+  const write = (dir: string, lines: string[]) => {
+    const file = path.join(dir, 't.jsonl');
+    fs.writeFileSync(file, `${lines.join('\n')}\n`);
+    return file;
+  };
+
+  it('reads a name set at launch from a short transcript', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-title-'));
+    try {
+      const file = write(dir, [header('pi-1', '/proj'), sessionInfo('Refactor auth module')]);
+      expect(readTranscriptTitleWithSessionInfoSync(file)).toBe('Refactor auth module');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('finds a recent /name that has already left the head window', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-title-'));
+    try {
+      const file = write(dir, [
+        header('pi-1', '/proj'),
+        pad(HEADER_READ_BYTES), // pushes everything after it out of the 8 KiB head
+        sessionInfo('Renamed mid-session'),
+      ]);
+      expect(readTranscriptTitleWithSessionInfoSync(file)).toBe('Renamed mid-session');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the newer tail name over the launch name in the head', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-title-'));
+    try {
+      const file = write(dir, [
+        header('pi-1', '/proj'),
+        sessionInfo('Launch name'),
+        pad(HEADER_READ_BYTES + TAIL_READ_BYTES), // pushes 'Launch name' out of the tail window
+        sessionInfo('Mid name'),
+        pad(HEADER_READ_BYTES), // keeps 'Mid name' out of the head; tail ends at 'Latest name'
+        sessionInfo('Latest name'),
+      ]);
+      expect(readTranscriptTitleWithSessionInfoSync(file)).toBe('Latest name');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a name buried beyond both windows (documented bounded-read limit)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-title-'));
+    try {
+      const file = write(dir, [
+        header('pi-1', '/proj'),
+        pad(HEADER_READ_BYTES),
+        sessionInfo('Buried name'),
+        pad(TAIL_READ_BYTES), // last window covers only padding — the name is out of reach
+      ]);
+      expect(readTranscriptTitleWithSessionInfoSync(file)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers an OMP transcript (in-place title line, no session_info) from the head', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-title-'));
+    try {
+      const file = write(dir, [titleEntry('OMP title'), header('omp-1', '/proj', 'Header title'), pad(1024)]);
+      expect(readTranscriptTitleWithSessionInfoSync(file)).toBe('OMP title');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a plain Pi transcript with no name', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-title-'));
+    try {
+      const file = write(dir, [header('pi-1', '/proj'), pad(1024)]);
+      expect(readTranscriptTitleWithSessionInfoSync(file)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -4,10 +4,11 @@ import * as fs from 'fs';
 import { ipcMain, BrowserWindow } from 'electron';
 import { getStatusLineScriptPath } from './hook-status';
 import { HOOK_MARKER, installHooksOnly, installStatusLine, getSupportedHookEvents } from './claude-cli';
-import { readJsonSafe } from './fs-utils';
+import { readJsonSafe, canonicalPath } from './fs-utils';
 import { loadState, saveState } from './store';
 import { isWin } from './platform';
 import type { Preferences, SettingsValidationResult } from '../shared/types';
+import { boundedSet } from './bounded-map';
 
 const LEGACY_STATUSLINE_RE = /[/\\]finevibe[/\\]statusline\.(sh|cmd)$/;
 
@@ -39,16 +40,52 @@ function readClaudeSettings(configDir: string = path.join(homedir(), '.claude'))
   return readJsonSafe(path.join(configDir, 'settings.json')) ?? {};
 }
 
+/**
+ * Remove the single layer of shell quoting `installStatusLine` writes around
+ * the script path: `"C:\Users\...\statusline.cmd"` for cmd.exe, `'/path'`
+ * via shQuote on POSIX (where an embedded `'` is escaped as `'\''`).
+ *
+ * The reader must undo what the writer did. The writer quotes because Claude
+ * Code runs the statusLine command through a shell and a raw path breaks on
+ * the first space (spaced home dirs, every `C:\Users\...` install); the
+ * reader once compared the raw `getStatusLineScriptPath()` string, so every
+ * healthy FineVibe install graded as `foreign` — the setup checklist showed
+ * "Overwritten by another tool", the consent gate prompted about FineVibe's
+ * own command, and `Fix` rewrote the same quoted command forever.
+ */
+function unquoteStatusLineCommand(command: string): string {
+  const trimmed = command.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if (first !== last || (first !== '"' && first !== "'")) return trimmed;
+  const inner = trimmed.slice(1, -1);
+  // POSIX shQuote closes the quote, emits an escaped literal quote, and
+  // reopens: `it` -> `'it'\''s'`. cmd.exe doubles an embedded `"`.
+  return (first === "'" ? inner.replace(/'\\''/g, "'") : inner.replace(/""/g, '"')).trim();
+}
+
+/**
+ * Lexical key for a statusline script path: shell-quoted forms, `..`/`.`
+ * segments, trailing separators, `\` vs `/` spellings, and (on the
+ * case-folding Windows volumes this runs on) letter case all collapse to one
+ * key. Lexical on purpose: `canonicalPath`/realpath hits the filesystem, and
+ * validation runs before the script has necessarily been installed.
+ */
+function statusLinePathKey(command: string): string {
+  const resolved = path.resolve(unquoteStatusLineCommand(command));
+  const slashed = resolved.split(path.sep).join('/');
+  return isWin ? slashed.toLowerCase() : slashed;
+}
+
 export function isFineVibeStatusLine(statusLine: unknown): boolean {
   if (!statusLine || typeof statusLine !== 'object') return false;
   const sl = statusLine as Record<string, unknown>;
-  if (sl.command === getStatusLineScriptPath()) return true;
+  if (typeof sl.command !== 'string') return false;
+  if (statusLinePathKey(sl.command) === statusLinePathKey(getStatusLineScriptPath())) return true;
   // Recognize legacy FineVibe statusline paths (e.g. /tmp/finevibe/statusline.sh)
   // so upgrades silently replace them without showing a conflict dialog.
-  if (typeof sl.command === 'string') {
-    return LEGACY_STATUSLINE_RE.test(sl.command);
-  }
-  return false;
+  return LEGACY_STATUSLINE_RE.test(unquoteStatusLineCommand(sl.command));
 }
 
 export function validateSettings(configDir?: string): SettingsValidationResult {
@@ -127,14 +164,76 @@ function defaultClaudeDir(): string {
 }
 
 /**
- * Normalized consent key for a config dir: resolved, separator-normalized
- * and case-folded where the filesystem is case-insensitive, so one dir
- * always maps to one record no matter how the caller spelled it.
+ * Cached {@link probeFoldsCase} result, keyed by the canonical
+ * (separator-normalized) dir. Case folding is a volume property; probing
+ * once per dir keeps the write side of the probe off the consent lookup
+ * (a hot path: every banner check, every install).
+ */
+const foldsCaseByDir = new Map<string, boolean>();
+/** B1: FIFO bound mirroring MAX_CONSENT_DIR_RECORDS (C3M-05) below — a
+ * long-lived session probing many dirs must not grow the memo unbounded.
+ * Oldest dir evicted first; the eviction cost is one re-probe (a write +
+ * exists + unlink in a `finally`), never a policy change. */
+export const FOLDS_CASE_BY_DIR_MAX = 200;
+
+/**
+ * Whether the filesystem holding `dir` (or its nearest existing ancestor)
+ * folds letter case in lookups.
+ *
+ * Probed rather than derived from `process.platform`: APFS can be created
+ * either way on macOS, so the platform alone does not answer it. If the
+ * anchor cannot be written the probe is impossible, so we fall back to the
+ * platform default — Windows folds (mirrors profiles.ts' canonicalDir
+ * probe).
+ */
+function probeFoldsCase(dir: string): boolean {
+  let anchor = path.resolve(dir);
+  while (!fs.existsSync(anchor)) {
+    const parent = path.dirname(anchor);
+    if (parent === anchor) return true;
+    anchor = parent;
+  }
+  const probe = path.join(anchor, `FineVibeCaseProbe-${process.pid}`);
+  const flipped = path.join(anchor, `finevibeCASEprobe-${process.pid}`);
+  try {
+    fs.writeFileSync(probe, '');
+    return fs.existsSync(flipped);
+  } catch {
+    return isWin;
+  } finally {
+    try { fs.unlinkSync(probe); } catch { /* already gone */ }
+  }
+}
+
+function foldsCase(dir: string): boolean {
+  const cached = foldsCaseByDir.get(dir);
+  if (cached !== undefined) return cached;
+  const folds = probeFoldsCase(dir);
+  boundedSet(foldsCaseByDir, dir, folds, FOLDS_CASE_BY_DIR_MAX);
+  return folds;
+}
+
+/**
+ * Normalized consent key for a config dir: canonical (realpath chain —
+ * symlinks, junctions, Windows 8.3 short names and case-insensitive-volume
+ * spellings of one dir all collapse), separator-normalized, and case-folded
+ * when the filesystem folds case, so one dir always maps to one record no
+ * matter how the caller spelled it. The old `path.resolve` form left a
+ * symlinked spelling of an already-answered dir with its own record — the
+ * duplicate-prompt bug.
+ *
+ * Migration: stored keys keep their identity for plain dirs — realpath
+ * returns the same path in real casing (lowercase-folded on Windows as
+ * before), and on case-sensitive POSIX volumes the resolve form is
+ * untouched. A dir reached through a symlink (or on a case-insensitive
+ * APFS volume) resolves to a new key, so its old record is simply not
+ * found and the dir is asked about once more: consent re-prompt is the
+ * safe direction for a record that licenses overwriting a foreign
+ * statusLine.
  */
 export function consentDirKey(configDir: string): string {
-  // pi-lens-ignore: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-  const resolved = path.resolve(configDir).split(path.sep).join('/');
-  return isWin ? resolved.toLowerCase() : resolved;
+  const canonical = canonicalPath(configDir).split(path.sep).join('/');
+  return foldsCase(canonical) ? canonical.toLowerCase() : canonical;
 }
 
 function isDefaultClaudeDir(configDir?: string): boolean {

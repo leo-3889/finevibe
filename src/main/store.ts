@@ -1,12 +1,22 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { PersistedState, Preferences, ProjectRecord } from '../shared/types';
+import type { PersistedState, Preferences, ProjectRecord, Profile, HostRecord } from '../shared/types';
+import { LOCAL_HOST_ID } from '../shared/types';
+import { validateHostRecordShape, migrateLegacySessionSshHosts } from '../shared/ssh-host';
+import { DEFAULT_PREFERENCES } from '../shared/default-preferences';
+import { boundedSet } from './bounded-map';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
 
 const STATE_DIR = path.join(os.homedir(), '.finevibe');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
+// SA-P2-8: last-known-good copy. Before it, a single corrupt state.json
+// (a bad hand-edit, a truncated file) meant a whole-state reset: the .tmp
+// sibling is a crash artifact that is consumed on recovery, so it is the
+// only copy exactly when it is missing. `performStateWrite` mirrors every
+// successful commit here, and `loadState` falls back to it.
+const STATE_FILE_GOOD = `${STATE_FILE}.good`;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** Leading-edge throttle window; see saveState. */
@@ -30,25 +40,72 @@ export function invalidateStateCache(): void {
   gateRootMemo = null;
   gateRootRawPaths = null;
   cliConfigRootsCanonical = null;
+  remoteProjectRoots = null;
+  // The write-backoff machine (see writeStateAtomically) is module state
+  // too: a forced-failure case must not leave an outage armed that would
+  // suppress the next case's leading-edge write.
+  clearWriteRetryTimer();
+  writeBackoffMs = 0;
+  suppressedWriteFailures = 0;
+}
+
+// Test-only. Fully resets the leading-edge throttle and the write-backoff
+// machine. The write-storm tests need a clean leading edge: a trailing
+// saveTimer armed by a prior case lives on a fake clock afterEach tears down,
+// so its handle survives as non-null `saveTimer` and makes the next saveState
+// skip the leading edge (write + log never fire). Production never calls this
+// — invalidateStateCache() deliberately leaves lastState/saveTimer intact so
+// store:save coalescing and the flush contract are preserved.
+export function resetWriteStateForTests(): void {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  clearWriteRetryTimer();
+  writeBackoffMs = 0;
+  suppressedWriteFailures = 0;
+  lastSaveAt = 0;
+  lastState = null;
 }
 
 /** The single documented default for a state file that omits `preferences`
- * (P2-84): a `version: 1` file without the field parses verbatim, and
- * `loadState` fills this in exactly once so every consumer reads a present
- * object. Keep in sync with the renderer's `defaultPreferences`. */
-export const DEFAULT_PREFERENCES: Preferences = { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true, defaultProjectsFolder: '' };
+ * (P2-84, SA-P2-6): the shared `src/shared/default-preferences.ts` object,
+ * now the one source for both main and the renderer. Re-exported so main-side
+ * importers keep the same path. */
+export { DEFAULT_PREFERENCES };
+
+// Deep copy of the defaults (order-independence audit 2026-10-26): a shallow
+// spread shares nested pref objects (sidebarViews, planModeDefaults,
+// defaultProfiles), so one caller mutating a nested default poisoned the
+// module constant for every later default. Preferences are pure JSON data -
+// JSON round-trip is the clone (main's TS lib predates structuredClone).
+function cloneDefaultPreferences(): Preferences {
+  try {
+    return JSON.parse(JSON.stringify(DEFAULT_PREFERENCES)) as Preferences;
+  } catch {
+    // Unreachable for a literal constant; a shallow spread keeps callers typed.
+    return { ...DEFAULT_PREFERENCES };
+  }
+}
 
 /** State returned by {@link loadState}: `preferences` is guaranteed present
  * by the loader's single normalization step, so main-side consumers never
  * need to guard it. */
-export type LoadedState = PersistedState & { preferences: Preferences };
+export type LoadedState = PersistedState & { preferences: Preferences; hosts: HostRecord[] };
 
 function defaultState(): LoadedState {
   return {
     version: 1,
     projects: [],
     activeProjectId: null,
-    preferences: { ...DEFAULT_PREFERENCES },
+    // Deep clone: DEFAULT_PREFERENCES nests objects (sidebarViews,
+    // planModeDefaults, defaultProfiles). A shallow spread shared the nested
+    // references, so ANY caller mutating a default nested pref mutated the
+    // module constant for every later default (observed as order-dependent
+    // deepEqual failures under shuffled tests; in production it meant two
+    // default-loads sharing mutated nested state).
+    preferences: cloneDefaultPreferences(),
+    hosts: [],
   };
 }
 
@@ -60,18 +117,61 @@ function defaultState(): LoadedState {
 // both parse, the newer mtime wins; the consumed .tmp is always unlinked,
 // because a stale copy left behind is what a later corrupt state.json would
 // resurrect.
+// A state.json saved by Notepad/PowerShell on Windows carries a UTF-8 BOM;
+// fs.readFileSync('utf-8') keeps it and JSON.parse rejects it, so an intact
+// hand-edited file used to be graded corrupt: .tmp recovery if a sibling
+// exists, else a silent reset to defaults. Strip the leading BOM before
+// parsing. A BOM-only file (a Notepad save of an empty doc) becomes '' and
+// fails the parse — the existing corrupt path, deliberately.
+function parseStateJson(raw: string): PersistedState {
+  // pi-lens-ignore: slop, unchecked-throwing-call
+  return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw) as PersistedState;
+}
+
+/** SA-P2-8: the migration seam. Today version 1 passes through and any
+ * other version is REFUSED with a loud warn — the loader then falls back to
+ * the recovery chain below (never silently: the reset is the warn). A future
+ * version bump adds its step HERE (`if (parsed.version === 2) return
+ * migrateV2(parsed)`), not in loadState's control flow. Refusing, not
+ * booting on a shape this build cannot interpret, is the current contract. */
+function migrateState(parsed: PersistedState): PersistedState | null {
+  if (parsed.version === 1) return parsed;
+  console.warn(
+    `state.json version ${JSON.stringify((parsed as { version?: unknown }).version)} has no migration path in this build: refusing the file (see store.ts migrateState)`,
+  );
+  return null;
+}
+
+/** SA-P2-8: the last-known-good copy, version-checked and parse-guarded.
+ * Returns undefined when there is nothing usable (no file, torn copy). */
+function readGoodState(): PersistedState | undefined {
+  try {
+    if (!fs.existsSync(STATE_FILE_GOOD)) return undefined;
+    const parsed = parseStateJson(fs.readFileSync(STATE_FILE_GOOD, 'utf-8'));
+    return parsed.version === 1 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function loadState(): LoadedState {
   if (stateCache) return stateCache;
   const valid: { main?: PersistedState; tmp?: PersistedState } = {};
+  // Only a state.json that EXISTS and fails to PARSE opens the .good
+  // fallback: a missing file is a fresh install, and a refused version is a
+  // deliberate refusal, not damage to route around.
+  let mainCorrupt = false;
   for (const file of [STATE_FILE, `${STATE_FILE}.tmp`]) {
     try {
       if (!fs.existsSync(file)) continue;
       const raw = fs.readFileSync(file, 'utf-8');
-      const parsed = JSON.parse(raw) as PersistedState;
-      if (parsed.version !== 1) continue;
-      if (file === STATE_FILE) valid.main = parsed;
-      else valid.tmp = parsed;
+      const parsed = parseStateJson(raw);
+      if (file === STATE_FILE) valid.main = migrateState(parsed) ?? undefined;
+      // The .tmp sibling keeps the plain version-1 skip: it is a crash
+      // artifact of THIS build's writer, never a migration subject.
+      else if (parsed.version === 1) valid.tmp = parsed;
     } catch {
+      if (file === STATE_FILE) mainCorrupt = true;
       continue;
     }
   }
@@ -88,6 +188,13 @@ export function loadState(): LoadedState {
       // Vanished (or the file system refuses) — the next save truncates it.
     }
   }
+  // SA-P2-8: corrupt state.json, no .tmp winner → the last-known-good copy.
+  // The warn names the source so a recovery is never mistaken for the
+  // plain 'using defaults' reset (the audit's bar: recovery is visible).
+  if (!picked && mainCorrupt) {
+    picked = readGoodState();
+    if (picked) console.warn('Recovered state from last-known-good copy (state.json is corrupt)');
+  }
   if (picked) {
     // P1-12: the same root validation guards the disk path — a peer-written
     // state.json must not persist a gate root across boots. Invalid projects
@@ -101,9 +208,38 @@ export function loadState(): LoadedState {
       }
       projects.push(project);
     }
+    // Hosts normalize once here too (multi-host Phase 1): entries the shared
+    // validator rejects are dropped with a log, never trusted.
+    const hosts: HostRecord[] = [];
+    for (const host of picked.hosts ?? []) {
+      const validated = validateHostRecordShape(host);
+      if (!validated) {
+        console.warn(`Dropped persisted host ${JSON.stringify((host as { id?: string })?.id)}: failed validateHostRecordShape`);
+        continue;
+      }
+      hosts.push(validated);
+    }
+    // Per-host providers plan §2: pre-existing records carry no hostId —
+    // normalize once at load, exactly once (mirrored in the renderer's
+    // hydrateLoadedState), never at call sites.
+    // Legacy sshHost adoption runs FIRST (parent §11, one release carrying
+    // both): a session tagged with a registry hostname adopts the host id;
+    // unregistered/ambiguous targets keep sshHost for the legacy wrap.
+    migrateLegacySessionSshHosts(projects, hosts);
+    for (const project of projects) {
+      if (!project.hostId) project.hostId = LOCAL_HOST_ID;
+      project.sessions = project.sessions.map((s) => (s.hostId ? s : { ...s, hostId: LOCAL_HOST_ID }));
+    }
+    const profiles: Profile[] | undefined = picked.profiles?.map((p) => (p.hostId ? p : { ...p, hostId: LOCAL_HOST_ID }));
     // Single documented default (P2-84): normalize once here, never at call
     // sites. Spread (not a cast) so the type system checks the result.
-    const normalized: LoadedState = { ...picked, projects, preferences: picked.preferences ?? { ...DEFAULT_PREFERENCES } };
+    const normalized: LoadedState = {
+      ...picked,
+      projects,
+      hosts,
+      ...(profiles ? { profiles } : {}),
+      preferences: picked.preferences ?? cloneDefaultPreferences(),
+    };
     stateCache = normalized;
     return normalized;
   }
@@ -122,25 +258,52 @@ function stateFileIsNewer(candidate: string, reference: string): boolean {
   }
 }
 
-export function saveState(state: PersistedState): void {
-  // S1-02: main is the ONLY writer of the statusLine-consent preference
-  // keys (boot modal -> recordDirConsent / guardedInstall). The renderer
-  // serializes its WHOLE state - boot-time preferences included - on every
-  // mutation (tab click, title, board move), so a renderer persist used to
-  // erase a consent granted in the modal minutes later (declined users
-  // re-prompted every launch). Graft main's authoritative consent keys onto
-  // every incoming payload at the single disk writer. Main-side writers
-  // pass the cache itself, so the graft is identity for them.
-  if (state.preferences && stateCache?.preferences) {
-    state.preferences.statusLineConsent = stateCache.preferences.statusLineConsent;
-    state.preferences.statusLineConsentCommand = stateCache.preferences.statusLineConsentCommand;
-    state.preferences.statusLineConsentByDir = stateCache.preferences.statusLineConsentByDir;
+// SA-P2-7: single implementation of the S1-02 graft, shared by saveState and
+// saveStateSync (previously byte-identical copies, with the sync branch — the
+// beforeunload flush — untested). SA-P1-1: when the cache is empty (the B2
+// root-change hook calls invalidateStateCache() immediately before a persist),
+// load-then-graft: re-read disk so the renderer's stale payload cannot become
+// the new cache and permanently erase a main-side consent. SA-P2-2: chromeImport
+// joins the main-owned key set — chromeImport:run/clearCookies write it on the
+// main side and a renderer whole-state save used to clobber the mid-session summary.
+function graftMainOwnedPreferences(state: PersistedState): void {
+  if (!state.preferences) return;
+  if (!stateCache) {
+    // SA-P1-1: only reload when there IS a persisted state. With no cache and
+    // no file (fresh install) the payload itself is the first state — the old
+    // empty-cache skip is kept for that case so a main-side first write is
+    // never overwritten by the defaults loadState would return.
+    if (!fs.existsSync(STATE_FILE) && !fs.existsSync(`${STATE_FILE}.tmp`)) return;
+    loadState();
   }
+  const authoritative = stateCache?.preferences;
+  if (!authoritative) return;
+  state.preferences.statusLineConsent = authoritative.statusLineConsent;
+  state.preferences.statusLineConsentCommand = authoritative.statusLineConsentCommand;
+  state.preferences.statusLineConsentByDir = authoritative.statusLineConsentByDir;
+  if (authoritative.chromeImport) state.preferences.chromeImport = authoritative.chromeImport;
+  else delete state.preferences.chromeImport;
+}
+
+export function saveState(state: PersistedState): void {
+  // S1-02: main is the ONLY writer of the main-owned preference keys (see
+  // graftMainOwnedPreferences). The renderer serializes its WHOLE state -
+  // boot-time preferences included - on every mutation (tab click, title,
+  // board move), so a renderer persist used to erase a consent granted in the
+  // modal minutes later (declined users re-prompted every launch). Main-side
+  // writers pass the cache itself, so the graft is identity for them.
+  graftMainOwnedPreferences(state);
   lastState = state;
   // P2-84: the cache is LoadedState; a writer's raw state normalizes to
   // the loader's single documented default on the way in.
-  stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
+  stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? cloneDefaultPreferences() };
   knownProjectPaths = deriveGateRoots(state.projects);
+  // ENOSPC storm guard (workstation, 2026-10-23): the disk is failing, so
+  // the single backoff timer (see writeStateAtomically) owns retries — no
+  // per-event write syscalls, no per-event log. `lastState` is already the
+  // newest state, so the recovery write flushes every mutation accepted
+  // while backing off.
+  if (writeBackoffMs > 0) return;
   // Leading-edge throttle (same shape as the renderer's persist in
   // state.ts, ffcd283): the first save of a burst writes through
   // IMMEDIATELY, so a crash loses at most the mutations after the last
@@ -297,6 +460,12 @@ function validateGateRoot(rawPath: unknown): { canonical: string } | { drop: str
 // - gateRootMemo: the derived array keyed on the raw path list it came from;
 //   an unchanged list returns the memo with ZERO fs calls.
 const gateRootCanonicalByPath = new Map<string, string>();
+// B1: FIFO bound on the per-path memo (settings-guard.ts'
+// MAX_CONSENT_DIR_RECORDS idiom): a session that keeps gating on fresh
+// project paths must not grow it without limit. Oldest path evicted first;
+// an eviction costs one stat + one realpath on the next save, never a
+// policy miss — the memoized canonical is re-checked on every hit anyway.
+export const GATE_ROOT_CANONICAL_MAX = 200;
 let gateRootRawPaths: string[] | null = null;
 let gateRootMemo: string[] | null = null;
 
@@ -336,7 +505,9 @@ function deriveGateRoots(projects: ProjectRecord[]): string[] {
       console.warn(`Dropped project root from the gate set: ${JSON.stringify(rawPath)} (${validated.drop})`);
       continue;
     }
-    if (cached === undefined && typeof rawPath === 'string') gateRootCanonicalByPath.set(rawPath, validated.canonical);
+    if (cached === undefined && typeof rawPath === 'string') {
+      boundedSet(gateRootCanonicalByPath, rawPath, validated.canonical, GATE_ROOT_CANONICAL_MAX);
+    }
     if (!roots.includes(validated.canonical)) roots.push(validated.canonical);
   }
   // Whole-list memo for an all-valid list only: a list containing a refused
@@ -346,6 +517,22 @@ function deriveGateRoots(projects: ProjectRecord[]): string[] {
   return roots;
 }
 let knownProjectPaths: string[] | null = null;
+
+// Coherence Phase 3 (docs/hosts.md): remote project roots, for the main-side
+// belt that refuses local git/fs sinks on paths that belong to a host.
+function deriveRemoteProjectRoots(projects: PersistedState['projects']): Array<{ path: string; hostId: string }> {
+  return projects
+    .filter((p) => typeof p.hostId === 'string' && p.hostId && p.hostId !== 'local')
+    .map((p) => ({ path: p.path, hostId: p.hostId as string }));
+}
+let remoteProjectRoots: Array<{ path: string; hostId: string }> | null = null;
+
+export function getRemoteProjectRoots(): Array<{ path: string; hostId: string }> {
+  if (remoteProjectRoots === null) {
+    remoteProjectRoots = deriveRemoteProjectRoots(loadState().projects);
+  }
+  return remoteProjectRoots;
+}
 
 export function getKnownProjectPaths(): string[] {
   if (knownProjectPaths === null) {
@@ -364,21 +551,25 @@ export function flushState(): void {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
+  // Same teardown for the backoff retry timer (see writeStateAtomically):
+  // a quit has no future to retry in, and an armed timer would fire after
+  // teardown exactly like the debounced one above.
+  clearWriteRetryTimer();
   if (lastState) {
     saveStateSync(lastState);
   }
+  // saveStateSync → onStateWriteFailed can arm one last retry; tear it
+  // down with the flush, mirroring the saveTimer teardown above.
+  clearWriteRetryTimer();
 }
 
 export function saveStateSync(state: PersistedState): void {
-  // S1-02: same consent-key graft as saveState — the renderer's
-  // beforeunload flush is a whole-state write too.
-  if (state.preferences && stateCache?.preferences) {
-    state.preferences.statusLineConsent = stateCache.preferences.statusLineConsent;
-    state.preferences.statusLineConsentCommand = stateCache.preferences.statusLineConsentCommand;
-    state.preferences.statusLineConsentByDir = stateCache.preferences.statusLineConsentByDir;
-  }
-  stateCache = { ...state, preferences: state.preferences ?? { ...DEFAULT_PREFERENCES } };
+  // S1-02: same graft as saveState via the shared helper (SA-P2-7) — the
+  // renderer's beforeunload flush is a whole-state write too.
+  graftMainOwnedPreferences(state);
+  stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? cloneDefaultPreferences() };
   knownProjectPaths = deriveGateRoots(state.projects);
+  remoteProjectRoots = deriveRemoteProjectRoots(state.projects);
   // A synchronous write is a disk write: it opens the throttle window for
   // the leading-edge check in saveState.
   lastSaveAt = Date.now();
@@ -402,44 +593,148 @@ function writeFully(fd: number, payload: Buffer): void {
   }
 }
 
+// Windows holds open files against replacement: while an AV scan, an
+// editor buffer or a backup indexer keeps a handle on state.json,
+// renameSync(tmp, state.json) fails EPERM/EBUSY. The payload is fsynced
+// into .tmp by this point, so a short bounded retry turns a silently lost
+// newest snapshot into a brief stall. Synchronous by necessity:
+// saveStateSync/flushState run on shutdown paths (Windows logout) that do
+// not outlive an async retry, so an armed timer would be dropped
+// mid-flight. Any other errno, or a failed budget, re-throws into the
+// existing catch-and-log; the fsynced .tmp then survives for loadState's
+// startup recovery.
+const RENAME_MAX_ATTEMPTS = 5;
+const RENAME_BACKOFF_MS = 50;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function renameWithRetry(tmpFile: string, target: string): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(tmpFile, target);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if ((code !== 'EPERM' && code !== 'EBUSY') || attempt >= RENAME_MAX_ATTEMPTS) throw err;
+      sleepSync(RENAME_BACKOFF_MS * 2 ** (attempt - 1));
+    }
+  }
+}
+
+// ENOSPC storm guard (workstation incident, 2026-10-23): a full disk made
+// EVERY renderer `store:save` IPC a failed atomic write, and the old
+// catch-and-log printed a full stack per attempt. The 300ms leading-edge
+// throttle re-armed on every mutation, so one outage logged ~400 stacks a
+// minute (journald + rsyslog mirrored them); the log growth consumed the
+// very space the failure complained about — a self-amplifying loop. The
+// first failure of an outage keeps the exact log line, repeats are counted
+// and suppressed, and ONE exponential backoff timer (1s -> 60s cap) owns
+// all retries. Steady state pays nothing: `writeBackoffMs === 0` is the
+// only state, and success short-circuits before any logging.
+const WRITE_BACKOFF_BASE_MS = 1000;
+const WRITE_BACKOFF_CAP_MS = 60000;
+/** Current retry delay; 0 = healthy (no outage in progress). */
+let writeBackoffMs = 0;
+let writeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let suppressedWriteFailures = 0;
+
+function clearWriteRetryTimer(): void {
+  if (writeRetryTimer !== null) {
+    clearTimeout(writeRetryTimer);
+    writeRetryTimer = null;
+  }
+}
+
+function onStateWriteSucceeded(): void {
+  if (writeBackoffMs === 0) return; // steady path: zero syscalls, zero logs
+  const n = suppressedWriteFailures;
+  writeBackoffMs = 0;
+  suppressedWriteFailures = 0;
+  console.info(`State saved after ${n} failed attempt(s)`);
+}
+
+function onStateWriteFailed(err: unknown): void {
+  if (writeBackoffMs === 0) {
+    writeBackoffMs = WRITE_BACKOFF_BASE_MS;
+    suppressedWriteFailures = 0;
+    // First failure of the outage: the exact pre-backoff log line, once.
+    console.error('Failed to save state:', err);
+  } else {
+    suppressedWriteFailures++;
+  }
+  scheduleWriteRetry();
+}
+
+function scheduleWriteRetry(): void {
+  if (writeRetryTimer !== null) return; // a retry is already armed
+  const delay = writeBackoffMs;
+  writeBackoffMs = Math.min(writeBackoffMs * 2, WRITE_BACKOFF_CAP_MS);
+  writeRetryTimer = setTimeout(() => {
+    writeRetryTimer = null;
+    // Coalesce like the trailing throttle: retry the LATEST state.
+    if (lastState) writeStateAtomically(lastState);
+  }, delay);
+}
+
+/** The atomic write, unguarded: every failure (mkdir/chmod, open,
+ * writeFully, fsync, rename) throws to writeStateAtomically's handler. */
+function performStateWrite(state: PersistedState): void {
+  if (fs.existsSync(STATE_DIR)) {
+    // C4S-12: state.json carries secrets, and its PARENT must be private
+    // too. Older builds created the dir with the 0755 default and mkdir
+    // never repairs an existing dir's mode — enforce 0700 on it as well.
+    // Both are no-ops for ACL purposes on Windows (harmless), and the
+    // stat guard keeps the hot persist path free of redundant chmods.
+    try {
+      if ((fs.statSync(STATE_DIR).mode & 0o777) !== 0o700) fs.chmodSync(STATE_DIR, 0o700);
+    } catch { /* best-effort: never block persistence */ }
+  } else {
+    fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  }
+  const tmpFile = `${STATE_FILE}.tmp`;
+  // fsync before rename: a crash between rename and data flush used to
+  // leave a truncated state.json whose .tmp recovery copy was already
+  // consumed by the rename — whole-state loss to defaults.
+  const payload = Buffer.from(JSON.stringify(state, null, 2), 'utf-8');
+  // P2-101: state.json can carry secrets (`project.defaultEnv`). The
+  // default file mode is 0644 — world-readable on multi-user hosts, and
+  // any backup/dotfile sync picks it up. Open the temp file 0600; the
+  // rename below hands that mode to state.json itself. On Windows the
+  // mode argument is a no-op (NTFS uses ACLs; every mode bit ≥0200 maps
+  // to "not read-only"), so this only ever tightens, never breaks.
+  const fd = fs.openSync(tmpFile, 'w', 0o600);
+  // The open mode applies only on CREATE; a .tmp left by an older build
+  // keeps its 0644, so force the mode on the descriptor. fchmodSync is
+  // likewise a no-op for ACL purposes on Windows.
+  fs.fchmodSync(fd, 0o600);
+  try {
+    writeFully(fd, payload);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  renameWithRetry(tmpFile, STATE_FILE);
+  // SA-P2-8: mirror the committed payload to the last-known-good copy. One
+  // plain write of the buffer the rename just made durable — no second
+  // fsync: a torn .good is a parse failure in readGoodState, which falls
+  // through to the pre-SA-P2-8 behavior (defaults), never to a bad state.
+  // The mode matches state.json (P2-101: the payload can carry secrets).
+  // Best-effort: a .good failure must not report the successful commit as a
+  // write failure and arm the ENOSPC backoff for a write that worked.
+  try {
+    fs.writeFileSync(STATE_FILE_GOOD, payload, { mode: 0o600 });
+  } catch {
+    // Best-effort: the next successful write recreates it.
+  }
+}
+
 function writeStateAtomically(state: PersistedState): void {
   try {
-    if (fs.existsSync(STATE_DIR)) {
-      // C4S-12: state.json carries secrets, and its PARENT must be private
-      // too. Older builds created the dir with the 0755 default and mkdir
-      // never repairs an existing dir's mode — enforce 0700 on it as well.
-      // Both are no-ops for ACL purposes on Windows (harmless), and the
-      // stat guard keeps the hot persist path free of redundant chmods.
-      try {
-        if ((fs.statSync(STATE_DIR).mode & 0o777) !== 0o700) fs.chmodSync(STATE_DIR, 0o700);
-      } catch { /* best-effort: never block persistence */ }
-    } else {
-      fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
-    }
-    const tmpFile = `${STATE_FILE}.tmp`;
-    // fsync before rename: a crash between rename and data flush used to
-    // leave a truncated state.json whose .tmp recovery copy was already
-    // consumed by the rename — whole-state loss to defaults.
-    const payload = Buffer.from(JSON.stringify(state, null, 2), 'utf-8');
-    // P2-101: state.json can carry secrets (`project.defaultEnv`). The
-    // default file mode is 0644 — world-readable on multi-user hosts, and
-    // any backup/dotfile sync picks it up. Open the temp file 0600; the
-    // rename below hands that mode to state.json itself. On Windows the
-    // mode argument is a no-op (NTFS uses ACLs; every mode bit ≥0200 maps
-    // to "not read-only"), so this only ever tightens, never breaks.
-    const fd = fs.openSync(tmpFile, 'w', 0o600);
-    // The open mode applies only on CREATE; a .tmp left by an older build
-    // keeps its 0644, so force the mode on the descriptor. fchmodSync is
-    // likewise a no-op for ACL purposes on Windows.
-    fs.fchmodSync(fd, 0o600);
-    try {
-      writeFully(fd, payload);
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmpFile, STATE_FILE);
+    performStateWrite(state);
+    onStateWriteSucceeded();
   } catch (err) {
-    console.error('Failed to save state:', err);
+    onStateWriteFailed(err);
   }
 }

@@ -55,11 +55,15 @@ async function searchFiles(): Promise<void> {
   const project = appState.activeProject;
   if (!project || !input) return;
 
+  // R2 Phase 4a: remote projects now list for real — main routes the query to
+  // the sftp walk sibling (`remote-fs.ts walkRemoteFiles`) when the project
+  // names a host. The old "not supported yet" notice is retired with the
+  // belt-only behavior it described.
   const { fileQuery } = parseQuery(input.value);
   const token = ++latestSearchToken;
   let files: string[];
   try {
-    files = await window.finevibe.fs.listFiles(project.path, fileQuery);
+    files = await window.finevibe.fs.listFiles(project.path, fileQuery, project.hostId);
   } catch {
     files = [];
   }
@@ -72,14 +76,14 @@ async function searchFiles(): Promise<void> {
   renderResults();
 }
 
-function renderResults(): void {
+function renderResults(emptyText?: string): void {
   if (!resultsList) return;
   resultsList.replaceChildren();
 
   if (results.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'quick-open-empty';
-    empty.textContent = input?.value ? 'No files found' : 'Type to search files...';
+    empty.textContent = emptyText ?? (input?.value ? 'No files found' : 'Type to search files...');
     resultsList.appendChild(empty);
     return;
   }

@@ -3,10 +3,11 @@ import * as path from 'path';
 import { BrowserWindow } from 'electron';
 import { writeCliSessionId } from './hook-status';
 import { readSessionHeaderSync } from './providers/pi-compatible-transcripts';
+import { getMainWindow } from './main-window';
 
 /**
- * Shared transcript-ownership watcher for Pi-compatible providers (Pi and
- * OMP).
+ * Shared transcript-ownership watcher for Pi-compatible providers (Pi,
+ * OMP and Pi-Bolt).
  *
  * Ownership is process-scoped, not inferred: every launch runs with
  * `--session-dir <dir>` pointing at a directory that only that launch
@@ -34,7 +35,7 @@ import { readSessionHeaderSync } from './providers/pi-compatible-transcripts';
  * never be adopted.
  */
 
-export interface CompatibleSessionWatcherOptions {
+interface CompatibleSessionWatcherOptions {
   /** Called after a session id is adopted, for follow-up wiring (title sync). */
   onAdopted?: (
     uiSessionId: string,
@@ -391,7 +392,7 @@ export function createCompatibleSessionWatcher(
     // dock re-activate) must not kill the polling fallback for good.
     pollInterval = setInterval(() => {
       if (watchedSessions.size === 0) return;
-      const win = BrowserWindow.getAllWindows()[0];
+      const win = getMainWindow();
       if (win && !win.isDestroyed()) runScan();
     }, POLL_INTERVAL_MS);
   }

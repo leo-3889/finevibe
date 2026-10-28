@@ -13,7 +13,9 @@ import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
 import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
+import { openExternal } from '../open-external.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
+import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
 import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
 import { forwardResize } from '../sharing/share-manager.js';
@@ -106,7 +108,7 @@ export function createTerminalPane(
     linkHandler: {
       activate: (event, uri) => {
         if (event.metaKey || event.ctrlKey) {
-          window.finevibe.app.openExternal(uri);
+          void openExternal(uri);
         }
       },
     },
@@ -120,7 +122,7 @@ export function createTerminalPane(
 
   terminal.loadAddon(new WebLinksAddon((event, url) => {
     if (event.metaKey || event.ctrlKey) {
-      window.finevibe.app.openExternal(url);
+      void openExternal(url);
     }
   }));
 
@@ -129,6 +131,11 @@ export function createTerminalPane(
   // first output bytes at spawn, before this parser exists — latch it at
   // creation so Escape never goes out as a bare ESC to the armed ConPTY.
   const handleWin32Key = attachWin32TerminalKeys(terminal, writeToPty, { latchKey: sessionId, latched: isWin });
+  // ConPTY eats a VT-native app's mouse modes, so a fullscreen TUI (pi-bolt,
+  // Claude CLI) never gets wheel reports: xterm's alt-screen fallback turns each
+  // notch into an Up/Down arrow and the CLI browses prompt history instead of
+  // scrolling the log. Send the wheel reports the terminal would have sent.
+  attachAltScreenWheelScroll(terminal, writeToPty);
 
   // Send CSI u encoding for Shift+Enter so Claude CLI treats it as newline
   attachClipboardCopyHandler(terminal, (e) => {
@@ -186,8 +193,12 @@ export function createTerminalPane(
   }
 
   // Register GitHub #123 link provider
+  // P2-22: the async getRemoteUrl resolves after destroyTerminal may already
+  // have disposed this terminal (or createTerminalPane replaced it). Register
+  // only while the map still holds THIS instance - xterm-6 tolerates it, but
+  // a provider on a disposed terminal is a dead closure holding the tree.
   window.finevibe.git.getRemoteUrl(projectPath).then((repoUrl) => {
-    if (repoUrl) {
+    if (repoUrl && instances.get(sessionId)?.terminal === terminal) {
       terminal.registerLinkProvider(new GithubLinkProvider(repoUrl, terminal));
     }
   });

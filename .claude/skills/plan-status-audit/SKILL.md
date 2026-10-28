@@ -1,31 +1,80 @@
 ---
 name: plan-status-audit
-description: This skill MUST be used whenever the task involves the repo's work queue — `todos/*-plan.md`, the full-audit P-id registry, `todos/AUDIT_STATUS.md`, "what is done / remaining / open", "check todos and plans", status snapshots, commit-splitting for large sweeps, or committing while other agents share the working tree. Use when the user asks what is finished, what is left, whether a plan landed, what to commit next, or to reconcile the plan with git history.
+description: This skill MUST be used whenever the task involves the repo's work queue — `todos/features/*-plan.md`, the full-audit P-id registry, `todos/AUDIT_STATUS.md`, "what is done / remaining / open", "check todos and plans", status snapshots, commit-splitting for large sweeps, or committing while other agents share the working tree. Use when the user asks what is finished, what is left, whether a plan landed, what to commit next, or to reconcile the plan with git history.
 ---
 
 # Status auditing and commit discipline
+
+## Preflight: `todos/` is local-only
+
+`todos/` is **gitignored** (`.gitignore:42`) while this skill is committed. On a fresh
+clone `ls todos/` is empty and there is nothing to audit — say so, and audit git history +
+`docs/` instead. Everything below assumes the owner's tree, where the queue exists:
+`ls todos/ && git check-ignore -v todos` proves which case you are in.
+
+## Layout (fixed 2026-10-28, codified in CLAUDE.md §Todos layout)
+
+`todos/` has exactly three entries:
+
+- `todos/AUDIT_STATUS.md` — the ONLY audit result file: open bugs + open improvements,
+  always consolidated. Never create a second live audit/agenda/owner file — merge into it.
+  (AGENDA.md and OWNER.md were merged into it 2026-10-28; archived copies:
+  `todos/archives/AGENDA-2026-10-28.md`, `todos/archives/OWNER-2026-10-28.md`.)
+- `todos/features/` — ALL feature plans plus their runbooks/checklists.
+- `todos/archives/` — everything closed, indexed by `todos/archives/README.md` (the index
+  carries no open items). Grouped by topic once the flat count grew: `plans/` (closed
+  plans), `settings-2026-10-24/`, `fleet-2026-10-25/`, `audits-2026-10-26/`; the registry,
+  `fork-rebuildable-on-origin.md` and `per-host-providers-plan.md` stay flat because
+  committed files cite their paths. The moment any part of an audit (a row, a phase,
+  a whole doc) closes, it moves here in the same session as a dated copy; the live file
+  keeps only open items. Closed feature plans move here too.
 
 ## Rule 0: never trust a plan header
 
 `todos/*-plan.md` headers (`Status: planned, not implemented`, `Status: todo · Owner: TBD`)
 are written once and never updated. Implementation lands right after them. Every plan in
 `todos/` read "planned, not implemented" while its commits were already on `rebuild`. The
-registry in `todos/full-audit-2026-10-20-plan.md` has 158 rows, all still marked `open`,
-while Waves A–F are committed. **Reconcile against git, then report.**
+registry in `todos/archives/full-audit-2026-10-20-plan.md` was quoted as "158 rows, all open" when
+it was already partly committed. **Reconcile against git, then report.**
+
+Never quote a census you did not just measure — print it with the commands:
+
+```bash
+P=todos/archives/full-audit-2026-10-20-plan.md   # full 172-row history (live rows merged into AUDIT_STATUS.md 2026-10-25)
+grep -oE '\b(P[0-9]+-[0-9]+|C-[0-9]+)\b' $P | sort -u | wc -l   # distinct ids
+grep -c 'Bugs open' todos/AUDIT_STATUS.md                        # 1 = the single audit file exists
+grep -A2 '## Bugs open' todos/AUDIT_STATUS.md                    # open bug rows ("None." when zero)
+```
+
+Measured 2026-10-24: 172 distinct ids, 139 rows `open`, plus rows whose status column is
+prose (`**decided: FORK identity**`, `decision`, `approval`) — the histogram only counts
+machine-shaped statuses, so it under-counts decisions by design. Measured 2026-10-25
+(post-merge): **12 open (9 P2 / 3 P3; 0 P1) + 4 SA rows**. Measured 2026-10-28:
+**0 open registry + 0 open SA** — every row fixed, per-row SHAs in
+`todos/archives/EXECUTION_2026-10-28.md` (the pre-consolidation ledger; the file named `AUDIT_STATUS-2026-10-28.md` is gone). Quote the
+numbers with the date.
 
 ## Recipe: truthful status snapshot
 
-1. Enumerate the queue: `ls todos/` (one file per feature plan, ids in the filename and in
-   the plan rows).
+1. Enumerate the queue: `ls todos/features/` (one file per feature plan, ids in the filename and in
+   the plan rows) + the open items in `todos/AUDIT_STATUS.md`.
 2. For each plan, extract the steps' code anchors (`file.ts:NN` / symbol names) and grep
    the tree for them — e.g. plan 47–49 claims a Codex `planModeStartupInput` flag; grepping
    `planModeStartupInput|pendingPromptTrigger` proves it never landed.
 3. Map plan → commits by subject: `git log --oneline -25` (subjects carry plan ids, e.g.
    `feat(projects): default projects folder + git-URL checkout (65-67)`).
-4. Registry rows: `grep -oE '\*\*(P[0-9]-[0-9]+|C-[0-9]+)\*\*'` for ids, `grep -cE '\| [A-Z] \| open \|'`
-   for statuses; read §1.1 "Commit map" (one task per commit, mirrored in the session todo
-   list) and §7 "Wave A/B/C/D" gates (12-task checklist, wave exit = 3 checks + the extras
-   in §6). Rows are keyed by stable ids (`P1-19`, `C-5`) — cite the id, not the row number.
+4. Registry rows: all 172 rows are closed since 2026-10-28. The full 172-row
+   history (every closed row with its `fixed (<sha>)` cell) is in
+   `todos/archives/full-audit-2026-10-20-plan.md`; the pre-consolidation per-row ledger
+   (2026-10-25→28 flips) is `todos/archives/EXECUTION_2026-10-28.md`. Open bugs/improvements
+   are only ever in `todos/AUDIT_STATUS.md`. Ids live in the **first table cell**,
+   bolded or not — `grep -oE '\b(P[0-9]+-[0-9]+|C-[0-9]+)\b' $P | sort -u` (172 ids).
+   The bold-only pattern `\*\*(P[0-9]-[0-9]+|C-[0-9]+)\*\*` matches 11 of them: it
+   under-counts ~15×, so never use it for a census.
+   Read the archived registry's §1.1 "Commit map" (one task per commit, mirrored in the
+   session todo list) and §7
+   "Wave A/B/C/D" gates (12-task checklist, wave exit = 3 checks + the extras in §6). Rows
+   are keyed by stable ids (`P1-19`, `C-5`) — cite the id, not the row number.
 5. Report in three buckets: **landed** (commit + test), **open code work** (anchored),
    **open verification** (`npm start` smoke / packaged-app evidence). Never merge the last
    two into "done".
@@ -69,7 +118,7 @@ exists (see the 2026-10-21 salvage section).
   session's in-progress Icons section into an audit commit; undone with
   `git commit --amend` + `git reset <path>` + re-commit.
 - If a concurrent session has staged someone else's renames (e.g. a doc move), give them
-  their own commit and strip them from yours (`git reset todos/audits/x.md` after the first
+  their own commit and strip them from yours (`git reset todos/archives/<doc>.md` after the first
   commit, then re-commit).
 - `.git/index.lock` contention appears mid-command: bounded retry loop on
   `git add`/`git commit`, never a blind single retry.
@@ -78,20 +127,21 @@ exists (see the 2026-10-21 salvage section).
 
 **Hunk surgery** (commit only part of a file, e.g. the audits pointer in a doc an agent is
 also editing): stage the whole file, dump hunks, drop the ones to keep unstaged, stage the
-rest, restore the file:
+rest, restore the file. **Illustrative shape, not a runnable script** — it hardcodes one
+doc, one filter string, and `/tmp` paths that do not exist on a Windows host (use a repo
+path under the tree, e.g. `.hunk.patch`). Read the emitted hunks and choose; do not paste
+it blind:
 
 ```bash
-git add docs/packaging.md && git diff --cached docs/packaging.md > /tmp/p.patch
+git add docs/packaging.md && git diff --cached docs/packaging.md > .hunk.patch
 python - <<'PY'   # Windows: no `split` binary
 import re
-t=open('/tmp/p.patch',encoding='utf-8').read().split('\n')
+t=open('.hunk.patch',encoding='utf-8').read().split('\n')
 h=re.split(r'(?m)^@@ ', '\n'.join(t[4:]))
 out=[h[0]]+[b for b in h[1:] if 'Icons' not in b.split('\n')[0]]
-open('/tmp/p2.patch','w',encoding='utf-8').write('\n'.join(out))
+open('.hunk2.patch','w',encoding='utf-8').write('\n'.join(out))
 PY
-git apply --cached --unidiff-zero - <<'EOF'
-... (the kept hunks) ...
-EOF
+git apply --cached --unidiff-zero .hunk2.patch
 git checkout -- docs/packaging.md   # keep the rest in the worktree
 ```
 
@@ -104,11 +154,16 @@ mismatch — host ABI, not code (see the `windows-packaging` skill). Expect `npm
 packaged-app smoke to be blocked here; report those rows as **unverified**, never as
 passing, and say which leg produced each number.
 
-## Standing facts (verified 2026-10-21)
+## Standing facts (re-measure before quoting)
 
-- `rebuild` is the integration branch and exists on **no remote** (111 commits ahead of
-  `fork/main`, which fast-forwards onto it). No push without asking.
-- `todos/fork-rebuildable-on-origin.md` (local-only, gitignored): upstream's PR #167 breaks if the
+- `rebuild` is the integration branch and exists on **no remote** — verify with
+  `git branch -r --contains rebuild` (empty today). Ahead of `fork/main` by
+  `git rev-list --count fork/main..rebuild` (9 today; the number moves with every rebase —
+  it was 111 when this skill was written, and the 2026-10-19/20 program's history was
+  re-hashed by the rewrite). No push without asking.
+- Remotes today: `fork` = `https://github.com/leo-3889/finevibe.git` (push), `origin` =
+  `https://github.com/elirantutia/vibeyard.git` (fetch; push is refused by config).
+- `todos/archives/fork-rebuildable-on-origin.md` (local-only, gitignored): upstream's PR #167 breaks if the
   `feature/*` branches under it are rebuilt — rebuilding is allowed **only** as a
   force-push plus a coordinated PR #167 update.
 - The 2026-10-19/20 agent workspace was dissolved 2026-10-21; per-finding evidence is gone,

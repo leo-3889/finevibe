@@ -1,12 +1,74 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { isWin } from './platform';
+import { boundedSet } from './bounded-map';
 
+/** `%NAME%` env-var reference, the Windows shell's expansion syntax. */
+const WIN_ENV_REF_RE = /%([^%]+)%/g;
+
+/**
+ * Expand a leading `~` to the home dir — in both spellings users type:
+ * `~/…` everywhere, and `~\…` on Windows, where cmd/PowerShell accept the
+ * backslash form and these paths never reach a shell that would expand it.
+ * A bare `~` is the home dir itself.
+ *
+ * On Windows only, also expand `%NAME%` env-var references. Paths typed into
+ * preferences (project dirs, config dirs) reach main verbatim, and the
+ * Windows shell never sees them, so `%APPDATA%`-style values would otherwise
+ * become literal directory names. An unset variable stays literal: expanding
+ * to empty would splice segments out of the path, while a raw `%NAME%` is at
+ * least what the user typed. POSIX shells expand `$NAME` before any value
+ * reaches us, and a literal `%NAME%` — like a literal `~\` — is legal POSIX
+ * filename data, so POSIX paths pass through untouched.
+ */
 export function expandUserPath(filePath: string): string {
-  if (filePath.startsWith('~/') || filePath === '~') {
-    return path.join(os.homedir(), filePath.slice(1));
+  let expanded = filePath;
+  if (expanded === '~' || expanded.startsWith('~/') || (isWin && expanded.startsWith('~\\'))) {
+    // Join the remainder COMPONENT-WISE. It arrives in whatever spelling the user
+    // typed (`git\my-project`, `git/my-project`, mixed); on a POSIX host
+    // `path.join(home, 'git\\my-project')` keeps the backslash as literal filename
+    // data — correct for POSIX, and the reason the Windows branch produced
+    // `<home>/\git\my-project` on a Linux runner. Splitting into components is the
+    // one form both hosts agree on, and it leaves the POSIX `~/…` output identical.
+    expanded = path.join(os.homedir(), ...expanded.slice(1).split(/[\\/]+/).filter(Boolean));
+    // A trailing separator the user typed is part of the spelling (`~/` names the
+    // home dir AS a directory); the component split drops it, so it is re-appended
+    // in the host spelling — the exact output `path.join(home, '/')` produced.
+    if (/[\\/]$/.test(filePath.slice(1))) expanded += path.sep;
   }
-  return filePath;
+  if (isWin && expanded.includes('%')) {
+    expanded = expanded.replace(WIN_ENV_REF_RE, (ref, name: string) => process.env[name] ?? ref);
+  }
+  return expanded;
+}
+
+/** Already absolute in the Windows sense: a drive root (`E:\`) or a UNC share. */
+const WIN_ABSOLUTE_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
+
+/**
+ * The single resolve step every `fs:` channel applies to a renderer path:
+ * expand the user spellings ({@link expandUserPath}), then `path.resolve`,
+ * which normalizes separators and the drive spelling. The renderer composes
+ * paths with `/` (its own join helper), so Windows receives the mixed
+ * `E:\AI/sample-project` verbatim; resolving here is what keeps that spelling
+ * from being persisted as a project path and makes every gate comparison
+ * see ONE spelling of one directory. A relative path resolves against
+ * main's cwd — the documented behavior of every channel that uses it.
+ *
+ * A Windows-absolute spelling is normalized in its OWN syntax and returned
+ * without a host resolve: on a non-Windows host `E:\AI` is not absolute, so
+ * `path.resolve` prepends the cwd and turns the project's drive path into a
+ * directory under the checkout. On Windows this branch and `path.resolve`
+ * produce the same string, so production behavior is unchanged.
+ */
+export function resolveUserPath(rawPath: string): string {
+  const expanded = expandUserPath(rawPath);
+  if (isWin) {
+    const winSpelling = expanded.replaceAll('/', '\\');
+    if (WIN_ABSOLUTE_RE.test(winSpelling)) return path.win32.normalize(winSpelling);
+  }
+  return path.resolve(expanded);
 }
 
 /**
@@ -31,6 +93,8 @@ export function expandUserPath(filePath: string): string {
 export const TARGET_CANONICAL_CACHE_MAX = 256;
 /** How long a target's canonical form may serve; roots are not TTL'd. */
 export const TARGET_CANONICAL_TTL_MS = 5_000;
+/** Root-LRU bound; the gate re-reads a bounded project + profile set. */
+export const ROOT_CANONICAL_CACHE_MAX = 1024;
 
 const rootCanonicalCache = new Map<string, string>();
 const targetCanonicalCache = new Map<string, { value: string; expiresAt: number }>();
@@ -49,11 +113,7 @@ export function canonicalPath(filePath: string): string {
     targetCanonicalCache.delete(resolved);
   }
   const value = canonicalChain(resolved);
-  targetCanonicalCache.set(resolved, { value, expiresAt: Date.now() + TARGET_CANONICAL_TTL_MS });
-  if (targetCanonicalCache.size > TARGET_CANONICAL_CACHE_MAX) {
-    const oldest = targetCanonicalCache.keys().next().value;
-    if (oldest !== undefined) targetCanonicalCache.delete(oldest);
-  }
+  boundedSet(targetCanonicalCache, resolved, { value, expiresAt: Date.now() + TARGET_CANONICAL_TTL_MS }, TARGET_CANONICAL_CACHE_MAX);
   return value;
 }
 
@@ -67,9 +127,16 @@ export function canonicalPath(filePath: string): string {
 export function canonicalRoot(dirPath: string): string {
   const resolved = path.resolve(dirPath);
   const hit = rootCanonicalCache.get(resolved);
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) {
+    // B1: insertion order doubles as recency (the target-LRU idiom above),
+    // so the size cap evicts the least recently used root, not the first
+    // root the session ever gated on.
+    rootCanonicalCache.delete(resolved);
+    rootCanonicalCache.set(resolved, hit);
+    return hit;
+  }
   const value = canonicalChain(resolved);
-  rootCanonicalCache.set(resolved, value);
+  boundedSet(rootCanonicalCache, resolved, value, ROOT_CANONICAL_CACHE_MAX);
   return value;
 }
 
@@ -85,12 +152,14 @@ let lastRootsSignature: string | null = null;
  * Store-persist hook (wired at `store:save`): the root cache is keyed on the
  * project set and the profile configDirs, so invalidate when a state write
  * changes exactly those. Every other state write (preferences, session
- * history) leaves the cache warm.
+ * history) leaves the cache warm. Returns whether the root set CHANGED —
+ * the caller drops every other root-keyed memo (store.ts' gate-root memo,
+ * B2) on the same delta.
  */
 export function invalidateCanonicalPathIfRootsChanged(state: {
   projects?: { path?: unknown }[];
   profiles?: { configDir?: unknown }[];
-}): void {
+}): boolean {
   const signature = JSON.stringify([
     (state.projects ?? []).map(p => p.path),
     (state.profiles ?? []).map(p => p.configDir),
@@ -98,6 +167,7 @@ export function invalidateCanonicalPathIfRootsChanged(state: {
   const changed = lastRootsSignature === null || signature !== lastRootsSignature;
   lastRootsSignature = signature;
   if (changed) invalidateCanonicalPathCache();
+  return changed;
 }
 
 /**

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ImportableLegacyProject } from '../shared/types';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, AgentmemoryStatus, AgentmemoryLog } from '../shared/types';
+import type { DiskHealth, PerfStats } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, HostRecord } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -11,7 +12,7 @@ export type { CostData } from '../shared/types';
 
 export interface FineVibeApi {
   pty: {
-    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string): Promise<void>;
+    create(sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs?: string, providerId?: ProviderId, initialPrompt?: string, systemPrompt?: string, envVars?: string, configDir?: string, hostId?: string): Promise<void>;
     createShell(sessionId: string, cwd: string): Promise<void>;
     write(sessionId: string, data: string): void;
     resize(sessionId: string, cols: number, rows: number): void;
@@ -44,7 +45,8 @@ export interface FineVibeApi {
     listDir(dirPath: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>;
     browseDirectory(): Promise<string | null>;
     cloneRepo(url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
-    listFiles(cwd: string, query: string): Promise<string[]>;
+    ensureDirectory(dirPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+    listFiles(cwd: string, query: string, hostId?: string): Promise<string[]>;
     topFilesByTokens(cwd: string, limit: number): Promise<TopFilesResult>;
     exists(filePath: string): Promise<boolean>;
     readFile(filePath: string): Promise<ReadFileResult>;
@@ -68,17 +70,44 @@ export interface FineVibeApi {
     /** Legacy `~/.vibeyard/state.json` projects that can be imported into the current list. */
     listImportableProjects(): Promise<ImportableLegacyProject[]>;
   };
+  log: {
+    /** Row 31: fire-and-forget ship of one renderer line into main's log tee. Mirrored in src/renderer/types.ts. */
+    write(level: 'log' | 'info' | 'warn' | 'error', message: string): void;
+  };
   profiles: {
-    provision(profileId: string, customPath?: string, providerId?: ProviderId): Promise<{ configDir: string; managed: boolean }>;
+    provision(profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
   };
+  hosts: {
+    list(): Promise<HostRecord[]>;
+    create(draft: unknown): Promise<HostRecord>;
+    update(id: string, patch: Record<string, unknown>): Promise<HostRecord>;
+    delete(id: string): Promise<void>;
+    openShell(id: string, sessionId: string): Promise<void>;
+    generateKey(): Promise<{ id: string; privateKeyPath: string; publicKey: string }>;
+    secretsAvailable(): Promise<boolean>;
+    setSecret(id: string, kind: 'password' | 'keypass', secret: string): Promise<void>;
+    forgetPassword(id: string): Promise<void>;
+    test(id: string): Promise<{ ok: boolean; fingerprint?: string; newFingerprint?: string; hostKeyChanged: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    approveHostKey(id: string, fingerprint: string): Promise<HostRecord | null>;
+    enroll(id: string, opts?: { pin?: string }): Promise<{ ok: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    unenroll(id: string): Promise<{ ok: boolean; detail?: string }>;
+    syncSettings(id: string, providerIds: ProviderId[], confirmOverwrite?: boolean): Promise<{ ok: boolean; drift?: string[]; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    /** Remote open/add folder (T5, UR-6): the Add-project verbs on the host.
+     * Main owns normalization/traversal/quoting; the record is the consent. */
+    listDirs(id: string, dirPath: string, prefix?: string): Promise<{ ok: boolean; dirs?: string[]; error?: string }>;
+    stat(id: string, path: string): Promise<{ ok: boolean; isDirectory?: boolean; size?: number; mtimeMs?: number; error?: string }>;
+    ensureDir(id: string, dirPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+    cloneRepo(id: string, url: string, destPath: string): Promise<{ ok: boolean; error?: string }>;
+    onStatus(callback: (event: { id: string; status: string; detail?: string }) => void): () => void;
+  };
   provider: {
-    getConfig(providerId: ProviderId, projectPath: string, configDir?: string): Promise<ProviderConfig>;
+    getConfig(providerId: ProviderId, projectPath: string, configDir?: string, hostId?: string): Promise<ProviderConfig>;
     listProviders(): Promise<CliProviderMeta[]>;
-    checkBinary(providerId?: ProviderId): Promise<boolean>;
+    checkBinary(providerId?: ProviderId, hostId?: string): Promise<boolean>;
     watchProject(providerId: ProviderId, projectPath: string): void;
     onConfigChanged(callback: () => void): () => void;
-    installAgent(slug: string, content: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
+    installAgent(slug: string, content: string, configDir?: string): Promise<Array<{ providerId: ProviderId; ok: boolean; filePath?: string; error?: string }>>;
     removeAgent(slug: string): Promise<void>;
   };
   git: {
@@ -105,6 +134,14 @@ export interface FineVibeApi {
     onDownloaded(cb: (info: { version: string }) => void): () => void;
     onError(cb: (info: { message: string }) => void): () => void;
   };
+  disk: {
+    get(): Promise<DiskHealth | null>;
+    onStatus(callback: (status: DiskHealth) => void): () => void;
+  };
+  perf: {
+    reportBoot(ms: number): void;
+    onStats(callback: (sample: PerfStats) => void): () => void;
+  };
   app: {
     focus(): void;
     getVersion(): Promise<string>;
@@ -115,11 +152,21 @@ export interface FineVibeApi {
     closeConfirmed(): void;
   };
 
-  agentmemory: {
-    status(): Promise<AgentmemoryStatus>;
-    start(): Promise<AgentmemoryStatus>;
-    /** Tail of the daemon console log file (see main/agentmemory-manager.ts). */
-    log(): Promise<AgentmemoryLog>;
+  /** One row of the A3 legacy-retirement audit log (main/userdata-migration.ts). */
+  storage: {
+    /** userData subtree sizes, descending; `truncated` on scan caps. */
+    scan(): Promise<{ entries: Array<{ name: string; bytes: number }>; truncated: boolean }>;
+    /** Clear caches ONLY (see clearSafeCaches in main/ipc-handlers.ts). */
+    clear(): Promise<{ tempDirsSwept: number }>;
+    /** Read-only A3 retirement audit log. */
+    retirement(): Promise<Array<{
+      id: string;
+      from: string;
+      at: string;
+      outcome: 'removed' | 'kept' | 'unverified' | 'error';
+      bytesFreed?: number;
+      reason?: string;
+    }>>;
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
@@ -193,8 +240,8 @@ function onChannel(channel: string, callback: (...args: unknown[]) => void): () 
 
 const api: FineVibeApi = {
   pty: {
-    create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir) =>
-      ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt, systemPrompt, envVars || '', configDir),
+    create: (sessionId, cwd, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId) =>
+      ipcRenderer.invoke('pty:create', sessionId, cwd, cliSessionId, isResume, extraArgs || '', providerId || 'claude', initialPrompt, systemPrompt, envVars || '', configDir, hostId),
     createShell: (sessionId, cwd) =>
       ipcRenderer.invoke('pty:createShell', sessionId, cwd),
     write: (sessionId, data) =>
@@ -244,32 +291,33 @@ const api: FineVibeApi = {
         callback(sessionId as string, events as InspectorEvent[])),
   },
   fs: {
-    isDirectory: (path) => ipcRenderer.invoke('fs:isDirectory', path),
+    isDirectory: (path, hostId?: string) => ipcRenderer.invoke('fs:isDirectory', path, hostId),
     expandPath: (path: string) => ipcRenderer.invoke('fs:expandPath', path),
     listDirs: (dirPath: string, prefix?: string) => ipcRenderer.invoke('fs:listDirs', dirPath, prefix),
-    listDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
+    listDir: (dirPath: string, hostId?: string) => ipcRenderer.invoke('fs:listDir', dirPath, hostId),
     browseDirectory: () => ipcRenderer.invoke('fs:browseDirectory'),
     cloneRepo: (url: string, destPath: string) => ipcRenderer.invoke('fs:cloneRepo', url, destPath),
-    listFiles: (cwd: string, query: string) => ipcRenderer.invoke('fs:listFiles', cwd, query),
+    ensureDirectory: (dirPath: string) => ipcRenderer.invoke('fs:ensureDirectory', dirPath),
+    listFiles: (cwd: string, query: string, hostId?: string) => ipcRenderer.invoke('fs:listFiles', cwd, query, hostId),
     topFilesByTokens: (cwd: string, limit: number) => ipcRenderer.invoke('fs:topFilesByTokens', cwd, limit),
-    exists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
-    readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
-    stat: (filePath: string) => ipcRenderer.invoke('fs:stat', filePath),
+    exists: (filePath: string, hostId?: string) => ipcRenderer.invoke('fs:exists', filePath, hostId),
+    readFile: (filePath: string, hostId?: string) => ipcRenderer.invoke('fs:readFile', filePath, hostId),
+    stat: (filePath: string, hostId?: string) => ipcRenderer.invoke('fs:stat', filePath, hostId),
     readImage: (filePath: string) => ipcRenderer.invoke('fs:readImage', filePath),
     trashItem: (filePath: string) => ipcRenderer.invoke('fs:trashItem', filePath),
     showInFolder: (targetPath: string) => ipcRenderer.invoke('fs:showInFolder', targetPath),
-    watchDir: (dirPath: string) => ipcRenderer.send('fs:watchDir', dirPath),
-    unwatchDir: (dirPath: string) => ipcRenderer.send('fs:unwatchDir', dirPath),
+    watchDir: (dirPath: string, hostId?: string) => ipcRenderer.send('fs:watchDir', dirPath, hostId),
+    unwatchDir: (dirPath: string, hostId?: string) => ipcRenderer.send('fs:unwatchDir', dirPath, hostId),
     onFsChange: (callback: (changes: FsChange[]) => void) => onChannel('fs:changed', (changes) => callback(changes as FsChange[])),
     getDroppedFilePath: (file: File) => webUtils.getPathForFile(file),
   },
   provider: {
-    getConfig: (providerId, projectPath, configDir?) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath, configDir),
+    getConfig: (providerId, projectPath, configDir?, hostId?) => ipcRenderer.invoke('provider:getConfig', providerId, projectPath, configDir, hostId),
     listProviders: () => ipcRenderer.invoke('provider:listProviders'),
-    checkBinary: (providerId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude'),
+    checkBinary: (providerId, hostId) => ipcRenderer.invoke('provider:checkBinary', providerId || 'claude', hostId),
     watchProject: (providerId, projectPath) => ipcRenderer.send('config:watchProject', providerId, projectPath),
     onConfigChanged: (callback) => onChannel('config:changed', callback),
-    installAgent: (slug, content) => ipcRenderer.invoke('provider:installAgent', slug, content),
+    installAgent: (slug, content, configDir) => ipcRenderer.invoke('provider:installAgent', slug, content, configDir),
     removeAgent: (slug) => ipcRenderer.invoke('provider:removeAgent', slug),
   },
   store: {
@@ -285,9 +333,37 @@ const api: FineVibeApi = {
   vibeyard: {
     listImportableProjects: () => ipcRenderer.invoke('vibeyard:listImportableProjects'),
   },
+  // Row 31: renderer diagnostics into main's log tee. `send` (fire-and-forget):
+  // a log line must never await the IPC round-trip, and main's console
+  // throttle + the renderer's per-minute budget (src/renderer/log.ts) bound
+  // the volume.
+  log: {
+    write: (level: 'log' | 'info' | 'warn' | 'error', message: string) => ipcRenderer.send('log:write', level, message),
+  },
   profiles: {
-    provision: (profileId, customPath, providerId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId),
+    provision: (profileId, customPath, providerId, hostId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId, hostId),
     keychainStatus: () => ipcRenderer.invoke('profiles:keychainStatus'),
+  },
+  hosts: {
+    list: () => ipcRenderer.invoke('hosts:list'),
+    create: (draft) => ipcRenderer.invoke('hosts:create', draft),
+    update: (id, patch) => ipcRenderer.invoke('hosts:update', id, patch),
+    delete: (id) => ipcRenderer.invoke('hosts:delete', id),
+    openShell: (id, sessionId) => ipcRenderer.invoke('hosts:openShell', id, sessionId),
+    generateKey: () => ipcRenderer.invoke('hosts:generateKey'),
+    secretsAvailable: () => ipcRenderer.invoke('hosts:secretsAvailable'),
+    setSecret: (id, kind, secret) => ipcRenderer.invoke('hosts:setSecret', id, kind, secret),
+    forgetPassword: (id) => ipcRenderer.invoke('hosts:forgetPassword', id),
+    test: (id) => ipcRenderer.invoke('hosts:test', id),
+    approveHostKey: (id, fingerprint) => ipcRenderer.invoke('hosts:approveHostKey', id, fingerprint),
+    enroll: (id, opts) => ipcRenderer.invoke('hosts:enroll', id, opts),
+    unenroll: (id) => ipcRenderer.invoke('hosts:unenroll', id),
+    syncSettings: (id, providerIds, confirmOverwrite) => ipcRenderer.invoke('hosts:syncSettings', id, providerIds, confirmOverwrite),
+    listDirs: (id, dirPath, prefix) => ipcRenderer.invoke('hosts:listDirs', id, dirPath, prefix),
+    stat: (id, target) => ipcRenderer.invoke('hosts:stat', id, target),
+    ensureDir: (id, dirPath) => ipcRenderer.invoke('hosts:ensureDir', id, dirPath),
+    cloneRepo: (id, url, destPath) => ipcRenderer.invoke('hosts:cloneRepo', id, url, destPath),
+    onStatus: (callback) => onChannel('hosts:status', callback as (...args: unknown[]) => void),
   },
   git: {
     getStatus: (path) => ipcRenderer.invoke('git:getStatus', path),
@@ -313,6 +389,15 @@ const api: FineVibeApi = {
     onDownloaded: (cb) => onChannel('update:downloaded', (info) => cb(info as { version: string })),
     onError: (cb) => onChannel('update:error', (info) => cb(info as { message: string })),
   },
+  disk: {
+    get: () => ipcRenderer.invoke('disk-health:get'),
+    onStatus: (cb) => onChannel('disk-health:status', (status) => cb(status as DiskHealth)),
+  },
+  perf: {
+    /** Echo of the renderer's own parse+first-paint time into the boot log. */
+    reportBoot: (ms: number) => { ipcRenderer.send('perf:reportBoot', ms); },
+    onStats: (cb) => onChannel('perf:stats', (sample) => cb(sample as PerfStats)),
+  },
   app: {
     focus: () => { ipcRenderer.send('app:focus'); },
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -322,10 +407,10 @@ const api: FineVibeApi = {
     onConfirmClose: (cb: () => void) => onChannel('app:confirmClose', cb),
     closeConfirmed: () => { ipcRenderer.send('app:closeConfirmed'); },
   },
-  agentmemory: {
-    status: () => ipcRenderer.invoke('agentmemory:status'),
-    start: () => ipcRenderer.invoke('agentmemory:start'),
-    log: () => ipcRenderer.invoke('agentmemory:log'),
+  storage: {
+    scan: () => ipcRenderer.invoke('storage:scan'),
+    clear: () => ipcRenderer.invoke('storage:clear'),
+    retirement: () => ipcRenderer.invoke('storage:retirement'),
   },
   browser: {
     saveScreenshot: (sessionId: string, dataUrl: string) =>

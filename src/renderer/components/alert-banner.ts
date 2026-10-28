@@ -1,6 +1,6 @@
 import { appState } from '../state.js';
 
-export interface AlertBannerConfig {
+interface AlertBannerConfig {
   className?: string;
   icon: string;
   message: string;
@@ -35,6 +35,9 @@ export function showAlertBanner(config: AlertBannerConfig): void {
 
   const banner = document.createElement('div');
   banner.className = `insight-alert${config.className ? ` ${config.className}` : ''}`;
+  // Banners appear over a live terminal: announce them to assistive tech.
+  banner.setAttribute('role', 'status');
+  banner.setAttribute('aria-live', 'polite');
 
   const icon = document.createElement('span');
   icon.className = 'insight-alert-icon';

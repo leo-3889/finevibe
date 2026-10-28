@@ -327,4 +327,26 @@ describe('git-panel file rows — path rendering (P2-102)', () => {
     expect(badge.textContent).toBe('M');
     expect(badge.className).toBe('git-file-badge modified');
   });
+
+  // Phase 3.5 (gitOn, docs/hosts.md): a remote project renders REAL data -
+  // the same worktree selector and file rows as a local project, because
+  // every git read routes to the host's git over the exec lane. The retired
+  // empty state ("Git runs on this machine") must never come back.
+  it('remote project: renders real worktrees/files, no retired empty state', async () => {
+    vi.mocked(getWorktrees).mockReturnValue([
+      { path: '/wt/main', branch: 'main' },
+      { path: '/wt/x', branch: 'x' },
+    ] as never);
+    const remoteProject = { id: 'p1', path: '/srv/app', hostId: 'host-1' } as never;
+    (appState as { activeProject: unknown }).activeProject = remoteProject;
+    const container = makeContainer();
+    const d = deferred<GitFileEntry[]>();
+    getFiles.mockReturnValueOnce(d.promise);
+    mountGitPanel(remoteProject, container);
+    expect(container.querySelector('.git-worktree-selector')).not.toBeNull();
+    expect(container.querySelector('.config-empty')?.textContent ?? '').not.toContain('Git runs on this machine');
+    expect(getFiles).toHaveBeenCalled();
+    d.resolve([]);
+    await d.promise;
+  });
 });

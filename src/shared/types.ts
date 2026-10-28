@@ -6,9 +6,14 @@ import type { ShareMode } from './sharing-types.js';
 export const ZOOM_MIN = 0.75;
 export const ZOOM_MAX = 2.0;
 
+/** The implicit localhost host id. Every `hostId` param defaults to this
+ * (per-host providers plan §2): channels and loaders are full-back-compat —
+ * pre-existing records normalize to 'local' at load, never at call sites. */
+export const LOCAL_HOST_ID = 'local';
+
 // --- Provider ---
 
-export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi' | 'omp';
+export type ProviderId = 'claude' | 'codex' | 'copilot' | 'gemini' | 'pi' | 'omp' | 'pi-bolt';
 type PendingPromptTrigger = 'session-start' | 'startup-arg';
 
 /**
@@ -29,6 +34,14 @@ export interface CliProviderCapabilities {
   costTracking: boolean;
   contextWindow: boolean;
   hookStatus: boolean;
+  /**
+   * Where `hookStatus` hooks live: 'user' (default) installs into the user
+   * config dir; 'project' (Copilot) writes `<project>/.github/hooks/` per
+   * project at PTY spawn and deletes them at quit, so a user-scope check is
+   * structurally always 'missing' — Setup validates them against the active
+   * project instead.
+   */
+  hookScope?: 'user' | 'project';
   configReading: boolean;
   shiftEnterNewline: boolean;
   pendingPromptTrigger: PendingPromptTrigger;
@@ -120,6 +133,9 @@ export interface SessionRecord {
   name: string;
   type?: SessionType;
   providerId?: ProviderId;
+  /** Persisted: host this session's provider runs on; absent means 'local'
+   * (normalized at load, per-host providers plan §2). */
+  hostId?: string;
   args?: string;
   /** Custom environment variables (raw `KEY=VALUE` lines) injected into the PTY on spawn. */
   envVars?: string;
@@ -135,6 +151,8 @@ export interface SessionRecord {
   cost?: CostInfo;
   contextWindow?: ContextWindowInfo;
   remoteHostName?: string;
+  /** Persisted: host this session launches through over SSH (`user@host` or `host`), validated by shared/ssh-host.ts. */
+  sshHost?: string;
   shareMode?: ShareMode;
   browserTabUrl?: string;
   /** When true, the browser-tab webview uses an isolated partition that doesn't see imported cookies/passwords. */
@@ -198,6 +216,63 @@ export interface Profile {
   /** True when configDir is the auto-managed path; false when the user supplied a custom path. */
   managed: boolean;
   createdAt: number;
+  /** Persisted: host whose filesystem `configDir` lives on; absent means 'local'
+   * (normalized at load, per-host providers plan §2). */
+  hostId?: string;
+}
+
+// --- Multi-host (Phase 1: Hosts registry) ---
+
+export type HostAuthKind = 'key' | 'password';
+
+export type HostEnrollmentStatus = 'draft' | 'probing' | 'auth-ok' | 'enrolled' | 'partial' | 'failed';
+
+/**
+ * A named SSH host from the registry (multi-host Phase 1). Zero secret
+ * material: passwords/passphrases live in the safeStorage-backed
+ * `host-secrets.json`, managed keys in `<userData>/hosts/<id>/` — this record
+ * is safe to log (redacted) and to send over IPC both ways.
+ */
+export interface HostRecord {
+  /** crypto.randomUUID(); the only handle the renderer ever sends. */
+  id: string;
+  /** Display name, 1..64 chars (escaped at render; never injected raw). */
+  name: string;
+  user: string;
+  /** RFC-1123 hostname or bracketed IPv6 literal (grammar in ssh-host.ts). */
+  host: string;
+  /** 1..65535; default 22. */
+  port: number;
+  authKind: HostAuthKind;
+  /** Managed keys: finevibe-generated, path derived from id. User keys: absolute path picked by the user. */
+  privateKeyPath?: string;
+  /** True → finevibe owns <userData>/hosts/<id>/id_ed25519. */
+  managedKey: boolean;
+  enrollmentStatus: HostEnrollmentStatus;
+  /** Last failure reason / partial summary (e.g. "provider X missing"). */
+  enrollmentDetail?: string;
+  enrolledAt?: string;
+  lastProbeAt?: string;
+  lastProbeOk?: boolean;
+  /** SHA256 fingerprint pinned at first successful connect (TOFU). Mismatch = hard refuse. */
+  hostKeyFingerprint?: string;
+  /** Prerequisite probe results from enrollment (Phase 2 consumers: provider CLIs, node, git). */
+  prerequisites?: Record<string, { ok: boolean; version?: string; path?: string }>;
+  /** Default folder for new projects on this host (remote-shell cwd, new-project prefill); absent = remote `~`. */
+  defaultFolder?: string;
+  /** True for the fleet memory server (UR-3): the daemon + forwards role, not a new type. */
+  memoryServer?: boolean;
+  /** Identity color (validated `#rrggbb`, shared/host-colors.ts): auto-assigned
+   * round-robin from HOST_PALETTE at creation, editable per host (plan §5). */
+  color?: string;
+  /** Settings-sync bookkeeping (per-host providers plan §4): the providers
+   * pushed, the last push time, and the sha256 of every pushed file keyed by
+   * its `~/`-anchored relPath (drift = remote hash ≠ stored hash). */
+  settingsSync?: {
+    providers: ProviderId[];
+    lastSyncAt?: string;
+    lastSyncHashes?: Record<string, string>;
+  };
 }
 
 export interface ArchivedSession {
@@ -320,6 +395,10 @@ export interface ProjectRecord {
   id: string;
   name: string;
   path: string;
+  /** Persisted: host whose filesystem `path` lives on; absent means 'local'
+   * (normalized at load, per-host providers plan §2/audit T2 #4 — remote
+   * project-scope gates only accept roots recorded for the queried host). */
+  hostId?: string;
   sessions: SessionRecord[];
   activeSessionId: string | null;
   layout: {
@@ -439,8 +518,14 @@ export interface Preferences {
   defaultProvider?: ProviderId;
   /** UI language tag. See `Locale` for the supported set. */
   locale?: Locale;
-  /** Per-provider global fallback profile, applied when neither the session nor the project specifies one. */
-  defaultProfiles?: Partial<Record<ProviderId, string>>;
+  /**
+   * Per-provider fallback profile, applied when neither the session nor the
+   * project specifies one. Host-scoped keys (shared/profile-keys.ts): the
+   * bare `providerId` is the LOCAL host, `"<hostId>|<providerId>"` a remote
+   * host. A remote host with no key launches bare — it never inherits the
+   * local default, whose config dir does not exist on that machine.
+   */
+  defaultProfiles?: Record<string, string>;
   /**
    * Per-provider default for "Plan mode" on the checkbox-less quick-send
    * paths (Ask AI / Inspect / Draw / Flow "Send to AI", Kanban create) and
@@ -476,34 +561,16 @@ export interface Preferences {
   defaultProjectsFolder?: string;
   keybindings?: Record<string, string>;
   theme?: 'dark' | 'light';
+  /**
+   * Active sidebar host tab (multi-host Phase 2, parent §11 UR-1): scopes the
+   * project list (Active Sessions stays cross-host, per-host plan §5).
+   * Absent = `LOCAL_HOST_ID`; a removed host falls back to Local at render.
+   */
+  activeHostId?: string;
   readinessExcludedProviders?: ProviderId[];
   sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;
-  /** Model A: start the shared agentmemory engine when FineVibe launches (start-if-absent; never killed on quit). */
-  agentmemoryAutoStart?: boolean;
   chromeImport?: ChromeImportSummary;
-}
-
-/** Result of probing the shared agentmemory daemon (see main/agentmemory-manager.ts). */
-export interface AgentmemoryStatus {
-  /** True when the daemon answers its health endpoint (reachable on any HTTP response). */
-  running: boolean;
-  /** agentmemory service version, e.g. "0.9.30" (top-level health field). */
-  serviceVersion?: string;
-  /** Pinned engine version(s) advertised by the daemon's workers, e.g. ["0.11.2"]. */
-  engineVersions?: string[];
-  /** Console (Viewer) URL to open, e.g. "http://localhost:3113". */
-  consoleUrl: string;
-  /** Short health detail / failure reason for the UI (e.g. "healthy", "spawn-failed"). */
-  detail?: string;
-}
-
-/** Tail of the shared daemon's captured console output (see main/agentmemory-manager.ts). */
-export interface AgentmemoryLog {
-  /** Absolute path of the log file the tail was read from. */
-  path: string;
-  /** Last bytes of the log, UTF-8 decoded; empty when the file is missing/unreadable. */
-  content: string;
 }
 
 // --- Chrome Import ---
@@ -538,6 +605,12 @@ export interface ChromeImportResult {
   cookieCount: number;
   skippedV11: number;
   errors: string[];
+  /**
+   * Non-fatal problems that did not block the imported cookies — e.g. the
+   * Linux keyring diagnosis (secret-tool missing, `peanuts` fallback)
+   * reported alongside a partial import. Shown next to the summary.
+   */
+  warnings?: string[];
 }
 
 /**
@@ -558,11 +631,17 @@ export interface SettingsValidationResult {
   statusLine: 'missing' | 'finevibe' | 'foreign';
   hooks: 'missing' | 'complete' | 'partial';
   foreignStatusLineCommand?: string;
+  /** SA-P2-1: statusLine is foreign AND the user's declined consent covers
+   * this exact command — a deliberate Keep, not an issue to fix. */
+  userKeptStatusLine?: boolean;
   hookDetails: Record<string, boolean>;
 }
 
 export interface SettingsWarningData {
   sessionId: string;
+  /** SA-P1-2: the provider the validation was computed from — the Fix
+   * Settings CTA must reinstall THIS provider's settings, not Claude's. */
+  providerId: ProviderId;
   statusLine: SettingsValidationResult['statusLine'];
   hooks: SettingsValidationResult['hooks'];
   /** P2-127: the profile config dir the validation was computed from;
@@ -600,6 +679,14 @@ export interface PersistedState {
   team?: TeamData;
   /** Global, provider-scoped CLI profiles (e.g. Claude work/personal config dirs). */
   profiles?: Profile[];
+  /**
+   * Named SSH hosts (multi-host Phase 1). Optional at the persistence
+   * boundary like `preferences`: normalized once by each loader
+   * (`store.ts` on the main side, `hydrateLoadedState` on the renderer side)
+   * via `validateHostRecordShape`; invalid entries are dropped with a log.
+   * Carries zero secret material (see `src/main/hosts/secrets.ts`).
+   */
+  hosts?: HostRecord[];
 }
 
 // --- AI Readiness ---
@@ -862,3 +949,24 @@ export type ClipboardPastePayload = {
   /** P4: true when main cut the text at the 8 Mi paste bound — a visible truncation the renderer must surface. */
   textTruncated?: boolean;
 };
+
+/** One disk-space reading for the volume that hosts app userData. Emitted
+ * by the disk-health preflight (src/main/disk-health.ts) on state
+ * transitions only, and served on `disk-health:get` for the renderer. */
+export type DiskHealth = { state: 'ok' | 'low' | 'unknown'; availableBytes?: number; checkedAt: string };
+
+/**
+ * One runtime sample from main (`src/main/boot-timing.ts`), pushed to the
+ * renderer's debug ring every `PERF_SAMPLE_INTERVAL_MS`. Bytes are Node
+ * `process.memoryUsage()` values; `resources` is the live libuv handle count
+ * (`process.getActiveResourcesInfo().length`) — the watcher/timer/socket
+ * total the performance doc asked to have measured.
+ */
+export interface PerfStats {
+  ms: number;
+  rss: number;
+  heapUsed: number;
+  external: number;
+  resources: number;
+  windows: number;
+}

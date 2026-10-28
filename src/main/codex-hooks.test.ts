@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { vi, type MockedFunction } from 'vitest';
 
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
@@ -24,6 +24,7 @@ vi.mock('./hook-commands', () => ({
 import * as fs from 'fs';
 import * as path from 'path';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks, CODEX_HOOK_MARKER } from './codex-hooks';
+import { installEventScript } from './hook-commands';
 
 const mockReadFileSync = vi.mocked(fs.readFileSync);
 const mockWriteFileSync = vi.mocked(fs.writeFileSync);
@@ -57,9 +58,15 @@ beforeEach(() => {
 // gemini-hooks) aborts the install and leaves the file untouched.
 describe('install over a corrupt hooks.json (P2-60)', () => {
   const TOML = '[features]\ncodex_hooks = true\n';
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-  afterEach(() => warn.mockClear());
+  // Spy PER TEST: the P1-6 console-guard afterEach mockRestores every console
+  // spy after each test, so a describe-scope spy (created once at collection)
+  // is inert for every test after the file's first - shuffled order made the
+  // warn assertion see 0 calls. Fresh spy per case, restored after.
+  let warn: MockedFunction<(...args: unknown[]) => void>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {}) as MockedFunction<(...args: unknown[]) => void>;
+  });
+  afterEach(() => warn.mockRestore());
 
   it('syntax-broken hooks.json: no write to hooks.json, warning logged', () => {
     mockFiles({ [CONFIG_TOML]: TOML, [HOOKS_JSON]: '{"hooks": {"Stop": [' });
@@ -442,7 +449,7 @@ describe('cleanupCodexHooks', () => {
   // P2-61: cleanup is the inverse of install — installCodexHooks writes
   // `codex_hooks = true` into config.toml, and cleanup must strip it,
   // otherwise the user's remaining hooks.json entries keep firing on every
-  // Codex run outside Vibeyard with no in-app way to turn the feature off.
+  // Codex run outside FineVibe with no in-app way to turn the feature off.
   const finevibeHooks = JSON.stringify({
     hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: `echo ${CODEX_HOOK_MARKER}` }] }] },
   });
@@ -500,5 +507,24 @@ describe('cleanupCodexHooks', () => {
     });
     cleanupCodexHooks();
     expect(tomlWrite()).toBeUndefined();
+  });
+});
+
+describe('UTF-8 stdin guard (codex capture script)', () => {
+  it('reconfigures stdin to UTF-8 before the first json.load(sys.stdin)', () => {
+    // Windows: Python <3.15 decodes sys.stdin with the ANSI code page, so a
+    // non-ASCII payload raises UnicodeDecodeError and event capture dies
+    // silently (see STDIN_UTF8_GUARD in shared/python.ts).
+    mockFiles({});
+    installCodexHooks();
+    const call = vi.mocked(installEventScript).mock.calls
+      .find(([name]) => String(name).startsWith('codex_event_'));
+    expect(call, 'no codex event script installed').toBeDefined();
+    const body = String(call![1]);
+    const guard = body.indexOf('sys.stdin.reconfigure(encoding="utf-8")');
+    const read = body.indexOf('json.load(sys.stdin)');
+    expect(guard, 'no UTF-8 guard in the codex event body').not.toBe(-1);
+    expect(guard).toBeLessThan(read);
+    expect(body.startsWith('import sys'), 'guard precedes the sys import').toBe(true);
   });
 });

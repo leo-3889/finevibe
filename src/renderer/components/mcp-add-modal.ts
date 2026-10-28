@@ -171,7 +171,7 @@ async function submit(overlay: HTMLElement): Promise<void> {
   onAddedFn?.();
 }
 
-export function closeMcpAddModal(): void {
+function closeMcpAddModal(): void {
   const overlay = document.getElementById('mcp-add-overlay');
   if (!overlay) return;
   overlay.style.display = 'none';

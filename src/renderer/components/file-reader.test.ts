@@ -41,10 +41,15 @@ beforeEach(() => {
   };
 });
 
-/** Render markdown, attach to the document, and click the first link. */
-function clickFirstLink(markdown: string, baseDir?: string): { wrapper: HTMLElement; defaultPrevented: boolean } {
+/**
+ * Render markdown, attach to the document, wait for the lazily loaded
+ * marked+DOMPurify chunk to fill the wrapper (P3: those libs are no longer in
+ * the boot entry), then click the first link.
+ */
+async function clickFirstLink(markdown: string, baseDir?: string): Promise<{ wrapper: HTMLElement; defaultPrevented: boolean }> {
   const wrapper = renderMarkdownContent(markdown, baseDir);
   document.body.appendChild(wrapper);
+  await vi.waitFor(() => expect(wrapper.querySelector('a')).not.toBeNull());
   const anchor = wrapper.querySelector('a')!;
   const event = new MouseEvent('click', { bubbles: true, cancelable: true });
   anchor.dispatchEvent(event);
@@ -52,7 +57,7 @@ function clickFirstLink(markdown: string, baseDir?: string): { wrapper: HTMLElem
 }
 
 describe('renderMarkdownContent link handling', () => {
-  it('never lets a link navigate the app document', () => {
+  it('never lets a link navigate the app document', async () => {
     for (const md of [
       '[x](other.md)',
       '[x](https://example.com)',
@@ -60,26 +65,26 @@ describe('renderMarkdownContent link handling', () => {
       '[x](#heading)',
       '[x](/abs/doc.md)',
     ]) {
-      expect(clickFirstLink(md, '/repo/docs').defaultPrevented).toBe(true);
+      expect((await clickFirstLink(md, '/repo/docs')).defaultPrevented).toBe(true);
     }
   });
 
   it('opens a relative file link in a file reader tab, resolved against the base dir', async () => {
-    clickFirstLink('[x](../README.md)', '/repo/docs');
+    await clickFirstLink('[x](../README.md)', '/repo/docs');
     await vi.waitFor(() => expect(addFileReaderSession).toHaveBeenCalledWith('p1', '/repo/README.md', undefined));
   });
 
   it('does not open a tab when the linked file is missing', async () => {
     exists.mockResolvedValue(false);
-    clickFirstLink('[x](gone.md)', '/repo/docs');
+    await clickFirstLink('[x](gone.md)', '/repo/docs');
     await vi.waitFor(() => expect(exists).toHaveBeenCalled());
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
   it('does not open a tab for a directory link', async () => {
     isDirectory.mockResolvedValue(true);
-    clickFirstLink('[x](../guides)', '/repo/docs');
-    await vi.waitFor(() => expect(isDirectory).toHaveBeenCalledWith('/repo/guides'));
+    await clickFirstLink('[x](../guides)', '/repo/docs');
+    await vi.waitFor(() => expect(isDirectory).toHaveBeenCalledWith('/repo/guides', undefined));
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
@@ -88,33 +93,34 @@ describe('renderMarkdownContent link handling', () => {
       activeProject = null;
       return true;
     });
-    clickFirstLink('[x](../README.md)', '/repo/docs');
+    await clickFirstLink('[x](../README.md)', '/repo/docs');
     await vi.waitFor(() => expect(exists).toHaveBeenCalled());
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
   it('ignores relative links when no base dir is known', async () => {
-    clickFirstLink('[x](sibling.md)');
+    await clickFirstLink('[x](sibling.md)');
     await Promise.resolve();
     expect(exists).not.toHaveBeenCalled();
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
-  it('sends http(s) links to the system browser', () => {
-    clickFirstLink('[x](https://example.com/a)', '/repo/docs');
+  it('sends http(s) links to the system browser', async () => {
+    await clickFirstLink('[x](https://example.com/a)', '/repo/docs');
     expect(openExternal).toHaveBeenCalledWith('https://example.com/a');
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
-  it('scrolls to the matching heading for in-document anchors', () => {
-    const { wrapper } = clickFirstLink('## Notification Types\n\n[x](#notification-types)', '/repo/docs');
+  it('scrolls to the matching heading for in-document anchors', async () => {
+    const { wrapper } = await clickFirstLink('## Notification Types\n\n[x](#notification-types)', '/repo/docs');
     const heading = wrapper.querySelector('h2')!;
     expect(heading.scrollIntoView).toHaveBeenCalled();
   });
 
-  it('ignores clicks that are not on a link', () => {
+  it('ignores clicks that are not on a link', async () => {
     const wrapper = renderMarkdownContent('plain paragraph', '/repo/docs');
     document.body.appendChild(wrapper);
+    await vi.waitFor(() => expect(wrapper.querySelector('p')).not.toBeNull());
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     wrapper.querySelector('p')!.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
@@ -199,4 +205,98 @@ it('reloads per fs change per pane — there is no coalescer (P3-11)', async () 
   } finally {
     destroyFileReaderPane('burst');
   }
+});
+
+describe('CRLF rendering (raw file reader)', () => {
+  // white-space:pre + LF-only splitting rendered every line of a CRLF file
+  // double-height: the trailing '\r' after the split leaves a visibly empty
+  // line per source line. The pane normalizes CRLF/CR to LF before splitting.
+  async function renderRaw(sessionId: string, content: string): Promise<ReturnType<typeof getFileReaderInstance>> {
+    Object.assign(window.finevibe.fs, { readFile: vi.fn(async () => ({ ok: true, content })) });
+    createFileReaderPane(sessionId, `/repo/${sessionId}.txt`);
+    const instance = getFileReaderInstance(sessionId)!;
+    document.body.appendChild(instance.element);
+    showFileReaderPane(sessionId, false);
+    await vi.waitFor(() => expect(instance.loaded).toBe(true));
+    return instance;
+  }
+
+  it('renders a CRLF file as one row per source line', async () => {
+    const instance = await renderRaw('crlf', 'a\r\nb');
+    try {
+      const rows = instance.element.querySelectorAll('.file-reader-line');
+      expect(rows).toHaveLength(2);
+      expect(rows[0].querySelector('.file-reader-line-text')?.textContent).toBe('a');
+      expect(rows[1].querySelector('.file-reader-line-text')?.textContent).toBe('b');
+      expect(instance.element.textContent).not.toMatch(/\r/);
+    } finally {
+      destroyFileReaderPane('crlf');
+    }
+  });
+
+  it('renders a CR-only file as one row per source line', async () => {
+    const instance = await renderRaw('cr', 'a\rb');
+    try {
+      const rows = instance.element.querySelectorAll('.file-reader-line');
+      expect(rows).toHaveLength(2);
+      expect(rows[0].querySelector('.file-reader-line-text')?.textContent).toBe('a');
+      expect(rows[1].querySelector('.file-reader-line-text')?.textContent).toBe('b');
+    } finally {
+      destroyFileReaderPane('cr');
+    }
+  });
+
+  it('leaves a pure-LF file unchanged', async () => {
+    const instance = await renderRaw('lf', 'a\nb\nc');
+    try {
+      const rows = instance.element.querySelectorAll('.file-reader-line');
+      expect(rows).toHaveLength(3);
+      expect(rows[2].querySelector('.file-reader-line-text')?.textContent).toBe('c');
+    } finally {
+      destroyFileReaderPane('lf');
+    }
+  });
+});
+
+describe('remote file preview (per-host providers, parent plan §11)', () => {
+  it('routes the read through the host rail and watches via the host id', async () => {
+    const readFile = vi.fn().mockResolvedValue({ ok: true, content: 'from the host' });
+    const watchDir = vi.fn();
+    Object.assign((globalThis as unknown as { window: { finevibe: { fs: unknown } } }).window.finevibe.fs, {
+      readFile, watchDir,
+    });
+    createFileReaderPane('remote-pane', '/home/dev/dev/app/x.ts', undefined, 'h1');
+    const instance = getFileReaderInstance('remote-pane')!;
+    document.body.appendChild(instance.element);
+    try {
+      showFileReaderPane('remote-pane', false);
+      await vi.waitFor(() => expect(instance.loaded).toBe(true));
+      expect(readFile).toHaveBeenCalledWith('/home/dev/dev/app/x.ts', 'h1');
+      expect(instance.element.textContent).toContain('from the host');
+      // Phase 4 remote watcher: the parent dir is watched through the host
+      // rail (main polls it over sftp), never as a local path.
+      expect(watchDir).toHaveBeenCalledWith('/home/dev/dev/app', 'h1');
+    } finally {
+      destroyFileReaderPane('remote-pane');
+    }
+  });
+
+  it('local panes keep the 2-arg read and the watcher', async () => {
+    const readFile = vi.fn().mockResolvedValue({ ok: true, content: 'local' });
+    const watchDir = vi.fn();
+    Object.assign((globalThis as unknown as { window: { finevibe: { fs: unknown } } }).window.finevibe.fs, {
+      readFile, watchDir,
+    });
+    createFileReaderPane('local-pane', '/repo/local.ts');
+    const instance = getFileReaderInstance('local-pane')!;
+    document.body.appendChild(instance.element);
+    try {
+      showFileReaderPane('local-pane', false);
+      await vi.waitFor(() => expect(instance.loaded).toBe(true));
+      expect(readFile).toHaveBeenCalledWith('/repo/local.ts', undefined);
+      expect(watchDir).toHaveBeenCalled();
+    } finally {
+      destroyFileReaderPane('local-pane');
+    }
+  });
 });

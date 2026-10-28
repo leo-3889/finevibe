@@ -6,7 +6,7 @@ import { showContextMenu } from '../board/board-context-menu.js';
 import { t } from '../../i18n.js';
 
 /** CSS class names for the Chat control's parts, so the card and the widget can share the logic. */
-export interface TeamChatControlClasses {
+interface TeamChatControlClasses {
   /** Base classes for the Chat button. */
   chat: string;
   /** Added to the Chat button when the provider chevron is shown (split-button shape). */

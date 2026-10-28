@@ -3,7 +3,7 @@ import { isCliSession } from '../../session-utils.js';
 import { getTerminalInstance } from '../terminal-pane.js';
 import type { BrowserTabInstance } from './types.js';
 
-export interface SendMenuActions {
+interface SendMenuActions {
   deliverTo: (session: SessionRecord) => void | Promise<void>;
   onNewSession: () => void | Promise<void>;
   onNewWithArgs: () => void;

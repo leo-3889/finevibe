@@ -6,6 +6,7 @@
   },
   "preferences": {
     "title": "Preferences",
+    "applyHint": "✓ Some settings apply immediately",
     "cancel": "Cancel",
     "done": "Done"
   },
@@ -16,7 +17,7 @@
     "desktopNotifications": "Desktop notifications when sessions need attention",
     "recordSessionHistory": "Record session history when sessions close",
     "showInsightAlerts": "Show insight alerts",
-    "autoNameSessions": "Auto-name sessions from the CLI's session title (Claude only)",
+    "autoNameSessions": "Auto-name sessions from the CLI's session title (Claude, OMP, Pi, Pi-Bolt)",
     "confirmClosingActiveSession": "Confirm closing an active session",
     "copyOnSelect": "Copy on select",
     "askAiFocus": "Ask AI opens the new session in",
@@ -60,10 +61,18 @@
       "urlPlaceholder": "Existing directory — or paste a GitHub/Codeberg URL",
       "browseButton": "Browse",
       "defaultProfileLabel": "Default profile",
-      "directoryNotExist": "Directory does not exist",
+      "directoryNotCreated": "Could not create the directory",
       "checkoutAndCreate": "Checkout and create",
+      "selectButton": "Select",
       "cloning": "Cloning…",
       "cloneFailed": "Clone failed"
+    },
+    "remoteBrowser": {
+      "title": "Browse {name}",
+      "up": "Up one level",
+      "loading": "Loading…",
+      "empty": "No subfolders",
+      "error": "Cannot list this folder"
     },
     "projectSettings": {
       "title": "Project Settings",
@@ -82,7 +91,21 @@
       "kanbanTasksNounPlural": "tasks"
     },
     "activeSessions": {
-      "title": "Active Sessions"
+      "title": "Active Sessions",
+      "hostSeparator": "on {host}"
+    },
+    "hostTabs": {
+      "local": "Local",
+      "add": "Add host",
+      "scrollLeft": "Scroll hosts left",
+      "scrollRight": "Scroll hosts right",
+      "offline": "{name} is unreachable",
+      "reconnect": "Reconnect",
+      "menu": {
+        "settings": "Settings → Hosts",
+        "reenroll": "Re-enroll",
+        "remove": "Remove"
+      }
     },
     "discussions": {
       "tooltip": "FineVibe Discussions",
@@ -148,7 +171,8 @@
       "promptLabel": "Prompt",
       "promptPlaceholder": "Add a custom prompt for this persona…",
       "title": "New Session",
-      "envError": "Use KEY=VALUE — invalid line: {line}"
+      "envError": "Use KEY=VALUE — invalid line: {line}",
+      "envOwnedError": "{keys} — owned by the pinned provider profile and ignored at launch. Remove the line(s); use the Profile field to choose a profile or config directory."
     },
     "newMcpInspector": {
       "defaultName": "Inspector {num}"
@@ -184,7 +208,12 @@
       "closeInspector": "Close Inspector",
       "inspect": "Inspect",
       "renameGroup": "Rename Group",
-      "ungroup": "Ungroup"
+      "ungroup": "Ungroup",
+      "sshHostSet": "Set SSH host…",
+      "sshHostChange": "Change SSH host…",
+      "sshHostClear": "Clear SSH host",
+      "sshHostPick": "Launch host",
+      "sshHostLocal": "Local"
     },
     "board": {
       "deleteTag": "Delete Tag"
@@ -447,46 +476,115 @@
       "View": "View",
       "Browser": "Browser"
     },
-    "new-session": { "label": "New Session" },
-    "new-session-alt": { "label": "New Session (Alt)" },
-    "new-project": { "label": "New Project" },
-    "goto-session-1": { "label": "Go to Session 1" },
-    "goto-session-2": { "label": "Go to Session 2" },
-    "goto-session-3": { "label": "Go to Session 3" },
-    "goto-session-4": { "label": "Go to Session 4" },
-    "goto-session-5": { "label": "Go to Session 5" },
-    "goto-session-6": { "label": "Go to Session 6" },
-    "goto-session-7": { "label": "Go to Session 7" },
-    "goto-session-8": { "label": "Go to Session 8" },
-    "goto-session-9": { "label": "Go to Session 9" },
-    "next-session": { "label": "Next Session" },
-    "prev-session": { "label": "Previous Session" },
-    "tab-back": { "label": "Back (Tab History)" },
-    "tab-forward": { "label": "Forward (Tab History)" },
-    "toggle-sidebar": { "label": "Toggle Sidebar" },
-    "toggle-split": { "label": "Toggle Split Mode" },
-    "project-terminal": { "label": "Project Terminal" },
-    "project-terminal-alt": { "label": "Project Terminal (Alt)" },
-    "debug-panel": { "label": "Debug Panel" },
-    "git-panel": { "label": "Git Panel" },
-    "quick-open": { "label": "Quick Open File" },
-    "session-search": { "label": "Search All Sessions" },
-    "find-in-terminal": { "label": "Find" },
-    "goto-line": { "label": "Go to Line" },
-    "help": { "label": "Help" },
-    "close-session": { "label": "Close Session" },
-    "toggle-inspector": { "label": "Toggle Session Inspector" },
-    "zoom-in": { "label": "Zoom In" },
-    "zoom-out": { "label": "Zoom Out" },
-    "zoom-reset": { "label": "Reset Zoom" },
-    "browser-reload": { "label": "Reload Page" },
-    "browser-hard-reload": { "label": "Hard Reload (Bypass Cache)" }
+    "new-session": {
+      "label": "New Session"
+    },
+    "new-session-alt": {
+      "label": "New Session (Alt)"
+    },
+    "new-project": {
+      "label": "New Project"
+    },
+    "goto-session-1": {
+      "label": "Go to Session 1"
+    },
+    "goto-session-2": {
+      "label": "Go to Session 2"
+    },
+    "goto-session-3": {
+      "label": "Go to Session 3"
+    },
+    "goto-session-4": {
+      "label": "Go to Session 4"
+    },
+    "goto-session-5": {
+      "label": "Go to Session 5"
+    },
+    "goto-session-6": {
+      "label": "Go to Session 6"
+    },
+    "goto-session-7": {
+      "label": "Go to Session 7"
+    },
+    "goto-session-8": {
+      "label": "Go to Session 8"
+    },
+    "goto-session-9": {
+      "label": "Go to Session 9"
+    },
+    "next-session": {
+      "label": "Next Session"
+    },
+    "prev-session": {
+      "label": "Previous Session"
+    },
+    "tab-back": {
+      "label": "Back (Tab History)"
+    },
+    "tab-forward": {
+      "label": "Forward (Tab History)"
+    },
+    "toggle-sidebar": {
+      "label": "Toggle Sidebar"
+    },
+    "toggle-split": {
+      "label": "Toggle Split Mode"
+    },
+    "project-terminal": {
+      "label": "Project Terminal"
+    },
+    "project-terminal-alt": {
+      "label": "Project Terminal (Alt)"
+    },
+    "debug-panel": {
+      "label": "Debug Panel"
+    },
+    "git-panel": {
+      "label": "Git Panel"
+    },
+    "quick-open": {
+      "label": "Quick Open File"
+    },
+    "session-search": {
+      "label": "Search All Sessions"
+    },
+    "find-in-terminal": {
+      "label": "Find"
+    },
+    "goto-line": {
+      "label": "Go to Line"
+    },
+    "help": {
+      "label": "Help"
+    },
+    "close-session": {
+      "label": "Close Session"
+    },
+    "toggle-inspector": {
+      "label": "Toggle Session Inspector"
+    },
+    "zoom-in": {
+      "label": "Zoom In"
+    },
+    "zoom-out": {
+      "label": "Zoom Out"
+    },
+    "zoom-reset": {
+      "label": "Reset Zoom"
+    },
+    "browser-reload": {
+      "label": "Reload Page"
+    },
+    "browser-hard-reload": {
+      "label": "Hard Reload (Bypass Cache)"
+    }
   },
   "profiles": {
     "heading": "CLI profiles",
     "description": "Each profile runs a CLI against its own config directory, isolating login, settings, and history — handy for separate work and personal licenses.",
     "descriptionClaude": "Claude Code: the profile's config dir is injected as CLAUDE_CONFIG_DIR. After creating a profile, start a session with it and run /login once to sign in.",
     "descriptionPi": "Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR. Set up auth and models in that config directory after creating the profile.",
+    "descriptionPiBolt": "Pi-Bolt: a Pi fork compiled from Pi. The profile's config dir is injected as PI_CODING_AGENT_DIR (the same agent dir mechanism as Pi). Make sure the pi-bolt CLI is installed, then set up auth and models in that config directory after creating the profile.",
     "descriptionOmp": "Oh my Pi: the profile's config dir is injected as PI_CODING_AGENT_DIR (the same omp agent dir mechanism as Pi). Make sure the omp CLI is installed, then set up auth and models in that config directory after creating the profile.",
     "keychainUnsupported": "This version of Claude Code{version} stores every login under a single macOS keychain entry, so profiles can't keep accounts separate. Update Claude Code to create and use profiles.",
     "keychainUnknown": "FineVibe can't yet confirm this Claude Code build isolates profile logins in the macOS keychain. Sign in to a profile once and isolation will be verified automatically.",
@@ -503,6 +601,7 @@
     "addNameLabel": "Name",
     "addNamePlaceholder": "e.g. Work",
     "addProviderLabel": "Provider",
+    "hostLabel": "Host",
     "addPathLabel": "Custom config path (optional)",
     "addPathPlaceholder": "Leave blank for a managed directory",
     "nameRequired": "Name is required",
@@ -517,6 +616,15 @@
     "fixButton": "Fix",
     "fixingButton": "Fixing…",
     "checking": "Checking configuration…",
+    "remoteScopeDesc": "Checks run live on “{host}” over its SSH lane.",
+    "enrollFirstLabel": "Enroll this host first",
+    "enrollFirstDesc": "FineVibe can’t run checks on “{host}” (status: {status}). Enroll it from the sidebar Hosts tab.",
+    "remoteNotFoundHelp": "{binaryName} was not found on “{host}”. Install the CLI there, then re-check.",
+    "recheckButton": "Re-check",
+    "settingsSyncLabel": "Settings sync",
+    "settingsSyncRemoteDesc": "Status line and hooks live on the host; FineVibe pushes them via Settings sync (sidebar → Hosts).",
+    "settingsSyncOn": "Synced",
+    "settingsSyncOff": "Not synced",
     "binaryDescription": "The {binaryName} binary must be installed for sessions to work.",
     "installed": "Installed",
     "notFound": "Not found",
@@ -524,14 +632,34 @@
     "statusLineConfigured": "Configured",
     "statusLineMissing": "Not configured",
     "statusLineForeign": "Overwritten by another tool",
+    "statusLineKept": "Kept your choice",
     "statusLineLabel": "Status Line",
     "statusLineDescription": "Required for cost tracking and context window monitoring.",
     "hooksComplete": "All hooks installed",
     "hooksMissing": "No hooks installed",
+    "hooksMissingProject": "No hooks installed in {project}",
     "hooksPartial": "Some hooks missing",
+    "hooksProjectScoped": "Per-project",
+    "hooksProjectScopedDesc": "Installed per project when a session starts; open a project to check or install.",
     "hooksLabel": "Session Hooks",
     "hooksDescription": "Required for session activity tracking.",
     "fixAllButton": "Fix All"
+  },
+  "statuslineConflict": {
+    "title": "Settings Conflict",
+    "intro": "Claude Code already has a <strong>statusLine</strong> setting configured by another tool.",
+    "currentLabel": "Current statusLine",
+    "warning": "FineVibe needs its own statusLine for cost tracking and context window monitoring. If you keep the current statusLine, these features will be unavailable.",
+    "keepButton": "Keep current statusLine",
+    "replaceButton": "Use FineVibe statusLine"
+  },
+  "settingsGuard": {
+    "bothMissing": "FineVibe settings are missing from {provider}. Cost tracking and session activity may not work.",
+    "statusLineForeign": "Another tool has overwritten FineVibe's statusLine setting. Cost tracking is unavailable.",
+    "statusLineMissing": "Cost tracking is unavailable \u2014 FineVibe's statusLine setting is not configured in {provider}.",
+    "hooksMissing": "Some session tracking hooks are missing from {provider} settings. Activity tracking may not work.",
+    "fixButton": "Fix Settings",
+    "fixingButton": "Fixing\u2026"
   },
   "help": {
     "tabStatusDot": "Tab Status Dot",
@@ -600,32 +728,139 @@
     "debugModeLabel": "Debug Mode",
     "versionLoaded": "Version: {ver}"
   },
+  "disk": {
+    "lowSpace": "Low disk space — {available} free. Free up space so FineVibe can keep saving your work.",
+    "lowSpaceUnknown": "Low disk space. Free up space so FineVibe can keep saving your work."
+  },
   "update": {
     "downloadFailed": "Update download failed"
-  },
-  "agentmemory": {
-    "autoStart": "Start agent memory engine on launch",
-    "probing": "Checking…",
-    "running": "Running",
-    "stopped": "Not running",
-    "startButton": "Start Engine",
-    "starting": "Starting…",
-    "openConsole": "Open Console",
-    "consoleTitle": "Agent Memory Console",
-    "consoleEmpty": "No log output yet. Console output is captured only for engines FineVibe starts — it will show up here after the next start.",
-    "consoleWebUi": "Web UI",
-    "consoleClose": "Close"
   },
   "preferencesNav": {
     "browser": "Browser",
     "shortcuts": "Shortcuts",
     "profiles": "Profiles",
+    "hosts": "Hosts",
     "setup": "Setup",
     "help": "Help",
     "about": "About",
     "general": "General",
     "appearance": "Appearance",
-    "agentmemory": "Agent Memory"
+    "storage": "Storage"
+  },
+  "hosts": {
+    "heading": "Remote hosts",
+    "description": "Enroll SSH hosts to run shells (and, later, coding agents) on remote machines.",
+    "add": "Add host",
+    "addTitle": "Add host",
+    "editTitle": "Edit host",
+    "edit": "Save",
+    "remove": "Remove",
+    "test": "Test",
+    "enroll": "Enroll",
+    "reenroll": "Re-enroll",
+    "openShell": "Open shell",
+    "forgetPassword": "Forget password",
+    "forgetPasswordPrompt": "Key-based login works now. Forget the stored password?",
+    "fingerprintTitle": "Confirm host key",
+    "fingerprintPrompt": "First connection to this host. Verify the fingerprint before trusting it:\n{fingerprint}",
+    "approveKey": "Trust & continue",
+    "lastProbe": "Last check: {at}",
+    "lastSync": "Settings synced: {at}",
+    "sync": "Sync settings",
+    "driftTitle": "Remote settings changed",
+    "driftPrompt": "These files on the host no longer match the last sync:\n{files}\nOverwrite them with the local settings?",
+    "overwrite": "Overwrite",
+    "syncProvider": {
+      "pi": "Sync Pi settings",
+      "pi-bolt": "Sync Pi-Bolt extensions",
+      "omp": "Sync Oh my Pi settings"
+    },
+    "prereqs": "Remote tools",
+    "empty": "No hosts yet. Add one to get started.",
+    "hostKeyChanged": "WARNING: the host key changed — possible man-in-the-middle. Refusing to connect.",
+    "shellNeedsProject": "Open a project first — remote shell tabs live in the project terminal panel.",
+    "confirmRemove": "Remove host “{name}”?",
+    "confirmRemoveEnrolled": "Remove host “{name}”? This revokes FineVibe's access key on the remote machine.",
+    "r1Banner": "Secure storage is unavailable, so passwords can't be saved. Use key-based authentication.",
+    "status": {
+      "draft": "Draft",
+      "probing": "Connecting…",
+      "auth-ok": "Auth OK — not enrolled",
+      "enrolled": "Enrolled",
+      "partial": "Partial",
+      "failed": "Failed"
+    },
+    "hostUnreachable": "Unreachable",
+    "step": {
+      "connect": "Connect",
+      "env": "Environment",
+      "key-deploy": "Deploy key",
+      "prereqs": "Prerequisites",
+      "dirs": "Directories",
+      "shell": "Shell",
+      "action": "Action",
+      "host-key": "Host key",
+      "forget-password": "Forget password",
+      "record": "Save record",
+      "sync": "Sync settings",
+      "npm": "npm install (host)"
+    },
+    "field": {
+      "name": "Name",
+      "user": "User",
+      "host": "Host",
+      "port": "Port",
+      "authKind": "Authentication",
+      "authKey": "SSH key",
+      "authPassword": "Password",
+      "keyPath": "Private key path",
+      "keyPathPlaceholder": "Leave empty to generate a FineVibe key",
+      "browse": "Browse",
+      "secret": "Secret",
+      "secretPlaceholder": "Key passphrase or password (stored in the system keychain)",
+      "color": "Color"
+    },
+    "color": {
+      "auto": "Auto",
+      "blue": "Blue",
+      "orange": "Orange",
+      "green": "Green",
+      "purple": "Purple",
+      "amber": "Amber",
+      "red": "Red",
+      "teal": "Teal",
+      "pink": "Pink"
+    },
+    "err": {
+      "name": "Name is required",
+      "user": "User is required",
+      "host": "Host is required",
+      "port": "Port must be 1-65535"
+    }
+  },
+  "storage": {
+    "usageHeading": "Disk usage (app data)",
+    "scanning": "Scanning…",
+    "scanFailed": "Scan failed",
+    "truncated": "Partial result — scan limit reached",
+    "subPi": "Pi sessions",
+    "subOmp": "OMP sessions",
+    "subPiBolt": "Pi-Bolt sessions",
+    "subPartitions": "Browser profiles",
+    "subCache": "Caches",
+    "subMisc": "Other app data",
+    "clearButton": "Clear caches",
+    "clearConfirm": "Delete browser and app caches (Cache, GPUCache, Code Cache, Dawn caches) and Chrome-import temp files? Sessions, transcripts and browser profile logins are never touched.",
+    "clearing": "Clearing…",
+    "cleared": "Caches cleared",
+    "clearFailed": "Clear failed",
+    "retirementHeading": "Legacy data retirement",
+    "retirementNone": "No pending legacy data",
+    "retirementEntry": "{from}: {outcome}",
+    "outcomeRemoved": "removed",
+    "outcomeKept": "kept (grace)",
+    "outcomeUnverified": "unverified",
+    "outcomeError": "error"
   },
   "session": {
     "crashedTitle": "Session ended unexpectedly",

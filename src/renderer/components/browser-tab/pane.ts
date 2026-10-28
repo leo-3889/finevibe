@@ -442,6 +442,7 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
 
   const instance: BrowserTabInstance = {
     sessionId,
+    destroyed: false,
     element: el,
     webview,
     viewportContainer,
@@ -495,6 +496,10 @@ export function createBrowserTabPane(sessionId: string, url?: string): void {
 
   // Preload must be set before src to ensure the inspect script is injected
   getPreloadPath().then((p) => {
+    // P2-68: a destroy landing during the await must not arm the guest load
+    // afterwards (the element is already detached; setting src can start a
+    // load with no owner).
+    if (instance.destroyed) return;
     webview.setAttribute('preload', `file://${p}`);
     // Session-restored / toggle-supplied URLs bypass navigateTo; normalize so
     // javascript:/view-source: can't reach the guest src directly.
@@ -827,6 +832,8 @@ export function destroyBrowserTabPane(sessionId: string): void {
   if (!instance) return;
   // Delete from the map first so errors below can't leave a half-destroyed instance around.
   instances.delete(sessionId);
+  // P2-68: stop in-flight async setup (getPreloadPath) from arming the guest.
+  instance.destroyed = true;
 
   document.removeEventListener('mousedown', instance.viewportOutsideClickHandler);
   try { dismissSendMenu(instance); } catch { /* menu already torn down */ }

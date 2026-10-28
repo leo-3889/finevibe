@@ -38,7 +38,7 @@ vi.mock('../provider-availability.js', () => {
 });
 
 import { appState, _resetForTesting } from '../state';
-import { buildTeamChatSession, MAX_SYSTEM_PROMPT_BYTES, nextSessionOrdinal, systemPromptByteLength, uniqueMemberId } from './team-state';
+import { buildTeamChatSession, MAX_SYSTEM_PROMPT_BYTES, nextSessionOrdinal, resolvePinnedTeamProfile, systemPromptByteLength, uniqueMemberId } from './team-state';
 import { getTeamChatProviderMetas } from '../provider-availability.js';
 const mockGetTeamChatProviderMetas = vi.mocked(getTeamChatProviderMetas);
 import { getCost } from '../session-cost.js';
@@ -359,6 +359,33 @@ describe('updateTeamMember unpin', () => {
   });
 });
 
+// P2-116: "Install as agent" must target the pinned profile's config dir (the
+// tree a profiled CLAUDE_CONFIG_DIR run actually reads), not the hardcoded
+// ~/.claude/agents the pre-fix chain dropped it for.
+describe('installAgent configDir threading (P2-116)', () => {
+  it('addTeamMember with installAsAgent passes the pinned profile configDir', async () => {
+    const profile = await appState.addProfile({ name: 'P116', providerId: 'claude' });
+    const installAgent = vi.fn(async () => []);
+    const prev = (window as { finevibe: { provider: unknown } }).finevibe.provider;
+    (window as { finevibe: { provider: unknown } }).finevibe.provider = { installAgent, removeAgent: vi.fn() };
+    try {
+      appState.addTeamMember({
+        name: 'P116',
+        role: 'Engineering',
+        systemPrompt: 'x',
+        source: 'custom',
+        installAsAgent: true,
+        profileId: profile.id,
+      });
+      await Promise.resolve();
+      expect(installAgent).toHaveBeenCalled();
+      expect(installAgent.mock.calls[0][2]).toBe(profile.configDir);
+    } finally {
+      (window as { finevibe: { provider: unknown } }).finevibe.provider = prev;
+    }
+  });
+});
+
 describe('nextSessionOrdinal (C4T-01)', () => {
   it('takes one past the highest matching suffix', () => {
     expect(nextSessionOrdinal('Dev', [])).toBe(1);
@@ -460,5 +487,25 @@ describe('system prompt size cap (C4TM-06)', () => {
     const exact = 'x'.repeat(MAX_SYSTEM_PROMPT_BYTES);
     const member = appState.addTeamMember({ name: 'A', role: 'r', systemPrompt: exact, source: 'custom' });
     expect(member?.systemPrompt).toBe(exact);
+  });
+});
+
+describe('resolvePinnedTeamProfile host scope (coherence Phase 1 + audit P3)', () => {
+  const profiles = [
+    { id: 'lp', name: 'L', providerId: 'claude', configDir: '/c', managed: true, createdAt: 0 },
+    { id: 'rp', name: 'R', providerId: 'claude', configDir: '/r', managed: true, createdAt: 0, hostId: 'host-1' },
+  ] as never;
+
+  it('unscoped (display) keeps the pin; scoped (launch) drops a cross-host pin', () => {
+    mockGetTeamChatProviderMetas.mockReturnValue([{ id: 'claude', displayName: 'Claude' }] as never);
+    const member = { profileId: 'lp' } as TeamMember;
+    expect(resolvePinnedTeamProfile(member, profiles)?.id).toBe('lp');
+    // Launch on host-1: the LOCAL profile pin cannot boot there.
+    expect(resolvePinnedTeamProfile(member, profiles, 'host-1')).toBeUndefined();
+    // Right host keeps it; a local launch drops the host profile.
+    const rmember = { profileId: 'rp' } as TeamMember;
+    expect(resolvePinnedTeamProfile(rmember, profiles, 'host-1')?.id).toBe('rp');
+    expect(resolvePinnedTeamProfile(rmember, profiles, 'local')).toBeUndefined();
+    mockGetTeamChatProviderMetas.mockReturnValue([] as never);
   });
 });

@@ -2,16 +2,21 @@ import * as pty from 'node-pty';
 import { execSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
+import * as fs from 'fs';
 import * as path from 'path';
 import type { ProviderId } from '../shared/types';
-import { parseEnvVars, partitionUserEnv } from '../shared/env-vars';
+import { LOCAL_HOST_ID } from '../shared/types';
+import { parseEnvVars, partitionUserEnv, providerOwnedEnvReason } from '../shared/env-vars';
 import { findConflictingEnvKeys, findConflictingLaunchFlags, tokenizeArgs } from '../shared/launch-args';
+import { isRegistryHostTarget } from '../shared/ssh-host';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
-import { registerSession } from './hook-status';
+import { getHost } from './hosts/host-registry';
+import { remoteLaunchSessionDir } from './launch-session-dir';
+import { registerSession, registerRemoteStatus, unregisterSession } from './hook-status';
 import { guardedProfileInstall } from './settings-guard';
 import { getKeychainIsolationStatus } from './claude-keychain';
-import { isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
+import { isLinux, isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
 import { canonicalPath } from './fs-utils';
 import { nvmDefaultNodeBinDir } from './providers/nvm';
 
@@ -56,6 +61,28 @@ let cachedFullPath: string | null = null;
 
 const PATH_MARKER_BEGIN = '__VY_PATH_BEGIN__';
 const PATH_MARKER_END = '__VY_PATH_END__';
+
+/**
+ * Default POSIX shell when $SHELL is unset. `/bin/zsh` is the macOS default
+ * login shell; stock Linux distros (Ubuntu) ship no zsh, so the same default
+ * ENOENTs the login-shell PATH probe and the shell tab there. `/bin/sh` is
+ * the always-present fallback and a valid `-ilc` probe target.
+ */
+function defaultPosixShell(): string {
+  return process.env.SHELL || (isMac ? '/bin/zsh' : '/bin/sh');
+}
+
+/**
+ * Shell for the interactive terminal tab. The default POSIX fallback is
+ * `/bin/sh` (see defaultPosixShell) — a valid `-ilc` probe target, but a
+ * poor interactive shell (no readline history, sparse completion); when
+ * $SHELL is unset prefer `/bin/bash` on Linux if it is installed.
+ */
+function interactiveShell(): string {
+  const fallback = defaultPosixShell();
+  if (isWin || isMac || process.env.SHELL) return fallback;
+  return fs.existsSync('/bin/bash') ? '/bin/bash' : fallback;
+}
 
 export function getRegistryPath(): string {
   if (!isWin) return '';
@@ -125,7 +152,7 @@ export function getFullPath(): string {
     return cachedFullPath;
   }
 
-  const shell = process.env.SHELL || '/bin/zsh';
+  const shell = defaultPosixShell();
 
   // -i is required: nvm exports PATH from ~/.zshrc, only sourced for interactive shells.
   try {
@@ -216,7 +243,7 @@ export function getFullPathAsync(): Promise<string> {
       cachedFullPath = Array.from(pathSet).join(pathSep);
       return cachedFullPath;
     }
-    const shell = process.env.SHELL || '/bin/zsh';
+    const shell = defaultPosixShell();
     try {
       const { stdout } = await execFileP(
         shell,
@@ -302,15 +329,97 @@ function quoteArgForCmdExe(arg: string): string {
     throw new Error(
       'Cannot pass an argument containing a double quote through cmd.exe: cmd ' +
         'has no escape for a literal quote, so it cannot be quoted safely. ' +
+        'A provider whose binary is a native .exe (no cmd.exe wrapper) accepts ' +
+        'the same argument; so does a Pi-compatible provider (Pi/Pi-Bolt/OMP), ' +
+        'which loads a prompt file instead of prompt text. ' +
         `Offending argument: ${JSON.stringify(shown)}`
     );
   }
   return CMDEXE_METACHARS.test(arg) ? `"${arg}"` : arg;
 }
 
+/** The launch target parsed out of an npm-style .cmd/.bat shim. */
+interface ShimTarget {
+  executable: string;
+  /** Shim-side argv that precedes the caller's args (the node script path). */
+  prefixArgs: string[];
+}
+
+/**
+ * Recover the real launch target from an npm-style .cmd/.bat shim so the
+ * spawn can skip cmd.exe entirely.
+ *
+ * cmd.exe cannot transport a multi-line argument: it ends its command at the
+ * first newline (the prompt is truncated to line 1), strips wrapper quotes
+ * and word-splits, and runs leftover fragments as commands. That breaks every
+ * multi-line startup prompt — Ask AI embeds the selected code in fences, so
+ * npm-shimmed CLIs (codex.cmd, pi-bolt.cmd, …) received only the first line.
+ * The target is a native exe (node.exe / tool.exe), so spawning it directly
+ * carries argv intact: CreateProcess + CommandLineToArgvW preserve newlines
+ * and escaped quotes inside a quoted token.
+ *
+ * Parsing is deliberately narrow — only the npm cmd-shim template
+ * `"%_prog%" "%dp0%\…\cli.js" %*` and the hand-written `"target.exe" %*`
+ * form, expanding only `%dp0%`/`%~dp0%` (shim dir) and `%_prog%` (node.exe
+ * beside the shim, else bare `node`, mirroring the shim's IF EXIST). Any
+ * unreadable shim, unknown variable, non-exe target, missing script, or
+ * unexpected token count returns null and the caller falls back to the
+ * cmd.exe wrapper (the previous behavior).
+ */
+function resolveCmdShimTarget(shimPath: string): ShimTarget | null {
+  let body: string;
+  try {
+    body = fs.readFileSync(shimPath, 'utf8');
+  } catch {
+    return null;
+  }
+  // Shims are tiny one-liners; anything larger is not a shim (or is binary).
+  if (body.length > 64 * 1024) return null;
+  const launchLine = body.split(/\r?\n/).filter((l) => l.includes('%*')).pop();
+  if (!launchLine) return null;
+  const quoted = [...launchLine.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  if (quoted.length === 0 || quoted.length > 2) return null;
+  // All quoted tokens must sit on the launch, before the %* passthrough.
+  if (launchLine.lastIndexOf('"') > launchLine.lastIndexOf('%*')) return null;
+
+  const shimDir = path.dirname(shimPath);
+  const expand = (token: string): string | null => {
+    if (/%_prog%/i.test(token)) {
+      if (token.toLowerCase() !== '%_prog%') return null; // %_prog% with a suffix — don't guess
+      const local = path.join(shimDir, 'node.exe');
+      return fs.existsSync(local) ? local : 'node';
+    }
+    const t = path.normalize(token.replace(/%~?dp0%?/gi, shimDir + path.sep));
+    if (/%[^%]*%/.test(t)) return null; // unknown cmd variable — don't guess
+    return t;
+  };
+
+  const executable = expand(quoted[0]);
+  if (!executable) return null;
+  const ext = path.extname(executable).toLowerCase();
+  if (ext !== '' && ext !== '.exe') return null;
+  let resolved = executable;
+  if (/[\\/]/.test(resolved)) {
+    if (!fs.existsSync(resolved)) return null;
+  } else {
+    // Bare name: cmd resolved it against the shim dir first — honour that.
+    const beside = path.join(shimDir, executable);
+    if (fs.existsSync(beside)) resolved = beside;
+  }
+  const prefixArgs: string[] = [];
+  if (quoted.length === 2) {
+    const script = expand(quoted[1]);
+    if (!script || !/\.(?:js|mjs|cjs)$/i.test(script)) return null;
+    if (!fs.existsSync(script)) return null;
+    prefixArgs.push(script);
+  }
+  return { executable, prefixArgs };
+}
+
 /**
  * On Windows, .cmd/.bat and .ps1 files cannot be spawned directly by node-pty
- * (CreateProcess returns error 193). Wrap them via cmd.exe or powershell.exe.
+ * (CreateProcess returns error 193). Prefer spawning the shim's real target
+ * directly (see resolveCmdShimTarget); fall back to cmd.exe or powershell.exe.
  */
 export function resolveWindowsShell(
   shell: string,
@@ -327,7 +436,14 @@ export function resolveWindowsShell(
       args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', shell, ...args],
     };
   }
-  // Everything else (.cmd, .bat, bare names, extensionless paths):
+  // .cmd/.bat shims carry their real target; an extensionless npm launcher
+  // resolves via PATHEXT to the <name>.cmd beside it — parse the same file.
+  const shimPath = ext === '.cmd' || ext === '.bat' ? shell : ext === '' ? `${shell}.cmd` : '';
+  if (shimPath) {
+    const target = resolveCmdShimTarget(shimPath);
+    if (target) return { shell: target.executable, args: [...target.prefixArgs, ...args] };
+  }
+  // Everything else (unparseable shims, bare names, extensionless paths):
   // wrap with cmd.exe so CreateProcess doesn't choke on non-PE binaries.
   // Every token must be quoted for cmd.exe — see quoteArgForCmdExe.
   return {
@@ -342,7 +458,7 @@ export function resolveWindowsShell(
  * 'nonpersistent' are rejected pre-spawn until per-launch storage is
  * tracked end-to-end.
  */
-export type SessionStorageMode = 'default' | 'custom-dir' | 'nonpersistent';
+type SessionStorageMode = 'default' | 'custom-dir' | 'nonpersistent';
 
 /**
  * One effective launch: the executable, argv, environment,
@@ -350,7 +466,7 @@ export type SessionStorageMode = 'default' | 'custom-dir' | 'nonpersistent';
  * Resolved once in spawnPty before any side effect; the child environment
  * and every lifecycle reader must agree on this single spec.
  */
-export interface LaunchSpec {
+interface LaunchSpec {
   executable: string;
   argv: string[];
   env: Record<string, string>;
@@ -367,6 +483,97 @@ export class LaunchSpecError extends Error {
     super(message);
     this.name = 'LaunchSpecError';
   }
+}
+
+/** POSIX single-quote quoting for one token of the remote command string. */
+function posixQuote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The provider binary for a launch, keyed per host (per-host providers plan
+ * §2). `hostId` absent/'local' → the existing local resolution (PATH/nvm
+ * probes + BinaryCache). A registry host resolves from the enrollment-time
+ * prereq probe — `HostRecord.prerequisites[providerId].path`, an absolute
+ * path ON THE HOST; local `resolveBinary` never runs for a remote session.
+ * Throws (LaunchSpecError → spawn-rejected pane message) when the host lacks
+ * the tool.
+ */
+export function resolveProviderBinary(providerId: ProviderId, hostId?: string): string {
+  if (hostId === undefined || hostId === LOCAL_HOST_ID) return getProvider(providerId).resolveBinaryPath();
+  const record = getHost(hostId);
+  if (!record) {
+    throw new LaunchSpecError(`Unknown host ${JSON.stringify(hostId)} — enroll it in Settings → Hosts first.`);
+  }
+  const prereq = record.prerequisites?.[providerId];
+  if (!prereq?.ok || !prereq.path) {
+    throw new LaunchSpecError(
+      `Host ${JSON.stringify(record.name)} has no ${providerId} binary (prereq probe: ${prereq ? 'missing' : 'never probed'}) — re-probe its tools in Settings → Hosts.`,
+    );
+  }
+  return prereq.path;
+}
+
+/**
+ * The provider launch command as one string for the remote login shell:
+ * the binary's basename (Windows `.CMD`/`.EXE` shims carry the same stem as
+ * the POSIX command) plus every argument, each POSIX-quoted. The local
+ * absolute path does not exist on the remote — the remote login shell's PATH
+ * resolves the remote's own install.
+ */
+function remoteCommand(bin: string, argv: string[], rawToken?: string): string {
+  // `rawToken` (the home-relative session dir) is emitted "…"-quoted so the
+  // remote login shell expands its leading `~` — single quotes (posixQuote)
+  // would hand the CLI a literal `~` directory. The token is the sanitized
+  // remoteLaunchSessionDir spelling ([A-Za-z0-9_./-] after `~/`), so double
+  // quoting carries no expansion risk.
+  return [bin, ...argv]
+    .map((t) => (rawToken !== undefined && t === rawToken ? `"${t.replace(/^~/, '$HOME')}"` : posixQuote(t)))
+    .join(' ');
+}
+
+/** Providers that steer their transcripts into a per-launch `--session-dir`. */
+function usesSessionDirArgv(providerId: ProviderId): providerId is 'pi' | 'pi-bolt' | 'omp' {
+  return providerId === 'pi' || providerId === 'pi-bolt' || providerId === 'omp';
+}
+
+/** Swap a locally-derived `--session-dir` value for the host-side spelling. */
+function remoteSessionDirArgv(argv: string[], hostDir: string): string[] {
+  const i = argv.indexOf('--session-dir');
+  if (i < 0 || i + 1 >= argv.length) return argv; // provider didn't add it — nothing to swap
+  const out = [...argv];
+  out[i + 1] = hostDir;
+  return out;
+}
+
+/**
+ * Env assignments the remote command must carry. ssh runs the remote command
+ * under a fresh login shell — the local child env (pty.spawn's `env`)
+ * applies to the ssh client only, so a profile's config-dir pointer (Pi/OMP
+ * `PI_CODING_AGENT_DIR`, Claude `CLAUDE_CONFIG_DIR`) must ride inside the
+ * command string. Full env forwarding is a SendEnv/AcceptEnv contract
+ * (sshd-side allowlist) — out of T1 scope.
+ * // ponytail: config-dir vars only; forward the rest when a concrete
+ * consumer needs it (then move to ssh SendEnv, not string-prefixing).
+ */
+const REMOTE_ENV_KEYS = ['PI_CODING_AGENT_DIR', 'CLAUDE_CONFIG_DIR', 'CLAUDE_IDE_SESSION_ID', 'FINEVIBE_SESSION_ID'];
+/**
+ * Session-id env values become FILE PATHS on the host (the merged hooks
+ * write `$HOME/.finevibe/run/$<ID>.status` — the id lands in a `mv` target),
+ * and the id is renderer-supplied. The poll side gates the same id with
+ * UI_SESSION_ID_RE (hook-status.ts); this is the spawn-side gate (audit T2
+ * #3): a hostile id is DROPPED — the session launches, hooks just no longer
+ * resolve a sidecar path (the host hook's `echo > "$.../<empty>.status"`
+ * targets the fixed dir; no attacker-controlled path component).
+ */
+const SESSION_ID_ENV_KEYS = new Set(['CLAUDE_IDE_SESSION_ID', 'FINEVIBE_SESSION_ID']);
+const SESSION_ID_VALUE_RE = /^[A-Za-z0-9_-]{1,128}$/;
+function remoteEnvPrefix(env: Record<string, string>): string {
+  return REMOTE_ENV_KEYS.filter(
+    (k) => env[k] !== undefined && (!SESSION_ID_ENV_KEYS.has(k) || SESSION_ID_VALUE_RE.test(env[k])),
+  )
+    .map((k) => `${k}=${posixQuote(env[k])}`)
+    .join(' ');
 }
 
 /**
@@ -389,8 +596,17 @@ export function resolveLaunchSpec(params: {
   systemPrompt?: string;
   envVars: string;
   configDir?: string;
+  /**
+   * Registry host id (per-host providers plan §2). Absent/'local' → local
+   * binary resolution; a remote id resolves the binary from the host's
+   * prereq probe and ssh-wraps the launch through the registry record
+   * (user@host, port). The legacy free-text `sshHost` wire was retired
+   * 2026-10-28 (parent §11) — the registry is the only remote spelling.
+   */
+  hostId?: string;
 }): LaunchSpec {
-  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir } = params;
+  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId } = params;
+  const isRemoteHost = hostId !== undefined && hostId !== LOCAL_HOST_ID;
   const provider = getProvider(providerId);
   const issues: string[] = [];
 
@@ -407,11 +623,12 @@ export function resolveLaunchSpec(params: {
   // vars like PATH ("user vars win") — EXCEPT the vars a provider owns for
   // profile isolation, which would silently repoint the session at another
   // login's config tree. Those are dropped and reported rather than applied.
-  const { allowed: userAllowed, dropped } = partitionUserEnv(userEnv);
+  const { allowed: userAllowed, dropped } = partitionUserEnv(userEnv, isWin);
   if (dropped.length > 0) {
     console.warn(
-      `Ignoring provider-owned env var(s) for session ${sessionId}: ${dropped.join(', ')} ` +
-        '— the pinned profile owns these.',
+      `Ignoring provider-owned env var(s) for session ${sessionId}: ` +
+        dropped.map((key) => `${key} (${providerOwnedEnvReason(key)})`).join(', ') +
+        ' — the pinned profile owns these; remove them from the session environment.',
     );
   }
   Object.assign(env, userAllowed);
@@ -430,14 +647,56 @@ export function resolveLaunchSpec(params: {
     );
   }
 
-  return {
-    executable: provider.resolveBinaryPath(),
-    argv: provider.buildArgs({ sessionId, cliSessionId, isResume, extraArgs, initialPrompt, systemPrompt }),
+  const base: LaunchSpec = {
+    executable: resolveProviderBinary(providerId, hostId),
+    // `remote` reaches the providers that can hand a quote-bearing prompt to
+    // the CLI as a FILE (see systemPromptArg): on an SSH host a local path is
+    // unreadable, so the value must stay a literal argument there.
+    argv: provider.buildArgs({
+      sessionId,
+      cliSessionId,
+      isResume,
+      extraArgs,
+      initialPrompt,
+      systemPrompt,
+      remote: isRemoteHost,
+    }),
     env,
     providerId,
     configDir,
     storageMode: 'default',
   };
+  if (isRemoteHost) {
+    // Registry-host launch (per-host providers plan §2): the binary is the
+    // host's prereq path (base.executable — an absolute path on the host,
+    // used verbatim, never a local basename), and the wrap targets the
+    // record's user@host:port. The record fields are registry-validated.
+    const record = getHost(hostId!)!;
+    // Registry-validated target: isRegistryHostTarget matches the record's
+    // own gate (incl. bracketed IPv6); parseSshHost's free-text grammar
+    // would reject the bracketed spelling (audit T1 #2).
+    if (!isRegistryHostTarget(record.user, record.host)) {
+      throw new LaunchSpecError(`Host ${JSON.stringify(record.name)} has an invalid user/host — re-save it in Settings → Hosts.`);
+    }
+    const prefix = remoteEnvPrefix(base.env);
+    // Host-side session dir (audit T2 #5): the same derivation the transcript
+    // mirror uses, swapped into the provider argv, plus a cheap mkdir guard
+    // (the CLI's local flow pre-creates the dir; the host's must exist too).
+    let argv = base.argv;
+    let mkdir = '';
+    let rawToken: string | undefined;
+    if (usesSessionDirArgv(providerId)) {
+      const hostDir = remoteLaunchSessionDir(providerId, sessionId);
+      argv = remoteSessionDirArgv(base.argv, hostDir);
+      if (argv !== base.argv) {
+        rawToken = hostDir;
+        mkdir = `mkdir -p "${hostDir.replace(/^~/, '$HOME')}" && `;
+      }
+    }
+    const cmd = `${mkdir}${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, argv, rawToken)}`;
+    return { ...base, executable: 'ssh', argv: ['-tt', '-p', String(record.port), '--', `${record.user}@${record.host}`, cmd] };
+  }
+  return base;
 }
 
 export async function spawnPty(
@@ -455,7 +714,8 @@ export async function spawnPty(
   // ever existed for this session, so the exit is not a process exit. Real PTY
   // exits leave it undefined.
   onExit: (exitCode: number, signal?: number, pid?: number, spawnRejectedReason?: string) => void,
-  configDir?: string
+  configDir?: string,
+  hostId?: string
 ): Promise<void> {
   // Register the in-flight spawn BEFORE any side effect: the window
   // between this request and the PTY landing in `ptys` is exactly where a
@@ -477,7 +737,7 @@ export async function spawnPty(
     // that never spawned.
     let spec: LaunchSpec;
     try {
-      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir });
+      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId });
     } catch (err) {
       // Nothing will spawn for this session; drop any kill that arrived for
       // it so a later re-spawn of the same id is not killed by a stale flag.
@@ -493,7 +753,14 @@ export async function spawnPty(
       killPty(sessionId);
     }
 
-    registerSession(sessionId);
+    // Remote-host sessions poll their status sidecar on the host over the
+    // sftp seam (per-host providers plan §3); local ones keep the STATUS_DIR
+    // watcher. registerSession is implied by registerRemoteStatus.
+    if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
+      registerRemoteStatus(sessionId, hostId);
+    } else {
+      registerSession(sessionId);
+    }
 
     const provider = getProvider(providerId);
 
@@ -568,7 +835,7 @@ export async function spawnPty(
       throw err;
     }
 
-    ptyProcess.onData((data) => onData(data));
+    ptyProcess.onData(onData);
     ptyProcess.onExit(({ exitCode, signal }) => {
       if (replacedPtys.delete(ptyProcess)) return;
       // Only remove from map if this PTY is still the active one for this session
@@ -686,18 +953,43 @@ export function spawnShellPty(
   sessionId: string,
   cwd: string,
   onData: (data: string) => void,
-  onExit: (exitCode: number, signal?: number) => void
+  onExit: (exitCode: number, signal?: number) => void,
+  /** Set = open the shell on a remote host via `ssh -tt -p <port> -- <host>`
+   * (multi-host Phase 1, council R-2): the local cwd is irrelevant (the
+   * remote cwd is `remote.defaultFolder`, falling back to the remote home). */
+  remote?: { host: string; port: number; defaultFolder?: string },
 ): void {
   if (ptys.has(sessionId)) {
     replacedPtys.add(ptys.get(sessionId)!.process);
     killPty(sessionId);
   }
 
+  // Register before spawn side effects so the SSH sidecar (`.ssh`) the
+  // output scanner writes below routes through handleFileChange's
+  // known-session gate; a shell session's whole existence is its PTY, so
+  // the registry entry lives and dies with the process.
+  registerSession(sessionId);
+
   const shell = isWin
     ? (process.env.COMSPEC || 'cmd.exe')
-    : (process.env.SHELL || '/bin/zsh');
+    : interactiveShell();
   const shellEnv = withUtf8Locale({ ...process.env, PATH: getFullPath() });
-  const ptyProcess = pty.spawn(shell, [], {
+  // Remote branch: the PTY runs system ssh; the remote login shell answers
+  // there. `--` stops ssh from parsing the host token as an option (the
+  // registry grammar already gates it), matching the resolveLaunchSpec wrap.
+  const useRemote = remote !== undefined;
+  const executable = useRemote ? 'ssh' : shell;
+  const argv = useRemote
+    ? [
+        '-tt',
+        '-p',
+        String(remote.port),
+        '--',
+        remote.host,
+        ...(remote.defaultFolder ? [`cd ${posixQuote(remote.defaultFolder)} && exec $SHELL`] : []),
+      ]
+    : [];
+  const ptyProcess = pty.spawn(executable, argv, {
     name: 'xterm-256color',
     cols: 120,
     rows: 15,
@@ -705,7 +997,7 @@ export function spawnShellPty(
     env: shellEnv,
   });
 
-  ptyProcess.onData((data) => onData(data));
+  ptyProcess.onData(onData);
   ptyProcess.onExit(({ exitCode, signal }) => {
     if (replacedPtys.delete(ptyProcess)) return;
     // Only remove from map if this PTY is still the active one for this session
@@ -713,6 +1005,7 @@ export function spawnShellPty(
     if (current?.process === ptyProcess) {
       ptys.delete(sessionId);
     }
+    unregisterSession(sessionId);
     onExit(exitCode, signal);
   });
 
@@ -727,7 +1020,9 @@ export function killAllPtys(): void {
 
 /**
  * Get the current working directory of a PTY's deepest child process.
- * Uses pgrep/lsof on Unix. Not supported on Windows (returns null).
+ * Uses pgrep/lsof on macOS, a `/proc/<pid>/cwd` readlink on Linux (stock
+ * distros ship without lsof, making the lsof path inert there). Not
+ * supported on Windows (returns null).
  */
 export function getPtyCwd(sessionId: string): Promise<string | null> {
   const instance = ptys.get(sessionId);
@@ -737,6 +1032,22 @@ export function getPtyCwd(sessionId: string): Promise<string | null> {
 
   if (isWin) {
     return getPtyCwdWindows(pid);
+  }
+
+  if (isLinux) {
+    return new Promise((resolve) => {
+      findDeepestChild(pid, (deepestPid) => {
+        try {
+          // C5G-10 parity with the macOS path: canonicalize the readlink
+          // target so the renderer's worktree prefix-match sees
+          // kernel-canonical paths.
+          resolve(canonicalPath(fs.readlinkSync(`/proc/${deepestPid}/cwd`)));
+        } catch (err) {
+          console.debug(`[pty-manager] /proc cwd readlink failed for pid ${deepestPid}:`, err);
+          resolve(null);
+        }
+      });
+    });
   }
 
   return new Promise((resolve) => {

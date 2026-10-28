@@ -45,18 +45,23 @@
   "scripts": {
     "build": "npm run build:core && npm run build:renderer && npm run copy-assets",
     "build:core": "tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json",
-    "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=iife --target=es2022 --minify --loader:.ts=ts",
-    "dev:renderer": "npm run build:renderer -- --sourcemap",
+    "build:renderer": "node scripts/build-renderer.mjs",
+    "dev:renderer": "node scripts/build-renderer.mjs --dev",
     "copy-assets": "node scripts/copy-assets.js",
     "icons": "node scripts/build-icons.mjs",
+    "prestart": "node scripts/require-built.js",
     "start": "npm run build && electron .",
+    "predev": "node scripts/require-built.js",
     "dev": "npm run build:core && npm run dev:renderer && npm run copy-assets && electron .",
-    "postinstall": "node -e \"try{require('electron-builder/package.json');require('child_process').execSync('electron-builder install-app-deps',{stdio:'inherit'})}catch{}\"",
+    "postinstall": "node -e \"try{require('electron-builder/package.json');require('child_process').execSync('electron-builder install-app-deps',{stdio:'inherit'})}catch(e){console.warn('postinstall: electron-builder install-app-deps skipped/failed:',e.message)}\"",
     "pack": "npm run build && npm run icons && electron-builder --dir",
     "dist": "npm run build && npm run icons && electron-builder",
     "win:stamp": "node scripts/edit-win-exe.mjs",
     "win:verify": "node scripts/verify-win-exe.mjs",
-    "dist:win:local": "npm run build && npm run icons && npx electron-builder --win dir --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && npm run win:stamp && npm run win:verify && npx electron-builder --win nsis zip --prepackaged dist/win-unpacked --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false",
+    "win:verify:setup": "node -e \"const {readdirSync}=require('fs'),{execFileSync}=require('child_process');const names=readdirSync('out').filter(n=>/^FineVibe-Setup-.*\\.exe$/.test(n));if(!names.length){console.error('no FineVibe-Setup-*.exe in out/ - the nsis leg produced nothing');process.exit(1)}for(const n of names)execFileSync(process.execPath,['scripts/verify-win-exe.mjs','out/'+n],{stdio:'inherit'})\"",
+    "dist:win:local": "npm run build && npm run icons && npx electron-builder --win dir --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && npm run win:stamp && npm run win:verify && npx electron-builder --win nsis zip --prepackaged out/win-unpacked --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && npm run win:verify:setup && node -e \"require('fs').rmSync('out/win-unpacked',{recursive:true,force:true})\"",
+    "clean": "node -e \"const fs=require('fs');for(const p of ['dist','out','coverage'])fs.rmSync(p,{recursive:true,force:true});for(const f of fs.readdirSync('.').filter(f=>f.endsWith('.tsbuildinfo')))fs.rmSync(f)\"",
+    "clean:caches": "node scripts/clean-caches.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -65,7 +70,9 @@
   "build": {
     "appId": "com.finevibe.app",
     "productName": "FineVibe",
-    "icon": "build/icon.png",
+    "directories": {
+      "output": "out"
+    },
     "files": [
       "dist/main/**/*",
       "dist/preload/**/*",
@@ -88,7 +95,8 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "FineVibe needs microphone access so CLI tools running in the terminal (e.g. Claude Code's /voice) can capture audio."
+        "NSMicrophoneUsageDescription": "FineVibe needs microphone access so CLI tools running in the terminal (e.g. Claude Code's /voice) can capture audio.",
+        "NSLocalNetworkUsageDescription": "FineVibe connects to other devices on your local network to share terminal sessions directly between them."
       },
       "notarize": true
     },
@@ -100,6 +108,11 @@
       ],
       "category": "Development",
       "icon": "build/icon.png"
+    },
+    "deb": {
+      "depends": [
+        "libsecret-tools"
+      ]
     },
     "win": {
       "artifactName": "FineVibe-${version}-win-${arch}.${ext}",
@@ -129,6 +142,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/dompurify": "^3.0.5",
     "@types/picomatch": "^4.0.2",
+    "@types/ssh2": "^1.15.6",
     "@vitest/coverage-v8": "^4.1.0",
     "electron": "^41.0.0",
     "electron-builder": "^26.8.1",
@@ -155,6 +169,7 @@
     "jszip": "^3.10.2",
     "marked": "^17.0.5",
     "node-pty": "^1.1.0",
-    "picomatch": "^4.0.3"
+    "picomatch": "^4.0.3",
+    "ssh2": "^1.17.0"
   }
 }

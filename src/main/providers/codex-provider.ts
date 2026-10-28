@@ -79,7 +79,7 @@ export class CodexProvider implements CliProvider {
       // on 2026-10-21: the CLI is not installed here. Never ship a planModeArg
       // from docs alone — an unknown flag makes codex exit at startup, bricking
       // every spawn. Probe outcomes + the `/plan` startup-input fallback are in
-      // docs/provider-contracts.md and todos/ask-ai-plan-mode-provider-support-plan.md.
+      // docs/provider-contracts.md and todos/archives/plans/ask-ai-plan-mode-provider-support-plan.md.
       systemPromptInjection: true,
       profiles: false,
       selfTitles: false,

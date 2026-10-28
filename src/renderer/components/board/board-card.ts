@@ -24,6 +24,12 @@ export function statusLabel(status: SessionStatus): string {
 export function createCardElement(task: BoardTask): HTMLElement {
   const el = document.createElement('div');
   el.className = 'board-card';
+  // Announces the card and its title (audit a11y pass), and claims keyboard
+  // activation (audit row 15): focusable, Enter/Space open the same edit
+  // modal as a body click; the focus ring lives in kanban.css.
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', task.title);
+  el.setAttribute('tabindex', '0');
   el.dataset.taskId = task.id;
   el.draggable = true;
 
@@ -121,6 +127,15 @@ export function createCardElement(task: BoardTask): HTMLElement {
     showTaskModal('edit', task);
   });
 
+  // Enter/Space on the focused card -> same action as a body click
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    // The run button is focusable itself and handles its own keys.
+    if ((e.target as HTMLElement).closest('button')) return;
+    e.preventDefault(); // Space would scroll the board
+    showTaskModal('edit', task);
+  });
+
   // Right-click -> context menu
   el.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -209,7 +224,7 @@ export async function runTask(task: BoardTask): Promise<void> {
   }
 }
 
-export function focusTaskSession(task: BoardTask): void {
+function focusTaskSession(task: BoardTask): void {
   const project = appState.activeProject;
   if (!project || !task.sessionId) return;
   appState.setActiveSession(project.id, task.sessionId);

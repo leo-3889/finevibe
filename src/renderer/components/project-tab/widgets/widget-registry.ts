@@ -12,7 +12,7 @@ import { createTopFilesWidget } from './top-files-widget.js';
 import { DEFAULT_SESSIONS_CONFIG } from './sessions-types.js';
 import { DEFAULT_TOP_FILES_CONFIG } from './top-files-types.js';
 
-export interface WidgetMeta {
+interface WidgetMeta {
   type: OverviewWidgetType;
   displayName: string;
   description: string;

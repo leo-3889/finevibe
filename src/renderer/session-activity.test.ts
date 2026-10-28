@@ -5,6 +5,7 @@ import {
   setIdle,
   removeSession,
   getStatus,
+  noteInspectorEvents,
   onChange,
   _resetForTesting,
 } from './session-activity';
@@ -127,6 +128,23 @@ describe('notifyInterrupt', () => {
     // User submits a new prompt — should clear interrupted and transition to working
     setHookStatus('s1', 'working', 'UserPromptSubmit');
     expect(getStatus('s1')).toBe('working');
+  });
+
+  it('lets polled (Transcript) working override interrupted state', () => {
+    // pi/pi-bolt/omp have no UserPromptSubmit hook: the polled tail re-emitting
+    // 'working' after an append IS the new-prompt signal and must refresh.
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    notifyInterrupt('s1');
+    expect(getStatus('s1')).toBe('waiting');
+
+    setHookStatus('s1', 'working', 'Transcript');
+    expect(getStatus('s1')).toBe('working');
+
+    // A fresh interrupt still wins; stale non-polled 'working' hooks stay swallowed.
+    notifyInterrupt('s1');
+    setHookStatus('s1', 'working', 'PostToolUse');
+    expect(getStatus('s1')).toBe('waiting');
   });
 
   it('clears interrupted flag on non-working hook status', () => {
@@ -280,5 +298,72 @@ describe('Stop-resolved-working fallback', () => {
     setIdle('s1');
     vi.advanceTimersByTime(10 * 60 * 1000);
     expect(getStatus('s1')).toBe('idle');
+  });
+});
+
+// The tick (✓) is a lie while the session is still waiting on children: the
+// glyph must stay '…' until the last subagent stops, on every surface, because
+// every surface reads this module's status.
+describe('in-flight subagents suppress completed', () => {
+  const ev = (type: string, agent_id?: string) =>
+    ({ type, timestamp: 0, hookEvent: '', agent_id } as never);
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('holds completed while a subagent runs and releases it on stop', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working', 'UserPromptSubmit');
+    noteInspectorEvents('s1', [ev('subagent_start', 'A')]);
+    setHookStatus('s1', 'completed', 'Transcript');
+    expect(getStatus('s1')).toBe('working');
+
+    noteInspectorEvents('s1', [ev('subagent_stop', 'A')]);
+    expect(getStatus('s1')).toBe('completed');
+  });
+
+  it('waits for every child in a parallel batch', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    noteInspectorEvents('s1', [ev('subagent_start', 'A'), ev('subagent_start', 'B')]);
+    setHookStatus('s1', 'completed');
+    noteInspectorEvents('s1', [ev('subagent_stop', 'A')]);
+    expect(getStatus('s1')).toBe('working');
+    noteInspectorEvents('s1', [ev('subagent_stop', 'B')]);
+    expect(getStatus('s1')).toBe('completed');
+  });
+
+  it('a lost SubagentStop cannot wedge the session: the backstop completes it', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    noteInspectorEvents('s1', [ev('subagent_start', 'A')]);
+    setHookStatus('s1', 'completed');
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(getStatus('s1')).toBe('completed');
+  });
+
+  it('a parent stop event clears a stale child set', () => {
+    initSession('s1');
+    setHookStatus('s1', 'working');
+    noteInspectorEvents('s1', [ev('subagent_start', 'A')]);
+    noteInspectorEvents('s1', [ev('stop')]);
+    setHookStatus('s1', 'completed');
+    expect(getStatus('s1')).toBe('completed');
+  });
+
+  it('is scoped per session and cleared on init/idle/remove', () => {
+    initSession('s1');
+    initSession('s2');
+    setHookStatus('s1', 'working');
+    setHookStatus('s2', 'working');
+    noteInspectorEvents('s1', [ev('subagent_start', 'A')]);
+
+    setHookStatus('s2', 'completed');
+    expect(getStatus('s2')).toBe('completed');
+
+    setIdle('s1');
+    setHookStatus('s1', 'working');
+    setHookStatus('s1', 'completed');
+    expect(getStatus('s1')).toBe('completed');
   });
 });

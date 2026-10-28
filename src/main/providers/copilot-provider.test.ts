@@ -69,6 +69,11 @@ let provider: CopilotProvider;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: clearAllMocks keeps IMPLEMENTATIONS - a shuffled
+  // predecessor's statSync/execSync probe answers leaked into this case.
+  mockStatSync.mockReset();
+  mockExecSync.mockReset();
+  mockExistsSync.mockReset();
   mockStatSync.mockImplementation(() => { throw new Error('ENOENT'); });
   _resetCachedPath();
   invalidateBinaryCache();
@@ -187,6 +192,14 @@ describe('buildEnv', () => {
     const env = provider.buildEnv('sess-123', { SOME_VAR: '/custom', OTHER: 'val' });
     expect(env.SOME_VAR).toBe('/custom');
     expect(env.OTHER).toBe('val');
+  });
+
+  it('drops an inherited COPILOT_HOME (P2-85 ambient twin)', () => {
+    // The per-session drop in env-vars.ts gates renderer-supplied vars; an
+    // ambient COPILOT_HOME in the app's own environment reached the child
+    // via baseEnv and relocated the CLI data tree away from every consumer.
+    const env = provider.buildEnv('sess-123', { COPILOT_HOME: '/foreign' });
+    expect(env.COPILOT_HOME).toBeUndefined();
   });
 });
 

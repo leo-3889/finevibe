@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 
 // "Checkout and create" (plan 65-67) in the Add-project modal: a git URL in
@@ -91,6 +91,7 @@ interface FsStub {
   listDirs: Mock;
   browseDirectory: Mock;
   cloneRepo: Mock;
+  ensureDirectory: Mock;
 }
 
 function testWindow(): { finevibe: { app: { openExternal: Mock }; store: { load: Mock; save: Mock }; fs: FsStub } } {
@@ -112,6 +113,7 @@ function stubDom() {
     listDirs: vi.fn(async () => [] as string[]),
     browseDirectory: vi.fn(async () => null as string | null),
     cloneRepo: vi.fn(async () => ({ ok: true })),
+    ensureDirectory: vi.fn(async (p: string) => ({ ok: true, path: p })),
   };
   testWindow().finevibe = {
     app: { openExternal: vi.fn() },
@@ -167,6 +169,181 @@ describe('Add-project git-URL detection', () => {
   });
 });
 
+describe('Add-project Select label (existing-directory probe)', () => {
+  // The probe chain (expandPath → isDirectory) is pure microtasks; one
+  // macrotask tick settles it.
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  // A blur probe needs a real focus move: FocusEvent carries the element the
+  // focus lands on, and the sidebar ignores a null target (dismissal) and any
+  // move into the modal footer (Cancel/Confirm).
+  const blurTo = (el: Element | null) => new FocusEvent('blur', { relatedTarget: el });
+  // Longer than the 100 ms autocomplete debounce: a keystroke probe would
+  // surface inside the sleep, i.e. before the assertion, not after it.
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const browseField = () => (modalMock.showModal.mock.calls[0][1] as unknown as Array<{
+    id: string;
+    onButtonClick?: (input: HTMLInputElement) => Promise<void> | void;
+  }>).find((f) => f.id === 'project-path')!.onButtonClick!;
+
+  it('probes the open prefill: an existing default folder reads Select', async () => {
+    // The prefill is the default projects folder — an allowlisted root in
+    // main — so probing it at open can never raise a native dialog, and the
+    // label is right without the user ever touching the field.
+    const { promptNewProject } = await setup('/home/u/projects');
+    promptNewProject();
+    await flush();
+    expect(fsStub.isDirectory).toHaveBeenCalledTimes(1);
+    expect(fsStub.isDirectory).toHaveBeenCalledWith('/home/u/projects');
+    expect(confirmBtn().textContent).toBe('Select');
+  });
+
+  it('probes the open prefill: a missing default folder stays Create', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    fsStub.isDirectory.mockResolvedValue(false);
+    promptNewProject();
+    await flush();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+
+  it('never probes at open when the path field is empty', async () => {
+    const { promptNewProject } = await setup('');
+    promptNewProject();
+    await sleep(150);
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+
+  it('never probes on the keystroke path; blur probes and flips to Select', async () => {
+    const { promptNewProject } = await setup('');
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = '/home/u/demo';
+    pathInput.dispatchEvent(new Event('input'));
+    await sleep(150);
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    expect(confirmBtn().textContent).toBe('Create');
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    expect(fsStub.isDirectory).toHaveBeenCalledWith('/home/u/demo');
+    expect(confirmBtn().textContent).toBe('Select');
+  });
+
+  it('keeps Checkout and create precedence: Select yields to a typed URL', async () => {
+    const { promptNewProject } = await setup('');
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    // Earn Select on a local dir first: an implementation that re-probes (or
+    // repaints Select) on the URL's blur would keep the wrong label here.
+    pathInput.value = '/home/u/demo';
+    pathInput.dispatchEvent(new Event('input'));
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    expect(confirmBtn().textContent).toBe('Select');
+    pathInput.value = URL_HTTPS;
+    pathInput.dispatchEvent(new Event('input'));
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    expect(fsStub.expandPath).not.toHaveBeenCalledWith(URL_HTTPS);
+    expect(fsStub.isDirectory).not.toHaveBeenCalledWith(URL_HTTPS);
+    expect(confirmBtn().textContent).toBe('Checkout and create');
+  });
+
+  it('probes after Browse fills the field', async () => {
+    const { promptNewProject } = await setup('');
+    fsStub.browseDirectory.mockResolvedValueOnce('/picked/dir');
+    promptNewProject();
+    await browseField()(input('modal-project-path'));
+    await flush();
+    expect(fsStub.isDirectory).toHaveBeenCalledWith('/picked/dir');
+    expect(confirmBtn().textContent).toBe('Select');
+  });
+
+  it('restores the plain label when the probed directory does not exist', async () => {
+    const { promptNewProject } = await setup('');
+    fsStub.isDirectory.mockResolvedValueOnce(false);
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = '/home/u/gone';
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+
+  it('never probes on a Cancel dismissal: a blur into the footer is not a focus move', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    promptNewProject();
+    // The open probe of the prefill is legitimate; this case is about the
+    // dismissal blurs that come after it.
+    await flush();
+    fsStub.isDirectory.mockClear();
+    const actions = document.createElement('div');
+    actions.id = 'modal-actions';
+    const cancel = document.createElement('button');
+    actions.appendChild(cancel);
+    document.body.appendChild(actions);
+    // Cancel/Confirm blur: the footer owns the click, so no probe.
+    input('modal-project-path').dispatchEvent(blurTo(cancel));
+    // Esc hides the overlay: a dismissal carries no relatedTarget at all.
+    input('modal-project-path').dispatchEvent(new Event('blur'));
+    await flush();
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    // The dismissal blurs paint nothing: the label the open probe earned
+    // for the prefill stands untouched.
+    expect(confirmBtn().textContent).toBe('Select');
+  });
+
+  it('drops a stale probe reply over the name rewrite; the rewrite probes its own value', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    // The prefill exists; the `<folder>/demo` the name sync builds does not.
+    fsStub.isDirectory.mockImplementation(async (p: string) => p === '/home/u/projects');
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    await flush();
+    expect(confirmBtn().textContent).toBe('Select');
+    // Queue a probe for the prefill whose reply is delayed past the rewrite.
+    let resolveStale: (v: boolean) => void = () => {};
+    fsStub.isDirectory.mockImplementationOnce(
+      () => new Promise<boolean>((r) => { resolveStale = r; }),
+    );
+    pathInput.dispatchEvent(blurTo(input('modal-project-name')));
+    await flush();
+    const nameInput = input('modal-project-name');
+    nameInput.value = 'demo';
+    nameInput.dispatchEvent(new Event('input'));
+    expect(pathInput.value).toBe('/home/u/projects/demo');
+    // The programmatic rewrite probes the value it just wrote: Create is
+    // earned by that reply, not by wiping the flag.
+    await flush();
+    expect(fsStub.isDirectory).toHaveBeenCalledWith('/home/u/projects/demo');
+    expect(confirmBtn().textContent).toBe('Create');
+    resolveStale(true);
+    await flush();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+
+  it('re-probes the name rewrite into Select when the new folder exists', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    fsStub.isDirectory.mockImplementation(async (p: string) => p === '/home/u/projects/demo');
+    promptNewProject();
+    await flush();
+    expect(confirmBtn().textContent).toBe('Create');
+    const nameInput = input('modal-project-name');
+    nameInput.value = 'demo';
+    nameInput.dispatchEvent(new Event('input'));
+    await flush();
+    expect(fsStub.isDirectory).toHaveBeenCalledWith('/home/u/projects/demo');
+    expect(confirmBtn().textContent).toBe('Select');
+  });
+
+  it('drops a late probe reply when the modal closes first (C2R-11 pattern)', async () => {
+    const { promptNewProject } = await setup('/home/u/projects');
+    promptNewProject();
+    modalMock.closeModal();
+    await flush();
+    expect(confirmBtn().textContent).toBe('Create');
+  });
+});
+
 describe('Add-project default-projects-folder prefill', () => {
   it('pre-fills the path with the folder and syncs while the name is edited', async () => {
     const { promptNewProject } = await setup('/home/u/projects');
@@ -176,6 +353,16 @@ describe('Add-project default-projects-folder prefill', () => {
     nameInput.value = 'demo';
     nameInput.dispatchEvent(new Event('input'));
     expect(input('modal-project-path').value).toBe('/home/u/projects/demo');
+  });
+
+  it('fills a Windows default folder with backslashes as the name is typed', async () => {
+    const { promptNewProject } = await setup('E:\\AI');
+    promptNewProject();
+    expect(input('modal-project-path').value).toBe('E:\\AI');
+    const nameInput = input('modal-project-name');
+    nameInput.value = 'sample-project';
+    nameInput.dispatchEvent(new Event('input'));
+    expect(input('modal-project-path').value).toBe('E:\\AI\\sample-project');
   });
 
   it('leaves the path alone once the user edited it', async () => {
@@ -210,14 +397,30 @@ describe('Add-project checkout-and-create flow', () => {
     expect(addProject).toHaveBeenCalledWith('repo', '/home/u/projects/repo', undefined);
   });
 
-  it('skips the isDirectory gate for a URL', async () => {
+  it('joins the clone target with the parent folder\'s separator style', async () => {
+    const { promptNewProject, addProject } = await setup('E:\\AI');
+    promptNewProject();
+    const pathInput = input('modal-project-path');
+    pathInput.value = URL_HTTPS;
+    pathInput.dispatchEvent(new Event('input'));
+    await modalMock.onConfirm!({ 'project-name': 'repo', 'project-path': URL_HTTPS, profile: '' });
+    expect(fsStub.cloneRepo).toHaveBeenCalledWith(URL_HTTPS, 'E:\\AI\\repo');
+    expect(addProject).toHaveBeenCalledWith('repo', 'E:\\AI\\repo', undefined);
+  });
+
+  it('skips the directory probe and the create call for a URL', async () => {
     const { promptNewProject } = await setup('/home/u/projects');
     promptNewProject();
     const pathInput = input('modal-project-path');
     pathInput.value = URL_HTTPS;
     pathInput.dispatchEvent(new Event('input'));
     await modalMock.onConfirm!({ 'project-name': 'repo', 'project-path': URL_HTTPS, profile: '' });
-    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    // A typed URL owns the field: nothing in the modal — open, blur,
+    // confirm — may probe it, and confirm never creates it; the clone owns
+    // the destination.
+    expect(fsStub.isDirectory).not.toHaveBeenCalledWith(URL_HTTPS);
+    expect(fsStub.expandPath).not.toHaveBeenCalledWith(URL_HTTPS);
+    expect(fsStub.ensureDirectory).not.toHaveBeenCalled();
   });
 
   it('prompts for the parent folder when no default folder is set', async () => {
@@ -261,21 +464,37 @@ describe('Add-project checkout-and-create flow', () => {
     expect(confirmBtn().textContent).toBe('Checkout and create');
   });
 
-  it('keeps the manual path/name flow: an existing directory registers directly', async () => {
+  it('keeps the manual path/name flow: confirm creates the directory and registers it', async () => {
     const { promptNewProject, addProject } = await setup('');
     promptNewProject();
     await modalMock.onConfirm!({ 'project-name': 'demo', 'project-path': '/home/u/demo', profile: '' });
-    expect(fsStub.isDirectory).toHaveBeenCalled();
+    expect(fsStub.ensureDirectory).toHaveBeenCalledWith('/home/u/demo');
+    // The confirm no longer gates on the consent-gated stat: main resolves
+    // the raw path itself, so the modal neither expands nor stats it.
+    expect(fsStub.isDirectory).not.toHaveBeenCalled();
+    expect(fsStub.expandPath).not.toHaveBeenCalledWith('/home/u/demo');
     expect(fsStub.cloneRepo).not.toHaveBeenCalled();
     expect(addProject).toHaveBeenCalledWith('demo', '/home/u/demo', undefined);
   });
 
-  it('keeps the manual flow gated: a missing directory shows the existing error', async () => {
+  it('registers the path main resolved, not the spelling that was typed', async () => {
     const { promptNewProject, addProject } = await setup('');
-    fsStub.isDirectory.mockResolvedValueOnce(false);
+    fsStub.ensureDirectory.mockResolvedValueOnce({ ok: true, path: 'E:\\AI\\sample-project' });
+    promptNewProject();
+    await modalMock.onConfirm!({ 'project-name': 'sample-project', 'project-path': 'E:\\AI/sample-project', profile: '' });
+    expect(addProject).toHaveBeenCalledWith('sample-project', 'E:\\AI\\sample-project', undefined);
+  });
+
+  it('keeps the manual flow gated: a directory main cannot create shows the error', async () => {
+    const { promptNewProject, addProject } = await setup('');
+    fsStub.ensureDirectory.mockResolvedValueOnce({ ok: false, error: 'EACCES: permission denied' });
     promptNewProject();
     await modalMock.onConfirm!({ 'project-name': 'demo', 'project-path': '/home/u/gone', profile: '' });
-    expect(modalMock.setModalError).toHaveBeenCalledWith('project-path', expect.stringContaining('Directory does not exist'));
+    expect(modalMock.setModalError).toHaveBeenCalledWith(
+      'project-path',
+      'Could not create the directory: EACCES: permission denied',
+    );
+    expect(modalMock.closeModal).not.toHaveBeenCalled();
     expect(addProject).not.toHaveBeenCalled();
   });
 });

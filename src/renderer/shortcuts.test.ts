@@ -21,6 +21,10 @@ describe('shortcut focus/modal guard', () => {
 
   beforeEach(() => {
     manager = new ShortcutManager();
+    // appState is a module-level mock (file lifetime); the keybinding
+    // rebind test sets a global 'close-session' override - every dispatch
+    // describe must start from the empty default, not a shuffled neighbor.
+    appState.preferences.keybindings = {};
     closeCalls = 0;
     zoomCalls = 0;
     manager.registerHandler('close-session', () => { closeCalls++; return true; });
@@ -133,6 +137,7 @@ describe('shortcut overlay guard (overlays outside modal-shell)', () => {
 
   beforeEach(() => {
     manager = new ShortcutManager();
+    appState.preferences.keybindings = {}; // module-level mock - see guard describe
     closeCalls = 0;
     manager.registerHandler('close-session', () => { closeCalls++; return true; });
     document.body.innerHTML = '';
@@ -241,5 +246,67 @@ describe('shortcut handler verdict', () => {
     expect(manager.matchEvent(e)).toBe(true);
     expect(closeCalls).toBe(1);
     expect(e.defaultPrevented).toBe(true);
+  });
+});
+
+describe('physical-key matching (non-Latin layouts)', () => {
+  // Letter/digit bindings resolve through e.code (layout-independent):
+  // a Cyrillic keyboard reports key:'т' on the physical T, and Ctrl+Т
+  // must still fire the Ctrl+T binding. Symbols/punctuation keep the
+  // e.key comparison; the mac meta paths are covered by the suites above.
+  let manager: ShortcutManager;
+  let newSessionCalls: number;
+  let goto1Calls: number;
+  let backCalls: number;
+
+  beforeEach(() => {
+    manager = new ShortcutManager();
+    appState.preferences.keybindings = {};
+    newSessionCalls = 0;
+    goto1Calls = 0;
+    backCalls = 0;
+    manager.registerHandler('new-session', () => { newSessionCalls++; return true; });
+    manager.registerHandler('goto-session-1', () => { goto1Calls++; return true; });
+    manager.registerHandler('tab-back', () => { backCalls++; return true; });
+    document.body.innerHTML = '';
+  });
+
+  it('fires a letter binding from the physical key under a Cyrillic e.key', () => {
+    const e = new KeyboardEvent('keydown', keyInit({ key: 'т', code: 'KeyT', ctrlKey: true }));
+    expect(manager.matchEvent(e)).toBe(true);
+    expect(newSessionCalls).toBe(1);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('does not fire when the physical key differs from the binding', () => {
+    // key 'т' arriving on the physical Y must not match Ctrl+T.
+    const e = new KeyboardEvent('keydown', keyInit({ key: 'т', code: 'KeyY', ctrlKey: true }));
+    expect(manager.matchEvent(e)).toBe(false);
+    expect(newSessionCalls).toBe(0);
+  });
+
+  it('matches digit bindings through e.code', () => {
+    const e = new KeyboardEvent('keydown', keyInit({ key: '1', code: 'Digit1', ctrlKey: true }));
+    expect(manager.matchEvent(e)).toBe(true);
+    expect(goto1Calls).toBe(1);
+  });
+
+  it('keeps symbol bindings on the e.key comparison', () => {
+    // Ctrl+[ is a punctuation binding: it matches the typed '['
+    // (Shift+4 on en-US produces e.key '[' with code 'Digit4'), and a
+    // physical bracket key whose layout emits a different character
+    // must not match.
+    const typed = new KeyboardEvent('keydown', keyInit({ key: '[', code: 'Digit4', ctrlKey: true }));
+    expect(manager.matchEvent(typed)).toBe(true);
+    expect(backCalls).toBe(1);
+    const physical = new KeyboardEvent('keydown', keyInit({ key: 'х', code: 'KeyL', ctrlKey: true }));
+    expect(manager.matchEvent(physical)).toBe(false);
+    expect(backCalls).toBe(1);
+  });
+
+  it('latin e.key + matching code keeps working (regression)', () => {
+    const e = new KeyboardEvent('keydown', keyInit({ key: 't', code: 'KeyT', ctrlKey: true }));
+    expect(manager.matchEvent(e)).toBe(true);
+    expect(newSessionCalls).toBe(1);
   });
 });

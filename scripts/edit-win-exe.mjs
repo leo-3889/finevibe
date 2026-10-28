@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stamp icon + version resources into dist/win-unpacked/FineVibe.exe.
+// Stamp icon + version resources into out/win-unpacked/FineVibe.exe.
 //
 // Why this exists: on a plain Windows host electron-builder's own rcedit pass
 // (`win.signAndEditExecutable`) fails while extracting winCodeSign-2.6.0.7z,
@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import { rcedit } from 'rcedit';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const exe = path.join(root, 'dist', 'win-unpacked', 'FineVibe.exe');
+const exe = path.join(root, 'out', 'win-unpacked', 'FineVibe.exe');
 const icon = path.join(root, 'build', 'icon.ico');
 const rel = p => path.relative(root, p).replace(/\\/g, '/');
 

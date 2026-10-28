@@ -17,7 +17,17 @@ import * as path from 'path';
 import { STATUS_DIR, SCRIPT_DIR } from './hook-status';
 import { isWin, pythonBin as PY } from './platform';
 import { STOP_INFLIGHT_TRUST_MS } from '../shared/constants';
+import { STDIN_UTF8_GUARD } from '../shared/python';
 
+/**
+ * Live pythonBin + UTF-8 mode on Windows (see STDIN_UTF8_GUARD for why).
+ * Computed at generation time, not module load: prerequisites
+ * .checkPythonAvailable() re-points the `pythonBin` binding after boot, and
+ * hook commands must spawn the pinned interpreter (P2-23).
+ */
+function pyUtf8Cmd(): string {
+  return isWin ? `${PY} -X utf8` : PY;
+}
 // Python helper scripts are written to SCRIPT_DIR by installEventScript() and
 // are deliberately kept on exit (hook-status.ts cleanup: deleting them races
 // with CLI processes that outlive the app, and they are reinstalled on
@@ -89,7 +99,7 @@ if sid:
   //
   // argv: [1]=session-id env var, [2]=status_dir, [3]=stale_ms, [4]=marker.
   installEventScript('stop_status_writer.py', `import sys,os,json,time
-sid=os.environ.get(sys.argv[1],'')
+${STDIN_UTF8_GUARD}sid=os.environ.get(sys.argv[1],'')
 status_dir=sys.argv[2]
 try:
     stale_ms=int(sys.argv[3])
@@ -139,7 +149,7 @@ with open(os.path.join(status_dir,sid+'.status'),'w') as f:
 
   // session_id_capture.py — captures session_id from JSON stdin
   installEventScript('session_id_capture.py', `import sys,json,os
-try:
+${STDIN_UTF8_GUARD}try:
     d=json.load(sys.stdin)
 except:
     sys.exit(0)
@@ -157,7 +167,7 @@ if sid_env and claude_sid:
   // must not raise a missing-tool insight. Random suffix so several failures in
   // one turn can't collide.
   installEventScript('tool_failure_capture.py', `import sys,json,os,random,string
-try:
+${STDIN_UTF8_GUARD}try:
     d=json.load(sys.stdin)
 except:
     sys.exit(0)
@@ -186,7 +196,7 @@ if sid and tn and err and not d.get('is_interrupt'):
  * nothing may be interpolated unquoted into `sh -c '...'`: any apostrophe
  * in the value terminates the outer quoted string.
  */
-function shQuote(word: string): string {
+export function shQuote(word: string): string {
   return `'${word.replace(/'/g, `'\\''`)}'`;
 }
 /**
@@ -209,7 +219,7 @@ export function statusCmd(
     // one-liner; the Python writer is left as-is because NTFS mtime is 100 ns,
     // far below the 2 s poll cadence, so the lost-update window below is a
     // POSIX (coarse-mtime tmpfs/HFS+) hazard.
-    return `${PY} "${py}" "${event}" "${status}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
+    return `${pyUtf8Cmd()} "${py}" "${event}" "${status}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
   }
   // Write to a temp name, then rename into place. `>` truncates the target
   // before writing, and on a coarse-mtime filesystem (1 s tmpfs, HFS+) the
@@ -250,7 +260,7 @@ export function stopStatusCmd(
 ): string {
   const py = path.join(SCRIPT_DIR, 'stop_status_writer.py').replace(/\\/g, '/');
   const dir = STATUS_DIR.replace(/\\/g, '/');
-  return `${PY} "${py}" "${sessionIdVar}" "${dir}" "${STOP_STALE_MS}" "${hookMarker}"`;
+  return `${pyUtf8Cmd()} "${py}" "${sessionIdVar}" "${dir}" "${STOP_STALE_MS}" "${hookMarker}"`;
 }
 
 /**
@@ -262,7 +272,7 @@ export function captureSessionIdCmd(
 ): string {
   const py = path.join(SCRIPT_DIR, 'session_id_capture.py').replace(/\\/g, '/');
   const dir = STATUS_DIR.replace(/\\/g, '/');
-  return `${PY} "${py}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
+  return `${pyUtf8Cmd()} "${py}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
 }
 
 /**
@@ -274,7 +284,7 @@ export function captureToolFailureCmd(
 ): string {
   const py = path.join(SCRIPT_DIR, 'tool_failure_capture.py').replace(/\\/g, '/');
   const dir = STATUS_DIR.replace(/\\/g, '/');
-  return `${PY} "${py}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
+  return `${pyUtf8Cmd()} "${py}" "${sessionIdVar}" "${dir}" "${hookMarker}"`;
 }
 
 /**
@@ -307,6 +317,6 @@ export function wrapPythonHookCmd(
   _pipeStdin = true,
 ): string {
   const pyCmd = path.join(SCRIPT_DIR, scriptName).replace(/\\/g, '/');
-  return `${PY} "${pyCmd}" "${hookMarker}"`;
+  return `${pyUtf8Cmd()} "${pyCmd}" "${hookMarker}"`;
 }
 

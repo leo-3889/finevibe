@@ -41,20 +41,47 @@ export default defineConfig({
       include: [
         'src/main/**/*.ts',
         'src/preload/**/*.ts',
-        // P2-12: the renderer component tree is the highest-risk unmeasured
-        // surface (board/pane/modal state); widen the map even where tests
-        // are thin — the report is expected to be noisy.
-        'src/renderer/components/**',
+        // P2-12 widened the map to the renderer component tree (the highest-risk
+        // unmeasured surface: board/pane/modal state); row 19 widened it to the
+        // whole renderer (state/, lib/, index/, keybindings) so the floor covers
+        // every renderer file a DOM suite can reach. The report is expected to be
+        // noisy — the floor in `thresholds` is what enforces, not the map.
+        'src/renderer/**/*.ts',
       ],
       exclude: [
         'src/main/mcp-ipc-handlers.ts',
         'src/main/menu.ts',
         'src/main/mcp-client.ts',
         'src/renderer/index.ts',
+        // Boot wiring for the served-page early-crash handoff (row 16): one
+        // array drain, exercised by early-crash.test.ts; index.ts itself is
+        // excluded above for the same reason.
+        'src/renderer/early-crash.ts',
         'src/renderer/keybindings.ts',
         'src/renderer/notification-sound.ts',
         'src/renderer/git-status.ts',
       ],
+      // Row 19 floor, measured 2026-10-28 over the full suite (`npm run test:coverage`).
+      // A ratchet: raise these as coverage grows, never lower them. `test:coverage` is
+      // the only gate that reads them (no CI job runs coverage today), so this bites
+      // locally first; wiring it into CI is an owner call alongside the red-on-`main`
+      // win32 suite (queue row 3).
+      thresholds: {
+        // Measured 2026-10-28 over the full suite with the map above, rounded
+        // DOWN, so this is a floor and not an aspiration: raise it as coverage
+        // grows, never lower it (v8 drifts ~0.02 pp run to run, hence integers).
+        // Measured now: statements 71.39 / branches 64.54 / functions 69.98 /
+        // lines 73.62. By area: main 88.8% lines, renderer 65.4% (205 files),
+        // and src/preload is fully bridged under test - preload.ts 100% lines
+        // (row 22's surface walk) and browser-tab-preload.ts 98.5% lines /
+        // 100% functions (row 22's guest-command test; the tail is the
+        // pointer-guard branches). The preload share is now at its practical
+        // ceiling: the remaining branches are jsdom-unreachable canvas paths.
+        statements: 71,
+        branches: 64,
+        functions: 69,
+        lines: 73,
+      }
     },
   },
 });

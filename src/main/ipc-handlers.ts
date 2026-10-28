@@ -6,42 +6,60 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from './pty-manager';
-import { addMcpServer, removeMcpServer, isManagedMcpConfigDir } from './claude-cli';
-import type { McpServerConfig } from './claude-cli';
+import { isManagedMcpConfigDir } from './claude-cli';
 import { fileURLToPath } from 'node:url';
-import { listImportableLegacyProjects } from './legacy-import';
-import { loadState, saveState, saveStateSync, getKnownProjectPaths, PersistedState } from './store';
+import { loadState, saveState, saveStateSync, getKnownProjectPaths, getRemoteProjectRoots, invalidateStateCache, PersistedState } from './store';
+import { getHost } from './hosts/host-registry';
+import { refreshHostTools } from './hosts/enrollment';
+import { listRemoteDir, readRemoteFile, statRemotePath, walkRemoteFiles } from './hosts/remote-fs';
+import { setRemoteWatchWindow, unwatchRemoteDir, watchRemoteDir } from './hosts/remote-watch';
+import {
+  gitOnStatus,
+  gitOnFiles,
+  gitOnDiff,
+  gitOnWorktrees,
+  gitOnRemoteUrl,
+  gitOnBranches,
+  gitOnStageFile,
+  gitOnUnstageFile,
+  gitOnDiscardFile,
+  gitOnCheckoutBranch,
+  gitOnCreateBranch,
+  type GitTarget,
+} from './git-on';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
 import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
-import { getGitStatus, getGitFiles, getGitDiff, getGitWorktrees, gitStageFile, gitUnstageFile, gitDiscardFile, getGitRemoteUrl, listGitBranches, checkoutGitBranch, createGitBranch } from './git-status';
 import { startGitWatcher, notifyGitChanged, onGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
-import { checkForUpdates, quitAndInstall } from './auto-updater';
-import { probeAgentmemory, ensureAgentmemoryRunning, readAgentmemoryLog } from './agentmemory-manager';
-import { createAppMenu } from './menu';
-import { getProvider, getAllProviderMetas, getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
+import { getProvider, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
+import { remoteLaunchSessionDir } from './launch-session-dir';
 import type { CliProvider } from './providers/provider';
 import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
-import { analyzeReadiness } from './readiness/analyzer';
-import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { detectGitCheckoutUrl } from '../shared/git-url';
-import type { ProviderId, Profile, GitFileEntry, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
-import { canonicalPath, canonicalRoot, expandUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
+import type { ProviderId, Profile, Preferences, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
+import { LOCAL_HOST_ID } from '../shared/types';
+import { canonicalPath, canonicalRoot, expandUserPath, resolveUserPath, isBinaryBuffer, isMacPackagePath, BINARY_SNIFF_BYTES, invalidateCanonicalPathIfRootsChanged } from './fs-utils';
 import { isLinux, isMac, isWin } from './platform';
 import { listProfiles as listChromeProfiles, runImport as runChromeImport, clearImportedCookies, getCookieCount } from './chrome-import/importer';
 import { sweepImportTempDirs } from './chrome-import/copy';
+import { dirSizeBytes } from './launch-session-dir';
+import { getLegacyRetirementStatus } from './userdata-migration';
 import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { buildFineVibeIgnoreMatcher } from './finevibeignore';
 import { setCloseConfirmed } from './close-state';
-import { provisionProfileDir } from './profiles';
-import { getKeychainIsolationStatus } from './claude-keychain';
+import { getMainWindow } from './main-window';
+import { registerLeafDomains } from './ipc/leaf-domains';
+import { registerAppDomains } from './ipc/app-domains';
+import { registerSupportDomains } from './ipc/support-domains';
+import { registerHostsDomains } from './ipc/hosts-domains';
+import { boundedSet } from './bounded-map';
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
 // "Checkout and create": a full clone of a large allowlisted repo over a slow
 // link is minutes, not seconds; the modal shows a progress state, so this
@@ -55,6 +73,23 @@ function isWithinKnownProject(resolvedPath: string): boolean {
   const target = canonicalPath(resolvedPath);
   const paths = getKnownProjectPaths();
   return paths.some(p => isWithin(canonicalRoot(p), target));
+}
+
+/**
+ * Coherence Phase 3 belt (docs/hosts.md "never silently lie"): a path that
+ * belongs to a REMOTE project must never be served by the local sinks. On a
+ * Linux controller whose local paths mirror the host's, local canonicalization
+ * happily resolves the remote string to a real local directory - the gate
+ * above passes and git/fs read the WRONG machine. Compare the raw string
+ * (posix-normalized) against the remote project roots; no canonicalization.
+ */
+function remoteProjectOwnerOf(resolvedPath: string): string | undefined {
+  const posix = resolvedPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  for (const root of getRemoteProjectRoots()) {
+    const r = root.path.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (posix === r || posix.startsWith(`${r}/`)) return root.hostId;
+  }
+  return undefined;
 }
 
 /**
@@ -75,6 +110,11 @@ const MAX_GIT_WATCHED_ROOTS = 200;
 function requireGitRoot(channel: string, projectPath: string): string {
   if (typeof projectPath !== 'string') throw new Error('Invalid project path');
   const resolved = path.resolve(projectPath);
+  const remoteOwner = remoteProjectOwnerOf(resolved);
+  if (remoteOwner) {
+    console.warn(`${channel} blocked: ${resolved} is a project on remote host ${remoteOwner} - git runs on this machine only`);
+    throw new Error('Project lives on a remote host');
+  }
   // Register and compare in canonical form. The renderer spells the same
   // directory differently (drive-letter case, separators, `..`, junctions) and
   // isWithinKnownProject canonicalizes on its side, so a raw-string set let one
@@ -86,6 +126,42 @@ function requireGitRoot(channel: string, projectPath: string): string {
     throw new Error('Path is not within a known project');
   }
   return resolved;
+}
+
+/**
+ * Phase 3.5 R2 routing: a remote-owned path resolves to its host record and
+ * the exec lane; everything else goes through the local requireGitRoot gate
+ * (a remote root whose host record was deleted keeps the belt refusal).
+ */
+function requireGitTarget(channel: string, projectPath: string): GitTarget {
+  if (typeof projectPath !== 'string') throw new Error('Invalid project path');
+  // R3: the remote compare runs on the RAW string. path.resolve on the
+  // controller turns posix `/srv/app` into `C:\srv\app` on Windows and the
+  // match is lost there - the old belt only fired cross-platform because it
+  // compared the resolved form (and was inert on Windows, per its own test).
+  const owner = remoteProjectOwnerOf(projectPath);
+  const record = owner ? getHost(owner) : null;
+  if (owner && record) {
+    const posix = projectPath.replace(/\\/g, '/');
+    return { kind: 'remote', record, cwd: posix.replace(/\/+$/, '') || '/' };
+  }
+  return { kind: 'local', cwd: requireGitRoot(channel, projectPath) };
+}
+
+/**
+ * filePath for a REMOTE project: git's own relative spelling (from the
+ * porcelain list). No path.resolve on the controller - a posix string
+ * canonicalized on Windows is the R3 shared-fiction bug - so validate
+ * structurally: relative, no `..` segments, no NUL.
+ */
+function requireRemoteRelPath(channel: string, filePath: string): string {
+  if (typeof filePath !== 'string' || filePath.trim() === '') throw new Error('Invalid file path');
+  const posix = filePath.replace(/\\/g, '/');
+  if (posix.includes('\0') || path.posix.isAbsolute(posix) || posix.split('/').includes('..')) {
+    console.warn(`${channel} blocked: ${filePath} is not a path inside the project`);
+    throw new Error('Invalid file path');
+  }
+  return posix;
 }
 
 /** filePath arrives from the renderer; keep the joined target inside the root. */
@@ -109,6 +185,47 @@ function requireGitFilePath(channel: string, root: string, filePath: string): st
 function isWithin(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+// SA-P2-4: `store:save` / `store:save-sync` take the renderer's PersistedState
+// verbatim. saveState validates the gate roots (P1-12) and grafts the
+// main-owned consent keys (S1-02), but `preferences` itself was never checked:
+// an injected unknown key persisted to disk and re-hydrated into every
+// consumer. Known-keys filter at the IPC boundary (no schema library). The
+// main-owned keys stay in the list on purpose — the store's graft runs AFTER
+// this (saveState → graftMainOwnedPreferences) and overwrites them with the
+// authoritative cache values, so filtering them out here would only erase the
+// payload the graft replaces. The `satisfies` is the drift guard: a Preferences
+// key missing from this object is a compile error, not a silent drop.
+const PREFERENCE_KEYS = {
+  soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: true,
+  sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true,
+  confirmCloseWorkingSession: true, zoomFactor: true, defaultProvider: true,
+  locale: true, defaultProfiles: true, planModeDefaults: true,
+  statusLineConsent: true, statusLineConsentCommand: true, statusLineConsentByDir: true,
+  copyOnSelect: true, askAiFocus: true, defaultProjectsFolder: true,
+  keybindings: true, theme: true, readinessExcludedProviders: true,
+  sidebarViews: true, boardCardMetrics: true,
+  activeHostId: true,
+  chromeImport: true,
+} satisfies Record<keyof Preferences, true>;
+
+function sanitizePersistedState(state: PersistedState): PersistedState {
+  const prefs = state?.preferences;
+  if (!prefs || typeof prefs !== 'object') return state;
+  const clean: Record<string, unknown> = {};
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(prefs)) {
+    if (Object.hasOwn(PREFERENCE_KEYS, key)) clean[key] = value;
+    else dropped.push(key);
+  }
+  if (dropped.length > 0) {
+    console.warn(`store:save dropped ${dropped.length} unknown preferences key(s): ${dropped.join(', ')}`);
+  }
+  // SAFETY: every key of `clean` passed the PREFERENCE_KEYS allowlist, so the
+  // object is a Preferences-shaped subset by construction; TS cannot follow
+  // Object.entries' Record<string, unknown> widening back to the interface.
+  return { ...state, preferences: clean as unknown as Preferences };
 }
 /** Map an exit + transcript crash reason to the renderer's exitReason
  *  (crash reason wins over the exit code; undefined = clean exit). */
@@ -186,15 +303,34 @@ function isAllowedReadPath(resolvedPath: string): boolean {
  * read gate widened with the home tree. The pre-project add / new-project
  * picker flows run in home before any project exists, so home is a
  * legitimate enumeration root; everything outside home + known roots is
- * not app data and needs the explicit confirm below (fs:listDirs) or is
- * answered with the channel's empty shape (fs:isDirectory).
+ * not app data and needs the explicit confirm below (fs:listDirs,
+ * fs:isDirectory) before anything is answered about it.
  */
 function isWithinHomeTree(resolvedPath: string): boolean {
   return isWithin(canonicalRoot(os.homedir()), canonicalPath(resolvedPath));
 }
 
+/** True when `resolvedPath` sits inside the preferences' default projects
+ * folder. A blank/absent value NEVER matches: `path.resolve('')` is the cwd,
+ * so an unset folder would silently admit every cwd subtree into the gate. */
+function isWithinDefaultProjectsFolder(resolvedPath: string): boolean {
+  const configured = loadState().preferences?.defaultProjectsFolder;
+  if (typeof configured !== 'string' || !configured.trim()) return false;
+  return isWithin(canonicalRoot(configured), canonicalPath(resolvedPath));
+}
+
 function isAllowedEnumeratePath(resolvedPath: string): boolean {
-  return isAllowedReadPath(resolvedPath) || isWithinHomeTree(resolvedPath);
+  // The preferences' default projects folder joins the enumerate tier: the
+  // New Project flow composes `<defaultProjectsFolder>/<name>` and probes it
+  // with fs:isDirectory BEFORE the project exists, so a non-home folder (the
+  // Windows `E:\dev` norm) has to answer honestly — under the old gate the
+  // probe opened a confirm whose Cancel was reported as "Directory does not
+  // exist". It is deliberately NOT added to isAllowedReadPath: a folder the
+  // user named for new projects authorizes stat/enumerate of what the modal
+  // composes there, not reading arbitrary files inside it.
+  return isAllowedReadPath(resolvedPath)
+    || isWithinHomeTree(resolvedPath)
+    || isWithinDefaultProjectsFolder(resolvedPath);
 }
 
 /** Confirm flow for home-outside enumeration, mirroring confirmRemoteHost in
@@ -222,6 +358,11 @@ async function confirmHomeOutsideListing(canonicalDir: string): Promise<boolean>
 // dialog per typed prefix (C:\, C:\dev\, ...). The answer is cached per
 // canonical directory for the session: enumeration asks at most once per
 // dir, and a Cancel keeps denying every repeat on that dir.
+// B1: FIFO bound mirroring settings-guard.ts' MAX_CONSENT_DIR_RECORDS
+// (C3M-05): a long-lived session browsing many home-outside prefixes must
+// not grow the answer cache without limit. Oldest answer evicted first; a
+// re-prompt after eviction is the safe direction (consent, not access).
+export const OUTSIDE_HOME_CONSENT_MAX = 200;
 const outsideHomeConsent = new Map<string, boolean>();
 // C2M-10 + CI-09: the answer cache only closes the SEQUENTIAL repeat. The
 // keystroke burst fires concurrent fs:listDirs for one dir while the first
@@ -229,6 +370,31 @@ const outsideHomeConsent = new Map<string, boolean>();
 // and every concurrent caller stacked its own native modal on top. Sharing
 // the in-flight confirmation is one dialog per dir, answered by all waiters.
 const outsideHomeConsentInFlight = new Map<string, Promise<boolean>>();
+
+/** Records a consent answer for the canonical spelling of `dir`, applying
+ * the B1 FIFO trim. `confirmHomeOutsideListingOnce` feeds this the dialog
+ * answer (both ways); `fs:browseDirectory` feeds it a native-picker pick,
+ * whose selection IS the consent — the follow-up label probes for the
+ * picked dir then answer from the cache with zero dialogs. */
+function rememberHomeOutsideConsent(dir: string, answer: boolean): void {
+  boundedSet(outsideHomeConsent, canonicalPath(dir), answer, OUTSIDE_HOME_CONSENT_MAX);
+}
+
+/** Parent-consent cascade for the fs:isDirectory existence gate ONLY.
+ * A `true` answer for a dir authorized the enumeration (fs:listDirs) that
+ * NAMED its children — the New Project autocomplete lists children of
+ * exactly that consented dir, and the keystroke burst consents the parent
+ * before any child probe fires. Answering "is this listed child a
+ * directory" therefore asks nothing the parent consent did not already
+ * publish, so the child skips its own dialog. A `false` (Cancel) never
+ * cascades — an explicit denial must not auto-answer anything. This does
+ * NOT apply to fs:listDirs: enumerating a child's CONTENTS was never
+ * authorized by the parent's consent, so every dir keeps its own confirm.
+ * Canonical-spelling mismatches (symlinked parent) miss the cascade and
+ * fall through to the confirm — the safe direction. */
+function hasHomeOutsideConsent(dir: string): boolean {
+  return outsideHomeConsent.get(canonicalPath(dir)) === true;
+}
 
 async function confirmHomeOutsideListingOnce(dir: string): Promise<boolean> {
   const key = canonicalPath(dir);
@@ -241,7 +407,7 @@ async function confirmHomeOutsideListingOnce(dir: string): Promise<boolean> {
   const run = confirmHomeOutsideListing(key).finally(() => { outsideHomeConsentInFlight.delete(key); });
   outsideHomeConsentInFlight.set(key, run);
   const answer = await run;
-  outsideHomeConsent.set(key, answer);
+  rememberHomeOutsideConsent(key, answer);
   return answer;
 }
 
@@ -268,7 +434,11 @@ async function enumerateProjectFiles(resolvedCwd: string): Promise<string[]> {
   try {
     const { stdout } = await execFileAsync(
       'git',
-      ['ls-files', '--cached', '--others', '--exclude-standard'],
+      // core.quotePath=false is load-bearing, exactly as in readiness/utils.ts:
+      // git octal-escapes any non-ASCII path by default ("caf\\303\\251.ts"),
+      // and Quick Open then shows the C-quoted spelling and matches nothing on
+      // the name the user types (nor on what the file tree offers).
+      ['-c', 'core.quotePath=false', 'ls-files', '--cached', '--others', '--exclude-standard'],
       { cwd: resolvedCwd, encoding: 'utf-8', timeout: 5000 },
     );
     // C2M-08: same cap as the fallback walk; git's own order is kept.
@@ -276,6 +446,19 @@ async function enumerateProjectFiles(resolvedCwd: string): Promise<string[]> {
   } catch {
     return walkProjectFiles(resolvedCwd);
   }
+}
+
+/**
+ * The enumeration contract is '/'-separated, project-relative paths — that is
+ * what `git ls-files` prints on every OS, and every consumer matches on it:
+ * `.finevibeignore` directory patterns (`build/`), Quick Open's path filters,
+ * the readiness checkers. `path.relative` yields the NATIVE spelling, so the
+ * fallback walk converts at the single point where a path leaves the walk: on
+ * Windows `build\out.js` matched no directory pattern, so an excluded tree was
+ * scanned anyway.
+ */
+function toPosixRel(rel: string): string {
+  return path.sep === '/' ? rel : rel.split(path.sep).join('/');
 }
 
 /**
@@ -299,7 +482,7 @@ async function walkProjectFiles(root: string): Promise<string[]> {
       if (entry.isDirectory()) {
         await walk(path.join(dir, entry.name), depth + 1);
       } else {
-        files.push(rel);
+        files.push(toPosixRel(rel));
       }
     }
   }
@@ -315,6 +498,11 @@ async function walkProjectFiles(root: string): Promise<string[]> {
 // at most one.
 const enumerateCache = new Map<string, { at: number; files: string[] }>();
 const enumerateInFlight = new Map<string, Promise<string[]>>();
+// B1: LRU bound on the per-cwd enumeration caches. Map insertion order
+// doubles as recency: every read hit re-inserts its entry, so evicting the
+// first key past the cap drops the least recently used cwd
+// (canonical inline idiom, fs-utils.ts:63-79).
+export const ENUMERATE_CACHE_MAX = 64;
 const ENUMERATE_TTL_MS = 30_000;
 // Clearing the cache does not reach an enumeration already walking the tree,
 // so a plain `enumerateCache.clear()` on git:changed left two holes: new
@@ -335,25 +523,77 @@ function invalidateEnumerations(): void {
   topFilesCache.clear();
 }
 
+/** B1: drop every TTL-expired entry from the two persistent enumeration
+ * caches (the in-flight maps are transient — a settled walk always clears
+ * its own slot). `invalidateEnumerations` is the force-clear on git:changed;
+ * this is the idle sweep that keeps a session reading only a few cwds from
+ * holding TTL-dead listings (and their file arrays) forever. */
+export function sweepEnumerationCaches(): void {
+  const now = Date.now();
+  for (const [cwd, entry] of enumerateCache) {
+    if (now - entry.at >= ENUMERATE_TTL_MS) enumerateCache.delete(cwd);
+  }
+  for (const [cwd, entry] of topFilesCache) {
+    if (now - entry.at >= TOP_FILES_TTL_MS) topFilesCache.delete(cwd);
+  }
+}
+
 async function getCachedProjectFiles(resolvedCwd: string): Promise<string[]> {
-  const hit = enumerateCache.get(resolvedCwd);
-  if (hit && Date.now() - hit.at < ENUMERATE_TTL_MS) return hit.files;
-  const pending = enumerateInFlight.get(resolvedCwd);
+  return getCachedFiles(resolvedCwd, () => enumerateProjectFiles(resolvedCwd));
+}
+
+// Query ranking shared by both fs:listFiles branches (local + R2 remote walk):
+// exact basename > prefix > name-substring > path-substring, capped by the
+// caller. Paths are posix-relative, so basename is a plain '/' split (the
+// previous path.basename call behaved identically on both platforms).
+function rankFilesByQuery(files: string[], _cwd: string, query: string): string[] {
+  if (!query) return files;
+  const lower = query.toLowerCase();
+  const exact: string[] = [];
+  const startsWith: string[] = [];
+  const nameContains: string[] = [];
+  const pathContains: string[] = [];
+  for (const f of files) {
+    const fileName = (f.split('/').pop() ?? f).toLowerCase();
+    if (fileName === lower) exact.push(f);
+    else if (fileName.startsWith(lower)) startsWith.push(f);
+    else if (fileName.includes(lower)) nameContains.push(f);
+    else if (f.toLowerCase().includes(lower)) pathContains.push(f);
+  }
+  return [...exact, ...startsWith, ...nameContains, ...pathContains];
+}
+
+// R2 Phase 4a: the same cache serves remote enumerations under the key
+// `${hostId}|${cwd}` (a remote cwd must never share a key with the local
+// mirror-path string). The generation counter is local-git-driven; a local
+// git:changed bump merely costs a remote project one extra re-walk after its
+// TTL — cheaper than a second cache family, and remote trees have no watcher
+// anyway (docs/hosts.md).
+async function getCachedFiles(key: string, loader: () => Promise<string[]>): Promise<string[]> {
+  const hit = enumerateCache.get(key);
+  if (hit && Date.now() - hit.at < ENUMERATE_TTL_MS) {
+    enumerateCache.delete(key);
+    enumerateCache.set(key, hit);
+    return hit.files;
+  }
+  const pending = enumerateInFlight.get(key);
   if (pending) return pending;
   const gen = enumerateGeneration;
   const run = async (): Promise<string[]> => {
     try {
-      const files = await enumerateProjectFiles(resolvedCwd);
-      if (gen === enumerateGeneration) enumerateCache.set(resolvedCwd, { at: Date.now(), files });
+      const files = await loader();
+      if (gen === enumerateGeneration) {
+        boundedSet(enumerateCache, key, { at: Date.now(), files }, ENUMERATE_CACHE_MAX);
+      }
       return files;
     } finally {
       // Only the run that still owns the slot clears it; an invalidation may
       // have handed this cwd to a newer enumeration already.
-      if (enumerateInFlight.get(resolvedCwd) === work) enumerateInFlight.delete(resolvedCwd);
+      if (enumerateInFlight.get(key) === work) enumerateInFlight.delete(key);
     }
   };
   const work = run();
-  enumerateInFlight.set(resolvedCwd, work);
+  enumerateInFlight.set(key, work);
   return work;
 }
 
@@ -369,6 +609,8 @@ const topFilesScans = new Map<string, Promise<{ files: TopFile[]; scanned: numbe
 // the tree on every mount after the first. CI-08: a walk superseded by
 // invalidateEnumerations() never publishes here (see scanTopFiles).
 const topFilesCache = new Map<string, { at: number; files: TopFile[]; scanned: number; skipped: number }>();
+// B1: same LRU bound as the enumeration cache it derives from.
+export const TOP_FILES_CACHE_MAX = 64;
 const TOP_FILES_TTL_MS = ENUMERATE_TTL_MS;
 
 // C2M-05: the head sample a token estimate is computed from. Mirrors the
@@ -544,12 +786,175 @@ async function removeAgentFromProvider(p: CliProvider, slug: string): Promise<Ag
   return results;
 }
 
+// ---- A5: in-app storage report (storage:scan / storage:clear) -----------
+
+/** Bounded-walk caps for `storage:scan`. The scan reports userData subtrees
+ *  for a human-facing MB report; a userData tree with more than these many
+ *  entries is abnormal enough that a complete census is not worth blocking
+ *  the call — the result carries `truncated: true` instead. */
+const STORAGE_SCAN_MAX_ENTRIES = 50_000;
+/** Children enumerated per directory before the scan marks itself truncated
+ *  (the shared dirSizeBytes idiom then bounds the recursion depth at 4). */
+const STORAGE_SCAN_MAX_CHILDREN = 1_000;
+
+interface StorageSubtreeUsage {
+  name: string;
+  bytes: number;
+}
+
+/** One shared visit budget + truncated flag threaded through a scan. */
+interface ScanBudget {
+  entries: number;
+  truncated: boolean;
+}
+
+/**
+ * Size one directory with the caps applied: the top level is enumerated
+ * here (child count capped), every sub-directory is then sized with the
+ * shared `dirSizeBytes` idiom from launch-session-dir.ts — depth-bounded,
+ * symlink-ignoring, swallow-per-entry. Never throws; a missing dir is 0.
+ * `skip` names (top level only) let the "misc" bucket exclude subtrees the
+ * scan already counted under their own names.
+ */
+function subtreeBytesBounded(
+  dir: string,
+  budget: ScanBudget,
+  skip?: Set<string>,
+): number {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  if (skip) names = names.filter((n) => !skip.has(n));
+  if (names.length > STORAGE_SCAN_MAX_CHILDREN || budget.entries <= 0) {
+    budget.truncated = true;
+    names = names.slice(0, Math.max(0, STORAGE_SCAN_MAX_CHILDREN));
+  }
+  let bytes = 0;
+  for (const name of names) {
+    if (budget.entries <= 0) {
+      budget.truncated = true;
+      break;
+    }
+    budget.entries -= 1;
+    const child = path.join(dir, name);
+    try {
+      const st = fs.lstatSync(child);
+      if (st.isFile()) bytes += st.size;
+      else if (st.isDirectory()) bytes += dirSizeBytes(child, 1);
+    } catch {
+      // Vanished between readdir and stat.
+    }
+  }
+  return bytes;
+}
+
+/** The named userData subtrees the report breaks out; everything else is
+ *  bucketed as "misc" (userData's own top level minus these + the scan's
+ *  per-directory caps apply everywhere). */
+const STORAGE_SUBTREES = ['pi-sessions', 'omp-sessions', 'pi-bolt-sessions', 'Partitions', 'Cache'] as const;
+
+/**
+ * Size the userData subtrees the storage report shows, descending by bytes.
+ * Synchronous and bounded: the caps above bound entries visited; depth is
+ * bounded by dirSizeBytes; every fs error degrades that entry to 0.
+ * Exported for storage-section.test.ts (fixture-driven scan tests).
+ */
+export function scanUserDataUsage(userDataDir: string): {
+  entries: StorageSubtreeUsage[];
+  truncated: boolean;
+} {
+  const budget: ScanBudget = { entries: STORAGE_SCAN_MAX_ENTRIES, truncated: false };
+  const entries: StorageSubtreeUsage[] = STORAGE_SUBTREES.map((name) => ({
+    name,
+    bytes: subtreeBytesBounded(path.join(userDataDir, name), budget),
+  }));
+  entries.push({
+    name: 'misc',
+    bytes: subtreeBytesBounded(userDataDir, budget, new Set<string>(STORAGE_SUBTREES)),
+  });
+  entries.sort((a, b) => b.bytes - a.bytes);
+  return { entries, truncated: budget.truncated };
+}
+
+/** Session-id format guard, identical to the session:release partition
+ *  lookup below — an iso dir is only ever `finevibe-browser-iso-<that id>`. */
+const ISO_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const ISO_PARTITION_PREFIX = 'finevibe-browser-iso-';
+
+/**
+ * Remove per-session isolated browser partition dirs under
+ * `userData/Partitions` (pane.ts: `persist:finevibe-browser-iso-<id>`).
+ * With `sessionId`, only that session's dir; without it, every dir whose
+ * suffix re-validates against the same guard — the boot sweep in main.ts
+ * (per-session ephemera left by a quit/crash between release hooks).
+ * Names that cannot be produced by the renderer's partition spelling are
+ * left alone. Never throws; a locked dir (Windows EBUSY) survives to the
+ * next sweep. Returns the number of dirs removed.
+ */
+export function removeIsoPartitionDirs(userDataDir: string, sessionId?: string): number {
+  const partitionsRoot = path.join(userDataDir, 'Partitions');
+  let names: string[];
+  try {
+    names = fs.readdirSync(partitionsRoot);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith(ISO_PARTITION_PREFIX)) continue;
+    const id = name.slice(ISO_PARTITION_PREFIX.length);
+    if (!ISO_SESSION_ID_RE.test(id)) continue;
+    if (sessionId !== undefined && id !== sessionId) continue;
+    try {
+      fs.rmSync(path.join(partitionsRoot, name), { recursive: true, force: true });
+      removed++;
+    } catch {
+      // Locked by Chromium until the partition object dies — next sweep retries.
+    }
+  }
+  return removed;
+}
+
+/**
+ * Clear ONLY the safe caches. Path allowlist — the entire set of things
+ * this function can delete:
+ *   userData/Cache, userData/GPUCache, userData/Code Cache,
+ *   userData/DawnGraphiteCache, userData/DawnWebGPUCache (Chromium's
+ *   clearCache() file set — no fs call below touches userData), plus
+ *   OS-temp finevibe-chrome-import-* dirs (sweepImportTempDirs' own
+ *   prefix+age gate, tmpdir-scoped).
+ * NEVER in scope: userData/omp-sessions, userData/pi-sessions, userData/pi-bolt-sessions,
+ * userData/Partitions (isolated browser logins), the default session's
+ * cookies/Local Storage (the imported Chrome jar — P2-100 in main.ts
+ * deliberately keeps it non-clearable from the renderer). That is why the
+ * clearStorageData() call below passes an explicit cache-only `storages`
+ * list: unscoped, it wipes cookies/Local Storage/IndexedDB, which are NOT
+ * caches. Pinned by storage-section.test.ts (allowlist assertions).
+ */
+export async function clearSafeCaches(
+  target: {
+    clearCache(): Promise<void>;
+    clearStorageData(options?: { storages?: string[] }): Promise<void>;
+  } = session.defaultSession,
+): Promise<{ tempDirsSwept: number }> {
+  await target.clearCache();
+  await target.clearStorageData({ storages: ['appcache', 'shadercache', 'serviceworkers', 'cachestorage'] });
+  // maxAgeMs: 0 mirrors the chromeImport:run finally-site sweep — a user
+  // pressing "Clear caches" wants the temp snapshots gone now, and no
+  // import is running while this dialog-driven clear is the front action.
+  const tempDirsSwept = sweepImportTempDirs({ maxAgeMs: 0 });
+  return { tempDirsSwept };
+}
+
 export function registerIpcHandlers(): void {
   // PA-07: invalidate the Quick Open enumeration cache on the same debounced
   // git:changed signal the renderer receives.
   onGitChanged(invalidateEnumerations);
-  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+  ipcMain.handle('pty:create', async (_event, sessionId: string, cwd: string, cliSessionId: string | null, isResume: boolean, extraArgs: string, providerId: ProviderId = 'claude', initialPrompt?: string, systemPrompt?: string, envVars: string = '', configDir?: string, hostId?: string) => {
+    const win = getMainWindow();
     if (!win) return;
 
     // Start hook status watcher on first PTY creation (window is guaranteed to exist)
@@ -597,8 +1002,16 @@ export function registerIpcHandlers(): void {
       // sessionDir (Pi/OMP) is the launch's exclusive transcript dir:
       // path resolution checks it first, so a post-`/clear` transcript is
       // found where the CLI wrote it, not only in the legacy trees.
-      const sessionDir = resolveLaunchSessionDir(providerId, sessionId);
-      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir });
+      // Audit T2 #5: a remote launch's dir is the HOST-side spelling (the
+      // same remoteLaunchSessionDir the spawn argv carries — one derivation,
+      // both planes; a local userData path can never exist on the host).
+      const sessionDir =
+        hostId !== undefined && hostId !== LOCAL_HOST_ID
+          ? providerId === 'pi' || providerId === 'pi-bolt' || providerId === 'omp'
+            ? remoteLaunchSessionDir(providerId, sessionId)
+            : undefined
+          : resolveLaunchSessionDir(providerId, sessionId);
+      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir, hostId });
       // ...and let the provider re-attach to its own on-disk state,
       // seeding the sessions watcher as an ADOPTED entry (known id +
       // existing transcript path) so a later `/clear` — a brand-new
@@ -638,7 +1051,7 @@ export function registerIpcHandlers(): void {
             unregisterTranscriptSync(sessionId);
             cleanupSessionStatus(sessionId);
             provider.onSessionExited?.(sessionId);
-            const rejectedWin = BrowserWindow.getAllWindows()[0];
+            const rejectedWin = getMainWindow();
             if (rejectedWin && !rejectedWin.isDestroyed()) {
               rejectedWin.webContents.send('pty:exit', sessionId, exitCode, signal, spawnRejectedReason, pid);
             }
@@ -686,12 +1099,13 @@ export function registerIpcHandlers(): void {
           unregisterTranscriptSync(sessionId);
           cleanupSessionStatus(sessionId);
           provider.onSessionExited?.(sessionId);
-          const w = BrowserWindow.getAllWindows()[0];
+          const w = getMainWindow();
           if (w && !w.isDestroyed()) {
             w.webContents.send('pty:exit', sessionId, exitCode, signal, exitReason, pid);
           }
         },
-        configDir
+        configDir,
+        hostId
       );
     } catch (err) {
       // spawnPty threw before installing the exit callback — cancel pending
@@ -724,6 +1138,9 @@ export function registerIpcHandlers(): void {
       if (statusLineIssue || hooksIssue) {
         win.webContents.send('settings:warning', {
           sessionId,
+          // SA-P1-2: the banner belongs to THIS provider — the Fix Settings
+          // CTA must repair its settings, not Claude's default.
+          providerId: provider.meta.id,
           statusLine: statusLineIssue ? validation.statusLine : 'finevibe',
           hooks: validation.hooks,
           // P2-127: the banner was computed from THIS dir (the profiled
@@ -741,7 +1158,7 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('pty:createShell', (_event, sessionId: string, cwd: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win) return;
 
     // P1-15: same launch gate as pty:create — the shell runs in a
@@ -753,14 +1170,14 @@ export function registerIpcHandlers(): void {
       win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
       return;
     }
-    const dataSink = ptyDataSink(() => BrowserWindow.getAllWindows()[0], sessionId);
+    const dataSink = ptyDataSink(() => getMainWindow(), sessionId);
     spawnShellPty(
       sessionId,
       cwd,
       dataSink,
       (exitCode, signal) => {
         dataSink.flush();
-        const w = BrowserWindow.getAllWindows()[0];
+        const w = getMainWindow();
         if (w && !w.isDestroyed()) {
           w.webContents.send('pty:exit', sessionId, exitCode, signal);
         }
@@ -792,7 +1209,7 @@ export function registerIpcHandlers(): void {
    *  exit-time flush bound to the outbox THIS sink registered (C2M-04). */
   type PtyDataSink = ((data: string) => void) & { flush(): void };
 
-  function ptyDataSink(getWindow: () => BrowserWindow | undefined, sessionId: string): PtyDataSink {
+  function ptyDataSink(getWindow: () => BrowserWindow | null | undefined, sessionId: string): PtyDataSink {
     const outbox = {
       parts: [] as string[],
       bytes: 0,
@@ -842,13 +1259,37 @@ export function registerIpcHandlers(): void {
     killPty(sessionId);
   });
 
-  ipcMain.handle('fs:isDirectory', (_event, filePath: string) => {
+  ipcMain.handle('fs:isDirectory', async (_event, filePath: string, hostId?: string) => {
     try {
-      const expanded = expandUserPath(filePath);
+      // Remote rail (parent plan §11, per-host providers): a trailing hostId
+      // routes the probe over sftp. The gate is remote-fs' host-exists +
+      // enrolled|partial + path safety — no enumerate-confirm (council R-1),
+      // and no local consent gate: a remote path has no LOCAL spelling, so
+      // every local gate would reject it as a C:\home\... fallback (T5
+      // lesson, replicated on every fs rail here).
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const st = await statRemotePath(hostId, filePath);
+        if (st.error) console.warn(`fs:isDirectory remote failed [${hostId}] ${filePath}: ${st.error}`);
+        return st.ok && st.isDirectory === true;
+      }
+      // resolveUserPath: the renderer spells this path with `/` joins on
+      // Windows (`E:\AI/sample-project`), and a mixed spelling must never reach
+      // statSync, the gate, or the persisted project path.
+      const expanded = resolveUserPath(filePath);
       // P2-38: this is fs:exists' existence oracle with a second spelling
       // (the sidebar's pre-project add flow), so it takes the widened home
-      // gate. Outside home + known roots: answer nothing.
-      if (!isAllowedEnumeratePath(expanded)) return false;
+      // gate. Home + known roots are answered honestly and never prompt;
+      // outside them the channel asks the same explicit per-directory
+      // confirm fs:listDirs / fs:cloneRepo use (consent cached by
+      // confirmHomeOutsideListingOnce) and Cancel keeps the old deny shape.
+      // The old silent false ignored the Windows reality that projects on
+      // non-home drives (E:\...) are the norm: adding an existing dir like
+      // E:\Ai\Brilliance reported "Directory does not exist".
+      // Cascade: the parent's consent (or the native picker's selection of
+      // it) named this child via enumeration — answer from it, no dialog.
+      if (!isAllowedEnumeratePath(expanded)
+        && !hasHomeOutsideConsent(path.dirname(expanded))
+        && !(await confirmHomeOutsideListingOnce(expanded))) return false;
       return fs.statSync(expanded).isDirectory();
     } catch {
       return false;
@@ -856,7 +1297,72 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('fs:expandPath', (_event, filePath: string): string => {
-    return expandUserPath(filePath);
+    // The only string-taking fs channel with no try/catch: a non-string from a
+    // renderer bug would throw a raw TypeError straight out of the channel.
+    if (typeof filePath !== 'string') return '';
+    return resolveUserPath(filePath);
+  });
+
+  // The New Project modal's "Create" verb: the renderer composes
+  // `<folder>/<name>` and main makes the directory it just promised, then
+  // answers with ITS resolved spelling — the renderer must persist that, not
+  // its own `/`-joined string. A pre-project WRITE, so it takes fs:cloneRepo's
+  // gate shape (home tree / known roots / the default projects folder pass, a
+  // home-outside target needs the same explicit confirm) plus fs:isDirectory's
+  // parent-consent cascade: the autocomplete that named this dir already
+  // consented its parent. A DENIED consent is reported as an error, never as
+  // non-existence — the modal has to tell "you declined" apart from "the
+  // folder is not there", which is exactly what the old fs:isDirectory false
+  // conflated.
+  ipcMain.handle('fs:ensureDirectory', async (_event, dirPath: string) => {
+    try {
+      if (typeof dirPath !== 'string' || !dirPath.trim()) {
+        return { ok: false, error: 'No directory path was given' };
+      }
+      const target = resolveUserPath(dirPath);
+      if (!isAllowedEnumeratePath(target)
+        && !hasHomeOutsideConsent(path.dirname(target))
+        && !(await confirmHomeOutsideListingOnce(target))) {
+        console.warn(`fs:ensureDirectory blocked: ${target} is outside home and not confirmed`);
+        return { ok: false, error: 'Location is outside your home directory and was not confirmed' };
+      }
+      try {
+        const stat = await fs.promises.stat(target);
+        if (!stat.isDirectory()) return { ok: false, error: `Not a directory: ${target}` };
+        return { ok: true, path: canonicalPath(target) };
+      } catch (err) {
+        const statErr = err as NodeJS.ErrnoException;
+        if (statErr.code !== 'ENOENT') {
+          return { ok: false, error: `${statErr.code}: ${statErr.message}` };
+        }
+      }
+      try {
+        await fs.promises.mkdir(target, { recursive: true });
+      } catch (err) {
+        const mkErr = err as NodeJS.ErrnoException;
+        if (mkErr.code !== 'EEXIST') {
+          console.warn('fs:ensureDirectory failed:', mkErr);
+          return { ok: false, error: `${mkErr.code}: ${mkErr.message}` };
+        }
+        // Race: the directory appeared between the stat and the mkdir (a
+        // concurrent New Project, an editor's autosave). Re-stat and answer
+        // as if it had been there from the start.
+        try {
+          const stat = await fs.promises.stat(target);
+          if (!stat.isDirectory()) return { ok: false, error: `Not a directory: ${target}` };
+          return { ok: true, path: canonicalPath(target) };
+        } catch {
+          return { ok: false, error: `${mkErr.code}: ${mkErr.message}` };
+        }
+      }
+      // Answered AFTER the mkdir: the canonical form of a path that did not
+      // exist a moment ago is now fully resolvable, so this is the spelling
+      // the user's own file explorer shows.
+      return { ok: true, path: canonicalPath(target) };
+    } catch (err) {
+      console.warn('fs:ensureDirectory failed:', err);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   ipcMain.handle('fs:listDirs', async (_event, dirPath: string, prefix?: string) => {
@@ -888,8 +1394,25 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
+  ipcMain.handle('fs:listDir', async (_event, dirPath: string, hostId?: string) => {
     try {
+      // Remote rail: the file tree's listing over sftp. Gated in remote-fs
+      // (host enrolled + path safety + project containment); failures answer
+      // [] exactly like the local catch, so the tree renders "empty" for a
+      // dead host instead of rejecting mid-expand.
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        try {
+          const res = await listRemoteDir(hostId, dirPath);
+          if (!res.ok) {
+            console.warn(`fs:listDir remote blocked [${hostId}] ${dirPath}: ${res.error}`);
+            return [];
+          }
+          return res.entries;
+        } catch (err) {
+          console.warn(`fs:listDir remote failed [${hostId}] ${dirPath}: ${err instanceof Error ? err.message : String(err)}`);
+          return [];
+        }
+      }
       const expanded = expandUserPath(dirPath);
       if (!isAllowedReadPath(expanded)) return [];
       // PA-24: async body — ipcMain.handle, so the renderer API is unchanged;
@@ -920,7 +1443,7 @@ export function registerIpcHandlers(): void {
       }
       const target = detectGitCheckoutUrl(url);
       if (!target) return { ok: false, error: 'Unsupported repository URL' };
-      const dest = path.resolve(expandUserPath(destPath));
+      const dest = resolveUserPath(destPath);
       if (!isAllowedEnumeratePath(dest) && !(await confirmHomeOutsideListing(dest))) {
         console.warn(`fs:cloneRepo blocked: ${dest} is outside home and not confirmed`);
         return { ok: false, error: 'Clone location is outside your home directory and was not confirmed' };
@@ -954,8 +1477,33 @@ export function registerIpcHandlers(): void {
     return loadState();
   });
 
+
+  // A5: in-app storage report. `storage:scan` sizes the userData subtrees
+  // (bounded walk, truncated flag on caps); `storage:clear` is the ONLY
+  // renderer-reachable deletion sink in userData-adjacent space and is
+  // allowlist-bound to Chromium caches + import temp dirs (see
+  // clearSafeCaches — sessions/Partitions are never deleted, pinned by
+  // storage-section.test.ts); `storage:retirement` is a read-only
+  // passthrough of the A3 audit log. Renderer passes no paths anywhere:
+  // userDataDir is main-side app.getPath, so no path input to validate.
+  ipcMain.handle('storage:scan', () => scanUserDataUsage(app.getPath('userData')));
+  ipcMain.handle('storage:clear', () => clearSafeCaches());
+  ipcMain.handle('storage:retirement', () => getLegacyRetirementStatus(app.getPath('userData')));
   ipcMain.handle('store:save', (_event, state: PersistedState) => {
-    invalidateCanonicalPathIfRootsChanged(state); saveState(state);
+    // B2: the store's gate-root canonical memo is fs-derived state keyed on
+    // the same root set these canonical caches cover — a project add/remove
+    // or configDir change must drop it in production, not only in tests.
+    // The drop is cache hygiene, never a verifier: it runs best-effort so a
+    // failing hook can never stop the payload from reaching the store's own
+    // validation in saveState (the P1-12 wiring contract).
+    try {
+      if (invalidateCanonicalPathIfRootsChanged(state)) invalidateStateCache();
+    } catch (err) {
+      console.warn('store:save root-cache hook failed:', err);
+    }
+    // SA-P2-4: preferences key allowlist at the boundary, before the store's
+    // gate-root validation and the main-owned graft (both run in saveState).
+    saveState(sanitizePersistedState(state));
   });
 
   // S1-03: synchronous quit flush. The renderer's beforeunload needs the
@@ -967,7 +1515,15 @@ export function registerIpcHandlers(): void {
   // (P2-108). It is a sendSync, so the throw answers `false`: the renderer's
   // best-effort quit flush reports the miss instead of dying with it.
   ipcMain.on('store:save-sync', safeOn('store:save-sync', (event, state: PersistedState) => {
-    invalidateCanonicalPathIfRootsChanged(state); saveStateSync(state);
+    // B2: same gate-root memo drop as store:save (see the note there) —
+    // best-effort for the same reason; saveStateSync must always run.
+    try {
+      if (invalidateCanonicalPathIfRootsChanged(state)) invalidateStateCache();
+    } catch (err) {
+      console.warn('store:save-sync root-cache hook failed:', err);
+    }
+    // SA-P2-4: same allowlist as store:save — same renderer payload class.
+    saveStateSync(sanitizePersistedState(state));
     event.returnValue = true;
   }, () => false));
 
@@ -979,32 +1535,39 @@ export function registerIpcHandlers(): void {
     event.returnValue = { theme: prefs.theme ?? null, zoomFactor: prefs.zoomFactor ?? null };
   }, () => ({ theme: null, zoomFactor: null })));
 
-  // List projects from the legacy `~/.vibeyard/state.json` that can be
-  // imported into the board. The one-time file migration is destination-
-  // wins, so the legacy project list never merged into a live state.json
-  // written under the new name. Read-only: the renderer adds the user's
-  // picks through its own state -> persist path.
-  ipcMain.handle('vibeyard:listImportableProjects', () => {
-    return listImportableLegacyProjects({ homedir: os.homedir(), existingPaths: getKnownProjectPaths() });
+  // Row 26 slice 1: the leaf domains (disk-health, vibeyard, menu, update) live
+  // in src/main/ipc/leaf-domains.ts; the only closure value they need is the
+  // live known-project path list.
+  registerLeafDomains({ getKnownProjectPaths });
+  // Row 26 slice 2: github/app/mcp domains in src/main/ipc/app-domains.ts. The
+  // preload path keeps computing here (__dirname must stay the big file's).
+  registerAppDomains({
+    requireGitRoot,
+    isWithinKnownProject,
+    getBrowserPreloadPath: () =>
+      path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js'),
   });
 
-  // Provision (create) a profile's config dir. Returns the resolved absolute
-  // path and whether it is the auto-managed location.
-  ipcMain.handle('profiles:provision', (_event, profileId: string, customPath?: string, providerId?: ProviderId) => {
-    const configDir = provisionProfileDir(profileId, customPath, providerId, loadState().profiles ?? []);
-    return { configDir, managed: !customPath?.trim() };
+  // Row 26 slice 3: stats/readiness/profiles in src/main/ipc/support-domains.ts.
+  registerSupportDomains({ requireGitRoot });
+  // Row 26 slice 4: the hosts:* domain in src/main/ipc/hosts-domains.ts. The
+  // only closure value it needs is the pty coalescer factory, shared with the
+  // pty:* handlers below, so it stays here and is injected.
+  registerHostsDomains({ createPtyDataSink: ptyDataSink });
+
+  // Row 31: the renderer's console goes to devtools and dies with the window,
+  // so renderer diagnostics never reached `finevibe.log` (main's console is
+  // tee'd there by log-file.ts). One intake: validate, tag, and write through
+  // the tee'd console. Fire-and-forget (`ipcMain.on`): a log line never
+  // blocks the renderer, and the renderer's own per-minute budget
+  // (src/renderer/log.ts) plus installConsoleThrottle bound the volume.
+  const RENDERER_LOG_LEVELS = new Set(['log', 'info', 'warn', 'error']);
+  ipcMain.on('log:write', (_event, level: unknown, message: unknown) => {
+    if (typeof level !== 'string' || !RENDERER_LOG_LEVELS.has(level)) return;
+    if (typeof message !== 'string') return;
+    console[level as 'log' | 'info' | 'warn' | 'error'](`[renderer] ${message.slice(0, 2000)}`);
   });
 
-  // Report whether the installed Claude Code build can isolate per-profile
-  // logins on this platform (macOS keychain namespacing). Drives the profile
-  // guardrail in the UI.
-  ipcMain.handle('profiles:keychainStatus', () => {
-    return getKeychainIsolationStatus();
-  });
-
-  ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {
-    createAppMenu(debugMode);
-  });
 
   // Opt-in clipboard latency probes for the P0 paste bench. Off is the
   // default: every probe below sits behind this one gate, so the handlers
@@ -1043,7 +1606,20 @@ export function registerIpcHandlers(): void {
   // entry points: main reads the clipboard itself for the keystrokes the renderer
   // intercepts (Windows Ctrl+V, the context menu), and the renderer hands bytes
   // over for a native paste event, whose file objects main cannot see.
-  const PASTE_DIR = path.join(os.tmpdir(), 'finevibe-paste');
+  /**
+   * The paste temp dir. POSIX suffixes the uid, mirroring hook-status's
+   * `getStatusDir`: os.tmpdir() is /tmp — world-writable and shared by every
+   * user, so a fixed name under mode 0700 is claimed by whoever creates it
+   * first and every other user's mkdir then fails EACCES. One local
+   * `mkdir /tmp/finevibe-paste` therefore switches off pasted images for every
+   * user of the machine, with no diagnostic beyond a console line. Windows
+   * keeps the bare name: per-user %TEMP% already isolates users.
+   */
+  function getPasteDir(): string {
+    const uid = !isWin && typeof process.getuid === 'function' ? process.getuid() : undefined;
+    return path.join(os.tmpdir(), uid === undefined ? 'finevibe-paste' : `finevibe-paste-${uid}`);
+  }
+  const PASTE_DIR = getPasteDir();
   const PASTE_MAX_BYTES = 25 * 1024 * 1024;
   // P4: the pasted TEXT bound (plan: ~8 MiB), counted in UTF-16 characters —
   // the unit the structured clone and the `pty:write` round trip cost on.
@@ -1062,7 +1638,9 @@ export function registerIpcHandlers(): void {
   async function writePastedFile(buffer: Buffer, ext: string): Promise<string | null> {
     if (buffer.length === 0 || buffer.length > PASTE_MAX_BYTES) return null;
     try {
-      await fs.promises.mkdir(PASTE_DIR, { recursive: true });
+      // 0700: the dir is under a world-writable parent, and a pasted
+      // screenshot is whatever the user just copied.
+      await fs.promises.mkdir(PASTE_DIR, { recursive: true, mode: 0o700 });
       if (!pasteFilesPruned) {
         pasteFilesPruned = true;
         void pruneStaleImages(PASTE_DIR);
@@ -1161,7 +1739,7 @@ export function registerIpcHandlers(): void {
       }
     });
   }
-  // P2 (todos/clipboard-paste-latency-plan.md): probe a file-list format
+  // P2 (todos/archives/plans/clipboard-paste-latency-plan.md): probe a file-list format
   // only on the platform that defines it AND when `availableFormats()`
   // (already fetched by the caller for free) lists it on this clipboard.
   // A plain-text paste then costs two acquisitions — formats + text — down
@@ -1374,7 +1952,48 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'provider:getConfig',
-    async (_event, providerId: ProviderId, projectPath: string, configDir?: string) => {
+    async (_event, providerId: ProviderId, projectPath: string, configDir?: string, hostId?: string) => {
+      if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
+        // Remote branch (per-host providers plan §3): read the host's config
+        // through the sftp seam. SEC-03's shape preserved — the gates are the
+        // host-scope analogues of the local ones (paths are host-side posix;
+        // canonicalizing against the local disk would be meaningless).
+        if (!getHost(hostId)) throw new Error(`Unknown host: ${JSON.stringify(hostId)}`);
+        if (configDir !== undefined) {
+          // Managed-profile gate, host scope: configDir must be exactly a
+          // persisted profile's configDir recorded FOR THIS HOST — the same
+          // "never derived from the payload's path shape" rule as the local
+          // branch, without the local-fs canonicalization.
+          const profiles = loadState().profiles ?? [];
+          const isManagedRemote = profiles.some((p) => (p.hostId ?? LOCAL_HOST_ID) === hostId && p.configDir === configDir);
+          if (!isManagedRemote) throw new Error(`Not a managed profile config dir: ${JSON.stringify(configDir)}`);
+        }
+        // Audit T2 #4: project containment is HOST-scoped. The gate roots
+        // are the project paths RECORDED FOR THIS HOST (`ProjectRecord.hostId`,
+        // normalized 'local' at load) — never the local-disk roots, which
+        // canonicalize against the controller's filesystem and would let a
+        // locally-known path unlock a read of the same string on the host.
+        // Until T5 registers remote projects, a host with no recorded
+        // project of its own gets no remote project scope at all.
+        const hostProjects = (loadState().projects ?? []).filter(
+          (p) => (p.hostId ?? LOCAL_HOST_ID) === hostId,
+        );
+        const normPosix = (p: string) => p.replace(/\/+/g, '/').replace(/\/+$/, '');
+        const withinRemoteProject = hostProjects.some((root) => {
+          const r = normPosix(root.path);
+          const t = normPosix(projectPath);
+          return t === r || t.startsWith(`${r}/`);
+        });
+        if (!withinRemoteProject) {
+          throw new Error(
+            hostProjects.length === 0
+              ? `No projects are registered for host ${JSON.stringify(hostId)} — remote project-scope config is refused`
+              : `Path is not within a known project of host ${JSON.stringify(hostId)}: ${JSON.stringify(projectPath)}`,
+          );
+        }
+        const { getRemoteProviderConfig } = await import('./hosts/remote-provider-config');
+        return getRemoteProviderConfig(providerId, hostId, projectPath, configDir);
+      }
       // SEC-03: both paths are renderer-supplied and reach provider config
       // reads - the gates every other config-reading channel enforces: the
       // configDir must be a managed profile dir (P2-113) and the project
@@ -1391,7 +2010,7 @@ export function registerIpcHandlers(): void {
   );
 
   ipcMain.on('config:watchProject', safeOn('config:watchProject', (_event, providerId: ProviderId, projectPath: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win) return;
     // getProvider stays first: an unknown provider id must keep throwing into
     // safeOn (P2-108), and the gate below only guards the path.
@@ -1477,7 +2096,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('session:transcriptExists', (_event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir?: string, liveSessionId?: string) =>
     transcriptExists(providerId, cliSessionId, projectPath, configDir, liveSessionId));
   ipcMain.handle('session:exportArchive', async (event, providerId: ProviderId, cliSessionId: string | null, projectPath: string, configDir: string | undefined, meta: ArchivedSession, format: 'zip' | 'file') => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    const win = BrowserWindow.fromWebContents(event.sender) ?? getMainWindow();
     if (!win) throw new Error('no window');
     if (configDir && !isManagedMcpConfigDir(configDir)) throw new Error('Not a managed profile config dir');
     // C3A-03: same gate as provider:getConfig; exportArchive reads the
@@ -1503,11 +2122,24 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('provider:checkBinary', async (_event, providerId: ProviderId = 'claude') => {
+  ipcMain.handle('provider:checkBinary', async (_event, providerId: ProviderId = 'claude', hostId?: string) => {
+    if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
+      // Per-host providers plan §2: a registry host answers from its record —
+      // no probing, no SSH on the request path. Stale (or never-probed)
+      // records answer anyway and refresh in the background over the exec
+      // lane (concurrent refreshes dedupe).
+      const record = getHost(hostId);
+      if (!record) return false;
+      const probedAt = record.lastProbeAt ? Date.parse(record.lastProbeAt) : 0;
+      if (Date.now() - probedAt > 24 * 60 * 60 * 1000) {
+        refreshHostTools(record).catch(() => { /* the next checkBinary retries */ });
+      }
+      return record.prerequisites?.[providerId]?.ok === true;
+    }
     const provider = getProvider(providerId);
     // S4-03: async twin (Wave E) — the sync probe chain (`where` 3 s,
     // `npm prefix -g` 5 s per missing binary) blocked main; Preferences→
-    // Setup fires this for all six providers per section mount. The
+    // Setup fires this for all seven providers per section mount. The
     // probe caches (in-process + disk) keep repeats on the hot path.
     return await (provider.validatePrerequisitesAsync?.() ?? provider.validatePrerequisites());
   });
@@ -1551,11 +2183,37 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('fs:browseDirectory', async () => {
-    const win = BrowserWindow.getAllWindows()[0];
+    // The focused window, mirroring confirmHomeOutsideListing: with several
+    // windows open, getAllWindows()[0] attaches the sheet to an arbitrary
+    // (possibly hidden) one.
+    const win = BrowserWindow.getFocusedWindow() ?? getMainWindow();
     if (!win) return null;
-    const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+    // Open where the user's projects live. Without defaultPath the native
+    // picker starts wherever the OS last was — Documents on a fresh Windows
+    // install, the portal/gtk default on Linux — so picking inside `E:\dev`
+    // is a walk on every single pick. A stale preference must not break the
+    // picker (and some platforms reject a missing defaultPath), so only an
+    // existing directory is passed.
+    let defaultPath: string | undefined;
+    const configured = loadState().preferences?.defaultProjectsFolder;
+    if (typeof configured === 'string' && configured.trim()) {
+      const candidate = resolveUserPath(configured);
+      try {
+        if (fs.statSync(candidate).isDirectory()) defaultPath = candidate;
+      } catch { /* removed/renamed folder: fall back to the platform default */ }
+    }
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openDirectory'],
+      ...(defaultPath ? { defaultPath } : {}),
+    });
     if (result.canceled || result.filePaths.length === 0) return null;
-    return result.filePaths[0];
+    const picked = result.filePaths[0];
+    // The native picker's selection IS the consent: record the pick so the
+    // post-Browse fs:isDirectory / fs:listDirs label probes answer from the
+    // cache with zero confirms. Home-tree picks never consult the gate, so
+    // recording keeps the cache semantics uniform.
+    rememberHomeOutsideConsent(picked, true);
+    return picked;
   });
 
   // Replay every status file. The hook scripts write only on change, so a
@@ -1563,7 +2221,7 @@ export function registerIpcHandlers(): void {
   // "Auto-name sessions" back on would leave existing tabs unnamed until their
   // title happened to change.
   ipcMain.on('session:resyncStatus', safeOn('session:resyncStatus', () => {
-    const w = BrowserWindow.getAllWindows()[0];
+    const w = getMainWindow();
     if (w) resyncAllSessions(w);
   }));
 
@@ -1578,7 +2236,7 @@ export function registerIpcHandlers(): void {
   // can assign an unrelated conversation and persist it), so the tab keeps its
   // default name until it is resumed.
   ipcMain.handle('session:syncRestored', (_event, sessions: RestoredSession[]) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win || win.isDestroyed() || !Array.isArray(sessions)) return;
     // transcript-sync writes `.name` into STATUS_DIR for the watcher to forward,
     // but the watcher only starts on the first `pty:create` — start it now.
@@ -1621,19 +2279,25 @@ export function registerIpcHandlers(): void {
     // localStorage must go when the session goes. Guarded by directory
     // existence so releasing a non-browser session never materialises a
     // partition via fromPartition().
-    if (typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
-      const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
+    if (typeof sessionId === 'string' && ISO_SESSION_ID_RE.test(sessionId)) {
+      const partDir = path.join(app.getPath('userData'), 'Partitions', `${ISO_PARTITION_PREFIX}${sessionId}`);
       if (fs.existsSync(partDir)) {
         session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
           .clearStorageData()
-          .catch((err) => console.warn('clearStorageData failed:', err));
+          .catch((err) => console.warn('clearStorageData failed:', err))
+          // A5 leak fix: clearStorageData empties the jar's contents, the
+          // DIRECTORY itself used to survive until quit — every isolated
+          // browser session ever released left its Partitions subtree
+          // behind for the app's whole lifetime. Remove it once the jar is
+          // cleared (locked dirs fall through to the boot sweep in main.ts).
+          .finally(() => { removeIsoPartitionDirs(app.getPath('userData'), sessionId); });
       }
     }
   }));
 
   ipcMain.on('app:focus', safeOn('app:focus', () => {
     app.focus({ steal: true });
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (win && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
       win.focus();
@@ -1645,10 +2309,6 @@ export function registerIpcHandlers(): void {
     app.quit();
   }));
 
-  ipcMain.handle('app:getVersion', () => app.getVersion());
-  ipcMain.handle('app:getBrowserPreloadPath', () =>
-    path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js')
-  );
 
   const MAX_SCREENSHOT_BYTES = 50 * 1024 * 1024;
   const MAX_SCREENSHOT_B64_LEN = Math.ceil((MAX_SCREENSHOT_BYTES * 4) / 3);
@@ -1762,54 +2422,56 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('app:openExternal', (_event, url: string) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      // Same outcome as before — the invoke rejects — but explicit rather than
-      // an escaping TypeError.
-      throw new Error('Invalid URL');
-    }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error('Only HTTP(S) URLs are allowed');
-    }
-    return shell.openExternal(url);
-  });
 
-  ipcMain.handle('git:getStatus', (_event, projectPath: string) => getGitStatus(requireGitRoot('git:getStatus', projectPath)));
+  ipcMain.handle('git:getStatus', (_event, projectPath: string) => gitOnStatus(requireGitTarget('git:getStatus', projectPath)));
 
-  ipcMain.handle('git:getRemoteUrl', (_event, projectPath: string) => getGitRemoteUrl(requireGitRoot('git:getRemoteUrl', projectPath)));
+  ipcMain.handle('git:getRemoteUrl', (_event, projectPath: string) => gitOnRemoteUrl(requireGitTarget('git:getRemoteUrl', projectPath)));
 
-  ipcMain.handle('git:getFiles', (_event, projectPath: string) => getGitFiles(requireGitRoot('git:getFiles', projectPath)));
+  ipcMain.handle('git:getFiles', (_event, projectPath: string) => gitOnFiles(requireGitTarget('git:getFiles', projectPath)));
 
   ipcMain.handle('git:getDiff', (_event, projectPath: string, filePath: string, area: string) => {
-    const root = requireGitRoot('git:getDiff', projectPath);
-    return getGitDiff(root, requireGitFilePath('git:getDiff', root, filePath), area);
+    const target = requireGitTarget('git:getDiff', projectPath);
+    const rel = target.kind === 'remote'
+      ? requireRemoteRelPath('git:getDiff', filePath)
+      : requireGitFilePath('git:getDiff', target.cwd, filePath);
+    return gitOnDiff(target, rel, area);
   });
 
-  ipcMain.handle('git:getWorktrees', (_event, projectPath: string) => getGitWorktrees(requireGitRoot('git:getWorktrees', projectPath)));
+  ipcMain.handle('git:getWorktrees', (_event, projectPath: string) => gitOnWorktrees(requireGitTarget('git:getWorktrees', projectPath)));
 
   ipcMain.handle('git:stageFile', async (_event, projectPath: string, filePath: string) => {
-    const root = requireGitRoot('git:stageFile', projectPath);
-    await gitStageFile(root, requireGitFilePath('git:stageFile', root, filePath));
+    const target = requireGitTarget('git:stageFile', projectPath);
+    // Phase 4b: the write routes through the gitOn lane; the local sibling
+    // keeps the requireGitFilePath gate, the remote one validates internally
+    // (path.resolve on a controller would mangle a remote posix path).
+    await gitOnStageFile(
+      target,
+      target.kind === 'local' ? requireGitFilePath('git:stageFile', target.cwd, filePath) : filePath,
+    );
     notifyGitChanged();
   });
 
   ipcMain.handle('git:unstageFile', async (_event, projectPath: string, filePath: string) => {
-    const root = requireGitRoot('git:unstageFile', projectPath);
-    await gitUnstageFile(root, requireGitFilePath('git:unstageFile', root, filePath));
+    const target = requireGitTarget('git:unstageFile', projectPath);
+    await gitOnUnstageFile(
+      target,
+      target.kind === 'local' ? requireGitFilePath('git:unstageFile', target.cwd, filePath) : filePath,
+    );
     notifyGitChanged();
   });
 
   ipcMain.handle('git:discardFile', async (_event, projectPath: string, filePath: string, area: string) => {
-    const root = requireGitRoot('git:discardFile', projectPath);
-    await gitDiscardFile(root, requireGitFilePath('git:discardFile', root, filePath), area as GitFileEntry['area']);
+    const target = requireGitTarget('git:discardFile', projectPath);
+    await gitOnDiscardFile(
+      target,
+      target.kind === 'local' ? requireGitFilePath('git:discardFile', target.cwd, filePath) : filePath,
+      area,
+    );
     notifyGitChanged();
   });
 
   ipcMain.on('git:watchProject', safeOn('git:watchProject', (_event, projectPath: string) => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = getMainWindow();
     if (!win) return;
     const resolved = path.resolve(projectPath);
     // P1-17: watched roots become git-capable roots (requireGitRoot admits
@@ -1837,15 +2499,17 @@ export function registerIpcHandlers(): void {
     startGitWatcher(win, resolved);
   }));
 
-  ipcMain.handle('git:listBranches', (_event, projectPath: string) => listGitBranches(requireGitRoot('git:listBranches', projectPath)));
+  ipcMain.handle('git:listBranches', (_event, projectPath: string) => gitOnBranches(requireGitTarget('git:listBranches', projectPath)));
 
   ipcMain.handle('git:checkoutBranch', async (_event, projectPath: string, branch: string) => {
-    await checkoutGitBranch(requireGitRoot('git:checkoutBranch', projectPath), branch);
+    const target = requireGitTarget('git:checkoutBranch', projectPath);
+    await gitOnCheckoutBranch(target, branch);
     notifyGitChanged();
   });
 
   ipcMain.handle('git:createBranch', async (_event, projectPath: string, branch: string) => {
-    await createGitBranch(requireGitRoot('git:createBranch', projectPath), branch);
+    const target = requireGitTarget('git:createBranch', projectPath);
+    await gitOnCreateBranch(target, branch);
     notifyGitChanged();
   });
 
@@ -1857,30 +2521,28 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('pty:getCwd', (_event, sessionId: string) => getPtyCwd(sessionId));
 
-  ipcMain.handle('fs:listFiles', async (_event, cwd: string, query: string) => {
+  ipcMain.handle('fs:listFiles', async (_event, cwd: string, query: string, hostId?: string) => {
     try {
+      // R2 Phase 4a: a registry hostId routes to the sftp walk sibling; the
+      // local branch and its Phase 3 belt below stay untouched for 'local'.
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const remoteFiles = await getCachedFiles(`${hostId}|${cwd}`, () => walkRemoteFiles(hostId, cwd));
+        return rankFilesByQuery(remoteFiles, cwd, query).slice(0, 50);
+      }
       const resolvedCwd = path.resolve(cwd);
+      const remoteOwner = remoteProjectOwnerOf(resolvedCwd);
+      if (remoteOwner) {
+        // Phase 3 belt: on mirror-path controllers the local gate below
+        // passes for a remote root; refuse before listing the wrong machine.
+        // A caller that names the host now reaches the sftp branch above.
+        console.warn(`fs:listFiles blocked: ${resolvedCwd} is a project on remote host ${remoteOwner}`);
+        return [];
+      }
       if (!isWithinKnownProject(resolvedCwd)) {
         return [];
       }
-      let files = await getCachedProjectFiles(resolvedCwd);
-
-      if (query) {
-        const lower = query.toLowerCase();
-        const exact: string[] = [];
-        const startsWith: string[] = [];
-        const nameContains: string[] = [];
-        const pathContains: string[] = [];
-        for (const f of files) {
-          const fileName = path.basename(f).toLowerCase();
-          if (fileName === lower) exact.push(f);
-          else if (fileName.startsWith(lower)) startsWith.push(f);
-          else if (fileName.includes(lower)) nameContains.push(f);
-          else if (f.toLowerCase().includes(lower)) pathContains.push(f);
-        }
-        files = [...exact, ...startsWith, ...nameContains, ...pathContains];
-      }
-      return files.slice(0, 50);
+      const files = await getCachedProjectFiles(resolvedCwd);
+      return rankFilesByQuery(files, resolvedCwd, query).slice(0, 50);
     } catch (err) {
       console.warn('fs:listFiles failed:', err);
       return [];
@@ -1898,6 +2560,8 @@ export function registerIpcHandlers(): void {
       // polling widget reads a sorted list instead of re-walking the tree.
       const hit = topFilesCache.get(resolvedCwd);
       if (hit && Date.now() - hit.at < TOP_FILES_TTL_MS) {
+        topFilesCache.delete(resolvedCwd);
+        topFilesCache.set(resolvedCwd, hit);
         return { ok: true, files: hit.files.slice(0, clampedLimit), scanned: hit.scanned, skipped: hit.skipped };
       }
       // UI3-11: one shared walk per cwd — concurrent widget mounts coalesce.
@@ -1977,13 +2641,18 @@ export function registerIpcHandlers(): void {
     results.sort((a, b) => b.tokens - a.tokens);
     const result = { files: results, scanned, skipped };
     if (gen === enumerateGeneration) {
-      topFilesCache.set(resolvedCwd, { at: Date.now(), ...result });
+      boundedSet(topFilesCache, resolvedCwd, { at: Date.now(), ...result }, TOP_FILES_CACHE_MAX);
     }
     return result;
   }
 
-  ipcMain.handle('fs:exists', (_event, filePath: string): boolean => {
+  ipcMain.handle('fs:exists', async (_event, filePath: string, hostId?: string): Promise<boolean> => {
     try {
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const st = await statRemotePath(hostId, filePath);
+        if (st.error) console.warn(`fs:exists remote failed [${hostId}] ${filePath}: ${st.error}`);
+        return st.ok;
+      }
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) return false;
       return fs.existsSync(resolved);
@@ -1992,8 +2661,15 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:stat', (_event, filePath: string): FileStatResult => {
+  ipcMain.handle('fs:stat', async (_event, filePath: string, hostId?: string): Promise<FileStatResult> => {
     try {
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const st = await statRemotePath(hostId, filePath);
+        if (st.error) console.warn(`fs:stat remote failed [${hostId}] ${filePath}: ${st.error}`);
+        return st.ok && st.size !== undefined && st.mtimeMs !== undefined
+          ? { ok: true, size: st.size, mtimeMs: st.mtimeMs }
+          : { ok: false };
+      }
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) {
         return { ok: false };
@@ -2005,8 +2681,15 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('fs:readFile', async (_event, filePath: string): Promise<ReadFileResult> => {
+  ipcMain.handle('fs:readFile', async (_event, filePath: string, hostId?: string): Promise<ReadFileResult> => {
     try {
+      // Remote rail: the file preview over sftp (size-capped, head-sniffed
+      // for binary — the same ReadFileResult shape as the local lane).
+      if (hostId && hostId !== LOCAL_HOST_ID) {
+        const res = await readRemoteFile(hostId, filePath);
+        if (!res.ok) console.warn(`fs:readFile remote blocked [${hostId}] ${filePath}: ${res.reason}${res.reason === 'binary' ? ' (size/sniff)' : ''}`);
+        return res;
+      }
       // Security: resolve to absolute and check it's within a known project directory
       const resolved = path.resolve(filePath);
       if (!isAllowedReadPath(resolved)) {
@@ -2099,15 +2782,27 @@ export function registerIpcHandlers(): void {
       shell.showItemInFolder(resolved);
     }));
 
-  ipcMain.on('fs:watchDir', safeOn('fs:watchDir', (event, dirPath: string) => {
+  ipcMain.on('fs:watchDir', safeOn('fs:watchDir', (event, dirPath: string, hostId?: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    // Remote rail (Phase 4 watcher): path.resolve would mangle a POSIX path
+    // on this Windows controller, so the host branch skips the local gate —
+    // remote-watch validates via normalizeRemotePath and the poll fails safe.
+    if (hostId && hostId !== LOCAL_HOST_ID) {
+      if (win) setRemoteWatchWindow(win);
+      watchRemoteDir(hostId, dirPath);
+      return;
+    }
     const resolved = path.resolve(dirPath);
     if (!isAllowedReadPath(resolved)) return;
-    const win = BrowserWindow.fromWebContents(event.sender);
     if (win) setFileWatcherWindow(win);
     watchDir(resolved);
   }));
 
-  ipcMain.on('fs:unwatchDir', safeOn('fs:unwatchDir', (_event, dirPath: string) => {
+  ipcMain.on('fs:unwatchDir', safeOn('fs:unwatchDir', (_event, dirPath: string, hostId?: string) => {
+    if (hostId && hostId !== LOCAL_HOST_ID) {
+      unwatchRemoteDir(hostId, dirPath);
+      return;
+    }
     const resolved = path.resolve(dirPath);
     // P2-30: mirror fs:watchDir's gate. Unwatch is destructive — the watcher
     // refcounts by path alone, so any frame naming a watched dir silently
@@ -2117,60 +2812,10 @@ export function registerIpcHandlers(): void {
     unwatchDir(resolved);
   }));
 
-  // PA-24: the widget renders requested this every poll; the file was read
-  // AND JSON.parsed in full each time. Memoize by (path, mtime, size) — the
-  // hook-status poll rewrites the file when usage changes, and the resulting
-  // mtime bump re-parses. Async body: the channel is ipcMain.handle.
-  let statsCacheMemo: { file: string; mtimeMs: number; size: number; data: unknown } | null = null;
-  ipcMain.handle('stats:getCache', async () => {
-    try {
-      const statsPath = path.join(os.homedir(), '.claude', 'stats-cache.json');
-      const st = await fs.promises.stat(statsPath);
-      const memo = statsCacheMemo;
-      if (memo && memo.file === statsPath && memo.mtimeMs === st.mtimeMs && memo.size === st.size) {
-        return memo.data;
-      }
-      const raw = await fs.promises.readFile(statsPath, 'utf-8');
-      const data = JSON.parse(raw);
-      statsCacheMemo = { file: statsPath, mtimeMs: st.mtimeMs, size: st.size, data };
-      return data;
-    } catch {
-      statsCacheMemo = null;
-      return null;
-    }
-  });
 
   // Both run git in the renderer-named cwd (`git ls-files` for the readiness
   // scan, `git remote get-url` for the repo detect), so both take the same
-  // root gate as the 13 git:* handlers: a known project or a watched worktree.
-  ipcMain.handle('readiness:analyze', async (_event, projectPath: string, excludedProviders?: ProviderId[]) => {
-    const root = requireGitRoot('readiness:analyze', projectPath);
-    // S4-03: warm the registry availability cache with the async probe
-    // twin. analyzeReadiness() reads availability through the sync
-    // getAvailableProviderIds(); warming first makes that a cache hit, so
-    // the first scan no longer runs the six sync probe chains on main.
-    // Response shape is the same ReadinessResult promise.
-    await getAvailableProviderIdsAsync();
-    return analyzeReadiness(root, excludedProviders);
-  });
 
-  ipcMain.handle('github:isAvailable', () => isGhAvailable());
-  ipcMain.handle('github:detectRepo', (_event, projectPath: string) =>
-    detectRepo(requireGitRoot('github:detectRepo', projectPath))
-  );
-  ipcMain.handle('github:listPRs', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
-    listPullRequests(repo, { state, max })
-  );
-  ipcMain.handle('github:listIssues', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
-    listIssues(repo, { state, max })
-  );
-
-  ipcMain.handle('update:checkNow', () => checkForUpdates());
-  ipcMain.handle('update:install', () => quitAndInstall());
-
-  ipcMain.handle('agentmemory:status', () => probeAgentmemory());
-  ipcMain.handle('agentmemory:start', () => ensureAgentmemoryRunning());
-  ipcMain.handle('agentmemory:log', () => readAgentmemoryLog());
 
   ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string, projectPath?: string) => {
     // P2-127: configDir is the dir the warning banner was computed from —
@@ -2182,6 +2827,14 @@ export function registerIpcHandlers(): void {
     // target THAT project, not the user-scope / last-installed one.
     if (configDir && !isManagedMcpConfigDir(configDir)) {
       return { success: false, error: `Refused: ${configDir} is not a managed profile directory.` };
+    }
+    // SA-P2-5: projectPath is renderer-supplied and reaches a writer —
+    // installCopilotHooks does mkdirSync+writeFileSync under it. Same
+    // known-project gate as mcp:removeServer / config:watchProject: a project
+    // the board never registered is refused before any provider runs.
+    if (projectPath && !isWithinKnownProject(path.resolve(projectPath))) {
+      console.warn(`settings:reinstall blocked: ${projectPath} is not within a known project`);
+      return { success: false, error: 'Path is not within a known project' };
     }
     try {
       const provider = getProvider(providerId);
@@ -2197,7 +2850,31 @@ export function registerIpcHandlers(): void {
   // broken project-scoped config is not reported `complete` from the
   // user-global file. No args = user-scope check (Preferences > Setup).
   ipcMain.handle('settings:validate', (_event, providerId: ProviderId = 'claude', projectPath?: string, configDir?: string): SettingsValidationResult => {
-    return getProvider(providerId).validateSettings(projectPath, configDir);
+    // SA-P3: validate read and echoed (foreignStatusLineCommand) files under
+    // any renderer-supplied dir — the same trust surface reinstall/decline
+    // gate. Refuse out-of-scope args with the all-clear shape the validators
+    // themselves return for non-applicable providers: no banner, no echo.
+    if (configDir && !isManagedMcpConfigDir(configDir)) {
+      console.warn(`settings:validate refused: ${configDir} is not a managed profile directory`);
+      return { statusLine: 'finevibe', hooks: 'complete', hookDetails: {} };
+    }
+    if (projectPath && !isWithinKnownProject(path.resolve(projectPath))) {
+      console.warn(`settings:validate refused: ${projectPath} is not within a known project`);
+      return { statusLine: 'finevibe', hooks: 'complete', hookDetails: {} };
+    }
+    const result = getProvider(providerId).validateSettings(projectPath, configDir);
+    // SA-P2-1: a declined consent covering the CURRENT foreign command is the
+    // user's Keep — surface it so Setup renders a neutral tier and the badge
+    // stays silent, instead of a red dot + a Fix that performs the declined
+    // Replace. A declined record with no recorded command freezes onto the
+    // current foreign command (mirrors the settings-guard gate).
+    if (result.statusLine === 'foreign') {
+      const { consent, command } = getDirConsent(loadState().preferences, configDir);
+      if (consent === 'declined' && (!command || command === result.foreignStatusLineCommand)) {
+        return { ...result, userKeptStatusLine: true };
+      }
+    }
+    return result;
   });
 
   // P1-14: for a profile session the warning banner is the single consent
@@ -2208,40 +2885,16 @@ export function registerIpcHandlers(): void {
   // inert data with no filesystem effect.
   ipcMain.on('settings:declineStatusLine', safeOn('settings:declineStatusLine', (_event, configDir: string | undefined, foreignCommand: string | null) => {
     if (configDir && !isManagedMcpConfigDir(configDir)) return;
+    // SA-P3: a banner dismissal with NO dir is the global ~/.claude surface —
+    // recording it writes the global declined record and mutes the boot
+    // consent modal, which owns global consent. The banner is the consent
+    // surface only for PROFILE dirs (P1-14); a global decline goes through
+    // the modal.
+    if (!configDir) return;
     recordDirConsent(configDir, 'declined', foreignCommand ?? null);
   }));
 
-  ipcMain.handle('mcp:addServer', (_event, name: string, config: McpServerConfig, scope: 'user' | 'project', projectPath?: string, configDir?: string) => {
-    try {
-      addMcpServer(name, config, scope, projectPath, configDir);
-      return { success: true };
-    } catch (err) {
-      console.error('mcp:addServer failed:', err);
-      return { success: false, error: String(err) };
-    }
-  });
 
-  // C3A-01: filePath arrives via the renderer as an echo of the list results,
-  // and removeMcpServer's self-built allowlist (claude-cli.ts) is derived from
-  // the same projectPath+configDir args — so they both identify AND authorize
-  // the write target. Gate the boundary like addMcpServer (claude-cli.ts) and
-  // provider:getConfig: configDir must be a managed profile dir, and a project
-  // scope must name a known project, or the allowlist is renderer-authored.
-  ipcMain.handle('mcp:removeServer', (_event, name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string) => {
-    if (configDir && !isManagedMcpConfigDir(configDir)) {
-      return { success: false, error: `Refused: ${configDir} is not a managed profile directory.` };
-    }
-    if (scope === 'project' && (!projectPath || !isWithinKnownProject(path.resolve(projectPath)))) {
-      return { success: false, error: 'Path is not within a known project' };
-    }
-    try {
-      removeMcpServer(name, filePath, scope, projectPath, configDir);
-      return { success: true };
-    } catch (err) {
-      console.error('mcp:removeServer failed:', err);
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
 
   registerMcpHandlers();
 }

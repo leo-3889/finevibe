@@ -1,5 +1,6 @@
 import { appState } from './state.js';
 import { resolveProjectFilePath } from './state/specialized-sessions.js';
+import { rlog } from './log.js';
 
 /**
  * Open a path in a file-reader tab, but only once the path is known to be an
@@ -28,24 +29,32 @@ export async function openFileReaderChecked(
 ): Promise<void> {
   const project = appState.activeProject;
   if (project?.id !== projectId) {
-    console.warn(`[open-file] ${projectId} is not the active project: ${filePath}`);
+    rlog('warn', `[open-file] ${projectId} is not the active project: ${filePath}`);
     return;
   }
 
   const fullPath = resolveProjectFilePath(project, filePath);
 
   try {
-    const [exists, isDir] = await Promise.all([
-      window.finevibe.fs.exists(fullPath),
-      window.finevibe.fs.isDirectory(fullPath),
-    ]);
-    if (!exists || isDir) {
-      console.warn(`[open-file] not an openable file: ${fullPath}`);
+    // Sequential, never `Promise.all`: `fs:isDirectory` is the consent-gated
+    // stat in main, so a path that does not exist must resolve on `exists`
+    // alone — a parallel probe would ask the user to consent on a dead path.
+    // Remote projects (parent plan §11): project.hostId routes both probes
+    // over sftp in main ('local' rides the local rails untouched).
+    const exists = await window.finevibe.fs.exists(fullPath, project.hostId);
+    if (!exists) {
+      rlog('warn', `[open-file] not an openable file: ${fullPath}`);
+      return;
+    }
+    const isDir = await window.finevibe.fs.isDirectory(fullPath, project.hostId);
+    if (isDir) {
+      rlog('warn', `[open-file] not an openable file: ${fullPath}`);
       return;
     }
   } catch (err: unknown) {
     // An invoke rejects when the window is tearing down mid-click.
-    console.warn(`[open-file] could not check ${fullPath}`, err);
+    // pi-lens-ignore: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring
+    rlog('warn', `[open-file] could not check ${fullPath}`, err);
     return;
   }
 
@@ -53,7 +62,7 @@ export async function openFileReaderChecked(
   // was in flight, and appending to the one they left would silently steal its
   // tab selection.
   if (appState.activeProject?.id !== projectId) {
-    console.warn(`[open-file] active project changed mid-lookup, dropping ${fullPath}`);
+    rlog('warn', `[open-file] active project changed mid-lookup, dropping ${fullPath}`);
     return;
   }
 

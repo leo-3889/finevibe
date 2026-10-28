@@ -10,6 +10,7 @@ vi.mock('fs', () => ({
   closeSync: vi.fn(),
   mkdirSync: vi.fn(),
   renameSync: vi.fn(),
+  writeFileSync: vi.fn(),
   statSync: vi.fn(),
   realpathSync: vi.fn(),
 }));
@@ -19,7 +20,7 @@ vi.mock('os', () => ({
 }));
 
 import * as fs from 'fs';
-import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, getKnownProjectPaths, DEFAULT_PREFERENCES } from './store';
+import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, getKnownProjectPaths, DEFAULT_PREFERENCES, GATE_ROOT_CANONICAL_MAX, resetWriteStateForTests } from './store';
 import type { PersistedState, ProjectRecord } from './store';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
@@ -30,15 +31,24 @@ const mockFsyncSync = vi.mocked(fs.fsyncSync);
 const mockCloseSync = vi.mocked(fs.closeSync);
 const mockMkdirSync = vi.mocked(fs.mkdirSync);
 const mockRenameSync = vi.mocked(fs.renameSync);
+const mockWriteFileSync = vi.mocked(fs.writeFileSync);
 const mockStatSync = vi.mocked(fs.statSync);
 const mockRealpathSync = vi.mocked(fs.realpathSync);
 
-const DEFAULT_STATE: PersistedState = {
-  version: 1,
-  projects: [],
-  activeProjectId: null,
-  preferences: { soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: false, sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true, confirmCloseWorkingSession: true, locale: 'en', agentmemoryAutoStart: true, defaultProjectsFolder: '' },
-};
+// Fresh deep copy per case (order-independence audit 2026-10-26): saveState
+// and the graft mutate the passed state's preferences IN PLACE (they graft
+// main-owned keys onto the object they receive). As a shared const, one
+// graft case poisoned the fixture for every later case - deterministic order
+// hid it, shuffled order exposed it. A factory hands every case its own copy.
+function makeDefaultState(): PersistedState {
+  return JSON.parse(JSON.stringify({
+    version: 1,
+    projects: [],
+    activeProjectId: null,
+    hosts: [],
+    preferences: DEFAULT_PREFERENCES,
+  })) as PersistedState;
+}
 
 // Monotonic fake epoch: vi.useFakeTimers() re-bases Date.now to the (barely
 // advanced) real clock, so a fixed advance from real time is not enough —
@@ -46,6 +56,22 @@ const DEFAULT_STATE: PersistedState = {
 let fakeClockBase = Date.now();
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence (coherence pass 2026-10-26): clearAllMocks clears
+  // CALLS but keeps implementations, and store tests set destructive fs
+  // overrides (renameSync EPERM storms, writeFileSync ENOSPC). Reset the
+  // write-path mocks to default success every case so a shuffled predecessor
+  // cannot leak a throwing implementation into this one.
+  mockRenameSync.mockReset();
+  mockWriteFileSync.mockReset();
+  // Same class for the READ path: a predecessor's per-path readFileSync impl
+  // (state.json/.tmp fixtures for the last-known-good recovery) must not
+  // answer this case's reads; existsSync defaults are falsy (no files).
+  mockReadFileSync.mockReset();
+  mockExistsSync.mockReset();
+  // Throttle/backoff machine is module state; every case must own a clean
+  // leading edge (previously only two write-storm cases reset it, so a
+  // shuffled order left lastSaveAt armed for the saveState describe).
+  resetWriteStateForTests();
   // fs.writeSync reports the byte count and production code loops on it, so the
   // mock has to behave like a real descriptor, not return undefined.
   mockWriteSync.mockImplementation(((
@@ -74,7 +100,7 @@ afterEach(() => {
 describe('loadState', () => {
   it('returns default state when file does not exist', () => {
     mockExistsSync.mockReturnValue(false);
-    expect(loadState()).toEqual(DEFAULT_STATE);
+    expect(loadState()).toEqual(makeDefaultState());
   });
 
   it('parses valid JSON', () => {
@@ -86,19 +112,65 @@ describe('loadState', () => {
     };
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify(state));
-    expect(loadState()).toEqual(state);
+    // hosts normalizes to [] on load (multi-host Phase 1 contract); projects
+    // get hostId 'local' (audit T2 #4 — host-scoped gate roots, normalized
+    // once at load like sessions/profiles).
+    expect(loadState()).toEqual({
+      ...state,
+      hosts: [],
+      projects: [{ ...state.projects[0], hostId: 'local' }],
+    });
+  });
+
+  // per-host providers T1: pre-existing (hostId-less) records normalize to
+  // 'local' once at load — the channel/renderer code can then treat hostId
+  // as always present.
+  it('normalizes hostId-less sessions and profiles to the local host at load', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      version: 1,
+      projects: [{ id: 'p1', name: 'Test', path: '/test', activeSessionId: null, layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+        sessions: [{ id: 's1', createdAt: 1 }, { id: 's2', createdAt: 2, hostId: 'demo-host' }] }],
+      activeProjectId: 'p1',
+      profiles: [{ id: 'pr1', name: 'Work', providerId: 'claude', configDir: '/c', managed: true, createdAt: 1 }],
+      preferences: { ...DEFAULT_PREFERENCES },
+    }));
+    const loaded = loadState();
+    expect(loaded.projects[0].sessions.map((s) => s.hostId)).toEqual(['local', 'demo-host']);
+    expect(loaded.profiles?.[0].hostId).toBe('local');
+  });
+
+  // parent §11 sshHost retirement, step 1: legacy free-text hosts adopt the
+  // registry id at load; unregistered/ambiguous ones keep sshHost (the
+  // pty-manager legacy wrap honors them for the coexistence release).
+  it('migrates a legacy session sshHost to the matching registry hostId', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      version: 1,
+      projects: [{ id: 'p1', name: 'Test', path: '/test', activeSessionId: null, layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+        sessions: [{ id: 's1', createdAt: 1, sshHost: 'lab.example.com' }, { id: 's2', createdAt: 2, sshHost: 'nowhere' }] }],
+      activeProjectId: 'p1',
+      hosts: [{ id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301', name: 'lab', user: 'dev', host: 'lab.example.com', port: 22, authKind: 'key', privateKeyPath: '/home/finevibe/hosts/3f2504e0-4f89-41d3-9a0c-0305e82c3301/id_ed25519', managedKey: true, enrollmentStatus: 'enrolled' }],
+      preferences: { ...DEFAULT_PREFERENCES },
+    }));
+    const loaded = loadState();
+    const [s1, s2] = loaded.projects[0].sessions;
+    expect(s1.hostId).toBe('3f2504e0-4f89-41d3-9a0c-0305e82c3301');
+    expect(s1.sshHost).toBeUndefined();
+    expect(s2.hostId).toBe('local');
+    expect(s2.sshHost).toBe('nowhere');
   });
 
   it('returns default state on invalid JSON', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue('not json');
-    expect(loadState()).toEqual(DEFAULT_STATE);
+    expect(loadState()).toEqual(makeDefaultState());
   });
 
   it('returns default state on wrong version', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ version: 99 }));
-    expect(loadState()).toEqual(DEFAULT_STATE);
+    expect(loadState()).toEqual(makeDefaultState());
   });
 
   it('fills the documented default preferences once for a file without them (P2-84)', () => {
@@ -109,6 +181,9 @@ describe('loadState', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, projects: [], activeProjectId: null }));
     const loaded = loadState();
     expect(loaded.preferences).toEqual(DEFAULT_PREFERENCES);
+    // SA-P2-3: the defaults must NOT carry `locale` - a default 'en' made the
+    // `saved ?? resolveSystemLocale(...)` boot fallback dead code.
+    expect(loaded.preferences.locale).toBeUndefined();
     // Cached reads carry the same normalized object (single fill, not per call).
     expect(loadState()).toBe(loaded);
   });
@@ -122,11 +197,34 @@ describe('loadState', () => {
     expect(loadState().preferences).toEqual(DEFAULT_PREFERENCES);
     expect(loadState().activeProjectId).toBe('p1');
   });
+
+  it('parses a state file saved with a UTF-8 BOM (Notepad/PowerShell edit)', () => {
+    // Notepad/PowerShell on Windows save state.json with a BOM;
+    // JSON.parse rejects it, so an intact hand-edited file was graded
+    // corrupt — .tmp recovery at best, a silent reset to defaults.
+    const state: PersistedState = {
+      version: 1,
+      projects: [],
+      activeProjectId: 'p1',
+      preferences: { ...DEFAULT_PREFERENCES },
+    };
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(`\uFEFF${JSON.stringify(state)}`);
+    expect(loadState()).toEqual({ ...state, hosts: [] });
+  });
+
+  it('treats a BOM-only state file as corrupt: defaults, no crash', () => {
+    // A Notepad save of an empty doc is just the BOM. It normalizes to ''
+    // and fails the parse — the existing corrupt path, deliberately.
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('\uFEFF');
+    expect(loadState()).toEqual(makeDefaultState());
+  });
 });
 
 describe('saveState', () => {
   it('writes the leading edge immediately, not 300ms later', () => {
-    saveState(DEFAULT_STATE);
+    saveState(makeDefaultState());
     // P1-2: with the old trailing debounce nothing reached disk until the
     // timer fired, so a crash inside the window lost the state. The
     // leading edge writes through at once.
@@ -136,8 +234,8 @@ describe('saveState', () => {
 
     // The first write opens the throttle window; bursts inside it coalesce
     // into ONE trailing write of the LATEST state.
-    saveState({ ...DEFAULT_STATE, activeProjectId: 'p2' });
-    saveState({ ...DEFAULT_STATE, activeProjectId: 'p3' });
+    saveState({ ...makeDefaultState(), activeProjectId: 'p2' });
+    saveState({ ...makeDefaultState(), activeProjectId: 'p3' });
     expect(mockWriteSync).toHaveBeenCalledOnce();
 
     vi.advanceTimersByTime(300);
@@ -148,10 +246,10 @@ describe('saveState', () => {
   });
 
   it('takes the leading edge again once the throttle window has passed', () => {
-    saveState(DEFAULT_STATE); // leading
+    saveState(makeDefaultState()); // leading
     vi.advanceTimersByTime(200);
 
-    const updated = { ...DEFAULT_STATE, activeProjectId: 'p1' };
+    const updated = { ...makeDefaultState(), activeProjectId: 'p1' };
     saveState(updated); // inside the window: trailing armed
     vi.advanceTimersByTime(300);
 
@@ -160,7 +258,7 @@ describe('saveState', () => {
     expect(written.activeProjectId).toBe('p1');
 
     vi.advanceTimersByTime(1_000);
-    const later = { ...DEFAULT_STATE, activeProjectId: 'p2' };
+    const later = { ...makeDefaultState(), activeProjectId: 'p2' };
     saveState(later); // window passed: leading again
     expect(mockWriteSync).toHaveBeenCalledTimes(3);
     const written2 = JSON.parse(String(mockWriteSync.mock.calls[2][1]));
@@ -169,7 +267,7 @@ describe('saveState', () => {
 
   it('creates directory if needed', () => {
     mockExistsSync.mockReturnValue(false);
-    saveState(DEFAULT_STATE);
+    saveState(makeDefaultState());
     vi.advanceTimersByTime(300);
 
     expect(mockMkdirSync).toHaveBeenCalledWith(
@@ -181,9 +279,9 @@ describe('saveState', () => {
   it('grafts main-owned statusLine-consent keys onto every write (S1-02)', () => {
     // Main records a consent decision (boot modal -> recordDirConsent).
     const withConsent = {
-      ...DEFAULT_STATE,
+      ...makeDefaultState(),
       preferences: {
-        ...DEFAULT_STATE.preferences!,
+        ...makeDefaultState().preferences!,
         statusLineConsent: 'declined' as const,
         statusLineConsentCommand: 'foreign-cmd',
         statusLineConsentByDir: { '/x': { consent: 'granted' as const, command: 'c' } },
@@ -194,7 +292,7 @@ describe('saveState', () => {
 
     // The renderer's next whole-state persist carries its BOOT-TIME prefs
     // (consent keys absent). Before S1-02 this erased the consent on disk.
-    saveState({ ...DEFAULT_STATE });
+    saveState({ ...makeDefaultState() });
     vi.advanceTimersByTime(300);
     const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
     expect(written.preferences.statusLineConsent).toBe('declined');
@@ -203,12 +301,114 @@ describe('saveState', () => {
     // And a main-side read sees them too.
     expect(loadState().preferences.statusLineConsent).toBe('declined');
   });
+
+  // SA-P1-1: the B2 root-change hook calls invalidateStateCache() immediately
+  // before saveState — the old guard (`stateCache?.preferences`) was then false
+  // and the renderer's stale payload became the cache verbatim, erasing a
+  // consent granted in the boot modal permanently. load-then-graft: an empty
+  // cache reloads from disk before the graft reads it.
+  it('reloads disk state when the cache was invalidated before a persist (SA-P1-1)', () => {
+    // Real-disk stand-in: readFileSync returns exactly what the last write wrote.
+    let disk = JSON.stringify({
+      ...makeDefaultState(),
+      preferences: {
+        ...makeDefaultState().preferences!,
+        statusLineConsent: 'granted' as const,
+        statusLineConsentCommand: 'cmd-a',
+      },
+    });
+    mockWriteSync.mockImplementation(((
+      _fd: number,
+      buffer: Buffer,
+      position = 0,
+    ) => {
+      if (position === 0) disk = buffer.toString('utf-8');
+      return buffer.length - position;
+    }) as unknown as typeof fs.writeSync);
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('state.json'));
+    mockReadFileSync.mockImplementation(() => disk);
+    invalidateStateCache();
+
+    // The renderer persists its whole state with a BOOT-TIME stale consent
+    // ('declined' from before the modal granted 'granted').
+    const staleRendererPayload: PersistedState = {
+      ...makeDefaultState(),
+      preferences: {
+        ...makeDefaultState().preferences!,
+        statusLineConsent: 'declined' as const,
+        statusLineConsentCommand: 'stale-cmd',
+      },
+    };
+    saveState(staleRendererPayload);
+
+    const written = JSON.parse(disk);
+    expect(written.preferences.statusLineConsent).toBe('granted');
+    expect(written.preferences.statusLineConsentCommand).toBe('cmd-a');
+  });
+
+  // SA-P2-2: chromeImport is main-owned (chromeImport:run/clearCookies write
+  // it); a renderer whole-state save must not clobber it.
+  it('grafts the main-owned chromeImport summary onto renderer writes (SA-P2-2)', () => {
+    const summary = { lastImportedAt: 123, profileId: 'Default', cookieCount: 42, skippedV11: 0 };
+    const withImport: PersistedState = {
+      ...makeDefaultState(),
+      preferences: { ...makeDefaultState().preferences!, chromeImport: summary },
+    };
+    // Main wrote the summary (chromeImport:run) — disk/cache now carry it.
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('state.json'));
+    mockReadFileSync.mockImplementation(() => JSON.stringify(withImport));
+    loadState();
+
+    // Renderer persist without the key (its boot snapshot predates the import).
+    saveState({ ...makeDefaultState() });
+    const written = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
+    expect(written.preferences.chromeImport).toEqual(summary);
+
+    // A renderer payload carrying a STALE summary is also overridden by main's.
+    vi.advanceTimersByTime(300);
+    saveState({
+      ...makeDefaultState(),
+      preferences: { ...makeDefaultState().preferences!, chromeImport: { ...summary, cookieCount: 1 } },
+    });
+    vi.advanceTimersByTime(300);
+    const written2 = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(written2.preferences.chromeImport).toEqual(summary);
+  });
 });
 
 describe('saveStateSync', () => {
   it('writes immediately without debounce', () => {
-    saveStateSync(DEFAULT_STATE);
+    saveStateSync(makeDefaultState());
     expect(mockWriteSync).toHaveBeenCalledOnce();
+  });
+
+  // SA-P2-7: the sync branch (the beforeunload flush path) had the same graft
+  // as saveState but no test pinning it — the duplicated copy could drift silently.
+  it('grafts main-owned consent keys like saveState (SA-P2-7)', () => {
+    // Own fs state: no state file on disk (vi.clearAllMocks() keeps prior
+    // tests' mock implementations, so the SA-P2-2 mocks would otherwise
+    // persist and the graft would load THAT test's disk content).
+    mockExistsSync.mockReturnValue(false);
+    const withConsent: PersistedState = {
+      ...makeDefaultState(),
+      preferences: {
+        ...makeDefaultState().preferences!,
+        statusLineConsent: 'declined' as const,
+        statusLineConsentCommand: 'foreign-cmd',
+        statusLineConsentByDir: { '/x': { consent: 'granted' as const, command: 'c' } },
+        chromeImport: { lastImportedAt: 5, profileId: 'Default', cookieCount: 7, skippedV11: 0 },
+      },
+    };
+    saveStateSync(withConsent);
+    const first = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
+    expect(first.preferences.statusLineConsent).toBe('declined');
+
+    // A second sync write from a stale payload keeps main's consent + summary.
+    saveStateSync({ ...makeDefaultState() });
+    const second = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
+    expect(second.preferences.statusLineConsent).toBe('declined');
+    expect(second.preferences.statusLineConsentCommand).toBe('foreign-cmd');
+    expect(second.preferences.chromeImport).toEqual({ lastImportedAt: 5, profileId: 'Default', cookieCount: 7, skippedV11: 0 });
   });
 
   it('keeps writing after a short write instead of renaming a partial file', () => {
@@ -219,7 +419,7 @@ describe('saveStateSync', () => {
       position = 0,
     ) => Math.min(64, buffer.length - position)) as unknown as typeof fs.writeSync);
 
-    const state = { ...DEFAULT_STATE, activeProjectId: longId };
+    const state = { ...makeDefaultState(), activeProjectId: longId };
     saveStateSync(state);
 
     expect(mockWriteSync.mock.calls.length).toBeGreaterThan(3);
@@ -237,7 +437,7 @@ describe('saveStateSync', () => {
   it('refuses to fsync and rename when the descriptor stops making progress', () => {
     mockWriteSync.mockReturnValue(0);
 
-    saveStateSync(DEFAULT_STATE);
+    saveStateSync(makeDefaultState());
 
     expect(mockFsyncSync).not.toHaveBeenCalled();
     expect(mockRenameSync).not.toHaveBeenCalled();
@@ -245,7 +445,7 @@ describe('saveStateSync', () => {
   });
 
   it('fsyncs and closes the temp file before renaming it into place', () => {
-    saveStateSync(DEFAULT_STATE);
+    saveStateSync(makeDefaultState());
 
     expect(String(mockOpenSync.mock.calls[0][0]).replaceAll('\\', '/')).toContain('/mock/home/.finevibe/state.json.tmp');
     expect(mockFsyncSync).toHaveBeenCalledOnce();
@@ -260,7 +460,7 @@ describe('saveStateSync', () => {
   // opens the temp file 0600 (mode at create) and fchmods it (covers a .tmp
   // left by an older 0644 build); the rename carries the mode to state.json.
   it('opens the temp file 0600 and chmods it for secrets at rest', () => {
-    saveStateSync(DEFAULT_STATE);
+    saveStateSync(makeDefaultState());
 
     expect(mockOpenSync.mock.calls[0][1]).toBe('w');
     expect(mockOpenSync.mock.calls[0][2]).toBe(0o600);
@@ -274,17 +474,61 @@ describe('saveStateSync', () => {
     mockWriteSync.mockImplementation(() => {
       throw new Error('ENOSPC');
     });
-    saveStateSync(DEFAULT_STATE);
+    saveStateSync(makeDefaultState());
 
     expect(mockCloseSync).toHaveBeenCalledOnce();
     expect(mockRenameSync).not.toHaveBeenCalled();
+  });
+
+  it('retries the rename through transient Windows lock failures (EPERM/EBUSY)', () => {
+    // AV scans and editor buffers hold state.json open; renameSync onto
+    // the locked target fails EPERM/EBUSY. The save must survive the
+    // lock, not lose the write.
+    const locked = (code: string) => Object.assign(new Error(`${code}: locked`), { code });
+    mockRenameSync
+      .mockImplementationOnce(() => { throw locked('EPERM'); })
+      .mockImplementationOnce(() => { throw locked('EBUSY'); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    saveStateSync(makeDefaultState());
+
+    expect(mockRenameSync).toHaveBeenCalledTimes(3);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('gives up after the rename budget: logged, fsynced .tmp left for startup recovery', () => {
+    const locked = () => Object.assign(new Error('EPERM: locked'), { code: 'EPERM' });
+    mockRenameSync.mockImplementation(() => { throw locked(); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    saveStateSync(makeDefaultState());
+
+    // 5 attempts, 50ms doubling backoff; the payload is NOT lost — the
+    // fsynced .tmp survives (loadState consumes it at next startup).
+    expect(mockRenameSync).toHaveBeenCalledTimes(5);
+    expect(err).toHaveBeenCalledWith('Failed to save state:', expect.objectContaining({ code: 'EPERM' }));
+    err.mockRestore();
+  });
+
+  it('does not retry a rename failure that is not a lock', () => {
+    mockRenameSync.mockImplementation(() => {
+      throw Object.assign(new Error('EXDEV: cross-device'), { code: 'EXDEV' });
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    saveStateSync(makeDefaultState());
+
+    expect(mockRenameSync).toHaveBeenCalledOnce();
+    expect(err).toHaveBeenCalledWith('Failed to save state:', expect.objectContaining({ code: 'EXDEV' }));
+    err.mockRestore();
   });
 });
 
 describe('flushState', () => {
   it('writes pending state immediately and disarms the trailing timer', () => {
-    saveState(DEFAULT_STATE); // leading write
-    saveState({ ...DEFAULT_STATE, activeProjectId: 'pending' }); // trailing armed
+    saveState(makeDefaultState()); // leading write
+    saveState({ ...makeDefaultState(), activeProjectId: 'pending' }); // trailing armed
     flushState();
     const written = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
     expect(written.activeProjectId).toBe('pending');
@@ -316,7 +560,7 @@ describe('main-owned gate root set (P1-12)', () => {
   };
 
   it('saveState refuses a fabricated gate root: the root set does not widen', () => {
-    saveState({ ...DEFAULT_STATE, projects: [projectAt(FS_ROOT)] });
+    saveState({ ...makeDefaultState(), projects: [projectAt(FS_ROOT)] });
     // One `store:save` with projects:[{path:'C:\\'}] must not authorize
     // arbitrary fs/git/MCP access — the root set stays shut.
     expect(getKnownProjectPaths()).toEqual([]);
@@ -325,7 +569,7 @@ describe('main-owned gate root set (P1-12)', () => {
   it('saveState refuses the home root, missing dirs and CLI config dirs, keeps real dirs', () => {
     missing('/mock/home/gone');
     saveState({
-      ...DEFAULT_STATE,
+      ...makeDefaultState(),
       projects: [
         projectAt('/mock/home'),
         projectAt('/mock/home/gone'),
@@ -337,7 +581,7 @@ describe('main-owned gate root set (P1-12)', () => {
   });
 
   it('saveState persists the renderer payload verbatim (persistence is not the gate)', () => {
-    saveState({ ...DEFAULT_STATE, projects: [projectAt(FS_ROOT)] });
+    saveState({ ...makeDefaultState(), projects: [projectAt(FS_ROOT)] });
     const written = JSON.parse(String(mockWriteSync.mock.calls[0][1]));
     expect(written.projects.map((p: ProjectRecord) => p.path)).toContain(FS_ROOT);
   });
@@ -382,7 +626,7 @@ describe('gate root memo (PA-08)', () => {
 
   it('re-saving an unchanged project list performs zero stat/realpath syscalls', () => {
     const state = {
-      ...DEFAULT_STATE,
+      ...makeDefaultState(),
       projects: [projectAt('/mock/home/projects/a'), projectAt('/mock/home/projects/b')],
     };
     saveState(state);
@@ -398,12 +642,12 @@ describe('gate root memo (PA-08)', () => {
   });
 
   it('adding one project costs exactly one stat + one realpath', () => {
-    saveState({ ...DEFAULT_STATE, projects: [projectAt('/mock/home/projects/a')] });
+    saveState({ ...makeDefaultState(), projects: [projectAt('/mock/home/projects/a')] });
     mockStatSync.mockClear();
     mockRealpathSync.mockClear();
 
     saveState({
-      ...DEFAULT_STATE,
+      ...makeDefaultState(),
       projects: [projectAt('/mock/home/projects/a'), projectAt('/mock/home/projects/new')],
     });
 
@@ -415,10 +659,15 @@ describe('gate root memo (PA-08)', () => {
   });
 
   it('re-validates a dropped path on every save while a cached sibling costs zero syscalls', () => {
+    // Own fs state: no state file, so the empty-cache graft in saveState
+    // skips loadState() — the previous test's persisted existsSync/readFileSync
+    // mocks would otherwise make it load and validate that test's project list
+    // (extra stats, extra drop warnings), inflating the counts asserted below.
+    mockExistsSync.mockReturnValue(false);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     missing('/mock/home/gone');
     const state = {
-      ...DEFAULT_STATE,
+      ...makeDefaultState(),
       projects: [projectAt('/mock/home/projects/real'), projectAt('/mock/home/gone')],
     };
     saveState(state);
@@ -437,5 +686,217 @@ describe('gate root memo (PA-08)', () => {
     expect(mockRealpathSync).not.toHaveBeenCalled();
     expect(mockStatSync.mock.calls.map((call) => String(call[0]))).not.toContain('/mock/home/projects/real');
     warn.mockRestore();
+  });
+
+  // B1: the memo was unbounded (only invalidateStateCache cleared it) — a
+  // session that keeps gating on fresh project paths grew it forever.
+  it('caps the per-path canonical memo at 200 entries, oldest evicted first', () => {
+    // Own fs state: no state file — an existsSync mock leaked from a prior
+    // test would make saveState's empty-cache graft run loadState(), whose
+    // project validation adds realpath calls for '/mock/home/projects/...'
+    // paths and breaks the memo-miss count below.
+    mockExistsSync.mockReturnValue(false);
+    const paths = Array.from({ length: GATE_ROOT_CANONICAL_MAX }, (_, i) => `/mock/home/projects/p${i}`);
+    saveState({ ...makeDefaultState(), projects: paths.map(projectAt) });
+    // One realpath per project path. The lazily recomputed CLI-config-root
+    // canonicals (dropped with the memo by invalidateStateCache) ride along
+    // on this first save — they are process constants, not memo misses, so
+    // the memo contract is counted on project paths only.
+    const isProjectPath = (call: unknown[]): boolean =>
+      String(call[0]).startsWith('/mock/home/projects/');
+    expect(mockRealpathSync.mock.calls.filter(isProjectPath)).toHaveLength(GATE_ROOT_CANONICAL_MAX);
+
+    // One more path: the cap+1-th insert evicts the oldest (p0), FIFO.
+    saveState({ ...makeDefaultState(), projects: [...paths.map(projectAt), projectAt('/mock/home/projects/overflow')] });
+    mockStatSync.mockClear();
+    mockRealpathSync.mockClear();
+
+    // p0 was evicted: it re-validates. Its re-insert hits the cap again and
+    // evicts the NEXT oldest survivor (p1), which the same loop then
+    // re-validates — pure FIFO cascade, never a policy miss. saveState's
+    // own persistence bookkeeping (state-file stat checks) rides along, so
+    // the memo contract is counted on project paths only.
+    saveState({ ...makeDefaultState(), projects: [projectAt(paths[0]!), projectAt(paths[1]!)] });
+    expect(mockStatSync.mock.calls.filter(isProjectPath).map((c) => String(c[0]))).toEqual([paths[0], paths[1]]);
+    expect(mockRealpathSync.mock.calls.filter(isProjectPath).map((c) => String(c[0]))).toEqual([paths[0], paths[1]]);
+  });
+});
+
+// ENOSPC write storm (workstation incident, 2026-10-23): a full disk made
+// every renderer `store:save` IPC a failed atomic write, and the old
+// catch-and-log printed a full stack per attempt (~400/min, journald-
+// mirrored, consuming the very space it complained about). The backoff
+// machine in writeStateAtomically must log ONCE per outage and retry on
+// one exponential timer, never per event.
+describe('write-failure backoff (ENOSPC storm)', () => {
+  const enospc = () =>
+    Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+
+  it('logs the failure once, stays silent across a save storm', () => {
+    resetWriteStateForTests(); // clean leading edge: drop leaked throttle/backoff state from a prior case
+    mockWriteSync.mockImplementation(() => {
+      throw enospc();
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    for (let i = 0; i < 20; i++) {
+      saveState({ ...makeDefaultState(), activeProjectId: `storm-${i}` });
+      vi.advanceTimersByTime(400); // every save takes the leading edge
+    }
+
+    // Flood regression: pre-backoff this logged ~20 full stacks (leading
+    // edge per save + trailing timer writes). Now the first failure logs
+    // with the exact legacy shape, and every repeat — the swallowed
+    // mutations and the retry timer's own failures (1s/2s/4s fire inside
+    // the 8s of advancing) — stays silent.
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalledWith('Failed to save state:', expect.objectContaining({ code: 'ENOSPC' }));
+    err.mockRestore();
+  });
+
+  it('backs off to the 60s cap, then recovers with one line', () => {
+    resetWriteStateForTests();
+    mockWriteSync.mockImplementation(() => {
+      throw enospc();
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    // The 'gives up after the rename budget' case installs a PERSISTENT
+    // mockImplementation(throw EPERM) on renameSync, and beforeEach's
+    // vi.clearAllMocks() = mockClear keeps persistent implementations.
+    // Neutralize that leak locally: the recovery attempt must reach a
+    // successful rename for the success handler to fire.
+    mockRenameSync.mockImplementation(() => undefined);
+
+    saveState(makeDefaultState()); // leading-edge attempt #1: logs once
+    expect(mockWriteSync).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalledTimes(1);
+
+    // The outage retries on the doubling 1s→60s-capped series — NOT the
+    // 300ms throttle. Renderer mutations keep arriving during every step;
+    // the backoff gate swallows them at zero write syscalls per event.
+    const cadence = [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000];
+    for (let step = 0; step < cadence.length; step++) {
+      for (let burst = 0; burst < 3; burst++) {
+        saveState({ ...makeDefaultState(), activeProjectId: `outage-${step}-${burst}` });
+        vi.advanceTimersByTime(200); // 600ms of mutations < the 1s floor
+      }
+      vi.advanceTimersByTime(cadence[step] - 600);
+      expect(mockWriteSync).toHaveBeenCalledTimes(step + 2); // ONE attempt per step
+    }
+    expect(err).toHaveBeenCalledTimes(1); // 8 repeats counted, not logged
+
+    // Disk recovers: the next backoff step writes, logs ONE recovery line,
+    // and no new error fires.
+    mockWriteSync.mockImplementation(((
+      _fd: number,
+      buffer: Buffer,
+      position = 0,
+    ) => buffer.length - position) as unknown as typeof fs.writeSync);
+    vi.advanceTimersByTime(60000);
+
+    expect(mockWriteSync).toHaveBeenCalledTimes(cadence.length + 2);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith('State saved after 8 failed attempt(s)');
+    expect(err).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+    info.mockRestore();
+  });
+});
+
+// SA-P2-8: a corrupt state.json used to mean a silent whole-state reset (the
+// .tmp sibling is a consumed crash artifact, so it is missing exactly when it
+// is needed), and `version !== 1` reset to defaults with one generic warn and
+// no migration seam. Recovery order is .tmp → .good → defaults, each with a
+// distinct warn; the version path is the documented migrateState() seam.
+describe('state recovery and the migration seam (SA-P2-8)', () => {
+  const pathEnds = (p: unknown, suffix: string): boolean =>
+    String(p).replaceAll('\\', '/').endsWith(suffix);
+  const diskFiles = (files: Record<string, string>): void => {
+    mockExistsSync.mockImplementation((p) =>
+      Object.keys(files).some((suffix) => pathEnds(p, suffix)));
+    mockReadFileSync.mockImplementation((p) => {
+      const hit = Object.keys(files).find((suffix) => pathEnds(p, suffix));
+      if (!hit) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return files[hit]!;
+    });
+  };
+  const stateAt = (id: string): string =>
+    JSON.stringify({ ...makeDefaultState(), activeProjectId: id });
+
+  it('recovers a corrupt state.json from the last-known-good copy', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    diskFiles({
+      'state.json': '{corrupt',
+      'state.json.good': stateAt('from-good'),
+    });
+
+    expect(loadState().activeProjectId).toBe('from-good');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('last-known-good'),
+    );
+    warn.mockRestore();
+  });
+
+  it('prefers a valid .tmp over the good copy when state.json is corrupt', () => {
+    // Existing behavior pinned: the .tmp check runs first, and with no
+    // parseable state.json it wins on mtime by definition.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    diskFiles({
+      'state.json': '{corrupt',
+      'state.json.tmp': stateAt('from-tmp'),
+      'state.json.good': stateAt('from-good'),
+    });
+
+    expect(loadState().activeProjectId).toBe('from-tmp');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('temp file'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('last-known-good'));
+    warn.mockRestore();
+  });
+
+  it('falls back to defaults, loudly, when the good copy is gone too', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    diskFiles({ 'state.json': '{corrupt' });
+
+    expect(loadState()).toEqual(makeDefaultState());
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('No valid state file'));
+    warn.mockRestore();
+  });
+
+  it('refuses a future version through the migration seam: defaults + a version warn', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    diskFiles({ 'state.json': JSON.stringify({ ...makeDefaultState(), version: 2 }) });
+
+    expect(loadState()).toEqual(makeDefaultState());
+    // Distinct from the corrupt/defaults warns: it names the version and the seam.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('version 2 has no migration path'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('last-known-good'));
+    warn.mockRestore();
+  });
+
+  it('mirrors every successful commit to state.json.good (0600)', () => {
+    saveStateSync({ ...makeDefaultState(), activeProjectId: 'committed' });
+
+    expect(mockWriteFileSync).toHaveBeenCalledOnce();
+    expect(pathEnds(mockWriteFileSync.mock.calls[0]![0], 'state.json.good')).toBe(true);
+    expect(JSON.parse(String(mockWriteFileSync.mock.calls[0]![1])).activeProjectId).toBe('committed');
+    expect(mockWriteFileSync.mock.calls[0]![2]).toEqual({ mode: 0o600 });
+    // The mirror runs after the commit rename, never before it.
+    expect(mockRenameSync.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockWriteFileSync.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('does not report a good-copy failure as a state write failure', () => {
+    // state.json committed; a .good write failure must not log the ENOSPC
+    // outage line nor arm the write backoff for a write that worked.
+    mockWriteFileSync.mockImplementation(() => { throw new Error('ENOSPC'); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    saveStateSync(makeDefaultState());
+
+    expect(mockRenameSync).toHaveBeenCalledOnce();
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
   });
 });

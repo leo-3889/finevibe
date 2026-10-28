@@ -1,20 +1,25 @@
 import { filePreview, PREVIEW_LINES } from '../file-preview.js';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
 import { appState } from '../state.js';
 import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
 import { escapeHtml } from './dom-search-backend.js';
 import { isAbsolutePath, dirname, samePath } from '../../shared/platform.js';
+import { openExternal } from '../open-external.js';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../../shared/token-estimate.js';
 import { pathToFileURL } from '../file-url.js';
 import { resolveMarkdownLink } from '../markdown-link.js';
 import { openFileReaderChecked } from '../open-file-reader.js';
 import { slugifyHeading } from '../../shared/slug.js';
+import { rlog } from '../log.js';
 
 interface FileReaderInstance {
   element: HTMLElement;
   filePath: string;
+  // Remote file preview (per-host providers, parent plan §11): set when the
+  // file's project lives on a registry host — reads ride the fs:readFile
+  // remote rail. Absent/'local' = local disk, unchanged. No watcher, no
+  // image preview over sftp in v1.
+  hostId?: string;
   resolvedPath: string | null;
   loaded: boolean;
   targetLine?: number;
@@ -45,7 +50,10 @@ function renderFileContent(content: string, firstLine = 1): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'file-reader-content';
 
-  const lines = content.split('\n');
+  // CRLF: the split is LF-only; a trailing '\r' under white-space:pre
+  // renders as a second, visibly empty row — CRLF files read double-height.
+  // Normalize CRLF/CR to LF first; pure-LF content is unchanged.
+  const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   for (let i = 0; i < lines.length; i++) {
     const row = document.createElement('div');
     row.className = 'file-reader-line';
@@ -70,7 +78,7 @@ function scrollToHeading(wrapper: HTMLElement, slug: string): void {
   const headings = [...wrapper.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')];
   const heading = headings.find((h) => slugifyHeading(h.textContent ?? '') === slug);
   if (!heading) {
-    console.warn(`[markdown-link] no heading matches anchor #${slug}`);
+    rlog('warn', `[markdown-link] no heading matches anchor #${slug}`);
     return;
   }
   heading.scrollIntoView({ block: 'start' });
@@ -96,9 +104,7 @@ function handleMarkdownClick(wrapper: HTMLElement, baseDir: string | undefined, 
       scrollToHeading(wrapper, target.slug);
       break;
     case 'external':
-      window.finevibe.app
-        .openExternal(target.url)
-        .catch((err: unknown) => console.warn(`[markdown-link] could not open ${target.url}`, err));
+      void openExternal(target.url);
       break;
     case 'file': {
       // openFileReaderChecked validates the path before it spawns a tab — a
@@ -109,16 +115,43 @@ function handleMarkdownClick(wrapper: HTMLElement, baseDir: string | undefined, 
       break;
     }
     case 'ignore':
-      console.warn(`[markdown-link] not a routable link: ${href}`);
+      rlog('warn', `[markdown-link] not a routable link: ${href}`);
       break;
   }
 }
 
+// P3 lazy boundary: `marked` + `dompurify` are loaded on first markdown render
+// (see renderMarkdownContent) instead of at boot. One shared promise, so ten
+// open readers fetch the chunk once.
+const loadMarkdownLibs = (): Promise<{
+  marked: typeof import('marked').marked;
+  // dompurify ships `export =`, so the module type IS the value type; the
+  // runtime `.default` is esModuleInterop's synthesized interop property.
+  DOMPurify: typeof import('dompurify');
+}> =>
+  Promise.all([import('marked'), import('dompurify')]).then(([m, p]) => ({
+    marked: m.marked,
+    DOMPurify: p.default,
+  }));
+
 export function renderMarkdownContent(content: string, baseDir?: string): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'file-reader-markdown';
-  const rawHtml = marked.parse(content, { async: false }) as string;
-  wrapper.innerHTML = DOMPurify.sanitize(rawHtml);
+  // P3 lazy boundary: `marked` + `dompurify` (~55 KiB minified) are no longer in
+  // the boot entry — esbuild puts them in their own chunk and they are fetched
+  // the first time any markdown is rendered. The wrapper is returned
+  // synchronously with the raw text as its pre-state, so an app that never
+  // opens a `.md` file never pays for the libs and one that does shows text
+  // immediately, then the rendered version.
+  wrapper.textContent = content;
+  void loadMarkdownLibs()
+    .then(({ marked, DOMPurify }) => {
+      const rawHtml = marked.parse(content, { async: false }) as string;
+      // DOMPurify returns a sanitized fragment, so the DOM is written with
+      // replaceChildren — no innerHTML assignment on rendered content at all.
+      wrapper.replaceChildren(DOMPurify.sanitize(rawHtml, { RETURN_DOM_FRAGMENT: true }));
+    })
+    .catch((err: unknown) => rlog('warn', '[markdown] renderer libs unavailable; showing raw text', err));
   wrapper.addEventListener('click', (event) => handleMarkdownClick(wrapper, baseDir, event));
   return wrapper;
 }
@@ -183,7 +216,19 @@ function resolveFilePath(instance: FileReaderInstance): string {
 }
 
 function showFileReaderMessage(body: Element, message: string): void {
-  body.innerHTML = `<div class="file-reader-content"><div class="file-reader-line"><span class="file-reader-line-text">${message}</span></div></div>`;
+  // Row 31 review: built with DOM nodes, not an innerHTML string — `message`
+  // carries file-system text (paths, provider errors) and textContent makes
+  // the escaping question disappear entirely.
+  const content = document.createElement('div');
+  content.className = 'file-reader-content';
+  const line = document.createElement('div');
+  line.className = 'file-reader-line';
+  const text = document.createElement('span');
+  text.className = 'file-reader-line-text';
+  text.textContent = message;
+  line.append(text);
+  content.append(line);
+  body.replaceChildren(content);
 }
 
 async function loadFile(instance: FileReaderInstance, sessionId: string): Promise<void> {
@@ -199,8 +244,16 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
 
   try {
     const fullPath = resolveFilePath(instance);
-    if (await closeSessionIfFileMissing(sessionId, fullPath)) return;
+    if (await closeSessionIfFileMissing(sessionId, fullPath, instance.hostId)) return;
     if (instance.kind === 'image') {
+      // Remote image preview needs sftp + base64 (fs:readImage is local);
+      // v1 ships text preview only (parent plan §11).
+      if (instance.hostId) {
+        showFileReaderMessage(body, 'Image preview is not supported for remote files');
+        instance.unsupported = true;
+        instance.loaded = true;
+        return;
+      }
       const result = await window.finevibe.fs.readImage(fullPath);
       if (!result) {
         showFileReaderMessage(body, 'Failed to load file');
@@ -211,7 +264,7 @@ async function loadFile(instance: FileReaderInstance, sessionId: string): Promis
       instance.loaded = true;
       return;
     }
-    const result = await window.finevibe.fs.readFile(fullPath);
+    const result = await window.finevibe.fs.readFile(fullPath, instance.hostId);
     if (!result.ok) {
       showFileReaderMessage(
         body,
@@ -275,14 +328,14 @@ function ensureFileChangedListener(): void {
   });
 }
 
-export function reloadFileReader(sessionId: string): void {
+function reloadFileReader(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
   instance.loaded = false;
   loadFile(instance, sessionId);
 }
 
-export function createFileReaderPane(sessionId: string, filePath: string, targetLine?: number): void {
+export function createFileReaderPane(sessionId: string, filePath: string, targetLine?: number, hostId?: string): void {
   if (instances.has(sessionId)) return;
 
   const el = document.createElement('div');
@@ -316,6 +369,7 @@ export function createFileReaderPane(sessionId: string, filePath: string, target
   const isImage = isImageFile(filePath);
   const instance: FileReaderInstance = {
     element: el, filePath, resolvedPath: null, loaded: false, targetLine,
+    hostId,
     viewMode: isMd ? 'rendered' : 'raw',
     kind: isImage ? 'image' : 'text',
     unsupported: false,
@@ -380,7 +434,7 @@ export function destroyFileReaderPane(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
   if (instance.resolvedPath) {
-    window.finevibe.fs.unwatchDir(dirname(instance.resolvedPath));
+    window.finevibe.fs.unwatchDir(dirname(instance.resolvedPath), instance.hostId);
   }
   destroySearchBar(sessionId);
   destroyGoToLineBar(sessionId);
@@ -401,7 +455,9 @@ export function showFileReaderPane(sessionId: string, isSplit: boolean): void {
     const fullPath = resolveFilePath(instance);
     instance.resolvedPath = fullPath;
     ensureFileChangedListener();
-    window.finevibe.fs.watchDir(dirname(fullPath));
+    // Local dirs ride chokidar; remote dirs the sftp poller (Phase 4) — the
+    // main side routes by hostId and both emit the same fs:changed events.
+    window.finevibe.fs.watchDir(dirname(fullPath), instance.hostId);
   }
 
   loadFile(instance, sessionId);
@@ -538,7 +594,7 @@ export function showGoToLineBar(sessionId: string): void {
   input.focus();
 }
 
-export function hideGoToLineBar(sessionId: string): void {
+function hideGoToLineBar(sessionId: string): void {
   const entry = goToLineBars.get(sessionId);
   if (!entry) return;
   entry.bar.classList.add('hidden');

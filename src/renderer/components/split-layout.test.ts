@@ -265,6 +265,6 @@ describe('split-layout session-added owner (C2R-09)', () => {
     });
 
     expect(createFileReaderPaneMock).toHaveBeenCalledTimes(1);
-    expect(createFileReaderPaneMock.mock.calls[0]).toEqual(['fr-1', '/x.ts', 3]);
+    expect(createFileReaderPaneMock.mock.calls[0]).toEqual(['fr-1', '/x.ts', 3, undefined]);
   });
 });

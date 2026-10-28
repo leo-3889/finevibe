@@ -1,13 +1,14 @@
 <p align="center">
-  <img src="build/icon.png" alt="Vibeyard" width="128" />
+  <img src="build/icon.png" alt="FineVibe" width="128" />
 </p>
 
-# Vibeyard — the `leo-3889/finevibe` fork
+# FineVibe — the `leo-3889/finevibe` fork
 
 > **Fork notice.** This repository — [leo-3889/finevibe](https://github.com/leo-3889/finevibe), the public fork — is a
 > fork of **[elirantutia/vibeyard](https://github.com/elirantutia/vibeyard)**, branched from upstream `v0.3.8`
-> (Sep 2026). The product is **Vibeyard**; only the fork's release artifacts carry FineVibe naming. For the product as
-> its authors describe it, read the **[upstream README](https://github.com/elirantutia/vibeyard#readme)** —
+> (Sep 2026). The product is **FineVibe** (the fork's rebrand of Vibeyard); upstream
+> keeps its own name. For the product as its authors describe it, read the
+> **[upstream README](https://github.com/elirantutia/vibeyard#readme)** —
 > [`README.upstream.md`](README.upstream.md) is a snapshot of it with the provider and profile lines updated to
 > describe this fork, so it is *not* verbatim; upstream's own README lags this code.
 
@@ -17,17 +18,18 @@
 | **This fork** | [leo-3889/finevibe](https://github.com/leo-3889/finevibe) |
 | **Upstream PR** | [#167](https://github.com/elirantutia/vibeyard/pull/167) |
 
-This README covers what the fork adds on top of Vibeyard; the base product's Highlights live in
+This README covers what the fork adds on top of the upstream product; the base product's Highlights live in
 [`README.upstream.md`](README.upstream.md) and are not restated here.
 
 ---
 
-## What this fork adds on top of Vibeyard
+## What this fork adds on top of the upstream product
 
-### Six CLI backends
+### Seven CLI backends
 
 - **Pi sessions** — drive the Pi coding agent (`pi`) in a full session tab: spawn, resume, live status — alongside the four upstream CLIs.
-- **Oh my Pi sessions** — the same first-class treatment for `omp`. Six backends in total: Claude Code, Codex, Copilot, Gemini, Pi, and Oh my Pi.
+- **Pi-Bolt sessions** — drive the Pi coding agent compiled ahead-of-time to native code (`pi-bolt`) in a full session tab: same `~/.pi/agent` sessions, spawn, resume, live status.
+- **Oh my Pi sessions** — the same first-class treatment for `omp`. Seven backends in total: Claude Code, Codex, Copilot, Gemini, Pi, Pi-Bolt, and Oh my Pi.
 
 ### Live session state without hooks
 
@@ -41,7 +43,7 @@ This README covers what the fork adds on top of Vibeyard; the base product's Hig
 ### Windows first-class, Linux packaged
 
 - **Built and checked on Windows 11** — ConPTY key encoding (arrows/Escape work in vim/less), safe `cmd.exe` argument quoting, Windows Python detection for hooks, icon/version-stamped builds.
-- **Full artifact matrix on fork Releases** — Windows Setup + portable + zip, macOS dmg/zip (signed, notarized), Linux `.deb` + AppImage. Builds ship as `FineVibe` installers with their own icon — artifact identity only; the product is Vibeyard.
+- **Full artifact matrix on fork Releases** — Windows Setup + portable + zip, macOS dmg/zip (signed, notarized), Linux `.deb` + AppImage. Builds ship as `FineVibe` installers with their own icon.
 
 ### Auto-update from the fork, never upstream
 
@@ -62,19 +64,24 @@ This README covers what the fork adds on top of Vibeyard; the base product's Hig
 - **Instant plain-text paste** — a clipboard-latency program: zero clipboard IPC for plain text on all three platforms, PNG encoding off the main thread, coalesced PTY output.
 - **Sidebar folder refresh** — expanding a folder re-reads the listing from disk, so files created by agents outside the watcher's view show up immediately.
 - **Copy path** — right-click → Copy path in the file tree and the project sidebar.
-- **New-session persona + prompt rows** — launch a team persona straight from the New Session modal and type its first message there; delivered at spawn on all six providers.
+- **New-session persona + prompt rows** — launch a team persona straight from the New Session modal and type its first message there; delivered at spawn on all seven providers.
 - **Per-member backend pin** — pin a team member to a specific provider/profile; the pin wins at launch from any launch surface.
 - **Session export** — every session is recorded from creation; export any archived session as a zip archive or a single transcript file.
 - **Default projects folder + git-URL checkout** — new projects pre-fill under your chosen projects folder; paste a GitHub/Codeberg URL to clone the repo and create the project in one step.
-- **Agent Memory engine management** — a Preferences section to auto-start, probe, and tail the shared `agentmemory` daemon in-app; the app never stops the engine — it's shared by every CLI.
 
 The complete per-feature reference — behavior, owning module, numeric limits — lives in
 [`docs/FEATURES.md`](docs/FEATURES.md); provider spawn contracts in
 [`docs/provider-contracts.md`](docs/provider-contracts.md).
 
+## Documentation
+
+All eight contract docs (providers, hosts, session lifecycle, security boundaries,
+performance, UI conventions, packaging, feature reference) are indexed in
+[`docs/README.md`](docs/README.md).
+
 ## What it does *not* do
 
-- **The repo is `leo-3889/finevibe`; the product is Vibeyard.** No rebrand inside: same product name, UI, and data. FineVibe naming appears only in the fork's artifacts (`FineVibe-…` installers, the `finevibe` npm package).
+- **The product is FineVibe, the fork's rebrand of Vibeyard.** Upstream keeps the Vibeyard name, its UI copy, and its data format; the fork renames the product and its artifacts (`FineVibe-…` installers, the `finevibe` npm package) and migrates `~/.vibeyard` data on first launch.
 - No fork-only telemetry, analytics, or phone-home.
 - No config lock-in or migration that blocks a return to upstream.
 - No upstream feature removed or disabled.
@@ -82,16 +89,20 @@ The complete per-feature reference — behavior, owning module, numeric limits �
 ## Known limits
 
 - **Cost and context tracking stay Claude-only** — every other backend, including Pi and OMP, runs without the cost/context rail.
-- **`pi` and `omp` must be on `PATH`** (or resolvable via nvm/npm-global probing) — a provider whose binary isn't found stays hidden.
+- **`pi`, `omp` and `pi-bolt` must be on `PATH`** (or resolvable via nvm/npm-global probing) — a provider whose binary isn't found stays hidden.
 - **macOS and Linux are unverified in this delta** — no new platform-specific code beyond `src/main/platform.ts`, but neither OS was exercised.
+- **Pi-Bolt shares `~/.pi/agent` with Pi** — Pi-Bolt-launched sessions use their own `pi-bolt-sessions` dir; terminal-launched `pi-bolt` sessions appear under the Pi provider.
 - **Updates arrive only from the fork's release feed** — never upstream; with `FINEVIBE_RELEASE_REPO` unset, downloading and auto-update are disabled entirely.
 - **Linux artifacts are x64-only** — launcher and release matrix ship amd64; no arm64 Linux builds.
 
 ## Install
 
-Requires at least one supported CLI installed and authenticated; `pi` and `omp` must be on `PATH` to appear.
+Requires at least one supported CLI installed and authenticated; `pi`, `omp` and `pi-bolt` must be on `PATH` to appear.
 
 ### npm (macOS, Linux & Windows)
+
+> **Not on npm yet.** The `finevibe` launcher publishes with the `4.0` cut; until then use
+> the [installers below](#desktop-installers). `npm i -g finevibe` returns 404 today.
 
 ```bash
 npm i -g finevibe

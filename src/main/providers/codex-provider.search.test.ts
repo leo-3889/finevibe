@@ -20,8 +20,10 @@ vi.mock('../codex-session-watcher', () => ({
 }));
 vi.mock('./resolve-binary', () => ({ resolveBinary: () => '', validateBinaryExists: () => true, validateBinaryExistsAsync: async () => true }));
 
+const realZstdHolder = vi.hoisted(() => ({ createZstdDecompress: null as null | (() => ReturnType<typeof import('zlib').createZstdDecompress>) }));
 vi.mock('zlib', async (importOriginal) => {
   const real = await importOriginal<typeof import('zlib')>();
+  realZstdHolder.createZstdDecompress = real.createZstdDecompress;
   return { ...real, createZstdDecompress: vi.fn(() => real.createZstdDecompress()) };
 });
 
@@ -46,7 +48,20 @@ function mockIndexFile(jsonl: string): void {
   vi.mocked(fs.createReadStream).mockReturnValueOnce(Readable.from([jsonl]) as fs.ReadStream);
 }
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(async () => {
+  vi.clearAllMocks();
+  // Order-independence: clearAllMocks (mockClear) does NOT clear queued
+  // mockReturnValueOnce/mockImplementationOnce entries - a shuffled
+  // predecessor's unconsumed Once (the self-destroy fixture, whose test
+  // asserts timing without awaiting indexTranscript) answered THIS test's
+  // decompression and the budget read saw '' . Reset to factory defaults
+  // (mockReset strips vi.fn(impl) - re-establish the real passthrough).
+  const zlibMod = await import('zlib');
+  vi.mocked(zlibMod.createZstdDecompress).mockReset().mockImplementation(() => realZstdHolder.createZstdDecompress!());
+  vi.mocked(fs.readdirSync).mockReset().mockImplementation(() => []);
+  vi.mocked(fs.createReadStream).mockReset();
+  vi.mocked(fs.promises.stat).mockReset();
+});
 
 describe('CodexProvider.discoverTranscripts()', () => {
   it('walks YYYY/MM/DD and parses cliSessionId from filename suffix', async () => {

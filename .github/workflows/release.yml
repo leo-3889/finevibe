@@ -189,6 +189,19 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Cache Electron + electron-builder downloads
+        # The npm lock pins the Electron version, so its hash keys the
+        # download caches (Electron zips, dmg2img, nsis). Restored before
+        # `npm ci` so the electron postinstall download hits the cache too.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
       - name: Install dependencies
         run: npm ci
 
@@ -198,7 +211,7 @@ jobs:
       - name: Build
         # P1-8: `--publish never` — builds must not race the shared tag;
         # the single `publish` job below uploads every artifact.
-        # electron-builder still writes latest-mac.yml into dist/, so the
+        # electron-builder still writes latest-mac.yml into out/, so the
         # auto-updater feed survives the publish job's aggregate upload.
         # artifacts_only: no Apple secrets exist for gate builds, so build
         # UNSIGNED (CSC_IDENTITY_AUTO_DISCOVERY=false) and skip notarization
@@ -210,30 +223,49 @@ jobs:
         run: npm run build && npm run icons
           && npx electron-builder --publish never --arm64 --x64 ${{ inputs.artifacts_only && '-c.mac.identity=null -c.mac.notarize=false' || '' }}
 
+      - name: Verify app icon in built bundles
+        # The mac target was the one packaging surface with no icon assertion
+        # (codesign and notarization say nothing about the tile). electron-builder
+        # copies build/icon.icns verbatim into Contents/Resources, so a byte
+        # comparison against the freshly generated master is exact.
+        run: |
+          for app in out/mac-arm64/FineVibe.app out/mac/FineVibe.app; do
+            icns=$(find "$app/Contents/Resources" -maxdepth 1 -name '*.icns' -print -quit)
+            if [ -z "$icns" ]; then
+              echo "::error::$app ships no .icns - the bundle has no app icon"
+              exit 1
+            fi
+            if ! cmp -s build/icon.icns "$icns"; then
+              echo "::error::$icns is not the generated build/icon.icns (assets/icon-source.png)"
+              exit 1
+            fi
+            echo "$app: $(basename "$icns") matches build/icon.icns"
+          done
+
       - name: Verify code signatures
         if: inputs.artifacts_only != true
         # P1-9: strict deep verification of both built bundles; a broken or
         # tampered signature fails the release here, not on a user's Mac.
         run: |
-          for app in dist/mac-arm64/FineVibe.app dist/mac/FineVibe.app; do
+          for app in out/mac-arm64/FineVibe.app out/mac/FineVibe.app; do
             codesign --verify --deep --strict --verbose=2 "$app"
           done
 
       - name: Verify notarization and Gatekeeper acceptance
         if: env.APPLE_ID != ''
         run: |
-          xcrun stapler validate dist/*.dmg
-          for dmg in dist/*.dmg; do spctl -a -vv -t install "$dmg"; done
+          xcrun stapler validate out/*.dmg
+          for dmg in out/*.dmg; do spctl -a -vv -t install "$dmg"; done
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-macos
           path: |
-            dist/*.dmg
-            dist/*.zip
-            dist/*.yml
-            dist/*.blockmap
+            out/*.dmg
+            out/*.zip
+            out/*.yml
+            out/*.blockmap
 
   build-linux:
     needs: [prepare]
@@ -249,6 +281,19 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Cache Electron + electron-builder downloads
+        # The npm lock pins the Electron version, so its hash keys the
+        # download caches (Electron zips, AppImage tooling, nsis). Restored
+        # before `npm ci` so the electron postinstall download hits it too.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
       - name: Install dependencies
         run: npm ci
 
@@ -263,24 +308,28 @@ jobs:
 
       - name: Verify package integrity
         # P1-9: dpkg parses the deb's control metadata and full contents list
-        # (a corrupt/truncated archive fails here). The AppImage gets an ELF
+        # (a corrupt/truncated archive fails here). The deb must also ship the
+        # desktop-integration files (hicolor icons + finevibe.desktop) so DE
+        # menus and Wayland docks show the app icon. The AppImage gets an ELF
         # magic check; its runtime signature is NOT verified (needs a FUSE
         # loop-mount the runner cannot do). Byte-exact integrity for both is
         # the SHA256SUMS.txt the publish job ships with the release.
         run: |
-          dpkg-deb --info dist/*.deb > /dev/null
-          dpkg-deb --contents dist/*.deb > /dev/null
-          head -c 4 dist/*.AppImage | grep -q "$(printf '\177ELF')"
+          dpkg-deb --info out/*.deb > /dev/null
+          dpkg-deb --contents out/*.deb > /dev/null
+          dpkg-deb --contents out/*.deb | grep -q 'usr/share/icons/hicolor'
+          dpkg-deb --contents out/*.deb | grep -q 'usr/share/applications/finevibe.desktop'
+          head -c 4 out/*.AppImage | grep -q "$(printf '\177ELF')"
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-linux
           path: |
-            dist/*.AppImage
-            dist/*.deb
-            dist/*.yml
-            dist/*.blockmap
+            out/*.AppImage
+            out/*.deb
+            out/*.yml
+            out/*.blockmap
 
   build-windows:
     needs: [prepare]
@@ -297,6 +346,20 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      - name: Cache Electron + electron-builder downloads
+        # The npm lock pins the Electron version, so its hash keys the
+        # download caches (Electron zips, winCodeSign, nsis, nsis-alsol).
+        # Restored before `npm ci` so the electron postinstall download
+        # hits it too. LOCALAPPDATA is the Windows runner's env var.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.LOCALAPPDATA }}\electron\Cache
+            ${{ env.LOCALAPPDATA }}\electron-builder\Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
 
       - name: Install dependencies
         run: npm ci
@@ -322,7 +385,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Add-Type -AssemblyName System.Drawing
-          $exe = Join-Path $PWD 'dist/win-unpacked/FineVibe.exe'
+          $exe = Join-Path $PWD 'out/win-unpacked/FineVibe.exe'
           if (-not (Test-Path $exe)) {
             Write-Host "::error::Missing $exe"
             Write-Host "  electron-builder produced no unpacked Windows exe"
@@ -394,6 +457,28 @@ jobs:
           if ($fail) { exit 1 }
           Write-Host 'Windows exe icon + version resources OK'
 
+      - name: Verify Setup installer identity
+        # The Setup .exe is the artifact the update feed hands users
+        # (electron-updater installs it on quit), and it is a separate PE: a
+        # 32-bit NSIS stub whose icon + version info makensis embeds from
+        # build/icon.ico (MUI_ICON/MUI_UNICON). Nothing audited it, so an
+        # installer showing the stock NSIS icon while the app tile was fine
+        # shipped green. Same guard as the app exe: scripts/verify-win-exe.mjs
+        # accepts PE32, the 16-256px icon group, the dark-tile pixel mean, and
+        # the installer's version shape (app version, no OriginalFilename).
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setups = @(Get-ChildItem out/FineVibe-Setup-*.exe)
+          if ($setups.Count -eq 0) {
+            Write-Host "::error::No out/FineVibe-Setup-*.exe - the nsis target produced nothing"
+            exit 1
+          }
+          foreach ($s in $setups) {
+            node scripts/verify-win-exe.mjs $s.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
       # P1-9 (documented gap): CI configures no Authenticode certificate, so
       # the Windows exe/zip ship unsigned and `signtool verify` has nothing to
       # validate here. Integrity assurance for this platform is the
@@ -403,16 +488,16 @@ jobs:
         with:
           name: release-windows
           path: |
-            dist/*.exe
-            dist/*.zip
-            dist/*.yml
-            dist/*.blockmap
+            out/*.exe
+            out/*.zip
+            out/*.yml
+            out/*.blockmap
 
   # P1-8: ONE job owns the GitHub release. The three matrix builds used to
   # each run `--publish always` against the same tag, racing release creation
   # and clobbering each other's `latest*.yml` (last writer silently won).
-  # The builds now run `--publish never` and hand their dist outputs over as
-  # artifacts; this job aggregates them, ships SHA256SUMS.txt next to the
+  # The builds now run `--publish never` and hand their `out/` artifacts over;
+  # this job aggregates them, ships SHA256SUMS.txt next to the
   # binaries (P1-9), and creates the release exactly once.
   publish:
     needs: [prepare, build, build-linux, build-windows]

@@ -238,6 +238,12 @@ function refreshMounted(): void {
   const project = appState.activeProject;
   if (!project || project.id !== mountedProjectId) return;
 
+  // Phase 3.5 (docs/hosts.md gitOn): remote projects render REAL data - every
+  // git read routes to the host's git over the exec lane, so the panel needs
+  // no remote-specific branch. The old empty state ("Git runs on this
+  // machine") and its stale-worktree teardown lived here; the poll-side
+  // cache drop retired with it (git-status.ts).
+
   const worktrees = getWorktrees(project.id);
   if (worktrees && worktrees.length > 1) {
     renderWorktreeSelector(gitPanelEl, project);

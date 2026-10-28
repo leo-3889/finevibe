@@ -142,3 +142,45 @@ describe('provider-availability', () => {
     });
   });
 });
+
+// Per-host providers T1 (plan §2): the availability cache is keyed per host.
+// A remote host hydrates from the registry record's prereq probe — the
+// renderer never probes (and never SSHes) for a remote answer.
+describe('per-host availability (per-host providers T1)', () => {
+  function setHosts(list: unknown[]) {
+    const fv = (globalThis as unknown as { window: { finevibe: Record<string, unknown> } }).window.finevibe;
+    fv.hosts = { list: vi.fn(async () => list) };
+  }
+
+  it('hydrates a remote host from hosts.list prerequisites without probing', async () => {
+    listProviders.mockResolvedValue([metaClaude, metaCodex]);
+    setHosts([{ id: 'lab', prerequisites: { claude: { ok: true } } }]);
+    const mod = await loadModule();
+    await mod.loadProviderAvailability('lab');
+    expect(checkBinary).not.toHaveBeenCalled();
+    expect(mod.getAvailableProviderMetas('lab').map(m => m.id)).toEqual(['claude']);
+    expect(mod.getProviderAvailabilitySnapshot('lab')!.availability.get('codex')).toBe(false);
+    // The local host is a separate cache entry: not loaded, so it stays empty.
+    expect(mod.getAvailableProviderMetas()).toEqual([]);
+  });
+
+  it('a host absent from the registry is fully unavailable', async () => {
+    listProviders.mockResolvedValue([metaClaude]);
+    setHosts([]);
+    const mod = await loadModule();
+    await mod.loadProviderAvailability('ghost');
+    expect(mod.hasMultipleAvailableProviders('ghost')).toBe(false);
+    expect(mod.getAvailableProviderMetas('ghost')).toEqual([]);
+  });
+
+  it('local loads probe and keep their own entry (default hostId = local)', async () => {
+    listProviders.mockResolvedValue([metaClaude, metaCodex]);
+    checkBinary.mockImplementation(async (id: string) => id === 'claude');
+    setHosts([{ id: 'lab', prerequisites: { claude: { ok: true }, codex: { ok: true } } }]);
+    const mod = await loadModule();
+    await mod.loadProviderAvailability();
+    expect(checkBinary).toHaveBeenCalled();
+    expect(mod.hasMultipleAvailableProviders()).toBe(false); // only claude local
+    expect(mod.hasMultipleAvailableProviders('lab')).toBe(false); // lab not loaded
+  });
+});

@@ -74,6 +74,12 @@ export const session = {
   defaultSession: { cookies: { set: () => Promise.resolve() } },
 };
 
+// app-scheme.ts value-imports these at module scope (protocol registration +
+// net.fetch in the handler); tests only exercise its pure functions, so
+// registration is recorded and fetch is never called.
+export const protocol = { registerSchemesAsPrivileged: noop, handle: noop };
+export const net = { fetch: () => Promise.reject(new Error('electron-stub: net.fetch is not implemented')) };
+
 export default {
   BrowserWindow,
   app,
@@ -84,4 +90,6 @@ export default {
   Menu,
   powerMonitor,
   session,
+  protocol,
+  net,
 };

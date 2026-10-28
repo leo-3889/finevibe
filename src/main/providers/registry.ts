@@ -7,6 +7,7 @@ import { CopilotProvider } from './copilot-provider';
 import { GeminiProvider } from './gemini-provider';
 import { PiProvider } from './pi-provider';
 import { OmpProvider } from './omp-provider';
+import { PiBoltProvider } from './pi-bolt-provider';
 
 const providers = new Map<ProviderId, CliProvider>();
 
@@ -17,6 +18,7 @@ export function initProviders(): void {
   registerProvider(new GeminiProvider());
   registerProvider(new PiProvider());
   registerProvider(new OmpProvider());
+  registerProvider(new PiBoltProvider());
 }
 
 export function registerProvider(provider: CliProvider): void {
@@ -46,7 +48,7 @@ export function getAllProviderMetas(): CliProviderMeta[] {
 
 // Availability probes (validatePrerequisites → validateBinaryExists: bin-dir
 // scans, nvm walk, `which`/`npm prefix -g` subprocesses) used to run for all
-// six providers on every getAvailableProviderIds call (readiness analysis,
+// seven providers on every getAvailableProviderIds call (readiness analysis,
 // the provider IPC). The result is cached for the process; the explicit
 // invalidation hook below clears it plus the binary probe cache. Call it
 // after provider install/uninstall or a settings change that moves binaries

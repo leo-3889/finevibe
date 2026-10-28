@@ -4,6 +4,7 @@ import * as readline from 'readline';
 import type { TranscriptDescriptor } from './provider';
 import type { CliSessionStatus } from '../../shared/types';
 import { isWin, isMac } from '../platform';
+import { hasActiveSubagentRun } from '../pi-subagent-runs';
 import {
   MAX_INDEX_BYTES,
   MAX_INDEX_FILE_BYTES,
@@ -226,7 +227,7 @@ export function readTranscriptStatusSync(filePath: string): CliSessionStatus | n
   if (status !== null) {
     // The small window works again — any cached fallback is stale.
     statusTailCache.delete(filePath);
-    return status;
+    return holdCompletedForSubagents(status, filePath);
   }
   let size: number;
   try {
@@ -238,11 +239,22 @@ export function readTranscriptStatusSync(filePath: string): CliSessionStatus | n
   const cached = statusTailCache.get(filePath);
   if (cached && cached.size === size) {
     putStatusTailCache(filePath, cached);
-    return cached.status;
+    return holdCompletedForSubagents(cached.status, filePath);
   }
   const fallback = transcriptStatusFromTail(readTranscriptTailSync(filePath, MAX_STATUS_TAIL_BYTES));
   putStatusTailCache(filePath, { size, status: fallback });
-  return fallback;
+  return holdCompletedForSubagents(fallback, filePath);
+}
+
+/**
+ * A `completed` while `pi-subagents` still has a run queued/running for this
+ * transcript is not a completion — the parent paused on its children, so report
+ * `working` (see `pi-subagents-runs.ts`). The hold is applied AFTER the tail
+ * cache: the cache stores what the transcript says, so the completion surfaces
+ * the moment the run finishes, with no transcript write in between.
+ */
+function holdCompletedForSubagents(status: CliSessionStatus | null, filePath: string): CliSessionStatus | null {
+  return status === 'completed' && hasActiveSubagentRun(filePath) ? 'working' : status;
 }
 
 export function _resetStatusTailCacheForTesting(): void {
@@ -415,6 +427,49 @@ export function transcriptTitleFromWindow(window: string | null): string | null 
 
 export function readTranscriptTitleSync(filePath: string): string | null {
   return transcriptTitleFromWindow(readHeaderWindowSync(filePath));
+}
+
+/**
+ * The latest user-set session name from a window: the last
+ * `{"type":"session_info","name":"..."}` entry with a non-empty name.
+ * Pi/Pi-Bolt append one per `/name` / `--name` / `pi.setSessionName()`
+ * (append-only: the LAST one in file order is current, unlike OMP's
+ * in-place-rewritten `title` line). A partial first line (tail windows
+ * start mid-line) simply fails to parse and is skipped. This scans every
+ * line of the window — `headEntries`' 4-line cap is tuned for the header.
+ */
+export function sessionInfoNameFromWindow(window: string | null): string | null {
+  if (!window) return null;
+  let name: string | null = null;
+  for (const line of window.split(/\r?\n/)) {
+    if (!line) continue;
+    let entry: { type?: unknown; name?: unknown };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // partial tail-window line, or not JSON
+    }
+    if (entry && entry.type === 'session_info' && typeof entry.name === 'string' && entry.name.trim()) {
+      name = entry.name.trim();
+    }
+  }
+  return name;
+}
+
+/**
+ * Session title for Pi-lineage transcripts (Pi, Pi-Bolt): the newest
+ * `session_info` name from the tail window (a recent `/name`), falling back
+ * to the head window (a name set at launch, before the file grew) and then
+ * to the OMP-shaped head title. A mid-session rename stops being visible
+ * once more than one window of entries has been appended after it — the
+ * windows never scan the whole file; the CLI's own picker reads the full
+ * file, a mirror cannot.
+ */
+export function readTranscriptTitleWithSessionInfoSync(filePath: string): string | null {
+  const head = readHeaderWindowSync(filePath);
+  const tailName = sessionInfoNameFromWindow(readTranscriptTailSync(filePath));
+  if (tailName) return tailName;
+  return sessionInfoNameFromWindow(head) ?? transcriptTitleFromWindow(head);
 }
 
 /**

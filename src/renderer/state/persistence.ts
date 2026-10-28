@@ -1,4 +1,6 @@
-import type { BoardColumn, BoardData, PersistedState, Preferences, ProjectRecord, SessionRecord, SidebarViews } from '../../shared/types.js';
+import type { BoardColumn, BoardData, HostRecord, PersistedState, Preferences, ProjectRecord, SessionRecord, SidebarViews } from '../../shared/types.js';
+import { LOCAL_HOST_ID } from '../../shared/types.js';
+import { validateHostRecordShape, migrateLegacySessionSshHosts } from '../../shared/ssh-host.js';
 import { restoreCost } from '../session-cost.js';
 import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
@@ -24,6 +26,32 @@ export function createDefaultBoard(): BoardData {
  */
 export function hydrateLoadedState(state: PersistedState, defaultPreferences: Preferences): void {
   state.preferences = { ...defaultPreferences, ...state.preferences };
+  // Hosts normalize once here too (multi-host Phase 1): entries the shared
+  // validator rejects are dropped, never trusted (mirrors store.ts on main).
+  const hosts: HostRecord[] = [];
+  for (const host of state.hosts ?? []) {
+    const validated = validateHostRecordShape(host);
+    if (validated) hosts.push(validated);
+  }
+  state.hosts = hosts;
+  // Legacy sshHost adoption runs before the hostId defaults (parent §11),
+  // mirroring store.ts on main: a session tagged with a registry hostname
+  // adopts the host id; unregistered/ambiguous targets keep sshHost for the
+  // legacy wrap, exactly one release carrying both spellings.
+  migrateLegacySessionSshHosts(state.projects, hosts);
+  // Per-host providers plan §2: pre-existing profiles and sessions carry no
+  // hostId — normalize 'local' once at load, mirroring store.ts on main.
+  for (const profile of state.profiles ?? []) {
+    if (!profile.hostId) profile.hostId = LOCAL_HOST_ID;
+  }
+  for (const project of state.projects) {
+    // Audit T2 #4: projects carry a hostId too (remote project-scope gates);
+    // normalize once, mirroring store.ts on main.
+    if (!project.hostId) project.hostId = LOCAL_HOST_ID;
+    for (const session of project.sessions) {
+      if (!session.hostId) session.hostId = LOCAL_HOST_ID;
+    }
+  }
   // Per-key merge: a save written before a new sidebar section existed must
   // inherit its default instead of leaving the key undefined (the shallow
   // spread above replaces the whole object).
@@ -153,7 +181,7 @@ export function serializeForSave(state: PersistedState): PersistedState {
     ...state,
     projects: state.projects.map((p: ProjectRecord) => ({
       ...p,
-      sessions: p.sessions.map(({ pendingInitialPrompt, pendingSystemPrompt, envVars, ...rest }: SessionRecord) => rest as SessionRecord),
+      sessions: p.sessions.map(({ pendingInitialPrompt: _pip, pendingSystemPrompt: _psp, envVars: _env, ...rest }: SessionRecord) => rest as SessionRecord),
     })),
   };
   const cache = state.team?.predefinedCache;

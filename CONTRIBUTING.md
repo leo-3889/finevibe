@@ -1,4 +1,4 @@
-# Contributing to Vibeyard
+# Contributing to FineVibe
 
 Thanks for your interest in contributing! Here's how to get started.
 
@@ -71,6 +71,13 @@ scope. The generator strips only the leading keyword, so a message like
 `feat : thing - description` would appear in the changelog with the `:` and scope
 still attached.
 
+## Documentation
+
+The contract docs (providers, hosts, session lifecycle, security boundaries, performance,
+UI conventions, packaging, feature reference) are indexed in
+[docs/README.md](docs/README.md). A change that invalidates a claim in one of them updates
+that doc in the same commit.
+
 ## Releases and Packaging
 
 Releases are cut by the `Release` workflow (`workflow_dispatch` on
@@ -94,7 +101,7 @@ ad-hoc Ubuntu package without releasing.
 
 We use [GitHub issue templates](https://github.com/elirantutia/vibeyard/issues/new/choose) to streamline reports. Pick the template that fits:
 
-- **Bug Report** — for something broken or not working as expected. The template asks for your OS, Vibeyard version, CLI provider/version, reproduction steps, and expected vs actual behavior.
+- **Bug Report** — for something broken or not working as expected. The template asks for your OS, FineVibe version, CLI provider/version, reproduction steps, and expected vs actual behavior.
 - **Feature Request** — for suggesting a new feature or improvement. Describe the idea, motivation, and any alternatives you've considered.
 - **Documentation Issue** — for reporting errors, gaps, or unclear sections in the docs.
 

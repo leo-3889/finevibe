@@ -9,8 +9,9 @@ import { createAppearanceSection } from './preferences/appearance-section.js';
 import { createBrowserSection } from './preferences/browser-section.js';
 import { createShortcutsSection } from './preferences/shortcuts-section.js';
 import { createProfilesSection } from './preferences/profiles-section.js';
+import { createHostsSection } from './preferences/hosts-section.js';
 import { createSetupSection, updateSetupBadge } from './preferences/setup-section.js';
-import { createAgentmemorySection } from './preferences/agentmemory-section.js';
+import { createStorageSection } from './preferences/storage-section.js';
 import { createAboutSection } from './preferences/about-section.js';
 import { createHelpSection } from './preferences/help-section.js';
 
@@ -24,8 +25,9 @@ const SECTIONS: { id: Section; labelKey: string; create: (ctx: PreferencesContex
   { id: 'browser', labelKey: 'preferencesNav.browser', create: createBrowserSection },
   { id: 'shortcuts', labelKey: 'preferencesNav.shortcuts', create: createShortcutsSection },
   { id: 'profiles', labelKey: 'preferencesNav.profiles', create: createProfilesSection },
+  { id: 'hosts', labelKey: 'preferencesNav.hosts', create: createHostsSection },
   { id: 'setup', labelKey: 'preferencesNav.setup', create: createSetupSection },
-  { id: 'agentmemory', labelKey: 'preferencesNav.agentmemory', create: createAgentmemorySection },
+  { id: 'storage', labelKey: 'preferencesNav.storage', create: createStorageSection },
   { id: 'help', labelKey: 'preferencesNav.help', create: createHelpSection },
   { id: 'about', labelKey: 'preferencesNav.about', create: createAboutSection },
 ];
@@ -45,6 +47,15 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
   });
   bodyEl.innerHTML = '';
   actions.innerHTML = '';
+
+  // SA-P2-10: zoom/locale/plan-mode/shortcut rows persist on change while
+  // theme restores on Cancel - the audit's prescribed fix is to say so in the
+  // modal instead of pretending every control is deferred.
+  const applyHint = document.createElement('span');
+  applyHint.className = 'modal-actions-hint';
+  applyHint.id = 'preferences-apply-hint';
+  applyHint.textContent = t('preferences.applyHint');
+  actions.appendChild(applyHint);
 
   const btnCancel = createModalButton(t('preferences.cancel'), false);
   btnCancel.id = 'preferences-cancel';
@@ -90,6 +101,10 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
     rerenderSection: (section) => renderSection(section),
     setSetupBadge: (hasIssue) => {
       menuItems.get('setup')?.classList.toggle('has-badge', hasIssue);
+    },
+    getActiveProject: () => {
+      const p = appState.activeProject;
+      return p ? { name: p.name, path: p.path } : null;
     },
     beginRecorder: (recorder) => { activeRecorder = recorder; },
     endRecorder: () => {
@@ -192,6 +207,7 @@ export function showPreferencesModal(initialSection: Section = 'general'): void 
   openModal = () => {
     // Refresh the modal title and footer buttons (in case they were re-translated).
     titleEl.textContent = t('preferences.title');
+    applyHint.textContent = t('preferences.applyHint');
     btnCancel.textContent = t('preferences.cancel');
     btnConfirm.textContent = t('preferences.done');
     // Refresh the sidebar menu labels.

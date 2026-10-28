@@ -1,10 +1,12 @@
 import { appState, type SessionRecord } from '../../state.js';
 import type { ProviderId, TeamMember } from '../../../shared/types.js';
 import { showModal, closeModal, setModalError, FieldDef } from '../modal.js';
-import { findInvalidEnvLines } from '../../../shared/env-vars.js';
+import { findInvalidEnvLines, findProviderOwnedEnvKeys, parseEnvVars } from '../../../shared/env-vars.js';
+import { isWin } from '../../platform.js';
 import { showJoinDialog } from '../join-dialog.js';
 import { loadProviderAvailability, getProviderAvailabilitySnapshot, getProviderCapabilities, getProviderDisplayName, getTeamCapableProviderIds } from '../../provider-availability.js';
 import { providerProfileOptions } from '../../profile-utils.js';
+import { resolveDefaultProfileId } from '../../../shared/profile-keys.js';
 import type { CustomSelectInstance } from '../custom-select.js';
 import { hideTabContextMenu, setActiveContextMenu, positionMenu } from './menu.js';
 import { t } from '../../i18n.js';
@@ -112,7 +114,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
     const providerWrapper = document.getElementById('modal-provider')?.closest('.modal-field') as HTMLElement | null;
     if (!providerWrapper) return;
     const member = memberId ? appState.getTeamMemberById(memberId) : undefined;
-    const pinned = member ? resolvePinnedTeamProfile(member, appState.profiles) : undefined;
+    const pinned = member ? resolvePinnedTeamProfile(member, appState.profiles, project?.hostId) : undefined;
     providerWrapper.title = pinned && member
       ? t('tab.newSessionModal.personaPinNote', { name: member.name, provider: getProviderDisplayName(pinned.providerId) })
       : '';
@@ -126,7 +128,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
   function setProfileFieldProvider(providerId: ProviderId, selected = ''): void {
     const wrapper = document.getElementById('modal-profile')?.closest('.modal-field') as HTMLElement | null;
     if (!wrapper) return;
-    const profiles = providerProfileOptions(providerId);
+    const profiles = providerProfileOptions(providerId, launchHostId);
     wrapper.style.display = profiles.length > 0 ? '' : 'none';
     profileSelect?.setOptions([
       { value: '', label: t('sidebar.defaultProfileOption') },
@@ -157,6 +159,9 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
   // seeds its initial gate + tick from it before the provider select exists.
   const preferred = project.defaultProvider ?? appState.preferences.defaultProvider ?? 'claude';
   const effectiveProvider = (availabilityMap.get(preferred) ? preferred : providers.find(p => availabilityMap.get(p.id))?.id) ?? 'claude';
+  // Sessions launch on their PROJECT's host; a profile is a directory on one
+  // machine, so the pickers offer only that host's profiles (Phase 1 rule).
+  const launchHostId = project.hostId;
   const fields: FieldDef[] = [
     { label: t('tab.newSessionModal.nameLabel'), id: 'session-name', placeholder: sessionNamePlaceholder, defaultValue: sessionNamePlaceholder },
   ];
@@ -236,8 +241,8 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
   // provider suffix). Offered when any available provider has profiles; the
   // provider select's onSelectChange re-scopes the list and hides the field
   // when the tool has none.
-  const anyProviderHasProfiles = providers.some((p) => providerProfileOptions(p.id as ProviderId).length > 0);
-  const initialProfileValue = project.defaultProfileId ?? appState.preferences.defaultProfiles?.[effectiveProvider as ProviderId] ?? '';
+  const anyProviderHasProfiles = providers.some((p) => providerProfileOptions(p.id as ProviderId, launchHostId).length > 0);
+  const initialProfileValue = project.defaultProfileId ?? resolveDefaultProfileId(appState.preferences, effectiveProvider as ProviderId, launchHostId) ?? '';
   if (anyProviderHasProfiles) {
     fields.push({
       label: t('tab.newSessionModal.profileLabel'),
@@ -246,7 +251,7 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       defaultValue: initialProfileValue,
       options: [
         { value: '', label: t('sidebar.defaultProfileOption') },
-        ...providerProfileOptions(effectiveProvider as ProviderId),
+        ...providerProfileOptions(effectiveProvider as ProviderId, launchHostId),
       ],
       onSelectCreated: (select) => { profileSelect = select; },
     });
@@ -261,6 +266,15 @@ export async function promptNewSession(onCreated?: (session: SessionRecord) => v
       const invalid = findInvalidEnvLines(envVars);
       if (invalid.length > 0) {
         setModalError('session-env', t('tab.newSessionModal.envError', { line: invalid[0] }));
+        return;
+      }
+      // Syntax is valid, but a provider-owned key is dropped at spawn (the
+      // pinned profile owns it) and the only signal used to be a main-process
+      // console line the packaged app never shows. Reject it here, where the
+      // user can act on it, with the same platform rule main applies.
+      const owned = findProviderOwnedEnvKeys(parseEnvVars(envVars), isWin);
+      if (owned.length > 0) {
+        setModalError('session-env', t('tab.newSessionModal.envOwnedError', { keys: owned.join(', ') }));
         return;
       }
     }

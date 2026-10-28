@@ -1,5 +1,6 @@
 import type { ILinkProvider, ILink, IBufferRange, Terminal } from '@xterm/xterm';
 import { openFileReaderChecked } from '../open-file-reader.js';
+import { openExternal } from '../open-external.js';
 
 // Matches GitHub issue/PR references like #123
 const GITHUB_REF_RE = /#(\d+)/g;
@@ -29,7 +30,7 @@ export class GithubLinkProvider implements ILinkProvider {
         range,
         text: match[0],
         activate: () => {
-          window.finevibe.app.openExternal(`${this.repoUrl}/issues/${issueNumber}`);
+          void openExternal(`${this.repoUrl}/issues/${issueNumber}`);
         },
       });
     }
@@ -38,13 +39,18 @@ export class GithubLinkProvider implements ILinkProvider {
   }
 }
 
-// Matches file paths like: src/foo/bar.ts:10-20, ./src/foo.ts:10, src/foo.ts
-// Must contain a `/` and end with a file extension
-const FILE_PATH_RE = /(?:^|[\s'"(\[{])(\.\/)?((?:[a-zA-Z0-9_@.-]+\/)+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)(?::(\d+)(?:-(\d+))?)?/g;
+// Matches file paths like: src/foo/bar.ts:10-20, ./src/foo.ts:10, src/foo.ts,
+// src\foo\bar.ts, C:\Users\me\x.ts:12. Requires at least one separator
+// (forward or backslash, with an optional drive-letter prefix) and a final
+// segment ending in a file extension — the extension requirement keeps
+// separator-noise like `2\2` (no extension segment) from linkifying, and
+// every separator must delimit a non-empty name segment.
+const FILE_PATH_RE = /(?:^|[\s'"(\[{])((?:[a-zA-Z]:\\(?:[a-zA-Z0-9_@.-]+[\\/])*|[a-zA-Z0-9_@.-]+[\\/](?:[a-zA-Z0-9_@.-]+[\\/])*)(?:\.\/)?[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)(?::(\d+)(?:-(\d+))?)?/g;
 
 export class FilePathLinkProvider implements ILinkProvider {
   constructor(
     private projectId: string,
+    // pi-lens-ignore: 6138
     private projectPath: string,
     private terminal: Terminal
   ) {}
@@ -62,13 +68,14 @@ export class FilePathLinkProvider implements ILinkProvider {
     FILE_PATH_RE.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = FILE_PATH_RE.exec(lineText)) !== null) {
-      const prefix = match[0].length - (match[1] || '').length - match[2].length - (match[3] ? `:${match[3]}` : '').length - (match[4] ? `-${match[4]}` : '').length;
+      const suffix = (match[2] ? `:${match[2]}` : '') + (match[3] ? `-${match[3]}` : '');
+      const prefix = match[0].length - match[1].length - suffix.length;
       const startX = match.index + prefix + 1; // 1-based
-      const fullMatchText = match[0].substring(prefix);
+      const fullMatchText = match[1] + suffix;
       const endX = startX + fullMatchText.length - 1;
 
-      const filePath = match[2];
-      const lineNumber = match[3] ? parseInt(match[3], 10) : undefined;
+      const filePath = match[1];
+      const lineNumber = match[2] ? parseInt(match[2], 10) : undefined;
 
       const range: IBufferRange = {
         start: { x: startX, y: bufferLineNumber },

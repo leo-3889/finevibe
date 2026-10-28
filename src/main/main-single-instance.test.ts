@@ -64,7 +64,7 @@ vi.mock('electron', () => {
         setPermissionCheckHandler: vi.fn(),
       },
     };
-    loadFile = vi.fn();
+    loadURL = vi.fn();
     handlers: Record<string, (arg?: unknown) => void> = {};
     on = vi.fn((event: string, cb: (arg?: unknown) => void) => { this.handlers[event] = cb; });
     constructor() {
@@ -80,6 +80,11 @@ vi.mock('electron', () => {
   return {
     app,
     BrowserWindow,
+    // main.ts registers/serves the renderer over app:// (src/main/app-scheme.ts):
+    // registerAppScheme() runs at module scope, so the electron mock must carry
+    // `protocol`, and app-scheme imports `net` for the file fetch.
+    protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
+    net: { fetch: vi.fn() },
     dialog: {
       showErrorBox: vi.fn(),
       showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })),
@@ -95,23 +100,16 @@ vi.mock('electron', () => {
   };
 });
 
-vi.mock('./ipc-handlers', () => ({ registerIpcHandlers: vi.fn(), resetHookWatcher: vi.fn() }));
+vi.mock('./ipc-handlers', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./ipc-handlers')>();
+  return { ...real, registerIpcHandlers: vi.fn(), resetHookWatcher: vi.fn() };
+});
 // main.ts imports both members it calls at boot (killAllPtys on quit, and
 // the C2M-02 PATH prewarm), so the factory must carry both names.
 vi.mock('./pty-manager', () => ({ killAllPtys: vi.fn(), getFullPathAsync: vi.fn(async () => '/usr/bin') }));
 vi.mock('./store', () => ({
   flushState: vi.fn(),
-  // P1-6: `agentmemoryAutoStart: false` is load-bearing. main.ts:231 gates
-  // the fire-and-forget `void ensureAgentmemoryRunning().then(s =>
-  // console.log('[agentmemory] ...'))` on this pref; with a bare
-  // `{ preferences: {} }` the log fires once per import, and the user
-  // console log from the file's LAST import can still be in flight on the
-  // worker RPC when the file tears down — "Closing rpc while
-  // onUserConsoleLog was pending" → EnvironmentTeardownError, exit 1, all
-  // tests green (the audit's ~1/5 `npm test` flake). Skipping the call
-  // removes the only module-side console write in this suite without
-  // touching the chain's microtask timing (see importPrimaryInstance).
-  loadState: vi.fn(() => ({ preferences: { agentmemoryAutoStart: false } })),
+  loadState: vi.fn(() => ({ preferences: {} })),
 }));
 vi.mock('./menu', () => ({ createAppMenu: vi.fn() }));
 vi.mock('./hook-status', () => ({ restartAndResync: vi.fn() }));
@@ -123,12 +121,6 @@ vi.mock('./auto-updater', () => ({ initAutoUpdater: vi.fn() }));
 vi.mock('./git-watcher', () => ({ stopGitWatcher: vi.fn() }));
 vi.mock('./file-watcher', () => ({ stopAllFileWatchers: vi.fn() }));
 vi.mock('./config-watcher', () => ({ stopConfigWatcher: vi.fn() }));
-// The real module spawns/probes a daemon and logs when its promise lands;
-// a landing after environment teardown races the vitest worker RPC
-// ("Closing rpc while onUserConsoleLog was pending").
-vi.mock('./agentmemory-manager', () => ({
-  ensureAgentmemoryRunning: vi.fn(() => Promise.resolve({ running: false })),
-}));
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 // PA-01: main.ts wires the cross-launch probe cache to userData at boot;
@@ -172,10 +164,15 @@ describe('single-instance gate', () => {
   it('quits immediately when another instance holds the lock', async () => {
     vi.mocked(app.requestSingleInstanceLock).mockReturnValue(false);
 
+    // Delta (order-independence audit 2026-10-26): a shuffled predecessor's
+    // deferred boot-chain continuation (main.ts:476-481) can land a quit
+    // during this case. Exactly ONE quit must be attributable to THIS import.
+    const quitBase = app.quit.mock.calls.length;
+    const lockBase = app.requestSingleInstanceLock.mock.calls.length;
     await import('./main');
 
-    expect(app.requestSingleInstanceLock).toHaveBeenCalledTimes(1);
-    expect(app.quit).toHaveBeenCalledTimes(1);
+    expect(app.requestSingleInstanceLock.mock.calls.length - lockBase).toBe(1);
+    expect(app.quit.mock.calls.length - quitBase).toBe(1);
     // The loser must not start serving relaunches.
     expect(appHandlers['second-instance']).toBeUndefined();
 

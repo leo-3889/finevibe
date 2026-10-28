@@ -1,5 +1,6 @@
 import { appState } from './state.js';
 import { onChange as onStatusChange } from './session-activity.js';
+import { isRemoteProject } from './host-scope.js';
 import type { GitWorktree } from './types.js';
 
 export interface GitStatus {
@@ -140,6 +141,9 @@ async function poll(): Promise<void> {
       // previous iteration was awaiting (that's why we looped).
       const project = appState.activeProject;
       if (!project) break;
+      // Phase 3.5: remote projects poll too - git:getStatus routes to the
+      // host's git over the exec lane (git-on.ts), so the same fetch serves
+      // both siblings. The old belt dropped every cached answer here instead.
 
       // Refresh worktree list every 3rd poll (~30s)
       worktreePollCounter++;
@@ -260,8 +264,9 @@ export function startPolling(): void {
     unwatchGitChanged = window.finevibe.git.onChanged(() => poll());
   }
 
-  // Start watcher for current project
-  if (appState.activeProject) {
+  // Start watcher for current project (remote projects have no local tree to
+  // watch - Phase 3 coherence; main also refuses remote-rooted git cwds).
+  if (appState.activeProject && !isRemoteProject(appState.activeProject)) {
     window.finevibe.git.watchProject(appState.activeProject.path);
   }
 
@@ -284,7 +289,11 @@ export function startPolling(): void {
       stopInterval();
       return;
     }
-    window.finevibe.git.watchProject(appState.activeProject.path);
+    // Phase 3.5: remote projects poll (git answers over the exec lane) but
+    // never start a local watcher - there is no local tree to watch.
+    if (!isRemoteProject(appState.activeProject)) {
+      window.finevibe.git.watchProject(appState.activeProject.path);
+    }
     startInterval(); // ensure the periodic timer is running
     poll(); // immediate refresh — startInterval() no-ops when a timer already exists
   };

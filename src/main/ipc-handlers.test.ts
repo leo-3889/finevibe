@@ -3,10 +3,10 @@ import { searchSessions } from './session-deep-search';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { CliProvider } from './providers/provider';
 import * as fs from 'fs';
-import { clipboard, dialog, utilityProcess } from 'electron';
 import * as os from 'os';
+import { clipboard, dialog, shell, utilityProcess } from 'electron';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { ClipboardPastePayload } from '../shared/types';
+import type { ClipboardPastePayload, SettingsValidationResult } from '../shared/types';
 import * as path from 'path';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 
@@ -23,6 +23,7 @@ type ExitCallback = (exitCode: number, signal?: number, pid?: number, spawnRejec
 const calls = vi.hoisted(() => [] as string[]);
 const handlers = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
 const knownPaths = vi.hoisted(() => [] as string[]);
+const remoteRoots = vi.hoisted(() => [] as Array<{ path: string; hostId: string }>);
 const fakeWin = vi.hoisted(() => ({
   isDestroyed: () => false,
   webContents: { send: vi.fn() },
@@ -75,8 +76,21 @@ vi.mock('electron', () => ({
     whenReady: () => Promise.resolve(),
     quit: vi.fn(),
   },
-  dialog: { showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })) },
-  shell: { openExternal: () => Promise.resolve() },
+  dialog: {
+    showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })),
+    // fs:browseDirectory passes the native directory picker through; the
+    // default cancels, picker-success tests override per test.
+    showOpenDialog: vi.fn(() => Promise.resolve({ canceled: true, filePaths: [] as string[] })),
+  },
+  // The file-tree channels: `fs:trashItem` moves a file to its volume's trash
+  // (the EXDEV test overrides `trashItem` per test) and `fs:showInFolder`
+  // reveals a file with showItemInFolder / opens a folder with openPath.
+  shell: {
+    openExternal: () => Promise.resolve(),
+    trashItem: vi.fn(() => Promise.resolve()),
+    showItemInFolder: vi.fn(),
+    openPath: vi.fn(() => Promise.resolve('')),
+  },
   clipboard: {
     writeText: vi.fn(),
     readText: vi.fn(() => ''),
@@ -130,6 +144,7 @@ vi.mock('./store', () => ({
   saveState: vi.fn(),
   saveStateSync: vi.fn(),
   getKnownProjectPaths: () => knownPaths,
+  getRemoteProjectRoots: () => remoteRoots,
 }));
 
 vi.mock('./hook-status', () => ({
@@ -185,8 +200,23 @@ vi.mock('./close-state', autoStub);
 vi.mock('./profiles', autoStub);
 vi.mock('./claude-keychain', autoStub);
 vi.mock('../shared/token-estimate', autoStub);
+// Per-host providers T1: the channel tests drive the host record lookup and
+// the shared tool refresh; the SSH stack must never load in this suite.
+vi.mock('./hosts/host-registry', autoStub);
+const sshExec = vi.hoisted(() => vi.fn());
+vi.mock('./hosts/ssh-client', () => ({
+  exec: (...args: unknown[]) => sshExec(...args),
+  sftpRead: vi.fn(),
+}));
+vi.mock('./hosts/enrollment', autoStub);
+vi.mock('./hosts/remote-provider-config', autoStub);
+vi.mock('./hosts/settings-sync', autoStub);
+vi.mock('./hosts/remote-fs', autoStub);
 
-import { registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting } from './ipc-handlers';
+import {
+  registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
+  sweepEnumerationCaches, ENUMERATE_CACHE_MAX, TOP_FILES_CACHE_MAX, OUTSIDE_HOME_CONSENT_MAX,
+} from './ipc-handlers';
 import { isManagedMcpConfigDir, removeMcpServer } from './claude-cli';
 import { loadState } from './store';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
@@ -197,10 +227,15 @@ import { buildFineVibeIgnoreMatcher } from './finevibeignore';
 import { estimateTokens } from '../shared/token-estimate';
 
 import { getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
+import { getHost } from './hosts/host-registry';
+import { refreshHostTools, provisionRemoteProfileDir } from './hosts/enrollment';
+import { syncSettingsToHost } from './hosts/settings-sync';
+import { getRemoteProviderConfig } from './hosts/remote-provider-config';
+import { listRemoteDir, readRemoteFile, statRemotePath, walkRemoteFiles } from './hosts/remote-fs';
 function makeProvider(): CliProvider {
   return {
     // hookStatus off keeps the post-spawn settings-warning block out of the way.
-    meta: { capabilities: { hookStatus: false } },
+    meta: { id: 'claude', capabilities: { hookStatus: false } },
     onSessionStarted: vi.fn(() => { calls.push('started'); }),
     onSessionResumed: vi.fn(() => { calls.push('resumed'); }),
     onSessionExited: vi.fn(() => { calls.push('exited'); }),
@@ -244,11 +279,26 @@ function exitCallback(): ExitCallback {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence: clearAllMocks clears CALLS but keeps implementations
+  // and leaked mockResolvedValueOnce chains. Several tests document and rely
+  // on the factory default "showMessageBox resolves response 0 (Cancel)" -
+  // a shuffled predecessor's mockResolvedValueOnce({response:1}) survived and
+  // made a denied-consent test enumerate the directory. Restore the factory
+  // baselines; clipboard.writeText is a bare vi.fn (reset to default).
+  vi.mocked(dialog.showMessageBox).mockReset().mockImplementation(() => Promise.resolve({ response: 0 } as never));
+  vi.mocked(clipboard.writeText).mockReset();
+  // Same class on the store mock: the fs:listDirs enumerate gate reads
+  // preferences.defaultProjectsFolder via loadState; a shuffled predecessor's
+  // throwing loadState impl ("state cache corrupted" at the corrupt-store
+  // test) survived clearAllMocks and made the gate catch -> [] with NO
+  // dialog. Restore the factory default every case.
+  vi.mocked(loadState).mockReset().mockImplementation(() => ({ projects: [], preferences: {} } as never));
   calls.length = 0;
   // The home-outside consent Map is module state; each test starts fresh.
   _resetHomeOutsideConsentForTesting();
   handlers.clear();
   knownPaths.length = 0;
+  remoteRoots.length = 0;
   provider = makeProvider();
   mockGetProvider.mockReturnValue(provider);
   // pty:create gates a renderer-supplied configDir through the managed
@@ -373,7 +423,56 @@ describe('fs:listFiles enumeration cache (PA-07)', () => {
     fs.writeFileSync(path.join(root, 'sub', 'b.ts'), 'b');
     fs.writeFileSync(path.join(root, 'node_modules', 'x.ts'), 'x');
     const files = await list(root);
-    expect(new Set(files)).toEqual(new Set(['a.ts', path.join('sub', 'b.ts')]));
+    // '/'-separated on every OS — the enumeration contract (see toPosixRel).
+    expect(new Set(files)).toEqual(new Set(['a.ts', 'sub/b.ts']));
+  });
+
+  it('asks git for unquoted paths so a non-ASCII filename survives enumeration', async () => {
+    stubGitLsFiles('café/AGENTS.md\n');
+    expect(await list(root, 'café')).toEqual(['café/AGENTS.md']);
+    const [cmd, argv] = mockGitCloneSpawn.mock.calls[0] as unknown as [string, string[]];
+    expect(cmd).toBe('git');
+    // The same flag readiness/utils.ts pins, for the same reason: by default
+    // git octal-escapes non-ASCII paths, so Quick Open listed
+    // "caf\303\251/AGENTS.md" — a name that is neither what the user types nor
+    // what the file tree shows, so the file was unopenable from Quick Open.
+    expect(argv).toContain('core.quotePath=false');
+    expect(argv).toContain('ls-files');
+  });
+
+  it('reports fallback-walked paths with \'/\' separators on a Windows host', async () => {
+    // `git ls-files` prints '/' on every OS, and every consumer of the listing
+    // matches on that shape. The walk handed them path.relative's native
+    // spelling instead: on Windows `generated\out.js` matched no `generated/`
+    // pattern. POSIX is a no-op (sep === '/'), so this is the Windows pin.
+    // The directory is NOT one of the walk's built-in IGNORE names, which are
+    // dropped by entry name and would hide the separator contract.
+    platformState.os = 'win32';
+    stubGitLsFiles(null);
+    fs.mkdirSync(path.join(root, 'generated'));
+    fs.writeFileSync(path.join(root, 'generated', 'out.js'), 'x');
+    fs.writeFileSync(path.join(root, 'a.ts'), 'a');
+    expect(new Set(await list(root))).toEqual(new Set(['a.ts', 'generated/out.js']));
+  });
+
+  it('a trailing-slash ignore pattern excludes a fallback-walked directory', async () => {
+    platformState.os = 'win32';
+    stubGitLsFiles(null);
+    fs.mkdirSync(path.join(root, 'generated'));
+    fs.writeFileSync(path.join(root, 'generated', 'bundle.js'), 'bundled');
+    fs.writeFileSync(path.join(root, 'a.ts'), 'source');
+    // picomatch's `generated/` semantics over '/' paths — finevibeignore builds
+    // exactly this, and mocking it is this suite's convention.
+    vi.mocked(buildFineVibeIgnoreMatcher).mockReturnValue((rel: string) => rel.split('/')[0] === 'generated');
+
+    const res = await handlers.get('fs:topFilesByTokens')!({}, root, 10) as {
+      ok: boolean;
+      files: Array<{ path: string }>;
+    };
+    expect(res.ok).toBe(true);
+    // The excluded directory never reaches the scan; on the pre-fix native
+    // spelling (`generated\bundle.js`) the pattern missed and it was read.
+    expect(res.files.map((f) => f.path)).toEqual(['a.ts']);
   });
 
   it('a git:changed invalidation drops the enumeration already in flight (UI3-11)', async () => {
@@ -411,6 +510,54 @@ describe('fs:listFiles enumeration cache (PA-07)', () => {
   });
 });
 
+// The file tree's two shell channels. `shell.trashItem` moves a file into the
+// trash of ITS OWN volume, so it rejects EXDEV for a project under os.tmpdir()
+// or on a secondary drive; the renderer caller has to see that reason, and the
+// reveal has to keep passing the file (not the parent) to be selected.
+describe('fs:trashItem / fs:showInFolder shell wiring', () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-shell-'));
+    knownPaths.push(root);
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('surfaces an EXDEV trash rejection to the caller as { ok:false, error }', async () => {
+    const file = path.join(root, 'shot.png');
+    fs.writeFileSync(file, 'x');
+    const exdev = Object.assign(new Error('EXDEV: cross-device link not permitted, rename'), { code: 'EXDEV' });
+    vi.mocked(shell.trashItem).mockRejectedValueOnce(exdev);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await handlers.get('fs:trashItem')!({}, file)).toEqual({ ok: false, error: exdev.message });
+      expect(warn).toHaveBeenCalledWith('fs:trashItem failed:', exdev);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('reveals a file with showItemInFolder(file) — the file path is what selects it', async () => {
+    const file = path.join(root, 'a.ts');
+    fs.writeFileSync(file, 'x');
+    expect(await handlers.get('fs:showInFolder')!({}, file)).toEqual({ ok: true });
+    // Electron's Linux reveal passes `--select <file>` to the file manager
+    // (Nautilus, Nemo, …), which needs the FILE; handing it the parent dir
+    // would open the folder with nothing highlighted.
+    expect(shell.showItemInFolder).toHaveBeenCalledWith(file);
+    expect(shell.openPath).not.toHaveBeenCalled();
+  });
+
+  it('opens a directory itself with openPath, never as a reveal', async () => {
+    const dir = path.join(root, 'src');
+    fs.mkdirSync(dir);
+    expect(await handlers.get('fs:showInFolder')!({}, dir)).toEqual({ ok: true });
+    expect(shell.openPath).toHaveBeenCalledWith(dir);
+    expect(shell.showItemInFolder).not.toHaveBeenCalled();
+  });
+});
+
 // PA-24: the stats widget rendered this every poll; the JSON file used to be
 // read and parsed in full each time. Memoized by (path, mtime, size).
 describe('stats:getCache memoization (PA-24)', () => {
@@ -423,12 +570,16 @@ describe('stats:getCache memoization (PA-24)', () => {
       const get = () => handlers.get('stats:getCache')!({}) as Promise<unknown>;
 
       fs.writeFileSync(file, JSON.stringify({ v: 1, pad: 'x'.repeat(64) }));
-      // NTFS records sub-ms mtime; utimesSync only accepts integer ms.
-      // Quantize the file's clock BEFORE the memo takes its first
-      // (mtime, size) snapshot, so the mtime restore below (Date-precision)
-      // lands exactly on the memo key — a sub-ms delta re-parses.
+      // Quantize the file's clock to a WHOLE SECOND before the memo takes its first
+      // (mtime, size) snapshot. NTFS records sub-ms mtimes and `utimesSync` takes
+      // integer ms, so a ms-quantized key looks exact there; ext4 keeps the
+      // nanoseconds that conversion implies (it reports `…796.999`), and the
+      // restore below passes a `Date`, which truncates the fractional ms — so the
+      // key lands ~1 ms off and the memo re-parses on Linux. Whole seconds are
+      // exact on every filesystem, and the +5000 bump below stays a real change.
       const q = fs.statSync(file);
-      fs.utimesSync(file, new Date(Math.floor(q.atimeMs)), new Date(Math.floor(q.mtimeMs)));
+      const wholeSec = Math.floor(q.mtimeMs / 1000) * 1000;
+      fs.utimesSync(file, new Date(wholeSec), new Date(wholeSec));
       expect(await get()).toEqual({ v: 1, pad: 'x'.repeat(64) });
 
       // Rewrite with identical size, restored mtime: the memo answers, no re-parse.
@@ -448,6 +599,83 @@ describe('stats:getCache memoization (PA-24)', () => {
       osHomeOverride.value = '';
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// Phase 3 coherence belt: a remote project's path must never be served by
+// the LOCAL git/fs sinks. The belt compares raw posix strings (no local
+// canonicalization), so it fires exactly where the old shared-fiction gate
+// passed: a controller whose local paths mirror the host's (Linux/macOS).
+// On Windows a remote posix path canonicalizes to a phantom drive path that
+// fails on its own, so the belt is inert there - skip.
+describe.skipIf(process.platform === 'win32')('remote-scope belt (git/fs)', () => {
+  it('git:getStatus refuses a remote project root and its subtrees', () => {
+    remoteRoots.push({ path: '/srv/app', hostId: 'host-1' });
+    // Same-path LOCAL record (the mirror-path lie): the shared-fiction gate
+    // passes, the belt must catch it.
+    knownPaths.push('/srv/app');
+    expect(() => handlers.get('git:getStatus')!({}, '/srv/app')).toThrow(/remote host/);
+    expect(() => handlers.get('git:getStatus')!({}, '/srv/app/sub')).toThrow(/remote host/);
+    // Trailing slash on the record, deep path in the call - both normalize.
+    remoteRoots[0].path = '/srv/app/';
+    expect(() => handlers.get('git:getStatus')!({}, '/srv/app/a/b')).toThrow(/remote host/);
+  });
+
+  it('fs:listFiles refuses a remote-rooted cwd with a greppable warn', async () => {
+    remoteRoots.push({ path: '/srv/app', hostId: 'host-1' });
+    knownPaths.push('/srv/app');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const files = await handlers.get('fs:listFiles')!({}, '/srv/app', '');
+    expect(files).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:listFiles blocked'));
+    warn.mockRestore();
+  });
+
+  // R2 Phase 4a: naming the host routes to the sftp walk sibling instead of
+  // the belt refusal above.
+  it('fs:listFiles with a remote hostId answers from the sftp walk (Phase 4a)', async () => {
+    vi.mocked(walkRemoteFiles).mockReset().mockResolvedValue(['src/a.ts', 'src/b.ts', 'README.md']);
+    const files = await handlers.get('fs:listFiles')!({}, '/home/u/app', 'src/', 'host-1') as string[];
+    expect(walkRemoteFiles).toHaveBeenCalledWith('host-1', '/home/u/app');
+    expect(files).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('local projects are untouched by the belt', async () => {
+    knownPaths.push(path.resolve('/local/proj'));
+    expect(() => handlers.get('git:getStatus')!({}, path.resolve('/local/proj'))).not.toThrow();
+  });
+});
+
+// Phase 3.5 (git-on.ts): a remote project with a live host record ROUTES to
+// the exec lane instead of the belt refusal; mutations still refuse (the
+// panel is read-only until the remote write-side lands in Phase 4).
+describe('git:* remote routing (Phase 3.5)', () => {
+  it('git:getStatus routes a remote project to the exec lane', async () => {
+    remoteRoots.push({ path: '/srv/rout', hostId: 'host-1' });
+    const record = { id: 'host-1', name: 'h', host: 'h.example' } as never;
+    vi.mocked(getHost).mockReturnValueOnce(record);
+    sshExec.mockResolvedValueOnce('# branch.head main\n# branch.ab +1 -0\n');
+    const gitStatus = await import('./git-status');
+    await handlers.get('git:getStatus')!({}, '/srv/rout');
+    // The exec command is the routing contract; parsing itself is pinned in
+    // git-on.test.ts (here git-status is autoStubbed, so the parsed value is stub noise).
+    expect(sshExec).toHaveBeenCalledWith(
+      record,
+      "git -C '/srv/rout' status --porcelain=v2 --branch --untracked-files=all",
+      { timeoutMs: 5000 },
+    );
+    expect(vi.mocked(gitStatus.getGitStatus)).not.toHaveBeenCalled();
+  });
+
+  // Phase 4b retired the read-only refusal: remote stage now routes to the
+  // exec lane sibling instead of throwing.
+  it('git:stageFile on a remote project routes to the exec lane (Phase 4b)', async () => {
+    remoteRoots.push({ path: '/srv/rout2', hostId: 'host-1' });
+    const record = { id: 'host-1', name: 'h', host: 'h.example' } as never;
+    vi.mocked(getHost).mockReturnValueOnce(record);
+    sshExec.mockResolvedValueOnce('');
+    await expect(handlers.get('git:stageFile')!({}, '/srv/rout2', 'x.ts')).resolves.toBeUndefined();
+    expect(sshExec).toHaveBeenCalledWith(record, "git -C '/srv/rout2' add -- 'x.ts'", { timeoutMs: 5000 });
   });
 });
 
@@ -610,6 +838,60 @@ describe('store:save-sync (S1-03)', () => {
     const event = { returnValue: undefined as unknown };
     expect(() => handlers.get('store:save-sync')!(event, { projects: [], preferences: {} })).not.toThrow();
     expect(event.returnValue).toBe(false);
+  });
+});
+
+// SA-P2-4: the store:save payload was unvalidated — gate-root validation
+// covered `projects[].path` only, so `preferences` reached disk verbatim and
+// an injected unknown key re-hydrated into every consumer on the next boot.
+describe('store:save preferences allowlist (SA-P2-4)', () => {
+  it('drops an unknown preferences key before it reaches the store', async () => {
+    const store = await import('./store');
+    handlers.get('store:save')!({}, {
+      projects: [],
+      preferences: { theme: 'dark', injectedKey: '<script>' },
+    } as never);
+    const passed = vi.mocked(store.saveState).mock.calls[0][0];
+    expect(passed.preferences).not.toHaveProperty('injectedKey');
+  });
+
+  it('keeps every known preferences key', async () => {
+    const store = await import('./store');
+    handlers.get('store:save')!({}, {
+      projects: [],
+      preferences: { theme: 'light', zoomFactor: 1.25, locale: 'zh-CN', keybindings: { 'a': 'b' } },
+    } as never);
+    expect(vi.mocked(store.saveState).mock.calls[0][0].preferences).toEqual({
+      theme: 'light', zoomFactor: 1.25, locale: 'zh-CN', keybindings: { 'a': 'b' },
+    });
+  });
+
+  // The store's graft (S1-02/SA-P1-1) runs inside saveState, AFTER this
+  // filter, and overwrites the main-owned keys with the authoritative cache —
+  // so the filter must pass them through untouched. The graft itself is pinned
+  // by store.test.ts 'grafts main-owned statusLine-consent keys onto every
+  // write (S1-02)'.
+  it('passes the main-owned consent keys through for the store graft', async () => {
+    const store = await import('./store');
+    handlers.get('store:save')!({}, {
+      projects: [],
+      preferences: { statusLineConsent: 'granted', chromeImport: { importedAt: 1 } },
+    } as never);
+    expect(vi.mocked(store.saveState).mock.calls[0][0].preferences).toEqual({
+      statusLineConsent: 'granted', chromeImport: { importedAt: 1 },
+    });
+  });
+
+  it('applies the same allowlist on the synchronous quit flush', async () => {
+    const store = await import('./store');
+    const event = { returnValue: undefined as unknown };
+    handlers.get('store:save-sync')!(event, {
+      projects: [],
+      preferences: { theme: 'dark', injectedKey: 1 },
+    } as never);
+    const passed = vi.mocked(store.saveStateSync).mock.calls[0][0];
+    expect(passed.preferences).not.toHaveProperty('injectedKey');
+    expect(passed.preferences).toMatchObject({ theme: 'dark' });
   });
 });
 
@@ -801,17 +1083,158 @@ describe('fs:listDirs home gate (P1-19)', () => {
 });
 
 describe('fs:isDirectory home gate (P2-38)', () => {
-  it('reports false for a home-outside directory - same oracle fs:exists denies', () => {
-    expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).toBe(false);
+  it('asks for a home-outside directory and reports false on Cancel', async () => {
+    // dialog.showMessageBox resolves response 0 (Cancel) by default.
+    // The old silent-false oracle (fs:exists denies, no dialog) is gone:
+    // home-outside now gets the same explicit confirm fs:listDirs uses.
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalled();
   });
 
-  it('reports true for a home-tree directory (pre-project add flow)', () => {
+  it('reports the honest stat for a home-outside directory after an explicit confirm', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    // OUTSIDE_HOME is a real existing directory (C:\\Windows / /etc), so
+    // the post-confirm answer is the honest stat: true, not the old deny.
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(true);
+  });
+
+  it('caches the confirm per directory — repeats answer from the cache with one dialog', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(true);
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(true);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports true for a home-tree directory with no confirm (pre-project add flow)', async () => {
     const homeDir = fs.mkdtempSync(path.join(os.homedir(), '.finevibe-isdir-'));
     try {
-      expect(handlers.get('fs:isDirectory')!({}, homeDir)).toBe(true);
+      await expect(handlers.get('fs:isDirectory')!({}, homeDir)).resolves.toBe(true);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
+  });
+});
+
+// The New Project picker's native selection (fs:browseDirectory) IS the
+// consent: the picked dir is recorded in the home-outside answer cache, so
+// the post-pick label probes for that dir answer from the cache and never
+// pop a second confirm.
+describe('fs:browseDirectory pick records consent', () => {
+  const pickOutsideHome = () =>
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce(
+      { canceled: false, filePaths: [OUTSIDE_HOME] } as never,
+    );
+
+  it('a native pick answers a later fs:isDirectory from the cache with no confirm', async () => {
+    pickOutsideHome();
+    await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBe(OUTSIDE_HOME);
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(true);
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('a native pick answers a later fs:listDirs from the cache with no confirm', async () => {
+    pickOutsideHome();
+    await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBe(OUTSIDE_HOME);
+    const dirs = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
+    expect(dirs.length).toBeGreaterThan(0);
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('a canceled pick records nothing — the gate still fires', async () => {
+    // The default showOpenDialog mock cancels.
+    await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBeNull();
+    // Default showMessageBox answer is Cancel (response 0) → the old deny.
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE_HOME)).resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalled();
+  });
+
+  /** The options the handler handed the picker. The handler uses the
+   *  `showOpenDialog(browserWindow, options)` overload; the module mock is
+   *  typed with the 1-arg overload, so the args tuple is read untyped. */
+  const lastPickerOptions = (): { defaultPath?: string } => {
+    const call = vi.mocked(dialog.showOpenDialog).mock.calls.at(-1) as unknown as unknown[];
+    return (call[1] ?? call[0]) as { defaultPath?: string };
+  };
+
+  // The picker opens at the preferences' default projects folder: with no
+  // defaultPath the native dialog starts wherever the OS last was (Documents
+  // on a fresh Windows install, the portal default on Linux), so picking
+  // inside `E:\dev` is a walk every single time. A stale preference must not
+  // break the picker, so only an EXISTING directory is passed.
+  it('opens at the default projects folder when it exists', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fv-pick-default-'));
+    try {
+      vi.mocked(loadState).mockReturnValueOnce(
+        { projects: [], preferences: { defaultProjectsFolder: root } } as never,
+      );
+      await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBeNull();
+      expect(lastPickerOptions().defaultPath).toBe(root);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes no defaultPath for a blank, whitespace or missing preference', async () => {
+    for (const configured of ['', '   ', path.join(os.tmpdir(), 'fv-pick-missing-zz')]) {
+      vi.mocked(loadState).mockReturnValueOnce(
+        { projects: [], preferences: { defaultProjectsFolder: configured } } as never,
+      );
+      await expect(handlers.get('fs:browseDirectory')!({})).resolves.toBeNull();
+      expect(lastPickerOptions().defaultPath).toBeUndefined();
+    }
+  });
+});
+
+// The parent-consent cascade (fs:isDirectory only): a consented dir's
+// enumeration (fs:listDirs / the New Project autocomplete) NAMED its
+// children, so answering "is child X a directory" asks nothing the parent
+// dialog already published — no child dialogs. Cancel never cascades, and
+// fs:listDirs keeps asking per dir (contents were never authorized).
+describe('fs:isDirectory parent-consent cascade', () => {
+  // A child dir that really exists under the home-outside root, on every
+  // platform: the first directory entry of C:\\Windows / /etc.
+  const existingChildDir = () => {
+    const name = fs.readdirSync(OUTSIDE_HOME).find((n) => {
+      try { return fs.statSync(path.join(OUTSIDE_HOME, n)).isDirectory(); } catch { return false; }
+    });
+    if (!name) throw new Error('no child dir under ' + OUTSIDE_HOME);
+    return path.join(OUTSIDE_HOME, name);
+  };
+
+  it('answers a child from the parent listDirs consent with no child dialog', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME); // the consent burst
+    await expect(handlers.get('fs:isDirectory')!({}, existingChildDir())).resolves.toBe(true);
+    // Exactly the parent's dialog; the child probe added none.
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('a canceled parent does not cascade — the child asks its own confirm', async () => {
+    // Default showMessageBox answer is Cancel: the parent's answer caches
+    // false, and a Cancel must never auto-answer a child.
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    await expect(handlers.get('fs:isDirectory')!({}, existingChildDir())).resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(2); // child's own confirm
+  });
+
+  it('a consented parent answers a vanished child honestly (false) with no dialog', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    await expect(handlers.get('fs:isDirectory')!({}, path.join(OUTSIDE_HOME, 'finevibe-cascade-missing-zz')))
+      .resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('cascade is parent-only: fs:listDirs on the child keeps its own confirm', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME); // parent consented
+    const child = existingChildDir();
+    // Cancel (default) for the child's own enumeration — listing a listed
+    // dir's CONTENTS was never authorized by the parent consent.
+    await expect(handlers.get('fs:listDirs')!({}, child)).resolves.toEqual([]);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -947,6 +1370,15 @@ describe('pty:create provider hooks', () => {
     expect(provider.onSessionStarted).not.toHaveBeenCalled();
   });
 
+  it('a resumed Pi-Bolt session seeds the transcript sync on its own pi-bolt-sessions dir', async () => {
+    await create('ui-1', 'cli-1', { isResume: true, providerId: 'pi-bolt', configDir: '/profiles/work' });
+    // Pi-Bolt owns a third launch base — the seed must name pi-bolt-sessions,
+    // not the Pi/OMP dirs (launch-session-dir.ts:44-46).
+    expect(mockRegisterSync).toHaveBeenCalledWith('ui-1', 'pi-bolt', 'cli-1', '/proj', '/profiles/work', { sessionDir: expect.stringContaining('pi-bolt-sessions') });
+    expect(provider.onSessionResumed).toHaveBeenCalledWith('ui-1', '/proj', fakeWin, '/profiles/work', 'cli-1');
+    expect(calls).toEqual(['resumed']);
+  });
+
   it('a provider with no resume hook still spawns', async () => {
     delete provider.onSessionResumed;
     await create('ui-1', 'cli-1', { isResume: true });
@@ -966,6 +1398,17 @@ describe('session:syncRestored', () => {
     ]);
     expect(mockRegisterSync).toHaveBeenCalledWith('ui-1', 'omp', 'cli-1', '/proj', undefined, { titleOnly: true, sessionDir: expect.stringContaining('omp-sessions') });
     expect(mockRegisterSession).toHaveBeenCalledWith('ui-1');
+  });
+
+  it('mirrors a Pi-Bolt session title-only against its own pi-bolt-sessions dir', () => {
+    mockRegisterSync.mockReturnValue(true);
+    syncRestored([
+      { sessionId: 'ui-pb', providerId: 'pi-bolt', cliSessionId: 'cli-pb', cwd: '/proj', createdAt: '2026-09-30T10:00:00.000Z', configDir: '/profiles/work' },
+    ]);
+    // Third restore arm (besides pi/omp): the titleOnly registration names the
+    // Pi-Bolt launch base, so a restored tab polls its own transcripts.
+    expect(mockRegisterSync).toHaveBeenCalledWith('ui-pb', 'pi-bolt', 'cli-pb', '/proj', '/profiles/work', { titleOnly: true, sessionDir: expect.stringContaining('pi-bolt-sessions') });
+    expect(mockRegisterSession).toHaveBeenCalledWith('ui-pb');
   });
 
   it('leaves a null-id session unresolved: no title mirror, no recovery', () => {
@@ -1658,7 +2101,9 @@ describe('clipboard:readForPaste bounds + off-main encode (P4)', () => {
     const payload = await readPaste();
 
     expect(clipboard.readImage).not.toHaveBeenCalled();
-    expect(payload.imagePath).toMatch(/[\\/]finevibe-paste[\\/].*\.png$/);
+    // POSIX suffixes the dir with the uid (see the test below); Windows keeps
+    // the bare name, and this suite defaults to the Windows platform.
+    expect(payload.imagePath).toMatch(/[\\/]finevibe-paste(-\d+)?[\\/].*\.png$/);
     expect(fs.readFileSync(payload.imagePath!)).toEqual(Buffer.from('PNGBYTES'));
   });
 
@@ -1717,6 +2162,33 @@ describe('clipboard:readForPaste bounds + off-main encode (P4)', () => {
     expect(clipboard.readImage).not.toHaveBeenCalled();
     expect(utilityProcess.fork).not.toHaveBeenCalled();
     expect(payload.imagePath).toBeNull();
+  });
+
+  it('suffixes the POSIX paste dir with the uid — a shared /tmp name is a free DoS', async () => {
+    // os.tmpdir() is /tmp: world-writable and shared. A fixed name created
+    // under 0700 is claimed by whoever gets there first, and every other
+    // user's mkdir then fails EACCES — one local `mkdir /tmp/finevibe-paste`
+    // switches off pasted images for the whole machine. The uid suffix is
+    // hook-status's getStatusDir shape; Windows' per-user %TEMP% needs none.
+    platformState.os = 'linux';
+    const realGetuid = process.getuid;
+    (process as { getuid?: unknown }).getuid = () => 4321;
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      registerIpcHandlers(); // the dir name is resolved per registration
+      formatsWith('image/png');
+      vi.mocked(clipboard.readBuffer).mockReturnValue(Buffer.from('PNGBYTES'));
+
+      const payload = await readPaste();
+
+      expect(payload.imagePath).toContain(`finevibe-paste-4321${path.sep}`);
+      // 0700: the parent is world-writable and a pasted screenshot is
+      // whatever the user just copied.
+      expect(mkdir.mock.calls[0][1]).toEqual({ recursive: true, mode: 0o700 });
+    } finally {
+      (process as { getuid?: unknown }).getuid = realGetuid;
+      mkdir.mockRestore();
+    }
   });
 });
 
@@ -1788,7 +2260,19 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
         statusLine: 'foreign',
         configDir: '/profiles/work',
         projectPath: '/proj',
+        providerId: 'claude',
       }),
+    );
+  });
+
+  // SA-P1-2: the payload names the provider the banner came from, so the
+  // Fix Settings CTA repairs codex/gemini/copilot, not Claude.
+  it('carries the provider id the validation was computed from', async () => {
+    provider.meta.id = 'codex';
+    await create('ui-1', null, { providerId: 'codex' });
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith(
+      'settings:warning',
+      expect.objectContaining({ sessionId: 'ui-1', providerId: 'codex' }),
     );
   });
 
@@ -1817,14 +2301,36 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
   // P2-55: Copilot's hooks are project-scoped — the CTA must repair the
   // project the banner was validated against, not the user scope.
   it('settings:reinstall threads the banner project to project-scoped providers', async () => {
+    knownPaths.push('/proj');
     await handlers.get('settings:reinstall')!({}, 'copilot', undefined, '/proj');
     expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined, '/proj');
+  });
+
+  // SA-P2-5: projectPath reaches installCopilotHooks' mkdirSync+writeFileSync,
+  // so it carries the same known-project gate as mcp:removeServer — a project
+  // the board never registered is refused before any provider runs.
+  it('settings:reinstall refuses a projectPath outside the known project roots', async () => {
+    knownPaths.push('/proj');
+    const result = await handlers.get('settings:reinstall')!({}, 'copilot', undefined, '/home/attacker/victim');
+    expect(result).toMatchObject({ success: false });
+    expect(provider.reinstallSettings).not.toHaveBeenCalled();
+  });
+
+  it('settings:reinstall accepts a projectPath inside a known project root', async () => {
+    knownPaths.push('/proj');
+    const result = await handlers.get('settings:reinstall')!({}, 'copilot', undefined, '/proj/sub');
+    expect(result).toEqual({ success: true });
+    expect(provider.reinstallSettings).toHaveBeenCalledWith(undefined, '/proj/sub');
   });
 
   // P2-86: settings:validate must dispatch scoped like the post-spawn
   // validation (pty:create passes (cwd, configDir)); the unscoped dispatch
   // read the user-global file and reported a broken project as `complete`.
   it('settings:validate scopes to the project and dir it was given', async () => {
+    // SA-P3: the handler now gates its scope args — this case exercises the
+    // IN-scope dispatch, so satisfy the gates (managed dir + known root).
+    vi.mocked(isManagedMcpConfigDir).mockReturnValue(true);
+    knownPaths.push('/proj');
     await handlers.get('settings:validate')!({}, 'copilot', '/proj', '/profiles/work');
     expect(provider.validateSettings).toHaveBeenCalledWith('/proj', '/profiles/work');
   });
@@ -1834,12 +2340,70 @@ describe('settings banner + repair profile threading (P1-14 / P2-127)', () => {
     expect(provider.validateSettings).toHaveBeenCalledWith(undefined, undefined);
   });
 
+  // SA-P2-1: a foreign statusLine covered by the dir's declined consent is
+  // the user's Keep — validate marks it so Setup renders the neutral tier
+  // and the badge stays silent instead of a red dot + a Replace-performing Fix.
+  it('settings:validate marks a kept foreign statusLine (SA-P2-1)', async () => {
+    provider.validateSettings = vi.fn(() => ({
+      statusLine: 'foreign' as const, hooks: 'complete' as const,
+      foreignStatusLineCommand: '/usr/bin/other-statusline', hookDetails: {},
+    }));
+    vi.mocked(loadState).mockReturnValue({ projects: [], preferences: {} } as never);
+
+    // Matching declined record → Keep.
+    vi.mocked(getDirConsent).mockReturnValue({ consent: 'declined', command: '/usr/bin/other-statusline' });
+    const kept = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/profiles/work')) as SettingsValidationResult;
+    expect(kept.userKeptStatusLine).toBe(true);
+
+    // Command-less declined record freezes onto the current foreign command.
+    vi.mocked(getDirConsent).mockReturnValue({ consent: 'declined', command: null });
+    const frozen = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/profiles/work')) as SettingsValidationResult;
+    expect(frozen.userKeptStatusLine).toBe(true);
+
+    // Stale declined command (a NEW tool overwrote it) → not a Keep.
+    vi.mocked(getDirConsent).mockReturnValue({ consent: 'declined', command: '/usr/bin/OLD-tool' });
+    const notKept = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/profiles/work')) as SettingsValidationResult;
+    expect(notKept.userKeptStatusLine).toBeUndefined();
+
+    // Granted consent (the overwrite is an issue to repair) → not a Keep.
+    vi.mocked(getDirConsent).mockReturnValue({ consent: 'granted', command: null });
+    const granted = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/profiles/work')) as SettingsValidationResult;
+    expect(granted.userKeptStatusLine).toBeUndefined();
+  });
+
   it('settings:declineStatusLine records the per-dir Keep and gates unmanaged dirs', () => {
     handlers.get('settings:declineStatusLine')!({}, '/profiles/work', '/usr/bin/other-statusline');
     expect(recordDirConsent).toHaveBeenCalledWith('/profiles/work', 'declined', '/usr/bin/other-statusline');
     vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
     handlers.get('settings:declineStatusLine')!({}, '/home/attacker/.claude', '/x');
     expect(recordDirConsent).toHaveBeenCalledTimes(1);
+  });
+
+  // SA-P3: a dir-less banner dismissal must NOT write the global declined
+  // record — that mutes the boot consent modal, which owns global consent.
+  it('settings:declineStatusLine refuses a dir-less global write (SA-P3)', () => {
+    handlers.get('settings:declineStatusLine')!({}, undefined, '/usr/bin/other-statusline');
+    expect(recordDirConsent).not.toHaveBeenCalled();
+  });
+
+  // SA-P3: validate read and echoed files under any renderer-supplied dir;
+  // the reinstall/decline gates now cover it — refused scopes return the
+  // all-clear shape (no banner, no echo of a foreign command).
+  it('settings:validate refuses unmanaged dirs and foreign projects (SA-P3)', async () => {
+    vi.mocked(isManagedMcpConfigDir).mockReturnValueOnce(false);
+    const refusedDir = (await handlers.get('settings:validate')!({}, 'claude', undefined, '/home/attacker/.claude')) as SettingsValidationResult;
+    expect(refusedDir).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
+
+    knownPaths.push('/proj');
+    const refusedPath = (await handlers.get('settings:validate')!({}, 'claude', '/home/attacker/victim')) as SettingsValidationResult;
+    expect(refusedPath).toEqual({ statusLine: 'finevibe', hooks: 'complete', hookDetails: {} });
+    expect(provider.validateSettings).not.toHaveBeenCalled();
+
+    // In-scope args still dispatch normally (this describe's mock returns
+    // a foreign statusLine — the point is that validateSettings RAN).
+    const ok = (await handlers.get('settings:validate')!({}, 'copilot', '/proj/sub')) as SettingsValidationResult;
+    expect(provider.validateSettings).toHaveBeenCalledWith('/proj/sub', undefined);
+    expect(ok.statusLine).toBe('foreign');
   });
 });
 
@@ -2103,12 +2667,25 @@ describe('fs:listDirs keystroke path (S4-04)', () => {
   });
 
   it('asks home-outside consent at most once per directory — repeats never re-prompt', async () => {
-    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
-    const first = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
-    const second = (await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME)) as string[];
-    expect(first.length).toBeGreaterThan(0);
-    expect(second).toEqual(first);
-    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    // Private fixture OUTSIDE the home tree, user-writable and
+    // machine-deterministic (C:\Windows\Temp on Windows, /tmp elsewhere) -
+    // enumerating C:\Windows itself depends on machine ACLs and flipped
+    // under shuffled order; C:\Users refuses creation (EPERM). Consent
+    // semantics are per-directory, so a private dir tests the same contract.
+    const base = process.platform === 'win32' && fs.existsSync('C:\\Windows\\Temp') ? 'C:\\Windows\\Temp' : fs.mkdtempSync(path.join(os.tmpdir(), 'fv-base-'));
+    const dir = fs.mkdtempSync(path.join(base, 'finevibe-consent-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'sub'));
+      vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+      const first = (await handlers.get('fs:listDirs')!({}, dir)) as string[];
+      const second = (await handlers.get('fs:listDirs')!({}, dir)) as string[];
+      expect(first.length).toBeGreaterThan(0);
+      expect(second).toEqual(first);
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (base !== 'C:\\Windows\\Temp') fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it('caches a Cancel too: every repeat on the declined directory returns empty with no new dialog', async () => {
@@ -2119,7 +2696,7 @@ describe('fs:listDirs keystroke path (S4-04)', () => {
   });
 });
 
-// S4-03: Preferences→Setup fires provider:checkBinary for all six providers
+// S4-03: Preferences→Setup fires provider:checkBinary for all seven providers
 // per section mount, installAgent filters targets, and readiness:analyze
 // probes availability — all must ride the async probe twin (Wave E), not the
 // sync `where`/`npm prefix -g` chain, and keep their response shapes.
@@ -2336,5 +2913,629 @@ describe('vibeyard:listImportableProjects', () => {
     // ./legacy-import is unmocked, so this reads the developer's real
     // homedir; the module never throws, so the contract is "an array".
     expect(await handler!({})).toBeInstanceOf(Array);
+  });
+});
+
+// B1: the two per-cwd caches were unbounded — one entry per project opened
+// in the session, freed only by TTL/git:changed on the cwds someone
+// revisited. Cap + touch-refresh LRU (fs-utils.ts idiom), plus the
+// TTL-expiry sweep exported for the idle housekeeper.
+describe('enumeration cache caps and sweep (B1)', () => {
+  const list = (cwd: string, query = ''): Promise<string[]> =>
+    handlers.get('fs:listFiles')!({}, cwd, query) as Promise<string[]>;
+  const scan = (cwd: string): Promise<Record<string, unknown>> =>
+    handlers.get('fs:topFilesByTokens')!({}, cwd, 10) as Promise<Record<string, unknown>>;
+
+  function stubGit(stdout: string | null) {
+    mockGitCloneSpawn.mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error | null, stdout: unknown, stderr?: string) => void;
+      if (stdout === null) cb(new Error('not a git repository'), '', '');
+      else cb(null, { stdout }, ''); // envelope convention, as stubGitLsFiles
+    }) as never);
+  }
+
+  let root: string;
+  function subdir(name: string): string {
+    const d = path.join(root, name);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'a.ts'), 'a');
+    return d;
+  }
+  beforeEach(() => {
+    vi.mocked(buildFineVibeIgnoreMatcher).mockReturnValue(() => false);
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-cache-cap-'));
+    knownPaths.push(root);
+    _resetEnumerateCacheForTesting();
+  });
+  afterEach(() => {
+    // A failed expect() must not leak a recording open-spy into the next
+    // test: vi.spyOn on an already-spied method reuses the live spy, so a
+    // leaked spy reports the NEXT test's own opens as unexpected calls.
+    vi.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+    vi.useRealTimers();
+  });
+
+  it('bounds enumerateCache at the cap; a touched cwd survives, the oldest re-enumerates', async () => {
+    stubGit('a.ts\n');
+    const dirs = Array.from({ length: ENUMERATE_CACHE_MAX }, (_, i) => subdir(`c${i}`));
+    for (const d of dirs) expect(await list(d)).toEqual(['a.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX);
+
+    // Touch-refresh dirs[0] (recency tail), then overflow with a fresh cwd.
+    expect(await list(dirs[0]!)).toEqual(['a.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX); // served from cache
+    await list(subdir('overflow'));
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX + 1);
+
+    // LRU eviction hit dirs[1] (the oldest now), not the touched dirs[0].
+    await list(dirs[1]!);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX + 2);
+    await list(dirs[0]!);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(ENUMERATE_CACHE_MAX + 2); // survived: no spawn
+  });
+
+  it('bounds topFilesCache at the cap; a touched cwd survives, the oldest re-reads', async () => {
+    stubGit(null); // reject git: the walk fallback enumerates (readdir only)
+    const openSpy = vi.spyOn(fs.promises, 'open');
+    const dirs = Array.from({ length: TOP_FILES_CACHE_MAX }, (_, i) => subdir(`t${i}`));
+    for (const d of dirs) {
+      openSpy.mockClear();
+      expect(((await scan(d)).files as unknown[]).length).toBe(1);
+      expect(openSpy).toHaveBeenCalledTimes(1); // the one file was read
+    }
+    await scan(dirs[0]!); // touch-refresh to the recency tail
+    await scan(subdir('overflow'));
+
+    openSpy.mockClear();
+    await scan(dirs[1]!); // evicted: the file is opened again
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    openSpy.mockClear(); // the dirs[1] re-read above is the expected eviction cost
+    await scan(dirs[0]!); // touched: served from the cache
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+
+  it('sweepEnumerationCaches drops TTL-expired entries and keeps fresh ones', async () => {
+    vi.useFakeTimers();
+    stubGit('a.ts\n');
+    const a = subdir('sweep-a');
+    const b = subdir('sweep-b');
+    expect(await list(a)).toEqual(['a.ts']); // enumerateCache: a
+    expect(await scan(a)).toMatchObject({ ok: true }); // topFilesCache: a
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(30_001); // a is now TTL-expired
+    expect(await list(b)).toEqual(['a.ts']); // b enters fresh (spawn 2)
+    expect(await scan(b)).toMatchObject({ ok: true }); // b's scan shares the listing
+
+    sweepEnumerationCaches();
+
+    expect(await list(a)).toEqual(['a.ts']);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(3);
+    // b's fresh entries survived the sweep: no spawn, no file open.
+    const openSpy = vi.spyOn(fs.promises, 'open');
+    console.log('SPY created; calls so far:', openSpy.mock.calls.length);
+    expect(await list(b)).toEqual(['a.ts']);
+    expect(((await scan(b)).files as unknown[]).length).toBe(1);
+    expect(mockGitCloneSpawn).toHaveBeenCalledTimes(3);
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+});
+
+// B1: the consent answer cache was unbounded — one canonical dir per prefix
+// typed into the Add-Project dialog for the life of the session. FIFO cap;
+// an eviction costs a re-prompt, the safe direction for consent.
+describe('home-outside consent cache cap (B1)', () => {
+  it('caps the consent cache at the cap, oldest answer evicted first', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValue({ response: 1 } as never);
+    // Keys only — the dirs never need to exist: enumeration asks before it
+    // reads, so a missing dir is answered from the cache like a real one.
+    const dirs = Array.from({ length: OUTSIDE_HOME_CONSENT_MAX + 1 }, (_, i) =>
+      path.join(OUTSIDE_HOME, `fv-consent-cap-${i}`));
+    for (const d of dirs) await handlers.get('fs:listDirs')!({}, d);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(OUTSIDE_HOME_CONSENT_MAX + 1);
+
+    // The cap+1-th insert evicted dirs[0]; the newest answer is cached.
+    await handlers.get('fs:listDirs')!({}, dirs[dirs.length - 1]!);
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(OUTSIDE_HOME_CONSENT_MAX + 1);
+
+    await handlers.get('fs:listDirs')!({}, dirs[0]!); // evicted: asks again
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(OUTSIDE_HOME_CONSENT_MAX + 2);
+  });
+});
+
+// The New Project modal's "Create" verb: the renderer composes
+// `<folder>/<name>` (its own `/` joins) and main creates the directory,
+// answering with ITS resolved + canonical spelling. As a pre-project WRITE it
+// takes fs:cloneRepo's gate shape, and a denied consent is an ERROR: the old
+// fs:isDirectory `false` conflated "you pressed Cancel" with "the folder is
+// not there", which is how an existing `E:\AI\sample-project` came to be reported
+// as non-existent on a non-home drive.
+describe('fs:ensureDirectory', () => {
+  // The gate admits the home tree, and these fixtures live in `os.tmpdir()`: under
+  // the user profile on Windows (`C:\Users\me\AppData\Local\Temp`), NOT on Linux
+  // (`/tmp` vs `/home/runner`) — so on the Linux runner every fixture took the
+  // outside-home consent path and answered `ok:false` with
+  // "Location is outside your home directory and was not confirmed". Presenting
+  // the temp dir AS the home tree makes the fixtures inside home on every host,
+  // which is the condition under test; the consent path itself keeps its own
+  // coverage below, via a real outside-home path.
+  let homeSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(fs.realpathSync(os.tmpdir()));
+  });
+  afterEach(() => {
+    homeSpy.mockRestore();
+  });
+  it('rejects a non-string or blank path before any filesystem work', async () => {
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      const expected = { ok: false, error: 'No directory path was given' };
+      await expect(handlers.get('fs:ensureDirectory')!({}, '')).resolves.toEqual(expected);
+      await expect(handlers.get('fs:ensureDirectory')!({}, '   ')).resolves.toEqual(expected);
+      await expect(handlers.get('fs:ensureDirectory')!({}, 42)).resolves.toEqual(expected);
+      await expect(handlers.get('fs:ensureDirectory')!({}, undefined)).resolves.toEqual(expected);
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('answers an existing directory with its canonical path and creates nothing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, dir)).resolves.toEqual({
+        ok: true,
+        path: fs.realpathSync(dir),
+      });
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers the renderer\'s `/`-joined spelling with the resolved path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
+    try {
+      // `${root}/sample-project` is what the modal sends on Windows
+      // (`E:\AI` + '/' + name); the answer is the platform spelling.
+      await expect(handlers.get('fs:ensureDirectory')!({}, `${root}/sample-project`)).resolves.toEqual({
+        ok: true,
+        path: path.join(fs.realpathSync(root), 'sample-project'),
+      });
+      expect(fs.statSync(path.join(root, 'sample-project')).isDirectory()).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a path that exists as a file', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
+    const blocker = path.join(root, 'blocker');
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      fs.writeFileSync(blocker, 'x');
+      await expect(handlers.get('fs:ensureDirectory')!({}, blocker)).resolves.toEqual({
+        ok: false,
+        error: `Not a directory: ${blocker}`,
+      });
+      expect(mkdir).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates a missing directory inside an allowed root recursively and answers its path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
+    const target = path.join(root, 'sample-project', 'nested');
+    // No mockImplementation: the spy calls through, so the directory is real.
+    const mkdir = vi.spyOn(fs.promises, 'mkdir');
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toEqual({
+        ok: true,
+        path: path.join(fs.realpathSync(root), 'sample-project', 'nested'),
+      });
+      expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
+      expect(fs.statSync(target).isDirectory()).toBe(true);
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a denied home-outside consent as an error and creates nothing', async () => {
+    const target = path.join(OUTSIDE_HOME, 'finevibe-ensure-denied-zz');
+    // A REPLACING spy: on a deny nothing may reach the filesystem, and this
+    // suite runs as the real user, whose mkdir in C:\\Windows / /etc is a
+    // permission error at best and a real directory at worst.
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+    try {
+      // The Cancel answer is pinned per test: an earlier suite leaves a
+      // persistent confirm-true implementation on this mock.
+      vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 0 } as never);
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toEqual({
+        ok: false,
+        error: 'Location is outside your home directory and was not confirmed',
+      });
+      expect(dialog.showMessageBox).toHaveBeenCalled();
+      expect(mkdir).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('creates after an explicit confirm for a home-outside directory', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    const target = path.join(OUTSIDE_HOME, 'finevibe-ensure-confirmed-zz');
+    // The spy REPLACES mkdir: nothing gets created inside C:\\Windows / /etc.
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toMatchObject({ ok: true });
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1);
+      expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('creates a child of a consented directory with no second dialog (cascade)', async () => {
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1 } as never);
+    // The New Project autocomplete's enumeration: the parent's consent NAMED
+    // this child, so creating it asks nothing the dialog did not publish.
+    await handlers.get('fs:listDirs')!({}, OUTSIDE_HOME);
+    const target = path.join(OUTSIDE_HOME, 'finevibe-ensure-cascade-zz');
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toEqual({
+        ok: true,
+        path: path.join(fs.realpathSync(OUTSIDE_HOME), 'finevibe-ensure-cascade-zz'),
+      });
+      expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
+      expect(dialog.showMessageBox).toHaveBeenCalledTimes(1); // the parent's, only
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+});
+
+// The preferences' default projects folder is an enumerate root: the New
+// Project modal composes `<defaultProjectsFolder>/<name>` and probes it with
+// fs:isDirectory BEFORE the project exists, so a non-home folder (the Windows
+// `E:\dev` norm) has to answer honestly — under the old gate the probe opened
+// a confirm whose Cancel was reported as "Directory does not exist". The READ
+// gate is untouched: naming a folder for new projects never authorizes reading
+// arbitrary files inside it.
+describe('default projects folder in the enumerate gate', () => {
+  // A real existing child dir of the home-outside root, on every platform.
+  const existingChildDir = () => {
+    const name = fs.readdirSync(OUTSIDE_HOME).find((n) => {
+      try { return fs.statSync(path.join(OUTSIDE_HOME, n)).isDirectory(); } catch { return false; }
+    });
+    if (!name) throw new Error('no child dir under ' + OUTSIDE_HOME);
+    return path.join(OUTSIDE_HOME, name);
+  };
+  const withDefaultFolder = (folder: string) =>
+    vi.mocked(loadState).mockReturnValueOnce({ projects: [], preferences: { defaultProjectsFolder: folder } } as never);
+
+  it('answers fs:isDirectory for a child with zero confirms', async () => {
+    withDefaultFolder(OUTSIDE_HOME);
+    await expect(handlers.get('fs:isDirectory')!({}, existingChildDir())).resolves.toBe(true);
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('admits fs:ensureDirectory into the same folder with zero confirms', async () => {
+    withDefaultFolder(OUTSIDE_HOME);
+    const target = path.join(OUTSIDE_HOME, 'fv-default-folder-zz');
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+    try {
+      await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toMatchObject({ ok: true });
+      expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
+      expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('leaves the old confirm behavior unchanged when the preference is blank', async () => {
+    // `path.resolve('')` is the cwd: a blank folder must admit NOTHING, or
+    // every cwd subtree would join the gate.
+    withDefaultFolder('');
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 0 } as never);
+    await expect(handlers.get('fs:isDirectory')!({}, existingChildDir())).resolves.toBe(false);
+    expect(dialog.showMessageBox).toHaveBeenCalled();
+  });
+
+  it('does not widen the read gate: fs:listDir still refuses the folder', async () => {
+    withDefaultFolder(OUTSIDE_HOME);
+    await expect(handlers.get('fs:listDir')!({}, OUTSIDE_HOME)).resolves.toEqual([]);
+  });
+});
+
+describe('P2-110: the five channels the coverage map overclaimed', () => {
+  it('git:openInEditor gates the root, keeps the file inside it, and opens the joined path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-openin-'));
+    try {
+      expect(() => handlers.get('git:openInEditor')!({}, root, 'a.ts')).toThrow(/not within a known project/);
+      expect(shell.openPath).not.toHaveBeenCalled();
+
+      knownPaths.push(root);
+      expect(() => handlers.get('git:openInEditor')!({}, root, '../escape.ts')).toThrow(/escapes the project/);
+      expect(() => handlers.get('git:openInEditor')!({}, root, '.')).toThrow(/not the project root/);
+      expect(shell.openPath).not.toHaveBeenCalled();
+
+      await handlers.get('git:openInEditor')!({}, root, path.join('src', 'a.ts'));
+      expect(shell.openPath).toHaveBeenCalledWith(path.join(root, 'src', 'a.ts'));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('app:openExternal opens only http(s) and rejects anything else', async () => {
+    const spy = vi.spyOn(shell, 'openExternal').mockResolvedValue(undefined);
+    expect(() => handlers.get('app:openExternal')!({}, 'file:///etc/passwd')).toThrow(/Only HTTP\(S\)/);
+    expect(() => handlers.get('app:openExternal')!({}, 'javascript:alert(1)')).toThrow(/Only HTTP\(S\)/);
+    expect(() => handlers.get('app:openExternal')!({}, 'not a url')).toThrow(/Invalid URL/);
+    expect(spy).not.toHaveBeenCalled();
+
+    await handlers.get('app:openExternal')!({}, 'https://example.com/x');
+    expect(spy).toHaveBeenCalledWith('https://example.com/x');
+  });
+
+  it('app:getBrowserPreloadPath resolves to the browser-tab preload next to the build', () => {
+    const p = handlers.get('app:getBrowserPreloadPath')!({}) as string;
+    expect(p.endsWith(path.join('preload', 'preload', 'browser-tab-preload.js'))).toBe(true);
+  });
+
+  it('browser:saveScreenshot validates the payload and sanitizes the session id', async () => {
+    await expect(handlers.get('browser:saveScreenshot')!({}, 's1', 'data:image/jpeg;base64,AAAA')).rejects.toThrow(/Invalid screenshot data URL/);
+    await expect(handlers.get('browser:saveScreenshot')!({}, 's1', 42 as never)).rejects.toThrow(/Invalid screenshot data URL/);
+    await expect(
+      handlers.get('browser:saveScreenshot')!({}, 's1', 'data:image/png;base64,' + 'A'.repeat(72_000_000)),
+    ).rejects.toThrow(/exceeds size limit/);
+
+    const written = await handlers.get('browser:saveScreenshot')!({}, '../evil', 'data:image/png;base64,iVBORw0KGgo=') as string;
+    try {
+      expect(path.dirname(written)).toBe(path.join(os.tmpdir(), 'finevibe-screenshots'));
+      expect(path.basename(written)).toMatch(/^draw-___evil-\d+\.png$/);
+      expect(fs.existsSync(written)).toBe(true);
+    } finally {
+      fs.rmSync(written, { force: true });
+    }
+  });
+
+  it('clipboard:saveImage answers null for malformed/mime/cap and saves a valid png', async () => {
+    await expect(handlers.get('clipboard:saveImage')!({}, 'not a data url')).resolves.toBeNull();
+    await expect(handlers.get('clipboard:saveImage')!({}, {} as never)).resolves.toBeNull();
+    await expect(handlers.get('clipboard:saveImage')!({}, 'data:text/plain;base64,AAAA')).resolves.toBeNull();
+    await expect(
+      handlers.get('clipboard:saveImage')!({}, 'data:image/png;base64,' + 'A'.repeat(35_000_000)),
+    ).resolves.toBeNull();
+
+    const saved = await handlers.get('clipboard:saveImage')!({}, 'data:image/png;base64,iVBORw0KGgo=') as string;
+    try {
+      expect(typeof saved).toBe('string');
+      expect(path.basename(saved)).toMatch(/^paste-\d+-[0-9a-f]{6,}\.png$/);
+      expect(fs.existsSync(saved)).toBe(true);
+    } finally {
+      fs.rmSync(saved, { force: true });
+    }
+  });
+});
+
+// Per-host providers T1 (plan §2, §9): the provider channels accept a hostId
+// and answer remote queries from the registry record — never by probing,
+// never by falling back to the local machine.
+describe('per-host provider channels (per-host providers T1)', () => {
+  const freshProbeAt = new Date().toISOString();
+  const lab = {
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 22,
+    prerequisites: { pi: { ok: true, path: '/home/dev/.local/bin/pi' } },
+    lastProbeAt: freshProbeAt,
+  };
+
+  it('provider:checkBinary answers a registry host from its record, without probing', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    provider.validatePrerequisitesAsync = vi.fn(async () => true);
+    provider.validatePrerequisites = vi.fn(() => { throw new Error('sync probe on a remote answer'); });
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi', 'lab')).resolves.toBe(true);
+    await expect(handlers.get('provider:checkBinary')!({}, 'codex', 'lab')).resolves.toBe(false);
+    expect(provider.validatePrerequisitesAsync).not.toHaveBeenCalled();
+    // Fresh record: no background refresh either.
+    expect(refreshHostTools).not.toHaveBeenCalled();
+  });
+
+  it('provider:checkBinary on a stale record answers AND fires the shared background refresh', async () => {
+    const stale = { ...lab, lastProbeAt: '2020-01-01T00:00:00.000Z' };
+    vi.mocked(getHost).mockReturnValue(stale as never);
+    vi.mocked(refreshHostTools).mockResolvedValue({} as never);
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi', 'lab')).resolves.toBe(true);
+    expect(refreshHostTools).toHaveBeenCalledWith(stale);
+  });
+
+  it('provider:checkBinary answers false for an unknown host', async () => {
+    vi.mocked(getHost).mockReturnValue(null as never);
+    await expect(handlers.get('provider:checkBinary')!({}, 'pi', 'ghost')).resolves.toBe(false);
+  });
+
+  it('hosts:syncSettings gates the payload and delegates (ids only cross the bridge)', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(syncSettingsToHost).mockResolvedValue({ ok: true, steps: [] });
+    await expect(handlers.get('hosts:syncSettings')!({}, 'lab', ['pi', 42, 'omp'], true)).resolves.toEqual({ ok: true, steps: [] });
+    expect(syncSettingsToHost).toHaveBeenCalledWith(lab, ['pi', 'omp'], { confirmOverwrite: true });
+    vi.mocked(getHost).mockReturnValue(null as never);
+    await expect(handlers.get('hosts:syncSettings')!({}, 'ghost', ['pi'])).resolves.toMatchObject({ ok: false });
+    await expect(handlers.get('hosts:syncSettings')!({}, 'lab', 'pi')).resolves.toMatchObject({ ok: false });
+    expect(syncSettingsToHost).toHaveBeenCalledTimes(1); // gate rejects, engine untouched
+  });
+
+  it('provider:getConfig answers a registry host through the seam (T2), host-gated', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    // Audit T2 #4: the containment roots are the project paths RECORDED FOR
+    // THIS HOST — never the local-disk gate roots.
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/home/dev/dev', hostId: 'lab' }],
+      preferences: {},
+    } as never);
+    const config = { mcpServers: [{ name: 'x', url: 'u', status: 'configured', scope: 'user', filePath: 'f' }], agents: [], skills: [], commands: [] };
+    vi.mocked(getRemoteProviderConfig).mockResolvedValue(config as never);
+    // posix containment against the host's project paths; '/home/dev/dev/x' is under it.
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/home/dev/dev/x', undefined, 'lab')).resolves.toBe(config);
+    expect(getRemoteProviderConfig).toHaveBeenCalledWith('pi', 'lab', '/home/dev/dev/x', undefined);
+  });
+
+  it('provider:getConfig refuses a remote host that is not registered', async () => {
+    vi.mocked(getHost).mockReturnValue(null as never);
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj', undefined, 'ghost'))
+      .rejects.toThrow(/Unknown host/);
+  });
+
+  it('provider:getConfig refuses a remote projectPath known only to the LOCAL disk (audit T2 #4)', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    knownPaths.push('/home/dev/dev'); // the local gate root — the exact escape the audit named
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/home/dev/dev', hostId: 'local' }],
+      preferences: {},
+    } as never);
+    // The same path string on the queried host must NOT pass: it is recorded
+    // for 'local', so reading it on 'lab' is refused (the host has no
+    // matching gate roots — the loud no-scope refusal).
+    await expect(handlers.get('provider:getConfig')!({}, 'claude', '/home/dev/dev', undefined, 'lab'))
+      .rejects.toThrow(/No projects are registered for host|not within a known project of host/);
+    // A host with no recorded projects of its own gets NO project scope.
+    vi.mocked(loadState).mockReset().mockReturnValue({ projects: [], preferences: {} } as never);
+    await expect(handlers.get('provider:getConfig')!({}, 'claude', '/home/dev/dev', undefined, 'lab'))
+      .rejects.toThrow(/No projects are registered for host/);
+  });
+
+  it('provider:getConfig gates remote configDir on that host\'s profiles (SEC-03 host scope)', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+      profiles: [{ id: 'p1', hostId: 'local', configDir: '/home/dev/.finevibe/profiles/p1', managed: true }],
+    } as never);
+    // A profile of the LOCAL host (or any host other than the queried one)
+    // must not unlock a remote read.
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj', '/home/dev/.finevibe/profiles/p1', 'lab'))
+      .rejects.toThrow(/managed profile config dir/);
+    // The same configDir recorded FOR THIS HOST passes.
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+      profiles: [{ id: 'p1', hostId: 'lab', configDir: '/home/dev/.finevibe/profiles/p1', managed: true }],
+    } as never);
+    vi.mocked(getRemoteProviderConfig).mockResolvedValue({ mcpServers: [], agents: [], skills: [], commands: [] } as never);
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj', '/home/dev/.finevibe/profiles/p1', 'lab')).resolves.toBeDefined();
+    expect(getRemoteProviderConfig).toHaveBeenLastCalledWith('pi', 'lab', '/proj', '/home/dev/.finevibe/profiles/p1');
+  });
+
+  it('provider:getConfig refuses a remote projectPath outside the host\'s projects', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }],
+      preferences: {},
+    } as never);
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/etc', undefined, 'lab'))
+      .rejects.toThrow(/not within a known project of host/);
+    // Sibling-prefix escape ('/project' is not under '/proj') stays refused.
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/project', undefined, 'lab'))
+      .rejects.toThrow(/not within a known project of host/);
+  });
+
+  it('profiles:provision routes remote managed provisioning over the exec lane helper', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(provisionRemoteProfileDir).mockResolvedValue('/home/dev/.finevibe/profiles/p1');
+    const out = await handlers.get('profiles:provision')!({}, 'p1', undefined, 'pi', 'lab') as { configDir: string; managed: boolean };
+    expect(out).toEqual({ configDir: '/home/dev/.finevibe/profiles/p1', managed: true });
+    expect(provisionRemoteProfileDir).toHaveBeenCalledWith(lab, 'p1');
+    // Custom paths stay local-only: the renderer must never steer a remote mkdir.
+    await expect(handlers.get('profiles:provision')!({}, 'p1', '/custom', 'pi', 'lab')).rejects.toThrow(/local-only/);
+  });
+
+  it('pty:create threads the trailing hostId down to spawnPty', async () => {
+    knownPaths.push('/proj');
+    await handlers.get('pty:create')!(
+      {}, 'host-1', '/proj', null, false, '', 'pi', undefined, undefined, '',
+      undefined, 'lab',
+    );
+    expect(mockSpawnPty).toHaveBeenCalled();
+    expect(mockSpawnPty.mock.calls[0][12]).toBe('lab');
+  });
+
+  it('pty:create registers a REMOTE transcript sync with the HOST session dir (audit T2 #5)', async () => {
+    knownPaths.push('/proj');
+    await handlers.get('pty:create')!(
+      {}, 'host-2', '/proj', 'cli-9', true, '', 'pi', undefined, undefined, '',
+      undefined, 'lab',
+    );
+    // The mirror resolves against the same host-side spelling the spawn argv
+    // carries — never the local userData path, which cannot exist on the host.
+    expect(mockRegisterSync).toHaveBeenCalledWith(
+      'host-2', 'pi', 'cli-9', '/proj', undefined,
+      { sessionDir: '~/.finevibe/sessions/pi/host-2', hostId: 'lab' },
+    );
+    // A LOCAL launch keeps the local launch-dir grammar untouched.
+    mockRegisterSync.mockClear();
+    await handlers.get('pty:create')!(
+      {}, 'host-3', '/proj', 'cli-9', true, '', 'pi', undefined, undefined, '',
+      undefined, undefined, undefined,
+    );
+    const localOpts = mockRegisterSync.mock.calls[0][5] as { sessionDir?: string; hostId?: string };
+    expect(localOpts.hostId).toBeUndefined();
+    expect(localOpts.sessionDir).not.toContain('~/.finevibe/sessions');
+  });
+});
+
+describe('remote fs rails (per-host providers, parent plan §11)', () => {
+  const REMOTE = '/home/dev/dev/app';
+
+  it('routes a registry hostId to the sftp lanes and keeps their shapes', async () => {
+    vi.mocked(listRemoteDir).mockResolvedValueOnce({
+      ok: true,
+      entries: [{ name: 'a.ts', path: `${REMOTE}/a.ts`, isDirectory: false }],
+    });
+    await expect(handlers.get('fs:listDir')!({}, REMOTE, 'h1')).resolves.toEqual([
+      { name: 'a.ts', path: `${REMOTE}/a.ts`, isDirectory: false },
+    ]);
+    expect(listRemoteDir).toHaveBeenCalledWith('h1', REMOTE);
+
+    vi.mocked(readRemoteFile).mockResolvedValueOnce({ ok: true, content: 'x' });
+    await expect(handlers.get('fs:readFile')!({}, `${REMOTE}/a.ts`, 'h1')).resolves.toEqual({ ok: true, content: 'x' });
+
+    vi.mocked(statRemotePath).mockResolvedValue({ ok: true, isDirectory: true, size: 0, mtimeMs: 5 });
+    await expect(handlers.get('fs:isDirectory')!({}, REMOTE, 'h1')).resolves.toBe(true);
+    await expect(handlers.get('fs:exists')!({}, REMOTE, 'h1')).resolves.toBe(true);
+    await expect(handlers.get('fs:stat')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: true, size: 0, mtimeMs: 5 });
+    vi.mocked(statRemotePath).mockResolvedValue({ ok: false });
+    await expect(handlers.get('fs:exists')!({}, REMOTE, 'h1')).resolves.toBe(false);
+    await expect(handlers.get('fs:stat')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: false });
+  });
+
+  it('rail failures answer the local failure shapes, never a rejection', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listRemoteDir).mockRejectedValueOnce(new Error('host down'));
+    await expect(handlers.get('fs:listDir')!({}, REMOTE, 'h1')).resolves.toEqual([]);
+    // Every swallowed rail failure must be greppable in <logs>/finevibe.log.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:listDir remote failed'));
+    vi.mocked(readRemoteFile).mockResolvedValueOnce({ ok: false, reason: 'binary' });
+    await expect(handlers.get('fs:readFile')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: false, reason: 'binary' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:readFile remote blocked'));
+    warn.mockRestore();
+  });
+
+  it('local and absent hostId never touch the remote lanes', async () => {
+    vi.mocked(listRemoteDir).mockClear();
+    vi.mocked(statRemotePath).mockClear();
+    await handlers.get('fs:listDir')!({}, OUTSIDE_HOME, 'local');
+    await handlers.get('fs:listDir')!({}, OUTSIDE_HOME);
+    await handlers.get('fs:exists')!({}, OUTSIDE_HOME, 'local');
+    expect(listRemoteDir).not.toHaveBeenCalled();
+    expect(statRemotePath).not.toHaveBeenCalled();
   });
 });

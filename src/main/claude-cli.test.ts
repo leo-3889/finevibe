@@ -49,7 +49,12 @@ vi.mock('./hook-commands', () => ({
   // and the assertions checked for that baked-in literal).
   captureToolFailureCmd: vi.fn((v: string, marker: string) => `capture-toolfailure ${v} ${marker}`),
   wrapPythonHookCmd: vi.fn((_name: string, _code: string, marker: string) => `capture-event .events ${marker}`),
+  // installStatusLine shells the script path with the real shQuote; the
+  // quoting test below asserts its exact output, so stub the real logic.
+  shQuote: (word: string) => `'${word.replace(/'/g, `'\\''`)}'`,
 }));
+
+import { isWin } from './platform';
 
 // The MCP config-dir allowlist asks the store which config dirs the app
 // handed out (profiles) and which projects it knows; both are state the
@@ -64,7 +69,9 @@ vi.mock('./store', () => ({
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { invalidateCanonicalPathCache } from './fs-utils';
 import { addMcpServer, getClaudeConfig, getSupportedHookEvents, installHooks, installHooksOnly, installStatusLine, removeMcpServer } from './claude-cli';
+import { isFineVibeStatusLine } from './settings-guard';
 import { installEventScript, stopStatusCmd } from './hook-commands';
 import { getClaudeVersion } from './providers/claude-version';
 
@@ -118,6 +125,19 @@ const enoent = () => Object.assign(new Error('ENOENT: no such file or directory'
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Order-independence (coherence pass): clearAllMocks clears CALLS but keeps
+  // IMPLEMENTATIONS - a shuffled predecessor's fs mocks (realpathSync casing
+  // fixtures at the tree tests, write-capture stubs) answered this case.
+  // Reset the whole surface to factory defaults, then set the baseline.
+  for (const m of [mockReadFileSync, mockReaddirSync, mockWriteFileSync, mockMkdirSync, mockOpenSync, mockWriteSync, mockFsyncSync, mockCloseSync, mockRenameSync, vi.mocked(fs.realpathSync), vi.mocked(getClaudeVersion)]) m.mockReset();
+  // mockReset strips even the vi.fn(impl) constructor implementation (Vitest>=1),
+  // so re-establish the factory default the whole suite assumes: identity realpath.
+  vi.mocked(fs.realpathSync).mockImplementation((p) => p as string);
+  // The fs-utils canonical caches (root: process-lifetime; target: 5s TTL)
+  // persist across cases: a predecessor's canonical form - computed under a
+  // DIFFERENT realpath mock (identity vs case-folded) - served this case and
+  // broke the allowlist compare. Every case starts with empty caches.
+  invalidateCanonicalPathCache();
   storeProfiles.length = 0;
   storeProjects.length = 0;
   // Default: all reads/dirs fail (empty state)
@@ -458,6 +478,28 @@ describe('install into a profile config dir', () => {
     expect(n(String(mockRenameSync.mock.calls[0][1]))).toBe(n(path.join(profileDir, 'settings.json')));
     const written = JSON.parse(settingsWrites()[0]);
     expect(written.statusLine.type).toBe('command');
+  });
+
+  it('installStatusLine quotes the script path for the shell', () => {
+    // Claude Code runs the statusLine command through a shell: the raw path
+    // broke on the first space (`/Users/John Smith/.finevibe/...`, spaced
+    // Windows profiles), silently killing cost/context/title. POSIX:
+    // shQuote single quotes; cmd.exe: double quotes.
+    installStatusLine(profileDir);
+    const written = JSON.parse(settingsWrites()[0]);
+    const p = path.join('/mock/home', '.finevibe', 'run', isWin ? 'statusline.cmd' : 'statusline.sh');
+    expect(written.statusLine.command).toBe(isWin ? `"${p}"` : `'${p}'`);
+  });
+
+  it('installStatusLine output reads back as FineVibe\'s own statusLine', () => {
+    // Writer/reader round trip: `installStatusLine` shells the path, and
+    // settings-guard's validator must classify that exact payload as
+    // FineVibe's. A raw-string compare made every healthy install grade as
+    // `foreign` (checklist: "Overwritten by another tool"; consent gate about
+    // FineVibe's own command; a `Fix` that could never clear).
+    installStatusLine(profileDir);
+    const written = JSON.parse(settingsWrites()[0]!);
+    expect(isFineVibeStatusLine(written.statusLine)).toBe(true);
   });
 
   it('defaults to ~/.claude when no config dir is given', () => {

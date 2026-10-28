@@ -39,7 +39,7 @@ export function findCliSessionTab(project: ProjectRecord, cliSessionId: string):
   return project.sessions.find((s) => s.cliSessionId === cliSessionId);
 }
 
-export interface ResumeSourceData {
+interface ResumeSourceData {
   providerId: ProviderId;
   cliSessionId: string | null | undefined;
   name: string;

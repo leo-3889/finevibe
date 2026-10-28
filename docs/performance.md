@@ -12,7 +12,7 @@ The file reader accepts text files up to 8 MiB. It displays a bounded page inste
 | Find within a file preview | Displayed page only | Matches outside the current page are not searched. Change pages to search another section. |
 | Untracked Git diff | 256 KiB and 5,000 split lines | An explanatory message instead of an oversized diff. Files containing NUL bytes receive a binary-file message. |
 | Global session search | Best 20 results; indexed text capped at 50 Ki characters per transcript, join separators included | Results search extracted user text, not every byte of a conversation. |
-| Pasted clipboard image | 25 MiB decoded; PNG, JPEG, GIF, WebP, BMP, TIFF | An oversized or unsupported image attaches nothing: the paste is silent. Saved images live in `os.tmpdir()/finevibe-paste` and files older than a day are pruned. |
+| Pasted clipboard image | 25 MiB decoded; PNG, JPEG, GIF, WebP, BMP, TIFF | An oversized or unsupported image attaches nothing: the paste is silent. Saved images live in the uid-suffixed paste dir under `os.tmpdir()` (`finevibe-paste-<uid>` on POSIX, `finevibe-paste` on Windows, created `0700`) and files older than a day are pruned. |
 
 `KiB` means 1,024 bytes. Character budgets use JavaScript string length (UTF-16 code units), not bytes or displayed symbols. These limits are code constants, not Preferences settings.
 
@@ -32,9 +32,9 @@ The derived disk index lives at:
 
 The index contains extracted user text, its working directory and source version metadata. It is local plaintext data; hashed filenames do not encrypt its contents. Source mtime, size and ctime determine reuse. Each record's text is capped at 50 Ki characters, and its serialized JSON must fit within 332 KiB. Records for sources absent from a completed, uncancelled provider discovery/index pass are pruned; the sweep is rate-limited per provider — `claimPruneSlot` grants each provider one prune pass per 30 s (`PRUNE_MIN_INTERVAL_MS`, `src/main/session-deep-search.ts:21-30,335`) — so repeat searches never re-walk the index per keystroke. A cancelled pass can leave them until a later completed pass. A pass whose discovery reported an incomplete scan root (`TranscriptDiscovery.complete` false, P2-70) counts as not-completed for pruning: its records survive untouched, because a root that failed to list is not evidence its transcripts are gone (see [provider contracts](provider-contracts.md)).
 
-Disk usage scales with history; there is no fixed aggregate disk quota. Eviction from the in-memory cache does not require reparsing an unchanged transcript when its disk index remains valid. Search still performs discovery and reads index records, so it is not free of filesystem work.
+Disk usage scales with history; the Pi/OMP session bases are bounded by the 2 GiB per-base quota (`SESSIONS_QUOTA_BYTES`, `src/main/launch-session-dir.ts`, A4 — startup + 24 h sweeps), and Preferences → Storage (A5, `storage:scan`, `src/main/ipc-handlers.ts`) reports the userData subtree sizes with scan caps surfaced as a `truncated` note. Eviction from the in-memory cache does not require reparsing an unchanged transcript when its disk index remains valid. Search still performs discovery and reads index records, so it is not free of filesystem work.
 
-To rebuild the index, close VibeYard and remove only `search-index-v3` from its Electron user-data directory. The next search rebuilds the required entries. This does not delete provider transcripts or the separate `~/.finevibe/state.json` file. There is currently no in-app cache-clear control. Developers must change the index directory version when extraction semantics change; the v2→v3 bump (P2-69) invalidated every pre-fix record because the Codex cwd extraction fix changed the persisted working directory that search results carry.
+To rebuild the index, close FineVibe and remove only `search-index-v3` from its Electron user-data directory. The next search rebuilds the required entries. This does not delete provider transcripts or the separate `~/.finevibe/state.json` file. Preferences → Storage (A5) adds an in-app cache-clear control (`storage:clear` in `src/main/ipc-handlers.ts`): Chromium caches (Cache/GPUCache/Code Cache/Dawn*Cache) plus Chrome-import temp dirs, sessions and browser profiles never touched — the search index is deliberately not in that cache set, so the directory removal above stays the rebuild path. Developers must change the index directory version when extraction semantics change; the v2→v3 bump (P2-69) invalidated every pre-fix record because the Codex cwd extraction fix changed the persisted working directory that search results carry.
 
 Sources: [search coordinator](../src/main/session-deep-search.ts), [disk index](../src/main/session-search-index.ts), [IPC cancellation](../src/main/ipc-handlers.ts), and [palette](../src/renderer/components/session-search-palette.ts).
 
@@ -87,12 +87,69 @@ A full static audit of main + renderer verified every bound above against source
 | File-tree directory cache | `src/renderer/components/file-tree.ts` `entryCache` | fixed (PA-30): one entry list per directory expanded during the session, freed only on collapse/project removal | LRU cap 2,000 directories (`ENTRY_CACHE_MAX_DIRS`), Map-insertion recency; every user-initiated expand and panel re-render evicts the subtree and re-reads from disk (`refreshFolderCache`, 5a4b9bd) |
 | `ProjectRecord.githubLastSeen` | `src/shared/types.ts` | fixed (PA-31): one entry per viewed PR/issue, forever | `pruneGithubLastSeen` keeps the newest 200 entries (`src/shared/github-last-seen.ts`) at every write site |
 | Per-launch session dirs | `src/main/launch-session-dir.ts` (`<userData>/pi-sessions`, `<userData>/omp-sessions`) | fixed: one directory per Pi/OMP start/resume, never removed — unbounded on disk, and `listLaunchSessionDirs()` cost one `stat` + one sidecar `readFile` per directory on EVERY global session search (~2,000 synchronous syscalls per search at 1,000 tabs) | 30-day retention window (`LAUNCH_SESSION_RETENTION_MS`), swept once per provider base per process, deferred off the spawn path to a `setImmediate` and capped at 200 directories per pass; the same age filter now gates the search listing |
+| Per-launch session dirs — A4 sweeps/quota (2026-10-23) | `src/main/launch-session-dir.ts` (`startSessionRetentionSweeps`, `enforceLaunchSessionQuota`) | the row above's arming was launch-only: an install that never launches Pi/OMP grew the two bases forever, and a heavy user's bases had no disk bound inside the 30-day window | startup sweep on a `setImmediate` + unref'd 24 h re-arm (daily tick also runs `sweepEnumerationCaches()`), plus a 2 GiB per-base quota (`SESSIONS_QUOTA_BYTES`): over quota, expired dirs evict oldest-first (sidecar `createdAt` → newest transcript mtime → dir mtime) under the same all-timestamps-past-window predicate; young dirs survive; `PRUNE_SCAN_LIMIT` bound and P2-57 ordering reused |
+| `enumerateCache` / `topFilesCache` | `src/main/ipc-handlers.ts` | fixed (B1): one entry per cwd enumerated/scanned in the session (Quick Open listings and token scans), freed only by the 30 s TTL / `git:changed` on the cwds someone revisited | LRU cap 64 cwds each (`ENUMERATE_CACHE_MAX`, `TOP_FILES_CACHE_MAX`), read-hit touch + oldest eviction; `sweepEnumerationCaches()` drops TTL-expired entries between invalidations |
+| `outsideHomeConsent` | `src/main/ipc-handlers.ts` | fixed (B1): one consent answer per home-outside dir canonicalized in the session (every Add-Project keystroke prefix on a home-outside root) | FIFO cap 200 (`OUTSIDE_HOME_CONSENT_MAX`), oldest answer evicted first (mirrors `MAX_CONSENT_DIR_RECORDS`); an eviction costs a re-prompt, the safe direction |
+| `rootCanonicalCache` | `src/main/fs-utils.ts` | fixed (B1): gate-root canonical forms live for the process, dropped only when the project/profile root set changes | LRU cap 1,024 (`ROOT_CANONICAL_CACHE_MAX`), read-hit touch + oldest eviction |
+| `gateRootCanonicalByPath` | `src/main/store.ts` | fixed (B1/B2): per-path gate memo cleared only by the test-only `invalidateStateCache`, so production grew it per project path and could keep a stale realpath after project add/remove | FIFO cap 200 (`GATE_ROOT_CANONICAL_MAX`); `store:save`/`store:save-sync` now call `invalidateStateCache()` whenever `invalidateCanonicalPathIfRootsChanged` reports a root-set change |
+| `foldsCaseByDir` | `src/main/settings-guard.ts` | fixed (B1): one case-fold probe result per dir probed in the session | FIFO cap 200 (`FOLDS_CASE_BY_DIR_MAX`), oldest evicted first; the eviction cost is one re-probe, never a policy change |
+| Legacy `Vibeyard`/`vibeyard` userData tree | `src/main/userdata-migration.ts` | fixed (A3): the copy-only migration contract left the whole legacy Chromium tree (browser state, caches, cookies) on disk for the machine's life after every cutover install | ledger-driven retirement (`retireLegacyUserData`, run at startup after the migration): deletes a legacy appData tree only after a 30-day grace (`RETIRE_GRACE_MS`), a destination integrity check against the migration ledger's `fileCount` (`userData/.finevibe-migrations.json`) and with no `retire-legacy-user-data.off` opt-out; pre-ledger copies (`fileCount: -1`) are never auto-retired; the home tree (`~/.vibeyard`) is out of scope; outcomes land in `userData/legacy-retirement.json` (`getLegacyRetirementStatus()`) |
 
 Sources: [state store](../src/main/store.ts), [session export](../src/main/session-export.ts), [hook status](../src/main/hook-status.ts), [terminal pane](../src/renderer/components/terminal-pane.ts), [file tree](../src/renderer/components/file-tree.ts).
 Per-launch retention policy: a directory is expired only when every timestamp it exposes is older than 30 days — the `.finevibe.json` sidecar's `createdAt`, the newest `*.jsonl` mtime, and the directory's own mtime (the last-activity proxy for pre-sidecar dirs and launches that never wrote a transcript). A resumed tab rewrites a fresh transcript, so its old sidecar never gets it deleted; a directory whose age cannot be established is kept. The sweep is armed by `ensureLaunchSessionDir()` — which every Pi/OMP start/resume calls — on a `setImmediate`, so the scan never runs on the spawn path (scout-2 P2); it uses `lstat` only (symlinked directories are skipped, never followed) and removes paths built by joining the provider base with a single `readdir` name, so it cannot escape its own base directory. Search visibility follows the same rule: a directory with no activity inside the window can only contain transcripts retention is about to delete, so it is filtered out before its sidecar is read. Scan bound: at most `PRUNE_SCAN_LIMIT = 200` dirs are examined per pass (`src/main/launch-session-dir.ts`) — an examined candidate costs ~5–6 sync syscalls (lstat + sidecar read + transcript readdir + per-jsonl lstat), so the bound sizes a bounded sweep, not a whole-tree walk; expired dirs past the bound converge over consecutive launches. On an over-limit base the names are first ordered by dir mtime ascending (`oldestDirsFirst`, one extra `lstat` per name, over-limit only), so the examined prefix is the deletion-candidate set and expired dirs can no longer hide in the unexamined tail past the cap; symlinks, non-dirs and vanished entries are parked behind the real dirs and never displace an examination slot. The unexamined tail is safe by the AND rule above: a dir with an in-window mtime is undeletable.
 
 
+Legacy userData retirement (A3, copy → verify → retire): the migration stays copy-first, and
+`retireLegacyUserData()` — called at startup right after `migrateLegacyUserData()` — closes
+the lifecycle from the ledger. Every clean copy pass records
+`{id, from, to, completedAt, fileCount, copiedBytes}` in
+`userData/.finevibe-migrations.json`. Gates per record: 30-day grace from `completedAt`
+(`RETIRE_GRACE_MS`), destination integrity (dest subtree file count ≥ the recorded count),
+no `retire-legacy-user-data.off` opt-out in userData, the source strictly under appData (the
+home tree `~/.vibeyard`, still read by the project importer, is never deleted), and a
+verified record — a pre-ledger copy (`fileCount: -1`) is only reported `unverified`.
+Removal is `fs.rmSync` recursive; every outcome (`removed`/`kept`/`unverified`/`error`,
+`bytesFreed`, `reason`) appends to `userData/legacy-retirement.json` (FIFO-capped at 50
+entries), read back by `getLegacyRetirementStatus()`. Covered by
+`src/main/userdata-migration.test.ts` (retirement suite).
+
+A4 sweep arming details: `startSessionRetentionSweeps(onDaily)` sweeps both provider bases
+mirroring the per-launch `setImmediate` arm, re-arms on an unref'd 24-hour `setInterval`
+(stop handle returned; main.ts passes `sweepEnumerationCaches` as the daily co-task), and
+each pass runs the window sweep before the quota. The quota's eviction scan is bounded by
+the same `pruneScanLimit` as the window sweep — an in-window dir mtime already makes a dir
+undeletable, so the unexamined tail cannot hold candidates — and over-quota bases past the
+bound converge over consecutive daily passes. The per-launch `ensureLaunchSessionDir()` arm
+is unchanged.
+
 Covered by `src/main/launch-session-dir.test.ts`.
+
+### Cache governance
+
+Every module-level `Map`/`Set` in `src/main` is process-lifetime, so it MUST be
+**capped** (exported cap constant + LRU/FIFO eviction, the `fs-utils.ts` idiom
+used by the B1 rows above), **teardown-bound** (every key dropped on
+exit/destroy/stop), **transient** (in-flight promise/marker maps the operation
+itself clears), or **bounded-by-construction** (keys from a small fixed set).
+`src/main/module-map-governance.test.ts` enforces this: it scans `src/main`
+for zero-indent collection declarations and fails on any collection without a
+bound-class allowlist entry, so a new module-level `Map`/`Set` cannot land
+without a reviewer recording its bound.
+
+## Remote host lanes (Phase 2, 2026-10-26)
+
+Bounds for the SSH/sftp surface (registry hosts; contracts in [hosts.md](hosts.md)):
+
+- **Connection cache** — `MAX_CACHED_CONNECTIONS = 32` (`ssh-client.ts:19`), FIFO-evicted, governance-allowlisted; one connection multiplexes the exec + sftp + shell channels (ssh2 per-connection channels), so per-verb lanes add no connections.
+- **Remote dir listing** — `MAX_REMOTE_LIST_DIRS = 500` (`remote-fs.ts:28`): one readdir payload ≈ 20 KB (the local `fs:listDirs` cap of 20 is a keystroke autocomplete; a browser page needs the directory). Lane timeouts: list/stat 10 s, `mkdir -p` 15 s, `git clone` 10 min (`CLONE_TIMEOUT_MS` mirrors the local `GIT_CLONE_TIMEOUT_MS` — same slow network operation).
+- **Remote file tree / preview** — `MAX_REMOTE_LIST_ENTRIES = 2000` (one tree-node readdir ≈ 80 KB, truncated-render past the cap), `MAX_REMOTE_READ_BYTES = 8 MiB` preview cap (parity with the local `MAX_READ_FILE_BYTES`); binary sniffed from an 8 KiB head window before any full read. No watcher over sftp: a remote tree refreshes on expand/re-render — agent writes land on the next expand, no polling lane.
+- **Status sidecar poll** — each remote `.status` read is a 4 KiB tail (`hook-status.ts:493`), on a sweep with its own in-flight flag (a slow sftp round trip never blocks the local fs poll); a failed host read arms a `REMOTE_HOST_COOLDOWN_MS = 30_000` cooldown, map capped at `REMOTE_HOST_COOLDOWN_MAX = 32` — a down host costs one connect timeout, not one per session per tick.
+- **Transcript / config windows** — every remote provider-file read is a paged window: head `HEADER_READ_BYTES = 8 KiB` (title), tail `TAIL_READ_BYTES = 16 KiB` (status), hard window cap `MAX_WINDOW_BYTES = 1 MiB` (`provider-fs.ts:22`); a pathological transcript is capped, never buffered whole. The seam is stateless by design (consumers gate on (mtime, size)); a bounded per-host tail cache is the recorded upgrade path if sftp latency ever shows (R1: the hot path stays the status sidecar, not the transcript).
+- **Settings sync** — bundle is the file-set allowlist (bounded per provider); writes are one file + one `.bak` per path; `npm install` runs on the host, not here.
+
+**Unmeasured:** sftp/exec round-trip latency on a real LAN host (dev box has no enrolled host); the rows above are bounds, not measurements. First live pass records: listDirs page time, sidecar poll tick under N remote sessions, transcript window read time.
+
+- Logging: every remote-lane failure writes one searchable line to the app log file — `<logs>/finevibe.log` (`app.getPath('logs')`; Windows `%USERPROFILE%\AppData\Roaming\FineVibe\logs`, macOS `~/Library/Logs/FineVibe`), capped 5 MiB with exactly ONE `.1` backup. The tee installs after the console throttle, so flood-collapse applies to the file too, and any write failure disables the file sink permanently (the 2026-10-23 ENOSPC rule: logging never amplifies a disk failure). Grep keys: `[hosts]` (ssh connect failures, prereq-probe failures, settings-sync write failures) and `fs:listDir remote` / `fs:readFile remote` / `fs:stat remote` / `fs:exists remote` / `fs:isDirectory remote` (rail gate refusals and lane failures — the UI shows "empty/failed" for these, the log carries the why).
 
 ## Measured runtime baseline (W2, 2026-10-19, Windows)
 
@@ -101,9 +158,16 @@ The only measured runtime numbers this machine has for the app's hot paths, from
 `858d97c`, Windows 10.0.26300 (NTFS, real-time AV active), Node v24.14.0. Every row
 below drove the real modules — bundled with esbuild, `electron` stubbed — except the
 startup row, which ran the real Electron app in the dev tree (not packaged); no gate ran
-concurrently, so no vitest contention. **The measurement harnesses no longer exist**: the
-agent workspace that held them was dissolved on 2026-10-21, so this is a baseline
-snapshot, not a rerunnable suite.
+concurrently, so no vitest contention. **The W2 harnesses themselves no longer exist**
+(the agent workspace holding them was dissolved on 2026-10-21). Their periodic
+successors — `dev/perf/s3-idle-growth.js`, `po06-watcher-cost.js`, `f2-codex-spike.js`,
+`f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md`; all four plus that
+README are tracked — `.gitignore` narrows the sandbox to `dev/*` and un-ignores `dev/perf/`
+and `dev/audit/`, so a fresh clone resolves the weekly `perf.yml` harness steps),
+driven by [`.github/workflows/perf.yml`](../.github/workflows/perf.yml) weekly + on
+dispatch against a built tree, results uploaded as artifacts, non-gating — re-measure
+the S3 / F2 / F3 / PO-06 scenarios in the running app, so these rows are a baseline
+with a rerun path, not a one-off snapshot.
 
 | Metric | Measured | Conditions |
 | --- | --- | --- |
@@ -205,6 +269,82 @@ All five phases shipped behind automated, mocked-clipboard coverage. Rows that n
 
 **Pending runtime checks (not runnable on this box):** P4's < 50 ms main-thread freeze target for a real 1080p/1440p screenshot paste (`dev/perf/clipboard-bench.js`), P5's ≥ 5× messages/sec reduction on the echo (`dev/perf/pty-paste-probe.js`), and the plan's §3 interactive rows — Explorer/Finder/Nautilus file copies, Linux middle-click, Wayland permission denial — on macOS, X11, Wayland, and packaged Windows. Recorded as coverage gaps in [FEATURES](FEATURES.md) §24.
 
+## Boot, bundle and runtime instrumentation (2026-10-28 architecture audit)
+
+Everything in this section is now *measured in the source tree*; the packaged
+app is still unmeasured (see "Evidence and open measurement").
+
+**Boot timeline.** `src/main/boot-timing.ts` stamps each boot step and main logs
+one line to `<logs>/finevibe.log`:
+
+```text
+[boot] identity+migrate=..ms ready=..ms sweeps=..ms ipc=..ms window=..ms total=..ms window-shown
+[boot] post-window python=..ms total=..ms
+[boot] renderer init=..ms
+```
+
+`identity+migrate` (userData identity + state migration) → `ready` (app.whenReady)
+→ `sweeps` (startup cleanup) → `ipc` (handler registration) → `window`
+(create + the `app://` load) → `window-shown`, then the deferred post-window probes
+(Python availability) in a second line. The renderer answers on `perf:reportBoot`
+with its own `performance.now()` measured at the end of its `main()` (ms from
+renderer script start to init complete - a label of the init phase, not a paint
+measurement), so a slow launch reads main-side and renderer-side cost in one
+stream. The two lines above
+are the boot-tests' own output (a headless harness): they prove the wiring, not
+the app's real timings.
+
+**Runtime sample.** `startPerfSampler` (same module) pushes `PerfStats` on
+`perf:stats` every 60 s (`PERF_SAMPLE_INTERVAL_MS`): `rss`, `heapUsed`,
+`heapTotal`, `external` and `process.getActiveResourcesInfo().length` — the
+handle count is the leak signal the static audit could not produce, since every
+structure in main is bounded by a constant (see "Static footprint audit"). The
+renderer mirrors each sample into the debug ring (Ctrl+Shift+D, type `perfStats`).
+This is the instrument for protocol rows S1/S3/S4 below: read the ring, or grep
+the log, instead of attaching `--inspect`.
+
+**Renderer bundle.** `npm run build:renderer` is
+`scripts/build-renderer.mjs`: esbuild + metafile report + two hard budgets. The
+bundle is ES modules with chunk splitting, which is only executable because the
+app is served over the privileged `app://` scheme (Chromium refuses
+`type="module"` scripts on `file://` — see "Renderer load path" in
+[security-boundaries.md](security-boundaries.md)). Measured on the 2026-10-28
+split tree (minified):
+
+| Emitted file | Size | When it is fetched |
+| --- | --- | --- |
+| `index.js` (entry) | **190.6 KiB** | boot — entry budget 350 KiB |
+| `chunk-OQFGLNNR.js` | 695.5 KiB | boot (static import graph) |
+| `chunk-LUN2P7DE.js` | 323.5 KiB | boot (static import graph) |
+| `marked.esm-*.js` | 40.4 KiB | first markdown render |
+| `purify.es-*.js` | 22.3 KiB | first markdown render |
+| `share-manager-*.js`, `split-layout-*.js`, `chunk-FW4363Y4.js` | 1.3 KiB | on demand |
+| **total JS shipped** | **1273.5 KiB** | total budget 1400 KiB |
+
+Before the split the app shipped one 1280.3 KiB minified IIFE entry, so splitting
+*moves* bytes rather than removing them. What actually changed: boot parses a
+190.6 KiB entry and pulls the shared chunks in parallel, and `marked` +
+`dompurify` (62.7 KiB) are fetched only when a `.md` file is first rendered
+(`renderMarkdownContent` in `src/renderer/components/file-reader.ts` returns the
+wrapper synchronously with the raw text as pre-state, then fills it).
+
+Two budgets gate the build, both proved to fail it (lowered, build exits 1 naming
+the measured size): `ENTRY_BUDGET_KIB` (350) guards what blocks first paint,
+`TOTAL_BUDGET_KIB` (1400) guards everything the app ships — gating only the entry
+would let a shared chunk grow ungated. Raising either is a commit that has to
+explain the growth.
+
+Remaining measured candidates, recorded as open improvements in
+[`todos/AUDIT_STATUS.md`](../todos/AUDIT_STATUS.md) (the local-only work queue,
+gitignored — absent on a fresh clone): `gridstack` (82.3 KiB) sits behind
+`components/project-tab/grid.ts`, whose synchronous grid API needs an async
+conversion before it can lazy-load, and xterm (540 KiB across three packages) is
+needed at first paint by definition.
+
+Sourcemaps are built for every production render (`index.js.map`, ~6 MB) and are
+**not shipped**: `build.files` excludes `dist/**/*.map`, so a packaged app pays
+nothing while a pasted renderer stack trace stays symbolizable off-device.
+
 ## Measurement protocol for the live run
 
 The static audit defines what the numbers must confirm. Launch with `--js-flags="--expose-gc"`; sample `process.memoryUsage()` (main, via `--inspect`) and `Get-Process FineVibe` working set (PowerShell, 60 s cadence, per-process rows) plus heap snapshots. Scenarios: **S1** 10 idle tabs → expect ≈ +0.2–0.4 MB/tab renderer, flat main; **S2** a ~100 MB output burst → renderer plateaus at scrollback capacity, main heap must not scale with the burst; **S3** 1 h idle with 10 live PTYs → growth < 5 MB/h (a linear rise implicates the 2 s pollers' per-file maps, `lastMtimes` first); **S4** open 50 sessions and close all → retained `Terminal`/`TranscriptSyncEntry`/reader counts return to baseline; **S5** state seeded with 5,000 history rows → time one persist, < 250 ms; **S6** export a session with a ≥50 MB `.events` sidecar → the main heap transient equals the buffered sidecar bytes (and collapses to chunk size once streaming lands). Record CSVs and snapshots under `bench/memory/<date>/`. Pass criteria: S3 < 5 MB/h, S4 within 10% of baseline, per-tab renderer cost within 2× the 240 KB estimate, S5 < 250 ms.
@@ -213,6 +353,10 @@ The static audit defines what the numbers must confirm. Launch with `--js-flags=
 
 Automated tests cover repeated search beyond the memory-cache budget, shared indexing/cancellation, growing diff files, split UTF-8 event records, oversized events, navigation within a 200,000-line file, and directory-cache invalidation.
 
+The boot timeline, the perf sampler and the bundle budget are covered by
+`src/main/boot-timing.test.ts` and `scripts/build-renderer.mjs` (the build fails
+over budget); the write path they exercise is covered by
+`src/renderer/state/persist-engine.ts` + `src/renderer/state.test.ts`.
 The persist throttle (`ffcd283`) is covered by `src/renderer/state.test.ts`. Measurement note: mutations inside one 200 ms window coalesce to a single serialize + IPC (leading edge fires the first mutation immediately), so S5-style persist timing counts one persist per burst, not per mutation; a lone mutation never waits behind the window.
 
 Still needed: run the measurement protocol above (S1–S6) in a packaged app, plus packaged preview/navigation checks and sustained terminal-output profiling. Passing unit tests does not establish a speedup percentage or complete the broader Pi/OMP integration audit.

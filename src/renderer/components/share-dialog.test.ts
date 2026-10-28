@@ -23,7 +23,11 @@ vi.mock('../sharing/share-crypto.js', () => ({
   DecryptionError: class DecryptionError extends Error {},
 }));
 
+// Mock platform: the network-gate hint renders for one OS only
+vi.mock('../platform.js', () => ({ isMac: false, isWin: true, isLinux: false }));
+
 // Minimal DOM stubs so share-dialog can create elements without jsdom
+// pi-lens-ignore: 6133
 const elementStubs = new Map<string, Record<string, unknown>>();
 function makeElement(): Record<string, unknown> {
   const el: Record<string, unknown> = {
@@ -108,11 +112,13 @@ describe('share-dialog cleanup on close', () => {
     expect(mockEndShare).not.toHaveBeenCalled();
   });
 
+  // pi-lens-ignore: 6133
   it('calls endShare when dialog closed after starting share but before connection', async () => {
     let onConnectedCb: (() => void) | undefined;
     const mockHandle = {
       onConnected: (cb: () => void) => { onConnectedCb = cb; },
       onAuthFailed: () => {},
+      onDisconnected: () => {},
     };
     mockShareSession.mockResolvedValue({ offer: 'test-offer', handle: mockHandle });
 
@@ -136,6 +142,7 @@ describe('share-dialog cleanup on close', () => {
     const mockHandle = {
       onConnected: (cb: () => void) => { onConnectedCb = cb; },
       onAuthFailed: () => {},
+      onDisconnected: () => {},
     };
     mockShareSession.mockResolvedValue({ offer: 'test-offer', handle: mockHandle });
 
@@ -165,5 +172,47 @@ describe('share-dialog cleanup on close', () => {
     await vi.waitFor(() => {
       expect(mockEndShare).toHaveBeenCalledWith('session-1');
     });
+  });
+});
+
+describe('share-dialog network-gate hint', () => {
+  function startShareCapturingDisconnect(): () => void {
+    let disconnected: (() => void) | undefined;
+    mockShareSession.mockResolvedValue({
+      offer: 'test-offer',
+      handle: {
+        onConnected: () => {},
+        onAuthFailed: () => {},
+        onDisconnected: (cb: () => void) => { disconnected = cb; },
+      },
+    });
+    showShareDialog('session-1');
+    clickButton('Start Sharing');
+    return () => disconnected!();
+  }
+
+  it('reports a failed connection and appends the Windows firewall hint', async () => {
+    const fireDisconnect = startShareCapturingDisconnect();
+    await vi.waitFor(() => { expect(mockShareSession).toHaveBeenCalled(); });
+
+    fireDisconnect();
+
+    const status = createdElements.find((el) => el.className === 'share-status');
+    expect(status!.textContent).toBe('Connection failed.');
+    const hint = createdElements.find(
+      (el) => el.className === 'share-notice' && String(el.textContent).includes('Windows Defender Firewall')
+    );
+    expect(hint).toBeDefined();
+  });
+
+  it('ignores disconnects after the dialog closed', async () => {
+    const fireDisconnect = startShareCapturingDisconnect();
+    await vi.waitFor(() => { expect(mockShareSession).toHaveBeenCalled(); });
+
+    closeShareDialog();
+    createdElements.length = 0;
+    fireDisconnect();
+
+    expect(createdElements.find((el) => el.className === 'share-status')).toBeUndefined();
   });
 });

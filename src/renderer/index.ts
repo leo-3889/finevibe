@@ -5,7 +5,7 @@ import { initTabBar } from './components/tab-bar/index.js';
 import { initSplitLayout } from './components/split-layout.js';
 import { initKeybindings } from './keybindings.js';
 import { handlePtyData, destroyTerminal, updateCostDisplay, updateContextDisplay, applyThemeToAllTerminals, refreshProfileLabels } from './components/terminal-pane.js';
-import { setHookStatus, notifyInterrupt } from './session-activity.js';
+import { setHookStatus, notifyInterrupt, noteInspectorEvents } from './session-activity.js';
 import { parseCost, setCostData, onChange as onCostChange } from './session-cost.js';
 import { applyCliSessionName } from './session-title.js';
 import { setContextData, onChange as onContextChange } from './session-context.js';
@@ -18,7 +18,9 @@ import { startPolling as startGitPolling } from './git-status.js';
 import { initDebugPanel, logDebugEvent } from './components/debug-panel.js';
 import { initGitPanel } from './components/git-panel.js';
 import { initActiveSessions } from './components/active-sessions-panel.js';
+import { initHostTabs } from './components/host-tabs.js';
 import { initUpdateBanner } from './components/update-banner.js';
+import { initDiskHealthBanner } from './components/disk-health-banner.js';
 import { initSessionHistory } from './components/session-history.js';
 import { captureInitialContext } from './session-insights.js';
 import { initInsightAlert } from './components/insight-alert.js';
@@ -38,6 +40,7 @@ import { initSessionInspector } from './components/session-inspector.js';
 import { initFilePrompt } from './components/file-prompt.js';
 import { initVibeyardImport } from './components/vibeyard-import.js';
 import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
+import { drainEarlyCrashes } from './early-crash.js';
 import { loadProviderMetas, getProviderCapabilities } from './provider-availability.js';
 import { setLocale as setI18nLocale, getLocale, t } from './i18n.js';
 import { resolveSystemLocale } from './system-locale.js';
@@ -60,6 +63,34 @@ import { initBoardSessionSync } from './board-session-sync.js';
 import { initTeamView } from './components/team/team-view.js';
 import { getZoomFactor } from './zoom.js';
 import { confirmAppClose } from './session-close.js';
+
+// Renderer crash capture (architecture audit 2026-10-28, P2; row 16 closed the
+// import-time gap). Main deliberately installs no uncaughtException handler; the
+// renderer had NO capture at all, so an uncaught error left a dead UI with no
+// trace. `console.error` is the transport: main tees the renderer console into
+// <logs>/finevibe.log, and the debug ring keeps it readable in-app
+// (Ctrl+Shift+D). The wiring below covers runtime; import-evaluation crashes
+// (this module's imports throwing, before any listener here exists) are caught
+// by the nonce'd inline script app-scheme injects into the served index.html,
+// and drained below into the same transport.
+let rendererErrorsReported = 0;
+function reportRendererError(kind: string, detail: string): void {
+  // A render loop throwing every frame must not flood the log file.
+  if (rendererErrorsReported++ >= 5) return;
+  console.error(`[renderer:${kind}] ${detail}`);
+  logDebugEvent('rendererError', detail);
+}
+for (const entry of drainEarlyCrashes()) reportRendererError('early', entry);
+window.addEventListener('error', (event) => {
+  reportRendererError(
+    'error',
+    event.message ? `${event.message} @ ${event.filename}:${event.lineno}:${event.colno}` : 'uncaught error (no detail)',
+  );
+});
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = (event as PromiseRejectionEvent).reason;
+  reportRendererError('rejection', String((reason as Error | undefined)?.stack ?? reason ?? 'unknown'));
+});
 
 // Theme and zoom live in persisted preferences, but `appState.load()` is an
 // async IPC round-trip: waiting on it painted the default dark theme at 1.0
@@ -222,6 +253,8 @@ async function main(): Promise<void> {
   window.finevibe.session.onInspectorEvents((sessionId, events) => {
     if (!appState.hasSession(sessionId)) return;
     logDebugEvent('inspectorEvents', sessionId, { count: events.length });
+    // In-flight children gate the status glyph (see session-activity).
+    noteInspectorEvents(sessionId, events);
     addInspectorEvents(sessionId, events);
   });
 
@@ -276,8 +309,11 @@ async function main(): Promise<void> {
   initDebugPanel();
   initGitPanel();
   initActiveSessions();
+  initHostTabs();
   initSessionHistory();
   initUpdateBanner();
+  initDiskHealthBanner();
+  initPerfRing();
   initInsightAlert();
   initToolDetector();
   initToolAlert();
@@ -413,6 +449,28 @@ window.addEventListener('beforeunload', () => appState.flushPersistSync());
 
   checkWhatsNew();
   checkStarPrompt();
+
+  // Audit P1: main logs the boot timeline to the log file; this echoes the
+  // renderer's own parse+init time (its `performance.now()` is measured from
+  // the renderer's timeOrigin, i.e. script start) so a slow launch reads
+  // main-side and renderer-side cost in one stream.
+  window.finevibe.perf.reportBoot(Math.round(performance.now()));
+}
+
+/**
+ * Mirror main's runtime sample (RSS/heap/live handles, `boot-timing.ts`) into
+ * the debug ring so runtime growth is visible in the running app — the audit
+ * found the app bounded everything by constants and measured nothing.
+ */
+function initPerfRing(): void {
+  window.finevibe.perf.onStats((s) => {
+    logDebugEvent('perfStats', '', {
+      rssMiB: +(s.rss / 1048576).toFixed(1),
+      heapMiB: +(s.heapUsed / 1048576).toFixed(1),
+      externalMiB: +(s.external / 1048576).toFixed(1),
+      resources: s.resources,
+    });
+  });
 }
 
 main().catch(console.error);

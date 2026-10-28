@@ -23,6 +23,13 @@ vi.mock('./platform', () => ({
   get isWin() { return false; },
 }));
 
+// git-watcher resolves the git binary through git-status's probe; the suite
+// pins the resolved name so the probe never spawns via the execFile mock.
+vi.mock('./git-status', () => ({
+  gitBinaryPath: () => 'git',
+  ensureGitProbe: vi.fn(),
+}));
+
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
@@ -59,6 +66,7 @@ function installWatch() {
     path: string;
     listener: WatchListener<string>;
     close: () => void;
+    errorHandlers: Array<(err: unknown) => void>;
   }> = [];
   mockWatch.mockImplementation(((p: unknown, listenerOrOpts: unknown, maybeListener?: unknown) => {
     // Two call shapes used by the module: fs.watch(path, listener)
@@ -68,10 +76,14 @@ function installWatch() {
       path: String(p),
       listener: listener as WatchListener<string>,
       close: vi.fn(),
+      errorHandlers: [] as Array<(err: unknown) => void>,
     };
     const watcher = {
       close: entry.close,
-      on: vi.fn().mockReturnThis(),
+      on: vi.fn((event: string, cb: (err: unknown) => void) => {
+        if (event === 'error') entry.errorHandlers.push(cb);
+        return watcher;
+      }),
     } as unknown as FSWatcher;
     watchers.push(entry);
     return watcher;
@@ -384,5 +396,69 @@ describe('notifyGitChanged', () => {
     off();
     notifyGitChanged();
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('watcher resilience', () => {
+  it('first watcher error warns once with the code and arms the periodic rescan', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const root = path.join('/proj');
+    installTree({ [root]: [] });
+    const watchers = installWatch();
+    stubGitRevParse(path.join(root, '.git'));
+    const win = makeWin();
+    await startGitWatcher(win as never, root);
+    const send = (win.webContents as unknown as { send: ReturnType<typeof vi.fn> }).send;
+
+    watchers
+      .find((w) => w.path === root)!
+      .errorHandlers.forEach((h) => h(Object.assign(new Error('native events died'), { code: 'EMFILE' })));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('EMFILE');
+
+    // The rescan drives the same debounced `git:changed` signal the renderer
+    // listens for: a 2s tick + the 300ms flush must reach the window.
+    send.mockClear();
+    await vi.advanceTimersByTimeAsync(2300);
+    expect(send).toHaveBeenCalledWith('git:changed');
+
+    // A second error on another watcher: no second warn (warn-once contract).
+    warn.mockClear();
+    watchers
+      .find((w) => w.path === path.join(root, '.git'))!
+      .errorHandlers.forEach((h) => h(Object.assign(new Error('again'), { code: 'EMFILE' })));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('Linux ENOSPC warns with the inotify-limit text', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    platform.isLinux = true;
+    const root = path.join('/proj');
+    installTree({ [root]: [] });
+    const watchers = installWatch();
+    stubGitRevParse(path.join(root, '.git'));
+    await startGitWatcher(makeWin() as never, root);
+    watchers
+      .find((w) => w.path === root)!
+      .errorHandlers.forEach((h) => h(Object.assign(new Error('queue overflow'), { code: 'ENOSPC' })));
+    expect(String(warn.mock.calls[0][0])).toContain('inotify limit reached (fs.inotify.max_user_watches)');
+  });
+
+  it('stopGitWatcher tears the rescan down (no sends after stop)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const root = path.join('/proj');
+    installTree({ [root]: [] });
+    const watchers = installWatch();
+    stubGitRevParse(path.join(root, '.git'));
+    const win = makeWin();
+    await startGitWatcher(win as never, root);
+    const send = (win.webContents as unknown as { send: ReturnType<typeof vi.fn> }).send;
+    watchers
+      .find((w) => w.path === root)!
+      .errorHandlers.forEach((h) => h(Object.assign(new Error('boom'), { code: 'EMFILE' })));
+    stopGitWatcher();
+    send.mockClear();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(send).not.toHaveBeenCalled();
   });
 });

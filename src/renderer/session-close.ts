@@ -55,8 +55,8 @@ export function closeSessionById(sessionId: string): void {
   if (project) appState.removeSession(project.id, sessionId);
 }
 
-export async function closeSessionIfFileMissing(sessionId: string, fullPath: string): Promise<boolean> {
-  if (await window.finevibe.fs.exists(fullPath)) return false;
+export async function closeSessionIfFileMissing(sessionId: string, fullPath: string, hostId?: string): Promise<boolean> {
+  if (await window.finevibe.fs.exists(fullPath, hostId)) return false;
   closeSessionById(sessionId);
   return true;
 }

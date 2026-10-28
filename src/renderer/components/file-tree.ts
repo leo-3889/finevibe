@@ -1,4 +1,5 @@
 import { appState, ProjectRecord } from '../state.js';
+import { LOCAL_HOST_ID } from '../../shared/types.js';
 import { openFileReaderChecked } from '../open-file-reader.js';
 import { pathToFileURL } from '../file-url.js';
 import { showContextMenu, MenuOption } from './board/board-context-menu.js';
@@ -7,6 +8,7 @@ import { FILE_PATH_DRAG_TYPE } from '../drag-types.js';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../../shared/token-estimate.js';
 import { isPathUnder } from '../../shared/platform.js';
 import { isMac, isWin } from '../platform.js';
+import { rlog } from '../log.js';
 
 export interface DirEntry {
   name: string;
@@ -46,6 +48,25 @@ const inflight = new Map<string, Promise<DirEntry[]>>();
 const watchedByProject = new Map<string, Set<string>>();
 const activeTrees = new Map<string, { project: ProjectRecord; container: HTMLElement }>();
 const projectPaths = new Map<string, string>();
+// Remote projects (per-host providers, parent plan §11): the tree's listings
+// ride the fs:listDir remote rail. The host is remembered per project so
+// every per-folder read (expand, reconcile, properties) gets it without
+// re-resolving the project. Absent/'local' = the local disk, unchanged.
+const projectHosts = new Map<string, string>();
+const remoteHostOf = (projectId: string): string | undefined =>
+  projectHosts.get(projectId) ?? undefined;
+// Cache/inflight keys: a remote listing key carries its host (`h1\0/path`)
+// so the same absolute path on two hosts — or on a Linux local disk and a
+// Linux host — never shares one cache row. `keyPath` recovers the path for
+// the subtree-eviction scans, which are host-agnostic by design (they run
+// per project; a cross-host over-eviction is a benign re-read).
+const KEY_SEP = '\u0000';
+const treeKey = (hostId: string | undefined, p: string): string =>
+  hostId ? `${hostId}${KEY_SEP}${p}` : p;
+const keyPath = (key: string): string => {
+  const i = key.indexOf(KEY_SEP);
+  return i === -1 ? key : key.slice(i + 1);
+};
 let unsubFileChanged: (() => void) | null = null;
 
 function getWatchedSet(projectId: string): Set<string> {
@@ -58,10 +79,15 @@ function getWatchedSet(projectId: string): Set<string> {
 }
 
 function watchFolder(projectId: string, folderPath: string): void {
+  // Remote folders ride the poll-based remote watcher (Phase 4): fs.watch is
+  // local, so the main side polls the dir over sftp and emits the same
+  // fs:changed events. The local branch is unchanged.
+  const hostId = remoteHostOf(projectId);
   const set = getWatchedSet(projectId);
-  if (set.has(folderPath)) return;
-  set.add(folderPath);
-  window.finevibe.fs.watchDir(folderPath);
+  const key = treeKey(hostId, folderPath);
+  if (set.has(key)) return;
+  set.add(key);
+  window.finevibe.fs.watchDir(folderPath, hostId);
 }
 
 /**
@@ -72,14 +98,15 @@ function watchFolder(projectId: string, folderPath: string): void {
 function unwatchSubtree(projectId: string, folderPath: string, clearExpanded = false): void {
   const set = watchedByProject.get(projectId);
   if (set) {
+    const hostId = remoteHostOf(projectId);
     for (const p of [...set]) {
-      if (!isPathUnder(p, folderPath)) continue;
+      if (!isPathUnder(keyPath(p), folderPath)) continue;
       set.delete(p);
-      window.finevibe.fs.unwatchDir(p);
+      window.finevibe.fs.unwatchDir(keyPath(p), hostId);
     }
   }
   for (const p of [...entryCache.keys()]) {
-    if (isPathUnder(p, folderPath)) entryCache.delete(p);
+    if (isPathUnder(keyPath(p), folderPath)) entryCache.delete(p);
   }
   if (clearExpanded) {
     const exp = expandedFolders.get(projectId);
@@ -95,7 +122,7 @@ function unwatchSubtree(projectId: string, folderPath: string, clearExpanded = f
  */
 function refreshFolderCache(folderPath: string): void {
   for (const p of [...entryCache.keys(), ...inflight.keys()]) {
-    if (isPathUnder(p, folderPath)) {
+    if (isPathUnder(keyPath(p), folderPath)) {
       entryCache.delete(p);
       inflight.delete(p);
     }
@@ -165,7 +192,7 @@ export function sortEntries(entries: DirEntry[]): DirEntry[] {
   });
 }
 
-export function toggleFolder(projectId: string, folderPath: string): boolean {
+function toggleFolder(projectId: string, folderPath: string): boolean {
   const set = getExpandedSet(projectId);
   if (set.has(folderPath)) {
     set.delete(folderPath);
@@ -189,12 +216,13 @@ export function clearProjectState(projectId: string): void {
     // fires, so the path comes from the tree's own record. Evict the cached
     // listings for its directories so a re-added project re-reads from disk.
     for (const key of [...entryCache.keys(), ...inflight.keys()]) {
-      if (isPathUnder(key, projectPath)) {
+      if (isPathUnder(keyPath(key), projectPath)) {
         entryCache.delete(key);
         inflight.delete(key);
       }
     }
   }
+  projectHosts.delete(projectId);
 }
 
 export function closeFileTree(projectId: string): void {
@@ -214,6 +242,8 @@ export const _cacheForTesting = {
   keys: () => [...entryCache.keys()],
   max: ENTRY_CACHE_MAX_DIRS,
 };
+/** @internal Test-only: cache-key formation (remote rows live under `host\0path`). */
+export const _keyForTesting = { treeKey, keyPath };
 /** @internal Test-only: clear the module-level entry cache. */
 export function _resetForTesting(): void {
   entryCache.clear();
@@ -229,28 +259,29 @@ export function _resetForTesting(): void {
   }
 }
 
-async function loadEntries(folderPath: string): Promise<DirEntry[]> {
-  const cached = cacheGet(folderPath);
+async function loadEntries(folderPath: string, hostId?: string): Promise<DirEntry[]> {
+  const key = treeKey(hostId, folderPath);
+  const cached = cacheGet(key);
   if (cached) return cached;
-  const pending = inflight.get(folderPath);
+  const pending = inflight.get(key);
   if (pending) return pending;
 
-  const promise = window.finevibe.fs.listDir(folderPath).then((entries) => {
+  const promise = window.finevibe.fs.listDir(folderPath, hostId).then((entries) => {
     const sorted = sortEntries(entries);
     // Only cache if this promise is still the registered inflight: if the
     // entry was evicted while the read was in flight (collapse, expand-time
     // refresh, LRU eviction), the result is stale and must not repopulate
     // the cache.
-    if (inflight.get(folderPath) === promise) {
-      cacheSet(folderPath, sorted);
-      inflight.delete(folderPath);
+    if (inflight.get(key) === promise) {
+      cacheSet(key, sorted);
+      inflight.delete(key);
     }
     return sorted;
   }).catch(() => {
-    if (inflight.get(folderPath) === promise) inflight.delete(folderPath);
+    if (inflight.get(key) === promise) inflight.delete(key);
     return [] as DirEntry[];
   });
-  inflight.set(folderPath, promise);
+  inflight.set(key, promise);
   return promise;
 }
 
@@ -364,7 +395,7 @@ function createEntry(projectId: string, depth: number, entry: DirEntry): HTMLEle
       copyPathMenuOption(entry),
       {
         label: 'Properties',
-        action: () => { showFileProperties(entry); },
+        action: () => { showFileProperties(entry, remoteHostOf(projectId)); },
       },
       deleteMenuOption(entry),
     ]);
@@ -411,7 +442,7 @@ async function renderChildren(
   container.dataset.depth = String(depth);
   watchFolder(projectId, folderPath);
   const gen = beginRender(container);
-  const entries = await loadEntries(folderPath);
+  const entries = await loadEntries(folderPath, remoteHostOf(projectId));
   if (!ownsRender(container, gen)) return;
   container.innerHTML = '';
 
@@ -439,7 +470,7 @@ async function reconcileChildren(
   container: HTMLElement
 ): Promise<void> {
   const gen = beginRender(container);
-  const entries = await loadEntries(folderPath);
+  const entries = await loadEntries(folderPath, remoteHostOf(projectId));
   if (!ownsRender(container, gen)) return;
   const newByPath = new Map(entries.map((e) => [e.path, e] as const));
 
@@ -497,10 +528,10 @@ async function reconcileChildren(
   }
 }
 
-async function showFileProperties(entry: DirEntry): Promise<void> {
+async function showFileProperties(entry: DirEntry, hostId?: string): Promise<void> {
   const [statResult, readResult] = await Promise.all([
-    window.finevibe.fs.stat(entry.path),
-    window.finevibe.fs.readFile(entry.path),
+    window.finevibe.fs.stat(entry.path, hostId),
+    window.finevibe.fs.readFile(entry.path, hostId),
   ]);
 
   const rows: Array<{ label: string; value: string; mono?: boolean }> = [];
@@ -574,7 +605,7 @@ function showInFolderMenuOption(entry: DirEntry): MenuOption {
     action: async () => {
       const result = await window.finevibe.fs.showInFolder(entry.path);
       if (!result.ok) {
-        console.warn(`Failed to show ${entry.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
+        rlog('warn', `Failed to show ${entry.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
       }
     },
   };
@@ -585,7 +616,7 @@ function copyPathMenuOption(entry: DirEntry): MenuOption {
   return {
     label: 'Copy Path',
     action: () => {
-      navigator.clipboard.writeText(entry.path).catch((err) => console.warn('clipboard write failed', err));
+      navigator.clipboard.writeText(entry.path).catch((err) => rlog('warn', 'clipboard write failed', err));
     },
   };
 }
@@ -598,6 +629,23 @@ function deleteMenuOption(entry: DirEntry): MenuOption {
   };
 }
 
+/**
+ * A failed delete has to reach the user, not just the console. The common
+ * cause is EXDEV: `shell.trashItem` moves the file to the volume's trash, so
+ * it rejects when that is another device - a project under os.tmpdir(), a
+ * secondary drive, some tmpfs. Before this the click appeared to succeed and
+ * the file sat exactly where it was, with the reason in main's console only.
+ * The fallback is deliberately nothing: a permanent delete is never attempted
+ * behind the user's back, because the Trash path is the only recoverable one.
+ */
+function reportTrashFailure(entry: DirEntry, reason: string): void {
+  rlog('warn', `Failed to trash ${entry.path}: ${reason}`);
+  window.alert(
+    `"${entry.name}" was not moved to the Trash: ${reason}\n`
+    + 'Permanent delete not attempted - the file is unchanged.',
+  );
+}
+
 function confirmAndTrash(entry: DirEntry): void {
   const kind = entry.isDirectory ? 'folder' : 'file';
   const message = entry.isDirectory
@@ -607,9 +655,15 @@ function confirmAndTrash(entry: DirEntry): void {
     `Delete ${kind}`,
     message,
     async () => {
-      const result = await window.finevibe.fs.trashItem(entry.path);
-      if (!result.ok) {
-        console.warn(`Failed to trash ${entry.path}: ${result.error ?? 'unknown error'}`);
+      try {
+        const result = await window.finevibe.fs.trashItem(entry.path);
+        if (!result.ok) reportTrashFailure(entry, result.error ?? 'unknown error');
+      } catch (err) {
+        // The channel can reject outright (the invoke itself fails) rather
+        // than answer { ok: false }; showConfirmModal never awaits this
+        // callback, so an uncaught throw here is an unhandled rejection and
+        // no feedback at all.
+        reportTrashFailure(entry, err instanceof Error ? err.message : String(err));
       }
     },
     { confirmLabel: 'Delete', danger: true },
@@ -620,6 +674,8 @@ export function renderFileTree(project: ProjectRecord, container: HTMLElement): 
   ensureChangeSubscription();
   activeTrees.set(project.id, { project, container });
   projectPaths.set(project.id, project.path);
+  if (project.hostId && project.hostId !== LOCAL_HOST_ID) projectHosts.set(project.id, project.hostId);
+  else projectHosts.delete(project.id);
   container.innerHTML = '';
   // The root has no collapse gesture, so every panel re-render (reopen,
   // project switch, preferences-changed) re-reads it from disk — the only

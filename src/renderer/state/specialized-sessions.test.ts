@@ -263,6 +263,37 @@ describe('resolveProfile()', () => {
   it('returns undefined when the referenced profile no longer exists', () => {
     expect(resolveProfile({ profileId: 'gone' }, undefined, {}, 'claude', PROFILES)).toBeUndefined();
   });
+
+  // Phase 1 host coherence: a profile is a directory on ONE machine.
+  const HOST_PROFILES: Profile[] = [
+    ...PROFILES,
+    { id: 'rwork', name: 'Remote Work', providerId: 'claude', configDir: '/home/u/.claude-rwork', managed: true, createdAt: 0, hostId: 'host-1' },
+  ];
+
+  it('local launch (hostId=local) reads the bare prefs key', () => {
+    const r = resolveProfile(undefined, undefined, { defaultProfiles: { claude: 'work' } }, 'claude', HOST_PROFILES, 'local');
+    expect(r?.id).toBe('work');
+  });
+
+  it('remote launch reads only its own host-prefixed prefs key — never the local default', () => {
+    const prefs = { defaultProfiles: { claude: 'work', 'host-1|claude': 'rwork' } };
+    expect(resolveProfile(undefined, undefined, prefs, 'claude', HOST_PROFILES, 'host-1')?.id).toBe('rwork');
+    // host-2 has no key of its own: bare launch, not the local profile.
+    expect(resolveProfile(undefined, undefined, prefs, 'claude', HOST_PROFILES, 'host-2')).toBeUndefined();
+  });
+
+  it('drops a pinned profile that lives on a different machine', () => {
+    // 'work' is a LOCAL profile; the session launches on host-1.
+    expect(resolveProfile({ profileId: 'work' }, undefined, {}, 'claude', HOST_PROFILES, 'host-1')).toBeUndefined();
+    // and symmetrically: a host profile pinned on a local launch.
+    expect(resolveProfile({ profileId: 'rwork' }, undefined, {}, 'claude', HOST_PROFILES, 'local')).toBeUndefined();
+    // right host → kept
+    expect(resolveProfile({ profileId: 'rwork' }, undefined, {}, 'claude', HOST_PROFILES, 'host-1')?.id).toBe('rwork');
+  });
+
+  it('host check also gates the project-level pin', () => {
+    expect(resolveProfile(undefined, { defaultProfileId: 'work' }, {}, 'claude', HOST_PROFILES, 'host-1')).toBeUndefined();
+  });
 });
 
 describe('addSession profile pinning', () => {

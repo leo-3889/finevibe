@@ -1,8 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
-import { registerIpcHandlers, resetHookWatcher } from './ipc-handlers';
+import { registerIpcHandlers, resetHookWatcher, sweepEnumerationCaches, removeIsoPartitionDirs } from './ipc-handlers';
 import { sweepImportTempDirs } from './chrome-import/copy';
 import { killAllPtys, getFullPathAsync } from './pty-manager';
 import { flushState, loadState } from './store';
@@ -10,7 +9,6 @@ import { createAppMenu } from './menu';
 import { restartAndResync } from './hook-status';
 import { initProviders, getAllProviders } from './providers/registry';
 import { initAutoUpdater } from './auto-updater';
-import { ensureAgentmemoryRunning } from './agentmemory-manager';
 import { stopGitWatcher } from './git-watcher';
 import { stopConfigWatcher } from './config-watcher';
 import { stopAllFileWatchers } from './file-watcher';
@@ -18,12 +16,30 @@ import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
 import { configureProbeCacheDir } from './providers/resolve-binary';
 import { isMac, isWin } from './platform';
+import { APP_INDEX_URL, installAppScheme, isAppDocumentUrl, registerAppScheme } from './app-scheme';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
 import { isHttpUrl } from '../shared/url';
-import { migrateLegacyUserData } from './userdata-migration';
+import { migrateLegacyUserData, retireLegacyUserData } from './userdata-migration';
+import { startSessionRetentionSweeps } from './launch-session-dir';
 
+import { installConsoleThrottle } from './log-throttle';
+import { installLogFile } from './log-file';
+import { startDiskHealthPreflight } from './disk-health';
+import { finishBoot, finishBootPhase, markBoot, reportRendererBoot, startPerfSampler, stopPerfSampler } from './boot-timing';
+import { getMainWindow } from './main-window';
+
+// 2026-10-23 ENOSPC incident: the state writer logged a full stack on every
+// renderer save against a full disk — 160 409 journal lines in 30 min,
+// rsyslog-mirrored into /var/log/syslog, and the log growth consumed the very
+// space it complained about (a self-amplifying loop). The per-write source is
+// fixed in store.ts; this is the app-wide net: any main-process logger that
+// loops collapses to one line plus a "repeated n times" tally, so no future
+// storm floods journald/syslog. Guarded on VITEST so per-test console spies
+// stay pristine (the mocked-boot suites import this module).
+if (!process.env.VITEST) installConsoleThrottle();
 let mainWindow: BrowserWindow | null = null;
+let stopDiskHealthPreflight: (() => void) | null = null;
 
 // The UI boots ONLY for the single-instance lock winner:
 // startMainProcess() (below createWindow) owns the second-instance,
@@ -46,8 +62,8 @@ function clearCloseConfirmWatchdog(): void {
 }
 
 function requestConfirmClose(): void {
-  const win = BrowserWindow.getAllWindows()[0];
-  if (win && !win.isDestroyed()) {
+  const win = getMainWindow();
+  if (win) {
     win.webContents.send('app:confirmClose');
     clearCloseConfirmWatchdog();
     closeConfirmTimer = setTimeout(() => {
@@ -68,6 +84,10 @@ function requestConfirmClose(): void {
 // import is Electron's sandbox-safe ipcRenderer, so it keeps working with
 // nodeIntegration off and sandbox forced on.
 const BROWSER_GUEST_PRELOAD = path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js');
+// The renderer entry the main window loads. Module scope: the not-built
+// boot guard (rendererIsBuilt) and createWindow must agree on ONE path.
+const RENDERER_INDEX_PATH = path.join(__dirname, '..', '..', 'renderer', 'index.html');
+
 
 // The app UI only ever needs clipboard reads (copy path) and its own desktop
 // notifications; camera/mic/geolocation/MIDI are denied for the host renderer
@@ -79,6 +99,11 @@ const HOST_PERMISSIONS: Record<string, true> = {
   notifications: true,
 };
 const isHostPermission = (permission: string): boolean => Object.hasOwn(HOST_PERMISSIONS, permission);
+
+// Privileged `app://` registration must precede the `ready` event (Electron
+// requirement), so it runs at module scope, not in whenReady. The handler that
+// serves dist/renderer is installed in whenReady below.
+registerAppScheme();
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -108,8 +133,9 @@ function createWindow(): void {
     },
   });
 
-  const indexPath = path.join(__dirname, '..', '..', 'renderer', 'index.html');
-  const loadRenderer = (): void => { mainWindow?.loadFile(indexPath); };
+  // Served over app:// (see app-scheme.ts): the bundle is ES modules with
+  // chunks, which Chromium will not execute from a file:// document.
+  const loadRenderer = (): void => { mainWindow?.loadURL(APP_INDEX_URL); };
   loadRenderer();
 
   // C4S-08: a renderer-process death (crash, OOM, GPU-loss kill) used to
@@ -121,7 +147,9 @@ function createWindow(): void {
 
   // Open external links in default browser instead of inside the app
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isHttpUrl(url)) shell.openExternal(url);
+    // openExternal rejects on a headless / no-default-browser Linux session;
+    // this handler has no caller to catch it, so warn here.
+    if (isHttpUrl(url)) shell.openExternal(url).catch((err: unknown) => console.warn(`[window-open] could not open ${url}`, err));
     return { action: 'deny' };
   });
   const appSession = mainWindow.webContents.session;
@@ -154,24 +182,16 @@ function createWindow(): void {
 
   // The app document is the ONLY navigation target we ever allow. A stray anchor
   // in rendered content (e.g. a relative `.md` link in the file reader) resolves
-  // against this file:// document and would otherwise navigate the window away
+  // against this app:// document and would otherwise navigate the window away
   // from index.html, destroying every session, PTY and layout binding with it.
-  // Compared on the decoded pathname so percent-encoding differences between
-  // Electron's own loadFile URL and pathToFileURL never cause a false block.
-  const appPathname = decodeURIComponent(pathToFileURL(indexPath).pathname);
-  const isAppUrl = (url: string): boolean => {
-    try {
-      const parsed = new URL(url);
-      return parsed.protocol === 'file:' && decodeURIComponent(parsed.pathname) === appPathname;
-    } catch {
-      return false;
-    }
-  };
+  // The predicate lives in app-scheme.ts (unit-tested) and matches the exact
+  // scheme + host + /index.html we load, so no other app:// path can pass.
+  const isAppUrl = (url: string): boolean => isAppDocumentUrl(url);
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (isAppUrl(url)) return;
     event.preventDefault();
-    if (isHttpUrl(url)) shell.openExternal(url);
+    if (isHttpUrl(url)) shell.openExternal(url).catch((err: unknown) => console.warn(`[will-navigate] could not open ${url}`, err));
   });
 
   mainWindow.on('close', (event) => {
@@ -212,6 +232,32 @@ function claimWindowsIdentity(): void {
     app.setAppUserModelId('com.finevibe.app');
   }
 }
+// Boot guard for an unbuilt tree (dist/ missing after a fresh clone,
+// `npm run clean`, or a failed build). The silent failure this replaces:
+// `electron .` loaded the nonexistent dist/renderer/index.html, the window
+// died with the app, and no message ever surfaced — users then launched
+// bare `electron` and landed on the stock Electron welcome window. Fail
+// loudly BEFORE the first window: name the exact missing artifact and the
+// fix, then quit. VITEST-gated like installConsoleThrottle (line 38): the
+// mocked-boot suites (main-single-instance, main-app-user-model-id) boot
+// main.ts from the SOURCE tree, where this dist-relative path never exists
+// — ungated, the guard would abort every mocked boot. The guard's own
+// suite (main-not-built.test.ts) unsets VITEST around its import to
+// exercise the real path.
+function rendererIsBuilt(): boolean {
+  if (process.env.VITEST) return true;
+  if (fs.existsSync(RENDERER_INDEX_PATH)) return true;
+  const projectDir = path.resolve(__dirname, '..', '..', '..');
+  dialog.showErrorBox(
+    'FineVibe is not built',
+    `FineVibe cannot start: its build output is missing.\n\n` +
+      `Missing: ${RENDERER_INDEX_PATH}\n\n` +
+      `Run "npm run build" in ${projectDir}, then start FineVibe again.`,
+  );
+  app.quit();
+  return false;
+}
+
 
 function startMainProcess(): void {
   // C4S-06: updater disposer (startup timeout + 4 h interval); quit runs it.
@@ -249,12 +295,27 @@ function startMainProcess(): void {
     console.error('[userdata-migration] failed; legacy data left untouched', error);
   }
 
+  // A3: ledger-driven retirement of the legacy userData tree the migration
+  // copied. Gated by the ledger: 30-day grace, destination integrity check,
+  // opt-out file, appData-only (the home tree `~/.vibeyard`, still read by
+  // the project importer, is never touched). Runs AFTER the migration, so a
+  // fresh cutover launch is never a retirement candidate. Never throws.
+  try {
+    retireLegacyUserData({
+      userDataDir: app.getPath('userData'),
+      appDataDir: app.getPath('appData'),
+    });
+  } catch (error) {
+    console.error('[userdata-retirement] failed; legacy data left untouched', error);
+  }
+  markBoot('identity+migrate');
+
   // Winner-only: a relaunch while the app runs focuses the existing
   // window, so launching again behaves like "focus FineVibe".
   app.on('second-instance', () => {
     const win = mainWindow && !mainWindow.isDestroyed()
       ? mainWindow
-      : BrowserWindow.getAllWindows()[0];
+      : getMainWindow();
     if (win && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
       win.focus();
@@ -262,6 +323,16 @@ function startMainProcess(): void {
   });
 
   app.whenReady().then(async () => {
+    // Tee the (already throttled) console into <logs>/finevibe.log FIRST, so
+    // every boot sweep and every later failure is on disk — packaged apps
+    // have no console the user can read (owner request 2026-10-26). VITEST
+    // gate mirrors the throttle above: test console spies stay pristine.
+    if (!process.env.VITEST) installLogFile(app.getPath('logs'));
+    markBoot('ready');
+    // Serve the built renderer over app:// (registered at module scope). Must
+    // run before the first window loads; the root is the directory index.html
+    // lives in, so a moved build tree moves the served root with it.
+    installAppScheme(path.dirname(RENDERER_INDEX_PATH));
     // P2-47 pin (boot call site; the after-import sweep lives in
     // ipc-handlers.ts chromeImport:run): quit/crash mid-import used to
     // leave the Chrome cookie snapshot in the OS temp dir for the
@@ -270,7 +341,21 @@ function startMainProcess(): void {
     // fresh dir is never touched. Never throws; tmpdir-sized, negligible
     // on the boot path.
     sweepImportTempDirs();
+    // A5: isolated browser partitions are per-session ephemera — every
+    // `session:release` removes its own jar (ipc-handlers.ts), but a quit
+    // or crash between close and release leaves `finevibe-browser-iso-*`
+    // dirs under userData/Partitions for the machine's life. Sweep all of
+    // them at boot; no live session exists this early, so every
+    // re-validating iso dir is by definition orphaned. Never throws.
+    removeIsoPartitionDirs(app.getPath('userData'));
+    // A4: Pi/OMP session-dir retention used to be armed ONLY by the first
+    // Pi/OMP launch — an install that never launches one grew the two base
+    // dirs forever. Sweep both bases at boot (setImmediate, off the boot
+    // path), re-arm every 24 h with the 2 GiB per-base quota, and run the
+    // enumeration-cache TTL sweep on every daily tick.
+    startSessionRetentionSweeps(sweepEnumerationCaches);
     initProviders();
+    markBoot('sweeps');
 
     // PA-01: the all-missing guard used to run BEFORE the window existed —
     // six serial spawn-bound probes (up to 2.4 s of `which`/`npm prefix -g`
@@ -309,7 +394,23 @@ function startMainProcess(): void {
     registerIpcHandlers();
     const state = loadState();
     createAppMenu(state.preferences?.debugMode ?? false);
+    markBoot('ipc');
+    // Boot guard (rendererIsBuilt): an unbuilt tree fails with the
+    // not-built dialog, never a silent window death. Quit BEFORE the first
+    // window — the close-confirm watchdog, the disk-health preflight and
+    // the provider probes below all assume a live renderer.
+    if (!rendererIsBuilt()) return;
     createWindow();
+    // 2026-10-23: proactive disk-health preflight. Warn ONCE, before writes
+    // start failing, when the userData volume runs low — one banner instead of
+    // a per-write ENOSPC stack storm. Emits on state transitions only (see
+    // disk-health.ts), so a full disk is a single warning, not a flood.
+    stopDiskHealthPreflight = startDiskHealthPreflight({
+      getUserDataPath: () => app.getPath('userData'),
+      onStatus: (status) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('disk-health:status', status);
+      },
+    });
     // S1-01: the updater and the activate/resume handlers used to be
     // registered at the very END of this chain, behind the awaited provider
     // probe fan-out, the Python probe, the statusLine-consent modal (whose
@@ -321,21 +422,30 @@ function startMainProcess(): void {
     // rejection (Electron: crash dialog). They gate on nothing: register
     // them the moment the window exists.
     disposeAutoUpdater = initAutoUpdater();
+    // Audit P1: first-paint is the boot number a user feels; everything after
+    // it reports as a post-window phase. The sampler pushes RSS/heap/handle
+    // counts to the renderer debug ring (Ctrl+Shift+D) every minute.
+    markBoot('window');
+    finishBoot('window-shown');
+    startPerfSampler(() => mainWindow);
+    // The renderer echoes its own parse+paint time on this channel; the
+    // summary lands in the same log stream, so one launch reads top-to-bottom.
+    ipcMain.on('perf:reportBoot', (_event, ms: unknown) => reportRendererBoot(ms));
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
       } else {
-        const win = BrowserWindow.getAllWindows()[0];
-        if (win && !win.isDestroyed()) {
+        const win = getMainWindow();
+        if (win) {
           restartAndResync(win);
         }
       }
     });
 
     powerMonitor.on('resume', () => {
-      const win = BrowserWindow.getAllWindows()[0];
-      if (win && !win.isDestroyed()) {
+      const win = getMainWindow();
+      if (win) {
         restartAndResync(win);
       }
     });
@@ -397,6 +507,8 @@ function startMainProcess(): void {
     // re-pointed (setPythonBin mutates it in place; nothing synchronous
     // gates on it) before the installs run.
     const pythonWarning = await checkPythonAvailable();
+    markBoot('python');
+    finishBootPhase('post-window');
     if (pythonWarning) {
       console.warn(pythonWarning);
       const owner = mainWindow;
@@ -430,19 +542,6 @@ function startMainProcess(): void {
     }
 
 
-
-    // Model A: opportunistically ensure the shared agentmemory engine is running
-    // before any agent session spawns, so its first MCP connect hits a live
-    // daemon. Fire-and-forget: a cold boot (engine self-install) must never block
-    // startup. The daemon is shared by all agent CLIs, so it is intentionally NOT
-    // stopped on quit (see before-quit) — that would sever memory outside FineVibe.
-    if (loadState().preferences.agentmemoryAutoStart !== false) {
-      void ensureAgentmemoryRunning().then(
-        (s) => console.log(`[agentmemory] ${s.running ? `running${s.serviceVersion ? ` v${s.serviceVersion}` : ''}` : 'not running'}`),
-        (err: unknown) => console.warn('[agentmemory] ensure failed:', (err as Error).message),
-      );
-    }
-
     })
     // S1-01: nothing below this point may crash the app: a rejected boot
   // chain (probe spawn failure, dialog API failure) used to surface as an
@@ -468,7 +567,10 @@ function startMainProcess(): void {
     }
     disposeAutoUpdater?.();
     flushState();
-    const win = BrowserWindow.getAllWindows()[0];
+    stopPerfSampler();
+    stopDiskHealthPreflight?.();
+    stopDiskHealthPreflight = null;
+    const win = getMainWindow();
     if (win && !win.isDestroyed()) {
       win.webContents.send('app:quitting');
     }
