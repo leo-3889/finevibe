@@ -24,13 +24,26 @@ const WIN_ENV_REF_RE = /%([^%]+)%/g;
 export function expandUserPath(filePath: string): string {
   let expanded = filePath;
   if (expanded === '~' || expanded.startsWith('~/') || (isWin && expanded.startsWith('~\\'))) {
-    expanded = path.join(os.homedir(), expanded.slice(1));
+    // Join the remainder COMPONENT-WISE. It arrives in whatever spelling the user
+    // typed (`git\my-project`, `git/my-project`, mixed); on a POSIX host
+    // `path.join(home, 'git\\my-project')` keeps the backslash as literal filename
+    // data — correct for POSIX, and the reason the Windows branch produced
+    // `<home>/\git\my-project` on a Linux runner. Splitting into components is the
+    // one form both hosts agree on, and it leaves the POSIX `~/…` output identical.
+    expanded = path.join(os.homedir(), ...expanded.slice(1).split(/[\\/]+/).filter(Boolean));
+    // A trailing separator the user typed is part of the spelling (`~/` names the
+    // home dir AS a directory); the component split drops it, so it is re-appended
+    // in the host spelling — the exact output `path.join(home, '/')` produced.
+    if (/[\\/]$/.test(filePath.slice(1))) expanded += path.sep;
   }
   if (isWin && expanded.includes('%')) {
     expanded = expanded.replace(WIN_ENV_REF_RE, (ref, name: string) => process.env[name] ?? ref);
   }
   return expanded;
 }
+
+/** Already absolute in the Windows sense: a drive root (`E:\`) or a UNC share. */
+const WIN_ABSOLUTE_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
 
 /**
  * The single resolve step every `fs:` channel applies to a renderer path:
@@ -41,9 +54,20 @@ export function expandUserPath(filePath: string): string {
  * from being persisted as a project path and makes every gate comparison
  * see ONE spelling of one directory. A relative path resolves against
  * main's cwd — the documented behavior of every channel that uses it.
+ *
+ * A Windows-absolute spelling is normalized in its OWN syntax and returned
+ * without a host resolve: on a non-Windows host `E:\AI` is not absolute, so
+ * `path.resolve` prepends the cwd and turns the project's drive path into a
+ * directory under the checkout. On Windows this branch and `path.resolve`
+ * produce the same string, so production behavior is unchanged.
  */
 export function resolveUserPath(rawPath: string): string {
-  return path.resolve(expandUserPath(rawPath));
+  const expanded = expandUserPath(rawPath);
+  if (isWin) {
+    const winSpelling = expanded.replaceAll('/', '\\');
+    if (WIN_ABSOLUTE_RE.test(winSpelling)) return path.win32.normalize(winSpelling);
+  }
+  return path.resolve(expanded);
 }
 
 /**

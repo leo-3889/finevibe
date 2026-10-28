@@ -1,7 +1,7 @@
 import { vi } from 'vitest';
 import * as path from 'path';
 import type * as PlatformModule from './platform';
-import { isMac, isWin } from './platform';
+import { isLinux, isMac, isWin } from './platform';
 
 const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
@@ -899,6 +899,24 @@ describe('getPtyCwd', () => {
       return undefined as never;
     });
 
+    if (isLinux) {
+      // The Linux implementation reads `/proc/<pid>/cwd` — it never calls lsof, so
+      // the mocks below (the macOS shape) can never satisfy it: on the Linux
+      // runner the readlink hit a real ENOENT, the implementation logged
+      // `[pty-manager] /proc cwd readlink failed for pid 2000` and answered null.
+      // Stub the readlink seam so the assertion exercises the real Linux path.
+      const readlink = vi.spyOn(fs, 'readlinkSync').mockImplementation((target) => {
+        if (String(target) === '/proc/2000/cwd') return '/some/worktree/path';
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+      try {
+        expect(await getPtyCwd('s1')).toBe('/some/worktree/path');
+      } finally {
+        readlink.mockRestore();
+      }
+      return;
+    }
+
     const result = await getPtyCwd('s1');
     expect(result).toBe('/some/worktree/path');
   });
@@ -1208,14 +1226,20 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
     const { pm, execSync } = await importPosixPtyManager('linux');
     execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
     expect(pm.getFullPath()).toBe('/usr/bin');
-    expect(execSync.mock.calls[0][0]).toMatch(/^\/bin\/sh -ilc /);
+    // Not calls[0]: on a Linux host the imported module graph runs its own
+    // `python3 --version` probe first, so index 0 was that probe in CI
+    // (`expected 'python3 --version' to match /^\/bin\/sh -ilc /`). The assertion
+    // is about WHICH login shell was probed, so select the probe by shape.
+    const probe = execSync.mock.calls.map((call) => String(call[0])).find((call) => / -ilc /.test(call));
+    expect(probe).toMatch(/^\/bin\/sh -ilc /);
   });
 
   it('keeps the /bin/zsh probe on macOS when $SHELL is unset', async () => {
     const { pm, execSync } = await importPosixPtyManager('darwin');
     execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
     expect(pm.getFullPath()).toBe('/usr/bin');
-    expect(execSync.mock.calls[0][0]).toMatch(/^\/bin\/zsh -ilc /);
+    const probe = execSync.mock.calls.map((call) => String(call[0])).find((call) => / -ilc /.test(call));
+    expect(probe).toMatch(/^\/bin\/zsh -ilc /);
   });
 
   it('spawns /bin/bash for the shell tab on Linux when $SHELL is unset and bash exists', async () => {
