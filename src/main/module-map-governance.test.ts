@@ -24,7 +24,8 @@
  * at ZERO indentation at line start, which is what keeps function bodies,
  * comment text and template-literal content out of the hits.
  */
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
@@ -46,22 +47,31 @@ export function scanModuleCollections(source: string): string[] {
 }
 
 const MAIN_ROOT = fileURLToPath(new URL('.', import.meta.url));
+const REPO_ROOT = path.resolve(MAIN_ROOT, '..', '..');
 
-/** Every non-test .ts under src/main, as `Name@src/main-relative/path` keys. */
+/**
+ * The tracked non-test .ts files under src/main, as `Name@src/main-relative/path`
+ * keys. The FILE SET comes from `git ls-files`, not a live directory walk: with a
+ * walk, a concurrent agent creating or deleting a file in `src/main` mid-run made
+ * the suite flake (2 of 3 full runs red on 2026-10-27, green in isolation - queue
+ * row 12). File CONTENT is still read from disk, so a new unbound `Map`/`Set` in
+ * a dirty file fails the gate exactly as before. Tracked-only is deliberate: the
+ * gate reviews what a commit can carry, so an untracked file is reviewed when it
+ * is staged, not while someone is still writing it.
+ */
 export function scanTree(root: string): string[] {
+  const rel = path.relative(REPO_ROOT, root).replaceAll('\\', '/');
+  const listing = execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '-z', '--', rel], {
+    encoding: 'utf8',
+  });
   const keys: string[] = [];
-  const walk = (dir: string): void => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) {
-        for (const name of scanModuleCollections(readFileSync(p, 'utf8'))) {
-          keys.push(`${name}@${path.relative(root, p).replaceAll('\\', '/')}`);
-        }
-      }
+  for (const file of listing.split('\0').filter(Boolean)) {
+    if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue;
+    const abs = path.join(REPO_ROOT, file);
+    for (const name of scanModuleCollections(readFileSync(abs, 'utf8'))) {
+      keys.push(`${name}@${path.relative(root, abs).replaceAll('\\', '/')}`);
     }
-  };
-  walk(root);
+  }
   return keys;
 }
 

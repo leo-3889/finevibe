@@ -41,10 +41,12 @@ export default defineConfig({
       include: [
         'src/main/**/*.ts',
         'src/preload/**/*.ts',
-        // P2-12: the renderer component tree is the highest-risk unmeasured
-        // surface (board/pane/modal state); widen the map even where tests
-        // are thin — the report is expected to be noisy.
-        'src/renderer/components/**',
+        // P2-12 widened the map to the renderer component tree (the highest-risk
+        // unmeasured surface: board/pane/modal state); row 19 widened it to the
+        // whole renderer (state/, lib/, index/, keybindings) so the floor covers
+        // every renderer file a DOM suite can reach. The report is expected to be
+        // noisy — the floor in `thresholds` is what enforces, not the map.
+        'src/renderer/**/*.ts',
       ],
       exclude: [
         'src/main/mcp-ipc-handlers.ts',
@@ -55,6 +57,22 @@ export default defineConfig({
         'src/renderer/notification-sound.ts',
         'src/renderer/git-status.ts',
       ],
+      // Row 19 floor, measured 2026-10-28 over the full suite (`npm run test:coverage`).
+      // A ratchet: raise these as coverage grows, never lower them. `test:coverage` is
+      // the only gate that reads them (no CI job runs coverage today), so this bites
+      // locally first; wiring it into CI is an owner call alongside the red-on-`main`
+      // win32 suite (queue row 3).
+      thresholds: {
+        // Measured 2026-10-28 over the full suite with the map above
+        // (statements 69.98 / branches 63.88 / functions 65.59 / lines 72.15).
+        // Rounded DOWN, so this is a floor, not an aspiration: raise it as
+        // coverage grows, never lower it. Sub-measured by area: main 88.8% lines,
+        // renderer 65.4% (205 files), preload 0.0% (365 lines, no test imports it).
+        statements: 69,
+        branches: 63,
+        functions: 65,
+        lines: 72,
+      }
     },
   },
 });

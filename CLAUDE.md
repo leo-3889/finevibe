@@ -8,6 +8,7 @@ FineVibe is an Electron desktop IDE for seven CLI backends: Claude Code, Codex C
 npm install
 npm run build
 npm test
+npm run test:coverage   # suite + coverage floor (raises as coverage grows)
 npx tsc -p tsconfig.renderer.json --noEmit
 git diff --check
 ```
