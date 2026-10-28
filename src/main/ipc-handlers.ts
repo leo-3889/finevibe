@@ -805,7 +805,7 @@ const STORAGE_SCAN_MAX_ENTRIES = 50_000;
  *  (the shared dirSizeBytes idiom then bounds the recursion depth at 4). */
 const STORAGE_SCAN_MAX_CHILDREN = 1_000;
 
-export interface StorageSubtreeUsage {
+interface StorageSubtreeUsage {
   name: string;
   bytes: number;
 }

@@ -50,7 +50,7 @@ const RETIREMENT_LOG = 'legacy-retirement.json';
 /** FIFO cap on the retirement audit log (mirrors the C3M-05 cap idiom). */
 const MAX_RETIREMENT_LOG_ENTRIES = 50;
 
-export interface TreeMigrationResult {
+interface TreeMigrationResult {
   /** Legacy source dir, or null when there was nothing to migrate. */
   source: string | null;
   copied: number;
@@ -66,7 +66,7 @@ export interface TreeMigrationResult {
   alreadyMigrated: boolean;
 }
 
-export interface UserDataMigrationReport {
+interface UserDataMigrationReport {
   home: TreeMigrationResult;
   appData: TreeMigrationResult;
 }
@@ -95,7 +95,7 @@ export interface MigrationLedgerRecord {
 }
 
 /** A3: one retirement attempt, appended to `userData/legacy-retirement.json`. */
-export interface LegacyRetirementEntry {
+interface LegacyRetirementEntry {
   id: string;
   from: string;
   at: string;
@@ -350,7 +350,7 @@ export function migrateLegacyUserData(opts: UserDataMigrationOptions): UserDataM
   return { home, appData };
 }
 
-export interface LegacyRetirementOptions {
+interface LegacyRetirementOptions {
   userDataDir: string;
   appDataDir: string;
 }

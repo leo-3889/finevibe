@@ -157,7 +157,7 @@ function encodeRepoPath(repo: string): string | null {
   return segments.map(encodeURIComponent).join('/');
 }
 
-export interface ListOptions {
+interface ListOptions {
   state: 'open' | 'closed' | 'all';
   max: number;
 }

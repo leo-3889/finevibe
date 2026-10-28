@@ -11,7 +11,7 @@ export const DEFAULT_LOW_WATER_BYTES = 200 * 1024 * 1024;
 /** Disk fill is a minutes-scale event; a per-minute statfs is plenty. The
  * incident's lesson is that per-write probing is what floods — this tick
  * only classifies, it never emits repeats. */
-export const DEFAULT_CHECK_INTERVAL_MS = 60_000;
+const DEFAULT_CHECK_INTERVAL_MS = 60_000;
 
 /** The most recent emitted status, served verbatim on `disk-health:get` so
  * a renderer that mounts mid-outage renders the banner without waiting for

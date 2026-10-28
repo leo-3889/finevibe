@@ -12,8 +12,8 @@ import { net, protocol } from 'electron';
 // used by board/grid/terminal ids) keep working exactly as they did on `file://`
 // (Chromium treats `file://` as potentially trustworthy, and a secure custom
 // scheme is at least as trustworthy), with `webSecurity` left ON.
-export const APP_SCHEME = 'app';
-export const APP_HOST = 'finevibe';
+const APP_SCHEME = 'app';
+const APP_HOST = 'finevibe';
 export const APP_INDEX_URL = `${APP_SCHEME}://${APP_HOST}/index.html`;
 
 // Explicit MIME: Chromium enforces strict MIME checking for module scripts, so

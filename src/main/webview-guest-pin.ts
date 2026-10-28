@@ -22,21 +22,21 @@ import { isWin } from './platform';
  * camera/mic/geolocation in the partition holding imported Chrome cookies.
  * The app UI only ever touches the clipboard (copy path, paste into the
  * terminal); guests keep page clipboard writes and fullscreen. */
-export const GUEST_PERMISSIONS: Record<string, true> = {
+const GUEST_PERMISSIONS: Record<string, true> = {
   'clipboard-sanitized-write': true,
   fullscreen: true,
 };
 
 /** Allowlist membership, own-keys only (a permission name is not attacker
  * controlled, but the lookup must not answer `true` for `constructor`). */
-export function isGuestPermission(permission: string): boolean {
+function isGuestPermission(permission: string): boolean {
   return Object.hasOwn(GUEST_PERMISSIONS, permission);
 }
 
 /** The subset of `Electron.WebPreferences` the pinning reads and writes. The
  * attributes arrive from the renderer as serializable data, so only strings
  * and booleans are ever present - never a `Session` object. */
-export interface GuestWebPreferences {
+interface GuestWebPreferences {
   nodeIntegration?: boolean;
   contextIsolation?: boolean;
   sandbox?: boolean;

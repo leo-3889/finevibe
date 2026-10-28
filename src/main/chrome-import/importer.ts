@@ -12,7 +12,7 @@ import { snapshotProfile } from './copy';
 import { readCookies } from './cookies';
 import { resetDecryptCache } from './decrypt';
 
-export type ProgressFn = (p: ChromeImportProgress) => void;
+type ProgressFn = (p: ChromeImportProgress) => void;
 
 export function listProfiles(): ChromeProfile[] {
   return listProfilesImpl();

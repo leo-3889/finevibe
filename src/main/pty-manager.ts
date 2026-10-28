@@ -68,7 +68,7 @@ const PATH_MARKER_END = '__VY_PATH_END__';
  * ENOENTs the login-shell PATH probe and the shell tab there. `/bin/sh` is
  * the always-present fallback and a valid `-ilc` probe target.
  */
-export function defaultPosixShell(): string {
+function defaultPosixShell(): string {
   return process.env.SHELL || (isMac ? '/bin/zsh' : '/bin/sh');
 }
 
@@ -458,7 +458,7 @@ export function resolveWindowsShell(
  * 'nonpersistent' are rejected pre-spawn until per-launch storage is
  * tracked end-to-end.
  */
-export type SessionStorageMode = 'default' | 'custom-dir' | 'nonpersistent';
+type SessionStorageMode = 'default' | 'custom-dir' | 'nonpersistent';
 
 /**
  * One effective launch: the executable, argv, environment,
@@ -466,7 +466,7 @@ export type SessionStorageMode = 'default' | 'custom-dir' | 'nonpersistent';
  * Resolved once in spawnPty before any side effect; the child environment
  * and every lifecycle reader must agree on this single spec.
  */
-export interface LaunchSpec {
+interface LaunchSpec {
   executable: string;
   argv: string[];
   env: Record<string, string>;

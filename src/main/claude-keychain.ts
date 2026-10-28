@@ -44,9 +44,9 @@ const BASE_SERVICE = 'Claude Code-credentials';
  */
 export const LAST_UNNAMESPACED_VERSION = '2.1.19';
 
-export type KeychainIsolationStatus = 'supported' | 'unsupported' | 'unknown';
+type KeychainIsolationStatus = 'supported' | 'unsupported' | 'unknown';
 
-export interface KeychainStatusResult {
+interface KeychainStatusResult {
   /** Whether per-profile login isolation is in effect on this platform/build. */
   status: KeychainIsolationStatus;
   /** Detected Claude CLI version, or null if undetectable. */
