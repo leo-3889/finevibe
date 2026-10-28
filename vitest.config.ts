@@ -66,17 +66,17 @@ export default defineConfig({
         // Measured 2026-10-28 over the full suite with the map above, rounded
         // DOWN, so this is a floor and not an aspiration: raise it as coverage
         // grows, never lower it (v8 drifts ~0.02 pp run to run, hence integers).
-        // Measured now: statements 70.57 / branches 63.97 / functions 69.15 /
-        // lines 72.77. By area: main 88.8% lines, renderer 65.4% (205 files),
-        // preload/preload.ts 100% lines (the row-22 bridge test; the functions
-        // jump 65 -> 69 is that file's ~300 bridge functions), and
-        // preload/browser-tab-preload.ts is still 0% — the named remainder of
-        // row 22, so the preload share cannot be raised past that until it is
-        // covered.
-        statements: 70,
-        branches: 63,
+        // Measured now: statements 71.39 / branches 64.54 / functions 69.98 /
+        // lines 73.62. By area: main 88.8% lines, renderer 65.4% (205 files),
+        // and src/preload is fully bridged under test - preload.ts 100% lines
+        // (row 22's surface walk) and browser-tab-preload.ts 98.5% lines /
+        // 100% functions (row 22's guest-command test; the tail is the
+        // pointer-guard branches). The preload share is now at its practical
+        // ceiling: the remaining branches are jsdom-unreachable canvas paths.
+        statements: 71,
+        branches: 64,
         functions: 69,
-        lines: 72,
+        lines: 73,
       }
     },
   },
