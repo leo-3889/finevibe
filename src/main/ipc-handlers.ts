@@ -6,8 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from './pty-manager';
-import { addMcpServer, removeMcpServer, isManagedMcpConfigDir } from './claude-cli';
-import type { McpServerConfig } from './claude-cli';
+import { isManagedMcpConfigDir } from './claude-cli';
 import { fileURLToPath } from 'node:url';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, getRemoteProjectRoots, invalidateStateCache, PersistedState } from './store';
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
@@ -46,7 +45,6 @@ import { searchSessions } from './session-deep-search';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { analyzeReadiness } from './readiness/analyzer';
-import { isGhAvailable, listPullRequests, listIssues, detectRepo } from './github-cli';
 import { detectGitCheckoutUrl } from '../shared/git-url';
 import type { ProviderId, Profile, Preferences, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
@@ -64,6 +62,7 @@ import { provisionProfileDir } from './profiles';
 import { getKeychainIsolationStatus } from './claude-keychain';
 import { getMainWindow } from './main-window';
 import { registerLeafDomains } from './ipc/leaf-domains';
+import { registerAppDomains } from './ipc/app-domains';
 import { boundedSet } from './bounded-map';
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
 // "Checkout and create": a full clone of a large allowlisted repo over a slow
@@ -1544,6 +1543,14 @@ export function registerIpcHandlers(): void {
   // in src/main/ipc/leaf-domains.ts; the only closure value they need is the
   // live known-project path list.
   registerLeafDomains({ getKnownProjectPaths });
+  // Row 26 slice 2: github/app/mcp domains in src/main/ipc/app-domains.ts. The
+  // preload path keeps computing here (__dirname must stay the big file's).
+  registerAppDomains({
+    requireGitRoot,
+    isWithinKnownProject,
+    getBrowserPreloadPath: () =>
+      path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js'),
+  });
 
   // Row 31: the renderer's console goes to devtools and dies with the window,
   // so renderer diagnostics never reached `finevibe.log` (main's console is
@@ -2455,10 +2462,6 @@ export function registerIpcHandlers(): void {
     app.quit();
   }));
 
-  ipcMain.handle('app:getVersion', () => app.getVersion());
-  ipcMain.handle('app:getBrowserPreloadPath', () =>
-    path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js')
-  );
 
   const MAX_SCREENSHOT_BYTES = 50 * 1024 * 1024;
   const MAX_SCREENSHOT_B64_LEN = Math.ceil((MAX_SCREENSHOT_BYTES * 4) / 3);
@@ -2572,20 +2575,6 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('app:openExternal', (_event, url: string) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      // Same outcome as before — the invoke rejects — but explicit rather than
-      // an escaping TypeError.
-      throw new Error('Invalid URL');
-    }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error('Only HTTP(S) URLs are allowed');
-    }
-    return shell.openExternal(url);
-  });
 
   ipcMain.handle('git:getStatus', (_event, projectPath: string) => gitOnStatus(requireGitTarget('git:getStatus', projectPath)));
 
@@ -3013,16 +3002,6 @@ export function registerIpcHandlers(): void {
     return analyzeReadiness(root, excludedProviders);
   });
 
-  ipcMain.handle('github:isAvailable', () => isGhAvailable());
-  ipcMain.handle('github:detectRepo', (_event, projectPath: string) =>
-    detectRepo(requireGitRoot('github:detectRepo', projectPath))
-  );
-  ipcMain.handle('github:listPRs', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
-    listPullRequests(repo, { state, max })
-  );
-  ipcMain.handle('github:listIssues', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
-    listIssues(repo, { state, max })
-  );
 
   ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string, projectPath?: string) => {
     // P2-127: configDir is the dir the warning banner was computed from —
@@ -3101,37 +3080,7 @@ export function registerIpcHandlers(): void {
     recordDirConsent(configDir, 'declined', foreignCommand ?? null);
   }));
 
-  ipcMain.handle('mcp:addServer', (_event, name: string, config: McpServerConfig, scope: 'user' | 'project', projectPath?: string, configDir?: string) => {
-    try {
-      addMcpServer(name, config, scope, projectPath, configDir);
-      return { success: true };
-    } catch (err) {
-      console.error('mcp:addServer failed:', err);
-      return { success: false, error: String(err) };
-    }
-  });
 
-  // C3A-01: filePath arrives via the renderer as an echo of the list results,
-  // and removeMcpServer's self-built allowlist (claude-cli.ts) is derived from
-  // the same projectPath+configDir args — so they both identify AND authorize
-  // the write target. Gate the boundary like addMcpServer (claude-cli.ts) and
-  // provider:getConfig: configDir must be a managed profile dir, and a project
-  // scope must name a known project, or the allowlist is renderer-authored.
-  ipcMain.handle('mcp:removeServer', (_event, name: string, filePath: string, scope: 'user' | 'project', projectPath?: string, configDir?: string) => {
-    if (configDir && !isManagedMcpConfigDir(configDir)) {
-      return { success: false, error: `Refused: ${configDir} is not a managed profile directory.` };
-    }
-    if (scope === 'project' && (!projectPath || !isWithinKnownProject(path.resolve(projectPath)))) {
-      return { success: false, error: 'Path is not within a known project' };
-    }
-    try {
-      removeMcpServer(name, filePath, scope, projectPath, configDir);
-      return { success: true };
-    } catch (err) {
-      console.error('mcp:removeServer failed:', err);
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
 
   registerMcpHandlers();
 }
