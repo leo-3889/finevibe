@@ -67,6 +67,7 @@ import { provisionProfileDir } from './profiles';
 import { getKeychainIsolationStatus } from './claude-keychain';
 import { getLastDiskHealth } from './disk-health';
 import { getMainWindow } from './main-window';
+import { boundedSet } from './bounded-map';
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
 // "Checkout and create": a full clone of a large allowlisted repo over a slow
 // link is minutes, not seconds; the modal shows a progress state, so this
@@ -384,12 +385,7 @@ const outsideHomeConsentInFlight = new Map<string, Promise<boolean>>();
  * whose selection IS the consent — the follow-up label probes for the
  * picked dir then answer from the cache with zero dialogs. */
 function rememberHomeOutsideConsent(dir: string, answer: boolean): void {
-  outsideHomeConsent.set(canonicalPath(dir), answer);
-  while (outsideHomeConsent.size > OUTSIDE_HOME_CONSENT_MAX) {
-    const oldest = outsideHomeConsent.keys().next().value;
-    if (oldest === undefined) break;
-    outsideHomeConsent.delete(oldest);
-  }
+  boundedSet(outsideHomeConsent, canonicalPath(dir), answer, OUTSIDE_HOME_CONSENT_MAX);
 }
 
 /** Parent-consent cascade for the fs:isDirectory existence gate ONLY.
@@ -595,11 +591,7 @@ async function getCachedFiles(key: string, loader: () => Promise<string[]>): Pro
     try {
       const files = await loader();
       if (gen === enumerateGeneration) {
-        enumerateCache.set(key, { at: Date.now(), files });
-        if (enumerateCache.size > ENUMERATE_CACHE_MAX) {
-          const oldest = enumerateCache.keys().next().value;
-          if (oldest !== undefined) enumerateCache.delete(oldest);
-        }
+        boundedSet(enumerateCache, key, { at: Date.now(), files }, ENUMERATE_CACHE_MAX);
       }
       return files;
     } finally {
@@ -2817,11 +2809,7 @@ export function registerIpcHandlers(): void {
     results.sort((a, b) => b.tokens - a.tokens);
     const result = { files: results, scanned, skipped };
     if (gen === enumerateGeneration) {
-      topFilesCache.set(resolvedCwd, { at: Date.now(), ...result });
-      if (topFilesCache.size > TOP_FILES_CACHE_MAX) {
-        const oldest = topFilesCache.keys().next().value;
-        if (oldest !== undefined) topFilesCache.delete(oldest);
-      }
+      boundedSet(topFilesCache, resolvedCwd, { at: Date.now(), ...result }, TOP_FILES_CACHE_MAX);
     }
     return result;
   }

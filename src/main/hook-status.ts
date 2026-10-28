@@ -7,6 +7,7 @@ import { isWin, pythonBin } from './platform';
 import { STDIN_UTF8_GUARD } from '../shared/python';
 import type { CliSessionStatus } from '../shared/types';
 import { readProviderFileWindow } from './hosts/provider-fs';
+import { evictOldest } from './bounded-map';
 
 /**
  * The status-data directory (the watcher's root; every `.status`/`.cost`/
@@ -72,10 +73,7 @@ const REMOTE_HOST_COOLDOWN_MS = 30_000;
 const REMOTE_HOST_COOLDOWN_MAX = 32;
 
 function armHostCooldown(hostId: string): void {
-  if (!remoteHostCooldown.has(hostId) && remoteHostCooldown.size >= REMOTE_HOST_COOLDOWN_MAX) {
-    const oldest = remoteHostCooldown.keys().next().value;
-    if (oldest !== undefined) remoteHostCooldown.delete(oldest);
-  }
+  if (!remoteHostCooldown.has(hostId)) evictOldest(remoteHostCooldown, REMOTE_HOST_COOLDOWN_MAX - 1);
   remoteHostCooldown.set(hostId, Date.now() + REMOTE_HOST_COOLDOWN_MS);
 }
 

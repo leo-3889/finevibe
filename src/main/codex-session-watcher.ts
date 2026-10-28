@@ -5,6 +5,7 @@ import * as zlib from 'zlib';
 import type { BrowserWindow } from 'electron';
 import { writeCliSessionId } from './hook-status';
 import { isLinux } from './platform';
+import { boundedSet } from './bounded-map';
 
 /**
  * Codex CLI has no hook system that reliably reports session IDs back to the
@@ -70,11 +71,7 @@ const MAX_META_CACHE_ENTRIES = 256;
 const metaCache = new Map<string, { mtimeMs: number; size: number; meta: { id?: string; cwd?: string } | null }>();
 
 function cacheMeta(filePath: string, mtimeMs: number, size: number, meta: { id?: string; cwd?: string } | null): void {
-  if (metaCache.size >= MAX_META_CACHE_ENTRIES) {
-    const oldest = metaCache.keys().next().value;
-    if (oldest !== undefined) metaCache.delete(oldest);
-  }
-  metaCache.set(filePath, { mtimeMs, size, meta });
+  boundedSet(metaCache, filePath, { mtimeMs, size, meta }, MAX_META_CACHE_ENTRIES);
 }
 
 function readCachedMeta(filePath: string, mtimeMs: number, size: number): { id?: string; cwd?: string } | null {
