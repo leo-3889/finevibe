@@ -40,6 +40,7 @@ import { initSessionInspector } from './components/session-inspector.js';
 import { initFilePrompt } from './components/file-prompt.js';
 import { initVibeyardImport } from './components/vibeyard-import.js';
 import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
+import { drainEarlyCrashes } from './early-crash.js';
 import { loadProviderMetas, getProviderCapabilities } from './provider-availability.js';
 import { setLocale as setI18nLocale, getLocale, t } from './i18n.js';
 import { resolveSystemLocale } from './system-locale.js';
@@ -63,13 +64,15 @@ import { initTeamView } from './components/team/team-view.js';
 import { getZoomFactor } from './zoom.js';
 import { confirmAppClose } from './session-close.js';
 
-// Renderer crash capture (architecture audit 2026-10-28, P2). Main deliberately
-// installs no uncaughtException handler; the renderer had NO capture at all, so
-// an uncaught error left a dead UI with no trace. `console.error` is the
-// transport: main tees the renderer console into <logs>/finevibe.log, and the
-// debug ring keeps it readable in-app (Ctrl+Shift+D). Installed at module top
-// level — CSP forbids the inline script that would also cover import-time
-// failures, so import-evaluation crashes stay out of reach by design.
+// Renderer crash capture (architecture audit 2026-10-28, P2; row 16 closed the
+// import-time gap). Main deliberately installs no uncaughtException handler; the
+// renderer had NO capture at all, so an uncaught error left a dead UI with no
+// trace. `console.error` is the transport: main tees the renderer console into
+// <logs>/finevibe.log, and the debug ring keeps it readable in-app
+// (Ctrl+Shift+D). The wiring below covers runtime; import-evaluation crashes
+// (this module's imports throwing, before any listener here exists) are caught
+// by the nonce'd inline script app-scheme injects into the served index.html,
+// and drained below into the same transport.
 let rendererErrorsReported = 0;
 function reportRendererError(kind: string, detail: string): void {
   // A render loop throwing every frame must not flood the log file.
@@ -77,6 +80,7 @@ function reportRendererError(kind: string, detail: string): void {
   console.error(`[renderer:${kind}] ${detail}`);
   logDebugEvent('rendererError', detail);
 }
+for (const entry of drainEarlyCrashes()) reportRendererError('early', entry);
 window.addEventListener('error', (event) => {
   reportRendererError(
     'error',
