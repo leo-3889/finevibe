@@ -1,10 +1,9 @@
 import type { ArchivedSession } from '../../../../shared/types.js';
 import { appState } from '../../../state.js';
-import { getProviderDisplayName } from '../../../provider-availability.js';
 import type { WidgetFactory } from './widget-host.js';
 import { DEFAULT_SESSIONS_CONFIG, type SessionsConfig } from './sessions-types.js';
 import { showSessionHistoryDialog } from './sessions-dialog.js';
-import { formatRelativeDate } from '../../../../shared/text-utils.js';
+import { buildSessionRow } from './session-row.js';
 
 export const createSessionsWidget: WidgetFactory = (host) => {
   const root = document.createElement('div');
@@ -56,42 +55,6 @@ export const createSessionsWidget: WidgetFactory = (host) => {
   }
 
   function buildRecentRow(archived: ArchivedSession): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'widget-sessions-row widget-sessions-row-recent';
-    row.title = archived.cliSessionId ? 'Click to resume' : 'No CLI session id — cannot resume';
-
-    const main = document.createElement('div');
-    main.className = 'widget-sessions-row-main';
-
-    const name = document.createElement('div');
-    name.className = 'widget-sessions-row-name';
-    name.textContent = archived.name;
-    main.appendChild(name);
-
-    const meta = document.createElement('div');
-    meta.className = 'widget-sessions-row-meta';
-
-    const provider = document.createElement('span');
-    provider.className = 'widget-sessions-provider';
-    provider.textContent = getProviderDisplayName(archived.providerId);
-    meta.appendChild(provider);
-
-    const date = document.createElement('span');
-    date.className = 'widget-sessions-date';
-    date.textContent = formatRelativeDate(archived.closedAt ?? archived.createdAt);
-    date.title = new Date(archived.closedAt ?? archived.createdAt).toLocaleString();
-    meta.appendChild(date);
-
-    if (archived.cost && archived.cost.totalCostUsd > 0) {
-      const cost = document.createElement('span');
-      cost.className = 'widget-sessions-cost';
-      cost.textContent = `$${archived.cost.totalCostUsd.toFixed(2)}`;
-      meta.appendChild(cost);
-    }
-
-    main.appendChild(meta);
-    row.appendChild(main);
-
     const isBookmarked = archived.bookmarked === true;
     const bookmarkBtn = document.createElement('button');
     bookmarkBtn.type = 'button';
@@ -102,8 +65,8 @@ export const createSessionsWidget: WidgetFactory = (host) => {
       e.stopPropagation();
       appState.toggleBookmark(host.projectId, archived.id);
     });
-    row.appendChild(bookmarkBtn);
 
+    const trailing: HTMLElement[] = [bookmarkBtn];
     // Live rows finalize on close; deleting the bookmark hides the running
     // session and re-archives it under a new id ("Running rows survive").
     if (archived.state !== 'active') {
@@ -116,18 +79,12 @@ export const createSessionsWidget: WidgetFactory = (host) => {
         e.stopPropagation();
         appState.removeHistoryEntry(host.projectId, archived.id);
       });
-      row.appendChild(removeBtn);
+      trailing.push(removeBtn);
     }
 
-    if (archived.cliSessionId) {
-      row.addEventListener('click', () => {
-        void appState.resumeFromHistorySafe(host.projectId, archived.id);
-      });
-    } else {
-      row.classList.add('disabled');
-    }
-
-    return row;
+    // Row 28: the skeleton (name/provider/date/cost + resume click) is the
+    // favorite widget's, shared through session-row.ts.
+    return buildSessionRow(archived, host.projectId, { trailing });
   }
 
   const offHistory = appState.on('history-changed', (data) => {
