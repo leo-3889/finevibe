@@ -14,13 +14,13 @@ import { exec } from './ssh-client';
 import { updateHost } from './host-registry';
 import { buildSettingsBundle, SYNCABLE_PROVIDER_IDS, type BundleEntry, type BundleSourceFs } from './settings-bundle';
 
-export interface SyncStep {
+interface SyncStep {
   step: string;
   ok: boolean;
   detail?: string;
 }
 
-export interface SyncResult {
+interface SyncResult {
   ok: boolean;
   /** Set when remote files drifted and the caller must confirm Overwrite. */
   drift?: string[];

@@ -24,14 +24,14 @@ import {
 import { setEnrollmentStatus, updateHost } from './host-registry';
 import { isValidProfileId } from '../profiles';
 
-export interface EnrollStep {
+interface EnrollStep {
   step: string;
   ok: boolean;
   detail?: string;
 }
 
-export type HostStatusEvent = { id: string; status: HostRecord['enrollmentStatus']; detail?: string };
-export type StatusEmitter = (event: HostStatusEvent) => void;
+type HostStatusEvent = { id: string; status: HostRecord['enrollmentStatus']; detail?: string };
+type StatusEmitter = (event: HostStatusEvent) => void;
 
 const POSIX_SYSTEMS = ['Linux', 'Darwin'];
 const PREREQ_TIMEOUT_MS = 10_000;
@@ -368,7 +368,7 @@ export async function enrollHost(
 }
 
 /** userData hosts dir helper (wizard calls it before create for managed keys). */
-export function managedKeyDir(hostId: string): string {
+function managedKeyDir(hostId: string): string {
   return `${app.getPath('userData')}/hosts/${hostId}`;
 }
 
