@@ -264,7 +264,7 @@ export function showFileViewer(filePath: string, area: string, worktreePath?: st
 }
 
 /** Reload the diff content for a given session (e.g. after git changes) */
-export function reloadFileViewer(sessionId: string): void {
+function reloadFileViewer(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
   if (isSelectionInsideFileViewer(sessionId)) {

@@ -14,7 +14,7 @@ const MB = 1024 * 1024;
 
 /** Human MB formatting — the report is MB-granular by design; a subtree
  *  below 0.1 MB reads as "0.0 MB", which is the honest answer there. */
-export function formatMB(bytes: number): string {
+function formatMB(bytes: number): string {
   const mb = bytes / MB;
   return mb >= 100 ? `${Math.round(mb)} MB` : `${mb.toFixed(1)} MB`;
 }

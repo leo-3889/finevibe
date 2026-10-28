@@ -32,7 +32,7 @@ export function sessionIdAtIndex(project: ProjectRecord, index: number): string 
   return project.sessions[index]?.id ?? null;
 }
 
-export type RemovalMode = 'all' | 'right' | 'left' | 'others';
+type RemovalMode = 'all' | 'right' | 'left' | 'others';
 
 /** Collect the set of session ids to remove for batch removal operations. */
 export function collectRemovalIds(project: ProjectRecord, mode: RemovalMode, anchorSessionId?: string): string[] {

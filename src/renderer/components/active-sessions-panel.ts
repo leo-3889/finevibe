@@ -24,7 +24,7 @@ export interface ActiveSessionRow {
 }
 
 /** Host display data the selector needs; injectable so tests stay pure. */
-export type HostMetaOf = (hostId: string) => { name: string; color: string };
+type HostMetaOf = (hostId: string) => { name: string; color: string };
 
 const registryHostMeta: HostMetaOf = (hostId) => ({ name: getHostName(hostId), color: getHostColor(hostId) });
 
@@ -84,7 +84,7 @@ export function selectActiveSessions(
 let containerEl: HTMLElement | null = null;
 
 /** Rebuild the sidebar Active Sessions section from current state. */
-export function renderActiveSessions(): void {
+function renderActiveSessions(): void {
   if (!containerEl) return;
 
   // Never wipe DOM mid-selection (mirrors the ui-dev re-render guard).

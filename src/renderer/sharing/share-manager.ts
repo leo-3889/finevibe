@@ -42,7 +42,7 @@ function notifyShareChange(): void {
 
 // --- Host side ---
 
-export interface ShareResult {
+interface ShareResult {
   offer: string;
   handle: ShareHandle;
 }

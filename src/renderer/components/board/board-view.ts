@@ -107,7 +107,7 @@ export function initBoard(): void {
   });
 }
 
-export function createBoardView(): HTMLElement {
+function createBoardView(): HTMLElement {
   const el = document.createElement('div');
   el.className = 'board-view';
 

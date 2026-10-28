@@ -14,7 +14,7 @@
 // `onEnter`, and only the top-of-stack entry is dismissed, so stacked
 // dialogs no longer close together on one keypress.
 
-export interface ModalEscapeEntry {
+interface ModalEscapeEntry {
   /** Called when ESC dismisses this modal. */
   onEscape: () => void;
   /**
@@ -88,7 +88,7 @@ export function modalStackDepth(): number {
   return stack.length;
 }
 
-export interface BindModalDismissOptions {
+interface BindModalDismissOptions {
   overlay: HTMLElement;
   onClose: () => void;
   canEscape?: () => boolean;

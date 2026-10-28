@@ -17,7 +17,7 @@ import {
   isMcpToolEvent,
 } from './session-inspector-utils.js';
 
-export interface AgentSpan {
+interface AgentSpan {
   agentId: string;
   startIdx: number;
   stopIdx: number;          // events.length if still running
@@ -26,7 +26,7 @@ export interface AgentSpan {
   childEventIndices: number[]; // sorted event indices belonging to this agent
 }
 
-export interface AgentModel {
+interface AgentModel {
   spans: Map<string, AgentSpan>;       // agentId → span
   eventOwner: Map<number, string>;     // event index → owning agentId
   stopIndices: Set<number>;            // all stop event indices (to skip in rendering)

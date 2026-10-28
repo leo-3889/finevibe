@@ -328,7 +328,7 @@ function ensureFileChangedListener(): void {
   });
 }
 
-export function reloadFileReader(sessionId: string): void {
+function reloadFileReader(sessionId: string): void {
   const instance = instances.get(sessionId);
   if (!instance) return;
   instance.loaded = false;
@@ -594,7 +594,7 @@ export function showGoToLineBar(sessionId: string): void {
   input.focus();
 }
 
-export function hideGoToLineBar(sessionId: string): void {
+function hideGoToLineBar(sessionId: string): void {
   const entry = goToLineBars.get(sessionId);
   if (!entry) return;
   entry.bar.classList.add('hidden');

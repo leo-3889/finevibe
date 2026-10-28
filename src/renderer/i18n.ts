@@ -12,7 +12,7 @@ import zhCN from './locales/zh-CN.json';
 import type { Locale } from '../shared/types.js';
 import { rlog } from './log.js';
 
-export const SUPPORTED_LOCALES: readonly Locale[] = ['en', 'zh-CN'] as const;
+const SUPPORTED_LOCALES: readonly Locale[] = ['en', 'zh-CN'] as const;
 
 const RESOURCES: Record<Locale, unknown> = {
   en,

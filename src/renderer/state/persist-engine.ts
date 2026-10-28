@@ -3,7 +3,7 @@ import { serializeForSave } from './persistence.js';
 import { rlog } from '../log.js';
 
 /** Leading-edge persist throttle window. */
-export const PERSIST_THROTTLE_MS = 200;
+const PERSIST_THROTTLE_MS = 200;
 
 /**
  * Run `cb` on the coming frame. `requestAnimationFrame` in the renderer; a

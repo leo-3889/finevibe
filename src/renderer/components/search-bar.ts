@@ -26,7 +26,7 @@ interface TerminalLike {
 
 type InstanceResolver = (sessionId: string) => TerminalLike | undefined;
 
-export class XtermSearchBackend implements SearchBackend {
+class XtermSearchBackend implements SearchBackend {
   private resultState: SearchResultState = { currentIndex: -1, totalCount: 0 };
   private listeners = new Set<(state: SearchResultState) => void>();
   private disposeSearchResultsListener: (() => void) | null = null;
@@ -277,7 +277,7 @@ export function destroySearchBar(sessionId: string): void {
   searchBars.delete(sessionId);
 }
 
-export function formatSearchResultText(query: string, state: SearchResultState): string {
+function formatSearchResultText(query: string, state: SearchResultState): string {
   if (!query) return '';
   if (state.totalCount === 0) return 'No results';
   return `${Math.max(state.currentIndex + 1, 1)} of ${state.totalCount}`;

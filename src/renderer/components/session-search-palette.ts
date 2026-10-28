@@ -18,7 +18,7 @@ interface SessionMapEntry {
   activeSessionId: string | null;
 }
 
-export function highlightMatches(text: string, query: string): string {
+function highlightMatches(text: string, query: string): string {
   const q = query.trim();
   if (!q) return escapeHtml(text);
   const tokens = Array.from(new Set([q, ...q.split(/\s+/)])).filter(Boolean);
