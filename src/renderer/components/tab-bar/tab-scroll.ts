@@ -14,7 +14,7 @@ interface TabScrollMemo {
 }
 
 /** What a render should do with the strip's offset. */
-export interface TabScrollPlan {
+interface TabScrollPlan {
   /** The offset to restore before considering the active tab. */
   scrollLeft: number;
   /** Whether the active tab may pull the strip from there. */
@@ -51,7 +51,7 @@ export function scrollDelta(leftGap: number, rightGap: number): number {
 
 /** Width the arrow group takes from the strip when visible. tabs.css sizes the
  *  two buttons to match, so the hysteresis below and the layout agree. */
-export const ARROW_RESERVE_PX = 52;
+const ARROW_RESERVE_PX = 52;
 
 /**
  * Whether the strip's tabs need scroll arrows. The rule carries the hysteresis

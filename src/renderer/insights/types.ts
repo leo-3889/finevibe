@@ -1,8 +1,8 @@
 import type { InitialContextSnapshot } from '../../shared/types.js';
 
-export type InsightSeverity = 'info' | 'warning';
+type InsightSeverity = 'info' | 'warning';
 
-export interface InsightAction {
+interface InsightAction {
   label: string;
   prompt: string;
 }

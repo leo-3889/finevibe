@@ -121,7 +121,7 @@ type EventType =
 type EventCallback = (data?: unknown) => void;
 
 /** What a `session-changed` fan-out was caused by; see {@link SessionChangedPayload}. */
-export type SessionChangeKind = 'activate' | 'add' | 'remove' | 'reorder' | 'metadata';
+type SessionChangeKind = 'activate' | 'add' | 'remove' | 'reorder' | 'metadata';
 
 /**
  * `session-changed` payload. The event used to be emitted payload-less, so

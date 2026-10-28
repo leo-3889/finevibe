@@ -7,7 +7,7 @@ export const DEFAULT_NAME_KEY = 'tab.newSession.defaultName';
 /** i18n key for the auto-generated MCP inspector tab name. */
 export const MCP_INSPECTOR_NAME_KEY = 'tab.newMcpInspector.defaultName';
 /** i18n key for the auto-generated tab-group name (`Group {num}` / `分组 {num}`). */
-export const GROUP_NAME_KEY = 'tab.group.defaultName';
+const GROUP_NAME_KEY = 'tab.group.defaultName';
 
 /** `Session {num}` → `/^Session (\d+)$/`, or null if the template has no `{num}`. */
 function toPattern(template: string): RegExp | null {
@@ -73,7 +73,7 @@ export function defaultSessionName(project: ProjectRecord): string {
  * counts session names — dissolving a group frees its number only once no
  * group carries it anymore.
  */
-export function nextGroupNumber(project: ProjectRecord): number {
+function nextGroupNumber(project: ProjectRecord): number {
   let max = 0;
   for (const group of project.tabGroups ?? []) {
     max = Math.max(max, parseNumberedName(GROUP_NAME_KEY, group.name) ?? 0);

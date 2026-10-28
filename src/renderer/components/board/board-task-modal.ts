@@ -13,7 +13,7 @@ import { runTask } from './board-card.js';
 import { resolvePinnedTeamProfile } from '../../state/team-state.js';
 import { t } from '../../i18n.js';
 
-export interface TaskModalPrefill {
+interface TaskModalPrefill {
   title?: string;
   prompt?: string;
   notes?: string;

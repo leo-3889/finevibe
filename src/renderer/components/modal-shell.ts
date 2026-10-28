@@ -5,7 +5,7 @@ export interface ModalShell {
   actions: HTMLElement;
 }
 
-export interface ModalShellOptions {
+interface ModalShellOptions {
   id: string;
   title: string;
   wide?: boolean;

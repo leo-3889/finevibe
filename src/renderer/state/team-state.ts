@@ -82,7 +82,7 @@ export function removeMember(team: TeamData, id: string): TeamMember | undefined
 }
 
 /** Assign a unique agentSlug to a member if it doesn't already have one. Returns true if a slug was assigned. */
-export function ensureAgentSlug(team: TeamData, member: TeamMember): boolean {
+function ensureAgentSlug(team: TeamData, member: TeamMember): boolean {
   if (member.agentSlug) return false;
   const taken = new Set(team.members.filter((m) => m !== member && m.agentSlug).map((m) => m.agentSlug!));
   member.agentSlug = ensureUniqueSlug(nameToSlug(member.name), taken);
@@ -93,7 +93,7 @@ export function ensureAgentSlug(team: TeamData, member: TeamMember): boolean {
  * Pick the provider for a team chat session: override → active CLI session's provider → default → claude,
  * filtered by which providers actually support team chat.
  */
-export function pickTeamChatProvider(
+function pickTeamChatProvider(
   activeSession: SessionRecord | undefined,
   defaultProvider: ProviderId | undefined,
   override: ProviderId | undefined,
@@ -218,7 +218,7 @@ export function buildTeamChatSession(
   };
 }
 
-export interface AgentApi {
+interface AgentApi {
   installAgent(slug: string, content: string, configDir?: string): Promise<unknown>;
   removeAgent(slug: string): Promise<unknown>;
 }

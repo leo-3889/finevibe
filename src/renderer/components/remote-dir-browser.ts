@@ -11,7 +11,7 @@ import { t } from '../i18n.js';
 
 const OVERLAY_ID = 'remote-dir-browser-overlay';
 
-export interface RemoteDirBrowserOptions {
+interface RemoteDirBrowserOptions {
   hostId: string;
   title: string;
   /** Canonical remote spelling (`~`, `~/x`, `/x`); default the remote home. */

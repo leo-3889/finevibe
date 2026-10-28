@@ -1,4 +1,4 @@
-export interface IndicatorRow {
+interface IndicatorRow {
   visual: () => HTMLElement;
   label: string;
   description: string;

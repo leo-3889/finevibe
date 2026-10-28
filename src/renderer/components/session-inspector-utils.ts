@@ -67,7 +67,7 @@ export function createToolInputEl(toolInput: unknown): HTMLPreElement {
   return el;
 }
 
-export interface McpToolInfo {
+interface McpToolInfo {
   rawToolName: string;
   server: string;
   tool: string;

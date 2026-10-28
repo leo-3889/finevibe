@@ -23,7 +23,7 @@ interface ShortcutDefault {
  * Labels/categories are translated at display time via `shortcutLabel`
  * and `shortcutCategoryLabel`.
  */
-export const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
+const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'new-session', label: 'New Session', category: 'Sessions', defaultKeys: 'CmdOrCtrl+T' },
   { id: 'new-session-alt', label: 'New Session (Alt)', category: 'Sessions', defaultKeys: 'CmdOrCtrl+Shift+N' },
   { id: 'new-project', label: 'New Project', category: 'Sessions', defaultKeys: 'CmdOrCtrl+Shift+P' },

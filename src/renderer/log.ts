@@ -20,7 +20,7 @@ const MAX_MESSAGE_CHARS = 2000;
 /** Renderer-side flood guard: lines admitted per rolling minute. */
 const LINES_PER_MINUTE = 200;
 
-export type RendererLogLevel = 'log' | 'info' | 'warn' | 'error';
+type RendererLogLevel = 'log' | 'info' | 'warn' | 'error';
 
 let budget = LINES_PER_MINUTE;
 let windowEndsAt = 0;

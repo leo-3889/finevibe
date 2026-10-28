@@ -106,7 +106,7 @@ export function getCost(sessionId: string): CostInfo | null {
   return costs.get(sessionId) ?? null;
 }
 
-export function getAggregateCost(): CostInfo {
+function getAggregateCost(): CostInfo {
   const aggregate: CostInfo = {
     totalCostUsd: 0,
     totalInputTokens: 0,

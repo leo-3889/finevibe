@@ -10,7 +10,7 @@ interface MountedWidget {
   itemEl: GridItemHTMLElement;
 }
 
-export interface ProjectTabGridOptions {
+interface ProjectTabGridOptions {
   projectId: string;
   rootEl: HTMLElement;
   initialLayout: OverviewLayout;

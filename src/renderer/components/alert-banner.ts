@@ -1,6 +1,6 @@
 import { appState } from '../state.js';
 
-export interface AlertBannerConfig {
+interface AlertBannerConfig {
   className?: string;
   icon: string;
   message: string;

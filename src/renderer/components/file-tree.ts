@@ -192,7 +192,7 @@ export function sortEntries(entries: DirEntry[]): DirEntry[] {
   });
 }
 
-export function toggleFolder(projectId: string, folderPath: string): boolean {
+function toggleFolder(projectId: string, folderPath: string): boolean {
   const set = getExpandedSet(projectId);
   if (set.has(folderPath)) {
     set.delete(folderPath);

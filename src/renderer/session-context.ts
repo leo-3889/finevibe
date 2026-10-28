@@ -49,7 +49,7 @@ export function getContext(sessionId: string): ContextWindowInfo | null {
   return contexts.get(sessionId) ?? null;
 }
 
-export type ContextSeverity = '' | 'warning' | 'critical';
+type ContextSeverity = '' | 'warning' | 'critical';
 
 export function getContextSeverity(usedPercentage: number): ContextSeverity {
   if (usedPercentage >= 90) return 'critical';

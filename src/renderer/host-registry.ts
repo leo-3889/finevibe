@@ -51,7 +51,7 @@ export function onHostsChange(cb: () => void): () => void {
   return () => { listeners.delete(cb); };
 }
 
-export function getHosts(): readonly HostRecord[] {
+function getHosts(): readonly HostRecord[] {
   return hosts;
 }
 

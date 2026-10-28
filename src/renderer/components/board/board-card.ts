@@ -214,7 +214,7 @@ export async function runTask(task: BoardTask): Promise<void> {
   }
 }
 
-export function focusTaskSession(task: BoardTask): void {
+function focusTaskSession(task: BoardTask): void {
   const project = appState.activeProject;
   if (!project || !task.sessionId) return;
   appState.setActiveSession(project.id, task.sessionId);

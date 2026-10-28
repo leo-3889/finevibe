@@ -4,7 +4,7 @@ export interface SelectorOption {
   value: string;
 }
 
-export type ActiveSelector = SelectorOption;
+type ActiveSelector = SelectorOption;
 
 export interface ElementInfo {
   tagName: string;

@@ -146,7 +146,7 @@ async function pathsForPastedFiles(files: File[]): Promise<string[]> {
   return paths;
 }
 
-export type PasteOutcome = 'files' | 'text' | 'passthrough' | 'empty';
+type PasteOutcome = 'files' | 'text' | 'passthrough' | 'empty';
 
 /**
  * Paste into a running terminal, for every flavor the clipboard carries.
