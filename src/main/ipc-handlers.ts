@@ -10,7 +10,7 @@ import { isManagedMcpConfigDir } from './claude-cli';
 import { fileURLToPath } from 'node:url';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, getRemoteProjectRoots, invalidateStateCache, PersistedState } from './store';
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
-import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
+import { enrollHost, refreshHostTools, testHost, unenrollHost } from './hosts/enrollment';
 import { syncSettingsToHost } from './hosts/settings-sync';
 import { cloneRemoteRepo, ensureRemoteDir, listRemoteDir, listRemoteDirs, readRemoteFile, statRemotePath, walkRemoteFiles } from './hosts/remote-fs';
 import { setRemoteWatchWindow, unwatchRemoteDir, watchRemoteDir } from './hosts/remote-watch';
@@ -36,7 +36,7 @@ import type { SessionExitReason } from './providers/pi-compatible-transcripts';
 import { startGitWatcher, notifyGitChanged, onGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
-import { getProvider, getAllProviderMetas, getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
+import { getProvider, getAllProviderMetas, getAllProviders } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
 import { remoteLaunchSessionDir } from './launch-session-dir';
 import type { CliProvider } from './providers/provider';
@@ -44,7 +44,6 @@ import { buildHandoffPrompt } from './providers/resume-handoff';
 import { searchSessions } from './session-deep-search';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../shared/token-estimate';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
-import { analyzeReadiness } from './readiness/analyzer';
 import { detectGitCheckoutUrl } from '../shared/git-url';
 import type { ProviderId, Profile, Preferences, SettingsValidationResult, ReadFileResult, FileStatResult, TopFilesResult, TopFile, ArchivedSession } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
@@ -58,11 +57,10 @@ import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, Clipbo
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { buildFineVibeIgnoreMatcher } from './finevibeignore';
 import { setCloseConfirmed } from './close-state';
-import { provisionProfileDir } from './profiles';
-import { getKeychainIsolationStatus } from './claude-keychain';
 import { getMainWindow } from './main-window';
 import { registerLeafDomains } from './ipc/leaf-domains';
 import { registerAppDomains } from './ipc/app-domains';
+import { registerSupportDomains } from './ipc/support-domains';
 import { boundedSet } from './bounded-map';
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
 // "Checkout and create": a full clone of a large allowlisted repo over a slow
@@ -1552,6 +1550,9 @@ export function registerIpcHandlers(): void {
       path.join(__dirname, '..', '..', 'preload', 'preload', 'browser-tab-preload.js'),
   });
 
+  // Row 26 slice 3: stats/readiness/profiles in src/main/ipc/support-domains.ts.
+  registerSupportDomains({ requireGitRoot });
+
   // Row 31: the renderer's console goes to devtools and dies with the window,
   // so renderer diagnostics never reached `finevibe.log` (main's console is
   // tee'd there by log-file.ts). One intake: validate, tag, and write through
@@ -1565,29 +1566,6 @@ export function registerIpcHandlers(): void {
     console[level as 'log' | 'info' | 'warn' | 'error'](`[renderer] ${message.slice(0, 2000)}`);
   });
 
-  // Provision (create) a profile's config dir. Returns the resolved absolute
-  // path and whether it is the auto-managed location.
-  ipcMain.handle('profiles:provision', async (_event, profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string) => {
-    if (hostId !== undefined && hostId !== LOCAL_HOST_ID) {
-      // Remote managed provisioning (plan §2): mkdir the managed dir on the
-      // host over the exec lane; custom paths stay local-only (the renderer
-      // must never steer a remote mkdir).
-      if (customPath?.trim()) throw new Error('Custom profile dirs are local-only; remote profiles use the managed dir.');
-      const record = getHost(hostId);
-      if (!record) throw new Error(`Unknown host: ${JSON.stringify(hostId)}`);
-      const configDir = await provisionRemoteProfileDir(record, profileId);
-      return { configDir, managed: true };
-    }
-    const configDir = provisionProfileDir(profileId, customPath, providerId, loadState().profiles ?? []);
-    return { configDir, managed: !customPath?.trim() };
-  });
-
-  // Report whether the installed Claude Code build can isolate per-profile
-  // logins on this platform (macOS keychain namespacing). Drives the profile
-  // guardrail in the UI.
-  ipcMain.handle('profiles:keychainStatus', () => {
-    return getKeychainIsolationStatus();
-  });
 
   // ---- Multi-host Phase 1: hosts registry --------------------------------
   // Secrets never cross these channels (secrets.ts is write-only over IPC);
@@ -2965,42 +2943,9 @@ export function registerIpcHandlers(): void {
     unwatchDir(resolved);
   }));
 
-  // PA-24: the widget renders requested this every poll; the file was read
-  // AND JSON.parsed in full each time. Memoize by (path, mtime, size) — the
-  // hook-status poll rewrites the file when usage changes, and the resulting
-  // mtime bump re-parses. Async body: the channel is ipcMain.handle.
-  let statsCacheMemo: { file: string; mtimeMs: number; size: number; data: unknown } | null = null;
-  ipcMain.handle('stats:getCache', async () => {
-    try {
-      const statsPath = path.join(os.homedir(), '.claude', 'stats-cache.json');
-      const st = await fs.promises.stat(statsPath);
-      const memo = statsCacheMemo;
-      if (memo && memo.file === statsPath && memo.mtimeMs === st.mtimeMs && memo.size === st.size) {
-        return memo.data;
-      }
-      const raw = await fs.promises.readFile(statsPath, 'utf-8');
-      const data = JSON.parse(raw);
-      statsCacheMemo = { file: statsPath, mtimeMs: st.mtimeMs, size: st.size, data };
-      return data;
-    } catch {
-      statsCacheMemo = null;
-      return null;
-    }
-  });
 
   // Both run git in the renderer-named cwd (`git ls-files` for the readiness
   // scan, `git remote get-url` for the repo detect), so both take the same
-  // root gate as the 13 git:* handlers: a known project or a watched worktree.
-  ipcMain.handle('readiness:analyze', async (_event, projectPath: string, excludedProviders?: ProviderId[]) => {
-    const root = requireGitRoot('readiness:analyze', projectPath);
-    // S4-03: warm the registry availability cache with the async probe
-    // twin. analyzeReadiness() reads availability through the sync
-    // getAvailableProviderIds(); warming first makes that a cache hit, so
-    // the first scan no longer runs the six sync probe chains on main.
-    // Response shape is the same ReadinessResult promise.
-    await getAvailableProviderIdsAsync();
-    return analyzeReadiness(root, excludedProviders);
-  });
 
 
   ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string, projectPath?: string) => {
