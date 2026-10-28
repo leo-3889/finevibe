@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Regression test for the not-built boot guard (rendererIsBuilt in main.ts).
-// With dist/ missing, `electron .` used to exit SILENTLY — loadFile on a
+// With dist/ missing, `electron .` used to exit SILENTLY — the app:// load of a
 // nonexistent index.html killed the window and the app — and users then
 // launched bare `electron` and landed on the stock Electron welcome window.
 // The guard must show the not-built dialog naming the missing artifact,
@@ -46,7 +46,7 @@ vi.mock('electron', () => {
         setPermissionCheckHandler: vi.fn(),
       },
     };
-    loadFile = vi.fn();
+    loadURL = vi.fn();
     on = vi.fn();
     constructor() {
       windows.push(this);
@@ -61,6 +61,11 @@ vi.mock('electron', () => {
   return {
     app,
     BrowserWindow,
+    // main.ts registers/serves the renderer over app:// (src/main/app-scheme.ts):
+    // registerAppScheme() runs at module scope, so the electron mock must carry
+    // `protocol`, and app-scheme imports `net` for the file fetch.
+    protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
+    net: { fetch: vi.fn() },
     dialog,
     powerMonitor: { on: vi.fn() },
     shell: { openExternal: vi.fn() },

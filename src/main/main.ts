@@ -1,7 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
 import { registerIpcHandlers, resetHookWatcher, sweepEnumerationCaches, removeIsoPartitionDirs } from './ipc-handlers';
 import { sweepImportTempDirs } from './chrome-import/copy';
 import { killAllPtys, getFullPathAsync } from './pty-manager';
@@ -17,6 +16,7 @@ import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
 import { configureProbeCacheDir } from './providers/resolve-binary';
 import { isMac, isWin } from './platform';
+import { APP_INDEX_URL, installAppScheme, isAppDocumentUrl, registerAppScheme } from './app-scheme';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
 import { isHttpUrl } from '../shared/url';
@@ -100,6 +100,11 @@ const HOST_PERMISSIONS: Record<string, true> = {
 };
 const isHostPermission = (permission: string): boolean => Object.hasOwn(HOST_PERMISSIONS, permission);
 
+// Privileged `app://` registration must precede the `ready` event (Electron
+// requirement), so it runs at module scope, not in whenReady. The handler that
+// serves dist/renderer is installed in whenReady below.
+registerAppScheme();
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -128,8 +133,9 @@ function createWindow(): void {
     },
   });
 
-  const indexPath = RENDERER_INDEX_PATH;
-  const loadRenderer = (): void => { mainWindow?.loadFile(indexPath); };
+  // Served over app:// (see app-scheme.ts): the bundle is ES modules with
+  // chunks, which Chromium will not execute from a file:// document.
+  const loadRenderer = (): void => { mainWindow?.loadURL(APP_INDEX_URL); };
   loadRenderer();
 
   // C4S-08: a renderer-process death (crash, OOM, GPU-loss kill) used to
@@ -176,19 +182,11 @@ function createWindow(): void {
 
   // The app document is the ONLY navigation target we ever allow. A stray anchor
   // in rendered content (e.g. a relative `.md` link in the file reader) resolves
-  // against this file:// document and would otherwise navigate the window away
+  // against this app:// document and would otherwise navigate the window away
   // from index.html, destroying every session, PTY and layout binding with it.
-  // Compared on the decoded pathname so percent-encoding differences between
-  // Electron's own loadFile URL and pathToFileURL never cause a false block.
-  const appPathname = decodeURIComponent(pathToFileURL(indexPath).pathname);
-  const isAppUrl = (url: string): boolean => {
-    try {
-      const parsed = new URL(url);
-      return parsed.protocol === 'file:' && decodeURIComponent(parsed.pathname) === appPathname;
-    } catch {
-      return false;
-    }
-  };
+  // The predicate lives in app-scheme.ts (unit-tested) and matches the exact
+  // scheme + host + /index.html we load, so no other app:// path can pass.
+  const isAppUrl = (url: string): boolean => isAppDocumentUrl(url);
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (isAppUrl(url)) return;
@@ -331,6 +329,10 @@ function startMainProcess(): void {
     // gate mirrors the throttle above: test console spies stay pristine.
     if (!process.env.VITEST) installLogFile(app.getPath('logs'));
     markBoot('ready');
+    // Serve the built renderer over app:// (registered at module scope). Must
+    // run before the first window loads; the root is the directory index.html
+    // lives in, so a moved build tree moves the served root with it.
+    installAppScheme(path.dirname(RENDERER_INDEX_PATH));
     // P2-47 pin (boot call site; the after-import sweep lives in
     // ipc-handlers.ts chromeImport:run): quit/crash mid-import used to
     // leave the Chrome cookie snapshot in the OS temp dir for the

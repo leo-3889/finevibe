@@ -1,6 +1,4 @@
 import { filePreview, PREVIEW_LINES } from '../file-preview.js';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
 import { appState } from '../state.js';
 import { closeSessionIfFileMissing } from '../session-close.js';
 import { destroySearchBar } from './search-bar.js';
@@ -121,12 +119,38 @@ function handleMarkdownClick(wrapper: HTMLElement, baseDir: string | undefined, 
   }
 }
 
+// P3 lazy boundary: `marked` + `dompurify` are loaded on first markdown render
+// (see renderMarkdownContent) instead of at boot. One shared promise, so ten
+// open readers fetch the chunk once.
+const loadMarkdownLibs = (): Promise<{
+  marked: typeof import('marked').marked;
+  // dompurify ships `export =`, so the module type IS the value type; the
+  // runtime `.default` is esModuleInterop's synthesized interop property.
+  DOMPurify: typeof import('dompurify');
+}> =>
+  Promise.all([import('marked'), import('dompurify')]).then(([m, p]) => ({
+    marked: m.marked,
+    DOMPurify: p.default,
+  }));
+
 export function renderMarkdownContent(content: string, baseDir?: string): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'file-reader-markdown';
-  const rawHtml = marked.parse(content, { async: false }) as string;
-  // pi-lens-ignore: xss-innerhtml
-  wrapper.innerHTML = DOMPurify.sanitize(rawHtml);
+  // P3 lazy boundary: `marked` + `dompurify` (~55 KiB minified) are no longer in
+  // the boot entry — esbuild puts them in their own chunk and they are fetched
+  // the first time any markdown is rendered. The wrapper is returned
+  // synchronously with the raw text as its pre-state, so an app that never
+  // opens a `.md` file never pays for the libs and one that does shows text
+  // immediately, then the rendered version.
+  wrapper.textContent = content;
+  void loadMarkdownLibs()
+    .then(({ marked, DOMPurify }) => {
+      const rawHtml = marked.parse(content, { async: false }) as string;
+      // DOMPurify returns a sanitized fragment, so the DOM is written with
+      // replaceChildren — no innerHTML assignment on rendered content at all.
+      wrapper.replaceChildren(DOMPurify.sanitize(rawHtml, { RETURN_DOM_FRAGMENT: true }));
+    })
+    .catch((err: unknown) => console.warn('[markdown] renderer libs unavailable; showing raw text', err));
   wrapper.addEventListener('click', (event) => handleMarkdownClick(wrapper, baseDir, event));
   return wrapper;
 }
