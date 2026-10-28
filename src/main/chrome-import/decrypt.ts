@@ -4,7 +4,7 @@ import * as linuxDecrypt from './decrypt-linux';
 import * as winDecrypt from './decrypt-win';
 import { stripDomainHash } from './domain-hash';
 
-export interface DecryptResult {
+interface DecryptResult {
   text: string | null;
   skipped: 'app-bound' | null;
   /**

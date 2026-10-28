@@ -35,7 +35,7 @@ import { getMainWindow } from './main-window';
  * never be adopted.
  */
 
-export interface CompatibleSessionWatcherOptions {
+interface CompatibleSessionWatcherOptions {
   /** Called after a session id is adopted, for follow-up wiring (title sync). */
   onAdopted?: (
     uiSessionId: string,

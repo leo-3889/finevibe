@@ -5,7 +5,7 @@ import type { TranscriptDescriptor, TranscriptDiscovery } from './provider';
 import { loadState } from '../store';
 
 /** Per-session character cap when indexing transcript content for global search. */
-export const MAX_INDEX_CHARS_PER_SESSION = 50 * 1024;
+const MAX_INDEX_CHARS_PER_SESSION = 50 * 1024;
 
 /**
  * Accumulates user-message text under the per-session character budget,

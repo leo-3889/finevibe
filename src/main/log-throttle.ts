@@ -22,7 +22,7 @@ type ConsoleMethodName = 'log' | 'info' | 'warn' | 'error';
 const METHODS: ConsoleMethodName[] = ['log', 'info', 'warn', 'error'];
 
 /** Prefix of the collapse summary; tests and log scrapers key on this text. */
-export const REPEATED_PREFIX = 'last message repeated';
+const REPEATED_PREFIX = 'last message repeated';
 
 /** Separators chosen to be absent from the serialized shapes we build. */
 const ARG_SEPARATOR = '\u0001';

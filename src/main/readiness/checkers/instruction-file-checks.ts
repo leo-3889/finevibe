@@ -22,7 +22,7 @@ const MAX_NESTED_ROWS = 20;
  * Returned as POSIX paths so they can be compared directly against `git ls-files` output,
  * which uses forward slashes on every platform.
  */
-export function instructionFileCandidates(opts: InstructionFileOpts): string[] {
+function instructionFileCandidates(opts: InstructionFileOpts): string[] {
   const candidates = [opts.fileName];
   if (opts.fallbackDirectory) {
     candidates.push(`${opts.fallbackDirectory}/${opts.fileName}`);
@@ -72,7 +72,7 @@ export function checkFileExists(projectPath: string, opts: InstructionFileOpts):
   };
 }
 
-export function checkBuildCommands(content: string | null, opts: InstructionFileOpts): ReadinessCheck {
+function checkBuildCommands(content: string | null, opts: InstructionFileOpts): ReadinessCheck {
   if (!content) {
     return {
       id: `${opts.idPrefix}-build`,
@@ -98,7 +98,7 @@ export function checkBuildCommands(content: string | null, opts: InstructionFile
   };
 }
 
-export function checkTestCommands(content: string | null, opts: InstructionFileOpts): ReadinessCheck {
+function checkTestCommands(content: string | null, opts: InstructionFileOpts): ReadinessCheck {
   if (!content) {
     return {
       id: `${opts.idPrefix}-test`,
@@ -124,7 +124,7 @@ export function checkTestCommands(content: string | null, opts: InstructionFileO
   };
 }
 
-export function checkArchitecture(content: string | null, opts: InstructionFileOpts): ReadinessCheck {
+function checkArchitecture(content: string | null, opts: InstructionFileOpts): ReadinessCheck {
   if (!content) {
     return {
       id: `${opts.idPrefix}-architecture`,

@@ -1,4 +1,4 @@
-export interface HandoffPromptInput {
+interface HandoffPromptInput {
   fromProviderLabel: string;
   sessionName: string;
   transcriptPath: string | null;

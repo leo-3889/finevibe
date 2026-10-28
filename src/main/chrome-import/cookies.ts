@@ -33,7 +33,7 @@ function mapSameSite(n: number): 'unspecified' | 'no_restriction' | 'lax' | 'str
   return 'unspecified';
 }
 
-export interface CookieReadResult {
+interface CookieReadResult {
   records: CookiesSetDetails[];
   skippedV11: number;
   /**

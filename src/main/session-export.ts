@@ -9,7 +9,7 @@ import { getProvider } from './providers/registry.js';
 import { launchSessionDir, type LaunchSessionProvider } from './launch-session-dir.js';
 import { statusFilePath } from './hook-status.js';
 
-export type SessionExportFormat = 'zip' | 'file';
+type SessionExportFormat = 'zip' | 'file';
 
 export interface SessionExportParams {
   providerId: ProviderId;
@@ -31,7 +31,7 @@ export function resolveLaunchSessionDir(providerId: ProviderId, liveSessionId?: 
 }
 
 /** Resolve the provider-native transcript file for an export/resume request. */
-export function resolveExportTranscript(
+function resolveExportTranscript(
   providerId: ProviderId,
   cliSessionId: string | null,
   projectPath: string,

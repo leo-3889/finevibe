@@ -19,7 +19,7 @@ export function isValidProfileId(id: string): boolean {
 }
 
 /** Default managed config dir for a profile id. */
-export function managedProfileDir(profileId: string): string {
+function managedProfileDir(profileId: string): string {
   if (!PROFILE_ID_RE.test(profileId) || profileId === '..' || profileId === '.') {
     throw new Error(`Invalid profile id: ${JSON.stringify(profileId)}`);
   }
