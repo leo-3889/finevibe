@@ -53,6 +53,10 @@ export default defineConfig({
         'src/main/menu.ts',
         'src/main/mcp-client.ts',
         'src/renderer/index.ts',
+        // Boot wiring for the served-page early-crash handoff (row 16): one
+        // array drain, exercised by early-crash.test.ts; index.ts itself is
+        // excluded above for the same reason.
+        'src/renderer/early-crash.ts',
         'src/renderer/keybindings.ts',
         'src/renderer/notification-sound.ts',
         'src/renderer/git-status.ts',

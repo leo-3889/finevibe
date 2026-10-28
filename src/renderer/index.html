@@ -10,10 +10,18 @@
                      WebRTC sharing (sharing/peer-guest.ts) is not governed by connect-src.
       frame-src *  — required by the in-app browser tab: guests load arbitrary sites.
       style-src 'unsafe-inline' — components set inline style attributes through innerHTML.
-      script-src 'self' — no inline scripts, which is also why renderer crash capture
-                     installs from the bundle (index.ts) instead of an inline handler.
+      script-src 'self' — no inline script authored in this file; the app-scheme
+                     handler adds a per-load CSP nonce + SHA-256 hash at serve
+                     time (tokens below) for the early-crash pre-load listener,
+                     and mirrors the full CSP in the response header.
+    Serve-time placeholders (audit row 16): the file stays nonce-free at rest
+    (build copies it verbatim); src/main/app-scheme.ts replaces every __FV_CRASH_*
+    token with a fresh per-response nonce / the inline script's SHA-256, and
+    expands the script token into the early-crash listener right before the
+    module script, so import-evaluation crashes are captured (drained by
+    src/renderer/early-crash.ts).
   -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' https:; frame-src *;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'nonce-__FV_CRASH_NONCE__' '__FV_CRASH_HASH__'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' https:; frame-src *;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FineVibe</title>
   <link rel="icon" type="image/png" href="icon.png">
@@ -109,7 +117,10 @@
     'self' means that origin — module scripts, chunks, styles, fonts, icons and
     the './CHANGELOG.md' fetch all resolve to it. webSecurity stays on; the
     scheme is registered standard+secure (src/main/app-scheme.ts).
+    The __FV_CRASH_* placeholders here are substituted at serve time — see the
+    <head> CSP comment for the mechanism.
   -->
+  __FV_CRASH_SCRIPT__
   <script type="module" src="index.js"></script>
 </body>
 </html>
