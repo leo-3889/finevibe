@@ -35,8 +35,13 @@ finevibe-copilot-hooks.json
 # Claude Code local settings
 .claude/settings.local.json
 
-# Local dev sandbox
-dev/
+# Local dev sandbox: scratch by default. The two directories that committed
+# files cite are un-ignored so a fresh clone can actually run them —
+# .github/workflows/perf.yml runs dev/perf/*.js, and the plan-status-audit and
+# windows-packaging skills tell you to run dev/audit/gate.sh.
+dev/*
+!dev/perf/
+!dev/audit/
 
 # Internal working docs (audit status, incident notes, work queue) — local only, never committed
 todos/

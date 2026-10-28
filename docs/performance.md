@@ -161,10 +161,9 @@ startup row, which ran the real Electron app in the dev tree (not packaged); no 
 concurrently, so no vitest contention. **The W2 harnesses themselves no longer exist**
 (the agent workspace holding them was dissolved on 2026-10-21). Their periodic
 successors — `dev/perf/s3-idle-growth.js`, `po06-watcher-cost.js`, `f2-codex-spike.js`,
-`f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md` — note `dev/` is
-gitignored and only four harnesses are force-tracked, so these four and the README exist
-in the maintainer's tree, not in a fresh clone, which is why the weekly
-`perf.yml` harness steps cannot resolve them in CI),
+`f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md`; all four plus that
+README are tracked — `.gitignore` narrows the sandbox to `dev/*` and un-ignores `dev/perf/`
+and `dev/audit/`, so a fresh clone resolves the weekly `perf.yml` harness steps),
 driven by [`.github/workflows/perf.yml`](../.github/workflows/perf.yml) weekly + on
 dispatch against a built tree, results uploaded as artifacts, non-gating — re-measure
 the S3 / F2 / F3 / PO-06 scenarios in the running app, so these rows are a baseline
