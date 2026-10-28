@@ -70,6 +70,10 @@ export interface FineVibeApi {
     /** Legacy `~/.vibeyard/state.json` projects that can be imported into the current list. */
     listImportableProjects(): Promise<ImportableLegacyProject[]>;
   };
+  log: {
+    /** Row 31: fire-and-forget ship of one renderer line into main's log tee. Mirrored in src/renderer/types.ts. */
+    write(level: 'log' | 'info' | 'warn' | 'error', message: string): void;
+  };
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
@@ -328,6 +332,13 @@ const api: FineVibeApi = {
   },
   vibeyard: {
     listImportableProjects: () => ipcRenderer.invoke('vibeyard:listImportableProjects'),
+  },
+  // Row 31: renderer diagnostics into main's log tee. `send` (fire-and-forget):
+  // a log line must never await the IPC round-trip, and main's console
+  // throttle + the renderer's per-minute budget (src/renderer/log.ts) bound
+  // the volume.
+  log: {
+    write: (level: 'log' | 'info' | 'warn' | 'error', message: string) => ipcRenderer.send('log:write', level, message),
   },
   profiles: {
     provision: (profileId, customPath, providerId, hostId) => ipcRenderer.invoke('profiles:provision', profileId, customPath, providerId, hostId),

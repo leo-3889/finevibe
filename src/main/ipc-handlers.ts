@@ -1558,6 +1558,19 @@ export function registerIpcHandlers(): void {
     return listImportableLegacyProjects({ homedir: os.homedir(), existingPaths: getKnownProjectPaths() });
   });
 
+  // Row 31: the renderer's console goes to devtools and dies with the window,
+  // so renderer diagnostics never reached `finevibe.log` (main's console is
+  // tee'd there by log-file.ts). One intake: validate, tag, and write through
+  // the tee'd console. Fire-and-forget (`ipcMain.on`): a log line never
+  // blocks the renderer, and the renderer's own per-minute budget
+  // (src/renderer/log.ts) plus installConsoleThrottle bound the volume.
+  const RENDERER_LOG_LEVELS = new Set(['log', 'info', 'warn', 'error']);
+  ipcMain.on('log:write', (_event, level: unknown, message: unknown) => {
+    if (typeof level !== 'string' || !RENDERER_LOG_LEVELS.has(level)) return;
+    if (typeof message !== 'string') return;
+    console[level as 'log' | 'info' | 'warn' | 'error'](`[renderer] ${message.slice(0, 2000)}`);
+  });
+
   // Provision (create) a profile's config dir. Returns the resolved absolute
   // path and whether it is the auto-managed location.
   ipcMain.handle('profiles:provision', async (_event, profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string) => {

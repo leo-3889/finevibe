@@ -8,6 +8,7 @@ import { FILE_PATH_DRAG_TYPE } from '../drag-types.js';
 import { estimateTokens, TOKEN_COUNT_MAX_CHARS } from '../../shared/token-estimate.js';
 import { isPathUnder } from '../../shared/platform.js';
 import { isMac, isWin } from '../platform.js';
+import { rlog } from '../log.js';
 
 export interface DirEntry {
   name: string;
@@ -604,7 +605,7 @@ function showInFolderMenuOption(entry: DirEntry): MenuOption {
     action: async () => {
       const result = await window.finevibe.fs.showInFolder(entry.path);
       if (!result.ok) {
-        console.warn(`Failed to show ${entry.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
+        rlog('warn', `Failed to show ${entry.path} in ${FILE_MANAGER}: ${result.error ?? 'unknown error'}`);
       }
     },
   };
@@ -615,7 +616,7 @@ function copyPathMenuOption(entry: DirEntry): MenuOption {
   return {
     label: 'Copy Path',
     action: () => {
-      navigator.clipboard.writeText(entry.path).catch((err) => console.warn('clipboard write failed', err));
+      navigator.clipboard.writeText(entry.path).catch((err) => rlog('warn', 'clipboard write failed', err));
     },
   };
 }
@@ -638,7 +639,7 @@ function deleteMenuOption(entry: DirEntry): MenuOption {
  * behind the user's back, because the Trash path is the only recoverable one.
  */
 function reportTrashFailure(entry: DirEntry, reason: string): void {
-  console.warn(`Failed to trash ${entry.path}: ${reason}`);
+  rlog('warn', `Failed to trash ${entry.path}: ${reason}`);
   window.alert(
     `"${entry.name}" was not moved to the Trash: ${reason}\n`
     + 'Permanent delete not attempted - the file is unchanged.',

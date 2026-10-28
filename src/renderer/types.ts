@@ -63,6 +63,10 @@ export interface FinevibeApi {
     /** Projects the legacy `~/.vibeyard/state.json` lists that FineVibe does not. Never rejects: main reads the legacy file defensively and answers [] when there is nothing importable. */
     listImportableProjects(): Promise<ImportableLegacyProject[]>;
   };
+  log: {
+    /** Row 31: fire-and-forget ship of one renderer line into main's log tee (`finevibe.log`). Never rejects, never throws: use `rlog()` from `src/renderer/log.ts`, not this directly. */
+    write(level: 'log' | 'info' | 'warn' | 'error', message: string): void;
+  };
   profiles: {
     provision(profileId: string, customPath?: string, providerId?: ProviderId, hostId?: string): Promise<{ configDir: string; managed: boolean }>;
     keychainStatus(): Promise<{ status: 'supported' | 'unsupported' | 'unknown'; version: string | null }>;
