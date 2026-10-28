@@ -50,7 +50,7 @@ vi.mock('electron', () => {
         setPermissionCheckHandler: vi.fn(),
       },
     };
-    loadFile = vi.fn();
+    loadURL = vi.fn();
     on = vi.fn();
     constructor() {
       windows.push(this);
@@ -66,6 +66,11 @@ vi.mock('electron', () => {
   return {
     app,
     BrowserWindow,
+    // main.ts registers/serves the renderer over app:// (src/main/app-scheme.ts):
+    // registerAppScheme() runs at module scope, so the electron mock must carry
+    // `protocol`, and app-scheme imports `net` for the file fetch.
+    protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
+    net: { fetch: vi.fn() },
     dialog: {
       showErrorBox: vi.fn(),
       showMessageBox: vi.fn(() => Promise.resolve({ response: 0 })),

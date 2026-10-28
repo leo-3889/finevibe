@@ -161,7 +161,10 @@ startup row, which ran the real Electron app in the dev tree (not packaged); no 
 concurrently, so no vitest contention. **The W2 harnesses themselves no longer exist**
 (the agent workspace holding them was dissolved on 2026-10-21). Their periodic
 successors — `dev/perf/s3-idle-growth.js`, `po06-watcher-cost.js`, `f2-codex-spike.js`,
-`f3-pi-tick.js` (see *Periodic perf harnesses* in [dev/perf/README.md](../dev/perf/README.md)),
+`f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md` — note `dev/` is
+gitignored and only four harnesses are force-tracked, so these four and the README exist
+in the maintainer's tree, not in a fresh clone, which is why the weekly
+`perf.yml` harness steps cannot resolve them in CI),
 driven by [`.github/workflows/perf.yml`](../.github/workflows/perf.yml) weekly + on
 dispatch against a built tree, results uploaded as artifacts, non-gating — re-measure
 the S3 / F2 / F3 / PO-06 scenarios in the running app, so these rows are a baseline
@@ -283,7 +286,7 @@ one line to `<logs>/finevibe.log`:
 
 `identity+migrate` (userData identity + state migration) → `ready` (app.whenReady)
 → `sweeps` (startup cleanup) → `ipc` (handler registration) → `window`
-(create + loadFile) → `window-shown`, then the deferred post-window probes
+(create + the `app://` load) → `window-shown`, then the deferred post-window probes
 (Python availability) in a second line. The renderer answers on `perf:reportBoot`
 with its own `performance.now()` measured at the end of its `main()` (ms from
 renderer script start to init complete - a label of the init phase, not a paint
@@ -301,28 +304,43 @@ renderer mirrors each sample into the debug ring (Ctrl+Shift+D, type `perfStats`
 This is the instrument for protocol rows S1/S3/S4 below: read the ring, or grep
 the log, instead of attaching `--inspect`.
 
-**Renderer bundle.** `npm run build:renderer` is now
-`scripts/build-renderer.mjs`: esbuild + metafile report + a hard budget. Measured
-on the 2026-10-28 tree (minified, single IIFE entry):
+**Renderer bundle.** `npm run build:renderer` is
+`scripts/build-renderer.mjs`: esbuild + metafile report + two hard budgets. The
+bundle is ES modules with chunk splitting, which is only executable because the
+app is served over the privileged `app://` scheme (Chromium refuses
+`type="module"` scripts on `file://` — see "Renderer load path" in
+[security-boundaries.md](security-boundaries.md)). Measured on the 2026-10-28
+split tree (minified):
 
-| Owner | Minified size |
-| --- | --- |
-| `src` (app code) | 593.8 KiB |
-| `@xterm/xterm` | 336.8 KiB |
-| `@xterm/addon-webgl` | 123.1 KiB |
-| `gridstack` | 82.3 KiB |
-| `marked` | 40.5 KiB |
-| `@xterm/addon-search` | 37.5 KiB |
-| **entry `dist/renderer/index.js`** | **1280.3 KiB** (budget 1400 KiB) |
+| Emitted file | Size | When it is fetched |
+| --- | --- | --- |
+| `index.js` (entry) | **190.6 KiB** | boot — entry budget 350 KiB |
+| `chunk-OQFGLNNR.js` | 695.5 KiB | boot (static import graph) |
+| `chunk-LUN2P7DE.js` | 323.5 KiB | boot (static import graph) |
+| `marked.esm-*.js` | 40.4 KiB | first markdown render |
+| `purify.es-*.js` | 22.3 KiB | first markdown render |
+| `share-manager-*.js`, `split-layout-*.js`, `chunk-FW4363Y4.js` | 1.3 KiB | on demand |
+| **total JS shipped** | **1273.5 KiB** | total budget 1400 KiB |
 
-The budget fails the build when the entry grows past it; raising it is a commit
-that has to explain the growth. Splitting the entry is *blocked by the
-`file://` load*: Chromium refuses ES-module scripts on that scheme in Electron,
-so `--format=esm --splitting` needs a privileged `app://` scheme first, and the
-measurable payoff is only ~160 KiB (gridstack + marked + dompurify) out of the
-1280.3 KiB entry — xterm and the app code are needed at first paint. Recorded as an open improvement in
-[`todos/AUDIT_STATUS.md`](../todos/AUDIT_STATUS.md) (the local-only work queue, gitignored —
-absent on a fresh clone) rather than done blind.
+Before the split the app shipped one 1280.3 KiB minified IIFE entry, so splitting
+*moves* bytes rather than removing them. What actually changed: boot parses a
+190.6 KiB entry and pulls the shared chunks in parallel, and `marked` +
+`dompurify` (62.7 KiB) are fetched only when a `.md` file is first rendered
+(`renderMarkdownContent` in `src/renderer/components/file-reader.ts` returns the
+wrapper synchronously with the raw text as pre-state, then fills it).
+
+Two budgets gate the build, both proved to fail it (lowered, build exits 1 naming
+the measured size): `ENTRY_BUDGET_KIB` (350) guards what blocks first paint,
+`TOTAL_BUDGET_KIB` (1400) guards everything the app ships — gating only the entry
+would let a shared chunk grow ungated. Raising either is a commit that has to
+explain the growth.
+
+Remaining measured candidates, recorded as open improvements in
+[`todos/AUDIT_STATUS.md`](../todos/AUDIT_STATUS.md) (the local-only work queue,
+gitignored — absent on a fresh clone): `gridstack` (82.3 KiB) sits behind
+`components/project-tab/grid.ts`, whose synchronous grid API needs an async
+conversion before it can lazy-load, and xterm (540 KiB across three packages) is
+needed at first paint by definition.
 
 Sourcemaps are built for every production render (`index.js.map`, ~6 MB) and are
 **not shipped**: `build.files` excludes `dist/**/*.map`, so a packaged app pays

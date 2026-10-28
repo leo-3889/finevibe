@@ -41,10 +41,15 @@ beforeEach(() => {
   };
 });
 
-/** Render markdown, attach to the document, and click the first link. */
-function clickFirstLink(markdown: string, baseDir?: string): { wrapper: HTMLElement; defaultPrevented: boolean } {
+/**
+ * Render markdown, attach to the document, wait for the lazily loaded
+ * marked+DOMPurify chunk to fill the wrapper (P3: those libs are no longer in
+ * the boot entry), then click the first link.
+ */
+async function clickFirstLink(markdown: string, baseDir?: string): Promise<{ wrapper: HTMLElement; defaultPrevented: boolean }> {
   const wrapper = renderMarkdownContent(markdown, baseDir);
   document.body.appendChild(wrapper);
+  await vi.waitFor(() => expect(wrapper.querySelector('a')).not.toBeNull());
   const anchor = wrapper.querySelector('a')!;
   const event = new MouseEvent('click', { bubbles: true, cancelable: true });
   anchor.dispatchEvent(event);
@@ -52,7 +57,7 @@ function clickFirstLink(markdown: string, baseDir?: string): { wrapper: HTMLElem
 }
 
 describe('renderMarkdownContent link handling', () => {
-  it('never lets a link navigate the app document', () => {
+  it('never lets a link navigate the app document', async () => {
     for (const md of [
       '[x](other.md)',
       '[x](https://example.com)',
@@ -60,25 +65,25 @@ describe('renderMarkdownContent link handling', () => {
       '[x](#heading)',
       '[x](/abs/doc.md)',
     ]) {
-      expect(clickFirstLink(md, '/repo/docs').defaultPrevented).toBe(true);
+      expect((await clickFirstLink(md, '/repo/docs')).defaultPrevented).toBe(true);
     }
   });
 
   it('opens a relative file link in a file reader tab, resolved against the base dir', async () => {
-    clickFirstLink('[x](../README.md)', '/repo/docs');
+    await clickFirstLink('[x](../README.md)', '/repo/docs');
     await vi.waitFor(() => expect(addFileReaderSession).toHaveBeenCalledWith('p1', '/repo/README.md', undefined));
   });
 
   it('does not open a tab when the linked file is missing', async () => {
     exists.mockResolvedValue(false);
-    clickFirstLink('[x](gone.md)', '/repo/docs');
+    await clickFirstLink('[x](gone.md)', '/repo/docs');
     await vi.waitFor(() => expect(exists).toHaveBeenCalled());
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
   it('does not open a tab for a directory link', async () => {
     isDirectory.mockResolvedValue(true);
-    clickFirstLink('[x](../guides)', '/repo/docs');
+    await clickFirstLink('[x](../guides)', '/repo/docs');
     await vi.waitFor(() => expect(isDirectory).toHaveBeenCalledWith('/repo/guides', undefined));
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
@@ -88,33 +93,34 @@ describe('renderMarkdownContent link handling', () => {
       activeProject = null;
       return true;
     });
-    clickFirstLink('[x](../README.md)', '/repo/docs');
+    await clickFirstLink('[x](../README.md)', '/repo/docs');
     await vi.waitFor(() => expect(exists).toHaveBeenCalled());
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
   it('ignores relative links when no base dir is known', async () => {
-    clickFirstLink('[x](sibling.md)');
+    await clickFirstLink('[x](sibling.md)');
     await Promise.resolve();
     expect(exists).not.toHaveBeenCalled();
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
-  it('sends http(s) links to the system browser', () => {
-    clickFirstLink('[x](https://example.com/a)', '/repo/docs');
+  it('sends http(s) links to the system browser', async () => {
+    await clickFirstLink('[x](https://example.com/a)', '/repo/docs');
     expect(openExternal).toHaveBeenCalledWith('https://example.com/a');
     expect(addFileReaderSession).not.toHaveBeenCalled();
   });
 
-  it('scrolls to the matching heading for in-document anchors', () => {
-    const { wrapper } = clickFirstLink('## Notification Types\n\n[x](#notification-types)', '/repo/docs');
+  it('scrolls to the matching heading for in-document anchors', async () => {
+    const { wrapper } = await clickFirstLink('## Notification Types\n\n[x](#notification-types)', '/repo/docs');
     const heading = wrapper.querySelector('h2')!;
     expect(heading.scrollIntoView).toHaveBeenCalled();
   });
 
-  it('ignores clicks that are not on a link', () => {
+  it('ignores clicks that are not on a link', async () => {
     const wrapper = renderMarkdownContent('plain paragraph', '/repo/docs');
     document.body.appendChild(wrapper);
+    await vi.waitFor(() => expect(wrapper.querySelector('p')).not.toBeNull());
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     wrapper.querySelector('p')!.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);

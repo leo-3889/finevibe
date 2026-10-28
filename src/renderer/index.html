@@ -104,6 +104,12 @@
     </div>
   </div>
 
-  <script src="index.js"></script>
+  <!--
+    CSP note (app:// era, P3): the document is served from app://finevibe, so
+    'self' means that origin — module scripts, chunks, styles, fonts, icons and
+    the './CHANGELOG.md' fetch all resolve to it. webSecurity stays on; the
+    scheme is registered standard+secure (src/main/app-scheme.ts).
+  -->
+  <script type="module" src="index.js"></script>
 </body>
 </html>
