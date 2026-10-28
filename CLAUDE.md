@@ -36,7 +36,7 @@ After implementation, review changed code for correctness and unnecessary comple
 
 ## Git history constraint (standing)
 
-The fork `leo-3889/finevibe` MUST stay able to rebuild/rebase onto `origin` (`elirantantia/vibeyard` main). NEVER force-push or history-rewrite `feat/multi-provider-status-and-profile-scoping` (it backs open upstream PR #167 — its published history is not ours to change) and never rewrite pre-rename commits. Keep `origin` fetchable: do not prune the remote, its refs, or fetched objects the fork descends from. Rebuild recipe: temp branch off `main` → `git fetch origin && git rebase origin/main` on it → full gate at the rebased tip → fast-forward `main` (no merge commit, no force) → push. If the recipe ever needs a force-push, merge commit, or rewrite to finish, the constraint is already broken — fix the history first, never the recipe. (Full text: `todos/fork-rebuildable-on-origin.md`, local-only.)
+The fork `leo-3889/finevibe` MUST stay able to rebuild/rebase onto `origin` (`elirantutia/vibeyard` main). NEVER force-push or history-rewrite `feat/multi-provider-status-and-profile-scoping` (it backs open upstream PR #167 — its published history is not ours to change) and never rewrite pre-rename commits. Keep `origin` fetchable: do not prune the remote, its refs, or fetched objects the fork descends from. Rebuild recipe: temp branch off `main` → `git fetch origin && git rebase origin/main` on it → full gate at the rebased tip → fast-forward `main` (no merge commit, no force) → push. If the recipe ever needs a force-push, merge commit, or rewrite to finish, the constraint is already broken — fix the history first, never the recipe. (Full text: `todos/fork-rebuildable-on-origin.md`, local-only.)
 
 ## Skills
 
