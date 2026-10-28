@@ -8,6 +8,7 @@ import { readJsonSafe, canonicalPath } from './fs-utils';
 import { loadState, saveState } from './store';
 import { isWin } from './platform';
 import type { Preferences, SettingsValidationResult } from '../shared/types';
+import { boundedSet } from './bounded-map';
 
 const LEGACY_STATUSLINE_RE = /[/\\]finevibe[/\\]statusline\.(sh|cmd)$/;
 
@@ -208,12 +209,7 @@ function foldsCase(dir: string): boolean {
   const cached = foldsCaseByDir.get(dir);
   if (cached !== undefined) return cached;
   const folds = probeFoldsCase(dir);
-  foldsCaseByDir.set(dir, folds);
-  while (foldsCaseByDir.size > FOLDS_CASE_BY_DIR_MAX) {
-    const oldest = foldsCaseByDir.keys().next().value;
-    if (oldest === undefined) break;
-    foldsCaseByDir.delete(oldest);
-  }
+  boundedSet(foldsCaseByDir, dir, folds, FOLDS_CASE_BY_DIR_MAX);
   return folds;
 }
 

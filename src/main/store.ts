@@ -5,6 +5,7 @@ import type { PersistedState, Preferences, ProjectRecord, Profile, HostRecord } 
 import { LOCAL_HOST_ID } from '../shared/types';
 import { validateHostRecordShape, migrateLegacySessionSshHosts } from '../shared/ssh-host';
 import { DEFAULT_PREFERENCES } from '../shared/default-preferences';
+import { boundedSet } from './bounded-map';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
 
@@ -505,12 +506,7 @@ function deriveGateRoots(projects: ProjectRecord[]): string[] {
       continue;
     }
     if (cached === undefined && typeof rawPath === 'string') {
-      gateRootCanonicalByPath.set(rawPath, validated.canonical);
-      while (gateRootCanonicalByPath.size > GATE_ROOT_CANONICAL_MAX) {
-        const oldest = gateRootCanonicalByPath.keys().next().value;
-        if (oldest === undefined) break;
-        gateRootCanonicalByPath.delete(oldest);
-      }
+      boundedSet(gateRootCanonicalByPath, rawPath, validated.canonical, GATE_ROOT_CANONICAL_MAX);
     }
     if (!roots.includes(validated.canonical)) roots.push(validated.canonical);
   }

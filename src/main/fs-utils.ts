@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { isWin } from './platform';
+import { boundedSet } from './bounded-map';
 
 /** `%NAME%` env-var reference, the Windows shell's expansion syntax. */
 const WIN_ENV_REF_RE = /%([^%]+)%/g;
@@ -112,11 +113,7 @@ export function canonicalPath(filePath: string): string {
     targetCanonicalCache.delete(resolved);
   }
   const value = canonicalChain(resolved);
-  targetCanonicalCache.set(resolved, { value, expiresAt: Date.now() + TARGET_CANONICAL_TTL_MS });
-  if (targetCanonicalCache.size > TARGET_CANONICAL_CACHE_MAX) {
-    const oldest = targetCanonicalCache.keys().next().value;
-    if (oldest !== undefined) targetCanonicalCache.delete(oldest);
-  }
+  boundedSet(targetCanonicalCache, resolved, { value, expiresAt: Date.now() + TARGET_CANONICAL_TTL_MS }, TARGET_CANONICAL_CACHE_MAX);
   return value;
 }
 
@@ -139,11 +136,7 @@ export function canonicalRoot(dirPath: string): string {
     return hit;
   }
   const value = canonicalChain(resolved);
-  rootCanonicalCache.set(resolved, value);
-  if (rootCanonicalCache.size > ROOT_CANONICAL_CACHE_MAX) {
-    const oldest = rootCanonicalCache.keys().next().value;
-    if (oldest !== undefined) rootCanonicalCache.delete(oldest);
-  }
+  boundedSet(rootCanonicalCache, resolved, value, ROOT_CANONICAL_CACHE_MAX);
   return value;
 }
 

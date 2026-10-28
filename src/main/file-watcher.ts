@@ -2,6 +2,7 @@ import * as path from 'path';
 import { FSWatcher } from 'chokidar';
 import type { BrowserWindow } from 'electron';
 import type { FsChange, FsChangeType } from '../shared/types';
+import { evictOldest } from './bounded-map';
 
 // Snappier than the old 500ms — live agent edits should feel near-instant — while
 // still coalescing the burst from a tool writing many files into one renderer flush.
@@ -132,16 +133,15 @@ export function watchDir(dir: string): void {
   // path, releasing its chokidar watch + fd. Graceful degradation matches
   // git-watcher's MAX_WATCHES: an evicted folder stops pushing fs:changed
   // events until it is re-opened (watchDir re-arms it).
-  if (refCounts.size >= MAX_FOLDER_WATCHES) {
-    const oldest = refCounts.keys().next().value;
-    if (oldest !== undefined) unwatchDir(oldest);
+  evictOldest(refCounts, MAX_FOLDER_WATCHES - 1, (oldest) => {
+    unwatchDir(oldest);
     if (!capWarned) {
       console.warn(
         `[file-watcher] reached MAX_FOLDER_WATCHES=${MAX_FOLDER_WATCHES}; evicted the least-recently-watched folder to admit ${dir}`
       );
       capWarned = true;
     }
-  }
+  });
   refCounts.set(dir, 1);
   ensureWatcher().add(dir);
   // A network root admitted into a native-mode watcher: native events are
