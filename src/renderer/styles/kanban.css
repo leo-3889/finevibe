@@ -192,6 +192,11 @@
   border-color: var(--accent);
   box-shadow: 0 6px 18px -10px rgba(0, 0, 0, 0.9);
 }
+.board-card:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
 .board-card.dragging {
   opacity: 0.4;
 }

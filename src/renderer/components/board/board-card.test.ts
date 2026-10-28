@@ -91,6 +91,7 @@ import {
   runTask,
 } from './board-card';
 import { hasMultipleAvailableProviders } from '../../provider-availability.js';
+import { showTaskModal } from './board-task-modal.js';
 import type { CostInfo, ContextWindowInfo } from '../../../shared/types.js';
 
 beforeEach(() => {
@@ -376,6 +377,49 @@ describe('createCardElement assignee badge', () => {
   it('omits the badge when the assignee no longer exists', () => {
     const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-backlog', assigneeId: 'ghost-member' });
     expect(assigneeEl(task)).toBeUndefined();
+  });
+});
+
+describe('createCardElement keyboard activation', () => {
+  function fireKey(card: StubEl, key: string, fromButton = false) {
+    const ev = {
+      key,
+      target: { closest: (sel: string) => (fromButton && sel === 'button' ? {} : null) },
+      preventDefault: vi.fn(),
+    };
+    for (const cb of card._listeners['keydown'] ?? []) cb(ev);
+    return ev;
+  }
+
+  const newTask = () => addTask({ title: 'T', prompt: 'p', columnId: 'col-backlog' })!;
+
+  it('is keyboard focusable (tabindex=0)', () => {
+    const card = createCardElement(newTask()) as unknown as StubEl;
+    expect(card.attrs.role).toBe('button');
+    expect(card.attrs.tabindex).toBe('0');
+  });
+
+  it('Enter opens the edit modal, same as a body click', () => {
+    const task = newTask();
+    fireKey(createCardElement(task) as unknown as StubEl, 'Enter');
+    expect(showTaskModal).toHaveBeenCalledWith('edit', task);
+  });
+
+  it('Space opens the edit modal and suppresses scrolling', () => {
+    const task = newTask();
+    const ev = fireKey(createCardElement(task) as unknown as StubEl, ' ');
+    expect(showTaskModal).toHaveBeenCalledWith('edit', task);
+    expect(ev.preventDefault).toHaveBeenCalled();
+  });
+
+  it('ignores other keys', () => {
+    fireKey(createCardElement(newTask()) as unknown as StubEl, 'a');
+    expect(showTaskModal).not.toHaveBeenCalled();
+  });
+
+  it('ignores keys originating from the run button (it handles its own Enter)', () => {
+    fireKey(createCardElement(newTask()) as unknown as StubEl, 'Enter', true);
+    expect(showTaskModal).not.toHaveBeenCalled();
   });
 });
 
