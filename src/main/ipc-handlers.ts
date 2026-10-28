@@ -9,7 +9,6 @@ import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd } from
 import { addMcpServer, removeMcpServer, isManagedMcpConfigDir } from './claude-cli';
 import type { McpServerConfig } from './claude-cli';
 import { fileURLToPath } from 'node:url';
-import { listImportableLegacyProjects } from './legacy-import';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, getRemoteProjectRoots, invalidateStateCache, PersistedState } from './store';
 import { listHosts, createHost, updateHost, deleteHost, getHost } from './hosts/host-registry';
 import { enrollHost, refreshHostTools, provisionRemoteProfileDir, testHost, unenrollHost } from './hosts/enrollment';
@@ -38,8 +37,6 @@ import type { SessionExitReason } from './providers/pi-compatible-transcripts';
 import { startGitWatcher, notifyGitChanged, onGitChanged } from './git-watcher';
 import { watchDir, unwatchDir, setFileWatcherWindow } from './file-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
-import { checkForUpdates, quitAndInstall } from './auto-updater';
-import { createAppMenu } from './menu';
 import { getProvider, getAllProviderMetas, getAllProviders, getAvailableProviderIdsAsync } from './providers/registry';
 import { exportSessionArchive, resolveLaunchSessionDir } from './session-export';
 import { remoteLaunchSessionDir } from './launch-session-dir';
@@ -65,8 +62,8 @@ import { buildFineVibeIgnoreMatcher } from './finevibeignore';
 import { setCloseConfirmed } from './close-state';
 import { provisionProfileDir } from './profiles';
 import { getKeychainIsolationStatus } from './claude-keychain';
-import { getLastDiskHealth } from './disk-health';
 import { getMainWindow } from './main-window';
+import { registerLeafDomains } from './ipc/leaf-domains';
 import { boundedSet } from './bounded-map';
 const MAX_READ_FILE_BYTES = 8 * 1024 * 1024;
 // "Checkout and create": a full clone of a large allowlisted repo over a slow
@@ -1486,12 +1483,6 @@ export function registerIpcHandlers(): void {
   });
 
 
-  // Disk-health preflight (src/main/disk-health.ts): the renderer fetches
-  // the last emitted status on mount; main.ts pushes transitions on
-  // 'disk-health:status'. Transition-only emissions keep a full disk at one
-  // banner, not a per-write stream.
-  ipcMain.handle('disk-health:get', () => getLastDiskHealth());
-
   // A5: in-app storage report. `storage:scan` sizes the userData subtrees
   // (bounded walk, truncated flag on caps); `storage:clear` is the ONLY
   // renderer-reachable deletion sink in userData-adjacent space and is
@@ -1549,14 +1540,10 @@ export function registerIpcHandlers(): void {
     event.returnValue = { theme: prefs.theme ?? null, zoomFactor: prefs.zoomFactor ?? null };
   }, () => ({ theme: null, zoomFactor: null })));
 
-  // List projects from the legacy `~/.vibeyard/state.json` that can be
-  // imported into the board. The one-time file migration is destination-
-  // wins, so the legacy project list never merged into a live state.json
-  // written under the new name. Read-only: the renderer adds the user's
-  // picks through its own state -> persist path.
-  ipcMain.handle('vibeyard:listImportableProjects', () => {
-    return listImportableLegacyProjects({ homedir: os.homedir(), existingPaths: getKnownProjectPaths() });
-  });
+  // Row 26 slice 1: the leaf domains (disk-health, vibeyard, menu, update) live
+  // in src/main/ipc/leaf-domains.ts; the only closure value they need is the
+  // live known-project path list.
+  registerLeafDomains({ getKnownProjectPaths });
 
   // Row 31: the renderer's console goes to devtools and dies with the window,
   // so renderer diagnostics never reached `finevibe.log` (main's console is
@@ -1727,10 +1714,6 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('hosts:cloneRepo', (_event, id: unknown, url: unknown, destPath: unknown) =>
     cloneRemoteRepo(id, url, destPath),
   );
-
-  ipcMain.handle('menu:rebuild', (_event, debugMode: boolean) => {
-    createAppMenu(debugMode);
-  });
 
   // Opt-in clipboard latency probes for the P0 paste bench. Off is the
   // default: every probe below sits behind this one gate, so the handlers
@@ -3040,9 +3023,6 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('github:listIssues', (_event, repo: string, state: 'open' | 'closed' | 'all', max: number) =>
     listIssues(repo, { state, max })
   );
-
-  ipcMain.handle('update:checkNow', () => checkForUpdates());
-  ipcMain.handle('update:install', () => quitAndInstall());
 
   ipcMain.handle('settings:reinstall', (_event, providerId: ProviderId = 'claude', configDir?: string, projectPath?: string) => {
     // P2-127: configDir is the dir the warning banner was computed from —
