@@ -570,12 +570,16 @@ describe('stats:getCache memoization (PA-24)', () => {
       const get = () => handlers.get('stats:getCache')!({}) as Promise<unknown>;
 
       fs.writeFileSync(file, JSON.stringify({ v: 1, pad: 'x'.repeat(64) }));
-      // NTFS records sub-ms mtime; utimesSync only accepts integer ms.
-      // Quantize the file's clock BEFORE the memo takes its first
-      // (mtime, size) snapshot, so the mtime restore below (Date-precision)
-      // lands exactly on the memo key — a sub-ms delta re-parses.
+      // Quantize the file's clock to a WHOLE SECOND before the memo takes its first
+      // (mtime, size) snapshot. NTFS records sub-ms mtimes and `utimesSync` takes
+      // integer ms, so a ms-quantized key looks exact there; ext4 keeps the
+      // nanoseconds that conversion implies (it reports `…796.999`), and the
+      // restore below passes a `Date`, which truncates the fractional ms — so the
+      // key lands ~1 ms off and the memo re-parses on Linux. Whole seconds are
+      // exact on every filesystem, and the +5000 bump below stays a real change.
       const q = fs.statSync(file);
-      fs.utimesSync(file, new Date(Math.floor(q.atimeMs)), new Date(Math.floor(q.mtimeMs)));
+      const wholeSec = Math.floor(q.mtimeMs / 1000) * 1000;
+      fs.utimesSync(file, new Date(wholeSec), new Date(wholeSec));
       expect(await get()).toEqual({ v: 1, pad: 'x'.repeat(64) });
 
       // Rewrite with identical size, restored mtime: the memo answers, no re-parse.
@@ -3050,6 +3054,21 @@ describe('home-outside consent cache cap (B1)', () => {
 // not there", which is how an existing `E:\AI\Brillance` came to be reported
 // as non-existent on a non-home drive.
 describe('fs:ensureDirectory', () => {
+  // The gate admits the home tree, and these fixtures live in `os.tmpdir()`: under
+  // the user profile on Windows (`C:\Users\me\AppData\Local\Temp`), NOT on Linux
+  // (`/tmp` vs `/home/runner`) — so on the Linux runner every fixture took the
+  // outside-home consent path and answered `ok:false` with
+  // "Location is outside your home directory and was not confirmed". Presenting
+  // the temp dir AS the home tree makes the fixtures inside home on every host,
+  // which is the condition under test; the consent path itself keeps its own
+  // coverage below, via a real outside-home path.
+  let homeSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(fs.realpathSync(os.tmpdir()));
+  });
+  afterEach(() => {
+    homeSpy.mockRestore();
+  });
   it('rejects a non-string or blank path before any filesystem work', async () => {
     const mkdir = vi.spyOn(fs.promises, 'mkdir');
     try {

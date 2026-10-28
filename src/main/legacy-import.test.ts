@@ -130,7 +130,18 @@ describe('listImportableLegacyProjects', () => {
       { name: 'Second', path: 'C:/repo//dup' },
     ]));
     const out = listImportableLegacyProjects({ homedir: home, existingPaths: [], pathExists: existsAll });
-    expect(out).toEqual([{ name: 'First', path: path.normalize('C:\\repo\\dup'), sessions: 1 }]);
+    // On Windows `C:\repo\dup` and `C:/repo//dup` are ONE directory, so
+    // `comparablePath` collapses them and the second entry is the duplicate — that
+    // is the rule under test. On POSIX they are two distinct relative names (the
+    // documented POSIX drop for Windows spellings relies on exactly that), so both
+    // survive. Asserting only the Windows answer is what made this red in CI; both
+    // branches are asserted, neither is skipped.
+    const first = { name: 'First', path: path.normalize('C:\\repo\\dup'), sessions: 1 };
+    expect(out).toEqual(
+      process.platform === 'win32'
+        ? [first]
+        : [first, { name: 'Second', path: path.normalize('C:/repo//dup'), sessions: 0 }],
+    );
   });
 
   it('counts sessions, treating absent or non-array as 0', () => {
