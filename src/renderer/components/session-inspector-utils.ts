@@ -4,6 +4,11 @@ import type { ProviderId, CliProviderCapabilities, InspectorEvent } from '../../
 import { getTerminalInstance } from './terminal-pane.js';
 import { inspectorState } from './session-inspector-state-ui.js';
 import { isCliSession } from '../session-utils.js';
+import { escapeHtml } from './escape-html.js';
+
+// Re-exported for the existing importers of this module (row 24 dedupe: the
+// body moved to escape-html.ts, the documented PA-34 home).
+export { escapeHtml };
 
 export function resetUIState(): void {
   inspectorState.expandedRows.clear();
@@ -210,10 +215,6 @@ export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   return `${(ms / 60000).toFixed(1)}m`;
-}
-
-export function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 export function formatTokenCount(n: number): string {
