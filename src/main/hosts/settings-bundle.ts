@@ -36,7 +36,7 @@ export const SYNCABLE_PROVIDER_IDS: ProviderId[] = ['pi', 'pi-bolt', 'omp', 'cla
  * sets is out of scope by construction. */
 const PI_FILE_SET = ['~/.pi/agent/settings.json', '~/.pi/agent/AGENTS.md', '~/.pi/agent/mcp.json', '~/.pi/agent/skills/'];
 
-export const PROVIDER_FILE_SETS: Record<ProviderId, string[]> = {
+const PROVIDER_FILE_SETS: Record<ProviderId, string[]> = {
   pi: PI_FILE_SET,
   'pi-bolt': [
     // Shares the whole pi tree (R-4 dedupe composes this with `pi`). The
@@ -93,7 +93,7 @@ export function neverSyncPath(relPath: string): boolean {
 
 /** Bound for a runaway skills tree: a bundle is a config set, not a corpus
  * (walk stops growing past this many files). */
-export const MAX_BUNDLE_FILES = 500;
+const MAX_BUNDLE_FILES = 500;
 
 /** One file destined for the host. relPath is the `~/`-anchored posix path
  * (the key drift hashes are stored under); content is LF-normalized. */

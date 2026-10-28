@@ -27,7 +27,7 @@ import { remotePathArg } from './settings-sync';
 /** Listing cap for the dir browser — bounds one readdir payload (the local
  * fs:listDirs cap is 20 because it is a keystroke autocomplete; a browser
  * page needs the directory, and 500 names is ~20 KB). */
-export const MAX_REMOTE_LIST_DIRS = 500;
+const MAX_REMOTE_LIST_DIRS = 500;
 
 /** Listing cap for the remote FILE tree — bounds one readdir payload like
  * MAX_REMOTE_LIST_DIRS bounds the dir browser. 2000 names is ~80 KB over
@@ -39,7 +39,7 @@ export const MAX_REMOTE_LIST_ENTRIES = 2000;
 /** Read cap for the remote file preview — parity with the local
  * MAX_READ_FILE_BYTES (ipc-handlers), so a tree open behaves the same on
  * both sides of the wire. */
-export const MAX_REMOTE_READ_BYTES = 8 * 1024 * 1024;
+const MAX_REMOTE_READ_BYTES = 8 * 1024 * 1024;
 
 const LIST_TIMEOUT_MS = 10_000;
 const READ_TIMEOUT_MS = 30_000;
@@ -49,10 +49,10 @@ const MKDIR_TIMEOUT_MS = 15_000;
  * host is the same slow network operation. */
 const CLONE_TIMEOUT_MS = 10 * 60_000;
 
-export interface RemoteDirsResult { ok: boolean; dirs?: string[]; error?: string }
-export interface RemoteStatResult { ok: boolean; isDirectory?: boolean; size?: number; mtimeMs?: number; error?: string }
-export interface RemoteEnsureResult { ok: boolean; path?: string; error?: string }
-export interface RemoteCloneResult { ok: boolean; error?: string }
+interface RemoteDirsResult { ok: boolean; dirs?: string[]; error?: string }
+interface RemoteStatResult { ok: boolean; isDirectory?: boolean; size?: number; mtimeMs?: number; error?: string }
+interface RemoteEnsureResult { ok: boolean; path?: string; error?: string }
+interface RemoteCloneResult { ok: boolean; error?: string }
 
 /**
  * Normalize a renderer-supplied remote path to the canonical posix spelling
@@ -169,7 +169,7 @@ export function isRemotePathInKnownProject(hostId: string, target: string): bool
   return false;
 }
 
-export interface RemoteDirEntry {
+interface RemoteDirEntry {
   name: string;
   path: string;
   isDirectory: boolean;

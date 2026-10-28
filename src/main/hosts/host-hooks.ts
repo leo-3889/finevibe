@@ -19,13 +19,13 @@ import type { ProviderId } from '../../shared/types';
 export const HOST_HOOK_MARKER = '# finevibe-hook';
 
 /** One hook handler we install: an event name + the command to run. */
-export interface HostHookEntry {
+interface HostHookEntry {
   event: string;
   command: string;
 }
 
 /** The host status sidecar dir (created at enrollment; hooks mkdir-guard). */
-export const HOST_STATUS_DIR = '~/.finevibe/run';
+const HOST_STATUS_DIR = '~/.finevibe/run';
 
 /** Provider → host settings file, home-relative. pi and pi-bolt share one tree. */
 export const HOST_SETTINGS_PATH: Partial<Record<ProviderId, string>> = {
@@ -119,7 +119,7 @@ function stripMarked(hooks: HooksConfig): HooksConfig {
 }
 
 /** Parse a settings payload for rewrite; a missing file reads as `{}`; throw = corrupt. */
-export function parseSettingsForRewrite(raw: string | null): Record<string, unknown> {
+function parseSettingsForRewrite(raw: string | null): Record<string, unknown> {
   if (raw === null) return {};
   let parsed: unknown;
   try {

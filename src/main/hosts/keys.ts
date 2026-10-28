@@ -13,13 +13,13 @@ import { utils as sshUtils } from 'ssh2';
 import type { HostRecord } from '../../shared/types';
 
 /** `ssh-keygen`-style public key line: `<type> <base64> [comment]`. */
-export interface PublicKeyLine {
+interface PublicKeyLine {
   type: string;
   base64: string;
   comment: string;
 }
 
-export function publicKeyLine(publicKeyPem: string, comment: string): PublicKeyLine | null {
+function publicKeyLine(publicKeyPem: string, comment: string): PublicKeyLine | null {
   // OpenSSH public keys are the wire format; PEM "BEGIN PUBLIC KEY" is
   // ssh2's export for ed25519/spki. Convert via ssh2 for openssh format.
   const line = sshUtils.parseKey(publicKeyPem, 'ssh');
@@ -136,6 +136,6 @@ export function readPublicKeyLine(privateKeyPath: string): string {
 }
 
 /** True when the record's key is finevibe-owned (delete on unenroll). */
-export function isManagedKey(record: HostRecord): boolean {
+function isManagedKey(record: HostRecord): boolean {
   return record.managedKey;
 }
