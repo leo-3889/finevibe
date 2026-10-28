@@ -110,7 +110,7 @@ async function legA() {
 async function legB() {
   console.log('\n=== Leg B: omp child under pty (R3) ===');
   const where = spawnSync('where', ['omp'], { encoding: 'utf8', shell: true });
-  const ompPath = ((where.stdout || '').split(/\r?\n/).find((l) => l.trim()) || 'C:\\Users\\Alex\\.bun\\bin\\omp.exe').trim();
+  const ompPath = ((where.stdout || '').split(/\r?\n/).find((l) => l.trim()) || 'C:\\Users\\me\\.bun\\bin\\omp.exe').trim();
   console.log('omp=' + ompPath);
   const rows = [];
   for (const n of [1024, 10240]) {
