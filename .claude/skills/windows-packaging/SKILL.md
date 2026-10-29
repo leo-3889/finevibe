@@ -105,7 +105,7 @@ provider (this exercises the ConPTY path, the least-verified link) → Chrome im
 
 Re-derive every bullet before repeating it — this list has carried dead blockers before
 (it asserted "no `src/main/userdata-migration.ts`" in the very commit that added that
-file, `cf0cacf7`). The checks are one-liners; run them, then quote the result.
+file, `9d7d0987`). The checks are one-liners; run them, then quote the result.
 
 - **Legacy identity migration SHIPS** — do not re-report it as a blocker.
   `src/main/userdata-migration.ts` runs from `src/main/main.ts` before anything reads
