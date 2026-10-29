@@ -20,7 +20,6 @@ vi.mock('node-pty', () => ({ spawn: vi.fn(), default: { spawn: vi.fn() } }));
 import { registerTranscriptSync, unregisterTranscriptSync, _resetTranscriptSyncForTesting } from './session-transcript-sync';
 import { initProviders } from './providers/registry';
 import { STATUS_DIR, startWatching, registerSession, unregisterSession, cleanupAll } from './hook-status';
-import { seedLaunchTranscript } from './providers/pi-compatible-transcripts';
 
 interface Sent { channel: string; args: unknown[] }
 
@@ -58,6 +57,15 @@ let sessionDir = '';
 let transcript = '';
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'fv-itest-cwd-'));
 let statusDirExistedBefore = true;
+
+// Mirrors providers/pi-compatible-transcripts seedLaunchTranscript (header jsonl, wx flag)
+// inline so this test compiles on a clean checkout; repoint the import when the provider export lands.
+function seedLaunchTranscript(sessionDir: string, cliSessionId: string, cwd: string): void {
+  const timestamp = new Date().toISOString();
+  const file = path.join(sessionDir, `${timestamp.replace(/[:.]/g, '-')}_${cliSessionId}.jsonl`);
+  const header = { type: 'session', version: 3, id: cliSessionId, timestamp, cwd: path.resolve(cwd) };
+  fs.writeFileSync(file, `${JSON.stringify(header)}\n`, { flag: 'wx' });
+}
 
 function appendEntry(entry: object): void {
   fs.appendFileSync(transcript, `${JSON.stringify(entry)}\n`);
