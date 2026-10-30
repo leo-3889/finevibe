@@ -561,6 +561,19 @@ describe('loadWebglWithFallback', () => {
     expect(webglState.lastInstance!.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('skips the addon entirely under the DOM-renderer escape hatch', () => {
+    // The probe for GPU glyph garbling: no addon means xterm keeps the DOM
+    // renderer, so a clean render proves the GPU path was at fault.
+    (globalThis as { __FINEVIBE_DOM_RENDERER__?: boolean }).__FINEVIBE_DOM_RENDERER__ = true;
+    try {
+      const terminal = { loadAddon: vi.fn() };
+      loadWebglWithFallback(terminal as any);
+      expect(terminal.loadAddon).not.toHaveBeenCalled();
+    } finally {
+      delete (globalThis as { __FINEVIBE_DOM_RENDERER__?: boolean }).__FINEVIBE_DOM_RENDERER__;
+    }
+  });
+
   it('falls back silently when WebGL is unavailable', () => {
     webglState.shouldThrow = true;
     const terminal = { loadAddon: vi.fn() };

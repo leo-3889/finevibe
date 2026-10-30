@@ -19,6 +19,15 @@ function clipboardTimingOn(): boolean {
   return g.__FINEVIBE_CLIPBOARD_TIMING__ === true || g.process?.env?.FINEVIBE_CLIPBOARD_TIMING === '1';
 }
 
+// Renderer gate for the WebGL escape hatch (same injection idiom as
+// clipboardTimingOn: the renderer is a sandboxed Browser World with no
+// process.env). GPU/compositor glyph garbling is diagnosed by re-rendering the
+// pane with the DOM renderer: set the flag in devtools and spawn a new pane.
+function domRendererForced(): boolean {
+  const g = globalThis as { __FINEVIBE_DOM_RENDERER__?: boolean; process?: { env?: Record<string, string | undefined> } };
+  return g.__FINEVIBE_DOM_RENDERER__ === true || g.process?.env?.FINEVIBE_DOM_RENDERER === '1';
+}
+
 // Wraps text in bracketed-paste escapes when the shell has the mode enabled,
 // so it's delivered as a paste rather than character-by-character input.
 export function wrapBracketedPaste(terminal: Terminal, text: string): string {
@@ -465,6 +474,7 @@ export function attachClipboardCopyHandler(
 // Disposing the addon on context loss lets xterm.js fall back to the DOM renderer
 // instead of keeping a dead GPU texture atlas (black-box glyphs).
 export function loadWebglWithFallback(terminal: Terminal): void {
+  if (domRendererForced()) return;
   try {
     const addon = new WebglAddon();
     terminal.loadAddon(addon);
