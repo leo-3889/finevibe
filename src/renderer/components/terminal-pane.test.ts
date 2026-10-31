@@ -630,6 +630,20 @@ describe('applyThemeToAllTerminals()', () => {
 
     expect((instance.terminal as unknown as FakeTerminal).options.theme).toBe(lightTerminalTheme);
   });
+
+  // Audit row 115: Option must reach the PTY as Meta (ESC-prefix), not a
+  // composed Unicode char, or every Alt/Meta binding in a fullscreen TUI is
+  // dead. macOptionClickForcesSelection stays unset (false): row 69 owns the
+  // Option+click decision, this pins keyboard Meta only.
+  it('constructs session panes with macOptionIsMeta enabled', async () => {
+    const { createTerminalPane, getTerminalInstance } = await import('./terminal-pane.js');
+
+    createTerminalPane('option-meta-1', '/project', null, false, '', 'claude');
+    const options = (getTerminalInstance('option-meta-1')!.terminal as unknown as FakeTerminal).options;
+
+    expect(options.macOptionIsMeta).toBe(true);
+    expect(options.macOptionClickForcesSelection).toBeUndefined();
+  });
 });
 
 describe('terminal Ctrl+Shift+C clipboard copy', () => {

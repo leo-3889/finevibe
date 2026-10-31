@@ -3,7 +3,7 @@ import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { appState } from '../state.js';
-import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
+import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
@@ -78,6 +78,7 @@ function createShell(projectId: string): ShellTerminalInstance {
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
     scrollback: TERMINAL_SCROLLBACK,
+    macOptionIsMeta: TERMINAL_MAC_OPTION_IS_META,
     cursorBlink: true,
     allowProposedApi: true,
   });

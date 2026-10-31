@@ -31,10 +31,9 @@ function domRendererForced(): boolean {
 // Wraps text in bracketed-paste escapes when the shell has the mode enabled,
 // so it's delivered as a paste rather than character-by-character input.
 export function wrapBracketedPaste(terminal: Terminal, text: string): string {
-  // SAFETY: xterm keeps the live mode flags on `modes` at runtime; only the
-  // public Terminal type omits the field.
-  const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-  return modes?.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
+  // `modes` is public API in @xterm/xterm 6.0.0 (xterm.d.ts:863, same read as
+  // terminal-wheel-scroll.ts): the live SM/DECSET flags, no cast needed.
+  return terminal.modes.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
 }
 
 // The byte a terminal receives for Ctrl+V (⌘V delivered as Ctrl+V): DC1.

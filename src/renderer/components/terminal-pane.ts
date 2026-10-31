@@ -12,7 +12,7 @@ import { removeSession as removeContextSession, getContext, getContextSeverity, 
 import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
-import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
+import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { openExternal } from '../open-external.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
 import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
@@ -103,6 +103,7 @@ export function createTerminalPane(
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
     scrollback: TERMINAL_SCROLLBACK,
+    macOptionIsMeta: TERMINAL_MAC_OPTION_IS_META,
     cursorBlink: true,
     allowProposedApi: true,
     linkHandler: {

@@ -294,6 +294,27 @@ describe('applyThemeToAllShells()', () => {
 
     expect((instance.terminal as unknown as FakeTerminal).options.theme).toBe(lightTerminalTheme);
   });
+
+  // Audit row 115: Option has to reach the shell as Meta (ESC-prefix), not a
+  // composed Unicode char. macOptionClickForcesSelection stays unset (false):
+  // row 69 owns the Option+click decision, this pins keyboard Meta only.
+  it('constructs shell panes with macOptionIsMeta enabled', async () => {
+    const { appState } = await import('../state.js');
+    const { initProjectTerminal, getShellTerminalInstance, getActiveShellSessionId } = await import('./project-terminal.js');
+
+    const project = { id: 'proj1', path: '/project', terminalPanelOpen: true, terminalPanelHeight: 200, sessions: [] };
+    (appState as any).activeProject = project;
+    (appState as any).projects = [project];
+
+    initProjectTerminal();
+    stateHandlers['state-loaded']?.forEach(cb => cb());
+
+    const instance = getShellTerminalInstance(getActiveShellSessionId()!)!;
+    const options = (instance.terminal as unknown as FakeTerminal).options;
+
+    expect(options.macOptionIsMeta).toBe(true);
+    expect(options.macOptionClickForcesSelection).toBeUndefined();
+  });
 });
 
 describe('project-terminal fit resize (P3-10)', () => {

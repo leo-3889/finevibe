@@ -160,6 +160,21 @@ describe('applyThemeToAllRemoteTerminals()', () => {
 
     expect((instance.terminal as unknown as FakeTerminal).options.theme).toBe(lightTerminalTheme);
   });
+
+  // Audit row 115: the guest pane drives a host TUI, so Option must arrive as
+  // Meta (ESC-prefix) there too — pinning a readwrite pane proves the option
+  // is not gated on the readonly/disableStdin branch. macOptionClickForces
+  // Selection stays unset (false): row 69 owns Option+click.
+  it('constructs remote panes with macOptionIsMeta enabled', async () => {
+    const { createRemoteTerminalPane, getRemoteTerminalInstance, _resetForTesting } = await import('./remote-terminal-pane.js');
+
+    _resetForTesting();
+    createRemoteTerminalPane('remote-meta', 'readwrite', 80, 24, () => {});
+    const options = (getRemoteTerminalInstance('remote-meta')!.terminal as unknown as FakeTerminal).options;
+
+    expect(options.macOptionIsMeta).toBe(true);
+    expect(options.macOptionClickForcesSelection).toBeUndefined();
+  });
 });
 
 describe('attachRemoteToContainer()', () => {

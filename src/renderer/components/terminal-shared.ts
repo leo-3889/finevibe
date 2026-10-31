@@ -10,3 +10,13 @@
  * agent run scrollable at ~1.2 MB/tab worst case, three sites, one number.
  */
 export const TERMINAL_SCROLLBACK = 5000;
+
+/**
+ * Audit row 115: on macOS Option+key composes a Unicode character instead of
+ * the ESC-prefixed Meta the TUIs in these panes bind (Alt+b/f word motion,
+ * Meta-arrows). One value, three construction sites (session panes, project
+ * shells, remote/guest panes). Trade-off: Option-compose input now needs
+ * Option held after the base key; click semantics stay on
+ * `macOptionClickForcesSelection` (unset = false, row 69 owns that call).
+ */
+export const TERMINAL_MAC_OPTION_IS_META = true;

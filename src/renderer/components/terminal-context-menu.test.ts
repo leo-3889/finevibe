@@ -6,6 +6,9 @@ function makeMockTerminal(hasSelection = false, selection = '') {
   return {
     hasSelection: vi.fn(() => hasSelection),
     getSelection: vi.fn(() => selection),
+    // Public @xterm/xterm API (xterm.d.ts:863) that pasteIntoTerminal reads for
+    // the bracketed-paste wrap; a real Terminal always carries it.
+    modes: { bracketedPasteMode: false },
     selectAll: vi.fn(),
     focus: vi.fn(),
   } as any;

@@ -9,7 +9,7 @@ import { appState } from '../state.js';
 import { attachCopyOnSelect, attachMouseForwardingGate, loadWebglWithFallback } from './terminal-utils.js';
 import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
-import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
+import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-shared.js';
 
 interface RemoteTerminalInstance {
   terminal: Terminal;
@@ -89,6 +89,7 @@ export function createRemoteTerminalPane(
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
     scrollback: TERMINAL_SCROLLBACK,
+    macOptionIsMeta: TERMINAL_MAC_OPTION_IS_META,
     cursorBlink: mode === 'readwrite',
     allowProposedApi: true,
     disableStdin: mode === 'readonly',
