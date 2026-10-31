@@ -49,6 +49,32 @@ export let pythonBin = isWin ? 'python' : '/usr/bin/python3';
  */
 export const POSIX_PYTHON_CANDIDATES = ['python3', '/usr/bin/python3', 'python'];
 
+/**
+ * Row 78 follow-up: the Apple Command Line Tools SHIM. On a mac with no CLT,
+ * `/usr/bin/python3` still exists and still resolves through `command -v`, so
+ * the zero-exec probe reports it as found while every real use of it pops the
+ * "Install Command Line Developer Tools" dialog (and every hook fails). Shared
+ * with prerequisites.ts so both probes refuse the same path for the same
+ * reason.
+ */
+export const APPLE_CLT_SHIM_PATH = '/usr/bin/python3';
+
+/**
+ * True when a toolchain is selected (`xcode-select -p` prints its root).
+ * Zero-exec like the locator: `sh` runs the check, never python. UNVERIFIED-
+ * RUNTIME: no CLT-less mac in CI, so the exit code this relies on (non-zero
+ * with no CLT) is Apple's documented behavior, not something these tests
+ * executed.
+ */
+function commandLineToolsInstalled(): boolean {
+  try {
+    execSync('xcode-select -p >/dev/null 2>&1', { timeout: 3000, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Resolved once at module load (POSIX only; Windows defers to
 // checkPythonAvailable()). Row 78: the probe asks the shell where the
 // interpreter is (`command -v`, a builtin) instead of running
@@ -63,6 +89,10 @@ if (!isWin) {
     try {
       const resolved = execSync(`command -v ${candidate}`, { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' }).trim();
       if (!resolved) continue;
+      // Resolution is not availability: keep probing past the CLT shim, so a
+      // brew/pyenv python further down PATH still wins and the boot warning
+      // (prerequisites.ts) keeps its teeth.
+      if (isMac && resolved === APPLE_CLT_SHIM_PATH && !commandLineToolsInstalled()) continue;
       pythonBin = resolved;
       break;
     } catch { /* not on PATH and not an executable path; try the next candidate */ }

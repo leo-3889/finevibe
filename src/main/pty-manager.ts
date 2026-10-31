@@ -129,22 +129,74 @@ function parseRegistryPath(payload: string): string[] {
   }
   return (Array.isArray(decoded) ? decoded : [decoded])
     .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
-    .map((value) => value.replace(/%([^%]+)%/g, (_m: string, varName: string) => process.env[varName] || `%${varName}%`));
+    .map(expandRegistryVars);
+}
+
+/**
+ * Row 73 follow-up: the pre-wave `reg query` read, restored as the catch
+ * fallback. PowerShell fails OPEN on ConstrainedLanguage / WDAC boxes: the
+ * language mode refuses the property read, `ConvertTo-Json` emits `[null,null]`
+ * (or the whole command errors), and the registry contributes ZERO PATH — a
+ * provider installed under a registry-only directory reads as uninstalled.
+ * reg.exe is not subject to the language mode, so it still answers there.
+ *
+ * Decode is exactly what it was pre-wave (`utf-8` over the console's OEM code
+ * page): ASCII paths — the overwhelming majority, and everything the fail-open
+ * bug could hide on those locked-down boxes — survive intact; a non-ASCII
+ * directory can still arrive mangled, which is the row-73 trade this fallback
+ * re-accepts rather than losing the entry entirely.
+ *
+ * One call per hive per twin, `reg query` exiting non-zero for a missing value
+ * (that hive contributes nothing — the pre-wave meaning of the catch).
+ */
+const REG_SYSTEM_HIVE = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment';
+const REG_USER_HIVE = 'HKCU\\Environment';
+
+/** %VAR% names the registry left raw (Get-ItemProperty expands most of them). */
+function expandRegistryVars(value: string): string {
+  return value.replace(/%([^%]+)%/g, (_m: string, varName: string) => process.env[varName] || `%${varName}%`);
+}
+
+/** The PATH value out of one `reg query HK…\Path` answer. */
+function parseRegQueryValue(output: string): string {
+  const match = output.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
+  return match ? expandRegistryVars(match[1].trim()) : '';
+}
+
+/** Both hives over reg.exe, joined — see the note above for when this runs. */
+function registryPathViaRegQuery(): string {
+  const values: string[] = [];
+  for (const hive of [REG_SYSTEM_HIVE, REG_USER_HIVE]) {
+    try {
+      const value = parseRegQueryValue(execSync(`reg query "${hive}" /v Path`, {
+        // Same per-spawn ceiling as the PowerShell read (row 73 raised it for
+        // a cold machine; reg.exe answers far under it).
+        encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
+      }));
+      if (value) values.push(value);
+    } catch (err) {
+      console.debug(`Could not read PATH from ${hive}:`, err);
+    }
+  }
+  return values.join(pathSep);
 }
 
 export function getRegistryPath(): string {
   if (!isWin) return '';
+  let values: string[] = [];
   try {
-    return parseRegistryPath(execSync(REG_PATH_COMMAND, {
+    values = parseRegistryPath(execSync(REG_PATH_COMMAND, {
       encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
-    })).join(pathSep);
+    }));
   } catch (err) {
-    // No PowerShell (blocked by AppLocker / constrained-language mode) means no
-    // registry contribution: getFullPath falls back to the inherited PATH plus
-    // its well-known directories.
+    // No PowerShell at all (blocked by AppLocker): the reg query fallback below
+    // is the one left standing.
     console.debug('Could not read PATH from the registry:', err);
-    return '';
   }
+  // Empty payload is the same failure with a different face — constrained
+  // language mode STARTS PowerShell and lets it print nothing useful.
+  if (values.length > 0) return values.join(pathSep);
+  return registryPathViaRegQuery();
 }
 
 /** Reset cached PATH (used after install-then-retry flows and in tests). */
@@ -244,8 +296,21 @@ export function getFullPathAsync(): Promise<string> {
         });
         registryValues = parseRegistryPath(stdout);
       } catch {
-        // Same failure handling as getRegistryPath: the registry contributes
-        // nothing and the well-known directories below carry the PATH.
+        // PowerShell missing/refused: the reg query fallback below is the one
+        // left standing (mirrors getRegistryPath, including the empty-payload
+        // case constrained-language mode produces).
+      }
+      if (registryValues.length === 0) {
+        registryValues = (await Promise.all([REG_SYSTEM_HIVE, REG_USER_HIVE].map(async (hive) => {
+          try {
+            const { stdout } = await execFileP('reg', ['query', hive, '/v', 'Path'], {
+              encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
+            });
+            return parseRegQueryValue(stdout);
+          } catch {
+            return '';
+          }
+        }))).filter(Boolean);
       }
       const pathSet = new Set([
         ...currentPath.split(pathSep),

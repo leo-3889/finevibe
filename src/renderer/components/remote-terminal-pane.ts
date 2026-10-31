@@ -6,7 +6,7 @@ import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { appState } from '../state.js';
-import { attachCopyOnSelect, attachMouseForwardingGate, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachMouseForwardingGate, loadWebglWithFallback } from './terminal-utils.js';
 import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
 import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-shared.js';
@@ -114,7 +114,14 @@ export function createRemoteTerminalPane(
     // starts encoded (a re-attached xterm cannot re-arm ConPTY, and the mode
     // never comes back off). macOS/Linux hosts never emit mode 9001: inert.
     const handleWin32Key = attachWin32TerminalKeys(terminal, onInput, { latchKey: `remote:${sessionId}` });
-    terminal.attachCustomKeyEventHandler((e) => handleWin32Key(e) ?? true);
+    // Rows 92/70 follow-up: this pane had ONLY the win32 encoder, so on a mac
+    // the Edit-menu chords came back dead (the menu hands Cmd+C/X/Z/A to the
+    // renderer and xterm writes no byte for a meta-only chord) and Ctrl+Shift+C
+    // copied nothing from a guest pane. Same wiring as the local panes
+    // (terminal-pane.ts / project-terminal.ts): the encoder rides along as the
+    // `extend` handler, because xterm keeps ONE custom key handler — the last
+    // attach wins, so both chords must live behind this single call.
+    attachClipboardCopyHandler(terminal, handleWin32Key, onInput);
   }
 
   const instance: RemoteTerminalInstance = {

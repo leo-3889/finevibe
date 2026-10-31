@@ -14,7 +14,11 @@ const { mockMatchesAnyShortcut, mockMatchEvent, mockPlatform, mockPreferences, m
     lastInstance: null as null | { dispose: ReturnType<typeof vi.fn>; fireContextLoss: () => void },
   },
 }));
-vi.mock('../shortcuts.js', () => ({
+// Partial: the manager is stubbed (its handlers are app wiring), while
+// `canonicalAlnumKey` — the physical-key rule the mac chords now resolve
+// through — must stay the real one, or this file would test a copy of it.
+vi.mock('../shortcuts.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../shortcuts.js')>()),
   shortcutManager: {
     matchesAnyShortcut: (...args: unknown[]) => mockMatchesAnyShortcut(...args),
     matchEvent: (...args: unknown[]) => mockMatchEvent(...args),
@@ -421,6 +425,40 @@ describe('attachClipboardCopyHandler (macOS)', () => {
     expect(terminal.simulateKey({ metaKey: true, altKey: true, key: 'a', type: 'keydown' })).toBe(true);
 
     expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  // Row 92 follow-up: the chord table used to read `e.key`, and a Cyrillic
+  // layout reports the layout's character for the physical key ('И' on the
+  // physical C), so every mac Edit chord missed on a non-Latin keyboard.
+  // `e.code` is layout-independent (the rule `shortcuts.ts` already used).
+  it('resolves mac chords from the physical key on a non-Latin layout', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    // No selection: Cmd+И is the SIGINT byte, exactly like Cmd+C.
+    expect(terminal.simulateKey({ metaKey: true, key: 'И', code: 'KeyC', type: 'keydown', preventDefault: vi.fn() })).toBe(false);
+    expect(writeToPty).toHaveBeenLastCalledWith('\x03');
+
+    // Cmd+Х (physical X) still reaches readline's C-x prefix.
+    expect(terminal.simulateKey({ metaKey: true, key: 'Х', code: 'KeyX', type: 'keydown', preventDefault: vi.fn() })).toBe(false);
+    expect(writeToPty).toHaveBeenLastCalledWith('\x18');
+    expect(writeToPty).toHaveBeenCalledTimes(2);
+  });
+
+  it('copies a selection with a non-Latin-layout Cmd+C', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('cyrillic-copy');
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ metaKey: true, key: 'И', code: 'KeyC', type: 'keydown', preventDefault });
+
+    expect(result).toBe(false);
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('cyrillic-copy', 'explicit');
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 
   it('leaves unhandled mac keys alone', () => {

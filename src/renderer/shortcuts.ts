@@ -141,8 +141,11 @@ function parseAccelerator(accelerator: string): { ctrl: boolean; meta: boolean; 
  * layout-independent: KeyA→'a', Digit1→'1' on every layout. Falls back
  * to `e.key` when the code is not a plain letter/digit position (e.g.
  * Numpad1, where e.key already carries the digit).
+ *
+ * Exported (row 92 follow-up): the terminal's mac Edit chords matched
+ * `e.key` and missed the same layouts (`terminal-utils.ts`).
  */
-function canonicalAlnumKey(e: KeyboardEvent): string {
+export function canonicalAlnumKey(e: KeyboardEvent): string {
   const letter = /^Key([A-Z])$/.exec(e.code ?? '');
   if (letter) return letter[1].toLowerCase();
   const digit = /^Digit([0-9])$/.exec(e.code ?? '');
@@ -266,8 +269,8 @@ function isModalOpen(): boolean {
  * recorded onto one of these is dead, because the native menu accelerator is
  * consumed before the renderer's keydown listener sees the event.
  *
- * Mirrors `src/main/menu.ts` (mac path): `Close Window` is the one item built
- * with a real accelerator, and the rest are the role defaults left on their
+ * Mirrors `src/main/menu.ts` (mac path): `Close Window` is one of the two items
+ * built with a real accelerator, the rest are the role defaults left on their
  * keys — `menu.test.ts` pins that every other entry is `registerAccelerator:
  * false` or `accelerator: ''`, so anything missing there is unclaimed and a
  * legitimate override target. Keys use the `eventToAccelerator` spelling
@@ -281,9 +284,10 @@ const MAC_MENU_OWNED_CHORDS = new Map<string, string>([
   ['CmdOrCtrl+Shift+Z', 'Redo'],
   ['CmdOrCtrl+Shift+V', 'Paste and Match Style'],
   ['CmdOrCtrl+Backspace', 'Delete'],
-  // Row 77: the app-menu Preferences… item registers its own key (the one
-  // non-role accelerator in src/main/menu.ts, mac-only) — `menu.test.ts` still
-  // pins that nothing else claims a key.
+  // Row 77: the app-menu Preferences… item registers its own key (the other
+  // non-role accelerator in src/main/menu.ts, mac-only — `Close Window`
+  // CmdOrCtrl+Shift+W is the one above) — `menu.test.ts` still pins that
+  // nothing else claims a key.
   ['CmdOrCtrl+,', 'Preferences'],
 ]);
 

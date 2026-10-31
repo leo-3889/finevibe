@@ -1,11 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { app } from 'electron';
 import type { PersistedState, Preferences, ProjectRecord, Profile, HostRecord } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
 import { validateHostRecordShape, migrateLegacySessionSshHosts } from '../shared/ssh-host';
 import { DEFAULT_PREFERENCES } from '../shared/default-preferences';
 import { boundedSet } from './bounded-map';
+import { isManagedKeyPath, isRendererKeyPathAllowed } from './hosts/keys';
 
 export type { SessionRecord, ProjectRecord, Preferences, PersistedState } from '../shared/types';
 
@@ -271,16 +273,21 @@ function stateFileIsNewer(candidate: string, reference: string): boolean {
 // renderer's `beforeunload` `store:save-sync`; that flush serializes the whole
 // state including the geometry loaded at boot, so ungrafted it rewrote the
 // previous launch's bounds over the fresh ones on every quit.
+// Rows 31/34: `hosts` joins it too — same whole-state write, but the payload is
+// untrusted input there, not just a stale copy (see graftMainOwnedHosts).
 function graftMainOwnedState(state: PersistedState): void {
-  if (!state.preferences) return;
   if (!stateCache) {
     // SA-P1-1: only reload when there IS a persisted state. With no cache and
     // no file (fresh install) the payload itself is the first state — the old
     // empty-cache skip is kept for that case so a main-side first write is
     // never overwritten by the defaults loadState would return.
-    if (!fs.existsSync(STATE_FILE) && !fs.existsSync(`${STATE_FILE}.tmp`)) return;
-    loadState();
+    if (fs.existsSync(STATE_FILE) || fs.existsSync(`${STATE_FILE}.tmp`)) loadState();
   }
+  // Rows 31/34: hosts need the same treatment even on a fresh install, where
+  // "no authoritative record" is itself the answer (see graftMainOwnedHosts),
+  // so this runs before the preferences guard below.
+  graftMainOwnedHosts(state);
+  if (!state.preferences) return;
   const authoritative = stateCache?.preferences;
   if (!authoritative) return;
   state.preferences.statusLineConsent = authoritative.statusLineConsent;
@@ -293,6 +300,65 @@ function graftMainOwnedState(state: PersistedState): void {
   const authoritativeBounds = stateCache?.windowBounds;
   if (authoritativeBounds) state.windowBounds = authoritativeBounds;
   else delete state.windowBounds;
+}
+
+/**
+ * Rows 31/34 bypass (found in the `9801edb6` review): the renderer persists the
+ * WHOLE state — `hosts` included (`serializeForSave` spreads `...state`) — and
+ * `sanitizePersistedState` (ipc-handlers) filters only `preferences`, so a
+ * compromised frame could rewrite a host record wholesale. Two of its fields
+ * cost more than a stale display name: `managedKey: true` on a record whose
+ * `privateKeyPath` is `~/.ssh/id_ed25519` makes `deleteHost` unlink a foreign
+ * key, and `enrollmentStatus: 'enrolled'` skips the enrollment machine that
+ * `hosts:openShell` / remote-fs gate on.
+ *
+ * So, per host matched by id, main re-asserts what main owns — the complement of
+ * `HOST_EDITABLE_FIELDS` (ipc/hosts-domains.ts) that actually matters here.
+ * `managedKey` is DERIVED from the path exactly like `gateKeyPatch` does (row 31:
+ * it is a property of the path, never of the payload), and a `privateKeyPath`
+ * that CHANGED must pass the same containment gate `hosts:update` applies (row
+ * 34); one that fails keeps the stored value instead of steering main's key read.
+ *
+ * A host id main never created cannot have come from the add-host wizard (that
+ * flow calls `hosts:create`, which persists main-side), so it is kept — the two
+ * rules above already make its read and its unlink safe — but it starts as a
+ * fresh `createHost` record does: `draft`, unpinned, unprobed.
+ */
+function graftMainOwnedHosts(state: PersistedState): void {
+  const hosts = state.hosts;
+  if (!hosts || hosts.length === 0) return;
+  const userData = app.getPath('userData');
+  const known = new Map((stateCache?.hosts ?? []).map((host) => [host.id, host]));
+  for (const host of hosts) {
+    // Garbage entries (a payload is not the store grammar) are left alone here;
+    // `loadState`'s `validateHostRecordShape` is what drops them.
+    if (!host || typeof host !== 'object') continue;
+    const stored = known.get(host.id);
+    const storedPath = stored?.privateKeyPath;
+    if (host.privateKeyPath !== storedPath
+      && !isRendererKeyPathAllowed(userData, typeof host.privateKeyPath === 'string' ? host.privateKeyPath : '')) {
+      if (storedPath === undefined) delete host.privateKeyPath;
+      else host.privateKeyPath = storedPath;
+    }
+    host.managedKey = typeof host.privateKeyPath === 'string' && isManagedKeyPath(userData, host.privateKeyPath);
+    if (!stored) {
+      host.enrollmentStatus = 'draft';
+      delete host.enrollmentDetail;
+      delete host.enrolledAt;
+      delete host.lastProbeAt;
+      delete host.lastProbeOk;
+      delete host.hostKeyFingerprint;
+      delete host.prerequisites;
+      continue;
+    }
+    host.enrollmentStatus = stored.enrollmentStatus;
+    host.enrollmentDetail = stored.enrollmentDetail;
+    host.enrolledAt = stored.enrolledAt;
+    host.lastProbeAt = stored.lastProbeAt;
+    host.lastProbeOk = stored.lastProbeOk;
+    host.hostKeyFingerprint = stored.hostKeyFingerprint;
+    host.prerequisites = stored.prerequisites;
+  }
 }
 
 export function saveState(state: PersistedState): void {

@@ -22,4 +22,8 @@ export const isWin = platform.indexOf('WIN') >= 0;
 // PRIMARY middle-click that main never writes. Chromium's Linux UA carries
 // `(X11; Linux <arch>)`; FreeBSD's carries `(X11; FreeBSD ...)`, so the
 // `Linux` token is what mirrors main and defaults unknown platforms to false.
-export const isLinux = /\(X11; Linux/i.test(userAgent);
+// `104f5f8e` shipped the token check as `\(X11; Linux`, which pinned the
+// window-system spelling too: a Wayland Electron build (`(Wayland; Linux …)`)
+// would read as "not Linux" while main says Linux. A word-boundary `Linux`
+// still refuses `(X11; FreeBSD …)`.
+export const isLinux = /\bLinux\b/i.test(userAgent);

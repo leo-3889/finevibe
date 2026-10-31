@@ -888,6 +888,46 @@ describe('store:save-sync (S1-03)', () => {
   });
 });
 
+// Rows 31/34 bypass (`9801edb6` review): the renderer's whole-state payload
+// carries `hosts`, and this boundary filter is a PREFERENCES allowlist — it
+// neither fixes nor drops a forged host record. That is deliberate: the filter
+// must not start dropping hosts (the wizard's own records ride the same array),
+// and the enforcement lives one call deeper, in `graftMainOwnedHosts` (pinned in
+// store.test.ts). These two cases pin the wiring contract both halves depend on:
+// every renderer flush channel hands the UNFILTERED hosts array to the store —
+// so there is no path around the graft, and no channel that quietly loses hosts.
+describe('store:save / store:save-sync pass renderer hosts to the store graft (rows 31/34)', () => {
+  const forgedHost = {
+    id: 'h1', name: 'demo-host', user: 'dev', host: '203.0.113.9', port: 22,
+    authKind: 'key', privateKeyPath: '~/.ssh/id_ed25519', managedKey: true,
+    enrollmentStatus: 'enrolled',
+  };
+
+  it('store:save forwards the forged record to saveState untouched', async () => {
+    const store = await import('./store');
+    const payload = { projects: [], preferences: {}, hosts: [forgedHost] } as never;
+
+    handlers.get('store:save')!({}, payload);
+
+    const passed = vi.mocked(store.saveState).mock.calls[0][0] as unknown as { hosts: Array<typeof forgedHost> };
+    expect(passed.hosts[0]).toBe(forgedHost);
+  });
+
+  // The `beforeunload` flush is the other whole-state write; a fix on the async
+  // channel alone would leave the quit path carrying the forged record to disk.
+  it('store:save-sync forwards it to saveStateSync untouched', async () => {
+    const store = await import('./store');
+    const payload = { projects: [], preferences: {}, hosts: [forgedHost] } as never;
+    const event = { returnValue: undefined as unknown };
+
+    handlers.get('store:save-sync')!(event, payload);
+
+    const passed = vi.mocked(store.saveStateSync).mock.calls[0][0] as unknown as { hosts: Array<typeof forgedHost> };
+    expect(passed.hosts[0]).toBe(forgedHost);
+    expect(event.returnValue).toBe(true);
+  });
+});
+
 // SA-P2-4: the store:save payload was unvalidated — gate-root validation
 // covered `projects[].path` only, so `preferences` reached disk verbatim and
 // an injected unknown key re-hydrated into every consumer on the next boot.

@@ -19,9 +19,18 @@ vi.mock('os', () => ({
   homedir: () => '/mock/home',
 }));
 
+// store.ts derives the main-owned host fields through the same helpers the hosts
+// IPC uses, and those take `<userData>` from Electron. Fixed spelling so the
+// fixtures below can name a managed key path (`<userData>/hosts/<id>/…`) and a
+// user key path (`~/.ssh/…` = `/mock/home/.ssh`, see the os mock).
+vi.mock('electron', () => ({
+  app: { getPath: () => '/mock/userData' },
+}));
+
 import * as fs from 'fs';
 import { loadState, saveState, flushState, saveStateSync, invalidateStateCache, getKnownProjectPaths, DEFAULT_PREFERENCES, GATE_ROOT_CANONICAL_MAX, resetWriteStateForTests } from './store';
 import type { PersistedState, ProjectRecord } from './store';
+import type { HostRecord } from '../shared/types';
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
@@ -394,6 +403,169 @@ describe('saveState', () => {
     saveState({ ...makeDefaultState() });
     vi.advanceTimersByTime(300);
     expect(JSON.parse(String(mockWriteSync.mock.calls[1][1])).windowBounds).toEqual(bounds);
+  });
+});
+
+// Rows 31/34 bypass (found in the `9801edb6` review): the renderer persists the
+// WHOLE state including `hosts`, and the IPC-boundary filter knows only
+// `preferences`. A compromised frame therefore rewrote the fields main owns —
+// `managedKey: true` beside a `~/.ssh` path made `deleteHost` unlink a foreign
+// key, `enrollmentStatus: 'enrolled'` skipped the enrollment machine, and a
+// foreign `privateKeyPath` steered the file main reads on every connect.
+describe('main-owned host fields survive renderer writes (rows 31/34)', () => {
+  const HOST_ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+  // The two roots `hosts-domains.ts` lets a renderer path come from, plus one
+  // outside both (`/etc/ssh` is the unbounded local read row 34 refused).
+  const MANAGED_KEY = `/mock/userData/hosts/${HOST_ID}/id_ed25519`;
+  const USER_KEY = '/mock/home/.ssh/id_ed25519';
+  const FOREIGN_KEY = '/etc/ssh/id_ed25519';
+  const PIN = `SHA256:${'A'.repeat(43)}=`;
+
+  function mainHost(overrides: Partial<HostRecord> = {}): HostRecord {
+    return {
+      id: HOST_ID,
+      name: 'demo-host',
+      user: 'dev',
+      host: '203.0.113.9',
+      port: 22,
+      authKind: 'key',
+      privateKeyPath: MANAGED_KEY,
+      managedKey: true,
+      enrollmentStatus: 'enrolled',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+      lastProbeAt: '2026-01-02T00:00:00.000Z',
+      lastProbeOk: true,
+      hostKeyFingerprint: PIN,
+      prerequisites: { git: { ok: true, version: '2.43', path: '/usr/bin/git' } },
+      ...overrides,
+    };
+  }
+
+  /** Main-side truth, the way the loader produces it (disk file → cache). */
+  function seedMainCache(...hosts: HostRecord[]): LoadedStateCache {
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('state.json'));
+    mockReadFileSync.mockReturnValue(JSON.stringify({ ...makeDefaultState(), hosts }));
+    return loadState();
+  }
+
+  type LoadedStateCache = ReturnType<typeof loadState>;
+
+  function writtenHosts(): Record<string, unknown>[] {
+    return JSON.parse(String(mockWriteSync.mock.calls.at(-1)![1])).hosts;
+  }
+
+  it('restores enrollmentStatus, the TOFU pin and prerequisites over a forged payload', () => {
+    seedMainCache(mainHost());
+
+    // A compromised frame: enrolled→draft is data loss, draft→enrolled is a
+    // skipped state machine, an empty pin silently DISABLES pinning (row 32).
+    saveState({
+      ...makeDefaultState(),
+      hosts: [{
+        ...mainHost(),
+        enrollmentStatus: 'draft',
+        hostKeyFingerprint: '',
+        prerequisites: undefined,
+        enrolledAt: undefined,
+      } as HostRecord],
+    });
+    vi.advanceTimersByTime(300);
+
+    const host = writtenHosts()[0];
+    expect(host.enrollmentStatus).toBe('enrolled');
+    expect(host.hostKeyFingerprint).toBe(PIN);
+    expect(host.prerequisites).toEqual({ git: { ok: true, version: '2.43', path: '/usr/bin/git' } });
+    expect(host.enrolledAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(host.lastProbeOk).toBe(true);
+  });
+
+  it('derives managedKey from the path instead of believing the payload (row 31)', () => {
+    // A browsed user key: main recorded managedKey false precisely so deleteHost
+    // never unlinks it. The payload claims true; the stored path decides.
+    seedMainCache(mainHost({ privateKeyPath: USER_KEY, managedKey: false }));
+
+    saveState({ ...makeDefaultState(), hosts: [{ ...mainHost({ privateKeyPath: USER_KEY, managedKey: true }) }] });
+    vi.advanceTimersByTime(300);
+
+    expect(writtenHosts()[0]).toMatchObject({ privateKeyPath: USER_KEY, managedKey: false });
+  });
+
+  it('refuses a privateKeyPath outside the managed key dir and ~/.ssh (row 34)', () => {
+    seedMainCache(mainHost({ privateKeyPath: USER_KEY, managedKey: false }));
+
+    saveState({
+      ...makeDefaultState(),
+      hosts: [{ ...mainHost({ privateKeyPath: USER_KEY, managedKey: false }), privateKeyPath: FOREIGN_KEY, managedKey: true }],
+    });
+    vi.advanceTimersByTime(300);
+
+    // The stored value survives; the foreign path never reaches disk, so neither
+    // the ssh read nor the delete-time unlink can be steered to /etc/ssh.
+    expect(writtenHosts()[0]).toMatchObject({ privateKeyPath: USER_KEY, managedKey: false });
+  });
+
+  it('keeps the fields of a host main itself created (identity for main writers)', () => {
+    // The `hosts:create` + enrollment idiom: main pushes the record and saves
+    // the cache it just read, so the graft must not downgrade its own write.
+    const created = mainHost({ enrollmentStatus: 'draft', hostKeyFingerprint: undefined, prerequisites: undefined });
+    const cache = seedMainCache(created);
+    cache.hosts[0] = { ...created, enrollmentStatus: 'enrolled', hostKeyFingerprint: PIN };
+
+    saveState(cache);
+    vi.advanceTimersByTime(300);
+
+    expect(writtenHosts()[0]).toMatchObject({
+      enrollmentStatus: 'enrolled',
+      hostKeyFingerprint: PIN,
+      privateKeyPath: MANAGED_KEY,
+      managedKey: true,
+    });
+  });
+
+  it('accepts a containment-legal path for a host main has never seen', () => {
+    // The add-host wizard writes through `hosts:create`, so a new id arriving in
+    // a renderer persist is unattested: it is kept (the gates make its read and
+    // unlink safe) but never enrolled, never pinned, and managedKey stays derived.
+    seedMainCache(mainHost());
+    const fresh = {
+      ...mainHost({ id: 'new-host', enrollmentStatus: 'enrolled' as const }),
+      privateKeyPath: '/mock/userData/hosts/new-host/id_ed25519',
+      managedKey: false,
+      hostKeyFingerprint: PIN,
+    };
+
+    saveState({ ...makeDefaultState(), hosts: [fresh] });
+    vi.advanceTimersByTime(300);
+
+    expect(writtenHosts()[0]).toMatchObject({
+      id: 'new-host',
+      privateKeyPath: '/mock/userData/hosts/new-host/id_ed25519',
+      managedKey: true,
+      enrollmentStatus: 'draft',
+    });
+    expect(writtenHosts()[0].hostKeyFingerprint).toBeUndefined();
+  });
+
+  it('carries the same graft through the sync quit flush (saveStateSync)', () => {
+    seedMainCache(mainHost());
+
+    saveStateSync({ ...makeDefaultState(), hosts: [{ ...mainHost(), privateKeyPath: FOREIGN_KEY, managedKey: false, enrollmentStatus: 'draft' }] });
+
+    expect(writtenHosts()[0]).toMatchObject({
+      privateKeyPath: MANAGED_KEY,
+      managedKey: true,
+      enrollmentStatus: 'enrolled',
+      hostKeyFingerprint: PIN,
+    });
+  });
+
+  it('leaves a malformed host entry for the loader to drop instead of throwing', () => {
+    seedMainCache(mainHost());
+
+    expect(() => saveState({ ...makeDefaultState(), hosts: [null as unknown as HostRecord, 'x' as unknown as HostRecord] })).not.toThrow();
+    vi.advanceTimersByTime(300);
+
+    expect(writtenHosts()).toEqual([null, 'x']);
   });
 });
 

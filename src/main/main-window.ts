@@ -68,25 +68,45 @@ function isWindowBounds(value: unknown): value is WindowBounds {
     && Number.isFinite(b.height) && (b.height as number) > 0;
 }
 
-/** Pure (displays injected, no Electron) so the off-screen fallback is testable. */
-function boundsAreOnScreen(
+/** Pure (displays injected, no Electron) so the off-screen fallback is testable.
+ * Returns the work area a stored rect may restore INTO — the one it overlaps
+ * enough to be visible — or null when no display holds
+ * {@link MIN_ON_SCREEN_OVERLAP_PX} of it.
+ *
+ * Row 79 follow-up: the predicate this replaced only answered "visible?", so a
+ * 2560x1440 rect remembered on a disconnected monitor passed on a 1920x1080
+ * screen (the overlap test only needs 100 px) and restored larger than the
+ * display it landed on, with its bottom-right corner off the edge. The caller
+ * clamps width/height to the returned area. */
+function containingWorkArea(
   bounds: WindowBounds,
   displays: ReadonlyArray<{ workArea: { x: number; y: number; width: number; height: number } }>,
-): boolean {
-  return displays.some((display) => {
+): { x: number; y: number; width: number; height: number } | null {
+  let best: { x: number; y: number; width: number; height: number } | null = null;
+  let bestOverlap = 0;
+  for (const display of displays) {
     const area = display.workArea;
     const overlapX = Math.min(bounds.x + bounds.width, area.x + area.width) - Math.max(bounds.x, area.x);
     const overlapY = Math.min(bounds.y + bounds.height, area.y + area.height) - Math.max(bounds.y, area.y);
-    return overlapX >= MIN_ON_SCREEN_OVERLAP_PX && overlapY >= MIN_ON_SCREEN_OVERLAP_PX;
-  });
+    if (overlapX < MIN_ON_SCREEN_OVERLAP_PX || overlapY < MIN_ON_SCREEN_OVERLAP_PX) continue;
+    const overlap = overlapX * overlapY;
+    if (!best || overlap > bestOverlap) {
+      best = area;
+      bestOverlap = overlap;
+    }
+  }
+  return best;
 }
 
 /** Constructor geometry: the persisted bounds when they are reachable on the
- * current screens, else null (the caller keeps its default size, and Electron
- * centers a sized window with no x/y). */
+ * current screens (clamped to that screen's work area), else null (the caller
+ * keeps its default size, and Electron centers a sized window with no x/y). */
 export function restoredWindowBounds(): WindowBounds | null {
   const stored = loadState().windowBounds;
-  return isWindowBounds(stored) && boundsAreOnScreen(stored, screen.getAllDisplays()) ? stored : null;
+  if (!isWindowBounds(stored)) return null;
+  const area = containingWorkArea(stored, screen.getAllDisplays());
+  if (!area) return null;
+  return { ...stored, width: Math.min(stored.width, area.width), height: Math.min(stored.height, area.height) };
 }
 
 /**

@@ -1,6 +1,6 @@
 import type { Terminal } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { shortcutManager } from '../shortcuts.js';
+import { shortcutManager, canonicalAlnumKey } from '../shortcuts.js';
 import { isMac, isWin } from '../platform.js';
 import { appState } from '../state.js';
 import type { ClipboardSource } from '../../shared/types.js';
@@ -41,7 +41,10 @@ const CTRL_V = '\x16';
 
 // The Ctrl-equivalent byte each mac Edit chord becomes in the PTY — the same
 // bytes a win/linux terminal sends for the same physical key: Ctrl+A
-// beginning-of-line, Ctrl+C SIGINT, Ctrl+X kill-line, Ctrl+Z suspend.
+// beginning-of-line, Ctrl+C SIGINT, Ctrl+X the emacs C-x prefix (readline's
+// kill-line is C-x C-k; 0x18 alone only arms the prefix), Ctrl+Z suspend.
+// Looked up through `canonicalAlnumKey`, NOT `e.key`: a Cyrillic layout reports
+// the key as 'с'/'а'/'х' and the chord would miss (row 92 follow-up).
 const MAC_CHORD_BYTES: Record<string, string> = { a: '\x01', c: '\x03', x: '\x18', z: '\x1a' };
 
 /**
@@ -519,10 +522,14 @@ export function attachClipboardCopyHandler(
     // this handler to its own helper textarea, so the terminal owns focus by
     // the time it runs.
     const macChord = isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+    // Physical key, so a Cyrillic/Greek/Arabic layout's Cmd+С/Х/А/З resolve as
+    // the Latin letters the chord table is keyed by (row 92 follow-up: this read
+    // `e.key`, so the chords missed on every non-Latin layout).
+    const macChordKey = canonicalAlnumKey(e);
     // Cmd+C with a selection copies through main (#160) instead of Chromium's
     // native copy of the armed textarea, which adds the rich flavors that
     // corrupt non-Latin text — same reason Ctrl+Shift+C goes through main.
-    if (macChord && e.key === 'c' && terminal.hasSelection()) {
+    if (macChord && macChordKey === 'c' && terminal.hasSelection()) {
       if (e.type === 'keydown') copySelection(terminal);
       // Stop Chromium's own edit command too: on the armed-copy path it would
       // overwrite what main just received, and the Cmd+X default would cut
@@ -536,7 +543,7 @@ export function attachClipboardCopyHandler(
     // native paste event attachImagePasteHandler and xterm's own paste
     // pipeline already serve.
     if (macChord && writeToPty) {
-      const byte = MAC_CHORD_BYTES[e.key.toLowerCase()];
+      const byte = MAC_CHORD_BYTES[macChordKey];
       if (byte !== undefined) {
         if (e.type === 'keydown') writeToPty(byte);
         e.preventDefault();

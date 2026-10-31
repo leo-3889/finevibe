@@ -82,7 +82,10 @@ vi.mock('../state.js', () => ({
 
 vi.mock('./terminal-pane.js', () => ({ fitAllVisible: vi.fn() }));
 vi.mock('./search-bar.js', () => ({ destroySearchBar: vi.fn(), hideSearchBar: vi.fn() }));
-vi.mock('../shortcuts.js', () => ({
+// Partial: only the manager is stubbed. `canonicalAlnumKey` (the physical-key
+// rule the terminal mac chords resolve through) must stay the real one.
+vi.mock('../shortcuts.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../shortcuts.js')>()),
   shortcutManager: { getKeys: vi.fn(() => []), matchEvent: vi.fn(() => false), matchesAnyShortcut: vi.fn(() => false) },
   displayKeys: vi.fn(() => ''),
 }));

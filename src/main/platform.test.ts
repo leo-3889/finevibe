@@ -56,6 +56,7 @@ describe('pythonBin (audit P2-23 POSIX probe, row 78 zero-exec)', () => {
     setPlatform('darwin');
     mockExecSync.mockImplementation((cmd: string) => {
       if (cmd === 'command -v /usr/bin/python3') return '/usr/bin/python3\n';
+      if (cmd.startsWith('xcode-select')) return '/Library/Developer/CommandLineTools\n';
       throw new Error('not found');
     });
 
@@ -63,9 +64,51 @@ describe('pythonBin (audit P2-23 POSIX probe, row 78 zero-exec)', () => {
 
     expect(pythonBin).toBe('/usr/bin/python3');
     const commands = mockExecSync.mock.calls.map(([cmd]) => String(cmd));
-    expect(commands).toEqual(['command -v python3', 'command -v /usr/bin/python3']);
-    expect(commands.some((cmd) => !cmd.startsWith('command -v '))).toBe(false);
+    expect(commands).toEqual([
+      'command -v python3',
+      'command -v /usr/bin/python3',
+      'xcode-select -p >/dev/null 2>&1',
+    ]);
+    expect(commands.some((cmd) => !cmd.startsWith('command -v ') && !cmd.startsWith('xcode-select'))).toBe(false);
     expect(commands.some((cmd) => cmd.includes('--version'))).toBe(false);
+  });
+
+  // Row 78 follow-up: `command -v` resolves Apple's CLT SHIM like a real
+  // interpreter, so on a CLT-less mac the probe used to pin a path that pops the
+  // "Install Command Line Developer Tools" dialog on first use — silently, since
+  // the boot warning now sees a "found" python3. The CLT gate keeps probing.
+  it('refuses the CLT shim when no Command Line Tools are selected (mac)', async () => {
+    setPlatform('darwin');
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'command -v python3' || cmd === 'command -v /usr/bin/python3') return '/usr/bin/python3\n';
+      if (cmd.startsWith('xcode-select')) throw new Error('no developer tools were found');
+      if (cmd === 'command -v python') return '/opt/homebrew/bin/python\n';
+      throw new Error('not found');
+    });
+
+    const { pythonBin } = await loadPlatform();
+
+    expect(pythonBin).toBe('/opt/homebrew/bin/python');
+    const commands = mockExecSync.mock.calls.map(([cmd]) => String(cmd));
+    // Gate fires once per shim hit: the PATH-resolved `python3` and the literal
+    // candidate are the same file, and neither may become pythonBin.
+    expect(commands.filter((cmd) => cmd.startsWith('xcode-select'))).toHaveLength(2);
+    expect(commands.some((cmd) => cmd.includes('/usr/bin/python3') && cmd.startsWith('command -v'))).toBe(true);
+  });
+
+  // The gate is darwin-only: a Linux box with /usr/bin/python3 (distro python)
+  // must never pay an xcode-select spawn, and must keep the resolved path.
+  it('never runs the CLT gate off macOS', async () => {
+    setPlatform('linux');
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'command -v python3') return '/usr/bin/python3\n';
+      throw new Error('not found');
+    });
+
+    const { pythonBin } = await loadPlatform();
+
+    expect(pythonBin).toBe('/usr/bin/python3');
+    expect(mockExecSync.mock.calls.map(([cmd]) => String(cmd))).toEqual(['command -v python3']);
   });
 
   it('falls through to bare python when the python3 spellings are absent', async () => {

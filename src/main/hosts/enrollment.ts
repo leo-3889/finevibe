@@ -1,4 +1,4 @@
-  // Enrollment state machine (multi-host Phase 1, plan §4).
+// Enrollment state machine (multi-host Phase 1, plan §4).
 //
 // Driven main-side; every step emits {step, ok, detail} so the wizard can
 // render a live checklist. Failures are per-step: a partial enrollment keeps

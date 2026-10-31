@@ -35,14 +35,18 @@ const ALIAS_STUB_FAILURE = Object.assign(
   { status: 9009 },
 );
 
-function mockPlatform(isWin: boolean) {
+function mockPlatform(isWin: boolean, isMac = false) {
   const setPythonBin = vi.fn();
   // The POSIX branch resolves the candidates platform.ts exports, in order.
   // Hard-coded here so a reordered/renamed list shows up as a failing probe
   // sequence instead of silently following the new one.
   vi.doMock('./platform', () => ({
     isWin,
+    isMac,
     setPythonBin,
+    // The CLT-shim path the darwin gate compares against (row 78 follow-up);
+    // literal again so a rename in platform.ts fails these cases loudly.
+    APPLE_CLT_SHIM_PATH: '/usr/bin/python3',
     POSIX_PYTHON_CANDIDATES: ['python3', '/usr/bin/python3', 'python'],
   }));
   return setPythonBin;
@@ -72,6 +76,29 @@ function programLocator(paths: Record<string, string>) {
     if (resolved) cb(null, `${resolved}\n`, '');
     else cb(Object.assign(new Error('not found'), { code: 1 }), '', '');
   });
+}
+
+// Row 78 follow-up: a mac whose `/usr/bin/python3` is the CLT shim. `command -v`
+// resolves BOTH python3 spellings to the shim path, `xcode-select -p` answers
+// only when a toolchain is selected, and the bare `python` spelling is whatever
+// the case wants present (Homebrew python in the fall-through case).
+function cltShim(cltInstalled: boolean, extraPaths: Record<string, string> = {}) {
+  const paths: Record<string, string> = {
+    python3: '/usr/bin/python3',
+    '/usr/bin/python3': '/usr/bin/python3',
+    ...extraPaths,
+  };
+  return (_cmd: string, args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string, stderr?: string) => void): void => {
+    const script = String(args[1] ?? '');
+    if (script.startsWith('xcode-select')) {
+      if (cltInstalled) cb(null, '/Library/Developer/CommandLineTools\n', '');
+      else cb(Object.assign(new Error('xcode-select: error: Unable to get active developer directory'), { code: 2 }), '', '');
+      return;
+    }
+    const resolved = paths[script.replace('command -v ', '')];
+    if (resolved) cb(null, `${resolved}\n`, '');
+    else cb(Object.assign(new Error('not found'), { code: 1 }), '', '');
+  };
 }
 
 function fails(cmd: string, args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string, stderr?: string) => void) {
@@ -138,6 +165,52 @@ describe('checkPythonAvailable()', () => {
       'command -v /usr/bin/python3',
     ]);
     expect(setPythonBin).toHaveBeenCalledWith('/usr/bin/python3');
+  });
+
+  // Row 78 follow-up: `command -v` happily resolves Apple's CLT SHIM, so on a
+  // mac without the Command Line Tools the probe used to answer "found" and the
+  // boot warning went quiet while every hook died in the install dialog the
+  // warning existed to pre-empt. The gate is `xcode-select -p` — still zero
+  // python executed.
+  it('mac: refuses the /usr/bin/python3 shim when no CLT is selected and warns', async () => {
+    const setPythonBin = mockPlatform(false, true);
+    execFile.mockImplementation(cltShim(false));
+
+    const warning = await (await loadCheck())();
+
+    expect(warning).toContain('Python not found.');
+    expect(setPythonBin).not.toHaveBeenCalled();
+    // Every shim hit is gated (both spellings resolve to it), and no candidate
+    // was ever executed: only `sh -c` calls leave this probe.
+    const scripts = execFile.mock.calls.map(([cmd, args]) => [String(cmd), String((args as string[])[1])]);
+    expect(scripts).toEqual([
+      ['sh', 'command -v python3'],
+      ['sh', 'xcode-select -p >/dev/null 2>&1'],
+      ['sh', 'command -v /usr/bin/python3'],
+      ['sh', 'xcode-select -p >/dev/null 2>&1'],
+      ['sh', 'command -v python'],
+    ]);
+  });
+
+  it('mac: keeps walking past the shim and pins the real interpreter', async () => {
+    const setPythonBin = mockPlatform(false, true);
+    execFile.mockImplementation(cltShim(false, { python: '/opt/homebrew/bin/python' }));
+
+    expect(await (await loadCheck())()).toBeNull();
+
+    expect(setPythonBin).toHaveBeenCalledTimes(1);
+    expect(setPythonBin).toHaveBeenCalledWith('/opt/homebrew/bin/python');
+  });
+
+  it('mac: accepts /usr/bin/python3 when the Command Line Tools are selected', async () => {
+    const setPythonBin = mockPlatform(false, true);
+    execFile.mockImplementation(cltShim(true));
+
+    expect(await (await loadCheck())()).toBeNull();
+
+    expect(setPythonBin).toHaveBeenCalledWith('/usr/bin/python3');
+    const scripts = execFile.mock.calls.map(([, args]) => String((args as string[])[1]));
+    expect(scripts).toEqual(['command -v python3', 'xcode-select -p >/dev/null 2>&1']);
   });
 
   it('POSIX: treats a locator that resolves to nothing as a miss', async () => {

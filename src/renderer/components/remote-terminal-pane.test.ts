@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type CsiHandler = (params: number[]) => boolean;
 type KeyHandler = (event: KeyboardEvent) => boolean | undefined;
@@ -10,6 +10,8 @@ class FakeTerminal {
   csiHandlers = new Map<string, CsiHandler>();
 
   customKeyHandler?: KeyHandler;
+
+  private selection = '';
 
   parser = {
     registerCsiHandler: (id: { final: string }, handler: CsiHandler) => {
@@ -31,6 +33,11 @@ class FakeTerminal {
   attachCustomKeyEventHandler(handler: KeyHandler): void {
     this.customKeyHandler = handler;
   }
+
+  // Selection surface the shared clipboard handler uses (Cmd+C / Ctrl+Shift+C).
+  getSelection(): string { return this.selection; }
+  hasSelection(): boolean { return this.selection.length > 0; }
+  setSelection(value: string): void { this.selection = value; }
 }
 
 vi.mock('@xterm/xterm', () => ({ Terminal: FakeTerminal }));
@@ -50,6 +57,16 @@ vi.mock('../state.js', () => ({
 const mockShowContextMenu = vi.hoisted(() => vi.fn());
 vi.mock('./terminal-context-menu.js', () => ({
   showTerminalContextMenu: (...args: unknown[]) => mockShowContextMenu(...args),
+}));
+
+// The shared key handler (`terminal-utils.attachClipboardCopyHandler`) reads the
+// platform live, so the mac Edit-chord cases below can flip it. Default false:
+// the win32 cases must not depend on the host that runs the suite.
+const mockPlatform = vi.hoisted(() => ({ isMac: false, isWin: false, isLinux: true }));
+vi.mock('../platform.js', () => ({
+  get isMac() { return mockPlatform.isMac; },
+  get isWin() { return mockPlatform.isWin; },
+  get isLinux() { return mockPlatform.isLinux; },
 }));
 
 class FakeClassList {
@@ -122,6 +139,12 @@ class FakeElement {
 class FakeDocument {
   createElement(): FakeElement {
     return new FakeElement();
+  }
+
+  // `shortcuts.ts` scans for open overlays on every key it is asked about; the
+  // pane tests never open one.
+  querySelectorAll(): FakeElement[] {
+    return [];
   }
 }
 
@@ -327,5 +350,99 @@ describe('remote pane win32-input-mode keys', () => {
     const terminal = getRemoteTerminalInstance('remote-win32-ro')!.terminal as unknown as FakeTerminal;
 
     expect(terminal.customKeyHandler).toBeUndefined();
+  });
+});
+
+// Rows 92/70 follow-up (`e8295d11` gap): the guest pane installed only the
+// win32 encoder, so the mac Edit chords died there while the local panes
+// answered them — xterm writes no byte for a meta-only a/c/x/z and the Edit
+// menu hands those keys back to the renderer. Mirrors the mac chord cases in
+// terminal-utils.test.ts on the REMOTE pane, because the bug was the wiring,
+// not the shared handler.
+describe('remote pane mac Edit chords', () => {
+  const clipboardWrite = vi.fn();
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('window', { finevibe: { clipboard: { write: clipboardWrite } } });
+    mockPlatform.isMac = true;
+    mockPlatform.isWin = false;
+  });
+
+  afterEach(() => {
+    mockPlatform.isMac = false;
+    vi.unstubAllGlobals();
+  });
+
+  function press(terminal: FakeTerminal, event: Record<string, unknown>) {
+    return terminal.customKeyHandler?.({
+      type: 'keydown',
+      preventDefault: vi.fn(),
+      ...event,
+    } as unknown as KeyboardEvent);
+  }
+
+  async function readwritePane(id: string) {
+    const { createRemoteTerminalPane, getRemoteTerminalInstance, _resetForTesting } = await import('./remote-terminal-pane.js');
+    _resetForTesting();
+    const onInput = vi.fn();
+    createRemoteTerminalPane(id, 'readwrite', 80, 24, onInput);
+    return { terminal: getRemoteTerminalInstance(id)!.terminal as unknown as FakeTerminal, onInput };
+  }
+
+  it('copies a selection with Cmd+C through main instead of writing a byte to the host', async () => {
+    const { terminal, onInput } = await readwritePane('remote-cmd-c');
+    terminal.setSelection('remote-copy');
+
+    expect(press(terminal, { key: 'c', code: 'KeyC', metaKey: true })).toBe(false);
+
+    expect(clipboardWrite).toHaveBeenCalledWith('remote-copy', 'explicit');
+    expect(onInput).not.toHaveBeenCalled();
+  });
+
+  it('sends Ctrl+C to the host for a bare Cmd+C (no selection)', async () => {
+    const { terminal, onInput } = await readwritePane('remote-cmd-sigint');
+
+    expect(press(terminal, { key: 'c', code: 'KeyC', metaKey: true })).toBe(false);
+
+    expect(onInput).toHaveBeenCalledWith('\x03');
+    expect(clipboardWrite).not.toHaveBeenCalled();
+  });
+
+  it('forwards Cmd+A/X/Z as their Ctrl bytes', async () => {
+    const { terminal, onInput } = await readwritePane('remote-cmd-bytes');
+
+    press(terminal, { key: 'a', code: 'KeyA', metaKey: true });
+    press(terminal, { key: 'x', code: 'KeyX', metaKey: true });
+    press(terminal, { key: 'z', code: 'KeyZ', metaKey: true });
+
+    expect(onInput.mock.calls.map(([data]) => data)).toEqual(['\x01', '\x18', '\x1a']);
+  });
+
+  // Row 92 follow-up: the chord table is keyed by the PHYSICAL key, so a
+  // Cyrillic layout (e.key='И' on the physical C) still copies.
+  it('copies with Cmd+И on a non-Latin layout', async () => {
+    const { terminal, onInput } = await readwritePane('remote-cmd-cyrillic');
+    terminal.setSelection('remote-cyrillic');
+
+    expect(press(terminal, { key: 'И', code: 'KeyC', metaKey: true })).toBe(false);
+
+    expect(clipboardWrite).toHaveBeenCalledWith('remote-cyrillic', 'explicit');
+    expect(onInput).not.toHaveBeenCalled();
+  });
+
+  it('keeps the win32 encoder alive behind the shared handler', async () => {
+    // xterm keeps ONE custom key handler: the shared attach must chain the
+    // encoder, not replace it, or Escape goes back to a bare ESC on a ConPTY
+    // host (the row the encoder exists for).
+    const { terminal, onInput } = await readwritePane('remote-both-handlers');
+    terminal.csiHandlers.get('h')!([9001]);
+
+    expect(press(terminal, { key: 'Escape' })).toBe(false);
+
+    expect(onInput).toHaveBeenCalledWith('\x1b[27;1;27;1;0;1_');
+    expect(clipboardWrite).not.toHaveBeenCalled();
   });
 });

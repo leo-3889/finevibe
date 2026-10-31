@@ -140,6 +140,32 @@ describe('restoredWindowBounds (audit row 79)', () => {
     expect(restoredWindowBounds()).toBeNull();
   });
 
+  // Row 79 follow-up: the containment check alone only asks "is 100 px of this
+  // rect visible?", so the rect remembered on a 2560x1440 monitor passed on a
+  // 1920x1080 screen and restored bigger than the display under it.
+  it('clamps a remembered rect that is larger than the display it lands on', async () => {
+    loadState.mockReturnValue({ windowBounds: { x: 0, y: 0, width: 2560, height: 1440 } });
+    const { restoredWindowBounds } = await fresh();
+    expect(restoredWindowBounds()).toEqual({ x: 0, y: 0, width: 1920, height: 1080 });
+  });
+
+  it('clamps against the display that actually holds the rect', async () => {
+    // The rect lives on the small secondary; the big primary must not set the
+    // ceiling, or the clamp lets the window hang off the screen it is on.
+    getAllDisplays.mockReturnValue([display(0, 0, 2560, 1440), display(2560, 0, 1280, 1024)]);
+    loadState.mockReturnValue({ windowBounds: { x: 2600, y: 20, width: 2560, height: 1440 } });
+    const { restoredWindowBounds } = await fresh();
+    expect(restoredWindowBounds()).toEqual({ x: 2600, y: 20, width: 1280, height: 1024 });
+  });
+
+  it('clamps to a menu-bar-excluded work area, not the panel size', async () => {
+    // macOS primary: workArea is the screen minus the menu bar / Dock.
+    getAllDisplays.mockReturnValue([{ workArea: { x: 0, y: 25, width: 1440, height: 855 } }]);
+    loadState.mockReturnValue({ windowBounds: { x: 0, y: 25, width: 1440, height: 900 } });
+    const { restoredWindowBounds } = await fresh();
+    expect(restoredWindowBounds()).toEqual({ x: 0, y: 25, width: 1440, height: 855 });
+  });
+
   it('ignores malformed bounds instead of handing them to the constructor', async () => {
     for (const bad of [undefined, null, 'top', {}, { x: 0, y: 0, width: 0, height: 400 }, { x: '0', y: 0, width: 800, height: 600 }]) {
       loadState.mockReturnValue({ windowBounds: bad });

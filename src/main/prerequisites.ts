@@ -1,8 +1,26 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 // pi-lens-ignore: find-import-file-without-extension
-import { isWin, setPythonBin, POSIX_PYTHON_CANDIDATES } from './platform';
+import { isWin, isMac, setPythonBin, POSIX_PYTHON_CANDIDATES, APPLE_CLT_SHIM_PATH } from './platform';
 const execFileAsync = promisify(execFile);
+
+/**
+ * True when a toolchain is selected (`xcode-select -p` prints its root). The
+ * CLT-shim gate of {@link checkPythonAvailable}; runs `sh`, never python.
+ * UNVERIFIED-RUNTIME: CI has no CLT-less mac, so the non-zero exit this relies
+ * on there is Apple's documented behavior, not an observed one — the tests
+ * below mock it.
+ */
+async function commandLineToolsInstalled(): Promise<boolean> {
+  try {
+    await execFileAsync('sh', ['-c', 'xcode-select -p >/dev/null 2>&1'], {
+      timeout: 3000, windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Check whether Python is available (needed for hook scripts) on every
@@ -29,6 +47,13 @@ const execFileAsync = promisify(execFile);
  * builtin (no interpreter starts) and prints the resolved absolute path, which
  * is the better thing to hand `setPythonBin` anyway.
  *
+ * Row 78 follow-up: resolving the shim is not having a python3. On a CLT-less
+ * mac `command -v` answers `/usr/bin/python3` for BOTH spellings, so the probe
+ * went quiet while every hook died in the modal the warning was supposed to
+ * prevent. Both darwin probes therefore gate that exact path behind
+ * `xcode-select -p` (sh again — zero python executed); a refused shim keeps the
+ * walk going and the warning reachable.
+ *
  * PA-16: async (execFile + promisify). The execSync form blocked the main
  * thread for up to 2×3 s right after createWindow() — on first paint, every
  * Windows launch. execFile has no shell, so the Windows candidates are argv
@@ -45,6 +70,7 @@ export async function checkPythonAvailable(): Promise<string | null> {
         });
         const resolved = stdout.trim();
         if (!resolved) continue;
+        if (isMac && resolved === APPLE_CLT_SHIM_PATH && !(await commandLineToolsInstalled())) continue;
         setPythonBin(resolved);
         return null;
       } catch { /* not on PATH and not an executable path; try the next candidate */ }

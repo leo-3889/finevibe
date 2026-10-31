@@ -1132,6 +1132,49 @@ describe('getRegistryPath (row 73 registry decode)', () => {
     expect(pm.getRegistryPath()).toBe('');
   });
 
+  // Row 73 follow-up: ConstrainedLanguage / WDAC boxes START PowerShell and let
+  // it refuse the property read, so the JSON path used to fail OPEN — the
+  // registry contributed zero and a provider living on a registry-only
+  // directory read as uninstalled. reg.exe is not subject to the language mode.
+  it('falls back to the reg query read when PowerShell is refused (ConstrainedLanguage)', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    process.env.SystemRoot = 'C:\\Windows';
+    execSync.mockImplementation((cmd: unknown) => {
+      const command = String(cmd);
+      if (command.startsWith('powershell.exe')) {
+        throw new Error('Cannot set property. Property setting is supported only on core types in this language mode.');
+      }
+      if (command.includes('HKLM')) return '\r\n    Path    REG_EXPAND_SZ    C:\\Windows\\system32;%SystemRoot%\\twain_32\r\n\r\n';
+      if (command.includes('HKCU')) return '\r\n    Path    REG_SZ    C:\\Users\\test\\AppData\\Roaming\\npm\r\n';
+      throw new Error('not found');
+    });
+
+    expect(pm.getRegistryPath())
+      .toBe('C:\\Windows\\system32;C:\\Windows\\twain_32;C:\\Users\\test\\AppData\\Roaming\\npm');
+
+    // Both hives, per hive one call, ASCII intact, %VAR% still expanded.
+    const commands = execSync.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands.filter((cmd) => cmd.startsWith('reg query'))).toHaveLength(2);
+    expect(commands[0]).toContain('powershell.exe');
+    expect(commands[1]).toContain('"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"');
+    expect(commands[2]).toContain('"HKCU\\Environment"');
+  });
+
+  // The other face of the same box: PowerShell RUNS and answers `[null,null]`
+  // because the language mode refused the property read, not because the hives
+  // are empty. Falling back on the empty payload is what closes that face.
+  it('falls back to the reg query read when PowerShell answers with empty hives', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockImplementation((cmd: unknown) => {
+      const command = String(cmd);
+      if (command.startsWith('powershell.exe')) return '[null,null]';
+      if (command.includes('HKLM')) return '    Path    REG_SZ    C:\\Windows\\system32\r\n';
+      throw new Error('not found');
+    });
+
+    expect(pm.getRegistryPath()).toBe('C:\\Windows\\system32');
+  });
+
   // The consumer half of the row: a provider installed under a non-ASCII
   // directory is only found if the decoded path reaches the PATH getFullPath
   // hands the binary probes — sync and async twins must agree.
@@ -1161,6 +1204,31 @@ describe('getRegistryPath (row 73 registry decode)', () => {
     // The async twin must spawn the locator, never the shell probe.
     expect(async_.execFile.mock.calls[0][0]).toBe('powershell.exe');
     expect(async_.execSync).not.toHaveBeenCalled();
+  });
+
+  // Row 73 follow-up, async twin: PowerShell throws (ConstrainedLanguage /
+  // WDAC / no PowerShell at all) and the pre-wave `reg query` read still knows
+  // where the provider CLIs live.
+  it('falls back to the reg query read in getFullPathAsync when PowerShell throws', async () => {
+    vi.stubEnv('PATH', 'C:\\Windows\\System32');
+    const async_ = await importWinPtyManager();
+    async_.execFile.mockImplementation((cmd: string, args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      if (cmd === 'powershell.exe') {
+        cb(new Error('Property setting is supported only on core types in this language mode.'));
+        return;
+      }
+      const hive = String((args as string[])[1]);
+      cb(null, hive.includes('HKLM')
+        ? '    Path    REG_EXPAND_SZ    C:\\Windows\\system32\r\n'
+        : '    Path    REG_SZ    C:\\Users\\test\\AppData\\Roaming\\npm\r\n');
+    });
+
+    const asyncPath = await async_.pm.getFullPathAsync();
+
+    expect(asyncPath).toContain('C:\\Windows\\System32');
+    expect(asyncPath).toContain('C:\\Windows\\system32');
+    expect(asyncPath).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
+    expect(async_.execFile.mock.calls.map(([cmd]) => cmd)).toEqual(['powershell.exe', 'reg', 'reg']);
   });
 
   if (!isWin) {

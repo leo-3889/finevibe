@@ -25,6 +25,10 @@ const WIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KH
 // Electron's FreeBSD port keeps the X11 product token but names the OS, so a
 // "looks like Linux" UA must still read false.
 const FREEBSD_UA = 'Mozilla/5.0 (X11; FreeBSD amd64) AppleWebKit/537.36 (KHTML, like Gecko) FineVibe/1.0.0 Chrome/130.0.6723.118 Electron/33.2.0 Safari/537.36';
+// A Wayland Electron build names the display server instead of X11; main
+// (`process.platform === 'linux'`) still says Linux, so the UA token check must
+// not pin the `(X11; ` spelling (row 104 follow-up, `104f5f8e`).
+const WAYLAND_UA = 'Mozilla/5.0 (Wayland; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) FineVibe/1.0.0 Chrome/130.0.6723.118 Electron/33.2.0 Safari/537.36';
 
 describe('renderer platform detection (audit row 104)', () => {
   it('reports Linux from the Chromium Linux UA', async () => {
@@ -46,6 +50,13 @@ describe('renderer platform detection (audit row 104)', () => {
     expect(isLinux).toBe(false);
     expect(isMac).toBe(false);
     expect(isWin).toBe(true);
+  });
+
+  it('reports Linux from a Wayland Linux UA (the token, not the display server)', async () => {
+    const { isLinux, isMac, isWin } = await loadPlatform({ platform: 'Linux x86_64', userAgent: WAYLAND_UA });
+    expect(isLinux).toBe(true);
+    expect(isMac).toBe(false);
+    expect(isWin).toBe(false);
   });
 
   it('defaults an unknown platform to false, matching main (FreeBSD UA)', async () => {
