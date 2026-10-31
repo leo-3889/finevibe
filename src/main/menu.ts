@@ -1,4 +1,5 @@
 import { app, Menu, BrowserWindow } from 'electron';
+import { RELOAD_MAIN_WINDOW_ACCELERATOR } from '../shared/constants';
 import { isMac, isWin, isLinux } from './platform';
 
 export function createAppMenu(debugMode = false): void {
@@ -139,7 +140,13 @@ export function createAppMenu(debugMode = false): void {
             label: 'Reload Main Window',
             // C4S-03: Ctrl+Alt+R is AltGr+R on many non-US layouts, so the
             // AltGr half of a dead-key/compose press would fire a reload.
-            accelerator: isMac ? 'Command+Shift+R' : 'Ctrl+Shift+F5',
+            // Row 99: the chord is display-only HERE but real in the renderer —
+            // the same shared constant is the `reload-main-window` shortcut's
+            // default keys, so the printed keys fire the same action on all
+            // three platforms (the old Command+Shift+R display collided with
+            // the browser-tab hard reload, and Ctrl+Shift+F5 was bound by
+            // nothing on win/linux).
+            accelerator: RELOAD_MAIN_WINDOW_ACCELERATOR,
             registerAccelerator: false,
             click: () => BrowserWindow.getFocusedWindow()?.reload(),
           },

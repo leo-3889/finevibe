@@ -572,6 +572,9 @@
     "zoom-reset": {
       "label": "Reset Zoom"
     },
+    "reload-main-window": {
+      "label": "Reload Main Window"
+    },
     "browser-reload": {
       "label": "Reload Page"
     },

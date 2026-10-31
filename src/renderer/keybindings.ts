@@ -129,6 +129,11 @@ export function initKeybindings(): void {
     instance.webview.reloadIgnoringCache();
     return true;
   });
+  // Row 99: the chord View → Reload Main Window displays (the same shared
+  // constant, `RELOAD_MAIN_WINDOW_ACCELERATOR`). The menu item's own click
+  // calls `webContents.reload()` on the main side; from here the identical
+  // action is the page reloading itself.
+  shortcutManager.registerHandler('reload-main-window', acts(() => window.location.reload()));
 
   document.addEventListener('keydown', (e) => {
     // A terminal's custom key handler runs the dispatcher at the xterm gate

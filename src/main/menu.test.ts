@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { RELOAD_MAIN_WINDOW_ACCELERATOR } from '../shared/constants';
 
 // Menu-accelerator guard. The win/linux GTK menu bar claims role-based
 // accelerators (Ctrl+C/V/X/Z/A, Ctrl+Q) before the renderer/xterm.js sees
@@ -115,6 +116,19 @@ describe.each([
     const template = await buildTemplate(platform);
     expect(claimedAccelerators(flatten(template))).toEqual([]);
   });
+
+  // Row 99: every displayed accelerator must be a chord something actually
+  // binds. Reload Main Window prints the shared constant that the renderer
+  // registers for real (shortcuts.ts `reload-main-window`), so the label and
+  // the behavior agree: display-only here (the native bar must claim no key —
+  // F5 belongs to the terminal), live in the renderer.
+  it('prints the reload chord the renderer really binds, on every platform', async () => {
+    const template = await buildTemplate(platform);
+    const reload = flatten(template).find((i) => i.label === 'Reload Main Window');
+    expect(reload).toBeDefined();
+    expect(reload!.accelerator).toBe(RELOAD_MAIN_WINDOW_ACCELERATOR);
+    expect(reload!.registerAccelerator).toBe(false);
+  });
 });
 
 describe('mac menu', () => {
@@ -173,8 +187,23 @@ describe('mac menu', () => {
     }
   });
 
+  // Row 99 (mac is where the display lied): the item used to print ⇧⌘R, the
+  // chord the renderer binds to the browser-tab HARD reload — so the menu
+  // showed one action and the key did another. It now prints the same shared
+  // constant win/linux show and the renderer binds.
+  it('prints the reload chord the renderer really binds', async () => {
+    const template = await buildTemplate({ isMac: true });
+    const reload = flatten(template).find((i) => i.label === 'Reload Main Window');
+    expect(reload).toBeDefined();
+    expect(reload!.accelerator).toBe(RELOAD_MAIN_WINDOW_ACCELERATOR);
+    expect(reload!.accelerator).not.toBe('Command+Shift+R');
+    expect(reload!.registerAccelerator).toBe(false);
+    // Display-only: it must not join the claimed set (Close Window stays the
+    // only one), or macOS would eat the event before the renderer.
+    expect(claimedAccelerators(flatten(template))).toEqual(['Close Window: CmdOrCtrl+Shift+W']);
+  });
+
   it('claims exactly one accelerator: Cmd+Shift+W Close Window', async () => {
-    // Close Window must stay menu-side: Cmd+Shift+W is an app-level window
     // command, not a PTY byte, and row 117 tracks its confirm-gating concern
     // separately. Every other entry is registerAccelerator:false, an empty
     // accelerator, or a role left on its default (hide/quit ⇒ Cmd+H/Cmd+Q:

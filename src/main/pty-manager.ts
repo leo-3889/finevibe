@@ -438,7 +438,9 @@ export function resolveWindowsShell(
   }
   // .cmd/.bat shims carry their real target; an extensionless npm launcher
   // resolves via PATHEXT to the <name>.cmd beside it — parse the same file.
-  const shimPath = ext === '.cmd' || ext === '.bat' ? shell : ext === '' ? `${shell}.cmd` : '';
+  let shimPath = '';
+  if (ext === '.cmd' || ext === '.bat') shimPath = shell;
+  else if (ext === '') shimPath = `${shell}.cmd`;
   if (shimPath) {
     const target = resolveCmdShimTarget(shimPath);
     if (target) return { shell: target.executable, args: [...target.prefixArgs, ...args] };
@@ -521,14 +523,16 @@ export function resolveProviderBinary(providerId: ProviderId, hostId?: string): 
  * absolute path does not exist on the remote — the remote login shell's PATH
  * resolves the remote's own install.
  */
-function remoteCommand(bin: string, argv: string[], rawToken?: string): string {
-  // `rawToken` (the home-relative session dir) is emitted "…"-quoted so the
-  // remote login shell expands its leading `~` — single quotes (posixQuote)
-  // would hand the CLI a literal `~` directory. The token is the sanitized
-  // remoteLaunchSessionDir spelling ([A-Za-z0-9_./-] after `~/`), so double
-  // quoting carries no expansion risk.
+function remoteCommand(bin: string, argv: string[], homeTokens: Set<string>): string {
+  // `homeTokens` (the home-relative session dir, and on a resume the
+  // transcript re-anchored under it) are emitted "…"-quoted so the remote
+  // login shell expands their leading `~` — single quotes (posixQuote) would
+  // hand the CLI a literal `~` directory. Each token is the sanitized
+  // remoteLaunchSessionDir spelling ([A-Za-z0-9_./-] after `~/`) plus a
+  // sanitized transcript basename, so double quoting carries no expansion
+  // risk.
   return [bin, ...argv]
-    .map((t) => (rawToken !== undefined && t === rawToken ? `"${t.replace(/^~/, '$HOME')}"` : posixQuote(t)))
+    .map((t) => (homeTokens.has(t) ? `"${t.replace(/^~/, '$HOME')}"` : posixQuote(t)))
     .join(' ');
 }
 
@@ -537,13 +541,52 @@ function usesSessionDirArgv(providerId: ProviderId): providerId is 'pi' | 'pi-bo
   return providerId === 'pi' || providerId === 'pi-bolt' || providerId === 'omp';
 }
 
-/** Swap a locally-derived `--session-dir` value for the host-side spelling. */
+/**
+ * Resume flags whose value the Pi-compatible CLIs accept as a transcript path
+ * OR an id looked up in `--session-dir` (`pi --session <path|id>`,
+ * `omp --resume <path|id>`).
+ */
+const REMOTE_RESUME_FLAGS = ['--session', '--resume'];
+
+/**
+ * Swap a locally-derived `--session-dir` value for the host-side spelling,
+ * and re-anchor a path-shaped resume token under it (audit row 97).
+ *
+ * The provider resolves its resume target to the CONTROLLER's transcript file
+ * (pi/omp `resumeTarget`); on the host that path does not exist, and both
+ * CLIs read a missing `--session|--resume <path>` as "start this file" — a
+ * blank transcript under the pinned id, silently. The transcript itself IS on
+ * the host, under the same basename in the host session dir (the mirror
+ * resolves it there), so a basename swap is enough. A bare id needs nothing:
+ * the CLIs look it up in `--session-dir`, which this function already swapped.
+ */
 function remoteSessionDirArgv(argv: string[], hostDir: string): string[] {
-  const i = argv.indexOf('--session-dir');
-  if (i < 0 || i + 1 >= argv.length) return argv; // provider didn't add it — nothing to swap
   const out = [...argv];
-  out[i + 1] = hostDir;
-  return out;
+  let changed = false;
+  const i = out.indexOf('--session-dir');
+  if (i >= 0 && i + 1 < argv.length) {
+    out[i + 1] = hostDir;
+    changed = true;
+  }
+  for (const flag of REMOTE_RESUME_FLAGS) {
+    const j = out.indexOf(flag);
+    if (j < 0 || j + 1 >= argv.length) continue;
+    const value = out[j + 1];
+    // Split on BOTH separators: the controller path is Windows-style on the
+    // primary deployment (Windows controller → Linux host), where
+    // path.basename on a POSIX build would return the whole string.
+    const base = value.split(/[/\\]/).pop() ?? '';
+    // `base !== value` is the path-shape test: a bare id has no separator.
+    // ponytail: a basename outside [A-Za-z0-9._-] keeps the old (broken) local
+    // spelling rather than escaping — our own transcript names
+    // (`<stamp>_<cliSessionId>.jsonl`) never hit that branch, and the ceiling
+    // is one blank resume, not an injectable command line.
+    if (base && base !== value && /^[A-Za-z0-9._-]+$/.test(base)) {
+      out[j + 1] = `${hostDir}/${base}`;
+      changed = true;
+    }
+  }
+  return changed ? out : argv;
 }
 
 /**
@@ -684,16 +727,18 @@ export function resolveLaunchSpec(params: {
     // (the CLI's local flow pre-creates the dir; the host's must exist too).
     let argv = base.argv;
     let mkdir = '';
-    let rawToken: string | undefined;
+    let homeTokens = new Set<string>();
     if (usesSessionDirArgv(providerId)) {
       const hostDir = remoteLaunchSessionDir(providerId, sessionId);
       argv = remoteSessionDirArgv(base.argv, hostDir);
       if (argv !== base.argv) {
-        rawToken = hostDir;
+        // Every host-derived token (the dir, and a resume path re-anchored
+        // under it) carries the leading `~` that the login shell must expand.
+        homeTokens = new Set(argv.filter((t) => t === hostDir || t.startsWith(`${hostDir}/`)));
         mkdir = `mkdir -p "${hostDir.replace(/^~/, '$HOME')}" && `;
       }
     }
-    const cmd = `${mkdir}${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, argv, rawToken)}`;
+    const cmd = `${mkdir}${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, argv, homeTokens)}`;
     return { ...base, executable: 'ssh', argv: ['-tt', '-p', String(record.port), '--', `${record.user}@${record.host}`, cmd] };
   }
   return base;

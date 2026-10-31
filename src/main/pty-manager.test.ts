@@ -469,6 +469,39 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.env.PI_CODING_AGENT_DIR).toBe('/home/dev/.finevibe/profiles/p1');
   });
 
+  // Audit row 97: a resume carries the provider's resolved transcript PATH, and
+  // swapping only --session-dir left that controller path in the command. The
+  // host has no such file, and Pi/OMP read a missing `--session|--resume <path>`
+  // as "start this file" — a blank transcript under the pinned id, silently.
+  it('re-anchors a path-shaped resume target under the host session dir (audit row 97)', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    const buildArgs = vi.spyOn(getProvider('omp'), 'buildArgs').mockReturnValue([
+      '--session-dir', '/home/dev/.config/finevibe/omp-sessions/s1',
+      '--resume', '/home/dev/.config/finevibe/omp-sessions/s1/2026-01-01T10-00-00_cli-1.jsonl',
+    ]);
+    try {
+      const spec = resolveLaunchSpec({ ...base, cliSessionId: 'cli-1', isResume: true, hostId: 'lab' });
+      const cmd = spec.argv[5] as string;
+      // Same spelling the transcript mirror resolves on the host, and
+      // $HOME-expanded like the session dir — single quotes would hand the CLI
+      // a literal `~` directory.
+      expect(cmd).toContain(`'--resume' "$HOME/.finevibe/sessions/omp/s1/2026-01-01T10-00-00_cli-1.jsonl"`);
+      expect(cmd).not.toContain('/home/dev/.config/finevibe');
+    } finally {
+      buildArgs.mockRestore();
+    }
+  });
+
+  it('leaves a bare-id resume token untouched (audit row 97 negative)', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    // No local transcript resolved — the usual remote resume, since the launch
+    // dir lives on the host — so the provider passes the bare id, which both
+    // CLIs look up inside the swapped --session-dir. Rewriting it would break
+    // that lookup.
+    const spec = resolveLaunchSpec({ ...base, cliSessionId: 'cli-1', isResume: true, hostId: 'lab' });
+    expect(spec.argv[5]).toContain(`'--resume' 'cli-1'`);
+  });
+
   it('drops a hostile session-id env value from the remote command (audit T2 #3)', () => {
     mockGetHost.mockReturnValue(labRecord);
     // The id is renderer-supplied and becomes a host-side file path in the

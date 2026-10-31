@@ -162,15 +162,31 @@ interface ListOptions {
   max: number;
 }
 
+/** GitHub's own `per_page` default — the fallback when the caller's number is unusable. */
+const GITHUB_DEFAULT_PER_PAGE = 30;
+
+/**
+ * Clamp a caller-supplied page size for `per_page` and the result slice.
+ *
+ * `max` crosses the IPC boundary verbatim (ipc/app-domains.ts passes the
+ * renderer's number), so a non-finite value used to reach gh as
+ * `per_page=NaN` and slice the result to empty — an empty panel with
+ * `ok: true`. Anything unusable falls back to the default page size.
+ */
+function clampPerPage(max: number): number {
+  return Number.isFinite(max) ? Math.min(Math.max(max, 1), GITHUB_MAX_PER_PAGE) : GITHUB_DEFAULT_PER_PAGE;
+}
+
 export async function listPullRequests(repo: string, opts: ListOptions): Promise<GithubFetchResult> {
   const encoded = repo ? encodeRepoPath(repo) : null;
   if (!encoded) return { ok: false, error: 'Invalid repo. Expected owner/name.' };
   if (!(await isGhAvailable())) return { ok: false, error: 'gh CLI not installed' };
+  const perPage = clampPerPage(opts.max);
   try {
     const items = await ghApi<GithubItem[]>(`repos/${encoded}/pulls`, {
-      query: { state: opts.state, per_page: Math.min(Math.max(opts.max, 1), GITHUB_MAX_PER_PAGE), sort: 'updated', direction: 'desc' },
+      query: { state: opts.state, per_page: perPage, sort: 'updated', direction: 'desc' },
     });
-    return { ok: true, items: items.slice(0, opts.max) };
+    return { ok: true, items: items.slice(0, perPage) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -185,11 +201,11 @@ export async function listIssues(repo: string, opts: ListOptions): Promise<Githu
     // /issues endpoint returns PRs too — search API filters server-side via is:issue.
     const qParts = [`repo:${repo}`, 'is:issue'];
     if (opts.state !== 'all') qParts.push(`state:${opts.state}`);
-    const perPage = Math.min(Math.max(opts.max, 1), GITHUB_MAX_PER_PAGE);
+    const perPage = clampPerPage(opts.max);
     const result = await ghApi<{ items: GithubItem[] }>('search/issues', {
       query: { q: qParts.join(' '), sort: 'updated', order: 'desc', per_page: perPage },
     });
-    return { ok: true, items: result.items.slice(0, opts.max) };
+    return { ok: true, items: result.items.slice(0, perPage) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

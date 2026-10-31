@@ -572,6 +572,9 @@
     "zoom-reset": {
       "label": "重置缩放"
     },
+    "reload-main-window": {
+      "label": "重新加载主窗口"
+    },
     "browser-reload": {
       "label": "重新加载页面"
     },

@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { RELOAD_MAIN_WINDOW_ACCELERATOR } from '../shared/constants';
+import { isMac } from './platform.js';
 
 // appState drags the whole renderer store graph; matchEvent only needs
-// `preferences.keybindings`.
+// `preferences.keybindings` (setPreference is here for the setOverride cases).
 vi.mock('./state.js', () => ({
-  appState: { preferences: { keybindings: {} } },
+  appState: { preferences: { keybindings: {} }, setPreference: vi.fn() },
 }));
 
 import { ShortcutManager } from './shortcuts.js';
@@ -308,5 +310,89 @@ describe('physical-key matching (non-Latin layouts)', () => {
     const e = new KeyboardEvent('keydown', keyInit({ key: 't', code: 'KeyT', ctrlKey: true }));
     expect(manager.matchEvent(e)).toBe(true);
     expect(newSessionCalls).toBe(1);
+  });
+});
+
+describe('reload-main-window chord (row 99)', () => {
+  // The View → Reload Main Window item prints this chord with
+  // registerAccelerator:false, so the menu claims nothing and this shortcut is
+  // the only thing that can act on the key. Display and behavior share
+  // `RELOAD_MAIN_WINDOW_ACCELERATOR`, so they cannot drift apart.
+  it('binds the exact chord the menu prints', () => {
+    const manager = new ShortcutManager();
+    let reloads = 0;
+    manager.registerHandler('reload-main-window', () => { reloads++; return true; });
+
+    expect(manager.getKeys('reload-main-window')).toBe(RELOAD_MAIN_WINDOW_ACCELERATOR);
+    const e = new KeyboardEvent('keydown', keyInit({
+      key: 'F5',
+      code: 'F5',
+      shiftKey: true,
+      ...(isMac ? { metaKey: true } : { ctrlKey: true }),
+    }));
+    expect(manager.matchEvent(e)).toBe(true);
+    expect(reloads).toBe(1);
+  });
+
+  it('leaves CmdOrCtrl+Shift+R to the browser-tab hard reload', () => {
+    // Row 99's collision: the mac menu used to PRINT this chord on the
+    // main-window item. The chord stays browser-tab-only (its handler declines
+    // outside a browser tab); only the F5 chord reloads the window.
+    const manager = new ShortcutManager();
+    let reloads = 0;
+    manager.registerHandler('reload-main-window', () => { reloads++; return true; });
+    const e = new KeyboardEvent('keydown', keyInit({
+      key: 'r',
+      code: 'KeyR',
+      shiftKey: true,
+      ...(isMac ? { metaKey: true } : { ctrlKey: true }),
+    }));
+    expect(manager.matchEvent(e)).toBe(false);
+    expect(reloads).toBe(0);
+  });
+});
+
+describe('setOverride mac-menu collision warning (row 117)', () => {
+  // The macOS application menu registers its own chords (src/main/menu.ts), and
+  // a native menu accelerator is consumed before the renderer's keydown
+  // listener sees the event — an override recorded onto one of them never
+  // fires. isMac is a module-level const, so the mac path needs a fresh import
+  // with the platform mocked (same resetModules idiom as menu.test.ts).
+  async function macManager(): Promise<ShortcutManager> {
+    vi.resetModules();
+    vi.doMock('./platform.js', () => ({ isMac: true }));
+    const { ShortcutManager: MacShortcutManager } = await import('./shortcuts.js');
+    const { appState: macAppState } = await import('./state.js');
+    (macAppState as { preferences: { keybindings: Record<string, string> } }).preferences.keybindings = {};
+    return new MacShortcutManager();
+  }
+
+  it('warns when an override lands on a chord the mac menu owns', async () => {
+    const manager = await macManager();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    manager.setOverride('close-session', 'CmdOrCtrl+Shift+W');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('Close Window');
+    warn.mockRestore();
+  });
+
+  it('warns for the role-default chords the mac menu keeps (Quit/Redo/…)', async () => {
+    const manager = await macManager();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const keys of ['CmdOrCtrl+Q', 'CmdOrCtrl+H', 'CmdOrCtrl+M', 'CmdOrCtrl+Shift+Z', 'CmdOrCtrl+Shift+V', 'CmdOrCtrl+Backspace']) {
+      manager.setOverride('goto-line', keys);
+    }
+    expect(warn).toHaveBeenCalledTimes(6);
+    warn.mockRestore();
+  });
+
+  it('stays silent on a chord the menu does not claim', async () => {
+    const manager = await macManager();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // CmdOrCtrl+Shift+E is unclaimed on mac, and on win/linux menu.ts
+    // registers no accelerators at all (their menu test pins that).
+    manager.setOverride('close-session', 'CmdOrCtrl+Shift+E');
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
