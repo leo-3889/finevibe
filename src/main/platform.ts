@@ -58,3 +58,21 @@ if (!isWin) {
 export function setPythonBin(bin: string): void {
   pythonBin = bin;
 }
+
+/**
+ * GPU escape hatch (audit row 85). On Mesa/gfx1201 boards the Electron GPU
+ * process (ANGLE → Vulkan → RADV) faults on `ring gfx_0.0.0`, and every kernel
+ * soft-recovery stalls the whole desktop ~10 s because GNOME shares that ring
+ * (f0d9e19e forensics). `FINEVIBE_DISABLE_GPU=1` drops GL for the whole app;
+ * Linux-only because that fault path is Mesa-specific — the Windows/macOS
+ * runs are unverified against the flag, so they ignore it. `platform` is a
+ * parameter so the boot wiring in main.ts stays a one-liner and the decision
+ * stays unit-testable; it defaults to the process platform (main.ts must not
+ * inline a platform comparison — that is this module's job).
+ */
+export function shouldDisableHardwareAcceleration(
+  env: Record<string, string | undefined>,
+  platform: string = process.platform,
+): boolean {
+  return platform === 'linux' && env.FINEVIBE_DISABLE_GPU === '1';
+}

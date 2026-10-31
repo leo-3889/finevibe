@@ -15,7 +15,7 @@ import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
 import { configureProbeCacheDir } from './providers/resolve-binary';
-import { isMac, isWin } from './platform';
+import { isMac, isWin, shouldDisableHardwareAcceleration } from './platform';
 import { APP_INDEX_URL, installAppScheme, isAppDocumentUrl, registerAppScheme } from './app-scheme';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
@@ -99,6 +99,14 @@ const HOST_PERMISSIONS: Record<string, true> = {
   notifications: true,
 };
 const isHostPermission = (permission: string): boolean => Object.hasOwn(HOST_PERMISSIONS, permission);
+
+// GPU escape hatch (audit row 85): gfx1201/Mesa-RADV desktop stalls — the ANGLE→
+// Vulkan GPU process faults `ring gfx_0.0.0` and each kernel soft-recovery freezes
+// the desktop (f0d9e19e forensics). `FINEVIBE_DISABLE_GPU=1` drops GL; the call
+// must precede `ready`, so it sits beside the other pre-ready Electron calls.
+if (shouldDisableHardwareAcceleration(process.env)) {
+  app.disableHardwareAcceleration();
+}
 
 // Privileged `app://` registration must precede the `ready` event (Electron
 // requirement), so it runs at module scope, not in whenReady. The handler that

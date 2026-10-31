@@ -99,6 +99,18 @@ describe('main.ts wiring (static invariants)', () => {
     expect(main.slice(0, registerAt)).toMatch(/^import /m);
   });
 
+  // AUDIT row 85: the FINEVIBE_DISABLE_GPU escape hatch (decision in platform.ts,
+  // docs/packaging.md). Electron ignores disableHardwareAcceleration() once the
+  // app is `ready`, so — same constraint as the privileged scheme — the call must
+  // sit at module scope, above the whenReady chain.
+  it('applies the GPU escape hatch before app.whenReady', () => {
+    const hatchAt = main.indexOf('app.disableHardwareAcceleration()');
+    const readyAt = main.indexOf('app.whenReady()');
+    expect(hatchAt).toBeGreaterThan(-1);
+    expect(readyAt).toBeGreaterThan(-1);
+    expect(hatchAt).toBeLessThan(readyAt);
+  });
+
   it('installs the handler inside whenReady, before the first window is created', () => {
     const installAt = main.indexOf('installAppScheme(path.dirname(RENDERER_INDEX_PATH))');
     const createAt = main.indexOf('createWindow();');

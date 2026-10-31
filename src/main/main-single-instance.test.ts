@@ -126,7 +126,13 @@ vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 // PA-01: main.ts wires the cross-launch probe cache to userData at boot;
 // the real module touches fs/child_process — stub it.
 vi.mock('./providers/resolve-binary', () => ({ configureProbeCacheDir: vi.fn() }));
-vi.mock('./platform', () => ({ isMac: false, isWin: false }));
+// main.ts imports the row-85 GPU-hatch decision at boot, so the factory must
+// carry it; these cases never exercise the hatch.
+vi.mock('./platform', () => ({
+  isMac: false,
+  isWin: false,
+  shouldDisableHardwareAcceleration: () => false,
+}));
 vi.mock('./chrome-import/copy', () => ({ sweepImportTempDirs: sweepImportSpy }));
 vi.mock('./close-state', () => ({
   isCloseConfirmed: vi.fn(() => true),

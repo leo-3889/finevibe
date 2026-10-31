@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const mockExecSync = vi.fn();
 
@@ -93,5 +95,57 @@ describe('pythonBin (audit P2-23 POSIX probe)', () => {
     mod.setPythonBin('/opt/pyenv/shims/python');
 
     expect(mod.pythonBin).toBe('/opt/pyenv/shims/python');
+  });
+});
+
+// AUDIT row 85: the FINEVIBE_DISABLE_GPU escape hatch wired in main.ts and
+// documented under docs/packaging.md. The fault path it exists for (Electron GPU
+// process → ANGLE/Vulkan → Mesa RADV, gfx1201 ring-gfx soft recoveries) is
+// Mesa-only, so a global dotfile export must not de-accelerate Windows/macOS.
+describe('shouldDisableHardwareAcceleration (row 85 GPU escape hatch)', () => {
+  it('opts a linux run out of GL when FINEVIBE_DISABLE_GPU=1', async () => {
+    const { shouldDisableHardwareAcceleration: should } = await loadPlatform();
+
+    expect(should({ FINEVIBE_DISABLE_GPU: '1' }, 'linux')).toBe(true);
+  });
+
+  it('keeps acceleration for any other value on linux', async () => {
+    const { shouldDisableHardwareAcceleration: should } = await loadPlatform();
+
+    expect(should({ FINEVIBE_DISABLE_GPU: '0' }, 'linux')).toBe(false);
+    expect(should({}, 'linux')).toBe(false);
+    expect(should({ FINEVIBE_DISABLE_GPU: 'true' }, 'linux')).toBe(false);
+  });
+
+  it('is ignored on win32 and darwin', async () => {
+    const { shouldDisableHardwareAcceleration: should } = await loadPlatform();
+
+    expect(should({ FINEVIBE_DISABLE_GPU: '1' }, 'win32')).toBe(false);
+    expect(should({ FINEVIBE_DISABLE_GPU: '1' }, 'darwin')).toBe(false);
+  });
+
+  // Call-site form: main.ts passes only env, so the platform must default to the
+  // running process — a wrong default would silently dead-letter the hatch.
+  it('defaults the platform argument to process.platform', async () => {
+    setPlatform('linux');
+    const { shouldDisableHardwareAcceleration: should } = await loadPlatform();
+
+    expect(should({ FINEVIBE_DISABLE_GPU: '1' })).toBe(true);
+  });
+
+  // Boot-order belt: every boot test mocks this helper to false, so deleting the
+  // main.ts block or moving it below `app.whenReady` stays green — and "strictly
+  // before ready" IS the mechanism, because disableHardwareAcceleration() after
+  // ready is a no-op for the already-spawned GPU process. Only a static read of
+  // main.ts fails on that move (style precedent: npm-launcher.test.ts gates).
+  it('is called from main.ts module scope, before app.whenReady', () => {
+    const mainSource = fs.readFileSync(path.join(process.cwd(), 'src', 'main', 'main.ts'), 'utf8');
+
+    const call = mainSource.indexOf('shouldDisableHardwareAcceleration(');
+    const ready = mainSource.indexOf('app.whenReady');
+
+    expect(call, 'main.ts no longer calls shouldDisableHardwareAcceleration(').toBeGreaterThan(-1);
+    expect(ready, 'main.ts has no app.whenReady').toBeGreaterThan(-1);
+    expect(call).toBeLessThan(ready);
   });
 });

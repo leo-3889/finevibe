@@ -98,7 +98,13 @@ vi.mock('./config-watcher', () => ({ stopConfigWatcher: vi.fn() }));
 vi.mock('./mcp-client', () => ({ disconnectAll: vi.fn() }));
 vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 vi.mock('./providers/resolve-binary', () => ({ configureProbeCacheDir: vi.fn() }));
-vi.mock('./platform', () => ({ isMac: false, isWin: false }));
+// main.ts imports the row-85 GPU-hatch decision at boot, so the factory must
+// carry it; these cases never exercise the hatch.
+vi.mock('./platform', () => ({
+  isMac: false,
+  isWin: false,
+  shouldDisableHardwareAcceleration: () => false,
+}));
 vi.mock('./chrome-import/copy', () => ({ sweepImportTempDirs: vi.fn() }));
 vi.mock('./close-state', () => ({
   isCloseConfirmed: vi.fn(() => true),
