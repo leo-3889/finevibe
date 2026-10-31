@@ -1,5 +1,7 @@
-import { app, BrowserWindow } from 'electron';
+import { app } from 'electron';
 import { autoUpdater } from 'electron-updater';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { setCloseConfirmed } from './close-state';
 import { getMainWindow } from './main-window';
 
@@ -27,17 +29,54 @@ export function quitAndInstall(): void {
   autoUpdater.quitAndInstall(true, true);
 }
 
-// P1-7 (audit plan §1(iv), FORK identity): a packaged fork build must NEVER
-// self-update from the upstream repo. The release feed is exactly the fork
-// repo named by FINEVIBE_RELEASE_REPO (the same override the npm launcher
-// honours); unset or malformed disables auto-update with a warning instead
-// of silently falling back to upstream releases.
+// P1-7 (audit plan §1(iv), FORK identity) + row 64: a packaged fork build must
+// NEVER self-update from the upstream repo, and it must self-update with
+// ZERO user env. The packaged default is the feed electron-builder bakes into
+// `resources/app-update.yml` (built from `build.publish`), which is exactly the
+// file electron-updater loads when no feed URL is set
+// (AppUpdater.loadUpdateConfig -> app.appUpdateConfigPath), so the packaged
+// path simply never calls setFeedURL. FINEVIBE_RELEASE_REPO only OVERRIDES it:
+// requiring that env var (the old behaviour) left every packaged build without
+// an updater, and on mac the launcher spawns through `open --args`
+// (bin/finevibe.js), which drops the caller's environment entirely.
+// The npm launcher has no baked feed and still requires the env var.
 const RELEASE_REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
-function resolveReleaseRepo(): string | null {
-  const value = process.env.FINEVIBE_RELEASE_REPO?.trim();
-  if (!value) return null;
-  return RELEASE_REPO_PATTERN.test(value) ? value : null;
+// The fork constant: keep equal to `build.publish` (owner/repo) in
+// package.json — auto-updater.test.ts pins it, so the two cannot drift. A
+// baked feed naming any OTHER repo (an upstream build's resources dir, a
+// hand-edited app-update.yml) never feeds a fork install: fail closed instead
+// of pulling foreign release bytes.
+export const FORK_RELEASE_REPO = 'leo-3889/finevibe';
+
+function parseReleaseRepo(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return RELEASE_REPO_PATTERN.test(trimmed) ? trimmed : null;
+}
+
+// A file electron-builder writes next to the app in packaged resources:
+// PublishManager writes `app-update.yml`, FpmTarget (deb/rpm/pacman) writes
+// `package-type`. Missing/unreadable returns null — the callers treat that as
+// "cannot be trusted".
+function readPackagedResource(name: string): string | null {
+  try {
+    return readFileSync(join(process.resourcesPath ?? '', name), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// app-update.yml is electron-builder's own flat serialization of the publish
+// config (builder-util serializeToYaml): `owner:`/`repo:` are top-level
+// scalars, so this stays a regex read instead of pulling a yaml parser into
+// src/main for a file we do not control the shape of.
+function readBakedFeedRepo(): string | null {
+  const text = readPackagedResource('app-update.yml');
+  if (text == null) return null;
+  const owner = /^owner:[ \t]*(\S+)[ \t]*$/m.exec(text)?.[1];
+  const repo = /^repo:[ \t]*(\S+)[ \t]*$/m.exec(text)?.[1];
+  return owner && repo ? `${owner}/${repo}` : null;
 }
 
 export function initAutoUpdater(): () => void {
@@ -57,22 +96,52 @@ export function initAutoUpdater(): () => void {
     return () => {};
   }
  
-  const releaseRepo = resolveReleaseRepo();
-  if (!releaseRepo) {
-    console.warn(
-      `[auto-updater] FINEVIBE_RELEASE_REPO=${process.env.FINEVIBE_RELEASE_REPO ?? '<unset>'} ` +
-      'is not a valid "owner/repo" — auto-update disabled (a fork build never ' +
-      'self-updates from the upstream release feed).',
+  // Row 57/65 posture: the linux channel file is ONE installer
+  // (Provider.getChannelFilePrefix -> `latest-linux.yml`) and it describes the
+  // AppImage — the artifact the npm launcher installs (row 65: `deb.publish`
+  // is null so the deb leg no longer overwrites that file). electron-updater
+  // picks DebUpdater from `resources/package-type` (electron-updater/out/
+  // main.js), and DebUpdater's findFile(files, "deb", ["AppImage", …]) then
+  // finds no .deb entry and errors on every check. Deb installs update
+  // through apt (docs/packaging.md, "Update policy").
+  if (readPackagedResource('package-type')?.trim() === 'deb') {
+    console.log(
+      '[auto-updater] deb install (resources/package-type is "deb") — skipping ' +
+      'auto-update; the linux release feed ships the AppImage only. Update with ' +
+      '`sudo apt install ./FineVibe-<version>-linux-amd64.deb` instead.',
     );
     return () => {};
+  }
+
+  const overrideRepo = parseReleaseRepo(process.env.FINEVIBE_RELEASE_REPO);
+  if (!overrideRepo && process.env.FINEVIBE_RELEASE_REPO?.trim()) {
+    console.warn(
+      `[auto-updater] FINEVIBE_RELEASE_REPO=${process.env.FINEVIBE_RELEASE_REPO} ` +
+      'is not a valid "owner/repo" — auto-update disabled (a malformed override is ' +
+      'never ignored in favour of the baked feed).',
+    );
+    return () => {};
+  }
+
+  if (overrideRepo) {
+    const [owner, repo] = overrideRepo.split('/');
+    autoUpdater.setFeedURL({ provider: 'github', owner, repo, releaseType: 'release' });
+  } else {
+    const bakedRepo = readBakedFeedRepo();
+    if (bakedRepo !== FORK_RELEASE_REPO) {
+      console.warn(
+        `[auto-updater] resources/app-update.yml feed is ${bakedRepo ?? '<unreadable>'}, ` +
+        `expected ${FORK_RELEASE_REPO} — auto-update disabled (a fork build never ` +
+        'self-updates from a foreign release feed).',
+      );
+      return () => {};
+    }
+    // No setFeedURL call: electron-updater loads that same file itself.
   }
 
    autoUpdater.autoDownload = true;
    autoUpdater.autoInstallOnAppQuit = true;
  
-  const [owner, repo] = releaseRepo.split('/');
-  autoUpdater.setFeedURL({ provider: 'github', owner, repo, releaseType: 'release' });
-
   autoUpdater.on('update-available', (info) => {
     sendToRenderer('update:available', { version: info.version });
   });

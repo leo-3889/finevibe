@@ -109,6 +109,17 @@ electron-updater/npm launcher. The `${arch}` macro is EXTENSION-aware
 Versions with a `-dev` suffix normalize to dpkg
 `~dev` (`0.3.9-dev` → `0.3.9~dev`) inside the deb control metadata.
 
+`build.mac.forceCodeSigning: true` keeps a mac build honest: app-builder-lib's
+`fallBackToAdhoc` (`macPackager.js:215`) otherwise signs arm64 builds with a
+fresh ad-hoc identity whenever the real identity is missing, so each release
+carries a different signer and macOS treats the update as a different app.
+With the flag the same build fails loudly instead
+(`reportError` → throw, `macCodeSign.js:75`). Because app-builder-lib rejects
+`identity: null` combined with the flag (`macPackager.js:217`), the
+`artifacts_only` gate leg of `release.yml` overrides both
+(`-c.mac.identity=null -c.mac.notarize=false -c.mac.forceCodeSigning=false`);
+release runs keep the flag and the loud failure.
+
 ## Build output directories
 
 `dist/` holds compiled app code only (tsc/esbuild: `dist/main`,
@@ -155,21 +166,49 @@ Electron welcome window appear.
 
 ## Update policy
 
-Both update paths — the packaged auto-updater (`src/main/auto-updater.ts`)
-and the npm launcher (`bin/finevibe.js`) — take their release feed from
-`FINEVIBE_RELEASE_REPO` (P1-7 fork policy, audit plan §1(iv)): it must name
-the fork repository that publishes these releases (`owner/repo`, served as
-GitHub Releases with `latest.yml`). Unset or malformed is a *deliberate*
-no-auto-update configuration: both components fail closed with a warning
-and never fall back to the upstream feed.
+The two update paths get their release feed differently, because only one of
+them ships with the repository's own metadata:
+
+- **Packaged auto-updater (`src/main/auto-updater.ts`)** uses the feed
+  electron-builder bakes into `resources/app-update.yml` (written from
+  `build.publish` by `PublishManager.onAfterPack`). That file *is* the
+  packaged default — `AppUpdater.loadUpdateConfig` reads it when no feed URL
+  is set — so a packaged build self-updates with zero user environment. The
+  old behaviour (requiring `FINEVIBE_RELEASE_REPO`) left every packaged build
+  without an updater, and on macOS the launcher spawns through
+  `open --args`, which drops the caller's environment entirely. Set,
+  `FINEVIBE_RELEASE_REPO` OVERRIDES the baked feed; a value that is not
+  `owner/repo` disables auto-update instead of being silently ignored.
+- **npm launcher (`bin/finevibe.js`)** has no baked feed: `FINEVIBE_RELEASE_REPO`
+  is required; unset/malformed refuses the download (P1-7 fork policy).
+
+Fork identity stays fail-closed either way: `initAutoUpdater` compares the
+baked feed against its fork constant (`FORK_RELEASE_REPO`, pinned to
+`build.publish` by `src/main/auto-updater.test.ts`) and disables itself with a
+warning when they differ, so foreign `resources/` bytes never feed a fork
+install.
 
 Per target:
 
 - **NSIS Setup (Windows) and dmg/zip (macOS):** electron-updater checks the
-  configured repo's `latest.yml` / `latest-mac.yml` and installs on quit.
-- **deb (Linux):** no updater channel — electron-updater has no deb target.
-  A deb install updates through apt/your package repo (or a manual
-  `apt install ./FineVibe-<new>.deb`).
+  feed's `latest.yml` / `latest-mac.yml` and installs on quit.
+- **AppImage (Linux):** the one self-updating linux artifact. The linux
+  channel file holds a single installer (`Provider.getChannelFilePrefix` →
+  `latest-linux.yml`), and it describes the AppImage — the same asset the npm
+  launcher installs. `build.deb.publish: null` is what keeps it that way:
+  without it the deb leg writes the same filename last and the AppImage entry
+  disappears, which makes `AppImageUpdater`'s `findFile(…, "AppImage")`
+  return undefined and every 4 h check end in `update:error`.
+- **deb (Linux):** excluded from the feed and from auto-update.
+  `build.deb.publish: null` stops the deb leg writing `latest-linux.yml`, and
+  `initAutoUpdater` skips initialization when `resources/package-type` is
+  `deb` (the marker `FpmTarget` writes, and the file electron-updater uses to
+  pick `DebUpdater`) — a deb install has no feed entry to install, so
+  `DebUpdater` would only error. Update a deb through apt/your package repo
+  (or a manual `sudo apt install ./FineVibe-<new>-linux-amd64.deb`).
+  Note `publish: null` also means `--publish always` would skip uploading the
+  `.deb` itself; the release workflow builds `--publish never` and uploads
+  every artifact from `out/` in one job, which is unaffected.
 - **portable `.exe` (Windows):** excluded from auto-update.
   electron-updater does not support the portable target — an "update" would
   download the NSIS setup and clobber the portable layout — so
@@ -234,8 +273,14 @@ launching the downloaded AppImage there dies before any window appears with
 `APPIMAGE_EXTRACT_AND_RUN=1` (the runtime then extracts to a temp dir on
 every start — works everywhere, costs a temp copy per launch), and writes
 the same `env APPIMAGE_EXTRACT_AND_RUN=1 …` prefix into the installed
-`.desktop` `Exec` so desktop launches take the same path. The `.deb` is a
-plain installed tree and is unaffected.
+`.desktop` `Exec` so desktop launches take the same path. Only the Exec
+*program* is replaced there: the embedded entry's arguments carry over, which
+is how `--no-sandbox` (electron-builder ships `Exec=AppRun --no-sandbox %U`,
+the bundled `chrome-sandbox` being 0755 non-setuid) survives the rewrite —
+dropping it aborts the launch on distros that restrict unprivileged user
+namespaces. `--appimage-extract-and-run` is the one argument dropped, because
+the `env` prefix is the same instruction. The `.deb` is a plain installed tree
+and is unaffected.
 
 ### Wayland posture (XWayland)
 

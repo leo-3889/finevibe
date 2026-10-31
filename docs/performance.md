@@ -342,8 +342,9 @@ conversion before it can lazy-load, and xterm (540 KiB across three packages) is
 needed at first paint by definition.
 
 Sourcemaps are built for every production render (`index.js.map`, ~6 MB) and are
-**not shipped**: `build.files` excludes `dist/**/*.map`, so a packaged app pays
-nothing while a pasted renderer stack trace stays symbolizable off-device.
+**not shipped**: `build.files` excludes `**/*.map` — the dependency tree's maps
+included — so a packaged app pays nothing while a pasted renderer stack trace
+stays symbolizable off-device.
 
 ## Measurement protocol for the live run
 

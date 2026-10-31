@@ -10,8 +10,9 @@
 // are unchanged in purpose: a number that fails the build when the entry grows,
 // plus a report that names what is actually big inside it.
 //
-// Sourcemaps: built always (dev: inline). The package excludes `dist/**/*.map`
-// (package.json build.files), so a packaged app pays nothing while a pasted
+// Sourcemaps: built always (dev: inline). The package excludes every
+// `**/*.map` (package.json build.files, dependency maps included), so a
+// packaged app pays nothing while a pasted
 // renderer stack trace stays symbolicable by anyone holding the matching build.
 import { build } from 'esbuild';
 import { statSync } from 'node:fs';

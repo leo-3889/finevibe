@@ -77,7 +77,7 @@
       "dist/main/**/*",
       "dist/preload/**/*",
       "dist/renderer/**/*",
-      "!dist/**/*.map",
+      "!**/*.map",
       "build/icon.png"
     ],
     "asarUnpack": [
@@ -98,7 +98,8 @@
         "NSMicrophoneUsageDescription": "FineVibe needs microphone access so CLI tools running in the terminal (e.g. Claude Code's /voice) can capture audio.",
         "NSLocalNetworkUsageDescription": "FineVibe connects to other devices on your local network to share terminal sessions directly between them."
       },
-      "notarize": true
+      "notarize": true,
+      "forceCodeSigning": true
     },
     "linux": {
       "artifactName": "FineVibe-${version}-linux-${arch}.${ext}",
@@ -110,6 +111,7 @@
       "icon": "build/icon.png"
     },
     "deb": {
+      "publish": null,
       "recommends": [
         "libsecret-tools"
       ]

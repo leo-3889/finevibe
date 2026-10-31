@@ -1,7 +1,7 @@
 > **Provenance:** snapshot of the upstream README (elirantutia/vibeyard, v0.3.8 era) with provider and profile lines updated to describe this fork — not upstream's current words; see [README.md](README.md).
 
 <p align="center">
-  <img src="build/vibeyard-black.png" alt="Vibeyard" width="128" />
+  <img src="build/icon.png" alt="Vibeyard" width="128" />
 </p>
 
 <h1 align="center">Vibeyard</h1>

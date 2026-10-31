@@ -47,7 +47,7 @@ This README covers what the fork adds on top of the upstream product; the base p
 
 ### Auto-update from the fork, never upstream
 
-- **Fork-only release feed** — the npm launcher and the packaged auto-updater (checked shortly after start, then every 4 h) fetch only from this repo's GitHub Releases via `FINEVIBE_RELEASE_REPO`. Unset or malformed, they refuse to download / disable themselves — a fork build never pulls upstream bytes.
+- **Fork-only release feed** — the packaged auto-updater (checked shortly after start, then every 4 h) reads the feed baked into its own `resources/app-update.yml`, which the build pins to this repo's GitHub Releases; `FINEVIBE_RELEASE_REPO` only overrides it. The npm launcher, which has no baked feed, requires `FINEVIBE_RELEASE_REPO`. Either way a malformed value fails closed — a fork build never pulls upstream bytes.
 
 ### Migration from `~/.vibeyard`
 
@@ -92,7 +92,7 @@ performance, UI conventions, packaging, feature reference) are indexed in
 - **`pi`, `omp` and `pi-bolt` must be on `PATH`** (or resolvable via nvm/npm-global probing) — a provider whose binary isn't found stays hidden.
 - **macOS and Linux are unverified in this delta** — no new platform-specific code beyond `src/main/platform.ts`, but neither OS was exercised.
 - **Pi-Bolt shares `~/.pi/agent` with Pi** — Pi-Bolt-launched sessions use their own `pi-bolt-sessions` dir; terminal-launched `pi-bolt` sessions appear under the Pi provider.
-- **Updates arrive only from the fork's release feed** — never upstream; with `FINEVIBE_RELEASE_REPO` unset, downloading and auto-update are disabled entirely.
+- **Updates arrive only from the fork's release feed** — never upstream; a malformed `FINEVIBE_RELEASE_REPO` override disables auto-update, and without the variable the launcher refuses to download.
 - **Linux artifacts are x64-only** — launcher and release matrix ship amd64; no arm64 Linux builds.
 
 ## Install

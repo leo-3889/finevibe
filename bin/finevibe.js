@@ -296,10 +296,15 @@ function fuseAvailable() {
 // Wayland/GTK docks match windows via StartupWMClass and show a generic
 // icon. Extract the AppImage's own entry/icons into $XDG_DATA_HOME.
 // Pure: rewrite the embedded .desktop text for the installed AppImage.
-// The Exec value is replaced wholesale (AppRun-relative paths die once the
-// squashfs is gone), Icon is forced to the installed hicolor theme name,
-// and StartupWMClass is pinned so docks match the running window. All
-// other keys (Name, Comment, Categories, MimeType, …) are preserved.
+// The Exec PROGRAM is replaced (AppRun-relative paths die once the squashfs
+// is gone) but its ARGUMENTS are carried over: electron-builder ships the
+// AppImage entry as `Exec=AppRun --no-sandbox %U` (the bundled chrome-sandbox
+// is 0755 non-setuid), and replacing the line wholesale dropped --no-sandbox
+// — on distros that restrict unprivileged user namespaces (Ubuntu's
+// apparmor_restrict_unprivileged_userns) the sandbox helper then aborts
+// before any window appears. Icon is forced to the installed hicolor theme
+// name, StartupWMClass is pinned so docks match the running window. All other
+// keys (Name, Comment, Categories, MimeType, …) are preserved.
 function buildDesktopEntry(embeddedContent, appPath, fuseAvailable = true) {
   const lines = embeddedContent
     ? String(embeddedContent).split(/\r?\n/)
@@ -311,10 +316,26 @@ function buildDesktopEntry(embeddedContent, appPath, fuseAvailable = true) {
         'Terminal=false',
         'Comment=Tenant IDE for AI CLI tools',
       ];
+  // Everything after the program token except the desktop field codes (%U,
+  // %F, …). `env`/`VAR=value` prefixes stay with the program, they are not
+  // arguments; --appimage-extract-and-run is dropped when the env prefix is
+  // added below, which is the same instruction.
+  const embeddedExec = (lines.find((line) => line.startsWith('Exec=')) ?? '').slice('Exec='.length);
+  const carriedArgs = embeddedExec
+    .split(/\s+/)
+    .filter((token) => token)
+    .filter((token) => !token.startsWith('%') && token !== 'env')
+    .filter((token) => !/AppRun$/.test(token))
+    .filter((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token))
+    .filter((token) => fuseAvailable || token !== '--appimage-extract-and-run');
+  const execWords = [
+    ...(fuseAvailable ? [] : ['env', 'APPIMAGE_EXTRACT_AND_RUN=1']),
+    appPath,
+    ...carriedArgs,
+    '%U',
+  ];
   const forced = {
-    Exec: fuseAvailable
-      ? `Exec=${appPath} %U`
-      : `Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`,
+    Exec: `Exec=${execWords.join(' ')}`,
     Icon: 'Icon=finevibe',
     StartupWMClass: 'StartupWMClass=FineVibe',
   };
