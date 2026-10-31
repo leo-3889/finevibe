@@ -55,6 +55,14 @@ describe('createHost', () => {
     expect(c.color).toBe('#123456');
   });
 
+  // The add-host wizard's password-auth draft omits managedKey entirely —
+  // createHost must default it, not fail the shape gate.
+  it('defaults a missing managedKey to false', () => {
+    const { managedKey: _omitted, ...passwordDraft } = DRAFT;
+    const rec = createHost(passwordDraft);
+    expect(rec.managedKey).toBe(false);
+  });
+
   it('rejects invalid drafts', () => {
     expect(() => createHost(null)).toThrow(HostValidationError);
     expect(() => createHost({ ...DRAFT, host: '-oProxyCommand=evil' })).toThrow(HostValidationError);

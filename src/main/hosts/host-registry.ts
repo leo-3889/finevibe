@@ -46,6 +46,9 @@ export function createHost(draft: unknown): HostRecord {
     raw.id = crypto.randomUUID();
   }
   if (raw.port === undefined) raw.port = 22;
+  // The add-host wizard omits managedKey for password auth (its spreads are
+  // key-auth-conditional) and the shape gate demands a boolean — default it.
+  if (raw.managedKey === undefined) raw.managedKey = false;
   if (typeof raw.name === 'string') raw.name = raw.name.trim();
   if (raw.color === undefined) {
     // Per-host providers plan §2: identity color assigned at creation,
