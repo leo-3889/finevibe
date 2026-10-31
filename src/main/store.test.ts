@@ -374,6 +374,27 @@ describe('saveState', () => {
     const written2 = JSON.parse(String(mockWriteSync.mock.calls[1][1]));
     expect(written2.preferences.chromeImport).toEqual(summary);
   });
+
+  // Row 79: windowBounds is main-owned (main-window.ts saveWindowBounds writes
+  // it at window close). The renderer's beforeunload flush is a whole-state
+  // write carrying the geometry it loaded at boot, so an ungrafted close-time
+  // save was rewritten by it — the window restored one launch stale, forever.
+  it('grafts the main-owned windowBounds onto renderer writes (row 79)', () => {
+    const bounds = { x: 40, y: 30, width: 1280, height: 800 };
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('state.json'));
+    mockReadFileSync.mockImplementation(() => JSON.stringify({ ...makeDefaultState(), windowBounds: bounds }));
+    loadState();
+
+    // Renderer persist carrying the boot snapshot's (stale) geometry.
+    saveState({ ...makeDefaultState(), windowBounds: { x: 0, y: 0, width: 1100, height: 700 } });
+    expect(JSON.parse(String(mockWriteSync.mock.calls[0][1])).windowBounds).toEqual(bounds);
+
+    // A renderer payload with no windowBounds at all must not erase it either.
+    vi.advanceTimersByTime(300);
+    saveState({ ...makeDefaultState() });
+    vi.advanceTimersByTime(300);
+    expect(JSON.parse(String(mockWriteSync.mock.calls[1][1])).windowBounds).toEqual(bounds);
+  });
 });
 
 describe('saveStateSync', () => {

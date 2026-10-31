@@ -266,7 +266,12 @@ function stateFileIsNewer(candidate: string, reference: string): boolean {
 // the new cache and permanently erase a main-side consent. SA-P2-2: chromeImport
 // joins the main-owned key set — chromeImport:run/clearCookies write it on the
 // main side and a renderer whole-state save used to clobber the mid-session summary.
-function graftMainOwnedPreferences(state: PersistedState): void {
+// Row 79: `windowBounds` joins the same key set (top level, not a preference).
+// main.ts saves it on the window 'close' event, which Electron emits BEFORE the
+// renderer's `beforeunload` `store:save-sync`; that flush serializes the whole
+// state including the geometry loaded at boot, so ungrafted it rewrote the
+// previous launch's bounds over the fresh ones on every quit.
+function graftMainOwnedState(state: PersistedState): void {
   if (!state.preferences) return;
   if (!stateCache) {
     // SA-P1-1: only reload when there IS a persisted state. With no cache and
@@ -283,16 +288,21 @@ function graftMainOwnedPreferences(state: PersistedState): void {
   state.preferences.statusLineConsentByDir = authoritative.statusLineConsentByDir;
   if (authoritative.chromeImport) state.preferences.chromeImport = authoritative.chromeImport;
   else delete state.preferences.chromeImport;
+  // `authoritative` above is the preferences sub-object; the geometry is a
+  // top-level key, so it reads from the cache itself.
+  const authoritativeBounds = stateCache?.windowBounds;
+  if (authoritativeBounds) state.windowBounds = authoritativeBounds;
+  else delete state.windowBounds;
 }
 
 export function saveState(state: PersistedState): void {
-  // S1-02: main is the ONLY writer of the main-owned preference keys (see
-  // graftMainOwnedPreferences). The renderer serializes its WHOLE state -
+  // S1-02: main is the ONLY writer of the main-owned keys (see
+  // graftMainOwnedState). The renderer serializes its WHOLE state -
   // boot-time preferences included - on every mutation (tab click, title,
   // board move), so a renderer persist used to erase a consent granted in the
   // modal minutes later (declined users re-prompted every launch). Main-side
   // writers pass the cache itself, so the graft is identity for them.
-  graftMainOwnedPreferences(state);
+  graftMainOwnedState(state);
   lastState = state;
   // P2-84: the cache is LoadedState; a writer's raw state normalizes to
   // the loader's single documented default on the way in.
@@ -566,7 +576,7 @@ export function flushState(): void {
 export function saveStateSync(state: PersistedState): void {
   // S1-02: same graft as saveState via the shared helper (SA-P2-7) — the
   // renderer's beforeunload flush is a whole-state write too.
-  graftMainOwnedPreferences(state);
+  graftMainOwnedState(state);
   stateCache = { ...state, hosts: state.hosts ?? [], preferences: state.preferences ?? cloneDefaultPreferences() };
   knownProjectPaths = deriveGateRoots(state.projects);
   remoteProjectRoots = deriveRemoteProjectRoots(state.projects);

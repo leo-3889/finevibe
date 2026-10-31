@@ -670,6 +670,28 @@ describe('packaged build configuration', () => {
     expect(build.files).not.toContain('!dist/**/*.map');
   });
 
+  it('leaves the mac artifact names at the builder defaults (row 72)', () => {
+    // linux/win set `artifactName`; mac deliberately does not, and the
+    // asymmetry is a download contract, not an oversight.
+    // ArchiveTarget.js:23-30 — the mac default pattern is
+    // `${productName}-${version}[-${arch}]-${os}.${ext}` (the arch part drops
+    // for the default arch x64), which is exactly what the npm launcher asks
+    // GitHub for: `FineVibe-<v>-mac.zip` / `FineVibe-<v>-arm64-mac.zip`
+    // (bin/finevibe.js getAssetName). A `build.mac.artifactName` REPLACES that
+    // pattern (platformPackager.js artifactPatternConfig) and renames the zip
+    // AND the dmg, so every mac launcher install would 404 on the asset —
+    // while `release.yml`'s `out/*.dmg` / `out/*.zip` upload globs stay green
+    // and no build step notices. Adding the pattern therefore means editing
+    // bin/finevibe.js in the same change.
+    expect(build.mac.artifactName).toBeUndefined();
+    expect(launcherSource).toContain('FineVibe-${version}-mac.zip');
+    expect(launcherSource).toContain('FineVibe-${version}-arm64-mac.zip');
+    // The platform tag the other two spellings carry — the reason the mac
+    // defaults look inconsistent next to them.
+    expect(build.linux.artifactName).toContain('-linux-');
+    expect(build.win.artifactName).toContain('-win-');
+  });
+
   it('keeps the AppImage as the only linux feed entry (row 65)', () => {
     // Both linux targets write the SAME channel file (updateInfoBuilder
     // getUpdateInfoFileName → latest-linux.yml), so the deb leg overwrote the

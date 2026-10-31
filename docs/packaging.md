@@ -101,13 +101,39 @@ its native runner and publishes to GitHub Releases:
 | `build-linux` | ubuntu-latest | `AppImage`, `deb` | x64 |
 | `build-windows` | windows-2022 | NSIS Setup `.exe`, portable `.exe`, `zip` | x64 |
 
-Artifact names come from `build.linux/win/mac.artifactName`, e.g.
+Artifact names come from `build.linux/win.artifactName`, e.g.
 `FineVibe-<version>-linux-amd64.deb`, plus `latest.yml` for the
 electron-updater/npm launcher. The `${arch}` macro is EXTENSION-aware
 (`builder-util getArtifactArchName`): x64 renders `amd64` for deb/snap but
 `x86_64` for AppImage/rpm — never assume one spelling for all linux targets.
+`build.mac.minimumSystemVersion` (row 76) is electron-builder's
+`LSMinimumSystemVersion`: it ships the Electron runtime's macOS floor (Electron
+41 = macOS 12 Monterey; Electron 38 dropped Big Sur, 44 drops Monterey) so an
+older macOS refuses to launch the app instead of dying inside dyld on missing
+symbols. It is pinned in `src/main/platform.test.ts` against the declared
+Electron major, so an Electron bump has to revisit it.
 Versions with a `-dev` suffix normalize to dpkg
 `~dev` (`0.3.9-dev` → `0.3.9~dev`) inside the deb control metadata.
+
+Mac is the one platform with NO `artifactName` (row 72), and the missing line is
+a contract rather than an oversight: the mac artifacts keep electron-builder's
+default names — zips `FineVibe-<version>-mac.zip` / `FineVibe-<version>-arm64-mac.zip`
+(`ArchiveTarget.js:23-30`, `${productName}-${version}[-${arch}]-${os}.${ext}`,
+the arch part dropping for the default arch x64) and dmgs
+`FineVibe-<version>.dmg` / `FineVibe-<version>-arm64.dmg` (`dmg.js:25`) —
+because `bin/finevibe.js getAssetName` downloads the mac zip under exactly those
+two spellings.
+Setting `build.mac.artifactName` replaces the pattern for BOTH mac targets, so
+the zip renames and every mac `npx finevibe` install 404s on the asset — while
+`release.yml`'s mac upload/verify globs (`out/*.dmg`, `out/*.zip`) still match,
+so the build stays green and only the user notices. `npm-launcher.test.ts`
+pins the pair (`mac.artifactName` undefined + the launcher's expected names);
+the reverse troubleshooting direction — a mac install failing with
+`Release v<version> not found` — is checked by comparing the assets on the
+release against those two spellings before anything else. A comment cannot live
+next to `build.mac` itself: electron-builder validates `build` with
+`additionalProperties: false` (`app-builder-lib/scheme.json`), so any extra key
+— even `"//"` — fails the build.
 
 `build.mac.forceCodeSigning: true` keeps a mac build honest: app-builder-lib's
 `fallBackToAdhoc` (`macPackager.js:215`) otherwise signs arm64 builds with a

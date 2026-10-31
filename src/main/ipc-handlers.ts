@@ -192,7 +192,7 @@ function isWithin(root: string, target: string): boolean {
 // an injected unknown key persisted to disk and re-hydrated into every
 // consumer. Known-keys filter at the IPC boundary (no schema library). The
 // main-owned keys stay in the list on purpose — the store's graft runs AFTER
-// this (saveState → graftMainOwnedPreferences) and overwrites them with the
+// this (saveState → graftMainOwnedState) and overwrites them with the
 // authoritative cache values, so filtering them out here would only erase the
 // payload the graft replaces. The `satisfies` is the drift guard: a Preferences
 // key missing from this object is a compile error, not a silent drop.

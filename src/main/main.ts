@@ -27,7 +27,7 @@ import { installConsoleThrottle } from './log-throttle';
 import { installLogFile } from './log-file';
 import { startDiskHealthPreflight } from './disk-health';
 import { finishBoot, finishBootPhase, markBoot, reportRendererBoot, startPerfSampler, stopPerfSampler } from './boot-timing';
-import { getMainWindow, showAndFocusWindow } from './main-window';
+import { getMainWindow, restoredWindowBounds, saveWindowBounds, showAndFocusWindow } from './main-window';
 
 // 2026-10-23 ENOSPC incident: the state writer logged a full stack on every
 // renderer save against a full disk — 160 409 journal lines in 30 min,
@@ -129,8 +129,11 @@ registerAppScheme();
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    // Audit row 79: the last position/size, when the persisted bounds are
+    // reachable on the current screens. Without them (first launch, a bad
+    // shape in state.json, or a monitor that has been disconnected) the window
+    // keeps this default size and Electron centers it.
+    ...(restoredWindowBounds() ?? { width: 1400, height: 900 }),
     minWidth: 800,
     minHeight: 500,
     title: 'FineVibe',
@@ -226,6 +229,13 @@ function createWindow(): void {
       return;
     }
     flushState();
+    // Audit row 79: close-time bounds write (main-window.ts saveWindowBounds).
+    // Deliberately only here and not on resize/move: no listener runs during the
+    // session, so a crash loses at most the last drag. The value survives the
+    // renderer's beforeunload flush because the store grafts `windowBounds` as
+    // a main-owned key, which is also why this call needs no ordering against
+    // flushState().
+    if (mainWindow && !mainWindow.isDestroyed()) saveWindowBounds(mainWindow);
   });
 
   mainWindow.on('closed', () => {
