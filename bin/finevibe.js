@@ -42,10 +42,12 @@ function getAssetName() {
       ? `FineVibe-${version}-arm64-mac.zip`
       : `FineVibe-${version}-mac.zip`;
   }
-  // electron-builder expands ${arch} to `amd64` in linux artifact names
-  // (builder-util toLinuxArchString); requesting `x64` 404s every install.
-  // main() restricts linux to x64, so amd64 is the only published name.
-  return `FineVibe-${version}-linux-amd64.AppImage`;
+  // electron-builder expands ${arch} per target extension
+  // (builder-util getArtifactArchName): x64 AppImages are published as
+  // `x86_64`, debs as `amd64`. Requesting `amd64`/`x64` here 404s every
+  // fresh linux install. main() restricts linux to x64, so x86_64 is the
+  // only published AppImage name.
+  return `FineVibe-${version}-linux-x86_64.AppImage`;
 }
 
 function getInstalledVersion() {

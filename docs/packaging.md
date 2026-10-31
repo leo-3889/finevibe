@@ -103,7 +103,10 @@ its native runner and publishes to GitHub Releases:
 
 Artifact names come from `build.linux/win/mac.artifactName`, e.g.
 `FineVibe-<version>-linux-amd64.deb`, plus `latest.yml` for the
-electron-updater/npm launcher. Versions with a `-dev` suffix normalize to dpkg
+electron-updater/npm launcher. The `${arch}` macro is EXTENSION-aware
+(`builder-util getArtifactArchName`): x64 renders `amd64` for deb/snap but
+`x86_64` for AppImage/rpm — never assume one spelling for all linux targets.
+Versions with a `-dev` suffix normalize to dpkg
 `~dev` (`0.3.9-dev` → `0.3.9~dev`) inside the deb control metadata.
 
 ## Build output directories
@@ -248,6 +251,22 @@ blurry terminal text under fractional scaling, and banner-click focus is
 best-effort. Revisit as a deliberate, tested migration when the Ubuntu CI
 matrix can run a native Wayland session; until then do not add the hint to
 launcher, `.desktop` `Exec`, or spawn arguments.
+
+### GPU escape hatch (Mesa/gfx12 desktop stalls)
+
+On Mesa/gfx1201 boards the Electron GPU process (ANGLE → Vulkan → Mesa RADV) can
+fault `[gfxhub] page fault` and stall `ring gfx_0.0.0`; GNOME shares that ring, so
+kernel soft-recovery freezes the whole desktop for ~10 s. `FINEVIBE_DISABLE_GPU=1`
+drops GL app-wide (`shouldDisableHardwareAcceleration` in `src/main/platform.ts`,
+applied before `ready`) — on the deb that means the desktop entry:
+`Exec=env FINEVIBE_DISABLE_GPU=1 /opt/FineVibe/finevibe %U` (a hand-edited
+`.desktop` is rewritten on the next install/upgrade, so reapply it). Narrower
+levers: `DRI_PRIME=pci-<bdf>` pins GL off the display card (keeps acceleration),
+`FINEVIBE_DOM_RENDERER=1` drops only the per-pane WebGL terminal renderer. All of
+them are workarounds: the real fix is kernel-side (gfx12 PTE/recovery patches, mainline
+7.1/7.3, not SRU into Ubuntu's 7.0.0-42 as of 2026-10-31 — booting 7.0.0-42 does
+already drop the 6.14 `svm_range_restore_work` retry loop). Windows/macOS ignore the
+flag; the fault path is Mesa-specific and those platforms are UNVERIFIED-RUNTIME.
 
 ### Ad-hoc packages without a release
 

@@ -454,23 +454,25 @@ describe('launcher download', () => {
 });
 
 describe('launcher linux asset name', () => {
-  // electron-builder publishes the linux artifact as `-linux-amd64`; a launcher
-  // asking for `-linux-x64` gets a 404 and every fresh install fails.
-  const amd64Asset = `FineVibe-${launcherVersion}-linux-amd64.AppImage`;
+  // electron-builder expands ${arch} per target extension (builder-util
+  // getArtifactArchName): the AppImage is published as `-linux-x86_64`, the
+  // deb as `-linux-amd64`. A launcher asking for either other spelling gets a
+  // 404 and every fresh install fails.
+  const appImageAsset = `FineVibe-${launcherVersion}-linux-x86_64.AppImage`;
   const appDir = path.join('/home/test', '.finevibe', 'app');
   const appPath = path.join(appDir, 'FineVibe.AppImage');
   const content = Buffer.from('finevibe-appimage-payload');
   const contentHex = crypto.createHash('sha256').update(content).digest('hex');
 
-  function servingAmd64Only() {
-    const downloadUrl = `https://github.com/leo-3889/vibeyard/releases/download/v${launcherVersion}/${amd64Asset}`;
+  function servingX8664Only() {
+    const downloadUrl = `https://github.com/leo-3889/vibeyard/releases/download/v${launcherVersion}/${appImageAsset}`;
     const apiUrl = `https://api.github.com/repos/leo-3889/vibeyard/releases/tags/v${launcherVersion}`;
     const httpsGet = vi.fn((url: string, _opts: unknown, cb: (res: FakeResponse) => void) => {
       const known = url === downloadUrl || url === apiUrl;
       const res = fakeResponse(known ? {} : { statusCode: 404 });
       cb(res);
       queueMicrotask(() => {
-        if (url === apiUrl) res.end(JSON.stringify({ assets: [{ name: amd64Asset, digest: `sha256:${contentHex}` }] }));
+        if (url === apiUrl) res.end(JSON.stringify({ assets: [{ name: appImageAsset, digest: `sha256:${contentHex}` }] }));
         else if (url === downloadUrl) res.end(content);
         else res.end('Not Found');
       });
@@ -479,13 +481,13 @@ describe('launcher linux asset name', () => {
     return { httpsGet, downloadUrl, apiUrl };
   }
 
-  it('asks the release API for the linux-amd64 asset name on linux/x64', () => {
+  it('asks the release API for the linux-x86_64 asset name on linux/x64', () => {
     const { exports } = loadLauncher();
-    expect(exports.getAssetName()).toBe(amd64Asset);
+    expect(exports.getAssetName()).toBe(appImageAsset);
   });
 
-  it('downloads and installs the linux-amd64 AppImage on a fresh linux install', async () => {
-    const { httpsGet, downloadUrl, apiUrl } = servingAmd64Only();
+  it('downloads and installs the linux-x86_64 AppImage on a fresh linux install', async () => {
+    const { httpsGet, downloadUrl, apiUrl } = servingX8664Only();
     const { exports, fakeFs, consoleError, spawn } = loadLauncher({ env: forkEnv, httpsGet, installedVersion: null });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
 
@@ -499,10 +501,10 @@ describe('launcher linux asset name', () => {
     const requested = httpsGet.mock.calls.map((call) => String(call[0]));
     expect(requested).toContain(downloadUrl);
     expect(requested).toContain(apiUrl);
-    expect(requested.filter((url) => url.includes('-linux-x64'))).toEqual([]);
+    expect(requested.filter((url) => url.includes('-linux-x64') || url.includes('-linux-amd64'))).toEqual([]);
 
     // The downloaded asset becomes the AppImage the launcher runs.
-    expect(fakeFs.renameSync).toHaveBeenCalledWith(path.join(appDir, `${amd64Asset}.tmp`), appPath);
+    expect(fakeFs.renameSync).toHaveBeenCalledWith(path.join(appDir, `${appImageAsset}.tmp`), appPath);
     expect(fakeFs.chmodSync).toHaveBeenCalledWith(appPath, 0o755);
     expect(fakeFs.writeFileSync).toHaveBeenCalledWith(
       path.join(appDir, 'version.json'),
@@ -512,6 +514,20 @@ describe('launcher linux asset name', () => {
     expect(consoleError).not.toHaveBeenCalled();
     expect(exports.RELEASE_API_URL).toBe(apiUrl);
   }, 15000);
+});
+
+describe('launcher linux deb dependencies', () => {
+  // FpmTarget (node_modules/app-builder-lib/out/targets/FpmTarget.js:160-182)
+  // REPLACES its defaults with whatever the config sets: `deb.depends:
+  // ["libsecret-tools"]` shipped a deb with no libnss3/libgtk-3-0, and any
+  // explicit `recommends` drops the builder default libappindicator3-1. So
+  // libsecret-tools (optional Chrome-import keyring lookup) belongs in
+  // recommends, and depends must stay unset to keep the Electron runtime deps.
+  it('leaves deb.depends to the builder defaults and recommends libsecret-tools', () => {
+    const build = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).build;
+    expect(build.deb.depends).toBeUndefined();
+    expect(build.deb.recommends).toEqual(['libsecret-tools']);
+  });
 });
 
 describe('launcher linux desktop entry', () => {
@@ -669,5 +685,96 @@ describe('published launcher manifest', () => {
   it('publishes with provenance and the OIDC token permission', () => {
     expect(npmJob).toMatch(/npm publish --provenance/);
     expect(npmJob).toMatch(/id-token: write/);
+  });
+});
+
+describe('release workflow packaging gates', () => {
+  // Audit rows 61 / 62 / 52 are release-leg step ORDERS that only a GitHub
+  // runner can execute, so they are pinned here against the same YAML the
+  // runner reads: the ABI flip must sit between install and packaging (61),
+  // the Apple credential gate must precede the build and the stapler check
+  // must not be gated on the credential it polices (62), and the linux gate
+  // must pin the AppImage name the launcher downloads (52, paired with
+  // getAssetName above). Each assertion fails on the pre-fix file.
+  const releaseWorkflow = fs.readFileSync(
+    path.join(process.cwd(), '.github', 'workflows', 'release.yml'),
+    'utf8',
+  );
+
+  function jobSlice(job: string): string {
+    const header = releaseWorkflow.indexOf(`\n  ${job}:\n`);
+    expect(header, `release.yml has no "${job}" job`).toBeGreaterThan(-1);
+    const body = releaseWorkflow.slice(header + `\n  ${job}:\n`.length);
+    // Job bodies indent at 4+ spaces; the first 2-space key is the next job.
+    const next = body.search(/^ {2}\S/m);
+    return next === -1 ? body : body.slice(0, next);
+  }
+
+  function stepIndex(jobBody: string, needle: string): number {
+    const index = jobBody.indexOf(needle);
+    expect(index, `release.yml job has no "${needle}"`).toBeGreaterThan(-1);
+    return index;
+  }
+
+  it('runs the windows suite on the Node ABI and retargets Electron before packaging', () => {
+    // `npm ci` postinstall builds better-sqlite3 for the Electron ABI, so
+    // without the rebuild step vitest silently skips the chrome-import suites;
+    // without the restore step @electron/rebuild skips the module back (its
+    // build/Release/.forge-meta still names the Electron ABI) and the app
+    // packages a Node-ABI binding every user fails to require.
+    const win = jobSlice('build-windows');
+    const rebuild = stepIndex(win, 'run: npm rebuild better-sqlite3');
+    const tests = stepIndex(win, 'run: npm test');
+    const restore = stepIndex(win, 'npx electron-builder install-app-deps');
+    const pack = stepIndex(win, 'npx electron-builder --win');
+    expect(rebuild).toBeLessThan(tests);
+    expect(tests).toBeLessThan(restore);
+    expect(restore).toBeLessThan(pack);
+    expect(win).toMatch(/rmSync\([^)]*\.forge-meta/);
+  });
+
+  it('fails a mac release before the build when notarization credentials are missing', () => {
+    const mac = jobSlice('build');
+    const gate = stepIndex(mac, 'name: Verify notarization credentials');
+    expect(mac.slice(0, gate)).toContain('actions/checkout@v4');
+    expect(gate).toBeLessThan(stepIndex(mac, 'run: npm ci'));
+    expect(gate).toBeLessThan(stepIndex(mac, 'npx electron-builder --publish never'));
+    const gateStep = mac.slice(gate, stepIndex(mac, 'run: npm ci'));
+    // The artifacts_only input is the manual exception; both Apple auth shapes
+    // app-builder-lib accepts must be honoured, and the job env must hand every
+    // one of them to both this gate and electron-builder.
+    expect(gateStep).toMatch(/^ {8}if: inputs\.artifacts_only != true$/m);
+    expect(gateStep).toContain('APPLE_API_ISSUER');
+    const jobEnv = mac.slice(0, stepIndex(mac, 'steps:'));
+    for (const name of ['APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER', 'APPLE_KEYCHAIN', 'APPLE_KEYCHAIN_PROFILE']) {
+      expect(jobEnv, `mac job env must export ${name}`).toContain(`${name}: \${{ secrets.`);
+    }
+  });
+
+  it('staples and spctl-checks every release build, not only when APPLE_ID is set', () => {
+    const mac = jobSlice('build');
+    const start = stepIndex(mac, 'name: Verify notarization and Gatekeeper acceptance');
+    const gateStep = mac.slice(start, mac.indexOf('run: |', start));
+    const ifLine = gateStep.split('\n').find((line) => line.trim().startsWith('if:')) ?? '';
+    expect(ifLine.trim()).toBe('if: inputs.artifacts_only != true');
+  });
+
+  it('asserts the exact AppImage filename the launcher downloads', () => {
+    // electron-builder expands ${arch} per target extension: the AppImage is
+    // x86_64, the deb amd64. Whichever side renames, every fresh linux install
+    // 404s — so the linux verify gate must pin the launcher's own spelling.
+    // The expected name is derived INDEPENDENTLY from build.linux.artifactName
+    // (builder-util getArtifactArchName: Arch.x64 + AppImage → x86_64), so the
+    // launcher and the workflow cannot drift together to a wrong-but-matching
+    // spelling — the exact way the amd64 bug originally shipped green.
+    const build = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).build;
+    const expected = build.linux.artifactName
+      .replace('${version}', '1.2.3')
+      .replace('${ext}', 'AppImage')
+      .replace('${arch}', 'x86_64');
+    const requested = launcherSource.match(/FineVibe-\$\{version\}-linux-([a-z0-9_]+)\.AppImage/);
+    expect(requested, 'launcher does not request a linux AppImage by name').not.toBeNull();
+    expect(`FineVibe-1.2.3-linux-${requested![1]}.AppImage`, 'launcher name must equal the builder-derived name').toBe(expected);
+    expect(jobSlice('build-linux')).toContain(`-linux-${requested![1]}.AppImage`);
   });
 });

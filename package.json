@@ -110,7 +110,7 @@
       "icon": "build/icon.png"
     },
     "deb": {
-      "depends": [
+      "recommends": [
         "libsecret-tools"
       ]
     },

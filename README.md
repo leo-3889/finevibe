@@ -119,7 +119,7 @@ From the fork's [Releases](https://github.com/leo-3889/finevibe/releases):
 
 - **Windows** — `FineVibe-Setup-<version>.exe` (NSIS) or `FineVibe-<version>.exe` (portable); zips for x64/arm64
 - **macOS** — signed, notarized `.dmg` / `FineVibe-<version>-mac.zip`
-- **Linux (x64)** — `FineVibe-<version>-linux-amd64.deb` or `FineVibe-<version>-linux-amd64.AppImage`
+- **Linux (x64)** — `FineVibe-<version>-linux-amd64.deb` or `FineVibe-<version>-linux-x86_64.AppImage`
 
 ```bash
 # Debian/Ubuntu — installs to /opt/FineVibe, CLI at /usr/bin/finevibe

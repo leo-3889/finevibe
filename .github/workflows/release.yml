@@ -171,18 +171,73 @@ jobs:
   build:
     needs: [prepare]
     runs-on: macos-latest
-    # Job-level so `if: env.APPLE_ID` can gate the notarization checks.
+    # Job-level so every step (the credential gate below and electron-builder
+    # itself) sees the same values electron-builder reads from the environment.
     env:
       CSC_LINK: ${{ secrets.CSC_LINK }}
       CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # app-builder-lib accepts App Store Connect API-key auth as an
+      # alternative to the Apple ID triple (macPackager.getNotarizeOptions);
+      # unset secrets arrive as empty strings, which that code treats as
+      # absent, so wiring them is safe when the repo does not use them.
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      # Third accepted shape: keychain-profile auth (same
+      # macPackager.getNotarizeOptions). APPLE_KEYCHAIN is optional there —
+      # it selects a non-default keychain — but wiring it costs nothing:
+      # unset secrets arrive as empty strings, which that code treats as
+      # absent, so wiring them is safe when the repo does not use them.
+      APPLE_KEYCHAIN: ${{ secrets.APPLE_KEYCHAIN }}
+      APPLE_KEYCHAIN_PROFILE: ${{ secrets.APPLE_KEYCHAIN_PROFILE }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Verify notarization credentials
+        if: inputs.artifacts_only != true
+        # Row 62: with no Apple credential in the environment, app-builder-lib
+        # logs "skipped macOS notarization" and SHIPS (macPackager
+        # .getNotarizeOptions returns undefined; only a PARTIAL set throws).
+        # An un-notarized dmg still passes codesign, so the release would be
+        # green and every first launch would be blocked by Gatekeeper. Fail
+        # before npm ci / signing instead. `artifacts_only` is the documented
+        # manual exception: it builds with CSC_IDENTITY_AUTO_DISCOVERY=false
+        # and -c.mac.notarize=false, so an unsigned bundle needs no secrets.
+        run: |
+          apple_id_complete=true
+          for name in APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!name}" ] || apple_id_complete=false
+          done
+          api_key_complete=true
+          for name in APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            [ -n "${!name}" ] || api_key_complete=false
+          done
+          # Option 3 of getNotarizeOptions needs only the profile: the
+          # APPLE_KEYCHAIN var merely selects a non-default keychain, so
+          # requiring it here would false-fail the commonest setup.
+          keychain_complete=false
+          [ -n "$APPLE_KEYCHAIN_PROFILE" ] && keychain_complete=true
+          credentials_present=$apple_id_complete
+          [ "$api_key_complete" = true ] && credentials_present=true
+          [ "$keychain_complete" = true ] && credentials_present=true
+          if [ "$credentials_present" = true ]; then
+            echo "Notarization credentials present:"
+            echo "  apple_id=$apple_id_complete api_key=$api_key_complete"
+            echo "  keychain_profile=$keychain_complete"
+            exit 0
+          fi
+          echo "::error::No Apple notarization credentials configured - this release would ship UN-notarized."
+          echo "::error::Need one complete credential set:"
+          echo "::error::APPLE_ID+APPLE_APP_SPECIFIC_PASSWORD+APPLE_TEAM_ID,"
+          echo "::error::or APPLE_API_KEY+APPLE_API_KEY_ID+APPLE_API_ISSUER,"
+          echo "::error::or APPLE_KEYCHAIN_PROFILE (APPLE_KEYCHAIN optional)."
+          exit 1
 
       - uses: actions/setup-node@v4
         with:
@@ -205,8 +260,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Rebuild better-sqlite3 for the Node ABI
+        # Row 61: `npm ci` postinstall runs `electron-builder install-app-deps`,
+        # which puts better-sqlite3 on the ELECTRON ABI (NODE_MODULE_VERSION
+        # 145 for Electron 41). vitest runs on plain Node (137), where the
+        # binding throws ERR_DLOPEN_FAILED and the chrome-import
+        # cookies/importer suites skip themselves, so this leg would ship its
+        # dmg without the cookie reader ever being exercised.
+        # prebuild-install fetches the prebuild for the running Node instead.
+        run: npm rebuild better-sqlite3
+
       - name: Run tests
         run: npm test
+
+      - name: Restore the Electron ABI build
+        # electron-builder's own packager rebuild (npmRebuild defaults on —
+        # app-builder-lib packager.js installAppDependencies) does NOT undo the
+        # step above: @electron/rebuild skips any module whose
+        # build/Release/.forge-meta already names the Electron ABI, so the
+        # Node-ABI binding would be packaged into the app and every user's
+        # `require('better-sqlite3')` would fail. Clearing the marker first
+        # makes install-app-deps re-fetch the Electron prebuild.
+        run: |
+          rm -f node_modules/better-sqlite3/build/Release/.forge-meta
+          npx electron-builder install-app-deps
 
       - name: Build
         # P1-8: `--publish never` — builds must not race the shared tag;
@@ -252,7 +329,12 @@ jobs:
           done
 
       - name: Verify notarization and Gatekeeper acceptance
-        if: env.APPLE_ID != ''
+        if: inputs.artifacts_only != true
+        # Row 62: this step used to be `if: env.APPLE_ID != ''` — gated on the
+        # very credential whose absence is the silent notarization skip, so the
+        # un-notarized case skipped its own detector. The credential gate above
+        # now fails release runs early, and the manual exception is the same
+        # `artifacts_only` input the codesign step honours.
         run: |
           xcrun stapler validate out/*.dmg
           for dmg in out/*.dmg; do spctl -a -vv -t install "$dmg"; done
@@ -297,8 +379,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Rebuild better-sqlite3 for the Node ABI
+        # Row 61: `npm ci` postinstall runs `electron-builder install-app-deps`,
+        # which puts better-sqlite3 on the ELECTRON ABI (NODE_MODULE_VERSION
+        # 145 for Electron 41). vitest runs on plain Node (137), where the
+        # binding throws ERR_DLOPEN_FAILED and the chrome-import
+        # cookies/importer suites skip themselves, so this leg would ship its
+        # deb/AppImage without the cookie reader ever being exercised.
+        # prebuild-install fetches the prebuild for the running Node instead.
+        run: npm rebuild better-sqlite3
+
       - name: Run tests
         run: npm test
+
+      - name: Restore the Electron ABI build
+        # electron-builder's own packager rebuild (npmRebuild defaults on —
+        # app-builder-lib packager.js installAppDependencies) does NOT undo the
+        # step above: @electron/rebuild skips any module whose
+        # build/Release/.forge-meta already names the Electron ABI, so the
+        # Node-ABI binding would be packaged into the app and every user's
+        # `require('better-sqlite3')` would fail. Clearing the marker first
+        # makes install-app-deps re-fetch the Electron prebuild.
+        run: |
+          rm -f node_modules/better-sqlite3/build/Release/.forge-meta
+          npx electron-builder install-app-deps
 
       - name: Build
         # P1-8: `--publish never` — builds must not race the shared tag;
@@ -319,7 +423,19 @@ jobs:
           dpkg-deb --contents out/*.deb > /dev/null
           dpkg-deb --contents out/*.deb | grep -q 'usr/share/icons/hicolor'
           dpkg-deb --contents out/*.deb | grep -q 'usr/share/applications/finevibe.desktop'
-          head -c 4 out/*.AppImage | grep -q "$(printf '\177ELF')"
+          # Row 52: pin the exact published AppImage name, not just "some
+          # AppImage". electron-builder expands ${arch} per target extension
+          # (builder-util getArtifactArchName): the AppImage is x86_64, the deb
+          # amd64 — and bin/finevibe.js downloads `linux-x86_64` by name. A
+          # rename here 404s every fresh linux install while this gate stays
+          # green, so it must fail here.
+          app_image="out/FineVibe-$(node -p "require('./package.json').version")-linux-x86_64.AppImage"
+          if [ ! -f "$app_image" ]; then
+            echo "::error::$app_image is missing - the launcher requests that exact asset name"
+            ls -1 out/
+            exit 1
+          fi
+          head -c 4 "$app_image" | grep -q "$(printf '\177ELF')"
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -364,8 +480,31 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Rebuild better-sqlite3 for the Node ABI
+        # Row 61: `npm ci` postinstall runs `electron-builder install-app-deps`,
+        # which puts better-sqlite3 on the ELECTRON ABI (NODE_MODULE_VERSION
+        # 145 for Electron 41). vitest runs on plain Node (137), where the
+        # binding throws ERR_DLOPEN_FAILED and the chrome-import
+        # cookies/importer suites skip themselves — no Windows artifact would be
+        # broken, but the cookie reader that matters most on Windows (DPAPI)
+        # would never be exercised. prebuild-install fetches the prebuild for
+        # the running Node instead.
+        run: npm rebuild better-sqlite3
+
       - name: Run tests
         run: npm test
+
+      - name: Restore the Electron ABI build
+        # electron-builder's own packager rebuild (npmRebuild defaults on —
+        # app-builder-lib packager.js installAppDependencies) does NOT undo the
+        # step above: @electron/rebuild skips any module whose
+        # build/Release/.forge-meta already names the Electron ABI, so the
+        # Node-ABI binding would be packaged into the app and every user's
+        # `require('better-sqlite3')` would fail. Clearing the marker first
+        # makes install-app-deps re-fetch the Electron prebuild.
+        run: |
+          node -e "require('fs').rmSync('node_modules/better-sqlite3/build/Release/.forge-meta',{force:true})"
+          npx electron-builder install-app-deps
 
       - name: Build
         # P1-8: `--publish never` — builds must not race the shared tag;

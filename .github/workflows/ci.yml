@@ -36,5 +36,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Rebuild better-sqlite3 for the Node ABI
+        # Row 61: `npm ci` postinstall runs `electron-builder install-app-deps`
+        # and puts better-sqlite3 on the Electron ABI, which plain-Node vitest
+        # cannot load — the chrome-import cookies/importer suites would
+        # self-skip on every leg. No packaging here, so no Electron-ABI
+        # restore step is needed afterwards.
+        run: npm rebuild better-sqlite3
+
       - name: Run tests
         run: npm test
