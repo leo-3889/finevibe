@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ClipboardPastePayload, SettingsValidationResult } from '../shared/types';
 import * as path from 'path';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
+import { launchSessionDir } from './launch-session-dir';
 
 /**
  * Focused on the `pty:create` lifecycle: which provider hook fires for a
@@ -1890,6 +1891,23 @@ describe('clipboard:readForPaste file lists', () => {
     expect((await readPaste()).files).toEqual(['/tmp/a & b.txt', '/tmp/café.md']);
   });
 
+  it('reads a single-file mac copy from public.file-url, the flavor modern senders publish', async () => {
+    // Logic proof (no mac pasteboard in CI): a sender carrying ONLY
+    // `public.file-url` used to match no branch, so the paste fell through to
+    // the file NAME the sender echoed as clipboard text. The branch decodes the
+    // file URL (percent-escapes included) and does not touch the plist reader.
+    platformState.os = 'darwin';
+    formatsWith('public.file-url', 'text/plain');
+    const target = '/tmp/report 1.md';
+    vi.mocked(clipboard.read).mockReturnValue(`${pathToFileURL(target).href}\0`);
+
+    const payload = await readPaste();
+    expect(payload.files).toEqual([target]);
+    expect(clipboard.read).toHaveBeenCalledWith('public.file-url');
+    // The plist is the fallback, not a second probe on a file-url clipboard.
+    expect(clipboard.readBuffer).not.toHaveBeenCalled();
+  });
+
   it('reads file-manager copies on Linux from text/uri-list, skipping web links', async () => {
     platformState.os = 'linux';
     formatsWith('text/uri-list', 'text/plain');
@@ -3630,7 +3648,13 @@ describe('per-host provider channels (per-host providers T1)', () => {
     );
     const localOpts = mockRegisterSync.mock.calls[0][5] as { sessionDir?: string; hostId?: string };
     expect(localOpts.hostId).toBeUndefined();
-    expect(localOpts.sessionDir).not.toContain('~/.finevibe/sessions');
+    // Audit R110: the local registration must name the SAME dir the provider
+    // hands its sessions watcher (launchSessionDir), not merely "not the host
+    // spelling". session-transcript-sync's isSameSync compares sessionDir
+    // verbatim: any delta (a missing value, a different derivation) makes the
+    // watcher's seed re-registration look like a new conversation, and the
+    // already-resolved incumbent is torn down for the seed.
+    expect(localOpts.sessionDir).toBe(launchSessionDir('pi', 'host-3'));
   });
 });
 

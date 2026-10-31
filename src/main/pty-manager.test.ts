@@ -1561,6 +1561,68 @@ describe('resolveWindowsShell', () => {
   }
 });
 
+// Audit R114: the cmd.exe quote rejection is a launch-spec rejection, not an
+// internal error. The wrapping used to be resolved AFTER the session was
+// registered and its hooks installed, so the throw escaped spawnPty as a
+// rejection of a channel the renderer never awaits: a blank pane, and the only
+// readable reason was the generic `Failed to prepare the launch: Error: …` — the
+// per-provider hint (a native-.exe binary, or a Pi-compatible provider loading a
+// prompt FILE) was lost with the exception class.
+describe('Windows quoted-prompt launch rejection (audit R114)', () => {
+  // Platform constants are baked at module load, so the win32 build needs a
+  // fresh module registry with './platform' pinned — the same seam as the
+  // darwin and posix suites above (test-case exception to the static-import
+  // rule). Unconditional on purpose: this Windows-only class must also run on
+  // the POSIX dev host, where it would otherwise never be exercised.
+  async function importWinPtyManager() {
+    const registerSession = vi.fn();
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => ({
+      ...(await importOriginal<typeof PlatformModule>()),
+      isWin: true,
+      isMac: false,
+      isLinux: false,
+      pathSep: '\\',
+      whichCmd: 'where',
+      utf8LocaleEnv: {},
+    }));
+    // registerSession is the first side effect spawnPty runs once the spec is
+    // resolved; the spy proves the rejection lands BEFORE it.
+    vi.doMock('./hook-status', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('./hook-status')>()),
+      registerSession,
+    }));
+    const registry = await import('./providers/registry');
+    registry.initProviders();
+    const pm = await import('./pty-manager');
+    return { pm, registerSession };
+  }
+
+  afterEach(() => {
+    vi.doUnmock('./platform');
+    vi.doUnmock('./hook-status');
+    vi.resetModules();
+  });
+
+  it('rejects a quote-bearing prompt with the actionable spec message before any side effect', async () => {
+    const { pm, registerSession } = await importWinPtyManager();
+    const onData = vi.fn();
+    const onExit = vi.fn();
+
+    await pm.spawnPty('win-quote', '/project', null, false, '', 'claude', undefined, 'focus on "auth.ts"', '', onData, onExit);
+
+    const pane = String(onData.mock.calls[0]?.[0] ?? '');
+    expect(pane).toContain('double quote');
+    expect(pane).toContain('prompt file');
+    expect(pane).not.toContain('Failed to prepare the launch');
+    // The spawn-rejected sentinel keeps the pane open with the message readable
+    // instead of archiving a crash for a session that never spawned.
+    expect(onExit).toHaveBeenCalledWith(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(registerSession).not.toHaveBeenCalled();
+  });
+});
+
 describe('withUtf8Locale (issues #157, #160)', () => {
   // Only one branch runs per platform; spelling the delta once keeps each test
   // to a single expectation.

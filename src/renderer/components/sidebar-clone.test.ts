@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 
 // "Checkout and create" (plan 65-67) in the Add-project modal: a git URL in
@@ -145,6 +145,21 @@ function confirmBtn(): HTMLButtonElement {
 
 const URL_SSH = 'git@github.com:owner/repo.git';
 const URL_HTTPS = 'https://github.com/owner/repo';
+
+// Audit R120 (the `cancels the pending fs.listDirs burst` flake): a test that
+// types a path into #modal-project-path arms the sidebar's real 100 ms
+// autocomplete debounce, and the debounce belongs to THAT modal instance — only
+// its own cleanup cancels it. Left open, the timer outlives the test and fires
+// inside a later one, where `window.finevibe.fs` is a fresh stub and the stale
+// burst counts against that test's `listDirs` assertion (1-in-N under parallel
+// load, green in isolation). Closing every test's modal runs the C2R-11 cleanup
+// funnel, so no debounce survives into the next test and the fake-timer
+// assertions below are deterministic instead of schedule-dependent.
+afterEach(() => {
+  // The mini-modal's close funnel: it runs the cleanups the sidebar registered
+  // (suggest-debounce cancel + probe-gate close), exactly like Esc/Cancel/Create.
+  modalMock.closeModal();
+});
 
 describe('Add-project git-URL detection', () => {
   it('flips the confirm label to Checkout and create and fills the repo name', async () => {
@@ -613,11 +628,23 @@ describe('Add-project path autocomplete teardown (C2R-11)', () => {
       vi.advanceTimersByTime(50); // inside the 100 ms debounce window
       expect(fsStub.listDirs).not.toHaveBeenCalled();
 
+      // Control: the same keystroke on a modal that stays open DOES reach
+      // fs.listDirs. Without it the assertions below are satisfied by any path
+      // that never gets there, and by a call count that only looks clean under a
+      // lucky timer schedule (the R120 flake class).
+      vi.advanceTimersByTime(50);
+      expect(fsStub.listDirs).toHaveBeenCalledTimes(1);
+      expect(fsStub.listDirs).toHaveBeenCalledWith('/home/u/projects/', 'de');
+
       // Esc / Cancel / Create all funnel through closeModal; the in-flight
       // debounce used to survive it and paint a detached dropdown.
+      pathInput.value = '/home/u/projects/dev';
+      pathInput.dispatchEvent(new Event('input'));
+      vi.advanceTimersByTime(50); // still inside the window: nothing listed yet
       modalMock.closeModal();
       vi.advanceTimersByTime(500);
-      expect(fsStub.listDirs).not.toHaveBeenCalled();
+      // Count unchanged: the pending burst died with the modal.
+      expect(fsStub.listDirs).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

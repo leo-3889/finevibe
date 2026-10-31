@@ -313,9 +313,12 @@ export function withUtf8Locale<T extends Record<string, string | undefined>>(env
  * opens a quoted region over the payload, while the `\"`-escaped form executes
  * it. Escaping is therefore worse than doing nothing.
  *
- * So an argument containing `"` is rejected rather than mangled. The caller
- * surfaces this as a spawn failure, which is the correct outcome; silently
- * producing an injectable command line is not.
+ * So an argument containing `"` is rejected rather than mangled. The rejection
+ * is a `LaunchSpecError` (audit R114): the pane contract is the actionable
+ * message plus the spawn-rejected exit, so it must survive as this class all
+ * the way to `spawnPty`'s spec-rejection branch — a plain Error reaches the
+ * catch-all there and the user loses the per-provider hint below. Silently
+ * producing an injectable command line is not an option either.
  *
  * Residual, accepted: `%VAR%` still expands inside double quotes. That leaks an
  * environment value into the argument; it is not code execution, so a percent
@@ -326,7 +329,7 @@ const CMDEXE_METACHARS = /[&|<>^]/;
 function quoteArgForCmdExe(arg: string): string {
   if (arg.includes('"')) {
     const shown = arg.length > 80 ? `${arg.slice(0, 77)}...` : arg;
-    throw new Error(
+    throw new LaunchSpecError(
       'Cannot pass an argument containing a double quote through cmd.exe: cmd ' +
         'has no escape for a literal quote, so it cannot be quoted safely. ' +
         'A provider whose binary is a native .exe (no cmd.exe wrapper) accepts ' +
@@ -781,8 +784,20 @@ export async function spawnPty(
     // with this message readable instead of archiving a crash for a session
     // that never spawned.
     let spec: LaunchSpec;
+    let spawnCommand: { shell: string; args: string[] };
     try {
       spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId });
+      // Audit R114: the Windows shell wrap is part of the SPEC, not part of the
+      // spawn. quoteArgForCmdExe rejects an argument carrying a literal `"` (cmd
+      // has no escape for one) and throws a LaunchSpecError; resolving it HERE
+      // puts that rejection in the branch below — the pane message plus the
+      // spawn-rejected exit — before this session is registered or any hook is
+      // installed. Resolved after those side effects it escaped as a rejection
+      // of a channel the renderer never awaits: a blank pane, and the only
+      // readable reason was the generic `Failed to prepare the launch: Error: …`
+      // (the per-provider hint about a native-.exe binary or a Pi-compatible
+      // prompt file was lost).
+      spawnCommand = resolveWindowsShell(spec.executable, spec.argv);
     } catch (err) {
       // Nothing will spawn for this session; drop any kill that arrived for
       // it so a later re-spawn of the same id is not killed by a stale flag.
@@ -862,8 +877,7 @@ export async function spawnPty(
       }
     }
 
-    const { shell, args: spawnArgs } = resolveWindowsShell(spec.executable, spec.argv);
-
+    const { shell, args: spawnArgs } = spawnCommand;
     let ptyProcess: pty.IPty;
     try {
       ptyProcess = pty.spawn(shell, spawnArgs, {

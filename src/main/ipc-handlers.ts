@@ -1790,7 +1790,8 @@ export function registerIpcHandlers(): void {
   // (docs/performance.md): Windows FileNameW (Electron's
   // readBuffer('CF_HDROP') answers 0 bytes — Chromium maps the drop list
   // onto text/uri-list — so the CF_HDROP branch stays as the gated
-  // pre-wide-senders fallback), macOS NSFilenamesPboardType, Linux
+  // pre-wide-senders fallback), macOS (audit R116: `public.file-url` first,
+  // the deprecated `NSFilenamesPboardType` plist as the fallback), Linux
   // text/uri-list (X11 file managers; portal permission can empty the
   // readable set on Wayland — an empty list keeps `hasContent` false and
   // the renderer answers with the CLI's own Ctrl+V paste).
@@ -1843,6 +1844,28 @@ export function registerIpcHandlers(): void {
         if (sub) sub.hdrop = performance.now() - tRead;
       } catch (err) {
         console.warn('Failed to read clipboard file drop list', err);
+      }
+    }
+    // Audit R116: `NSFilenamesPboardType` is the pre-UTI type, and a growing
+    // set of senders (Finder's single-file copy, anything writing an
+    // NSPasteboardItem via `writeObjects([NSURL])`) publish only
+    // `public.file-url`. With nothing but that flavor the branch below read
+    // nothing, and the paste degraded to the file NAME the sender echoed as
+    // clipboard text. Electron surfaces the flavor through `clipboard.read`
+    // (`read(format): string`), which hands back the pasteboard's raw bytes:
+    // one `file://` URL, NUL-padded.
+    // ponytail: one URL per pasteboard item, which is what the flavor carries;
+    // multi-file copies are exactly the case that still publishes the plist
+    // below, so that branch stays as the fallback rather than decoding a
+    // hypothetical multi-URL file-url.
+    if (isMac && paths.length === 0 && hasFormat(formats, 'public.file-url')) {
+      try {
+        const tRead = CLIPBOARD_TIMING ? performance.now() : 0;
+        const url = clipboard.read('public.file-url').replace(/\0[\s\S]*$/, '').trim();
+        if (url.startsWith('file://')) paths.push(fileURLToPath(url));
+        if (sub) sub.fileUrl = performance.now() - tRead;
+      } catch (err) {
+        console.warn('Failed to read clipboard file URL', err);
       }
     }
     if (isMac && paths.length === 0 && hasFormat(formats, 'nsfilenamespboardtype')) {
@@ -1965,7 +1988,7 @@ export function registerIpcHandlers(): void {
         `text=${fmtMs(tText - tFormats)}ms`,
       ];
       if (sub) {
-        for (const key of ['fileNameW', 'hdrop', 'nsPlist', 'uriList'] as const) {
+        for (const key of ['fileNameW', 'hdrop', 'fileUrl', 'nsPlist', 'uriList'] as const) {
           if (key in sub) parts.push(`${key}=${fmtMs(sub[key])}ms`);
         }
       }
