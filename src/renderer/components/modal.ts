@@ -9,6 +9,8 @@ export interface FieldDef {
   defaultValue?: string;
   rows?: number;
   maxLength?: number;
+  /** Masked `text` field (type=password, autofill off, never prefilled). */
+  secret?: boolean;
   options?: { value: string; label: string; disabled?: boolean }[];
   buttonLabel?: string;
   onButtonClick?: (input: HTMLInputElement) => void;
@@ -135,9 +137,17 @@ export function showModal(
       if (!(overlay as any)._selectCleanups) (overlay as any)._selectCleanups = [];
       (overlay as any)._selectCleanups.push(() => sel.destroy());
     } else {
-      input.type = 'text';
+      input.type = field.secret ? 'password' : 'text';
       input.placeholder = field.placeholder ?? '';
-      input.value = field.defaultValue ?? '';
+      if (field.secret) {
+        // Secrets live in the OS keychain and are write-only from this form:
+        // ignore defaultValue so an edit dialog can never echo one back, and
+        // `new-password` keeps Chrome from offering a stored credential.
+        input.autocomplete = 'new-password';
+        input.spellcheck = false;
+      } else {
+        input.value = field.defaultValue ?? '';
+      }
       div.appendChild(label);
 
       if (field.buttonLabel && field.onButtonClick) {

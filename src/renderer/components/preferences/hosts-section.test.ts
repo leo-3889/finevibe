@@ -139,6 +139,23 @@ describe('hosts-section', () => {
     expect(api.enroll).toHaveBeenCalledWith('h1');
   });
 
+  it('wizard: the secret field is masked and prefilled on neither add nor edit (bug #7)', async () => {
+    const fieldsFor = async (act: string | null) => {
+      api.list.mockResolvedValue(act ? [host({ authKind: 'password', enrollmentStatus: 'enrolled' })] : []);
+      const { container } = await mount();
+      const btn = act === null
+        ? (container.querySelector('.hosts-add-btn') as HTMLButtonElement)
+        : (container.querySelector(`button[data-act="${act}"]`) as HTMLButtonElement);
+      btn.click();
+      return modal.showModal.mock.calls[0][1] as Array<{ id: string; secret?: boolean; defaultValue?: string }>;
+    };
+    for (const act of [null, 'edit']) {
+      const secret = (await fieldsFor(act)).find((f) => f.id === 'secret')!;
+      expect(secret.secret).toBe(true);
+      expect(secret.defaultValue).toBeUndefined();
+    }
+  });
+
   it('wizard: key auth with no path generates a key, seeds id, stores secret, runs test', async () => {
     api.generateKey.mockResolvedValue({ id: 'gen1', privateKeyPath: '/cfg/hosts/gen1/id_ed25519', publicKey: 'ssh-ed25519 x' });
     api.create.mockImplementation(async (draft: HostRecord) => ({ ...host(), ...draft }));

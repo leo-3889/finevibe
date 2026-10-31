@@ -58,7 +58,7 @@ showModal('My Title', [
 
 - **File**: `src/renderer/components/modal.ts` (shared `#modal-overlay`, one instance)
 - Exports: `showModal()`, `showConfirmDialog()`, `showPropertiesDialog()`, `closeModal()`, `setModalError()`, `registerModalCleanup()`
-- Field types (`FieldDef`, `modal.ts:4-20`): `text`, `textarea` (honors `rows`), `checkbox`, `select`. Common fields: `placeholder`, `defaultValue`, `maxLength`, `options` (`{value,label,disabled?}`), `buttonLabel` + `onButtonClick(input)` (inline button, e.g. "Browse"), `onChange(checked)` for checkboxes, `onSelectChange(value)` and `onSelectCreated(select)` for selects (the latter lets you re-scope options through `CustomSelectInstance.setOptions`).
+- Field types (`FieldDef`, `modal.ts:4-19`): `text`, `textarea` (honors `rows`), `checkbox`, `select`. Common fields: `placeholder`, `defaultValue`, `maxLength`, `options` (`{value,label,disabled?}`), `buttonLabel` + `onButtonClick(input)` (inline button, e.g. "Browse"), `onChange(checked)` for checkboxes, `onSelectChange(value)` and `onSelectCreated(select)` for selects (the latter lets you re-scope options through `CustomSelectInstance.setOptions`). `secret: true` on a `text` field masks it (`type=password`, `autocomplete=new-password`, spellcheck off) and ignores `defaultValue` — secrets are write-only from modals, never prefilled.
 - `showConfirmDialog(title, message, { confirmLabel?, cancelLabel?, onConfirm })` — **use this for any yes/no**, never hand-build a two-button overlay.
 - `showPropertiesDialog(...)` — key/value property sheet.
 - `registerModalCleanup(fn)` — run teardown (destroy a custom select, clear a timer) when the modal closes; use it for anything injected outside the standard `FieldDef` flow.

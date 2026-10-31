@@ -205,7 +205,7 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
         const picked = await window.finevibe.fs.browseDirectory();
         if (picked) input.value = picked;
       } },
-      { id: 'secret', label: t('hosts.field.secret'), type: 'text', placeholder: t('hosts.field.secretPlaceholder') },
+      { id: 'secret', label: t('hosts.field.secret'), type: 'text', secret: true, placeholder: t('hosts.field.secretPlaceholder') },
       // Settings-sync opt-ins (plan §4): persisted on the record, drive the
       // card's Sync settings button. Opt-in: unchecked by default.
       ...SYNCABLE.map((p): FieldDef => ({
