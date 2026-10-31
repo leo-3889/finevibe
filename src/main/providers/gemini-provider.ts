@@ -126,6 +126,12 @@ export class GeminiProvider implements CliProvider {
     if (opts.extraArgs) {
       args.push(...tokenizeArgs(opts.extraArgs));
     }
+    // Audit row 98: this push is deliberately NOT gated on `!isResume`. The
+    // provider declares `pendingPromptTrigger: 'startup-arg'`, so terminal-pane
+    // hands the queued prompt to the spawn argv and never types it into the
+    // pane — moving it inside the fresh-spawn branch silently loses a
+    // browser-tab / team / Restart Session prompt delivered to a dormant
+    // session (the shape copilot-provider.ts:81-90 documents for the same case).
     if (opts.initialPrompt) {
       args.push('-i', opts.initialPrompt);
     }

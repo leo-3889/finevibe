@@ -237,6 +237,30 @@ describe('buildArgs', () => {
     expect(args).toEqual(['-i', 'Fix the hooks config']);
   });
 
+  // Audit row 98: this provider declares pendingPromptTrigger 'startup-arg',
+  // so the pane never types the queued prompt — dropping it from the resume
+  // argv lost a browser-tab / team / Restart Session prompt sent to a dormant
+  // session (the same fix copilot-provider.ts:81-90 carries).
+  it('carries the queued prompt through RESUME (-r <id> -i <prompt>)', () => {
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'Fix the hooks config' });
+    expect(args).toEqual(['-r', 'sid-1', '-i', 'Fix the hooks config']);
+  });
+
+  it('carries the prompt AND extra args on resume', () => {
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '--model gemini-2.5-flash', initialPrompt: 'hi' });
+    expect(args).toEqual(['-r', 'sid-1', '--model', 'gemini-2.5-flash', '-i', 'hi']);
+  });
+
+  it('still emits -i when isResume is set but no cliSessionId arrived yet', () => {
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: true, extraArgs: '', initialPrompt: 'hi' });
+    expect(args).toEqual(['-i', 'hi']);
+  });
+
+  it('emits -i exactly once on resume (no duplicated prompt flag)', () => {
+    const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: 'sid-1', isResume: true, extraArgs: '', initialPrompt: 'hi' });
+    expect(args.filter((a) => a === '-i')).toHaveLength(1);
+  });
+
   it('does not append -i flag when initialPrompt is absent', () => {
     const args = provider.buildArgs({ sessionId: 'sess-1', cliSessionId: null, isResume: false, extraArgs: '' });
     expect(args).toEqual([]);
