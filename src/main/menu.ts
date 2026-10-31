@@ -76,15 +76,31 @@ export function createAppMenu(debugMode = false): void {
         { label: 'Delete', click: () => focusedContents()?.delete() },
         { label: 'Select All', click: () => focusedContents()?.selectAll() },
       ] : [
-        { role: 'undo' as const },
+        // macOS row 92/70: a role item registers its default accelerator
+        // (registerAccelerator defaults to true), so macOS claims Cmd+Z/X/C/V/A
+        // at the menu bar BEFORE the renderer — xterm's customKeyEventHandler
+        // never sees them and the role acts on xterm's hidden helper textarea
+        // (Select All is a visual no-op, undo/cut land in the textarea). An
+        // empty accelerator keeps the label and the click action while
+        // claiming no key; these five are the chords a focused PTY needs, and
+        // terminal-utils.ts routes them from there. Redo/pasteAndMatchStyle/
+        // Delete stay claimed: none is a byte a PTY expects.
+        //
+        // Ordinary inputs keep working: unregistering a MENU accelerator does
+        // not disable Chromium's own editing commands. Cmd+C/V/X/Z/A in an
+        // <input>/<textarea> are handled by the browser's editable-element
+        // behavior, which is exactly how the unclaimed Cmd+V paste path (the
+        // paste event attachImagePasteHandler listens for) already reaches the
+        // renderer here.
+        { role: 'undo' as const, accelerator: '' },
         { role: 'redo' as const },
         { type: 'separator' as const },
-        { role: 'cut' as const },
-        { role: 'copy' as const },
-        { role: 'paste' as const },
+        { role: 'cut' as const, accelerator: '' },
+        { role: 'copy' as const, accelerator: '' },
+        { role: 'paste' as const, accelerator: '' },
         { role: 'pasteAndMatchStyle' as const },
         { role: 'delete' as const },
-        { role: 'selectAll' as const },
+        { role: 'selectAll' as const, accelerator: '' },
       ],
     },
     {

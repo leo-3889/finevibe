@@ -145,4 +145,42 @@ describe('mac menu', () => {
     // Cmd+W belongs to File → Close Session; the role must claim no key.
     expect(close!.accelerator).toBe('');
   });
+
+  // Row 92 (+ its row-70 Cmd+C sibling): the mac Edit roles must keep their
+  // labels and click actions but claim no key, or macOS intercepts Cmd+Z/X/C/V/A
+  // before xterm's customKeyEventHandler and the role acts on the hidden helper
+  // textarea. Same accelerator:'' idiom the toggleDevTools/role:close rows use.
+  it('keeps the Edit role labels while freeing the terminal chords', async () => {
+    const template = await buildTemplate({ isMac: true });
+    const edit = submenuOf(template, 'Edit');
+    for (const role of ['undo', 'cut', 'copy', 'paste', 'selectAll']) {
+      const item = edit.find((i) => i.role === role);
+      expect(item, `role ${role} stays in the menu`).toBeDefined();
+      expect(item!.accelerator).toBe('');
+      expect(item!.registerAccelerator).toBeUndefined();
+    }
+    expect(claimedAccelerators(edit)).toEqual([]);
+  });
+
+  it('leaves the non-terminal Edit roles on their defaults', async () => {
+    // Negative check: only the five PTY chords were touched. Redo (Cmd+Shift+Z),
+    // pasteAndMatchStyle (Cmd+Shift+V) and Delete are not bytes a shell or
+    // readline expects, so they keep the role's own accelerator.
+    const template = await buildTemplate({ isMac: true });
+    const edit = submenuOf(template, 'Edit');
+    for (const role of ['redo', 'pasteAndMatchStyle', 'delete']) {
+      expect(edit.find((i) => i.role === role)!.accelerator).toBeUndefined();
+    }
+  });
+
+  it('claims exactly one accelerator: Cmd+Shift+W Close Window', async () => {
+    // Close Window must stay menu-side: Cmd+Shift+W is an app-level window
+    // command, not a PTY byte, and row 117 tracks its confirm-gating concern
+    // separately. Every other entry is registerAccelerator:false, an empty
+    // accelerator, or a role left on its default (hide/quit ⇒ Cmd+H/Cmd+Q:
+    // invisible to this template-level check, and no shell or readline binding
+    // — only the Cmd+Z/X/C/V/A chords above ever reached xterm as bytes).
+    const template = await buildTemplate({ isMac: true });
+    expect(claimedAccelerators(flatten(template))).toEqual(['Close Window: CmdOrCtrl+Shift+W']);
+  });
 });

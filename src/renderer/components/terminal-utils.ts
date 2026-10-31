@@ -1,7 +1,7 @@
 import type { Terminal } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { shortcutManager } from '../shortcuts.js';
-import { isWin } from '../platform.js';
+import { isMac, isWin } from '../platform.js';
 import { appState } from '../state.js';
 import type { ClipboardSource } from '../../shared/types.js';
 import { FILE_PATH_DRAG_TYPE, NATIVE_FILES_DRAG_TYPE } from '../drag-types.js';
@@ -39,6 +39,11 @@ export function wrapBracketedPaste(terminal: Terminal, text: string): string {
 
 // The byte a terminal receives for Ctrl+V (⌘V delivered as Ctrl+V): DC1.
 const CTRL_V = '\x16';
+
+// The Ctrl-equivalent byte each mac Edit chord becomes in the PTY — the same
+// bytes a win/linux terminal sends for the same physical key: Ctrl+A
+// beginning-of-line, Ctrl+C SIGINT, Ctrl+X kill-line, Ctrl+Z suspend.
+const MAC_CHORD_BYTES: Record<string, string> = { a: '\x01', c: '\x03', x: '\x18', z: '\x1a' };
 
 /**
  * Quote a filesystem path for the shell owning the PTY. Unquoted paths with
@@ -435,6 +440,8 @@ type XtermCore = {
  */
 export function attachMouseForwardingGate(terminal: Terminal): void {
   // jsdom fakes and half-constructed terminals have no _core.
+  // SAFETY: `_core` is xterm's runtime internal (public Terminal type omits it);
+  // the shape below is the subset attachMouseForwardingGate actually touches.
   const core = (terminal as unknown as { _core?: XtermCore })._core;
   const selectionService = core?._selectionService;
   const mouseService = core?.coreMouseService;
@@ -460,6 +467,9 @@ export function attachMouseForwardingGate(terminal: Terminal): void {
  * - Cmd/Ctrl+F: bubbles up to document (prevents xterm from consuming it)
  * - Ctrl+Shift+C: copies selected text to clipboard
  * - Windows Ctrl+C: copies if selection exists, otherwise passes through as SIGINT
+ * - macOS Cmd+C/X/Z/A: the same contract, routed here because the Edit menu no
+ *   longer claims those keys (main/menu.ts) and xterm writes nothing for a
+ *   meta-only a/c/x/z. Needs `writeToPty` to deliver the bytes.
  * - Windows Ctrl+V: returns false WITHOUT preventDefault (P1) so Chromium's
  *   native paste event fires — xterm must not write the literal DC1, the
  *   paste event (attachImagePasteHandler + xterm's own paste) serves it.
@@ -473,7 +483,8 @@ export function attachMouseForwardingGate(terminal: Terminal): void {
  */
 export function attachClipboardCopyHandler(
   terminal: Terminal,
-  extend?: ExtraKeyHandler
+  extend?: ExtraKeyHandler,
+  writeToPty?: (data: string) => void
 ): void {
   terminal.attachCustomKeyEventHandler((e) => {
     // Cmd/Ctrl+F: bubble to document for search
@@ -501,6 +512,38 @@ export function attachClipboardCopyHandler(
     // — the path macOS/Linux already used. Main's clipboard read survives as
     // pasteIntoTerminal's fallback (CF_HDROP-only copies, the context menu).
     if (isWin && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key === 'v') return false;
+
+    // macOS (rows 92/70): the Edit menu hands Cmd+C/X/Z/A back to the
+    // renderer, and xterm's mac mapping writes nothing for a meta-only a/c/x/z
+    // (Keyboard.ts maps only Cmd+A to a buffer select-all), so the chords are
+    // routed here. No "is a text field focused" test belongs here: xterm binds
+    // this handler to its own helper textarea, so the terminal owns focus by
+    // the time it runs.
+    const macChord = isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+    // Cmd+C with a selection copies through main (#160) instead of Chromium's
+    // native copy of the armed textarea, which adds the rich flavors that
+    // corrupt non-Latin text — same reason Ctrl+Shift+C goes through main.
+    if (macChord && e.key === 'c' && terminal.hasSelection()) {
+      if (e.type === 'keydown') copySelection(terminal);
+      // Stop Chromium's own edit command too: on the armed-copy path it would
+      // overwrite what main just received, and the Cmd+X default would cut
+      // xterm's helper textarea out from under the IME composition helper.
+      e.preventDefault();
+      return false;
+    }
+    // Without a selection Cmd+C is SIGINT; Cmd+A/X/Z become their Ctrl bytes,
+    // matching what win/linux send for Ctrl+A/X/Z. Cmd+V stays untouched:
+    // xterm leaves the meta-only keydown uncancelled, so Chromium fires the
+    // native paste event attachImagePasteHandler and xterm's own paste
+    // pipeline already serve.
+    if (macChord && writeToPty) {
+      const byte = MAC_CHORD_BYTES[e.key.toLowerCase()];
+      if (byte !== undefined) {
+        if (e.type === 'keydown') writeToPty(byte);
+        e.preventDefault();
+        return false;
+      }
+    }
 
     // App accelerators: run the dispatcher here (keydown only) so its
     // verdict decides xterm. A handler that acted consumed the key — the PTY

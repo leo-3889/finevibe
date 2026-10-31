@@ -288,6 +288,204 @@ describe('attachClipboardCopyHandler (macOS)', () => {
     expect(result).toBe(true);
     expect(writeToPty).not.toHaveBeenCalled();
   });
+
+  // Row 92/70: menu.ts hands Cmd+C/X/Z/A back to the renderer, so this handler
+  // owns them. The mac runtime route (menu → renderer) is UNVERIFIED-RUNTIME;
+  // these pin the handler's verdict for the keydown xterm will deliver.
+  it('Cmd+C with a selection copies through main and suppresses the native copy', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('mac-copy');
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keydown', preventDefault });
+
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('mac-copy', 'explicit');
+    expect(mockClipboardWrite).not.toHaveBeenCalled();
+    // No SIGINT alongside the copy, and the default edit command is stopped so
+    // Chromium cannot re-copy the (unarmed) helper textarea over this write.
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(preventDefault).toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('Cmd+C with a selection copies on keydown only, but stays suppressed on keyup', () => {
+    const terminal = new FakeTerminal();
+    attachClipboardCopyHandler(terminal as any);
+
+    terminal.setSelection('mac-keyup');
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keyup', preventDefault: vi.fn() });
+
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('Cmd+C with no selection sends SIGINT to the PTY', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('');
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keydown', preventDefault });
+
+    // xterm's mac mapping writes nothing for a meta-only 'c', so the byte is
+    // written here rather than left to xterm.
+    expect(writeToPty).toHaveBeenCalledWith('\x03');
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+    expect(preventDefault).toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('Cmd+C with no selection writes the byte on keydown only', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keyup', preventDefault: vi.fn() });
+
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('Cmd+A/X/Z forward their Ctrl bytes, matching win/linux Ctrl+A/X/Z', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+    const preventDefault = vi.fn();
+
+    expect(terminal.simulateKey({ metaKey: true, key: 'a', type: 'keydown', preventDefault })).toBe(false);
+    expect(terminal.simulateKey({ metaKey: true, key: 'x', type: 'keydown', preventDefault })).toBe(false);
+    expect(terminal.simulateKey({ metaKey: true, key: 'z', type: 'keydown', preventDefault })).toBe(false);
+
+    expect(writeToPty.mock.calls).toEqual([['\x01'], ['\x18'], ['\x1a']]);
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+    // Cmd+A select-all / Cmd+X cut must not reach the helper textarea either.
+    expect(preventDefault).toHaveBeenCalledTimes(3);
+  });
+
+  it('Cmd+A forwards the byte even with a selection (it is readline, not select-all)', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('selectable');
+    terminal.simulateKey({ metaKey: true, key: 'a', type: 'keydown', preventDefault: vi.fn() });
+
+    expect(writeToPty).toHaveBeenCalledWith('\x01');
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+  });
+
+  // Cmd+V must survive untouched: xterm leaves the meta-only keydown
+  // uncancelled so Chromium fires the native paste event
+  // (attachImagePasteHandler + xterm's own paste pipeline).
+  it('leaves Cmd+V to the native paste event', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ metaKey: true, key: 'v', type: 'keydown', preventDefault });
+
+    expect(result).toBe(true);
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(mockReadForPaste).not.toHaveBeenCalled();
+  });
+
+  it('Cmd+Shift+C still copies', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('shift-cmd-copy');
+    const result = terminal.simulateKey({ metaKey: true, shiftKey: true, key: 'C', type: 'keydown' });
+
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('shift-cmd-copy', 'explicit');
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('does not forward Ctrl-only or modified chords (xterm already sends those bytes)', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('sel');
+    // Ctrl+A is xterm's own \x01 mapping; Ctrl+C is SIGINT; Ctrl+Shift+C is the
+    // existing copy path — none may be double-written here.
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'a', type: 'keydown' })).toBe(true);
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keydown' })).toBe(true);
+    expect(terminal.simulateKey({ metaKey: true, ctrlKey: true, key: 'a', type: 'keydown' })).toBe(true);
+    expect(terminal.simulateKey({ metaKey: true, altKey: true, key: 'a', type: 'keydown' })).toBe(true);
+
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  it('leaves unhandled mac keys alone', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    expect(terminal.simulateKey({ metaKey: true, key: 't', type: 'keydown' })).toBe(true);
+    expect(terminal.simulateKey({ key: 'a', type: 'keydown' })).toBe(true);
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  it('forwards nothing when the caller passes no PTY writer', () => {
+    // Two-arg callers keep xterm's pre-existing behavior instead of having the
+    // key swallowed by a byte write that cannot land.
+    const terminal = new FakeTerminal();
+    attachClipboardCopyHandler(terminal as any);
+
+    terminal.setSelection('');
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keydown' });
+
+    expect(result).toBe(true);
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('attachClipboardCopyHandler (non-mac Edit chords unchanged)', () => {
+  beforeEach(() => {
+    stubPlatform('Linux');
+    mockPlatform.isMac = false;
+    mockPlatform.isWin = false;
+    mockPlatform.isLinux = true;
+  });
+
+  it('does not treat meta chords as mac Edit chords on Linux', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('linux-sel');
+    for (const key of ['c', 'a', 'x', 'z']) {
+      expect(terminal.simulateKey({ metaKey: true, key, type: 'keydown' })).toBe(true);
+    }
+
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Windows Ctrl+C selection contract', () => {
+    stubPlatform('Win32');
+    mockPlatform.isWin = true;
+    mockPlatform.isLinux = false;
+
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('win-sel');
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keydown' })).toBe(false);
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('win-sel', 'explicit');
+
+    terminal.setSelection('');
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keyup' })).toBe(true);
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
 });
 
 describe('attachClipboardCopyHandler (Windows)', () => {

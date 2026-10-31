@@ -99,7 +99,7 @@ function createShell(projectId: string): ShellTerminalInstance {
   // Shell panes scroll the log of a fullscreen TUI the same way session terminals
   // do (ConPTY never forwards its mouse modes to xterm).
   attachAltScreenWheelScroll(terminal, writeToPty);
-  attachClipboardCopyHandler(terminal, handleWin32Key);
+  attachClipboardCopyHandler(terminal, handleWin32Key, writeToPty);
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: ShellTerminalInstance = {

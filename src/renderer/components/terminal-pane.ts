@@ -146,7 +146,7 @@ export function createTerminalPane(
       e.preventDefault();
       return false;
     }
-  });
+  }, writeToPty);
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: TerminalInstance = {
