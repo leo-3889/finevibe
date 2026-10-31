@@ -229,6 +229,7 @@ export interface FineVibeApi {
     onToggleDebug(callback: () => void): () => void;
     onToggleInspector(callback: () => void): () => void;
     onCloseSession(callback: () => void): () => void;
+    onOpenPreferences(callback: () => void): () => void;
     rebuild(debugMode: boolean): Promise<void>;
   };
 }
@@ -477,6 +478,7 @@ const api: FineVibeApi = {
     onToggleDebug: (cb) => onChannel('menu:toggle-debug', cb),
     onToggleInspector: (cb) => onChannel('menu:toggle-inspector', cb),
     onCloseSession: (cb) => onChannel('menu:close-session', cb),
+    onOpenPreferences: (cb) => onChannel('menu:open-preferences', cb),
     rebuild: (debugMode) => ipcRenderer.invoke('menu:rebuild', debugMode),
   },
 };

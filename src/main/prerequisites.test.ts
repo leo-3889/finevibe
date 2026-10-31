@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { promisify } from 'util';
 
 // PA-16: the probe is async execFile now (the execSync form blocked the main
 // thread for up to 2×3 s on every Windows launch). execFile lives in a
@@ -8,6 +9,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const { execFile } = vi.hoisted(() => ({ execFile: vi.fn() }));
 vi.mock('child_process', () => ({ execFile }));
 vi.mock('node:child_process', () => ({ execFile }));
+
+// Real execFile carries a `util.promisify.custom` implementation that resolves
+// with `{ stdout, stderr }`; a bare vi.fn() does not, so a promisified mock
+// would resolve with the raw callback arguments and the POSIX probe (row 78)
+// could never read `stdout`. Attaching the same wrapper keeps these tests
+// honest about the production call shape: `const { stdout } = await
+// execFileAsync(...)`.
+(execFile as unknown as Record<symbol, unknown>)[promisify.custom] = (
+  cmd: string,
+  args: readonly string[],
+  options: unknown,
+): Promise<{ stdout?: string; stderr?: string }> => new Promise((resolve, reject) => {
+  execFile(cmd, args, options, (err: unknown, stdout?: string, stderr?: string) => {
+    if (err) reject(err); else resolve({ stdout, stderr });
+  });
+});
 
 // The App Execution Alias stub: exits 9009 with the Store nag, which makes
 // execFile's callback fire with an error. This is the exact failure mode of
@@ -20,7 +37,14 @@ const ALIAS_STUB_FAILURE = Object.assign(
 
 function mockPlatform(isWin: boolean) {
   const setPythonBin = vi.fn();
-  vi.doMock('./platform', () => ({ isWin, setPythonBin }));
+  // The POSIX branch resolves the candidates platform.ts exports, in order.
+  // Hard-coded here so a reordered/renamed list shows up as a failing probe
+  // sequence instead of silently following the new one.
+  vi.doMock('./platform', () => ({
+    isWin,
+    setPythonBin,
+    POSIX_PYTHON_CANDIDATES: ['python3', '/usr/bin/python3', 'python'],
+  }));
   return setPythonBin;
 }
 
@@ -36,6 +60,18 @@ async function loadCheck() {
 
 function answers(cmd: string, args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string, stderr?: string) => void) {
   cb(null, `${cmd} ${args.join(' ')}\n`, '');
+}
+
+// Row 78: the POSIX locator answers `sh -c 'command -v <candidate>'` with the
+// resolved path, or exit 1 when the candidate is nowhere. Program it by
+// candidate name; the resolved path is what `setPythonBin` must receive.
+function programLocator(paths: Record<string, string>) {
+  execFile.mockImplementation((_cmd: string, args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string, stderr?: string) => void) => {
+    const candidate = String(args[1] ?? '').replace('command -v ', '');
+    const resolved = paths[candidate];
+    if (resolved) cb(null, `${resolved}\n`, '');
+    else cb(Object.assign(new Error('not found'), { code: 1 }), '', '');
+  });
 }
 
 function fails(cmd: string, args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string, stderr?: string) => void) {
@@ -57,36 +93,65 @@ afterEach(() => {
 });
 
 describe('checkPythonAvailable()', () => {
-  it('POSIX: probes the platform.ts candidates in order and pins the winner', async () => {
-    // The POSIX probe mirrors platform.ts's module-load re-point: python3
+  it('POSIX: resolves the platform.ts candidates in order and pins the winner', async () => {
+    // The POSIX probe mirrors platform.ts's module-load resolution: python3
     // first (PATH installs are the common case), absolute distro path, then
     // bare python. Finding one is silent (null); the pin lets hook commands
-    // spawn the interpreter that actually answers.
+    // spawn the interpreter that actually exists.
     const setPythonBin = mockPlatform(false);
-    execFile.mockImplementation((cmd: string, _args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
-      if (cmd === 'python3') cb(null, 'Python 3.12.4\n');
-      else cb(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    });
+    programLocator({ python3: '/opt/homebrew/bin/python3' });
     expect(await (await loadCheck())()).toBeNull();
     expect(execFile).toHaveBeenCalledTimes(1);
     expect(execFile).toHaveBeenCalledWith(
-      'python3', ['--version'],
+      'sh', ['-c', 'command -v python3'],
       { encoding: 'utf-8', timeout: 3000, windowsHide: true },
       expect.any(Function),
     );
     expect(setPythonBin).toHaveBeenCalledTimes(1);
-    expect(setPythonBin).toHaveBeenCalledWith('python3');
+    // The RESOLVED path, not the candidate spelling: hook commands then spawn
+    // an absolute interpreter and never depend on the spawner's PATH.
+    expect(setPythonBin).toHaveBeenCalledWith('/opt/homebrew/bin/python3');
+  });
+
+  // Row 78 is the mechanism: /usr/bin/python3 on a mac without the Command
+  // Line Tools is Apple's installer shim, and this probe runs during boot —
+  // executing it popped the "Install Command Line Developer Tools" dialog on
+  // every launch. Nothing but the sh locator may be spawned.
+  it('POSIX: never executes an interpreter while probing (no CLT dialog at boot)', async () => {
+    const setPythonBin = mockPlatform(false);
+    programLocator({ '/usr/bin/python3': '/usr/bin/python3' });
+    expect(await (await loadCheck())()).toBeNull();
+    expect(execFile.mock.calls.map(([cmd, args]) => [String(cmd), (args as string[])[1]])).toEqual([
+      ['sh', 'command -v python3'],
+      ['sh', 'command -v /usr/bin/python3'],
+    ]);
+    expect(execFile.mock.calls.some(([cmd, args]) => cmd !== 'sh' || String((args as string[])[0]) !== '-c')).toBe(false);
+    expect(setPythonBin).toHaveBeenCalledWith('/usr/bin/python3');
   });
 
   it('POSIX: falls through to /usr/bin/python3 when PATH python3 is missing', async () => {
     const setPythonBin = mockPlatform(false);
-    execFile.mockImplementation((cmd: string, _args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
-      if (cmd === '/usr/bin/python3') cb(null, 'Python 3.11.2\n');
-      else cb(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    });
+    programLocator({ '/usr/bin/python3': '/usr/bin/python3' });
     expect(await (await loadCheck())()).toBeNull();
-    expect(execFile.mock.calls.map(([cmd]) => cmd)).toEqual(['python3', '/usr/bin/python3']);
+    expect(execFile.mock.calls.map(([, args]) => (args as string[])[1])).toEqual([
+      'command -v python3',
+      'command -v /usr/bin/python3',
+    ]);
     expect(setPythonBin).toHaveBeenCalledWith('/usr/bin/python3');
+  });
+
+  it('POSIX: treats a locator that resolves to nothing as a miss', async () => {
+    // `command -v` can exit 0 with an empty body (a shell function/alias
+    // spelling). Pinning an empty path would bake a dead hook command, so the
+    // candidate counts as missing and the warning is what the user gets.
+    const setPythonBin = mockPlatform(false);
+    execFile.mockImplementation((_cmd: string, args: readonly string[], _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      if (String(args[1] ?? '').endsWith('python')) cb(null, '  ');
+      else cb(Object.assign(new Error('not found'), { code: 1 }), '');
+    });
+    const warning = await (await loadCheck())();
+    expect(warning).toContain('Python not found.');
+    expect(setPythonBin).not.toHaveBeenCalled();
   });
 
   it('POSIX: surfaces the non-fatal warning when nothing answers', async () => {
@@ -95,14 +160,16 @@ describe('checkPythonAvailable()', () => {
     // caller (main.ts) shows this text in the same warning dialog Windows
     // uses; hook installs stay fail-closed (P1-13/P2-53).
     const setPythonBin = mockPlatform(false);
-    execFile.mockImplementation((_cmd: string, _args: readonly string[], _opts: unknown, cb: (err: unknown) => void) => {
-      cb(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    });
+    programLocator({});
     const warning = await (await loadCheck())();
     expect(warning).toContain('Python not found.');
     expect(warning).toContain('python3');
     expect(warning).toContain('apt install python3');
-    expect(execFile.mock.calls.map(([cmd]) => cmd)).toEqual(['python3', '/usr/bin/python3', 'python']);
+    expect(execFile.mock.calls.map(([, args]) => (args as string[])[1])).toEqual([
+      'command -v python3',
+      'command -v /usr/bin/python3',
+      'command -v python',
+    ]);
     expect(setPythonBin).not.toHaveBeenCalled();
   });
 

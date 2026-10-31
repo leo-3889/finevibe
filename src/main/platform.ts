@@ -35,23 +35,37 @@ export const utf8LocaleEnv: Record<string, string> =
  * universal path — Homebrew, pyenv, conda, distro-python and user-local
  * installs put the interpreter elsewhere, and hooks then die silently in
  * exactly the installs the Windows re-point was built for. At module load we
- * probe the candidate spellings and pin the first that answers, mirroring
+ * resolve the candidate spellings and pin the first that exists, mirroring
  * the Windows `pythonBin` binding shape. Exported as `let`: the bundler
  * keeps the live binding, so every hook command template reads the resolved
  * interpreter. */
 export let pythonBin = isWin ? 'python' : '/usr/bin/python3';
 
-// Probed once at module load (POSIX only; Windows defers to
-// checkPythonAvailable()). `python3` first: PATH-resolved installs (brew,
-// pyenv, asdf) are the common case on macOS/Linux; the absolute path is the
-// distro default; bare `python` covers the few remaining POSIX setups.
+/**
+ * POSIX interpreter spellings, probed in this order: PATH-resolved installs
+ * (brew, pyenv, asdf) first, then the distro default, then the few remaining
+ * bare-`python` setups. Shared with `checkPythonAvailable()` (prerequisites.ts)
+ * so its boot warning walks the same list in the same order.
+ */
+export const POSIX_PYTHON_CANDIDATES = ['python3', '/usr/bin/python3', 'python'];
+
+// Resolved once at module load (POSIX only; Windows defers to
+// checkPythonAvailable()). Row 78: the probe asks the shell where the
+// interpreter is (`command -v`, a builtin) instead of running
+// `<candidate> --version`. On a mac without the Command Line Tools,
+// /usr/bin/python3 is Apple's installer shim and EXECUTING it pops the
+// "Install Command Line Developer Tools" dialog — which this module-load probe
+// was doing on every boot. `command -v` prints the PATH-resolved path (or the
+// argument itself when it is an executable path) and never starts an
+// interpreter, so `pythonBin` ends up holding an absolute path.
 if (!isWin) {
-  for (const candidate of ['python3', '/usr/bin/python3', 'python']) {
+  for (const candidate of POSIX_PYTHON_CANDIDATES) {
     try {
-      execSync(`${candidate} --version`, { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
-      pythonBin = candidate;
+      const resolved = execSync(`command -v ${candidate}`, { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' }).trim();
+      if (!resolved) continue;
+      pythonBin = resolved;
       break;
-    } catch { /* this interpreter is missing; try the next candidate */ }
+    } catch { /* not on PATH and not an executable path; try the next candidate */ }
   }
 }
 

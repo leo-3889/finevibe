@@ -10,6 +10,21 @@ export function createAppMenu(debugMode = false): void {
       submenu: [
         { role: 'about' as const },
         { type: 'separator' as const },
+        // Row 77: Cmd+, was dead — no menu carried a Preferences item, so the
+        // sidebar gear was the only entry to the settings modal. Unlike the
+        // display-only / `accelerator: ''` items elsewhere in this template,
+        // this one registers its key: Cmd+, is not a byte a shell or readline
+        // expects (the row 92/70 exclusion list is Cmd+Z/X/C/V/A), and a native
+        // menu accelerator still fires while an <input> owns the keyboard,
+        // where the renderer's shortcut dispatcher suppresses app chords.
+        // Mac-only placement, so the win/linux "the menu claims no
+        // accelerator" invariant below stays intact.
+        {
+          label: 'Preferences…',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => sendToRenderer('menu:open-preferences'),
+        },
+        { type: 'separator' as const },
         { role: 'services' as const },
         { type: 'separator' as const },
         { role: 'hide' as const },

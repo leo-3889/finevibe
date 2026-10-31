@@ -281,6 +281,10 @@ const MAC_MENU_OWNED_CHORDS = new Map<string, string>([
   ['CmdOrCtrl+Shift+Z', 'Redo'],
   ['CmdOrCtrl+Shift+V', 'Paste and Match Style'],
   ['CmdOrCtrl+Backspace', 'Delete'],
+  // Row 77: the app-menu Preferences… item registers its own key (the one
+  // non-role accelerator in src/main/menu.ts, mac-only) — `menu.test.ts` still
+  // pins that nothing else claims a key.
+  ['CmdOrCtrl+,', 'Preferences'],
 ]);
 
 export class ShortcutManager {

@@ -1,17 +1,45 @@
 import { vi } from 'vitest';
+import { promisify } from 'util';
 import * as path from 'path';
 import type * as PlatformModule from './platform';
 import { isLinux, isMac, isWin } from './platform';
 
-const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
+const { mockSpawn, mockWrite, mockResize, mockKill, mockExecSync, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockWrite: vi.fn(),
   mockResize: vi.fn(),
   mockKill: vi.fn(),
+  mockExecSync: vi.fn((): string => { throw new Error('not found'); }),
   mockExecFile: vi.fn(),
   mockKeychainIsolation: vi.fn(() => ({ status: 'supported' as 'supported' | 'unsupported' | 'unknown', version: null as string | null })),
   mockNvmDefaultNodeBinDir: vi.fn(() => null as string | null),
 }));
+
+// pty-manager promisifies execFile and destructures `{ stdout }`. Real execFile
+// carries a util.promisify.custom implementation that resolves that shape; a
+// bare vi.fn() resolves with the raw callback arguments instead, so the mock
+// needs the same wrapper. It is attached in a SYNCHRONOUS hoisted block (before
+// this file's own imports run, so before pty-manager promisifies execFile) and
+// keyed with the registered symbol directly — awaiting an import here would
+// land the assignment after the module was already wired.
+vi.hoisted(() => {
+  const execFile = mockExecFile as unknown as (
+    cmd: string,
+    args: readonly string[],
+    options: unknown,
+    cb: (err: unknown, stdout?: string, stderr?: string) => void,
+  ) => void;
+  (mockExecFile as unknown as Record<symbol, unknown>)[Symbol.for('nodejs.util.promisify.custom')] = (
+    command: string,
+    args: readonly string[],
+    options: unknown,
+  ): Promise<{ stdout: string }> => new Promise((resolve, reject) => {
+    execFile(command, args, options, (err, stdout) => {
+      if (err) reject(err); else resolve({ stdout: stdout ?? '' });
+    });
+  });
+  return {};
+});
 
 // Per-host providers T1: remote launches resolve the binary from the host
 // registry record — stub the registry, never the SSH stack.
@@ -23,8 +51,11 @@ vi.mock('node-pty', () => ({
   spawn: mockSpawn,
 }));
 
+// `execSync` is a hoisted fn, not a fresh vi.fn() per factory call: suites that
+// re-import pty-manager through vi.resetModules() (the win/darwin PATH suites)
+// must program the SAME function object the module closed over.
 vi.mock('child_process', () => ({
-  execSync: vi.fn(() => { throw new Error('not found'); }),
+  execSync: mockExecSync,
   execFile: mockExecFile,
 }));
 
@@ -66,7 +97,6 @@ vi.mock('./settings-guard', () => ({
 }));
 
 import * as fs from 'fs';
-import * as child_process from 'child_process';
 import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, resolveProviderBinary, LaunchSpecError } from './pty-manager';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider, initProviders } from './providers/registry';
@@ -978,65 +1008,161 @@ describe('getPtyCwd', () => {
 });
 
 
-const mockExecSync = vi.mocked(child_process.execSync);
+// pty-manager promisifies execFile for the async PATH probes and destructures
+// `{ stdout }` — the shape the real execFile's util.promisify.custom
+// implementation resolves (the hoisted block at the top of this file installs
+// the same wrapper on the mock, before any module promisifies it).
 
-describe('getRegistryPath', () => {
-  beforeEach(() => {
-    resetPathCache();
+// Row 73: the registry PATH read is Windows-only, and isWin/pathSep are baked at
+// module load, so the Windows build of pty-manager needs a fresh module registry
+// with the platform seam pinned (the same idiom the darwin suite below uses).
+// Static-import gating left the whole suite skipped on Linux/mac CI — exactly
+// how the OEM-code-page bug shipped.
+async function importWinPtyManager() {
+  vi.resetModules();
+  vi.doMock('./platform', async (importOriginal) => ({
+    ...(await importOriginal<typeof PlatformModule>()),
+    isWin: true,
+    isMac: false,
+    isLinux: false,
+    pathSep: ';',
+    whichCmd: 'where',
+    utf8LocaleEnv: {},
+  }));
+  const cp = await import('child_process');
+  const pm = await import('./pty-manager');
+  // Import-time probes (provider registry, keychain status) also reach execSync,
+  // and the getPtyCwd suite leaves queued `mockImplementationOnce` answers on
+  // these hoisted mocks — `clearAllMocks`/`mockClear` keep that queue, so a
+  // stale `lsof` answer would otherwise reply to the registry spawn (and only
+  // under full-file ordering). Reset the state, then restore the factory default
+  // the statically-imported suites rely on. The hoisted mock objects themselves
+  // are untouched, so the child_process factory and the promisify wrapper still
+  // point at them.
+  mockExecSync.mockReset();
+  mockExecSync.mockImplementation(() => {
+    throw new Error('not found');
+  });
+  mockExecFile.mockReset();
+  return { pm, execSync: vi.mocked(cp.execSync), execFile: vi.mocked(cp.execFile) };
+}
+
+describe('getRegistryPath (row 73 registry decode)', () => {
+  afterEach(() => {
+    vi.doUnmock('./platform');
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    mockExecSync.mockImplementation(() => {
+      throw new Error('not found');
+    });
   });
 
-  if (isWin) {
-    it('parses REG_SZ registry output', () => {
-      mockExecSync
-        .mockReturnValueOnce(
-          '\r\nHKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\r\n    Path    REG_SZ    C:\\Windows\\system32;C:\\Windows\r\n\r\n',
-        )
-        .mockReturnValueOnce(
-          '\r\nHKCU\\Environment\r\n    Path    REG_SZ    C:\\Users\\test\\AppData\\Roaming\\npm\r\n\r\n',
-        );
+  // The payload shape PowerShell returns for [HKLM system PATH, HKCU user PATH].
+  // Windows PowerShell 5.1 escapes non-ASCII to \uXXXX (pure ASCII stdout);
+  // PowerShell 7 on a UTF-8 console emits the raw characters. Both are UTF-8
+  // bytes by contract now — under `reg query` the same directories arrived in
+  // the console OEM code page (cp866 / cp932 / cp936) and decoded as mojibake.
+  it('reads both hives in one PowerShell call that pins UTF-8 output', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('["C:\\\\Windows","C:\\\\Users\\\\test\\\\AppData\\\\Roaming\\\\npm"]');
 
-      const result = getRegistryPath();
-      expect(result).toContain('C:\\Windows\\system32;C:\\Windows');
-      expect(result).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
+    expect(pm.getRegistryPath()).toBe('C:\\Windows;C:\\Users\\test\\AppData\\Roaming\\npm');
+
+    expect(execSync).toHaveBeenCalledTimes(1);
+    const [cmd, opts] = execSync.mock.calls[0] as unknown as [string, { encoding: string; timeout: number }];
+    expect(cmd).toContain('[Console]::OutputEncoding=[Text.Encoding]::UTF8');
+    expect(cmd).toContain('Session Manager\\Environment');
+    expect(cmd).toContain("'HKCU:\\Environment'");
+    expect(cmd).toContain('ConvertTo-Json');
+    expect(cmd).not.toContain('reg query');
+    expect(opts.encoding).toBe('utf-8');
+  });
+
+  it('decodes the \\uXXXX payload Windows PowerShell 5.1 emits (Cyrillic profile dir)', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('["C:\\\\Program Files\\\\\\u041e\\u0431\\u0449\\u0438\\u0435",""]');
+
+    expect(pm.getRegistryPath()).toBe('C:\\Program Files\\Общие');
+  });
+
+  it('decodes raw UTF-8 Cyrillic/CJK output (PowerShell 7 on a UTF-8 console)', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('["C:\\\\Program Files\\\\Общие","C:\\\\Users\\\\用户\\\\bin"]');
+
+    expect(pm.getRegistryPath()).toBe('C:\\Program Files\\Общие;C:\\Users\\用户\\bin');
+  });
+
+  it('tolerates the BOM redirected PowerShell output can carry', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('\uFEFF["C:\\\\Windows","C:\\\\Users\\\\test\\\\AppData\\\\Roaming\\\\npm"]');
+
+    expect(pm.getRegistryPath()).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
+  });
+
+  it('expands %VAR% references the registry left raw', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    process.env.SystemRoot = 'C:\\Windows';
+    execSync.mockReturnValue('["%SystemRoot%\\\\system32;%SystemRoot%",""]');
+
+    const result = pm.getRegistryPath();
+
+    expect(result).toBe('C:\\Windows\\system32;C:\\Windows');
+    expect(result).not.toContain('%SystemRoot%');
+  });
+
+  it('drops a null or empty hive — a missing HKCU Environment\\Path is normal', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('[null,"C:\\\\Users\\\\test\\\\AppData\\\\Roaming\\\\npm"]');
+
+    expect(pm.getRegistryPath()).toBe('C:\\Users\\test\\AppData\\Roaming\\npm');
+  });
+
+  it('returns an empty string when PowerShell is unavailable', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockImplementation(() => { throw new Error('access denied'); });
+
+    expect(pm.getRegistryPath()).toBe('');
+  });
+
+  it('returns an empty string for a payload that is not JSON', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('Get-ItemProperty : Cannot find path ...');
+
+    expect(pm.getRegistryPath()).toBe('');
+  });
+
+  // The consumer half of the row: a provider installed under a non-ASCII
+  // directory is only found if the decoded path reaches the PATH getFullPath
+  // hands the binary probes — sync and async twins must agree.
+  it('feeds the decoded non-ASCII directory to getFullPath, sync and async', async () => {
+    const payload = '["C:\\\\Program Files\\\\Общие\\\\bin",null]';
+    vi.stubEnv('PATH', 'C:\\Windows\\System32');
+
+    const sync = await importWinPtyManager();
+    sync.execSync.mockReturnValue(payload);
+    const syncPath = sync.pm.getFullPath();
+
+    expect(syncPath).toContain('C:\\Program Files\\Общие\\bin');
+    expect(syncPath.startsWith('C:\\Windows\\System32')).toBe(true);
+
+    const async_ = await importWinPtyManager();
+    // The mock's util.promisify.custom wrapper (installed in the hoisted block
+    // above) is what makes `const { stdout } = await execFileP(…)` read the
+    // payload here exactly as it does in production.
+    expect((mockExecFile as unknown as Record<symbol, unknown>)[promisify.custom]).toBeTypeOf('function');
+    async_.execFile.mockImplementation((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      cb(null, payload);
+      return undefined as never;
     });
+    const asyncPath = await async_.pm.getFullPathAsync();
 
-    it('expands %VAR% references in REG_EXPAND_SZ values', () => {
-      process.env.SystemRoot = 'C:\\Windows';
-      process.env.USERPROFILE = 'C:\\Users\\test';
+    expect(asyncPath).toContain('C:\\Program Files\\Общие\\bin');
+    // The async twin must spawn the locator, never the shell probe.
+    expect(async_.execFile.mock.calls[0][0]).toBe('powershell.exe');
+    expect(async_.execSync).not.toHaveBeenCalled();
+  });
 
-      mockExecSync
-        .mockReturnValueOnce(
-          '    Path    REG_EXPAND_SZ    %SystemRoot%\\system32;%SystemRoot%\r\n',
-        )
-        .mockReturnValueOnce(
-          '    Path    REG_EXPAND_SZ    %USERPROFILE%\\AppData\\Roaming\\npm\r\n',
-        );
-
-      const result = getRegistryPath();
-      expect(result).toContain('C:\\Windows\\system32');
-      expect(result).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
-      expect(result).not.toContain('%SystemRoot%');
-      expect(result).not.toContain('%USERPROFILE%');
-    });
-
-    it('returns empty string when registry queries fail', () => {
-      mockExecSync.mockImplementation(() => { throw new Error('access denied'); });
-
-      const result = getRegistryPath();
-      expect(result).toBe('');
-    });
-
-    it('handles partial failure (system path fails, user path succeeds)', () => {
-      mockExecSync
-        .mockImplementationOnce(() => { throw new Error('access denied'); })
-        .mockReturnValueOnce(
-          '    Path    REG_SZ    C:\\Users\\test\\AppData\\Roaming\\npm\r\n',
-        );
-
-      const result = getRegistryPath();
-      expect(result).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
-    });
-  } else {
+  if (!isWin) {
     it('returns empty string on non-Windows', () => {
       expect(getRegistryPath()).toBe('');
     });

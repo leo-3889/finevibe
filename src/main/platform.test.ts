@@ -30,45 +30,67 @@ afterEach(() => {
   setPlatform(realPlatform);
 });
 
-describe('pythonBin (audit P2-23 POSIX probe)', () => {
-  it('probes python3 first and pins it when it answers', async () => {
+describe('pythonBin (audit P2-23 POSIX probe, row 78 zero-exec)', () => {
+  it('resolves python3 through the shell and pins the absolute path it prints', async () => {
     setPlatform('linux');
     mockExecSync.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.startsWith('python3 ')) return 'Python 3.12.4\n';
-      throw new Error('ENOENT');
+      if (cmd === 'command -v python3') return '/opt/homebrew/bin/python3\n';
+      throw new Error('not found');
     });
 
     const { pythonBin } = await loadPlatform();
 
-    expect(pythonBin).toBe('python3');
+    expect(pythonBin).toBe('/opt/homebrew/bin/python3');
     expect(mockExecSync).toHaveBeenCalledWith(
-      'python3 --version',
+      'command -v python3',
       { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' },
     );
   });
 
-  it('falls through to /usr/bin/python3 when the bare python3 spelling is missing', async () => {
-    setPlatform('linux');
+  // Row 78 is the mechanism, not the outcome: /usr/bin/python3 on a mac
+  // without the Command Line Tools is Apple's installer shim, and EXECUTING it
+  // pops the "Install Command Line Developer Tools" dialog — which this
+  // module-load probe was doing on every boot. Resolution must therefore go
+  // through the `command -v` builtin, never through the interpreter.
+  it('never executes an interpreter while probing (no CLT install dialog at boot)', async () => {
+    setPlatform('darwin');
     mockExecSync.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.startsWith('/usr/bin/python3 ')) return 'Python 3.11.2\n';
-      throw new Error('ENOENT');
+      if (cmd === 'command -v /usr/bin/python3') return '/usr/bin/python3\n';
+      throw new Error('not found');
     });
 
     const { pythonBin } = await loadPlatform();
 
     expect(pythonBin).toBe('/usr/bin/python3');
+    const commands = mockExecSync.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).toEqual(['command -v python3', 'command -v /usr/bin/python3']);
+    expect(commands.some((cmd) => !cmd.startsWith('command -v '))).toBe(false);
+    expect(commands.some((cmd) => cmd.includes('--version'))).toBe(false);
   });
 
-  it('tries bare python last when the python3 spellings are missing', async () => {
+  it('falls through to bare python when the python3 spellings are absent', async () => {
     setPlatform('darwin');
     mockExecSync.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd === 'python --version') return 'Python 3.13.0\n';
-      throw new Error('ENOENT');
+      if (cmd === 'command -v python') return '/usr/local/bin/python\n';
+      throw new Error('not found');
     });
 
     const { pythonBin } = await loadPlatform();
 
-    expect(pythonBin).toBe('python');
+    expect(pythonBin).toBe('/usr/local/bin/python');
+  });
+
+  it('treats a locator that resolves to nothing as a miss and keeps probing', async () => {
+    setPlatform('linux');
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'command -v python3') return '   \n';
+      if (cmd === 'command -v /usr/bin/python3') return '/usr/bin/python3\n';
+      throw new Error('not found');
+    });
+
+    const { pythonBin } = await loadPlatform();
+
+    expect(pythonBin).toBe('/usr/bin/python3');
   });
 
   it('keeps the /usr/bin/python3 default when every candidate fails', async () => {
@@ -88,6 +110,15 @@ describe('pythonBin (audit P2-23 POSIX probe)', () => {
     expect(mockExecSync).not.toHaveBeenCalled();
   });
 
+  // prerequisites.ts's boot warning walks the SAME list in the SAME order; a
+  // second literal there is how the two probes would drift apart.
+  it('exports the candidate list prerequisites.ts resolves in order', async () => {
+    setPlatform('linux');
+    const { POSIX_PYTHON_CANDIDATES } = await loadPlatform();
+
+    expect(POSIX_PYTHON_CANDIDATES).toEqual(['python3', '/usr/bin/python3', 'python']);
+  });
+
   it('setPythonBin re-points the live binding the hook templates read', async () => {
     setPlatform('linux');
     const mod = await loadPlatform();
@@ -95,6 +126,30 @@ describe('pythonBin (audit P2-23 POSIX probe)', () => {
     mod.setPythonBin('/opt/pyenv/shims/python');
 
     expect(mod.pythonBin).toBe('/opt/pyenv/shims/python');
+  });
+});
+
+// Row 76: electron-builder copies build.mac.minimumSystemVersion into the
+// bundle's Info.plist (LSMinimumSystemVersion). Without it, a macOS older than
+// the Electron floor launches the app and dies inside dyld on missing symbols
+// instead of getting the "can't be opened" refusal — a static config value no
+// runtime test can observe, so it is pinned here (package.json stays strict
+// JSON, which is why the reasoning is in this test rather than the config).
+describe('build.mac.minimumSystemVersion (row 76 mac floor)', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as {
+    build: { mac: { minimumSystemVersion?: string } };
+    devDependencies: Record<string, string>;
+  };
+
+  it('ships the Electron runtime minimum so old macOS refuses instead of crashing', () => {
+    // Electron 41's floor is macOS 12 Monterey: the installed package's README
+    // states "macOS (Monterey and up)" — Electron 38 dropped Big Sur, Electron
+    // 44 drops Monterey. Pinned against the declared Electron major so the next
+    // Electron bump has to revisit the floor instead of shipping a bundle that
+    // dies in dyld on the oldest supported OS.
+    expect(pkg.build.mac.minimumSystemVersion).toBe('12.0');
+    const electronMajor = Number(pkg.devDependencies.electron.replace(/[^\d.]/g, '').split('.')[0]);
+    expect(electronMajor).toBe(41);
   });
 });
 

@@ -386,6 +386,19 @@ describe('setOverride mac-menu collision warning (row 117)', () => {
     warn.mockRestore();
   });
 
+  // Row 77: Preferences… is the one non-role chord the mac menu registers, so
+  // an override recorded onto it is dead in exactly the same way — the map in
+  // shortcuts.ts mirrors src/main/menu.ts, and menu.test.ts pins that nothing
+  // else claims a key.
+  it('warns for the Preferences chord (CmdOrCtrl+,)', async () => {
+    const manager = await macManager();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    manager.setOverride('close-session', 'CmdOrCtrl+,');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('Preferences');
+    warn.mockRestore();
+  });
+
   it('stays silent on a chord the menu does not claim', async () => {
     const manager = await macManager();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

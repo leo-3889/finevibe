@@ -84,41 +84,67 @@ function interactiveShell(): string {
   return fs.existsSync('/bin/bash') ? '/bin/bash' : fallback;
 }
 
+/**
+ * Registry PATH read (audit row 73). `reg query` writes its stdout in the
+ * console OEM code page (cp866 / cp932 / cp936 on Cyrillic / CJK installs)
+ * while Node decoded it as UTF-8, so every non-ASCII PATH entry arrived
+ * mangled and a provider installed under such a directory looked uninstalled.
+ * PowerShell owns the decode instead: `[Console]::OutputEncoding` is set to
+ * UTF-8 before the values are read and `ConvertTo-Json` emits both hives as
+ * one JSON array (Windows PowerShell 5.1 additionally escapes non-ASCII to
+ * \uXXXX, so the payload is usually pure ASCII and code-page independent).
+ * Both hives come from a single spawn — a missing value comes back as null
+ * and contributes nothing, which is what the old per-hive `reg query`
+ * non-zero exit meant. Get-ItemProperty resolves REG_EXPAND_SZ through the
+ * registry API (expanded values), so the %VAR% pass in parseRegistryPath is
+ * only the fallback for names .NET could not expand.
+ */
+const REG_PATH_SCRIPT = [
+  '[Console]::OutputEncoding=[Text.Encoding]::UTF8',
+  "$s=(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name Path -ErrorAction SilentlyContinue).Path",
+  "$u=(Get-ItemProperty 'HKCU:\\Environment' -Name Path -ErrorAction SilentlyContinue).Path",
+  'ConvertTo-Json -Compress -InputObject @($s,$u)',
+].join('; ');
+
+// PowerShell start-up (CLR + type loader) costs far more than reg.exe, so the
+// old 3 s reg budget would kill it on a cold machine. Same ceiling as the
+// POSIX login-shell probe below.
+const REG_PATH_TIMEOUT_MS = 8000;
+
+const REG_PATH_ARGV = ['-NoProfile', '-NonInteractive', '-Command', REG_PATH_SCRIPT];
+// execSync runs through cmd.exe, so the same call needs the quoted form. The
+// script carries no `"`, `%` or redirection character, so one pair of quotes
+// is enough for cmd.
+const REG_PATH_COMMAND = `powershell.exe -NoProfile -NonInteractive -Command "${REG_PATH_SCRIPT}"`;
+
+/** [system, user] PATH values from the JSON payload, %VAR% expanded. */
+function parseRegistryPath(payload: string): string[] {
+  let decoded: unknown;
+  try {
+    // Redirected PowerShell output can carry a UTF-8 BOM.
+    decoded = JSON.parse(payload.replace(/^\uFEFF/, '').trim());
+  } catch (err) {
+    console.debug('Could not parse the registry PATH payload:', err);
+    return [];
+  }
+  return (Array.isArray(decoded) ? decoded : [decoded])
+    .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+    .map((value) => value.replace(/%([^%]+)%/g, (_m: string, varName: string) => process.env[varName] || `%${varName}%`));
+}
+
 export function getRegistryPath(): string {
   if (!isWin) return '';
-
-  const parse = (output: string): string => {
-    const match = output.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
-    if (!match) return '';
-    let value = match[1].trim();
-    value = value.replace(/%([^%]+)%/g, (_m, varName) => process.env[varName] || `%${varName}%`);
-    return value;
-  };
-
-  let systemPath = '';
   try {
-    systemPath = parse(execSync(
-      'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v Path',
-      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
-    ));
+    return parseRegistryPath(execSync(REG_PATH_COMMAND, {
+      encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
+    })).join(pathSep);
   } catch (err) {
-    // `reg query` exits non-zero when the value is absent; that hive simply
-    // contributes nothing to PATH.
-    console.debug('Could not read system PATH from registry:', err);
+    // No PowerShell (blocked by AppLocker / constrained-language mode) means no
+    // registry contribution: getFullPath falls back to the inherited PATH plus
+    // its well-known directories.
+    console.debug('Could not read PATH from the registry:', err);
+    return '';
   }
-
-  let userPath = '';
-  try {
-    userPath = parse(execSync(
-      'reg query "HKCU\\Environment" /v Path',
-      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
-    ));
-  } catch (err) {
-    // Same as above: a missing HKCU Environment\Path is normal, not an error.
-    console.debug('Could not read user PATH from registry:', err);
-  }
-
-  return [systemPath, userPath].filter(Boolean).join(pathSep);
 }
 
 /** Reset cached PATH (used after install-then-retry flows and in tests). */
@@ -196,8 +222,8 @@ export function getFullPath(): string {
 /**
  * S2-02: async twin of getFullPath. The sync one blocks the main thread
  * for the login-shell spawn (POSIX: `execSync($SHELL -ilc …)`, 0.2-1.5 s
- * typical on nvm/p10k setups) or two registry `reg query` execSyncs
- * (Windows) — the PA-01 boot probe fan-out calls it on every launch
+ * typical on nvm/p10k setups) or the PowerShell registry read (Windows)
+ * — the PA-01 boot probe fan-out calls it on every launch
  * (the disk-cache freshness gate needs the PATH snapshot), so the whole
  * boot chain paid that spawn synchronously after createWindow. Same cache,
  * same composition, same fallback; concurrent callers share one promise.
@@ -211,32 +237,19 @@ export function getFullPathAsync(): Promise<string> {
     const currentPath = process.env.PATH || '';
     const home = os.homedir();
     if (isWin) {
-      const parse = (output: string): string => {
-        const match = output.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
-        if (!match) return '';
-        const value = match[1].trim();
-        return value.replace(/%([^%]+)%/g, (_m, varName) => process.env[varName] || `%${varName}%`);
-      };
-      const regQuery = async (hive: string): Promise<string> => {
-        try {
-          const { stdout } = await execFileP('reg', ['query', hive, '/v', 'Path'], {
-            encoding: 'utf-8', timeout: 3000, windowsHide: true,
-          });
-          return parse(stdout);
-        } catch {
-          // `reg query` exits non-zero when the value is absent; the hive
-          // contributes nothing to PATH (mirrors getRegistryPath).
-          return '';
-        }
-      };
-      const [systemPath, userPath] = await Promise.all([
-        regQuery('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
-        regQuery('HKCU\\Environment'),
-      ]);
+      let registryValues: string[] = [];
+      try {
+        const { stdout } = await execFileP('powershell.exe', REG_PATH_ARGV, {
+          encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
+        });
+        registryValues = parseRegistryPath(stdout);
+      } catch {
+        // Same failure handling as getRegistryPath: the registry contributes
+        // nothing and the well-known directories below carry the PATH.
+      }
       const pathSet = new Set([
         ...currentPath.split(pathSep),
-        ...systemPath.split(pathSep),
-        ...userPath.split(pathSep),
+        ...registryValues.flatMap((value) => value.split(pathSep)),
         path.join(home, 'AppData', 'Roaming', 'npm'),
         path.join(home, '.local', 'bin'),
       ]);
