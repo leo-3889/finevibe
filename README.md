@@ -110,14 +110,17 @@ FINEVIBE_RELEASE_REPO=leo-3889/finevibe finevibe
 ```
 
 The launcher downloads the matching build from this repo's Releases (HTTPS, sha256-verified) into
-`~/.finevibe/app` and launches it. The feed variable is required — without it the launcher refuses to
-download. Node ≥18 for the launcher; the Linux launcher is x64-only.
+`~/.finevibe/app` and launches it — on Linux that build is the AppImage
+(`FineVibe-<version>-linux-x86_64.AppImage`), the same artifact the in-app updater ships, while the `.deb`
+below updates through apt. The feed variable is required — without it the launcher refuses to
+download. Node ≥18 for the launcher; Windows and Linux are x64-only (a win-arm64 run is refused — no such
+asset is published).
 
 ### Desktop installers
 
 From the fork's [Releases](https://github.com/leo-3889/finevibe/releases):
 
-- **Windows** — `FineVibe-Setup-<version>.exe` (NSIS) or `FineVibe-<version>.exe` (portable); zips for x64/arm64
+- **Windows (x64)** — `FineVibe-Setup-<version>.exe` (NSIS) or `FineVibe-<version>.exe` (portable); `FineVibe-<version>-win-x64.zip` (no arm64 asset is published)
 - **macOS** — signed, notarized `.dmg` / `FineVibe-<version>-mac.zip`
 - **Linux (x64)** — `FineVibe-<version>-linux-amd64.deb` or `FineVibe-<version>-linux-x86_64.AppImage`
 
