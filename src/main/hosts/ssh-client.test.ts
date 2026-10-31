@@ -46,21 +46,33 @@ class FakeSftp extends EventEmitter {
   }
   readFile(p: string, cb: (err: Error | null, buf: Buffer) => void): void {
     if (this.hang) return;
-    if (this.failCode !== null) return this.cb(cb, this.err(this.failCode), null as never);
+    if (this.failCode !== null) {
+      this.cb(cb, this.err(this.failCode), null as never);
+      return;
+    }
     const buf = this.files.get(p);
-    buf ? cb(null, buf) : this.cb(cb, this.err(2), null as never);
+    if (buf) cb(null, buf);
+    else this.cb(cb, this.err(2), null as never);
   }
   stat(p: string, cb: (err: Error | null, stats: { size: number }) => void): void {
     if (this.hang) return;
-    if (this.failCode !== null) return this.cb(cb, this.err(this.failCode), null as never);
+    if (this.failCode !== null) {
+      this.cb(cb, this.err(this.failCode), null as never);
+      return;
+    }
     const buf = this.files.get(p);
-    buf ? cb(null, { size: buf.length }) : this.cb(cb, this.err(2), null as never);
+    if (buf) cb(null, { size: buf.length });
+    else this.cb(cb, this.err(2), null as never);
   }
   open(p: string, _flag: string, cb: (err: Error | null, handle?: string) => void): void {
     if (this.hang) return;
-    if (this.failCode !== null) return this.cb(cb, this.err(this.failCode), undefined as never);
+    if (this.failCode !== null) {
+      this.cb(cb, this.err(this.failCode), undefined as never);
+      return;
+    }
     const buf = this.files.get(p);
-    buf ? cb(null, `h:${p}`) : this.cb(cb, this.err(2), undefined as never);
+    if (buf) cb(null, `h:${p}`);
+    else this.cb(cb, this.err(2), undefined as never);
   }
   read(
     handle: string,
@@ -72,8 +84,14 @@ class FakeSftp extends EventEmitter {
   ): void {
     if (this.hang) return;
     const src = this.files.get(handle.slice(2));
-    if (!src) return this.cb(cb, this.err(2), undefined as never);
-    if (this.eofAt !== null && position >= this.eofAt) return this.cb(cb, this.err(1), undefined as never);
+    if (!src) {
+      this.cb(cb, this.err(2), undefined as never);
+      return;
+    }
+    if (this.eofAt !== null && position >= this.eofAt) {
+      this.cb(cb, this.err(1), undefined as never);
+      return;
+    }
     const slice = src.subarray(position, position + Math.min(length, this.readChunk));
     slice.copy(buf, offset);
     cb(null, slice.length);
@@ -84,13 +102,20 @@ class FakeSftp extends EventEmitter {
   }
   readdir(p: string, cb: (err: Error | null, list?: { filename: string }[]) => void): void {
     if (this.hang) return;
-    if (this.failCode !== null) return this.cb(cb, this.err(this.failCode), undefined as never);
+    if (this.failCode !== null) {
+      this.cb(cb, this.err(this.failCode), undefined as never);
+      return;
+    }
     const list = this.dirs.get(p);
-    list ? cb(null, list.map((filename) => ({ filename }))) : this.cb(cb, this.err(2), undefined as never);
+    if (list) cb(null, list.map((filename) => ({ filename })));
+    else this.cb(cb, this.err(2), undefined as never);
   }
   writeFile(p: string, content: string, cb: (err: Error | null) => void): void {
     if (this.hang) return;
-    if (this.failCode !== null) return this.cb(cb, this.err(this.failCode), undefined);
+    if (this.failCode !== null) {
+      this.cb(cb, this.err(this.failCode), undefined);
+      return;
+    }
     this.files.set(p, Buffer.from(content));
     cb(null);
   }
@@ -106,8 +131,14 @@ class FakeClient extends EventEmitter {
   constructor(config: { host?: string; hostVerifier?: (key: Buffer) => boolean }) {
     super();
     setTimeout(() => {
-      // ssh2 calls the configured hostVerifier with the server key before ready.
-      config.hostVerifier?.(Buffer.from(`key-for-${config.host}`));
+      // ssh2 calls the configured hostVerifier with the server key before
+      // ready. A `false` fails the handshake: error then close, never ready.
+      const accepted = config.hostVerifier?.(Buffer.from(`key-for-${config.host}`));
+      if (accepted === false) {
+        this.emit('error', new Error('Bad host signature')); // ssh2's own wording
+        this.emit('close');
+        return;
+      }
       this.emit('ready');
     }, 0);
   }
@@ -204,6 +235,52 @@ describe('connect', () => {
     await expect(connect({ ...base, id: `${base.id}-err` })).rejects.toThrow('auth failed');
     // Failed entry is dropped so the next connect retries fresh.
     expect(cachedConnectionCount()).toBe(0);
+  });
+});
+
+describe('host-key pin enforcement (audit row 30)', () => {
+  const serverPin = fingerprintOf(Buffer.from('key-for-203.0.113.9'));
+  // Each case uses its own host id (cache isolation); the global afterEach
+  // only closes base.id.
+  afterEach(() => {
+    for (const suffix of ['-bad-pin', '-good-pin', '-exec-pin', '-tofu', '-unpinned']) closeConnection(`${base.id}${suffix}`);
+  });
+
+  it('a routine connect with a mismatched pin rejects host-key-changed', async () => {
+    // Pre-fix: no verifier was passed outside enrollment, so a MITM key
+    // connected silently on every exec/sftp/git-over-ssh lane.
+    const pinned = { ...base, id: `${base.id}-bad-pin`, hostKeyFingerprint: 'SHA256:attacker-key' };
+    await expect(connect(pinned)).rejects.toThrow('host-key-changed');
+    expect(cachedConnectionCount()).toBe(0);
+  });
+
+  it('a routine connect with the matching pin resolves', async () => {
+    const pinned = { ...base, id: `${base.id}-good-pin`, hostKeyFingerprint: serverPin };
+    const { fingerprint } = await connect(pinned);
+    expect(fingerprint).toBe(serverPin);
+  });
+
+  it('exec inherits the pin check (the lane that was MITM-able)', async () => {
+    const pinned = { ...base, id: `${base.id}-exec-pin`, hostKeyFingerprint: 'SHA256:attacker-key' };
+    await expect(exec(pinned, 'whoami')).rejects.toThrow('host-key-changed');
+  });
+
+  it('an explicit verifyHostKey keeps precedence (enrollment TOFU lane)', async () => {
+    // The record pins an older key; the wizard caller accepts the captured one.
+    const stale = { ...base, id: `${base.id}-tofu`, hostKeyFingerprint: 'SHA256:old-key' };
+    const { fingerprint } = await connect(stale, { verifyHostKey: (fp) => fp === serverPin });
+    expect(fingerprint).toBe(serverPin);
+    // And an unpinned record with no verifier still connects (first-run capture).
+    const { fingerprint: first } = await connect({ ...base, id: `${base.id}-unpinned` });
+    expect(first).toBe(serverPin);
+  });
+
+  it('a pin approved after connect replaces the unverified cached client', async () => {
+    await connect(base); // no pin yet: TOFU capture window
+    await connect({ ...base, hostKeyFingerprint: serverPin }); // hosts:approveHostKey
+    expect(made).toHaveLength(2);
+    expect(made[0].ended).toBe(true);
+    expect(cachedConnectionCount()).toBe(1);
   });
 });
 

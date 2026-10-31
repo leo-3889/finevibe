@@ -48,6 +48,10 @@ export function setClientFactoryForTests(factory: ClientFactory | null): void {
 interface CachedConnection {
   client: Client;
   ready: Promise<void>;
+  /** Pin this client's handshake was verified against (`hostKeyFingerprint`).
+   * Reuse is gated on it so a pin approved/rotated after connect cannot ride
+   * an older, unverified connection. */
+  verifiedPin?: string;
 }
 
 const connections = new Map<string, CachedConnection>();
@@ -90,16 +94,22 @@ export function connectConfigFor(record: HostRecord): ConnectConfig {
 /**
  * Connect (or reuse a cached connection) to `record`. Resolves once `ready`
  * fires; rejects on error/timeout. The server fingerprint is captured via
- * the `hostVerifier` seam (TOFU); `verifyHostKey` (enrollment, §4 step 2)
- * rejects the connection when the captured fingerprint does not match the
- * pinned one — the rejection is then the `host-key-changed` error.
+ * the `hostVerifier` seam; the pin on the record (`hostKeyFingerprint`,
+ * `SHA256:<base64>`) is enforced BY DEFAULT (audit row 30): every routine
+ * exec/sftp/git-over-ssh connect refuses a mismatch, not just enrollment.
+ * A mismatch rejects with the same `host-key-changed` error the enrollment
+ * lane produces (its consumers compare that exact message). `verifyHostKey`
+ * overrides the default — enrollment's TOFU capture (§4 step 2) passes one to
+ * accept a key the record has not pinned yet — it never disables the pin.
  */
 export function connect(
   record: HostRecord,
   opts?: { timeoutMs?: number; forceNew?: boolean; verifyHostKey?: (fingerprint: string) => boolean },
 ): Promise<{ client: Client; fingerprint: string }> {
+  const pinned = record.hostKeyFingerprint || undefined;
+  const verifyHostKey = opts?.verifyHostKey ?? (pinned ? (fp: string) => fp === pinned : undefined);
   const existing = connections.get(record.id);
-  if (existing && !opts?.forceNew) {
+  if (existing && !opts?.forceNew && existing.verifiedPin === pinned) {
     return existing.ready.then(() => ({ client: existing.client, fingerprint: existingFingerprint(existing) ?? '' }));
   }
   const config = connectConfigFor(record);
@@ -110,7 +120,7 @@ export function connect(
   config.hostVerifier = (key: Buffer) => {
     fingerprint = fingerprintOf(key);
     if (connRef) setFingerprint(connRef, fingerprint);
-    if (opts?.verifyHostKey && !opts.verifyHostKey(fingerprint)) {
+    if (verifyHostKey && !verifyHostKey(fingerprint)) {
       refused = true;
       return false; // ssh2 refuses the connection
     }
@@ -132,17 +142,18 @@ export function connect(
       reject(refused ? new Error('host-key-changed') : new Error('connection closed before ready'));
     });
   });
-  const conn: CachedConnection = { client, ready };
+  // An explicit verifier may accept a key that DIFFERS from the record's pin
+  // (rotation flows), so such a connection is not labeled as pin-verified —
+  // the next routine connect re-handshakes and enforces the pin strictly.
+  const conn: CachedConnection = { client, ready, verifiedPin: opts?.verifyHostKey ? undefined : pinned };
   connRef = conn;
   setFingerprint(conn, fingerprint);
-  // forceNew replaces an existing entry: drop its FIFO slot (audit T1 #1) and
-  // close the old client so eviction accounting stays exact.
-  if (opts?.forceNew) {
-    const old = connections.get(record.id);
-    if (old) {
-      old.client.end();
-      connections.delete(record.id);
-    }
+  // Past the reuse gate, an existing entry is stale by definition (forceNew,
+  // or the pin changed since it was verified): drop its FIFO slot (audit T1
+  // #1) and close the old client so eviction accounting stays exact.
+  if (existing) {
+    existing.client.end();
+    connections.delete(record.id);
     const dup = insertionOrder.indexOf(record.id);
     if (dup >= 0) insertionOrder.splice(dup, 1);
   }
@@ -155,7 +166,8 @@ export function connect(
     // line per failed connect in <logs>/finevibe.log (owner gate: "check
     // FineVibe logs for issues"). Consumers may ALSO log their own context
     // (fs rails do); this is the lane-level net.
-    console.warn(`[hosts] ssh connect failed ${record.user}@${record.host}:${record.port}: ${err instanceof Error ? err.message : String(err)}`);
+    const hint = err instanceof Error && err.message === 'host-key-changed' ? ' — pinned host key changed; run Test & Approve in Settings \u2192 Hosts' : '';
+    console.warn(`[hosts] ssh connect failed ${record.user}@${record.host}:${record.port}: ${err instanceof Error ? err.message : String(err)}${hint}`);
     if (connections.get(record.id) === conn) {
       connections.delete(record.id);
       const idx = insertionOrder.indexOf(record.id);
