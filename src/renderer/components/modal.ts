@@ -245,6 +245,9 @@ export function showConfirmDialog(
     confirmLabel?: string;
     cancelLabel?: string;
     onConfirm: () => void;
+    /** Fired when the dialog is dismissed without confirming (Cancel click or
+     *  ESC) — the only way a caller can tell an explicit Cancel from silence. */
+    onCancel?: () => void;
   }
 ): void {
   titleEl.textContent = title;
@@ -274,6 +277,7 @@ export function showConfirmDialog(
 
   const handleCancel = () => {
     closeModal();
+    options.onCancel?.();
   };
 
   const handleKeydown = (e: KeyboardEvent) => {

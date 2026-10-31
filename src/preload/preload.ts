@@ -150,6 +150,7 @@ export interface FineVibeApi {
     onQuitting(callback: () => void): () => void;
     onConfirmClose(callback: () => void): () => void;
     closeConfirmed(): void;
+    closeCancelled(): void;
   };
 
   /** One row of the A3 legacy-retirement audit log (main/userdata-migration.ts). */
@@ -406,6 +407,7 @@ const api: FineVibeApi = {
     onQuitting: (cb: () => void) => onChannel('app:quitting', cb),
     onConfirmClose: (cb: () => void) => onChannel('app:confirmClose', cb),
     closeConfirmed: () => { ipcRenderer.send('app:closeConfirmed'); },
+    closeCancelled: () => { ipcRenderer.send('app:closeCancelled'); },
   },
   storage: {
     scan: () => ipcRenderer.invoke('storage:scan'),

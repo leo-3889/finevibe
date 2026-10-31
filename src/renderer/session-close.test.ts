@@ -413,10 +413,16 @@ describe('confirmAppClose', () => {
       id === sessions[0].id ? 'working' : 'idle',
     );
     const onConfirm = vi.fn();
+    const onCancel = vi.fn();
 
-    confirmAppClose(onConfirm);
+    confirmAppClose(onConfirm, onCancel);
 
     expect(mockShowConfirmDialog).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+    // Audit row 89: the dialog must be able to report an explicit Cancel —
+    // main's close watchdog cannot tell Cancel from a hung renderer otherwise.
+    mockShowConfirmDialog.mock.calls[0][2].onCancel();
+    expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onConfirm).not.toHaveBeenCalled();
   });
 });

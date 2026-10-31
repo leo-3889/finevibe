@@ -565,6 +565,11 @@ function startMainProcess(): void {
 
   // C4S-07: a confirmed reply from the renderer disarms the watchdog.
   ipcMain.on('app:closeConfirmed', clearCloseConfirmWatchdog);
+  // Audit row 89: an explicit Cancel disarms it too. The watchdog only ever
+  // punished a HUNG renderer, but it could not tell silence from Cancel, so a
+  // cancelled quit still force-killed every PTY 15 s later. Clearing (never
+  // confirming) leaves isCloseConfirmed false, so the next close/quit re-arms.
+  ipcMain.on('app:closeCancelled', clearCloseConfirmWatchdog);
 
   app.on('before-quit', (event) => {
     clearCloseConfirmWatchdog();

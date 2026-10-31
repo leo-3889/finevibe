@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { stopGitWatcher } from './git-watcher';
 import { stopConfigWatcher } from './config-watcher';
 import type { MockedFunction } from 'vitest';
@@ -20,8 +20,12 @@ interface MockWindow {
   focus: () => void;
 }
 
-const { appHandlers, app, windows, fakeProvider } = vi.hoisted(() => {
+const { appHandlers, app, windows, fakeProvider, ipcHandlers, ipcMainOn, closeState } = vi.hoisted(() => {
   const appHandlers: Record<string, (...args: unknown[]) => void> = {};
+  // Audit row 89: main.ts registers its ipcMain handlers with literal channel
+  // names; recording them by channel lets a case invoke the close lanes
+  // directly (the real ipc-handlers registration is mocked out here).
+  const ipcHandlers: Record<string, (...args: unknown[]) => void> = {};
   const app = {
     requestSingleInstanceLock: vi.fn(() => true),
     on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
@@ -41,7 +45,24 @@ const { appHandlers, app, windows, fakeProvider } = vi.hoisted(() => {
     installHooks: vi.fn(async () => {}),
     installStatusScripts: vi.fn(),
   };
-  return { appHandlers, app, windows, fakeProvider };
+  // main.ts imports isCloseConfirmed/setCloseConfirmed and the watchdog reads
+  // the flag inside its timer, so the mock is hoisted: a case flips the flag
+  // and beforeEach restores the boot default (confirmed).
+  const closeState = {
+    isCloseConfirmed: vi.fn(() => true),
+    setCloseConfirmed: vi.fn(),
+  };
+  return {
+    appHandlers,
+    app,
+    windows,
+    fakeProvider,
+    ipcHandlers,
+    closeState,
+    ipcMainOn: vi.fn((channel: string, handler: (...args: unknown[]) => void) => {
+      ipcHandlers[channel] = handler;
+    }),
+  };
 });
 
 // P2-47: the winner's whenReady chain sweeps stale finevibe-chrome-import-*
@@ -93,7 +114,7 @@ vi.mock('electron', () => {
     shell: { openExternal: vi.fn() },
     // main.ts registers the browser:clearIsolatedStorage jar clear on
     // ipcMain and resolves the isolated partition through session.
-    ipcMain: { on: vi.fn() },
+    ipcMain: { on: ipcMainOn },
     session: {
       fromPartition: vi.fn(() => ({ clearStorageData: vi.fn(async () => {}) })),
     },
@@ -134,10 +155,7 @@ vi.mock('./platform', () => ({
   shouldDisableHardwareAcceleration: () => false,
 }));
 vi.mock('./chrome-import/copy', () => ({ sweepImportTempDirs: sweepImportSpy }));
-vi.mock('./close-state', () => ({
-  isCloseConfirmed: vi.fn(() => true),
-  setCloseConfirmed: vi.fn(),
-}));
+vi.mock('./close-state', () => closeState);
 
 // Dynamic import is the point of this suite: main.ts runs the
 // single-instance gate at module scope, so each case must re-execute the
@@ -163,6 +181,9 @@ beforeEach(() => {
   vi.mocked(app.quit).mockClear();
   vi.mocked(app.on).mockClear();
   vi.mocked(sweepImportSpy).mockClear();
+  for (const key of Object.keys(ipcHandlers)) delete ipcHandlers[key];
+  closeState.isCloseConfirmed.mockReturnValue(true);
+  closeState.setCloseConfirmed.mockClear();
   fakeProvider.validatePrerequisites = () => true;
 });
 
@@ -254,5 +275,57 @@ describe('single-instance gate', () => {
     await importPrimaryInstance();
 
     expect(probeOrder).toEqual(['probe-after-window']);
+  });
+});
+
+// Audit row 89: the C4S-07 close-confirmation watchdog (main.ts,
+// CLOSE_CONFIRM_WATCHDOG_MS = 15 s) exists to end a quit that a HUNG renderer
+// never answered. It used to be the only timer, so an explicit Cancel in the
+// quit confirm — which answers nothing on IPC — was indistinguishable from a
+// hang, and the app force-quit (killAllPtys) 15 s after the user dismissed the
+// dialog. The renderer now answers Cancel with 'app:closeCancelled'.
+describe('close-confirmation watchdog', () => {
+  // main.ts CLOSE_CONFIRM_WATCHDOG_MS; not exported, kept in sync by hand.
+  const WATCHDOG_MS = 15_000;
+  const quitEvent = { preventDefault: vi.fn() };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Unconfirmed close: before-quit preventDefaults and arms the watchdog,
+  // exactly the state a hung renderer would leave behind.
+  function armWatchdog(): number {
+    closeState.isCloseConfirmed.mockReturnValue(false);
+    appHandlers['before-quit']!(quitEvent);
+    return app.quit.mock.calls.length;
+  }
+
+  it('quits after the watchdog window when the renderer stays silent', async () => {
+    await importPrimaryInstance();
+    vi.useFakeTimers();
+
+    const quitBase = armWatchdog();
+    vi.advanceTimersByTime(WATCHDOG_MS);
+
+    expect(quitEvent.preventDefault).toHaveBeenCalled();
+    expect(app.quit.mock.calls.length - quitBase).toBe(1);
+  });
+
+  it('disarms the watchdog on app:closeCancelled, and re-arms on the next quit', async () => {
+    await importPrimaryInstance();
+    vi.useFakeTimers();
+
+    const quitBase = armWatchdog();
+    ipcHandlers['app:closeCancelled']!();
+    vi.advanceTimersByTime(WATCHDOG_MS);
+    expect(app.quit.mock.calls.length - quitBase).toBe(0);
+    // Cancelling must not confirm: the flag stays false so the window close
+    // still asks next time (and the next arm above is a real arm).
+    expect(closeState.setCloseConfirmed).not.toHaveBeenCalled();
+
+    const rearmBase = armWatchdog();
+    vi.advanceTimersByTime(WATCHDOG_MS);
+    expect(app.quit.mock.calls.length - rearmBase).toBe(1);
   });
 });
