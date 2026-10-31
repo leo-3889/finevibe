@@ -9,7 +9,9 @@ const { mockSpawn, mockWrite, mockResize, mockKill, mockExecSync, mockExecFile, 
   mockWrite: vi.fn(),
   mockResize: vi.fn(),
   mockKill: vi.fn(),
-  mockExecSync: vi.fn((): string => { throw new Error('not found'); }),
+  // Loosely typed on purpose: suites program it with both `()` and `(cmd)`
+  // implementations, the way the real execSync overloads allow.
+  mockExecSync: vi.fn((..._args: any[]): string => { throw new Error('not found'); }),
   mockExecFile: vi.fn(),
   mockKeychainIsolation: vi.fn(() => ({ status: 'supported' as 'supported' | 'unsupported' | 'unknown', version: null as string | null })),
   mockNvmDefaultNodeBinDir: vi.fn(() => null as string | null),
@@ -1029,7 +1031,6 @@ async function importWinPtyManager() {
     whichCmd: 'where',
     utf8LocaleEnv: {},
   }));
-  const cp = await import('child_process');
   const pm = await import('./pty-manager');
   // Import-time probes (provider registry, keychain status) also reach execSync,
   // and the getPtyCwd suite leaves queued `mockImplementationOnce` answers on
@@ -1044,7 +1045,7 @@ async function importWinPtyManager() {
     throw new Error('not found');
   });
   mockExecFile.mockReset();
-  return { pm, execSync: vi.mocked(cp.execSync), execFile: vi.mocked(cp.execFile) };
+  return { pm, execSync: mockExecSync, execFile: mockExecFile };
 }
 
 describe('getRegistryPath (row 73 registry decode)', () => {
