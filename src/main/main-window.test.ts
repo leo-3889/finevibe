@@ -50,6 +50,48 @@ describe('getMainWindow', () => {
   });
 });
 
+describe('showAndFocusWindow', () => {
+  type FrontWin = Win & {
+    isMinimized(): boolean;
+    isVisible(): boolean;
+    restore: ReturnType<typeof vi.fn>;
+    show: ReturnType<typeof vi.fn>;
+    focus: ReturnType<typeof vi.fn>;
+  };
+
+  const frontWin = (minimized: boolean, visible: boolean): FrontWin => ({
+    isDestroyed: () => false,
+    webContents: { send: vi.fn() },
+    isMinimized: () => minimized,
+    isVisible: () => visible,
+    restore: vi.fn(),
+    show: vi.fn(),
+    focus: vi.fn(),
+  });
+
+  it('restores a minimized window and shows a hidden one before focusing', async () => {
+    const { showAndFocusWindow } = await fresh();
+    const win = frontWin(true, false);
+
+    showAndFocusWindow(win as never);
+
+    expect(win.restore).toHaveBeenCalledTimes(1);
+    expect(win.show).toHaveBeenCalledTimes(1);
+    expect(win.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a visible, un-minimized window alone apart from the focus', async () => {
+    const { showAndFocusWindow } = await fresh();
+    const win = frontWin(false, true);
+
+    showAndFocusWindow(win as never);
+
+    expect(win.restore).not.toHaveBeenCalled();
+    expect(win.show).not.toHaveBeenCalled();
+    expect(win.focus).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('sendToMainWindow', () => {
   it('sends through the live window and no-ops when there is none', async () => {
     const { sendToMainWindow } = await fresh();

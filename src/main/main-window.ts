@@ -26,6 +26,21 @@ export function getMainWindow(): BrowserWindow | null {
 }
 
 /**
+ * Bring `win` back in front: un-minimize, un-hide, focus.
+ *
+ * Audit row 91: the macOS dock 'activate' lane only resynced session status, so
+ * a dock click on a minimized window painted status changes behind a window
+ * that never came back. The restore body existed once, in the `app:focus` IPC
+ * handler; both lanes (plus the second-instance focus) call this instead.
+ * `show()` is gated on visibility so a visible window sees no extra event.
+ */
+export function showAndFocusWindow(win: BrowserWindow): void {
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+}
+
+/**
  * Push to the main window; a no-op when it is gone. Every main→renderer
  * channel is fire-and-forget by contract (see docs/FEATURES.md §29), so a
  * missing window is a normal drop, not an error.

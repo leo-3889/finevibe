@@ -53,8 +53,7 @@ import { getLegacyRetirementStatus } from './userdata-migration';
 import type { ChromeImportOptions, ChromeImportProgress, ClipboardSource, ClipboardPastePayload } from '../shared/types';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
 import { buildFineVibeIgnoreMatcher } from './finevibeignore';
-import { setCloseConfirmed } from './close-state';
-import { getMainWindow } from './main-window';
+import { getMainWindow, showAndFocusWindow } from './main-window';
 import { registerLeafDomains } from './ipc/leaf-domains';
 import { registerAppDomains } from './ipc/app-domains';
 import { registerSupportDomains } from './ipc/support-domains';
@@ -2299,15 +2298,13 @@ export function registerIpcHandlers(): void {
     app.focus({ steal: true });
     const win = getMainWindow();
     if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
+      showAndFocusWindow(win);
     }
   }));
 
-  ipcMain.on('app:closeConfirmed', safeOn('app:closeConfirmed', () => {
-    setCloseConfirmed(true);
-    app.quit();
-  }));
+  // `app:closeConfirmed` is registered in src/main/main.ts: the reply has to
+  // act on the quit/window-close split main.ts stamps when it asks (audit row
+  // 90), so the whole lane lives beside the close and before-quit handlers.
 
 
   const MAX_SCREENSHOT_BYTES = 50 * 1024 * 1024;
