@@ -248,6 +248,12 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
     listRemoteDirs(id, dirPath, typeof prefix === 'string' ? prefix : undefined),
   );
 
+  // Row 93: the DIR-BROWSER stat. Deliberately NOT project-contained — the
+  // Add-project modal names folders that are not projects yet, and the enrolled
+  // HostRecord is that flow's consent (council R-1). The contained twin is the
+  // TREE rail `fs:stat` (ipc-handlers.ts), which runs
+  // remote-fs' isRemotePathInKnownProject first; keeping the two lanes apart is
+  // what the contract paragraph in docs/security-boundaries.md documents.
   ipcMain.handle('hosts:stat', (_event, id: unknown, target: unknown) =>
     statRemotePath(id, target),
   );

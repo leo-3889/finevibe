@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { loadState, saveState, saveStateSync, getKnownProjectPaths, getRemoteProjectRoots, invalidateStateCache, PersistedState } from './store';
 import { getHost } from './hosts/host-registry';
 import { refreshHostTools } from './hosts/enrollment';
-import { listRemoteDir, readRemoteFile, statRemotePath, walkRemoteFiles } from './hosts/remote-fs';
+import { isRemotePathInKnownProject, listRemoteDir, readRemoteFile, statRemotePath, walkRemoteFiles } from './hosts/remote-fs';
 import { setRemoteWatchWindow, unwatchRemoteDir, watchRemoteDir } from './hosts/remote-watch';
 import {
   gitOnStatus,
@@ -948,6 +948,21 @@ export async function clearSafeCaches(
   return { tempDirsSwept };
 }
 
+/**
+ * The temp directories main WRITES into, uid-scoped (audit R95, documented in
+ * docs/security-boundaries.md): `os.tmpdir()` is world-writable and shared by
+ * every user, so a fixed name under mode 0700 is claimed by whoever creates it
+ * first and every other user's mkdir then fails EACCES — one local
+ * `mkdir /tmp/<name>` switches the feature off machine-wide, and a dir a
+ * foreign user owns is a write-squat target for what gets written into it.
+ * `getStatusDir()` (hook-status.ts) carries the same suffix for the status
+ * sidecars. Windows keeps the bare name: per-user %TEMP% already isolates.
+ */
+export function uidScopedTempDir(base: string): string {
+  const uid = !isWin && typeof process.getuid === 'function' ? process.getuid() : undefined;
+  return path.join(os.tmpdir(), uid === undefined ? base : `${base}-${uid}`);
+}
+
 export function registerIpcHandlers(): void {
   // PA-07: invalidate the Quick Open enumeration cache on the same debounced
   // git:changed signal the renderer receives.
@@ -982,9 +997,31 @@ export function registerIpcHandlers(): void {
       win.webContents.send('pty:data', sessionId, `\r\n\x1b[31m${message}\x1b[0m\r\n`);
       win.webContents.send('pty:exit', sessionId, 1, undefined, SPAWN_REJECTED_EXIT_REASON, undefined);
     };
-    if (!isWithinKnownProject(path.resolve(cwd))) {
-      rejectLaunch(`Refused to launch: the working directory ${cwd} is not a known project.`);
-      return;
+    // Audit R96: the cwd gate is host-aware. A REMOTE launch's cwd is a HOST
+    // path, and isWithinKnownProject canonicalizes against the LOCAL disk
+    // (realpath of existing dirs): a Windows controller turned `/srv/app` into
+    // `C:\srv\app` and refused every remote provider launch, while a Linux
+    // controller whose paths mirror the host's accepted the same string for the
+    // WRONG machine. Remote launches are therefore contained against the project
+    // roots recorded FOR THAT HOST (remote-fs' rule, no local disk touched).
+    const remoteLaunchHost = hostId !== undefined && hostId !== LOCAL_HOST_ID ? hostId : undefined;
+    if (remoteLaunchHost !== undefined) {
+      if (!isRemotePathInKnownProject(remoteLaunchHost, cwd)) {
+        rejectLaunch(`Refused to launch: the working directory ${cwd} is not a known project of host ${JSON.stringify(remoteLaunchHost)}.`);
+        return;
+      }
+    } else {
+      // Phase 3 belt, on the RAW string (the requireGitTarget lesson): a path a
+      // REMOTE project owns must not spawn the LOCAL CLI in the mirror dir.
+      const mirroredOwner = remoteProjectOwnerOf(cwd);
+      if (mirroredOwner !== undefined) {
+        rejectLaunch(`Refused to launch: ${cwd} is a project on remote host ${JSON.stringify(mirroredOwner)} — start the session with that host selected.`);
+        return;
+      }
+      if (!isWithinKnownProject(path.resolve(cwd))) {
+        rejectLaunch(`Refused to launch: the working directory ${cwd} is not a known project.`);
+        return;
+      }
     }
     if (configDir && !isManagedMcpConfigDir(configDir)) {
       rejectLaunch(`Refused to launch: the config directory ${configDir} is not a managed profile directory.`);
@@ -1262,11 +1299,18 @@ export function registerIpcHandlers(): void {
     try {
       // Remote rail (parent plan §11, per-host providers): a trailing hostId
       // routes the probe over sftp. The gate is remote-fs' host-exists +
-      // enrolled|partial + path safety — no enumerate-confirm (council R-1),
-      // and no local consent gate: a remote path has no LOCAL spelling, so
-      // every local gate would reject it as a C:\home\... fallback (T5
-      // lesson, replicated on every fs rail here).
+      // enrolled|partial + path safety + project containment — no
+      // enumerate-confirm (council R-1), and no local consent gate: a remote
+      // path has no LOCAL spelling, so every local gate would reject it as a
+      // C:\home\... fallback (T5 lesson, replicated on every fs rail here).
       if (hostId && hostId !== LOCAL_HOST_ID) {
+        // Audit R93: this is a TREE rail, so it takes the project containment
+        // fs:listDir / fs:readFile already ran — the dir-browser lanes
+        // (hosts:stat / hosts:listDirs) are the ones the HostRecord consents to.
+        if (!isRemotePathInKnownProject(hostId, filePath)) {
+          console.warn(`fs:isDirectory remote blocked [${hostId}] ${filePath}: not a known project path`);
+          return false;
+        }
         const st = await statRemotePath(hostId, filePath);
         if (st.error) console.warn(`fs:isDirectory remote failed [${hostId}] ${filePath}: ${st.error}`);
         return st.ok && st.isDirectory === true;
@@ -1609,17 +1653,12 @@ export function registerIpcHandlers(): void {
   // intercepts (Windows Ctrl+V, the context menu), and the renderer hands bytes
   // over for a native paste event, whose file objects main cannot see.
   /**
-   * The paste temp dir. POSIX suffixes the uid, mirroring hook-status's
-   * `getStatusDir`: os.tmpdir() is /tmp — world-writable and shared by every
-   * user, so a fixed name under mode 0700 is claimed by whoever creates it
-   * first and every other user's mkdir then fails EACCES. One local
-   * `mkdir /tmp/finevibe-paste` therefore switches off pasted images for every
-   * user of the machine, with no diagnostic beyond a console line. Windows
-   * keeps the bare name: per-user %TEMP% already isolates users.
+   * The paste temp dir: `finevibe-paste` uid-suffixed on POSIX (the
+   * world-writable-tmpdir rule now lives in `uidScopedTempDir`, shared with the
+   * browser screenshot dir — audit R95).
    */
   function getPasteDir(): string {
-    const uid = !isWin && typeof process.getuid === 'function' ? process.getuid() : undefined;
-    return path.join(os.tmpdir(), uid === undefined ? 'finevibe-paste' : `finevibe-paste-${uid}`);
+    return uidScopedTempDir('finevibe-paste');
   }
   const PASTE_DIR = getPasteDir();
   const PASTE_MAX_BYTES = 25 * 1024 * 1024;
@@ -1980,13 +2019,14 @@ export function registerIpcHandlers(): void {
         const hostProjects = (loadState().projects ?? []).filter(
           (p) => (p.hostId ?? LOCAL_HOST_ID) === hostId,
         );
-        const normPosix = (p: string) => p.replace(/\/+/g, '/').replace(/\/+$/, '');
-        const withinRemoteProject = hostProjects.some((root) => {
-          const r = normPosix(root.path);
-          const t = normPosix(projectPath);
-          return t === r || t.startsWith(`${r}/`);
-        });
-        if (!withinRemoteProject) {
+        // Audit R94: the compare is remote-fs' ONE containment helper (used by
+        // the fs tree rails too), which rejects `..` on the raw segments and
+        // compares normalized spellings on both sides. The old raw `startsWith`
+        // let `/proj/evil/../../secret` through the gate and `joinPosix` +
+        // `normalizeProviderPath` collapsed the `..` AFTER it — an arbitrary
+        // host-directory read of the fixed config filenames (.mcp.json, tokens
+        // in) behind a path that looked contained.
+        if (!isRemotePathInKnownProject(hostId, projectPath)) {
           throw new Error(
             hostProjects.length === 0
               ? `No projects are registered for host ${JSON.stringify(hostId)} — remote project-scope config is refused`
@@ -2351,8 +2391,12 @@ export function registerIpcHandlers(): void {
       throw new Error('Screenshot data exceeds size limit');
     }
     const buffer = Buffer.from(b64, 'base64');
-    const dir = path.join(os.tmpdir(), 'finevibe-screenshots');
-    await fs.promises.mkdir(dir, { recursive: true });
+    // Audit R95: the screenshot dir took the bare, machine-shared
+    // `os.tmpdir()/finevibe-screenshots` — one local `mkdir` of that name under
+    // 0700 made every other user's screenshot write fail, and the dir was a
+    // write-squat target. Same uid suffix + 0700 as the paste dir.
+    const dir = uidScopedTempDir('finevibe-screenshots');
+    await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
     if (!screenshotsPruned) {
       screenshotsPruned = true;
       void pruneStaleImages(dir);
@@ -2552,6 +2596,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('fs:topFilesByTokens', async (_event, cwd: string, limit: number): Promise<TopFilesResult> => {
     try {
       const resolvedCwd = path.resolve(cwd);
+      // R101: fs:listFiles' Phase 3 belt, missing here — on a mirror-path
+      // controller the local gate below passes for a remote root and the widget
+      // ranks the WRONG machine's files.
+      const remoteOwner = remoteProjectOwnerOf(resolvedCwd);
+      if (remoteOwner) {
+        console.warn(`fs:topFilesByTokens blocked: ${resolvedCwd} is a project on remote host ${remoteOwner}`);
+        return { ok: false };
+      }
       if (!isWithinKnownProject(resolvedCwd)) {
         return { ok: false };
       }
@@ -2649,6 +2701,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('fs:exists', async (_event, filePath: string, hostId?: string): Promise<boolean> => {
     try {
       if (hostId && hostId !== LOCAL_HOST_ID) {
+        // Audit R93: TREE rail — project containment, like fs:listDir (the
+        // remote existence oracle must not probe arbitrary host paths).
+        if (!isRemotePathInKnownProject(hostId, filePath)) {
+          console.warn(`fs:exists remote blocked [${hostId}] ${filePath}: not a known project path`);
+          return false;
+        }
         const st = await statRemotePath(hostId, filePath);
         if (st.error) console.warn(`fs:exists remote failed [${hostId}] ${filePath}: ${st.error}`);
         return st.ok;
@@ -2664,6 +2722,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('fs:stat', async (_event, filePath: string, hostId?: string): Promise<FileStatResult> => {
     try {
       if (hostId && hostId !== LOCAL_HOST_ID) {
+        // Audit R93: TREE rail — project containment, like fs:readFile.
+        if (!isRemotePathInKnownProject(hostId, filePath)) {
+          console.warn(`fs:stat remote blocked [${hostId}] ${filePath}: not a known project path`);
+          return { ok: false };
+        }
         const st = await statRemotePath(hostId, filePath);
         if (st.error) console.warn(`fs:stat remote failed [${hostId}] ${filePath}: ${st.error}`);
         return st.ok && st.size !== undefined && st.mtimeMs !== undefined

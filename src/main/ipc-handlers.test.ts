@@ -207,14 +207,36 @@ const sshExec = vi.hoisted(() => vi.fn());
 vi.mock('./hosts/ssh-client', () => ({
   exec: (...args: unknown[]) => sshExec(...args),
   sftpRead: vi.fn(),
+  // remote-fs (loaded REAL below for its pure path helpers) imports the whole
+  // sftp surface; Vitest throws on a named import the factory does not define.
+  sftpListDirEntries: vi.fn(),
+  sftpReadRange: vi.fn(),
+  sftpStat: vi.fn(),
 }));
 vi.mock('./hosts/enrollment', autoStub);
 vi.mock('./hosts/remote-provider-config', autoStub);
 vi.mock('./hosts/settings-sync', autoStub);
-vi.mock('./hosts/remote-fs', autoStub);
+// The sftp/exec lanes are stubs (no ssh2 in this suite), but remote-fs' PURE
+// path/containment helper stays real: the tree-rail gate (audit R93), the
+// provider:getConfig containment (R94) and the pty:create host gate (R96) all
+// ARE that compare, and a bare vi.fn() answers `undefined` — i.e. every gate
+// refuses, which would silently make each gate test prove nothing.
+vi.mock('./hosts/remote-fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./hosts/remote-fs')>();
+  return {
+    ...actual,
+    listRemoteDir: vi.fn(),
+    listRemoteDirs: vi.fn(),
+    readRemoteFile: vi.fn(),
+    statRemotePath: vi.fn(),
+    walkRemoteFiles: vi.fn(),
+    ensureRemoteDir: vi.fn(),
+    cloneRemoteRepo: vi.fn(),
+  };
+});
 
 import {
-  registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
+  registerIpcHandlers, uidScopedTempDir, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
   sweepEnumerationCaches, ENUMERATE_CACHE_MAX, TOP_FILES_CACHE_MAX, OUTSIDE_HOME_CONSENT_MAX,
 } from './ipc-handlers';
 import { isManagedMcpConfigDir, removeMcpServer } from './claude-cli';
@@ -643,6 +665,30 @@ describe.skipIf(process.platform === 'win32')('remote-scope belt (git/fs)', () =
   it('local projects are untouched by the belt', async () => {
     knownPaths.push(path.resolve('/local/proj'));
     expect(() => handlers.get('git:getStatus')!({}, path.resolve('/local/proj'))).not.toThrow();
+  });
+
+  // Audit R96: pty:create was the one launch sink without this belt — a
+  // no-hostId launch into a mirrored remote path spawned the LOCAL CLI there.
+  it('pty:create refuses a local launch into a mirrored remote project path', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    remoteRoots.push({ path: '/srv/app', hostId: 'host-1' });
+    knownPaths.push('/srv/app'); // the mirror lie: the local gate passes
+    await handlers.get('pty:create')!({}, 'belt-1', '/srv/app', null, false, '', 'pi');
+    expect(mockSpawnPty).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pty:create blocked'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('is a project on remote host'));
+    warn.mockRestore();
+  });
+
+  // Audit R101: fs:topFilesByTokens is fs:listFiles' polling twin and ran the
+  // local gate without the belt — the widget ranked the WRONG machine.
+  it('fs:topFilesByTokens refuses a remote-rooted cwd with a greppable warn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    remoteRoots.push({ path: '/srv/top', hostId: 'host-1' });
+    knownPaths.push('/srv/top');
+    await expect(handlers.get('fs:topFilesByTokens')!({}, '/srv/top', 10)).resolves.toEqual({ ok: false });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:topFilesByTokens blocked'));
+    warn.mockRestore();
   });
 });
 
@@ -3318,11 +3364,34 @@ describe('P2-110: the five channels the coverage map overclaimed', () => {
 
     const written = await handlers.get('browser:saveScreenshot')!({}, '../evil', 'data:image/png;base64,iVBORw0KGgo=') as string;
     try {
-      expect(path.dirname(written)).toBe(path.join(os.tmpdir(), 'finevibe-screenshots'));
+      expect(path.dirname(written)).toBe(uidScopedTempDir('finevibe-screenshots'));
       expect(path.basename(written)).toMatch(/^draw-___evil-\d+\.png$/);
       expect(fs.existsSync(written)).toBe(true);
     } finally {
       fs.rmSync(written, { force: true });
+    }
+  });
+
+  // Audit R95: the screenshot dir was the bare `os.tmpdir()/finevibe-screenshots`.
+  // os.tmpdir() is world-writable and shared, so one local
+  // `mkdir /tmp/finevibe-screenshots` claimed the 0700 name and every other
+  // user's screenshot write then failed EACCES — and a directory a foreign user
+  // owns is the write-squat target for what gets written into it. The paste
+  // dir's uid-suffix rule (uidScopedTempDir) now covers both.
+  it('browser:saveScreenshot writes into the uid-suffixed dir on POSIX (audit R95)', async () => {
+    platformState.os = 'linux';
+    try {
+      const uid = process.getuid!();
+      const written = await handlers.get('browser:saveScreenshot')!({}, 's1', 'data:image/png;base64,iVBORw0KGgo=') as string;
+      try {
+        expect(path.basename(path.dirname(written))).toBe(`finevibe-screenshots-${uid}`);
+        // 0700 on a world-writable parent: a screenshot is browser content.
+        expect(fs.statSync(path.dirname(written)).mode & 0o077).toBe(0);
+      } finally {
+        fs.rmSync(written, { force: true });
+      }
+    } finally {
+      platformState.os = 'win32';
     }
   });
 
@@ -3473,8 +3542,63 @@ describe('per-host provider channels (per-host providers T1)', () => {
     await expect(handlers.get('profiles:provision')!({}, 'p1', '/custom', 'pi', 'lab')).rejects.toThrow(/local-only/);
   });
 
+  // Audit R94: the remote containment was a raw startsWith. joinPosix +
+  // normalizeProviderPath collapse `..` lexically AFTER the compare, so a path
+  // that merely STARTS WITH a project root escaped it — the fixed config
+  // filenames (.mcp.json, tokens in) were read out of an arbitrary host dir.
+  it('provider:getConfig refuses a ..-traversal remote projectPath that prefix-matches a root', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
+    vi.mocked(getRemoteProviderConfig).mockClear();
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj/evil/../../secret', undefined, 'lab'))
+      .rejects.toThrow(/not within a known project of host/);
+    expect(getRemoteProviderConfig).not.toHaveBeenCalled();
+  });
+
+  // Audit R96: the launch gate ran isWithinKnownProject(path.resolve(cwd)) for
+  // EVERY launch. Its roots are realpaths of existing LOCAL directories, so a
+  // remote cwd — absent on the controller, and re-anchored to a phantom
+  // `C:\srv\app` by path.resolve on a Windows controller — refused every
+  // remote provider launch. Logic proof (no Windows runtime here): the host
+  // launch passes with an EMPTY local root set.
+  it('pty:create gates a hostId launch on the HOST roots, not the local disk (win controller)', async () => {
+    platformState.os = 'win32';
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/srv/app', hostId: 'lab' }], preferences: {},
+    } as never);
+    // knownPaths stays EMPTY on purpose: deriveGateRoots keeps only existing
+    // local dirs, so a host project is never in the local gate's root set.
+    await handlers.get('pty:create')!(
+      {}, 'win-1', '/srv/app', null, false, '', 'pi', undefined, undefined, '',
+      undefined, 'lab',
+    );
+    expect(mockSpawnPty).toHaveBeenCalled();
+    expect(mockSpawnPty.mock.calls[0][1]).toBe('/srv/app');
+  });
+
+  it('pty:create still refuses a hostId launch outside that host\'s projects', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/srv/app', hostId: 'lab' }], preferences: {},
+    } as never);
+    await handlers.get('pty:create')!(
+      {}, 'win-2', '/srv/other', null, false, '', 'pi', undefined, undefined, '',
+      undefined, 'lab',
+    );
+    expect(mockSpawnPty).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('is not a known project of host'));
+    warn.mockRestore();
+  });
+
   it('pty:create threads the trailing hostId down to spawnPty', async () => {
     knownPaths.push('/proj');
+    // Audit R96: a host launch is gated against the host's RECORDED projects,
+    // not the controller's disk.
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
     await handlers.get('pty:create')!(
       {}, 'host-1', '/proj', null, false, '', 'pi', undefined, undefined, '',
       undefined, 'lab',
@@ -3485,6 +3609,9 @@ describe('per-host provider channels (per-host providers T1)', () => {
 
   it('pty:create registers a REMOTE transcript sync with the HOST session dir (audit T2 #5)', async () => {
     knownPaths.push('/proj');
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
     await handlers.get('pty:create')!(
       {}, 'host-2', '/proj', 'cli-9', true, '', 'pi', undefined, undefined, '',
       undefined, 'lab',
@@ -3510,6 +3637,14 @@ describe('per-host provider channels (per-host providers T1)', () => {
 describe('remote fs rails (per-host providers, parent plan §11)', () => {
   const REMOTE = '/home/dev/dev/app';
 
+  // The stat rails are TREE rails (audit R93): they contain on the project
+  // roots recorded for the host, so every lane here names a path under one.
+  beforeEach(() => {
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/home/dev/dev', hostId: 'h1' }], preferences: {},
+    } as never);
+  });
+
   it('routes a registry hostId to the sftp lanes and keeps their shapes', async () => {
     vi.mocked(listRemoteDir).mockResolvedValueOnce({
       ok: true,
@@ -3530,6 +3665,28 @@ describe('remote fs rails (per-host providers, parent plan §11)', () => {
     vi.mocked(statRemotePath).mockResolvedValue({ ok: false });
     await expect(handlers.get('fs:exists')!({}, REMOTE, 'h1')).resolves.toBe(false);
     await expect(handlers.get('fs:stat')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: false });
+  });
+
+  // Audit R93: the three stat rails fed the renderer path straight to
+  // statRemotePath, which carries only the DIR-BROWSER gate (host + path
+  // safety, no project containment) — the always-on tree could probe any path
+  // on the host while the contract claimed containment, and fs:listDir /
+  // fs:readFile already refused the same path.
+  it('the stat rails refuse a remote path outside the host\'s projects, before any sftp touch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(statRemotePath).mockClear().mockResolvedValue({ ok: true, isDirectory: true, size: 0, mtimeMs: 5 });
+    const OUTSIDE = '/home/dev/other/app';
+    await expect(handlers.get('fs:exists')!({}, OUTSIDE, 'h1')).resolves.toBe(false);
+    await expect(handlers.get('fs:stat')!({}, OUTSIDE, 'h1')).resolves.toEqual({ ok: false });
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE, 'h1')).resolves.toBe(false);
+    expect(statRemotePath).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:exists remote blocked'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:stat remote blocked'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:isDirectory remote blocked'));
+    // A path under the host's project still reaches the lane.
+    await expect(handlers.get('fs:exists')!({}, REMOTE, 'h1')).resolves.toBe(true);
+    expect(statRemotePath).toHaveBeenCalledWith('h1', REMOTE);
+    warn.mockRestore();
   });
 
   it('rail failures answer the local failure shapes, never a rejection', async () => {

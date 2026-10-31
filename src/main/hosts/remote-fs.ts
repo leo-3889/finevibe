@@ -133,8 +133,16 @@ export async function listRemoteDirs(
   }
 }
 
-/** The `fs:stat` answer for a remote path (widened with `isDirectory`, the
- * one thing the Add-project probe asks). Missing answers `{ok:false}`. */
+/**
+ * The `fs:stat` answer for a remote path (widened with `isDirectory`, the
+ * one thing the Add-project probe asks). Missing answers `{ok:false}`.
+ *
+ * NOT project-contained on purpose: this is the Add-project DIR-BROWSER lane
+ * (`hosts:stat`), whose consent is the enrolled HostRecord (council R-1) — the
+ * browser has to name folders that are not projects yet. The always-on TREE
+ * rails call `isRemotePathInKnownProject` themselves before reaching here
+ * (audit row 93).
+ */
 export async function statRemotePath(hostId: unknown, target: unknown): Promise<RemoteStatResult> {
   const gate = gateHost(hostId);
   if ('error' in gate) return { ok: false, error: gate.error };
@@ -155,16 +163,27 @@ export async function statRemotePath(hostId: unknown, target: unknown): Promise<
  * `isAllowedReadPath`: a file read must sit under a known project root. The
  * remote root set is the persisted ProjectRecords whose `hostId` is this
  * host (paths stored posix at add-time; trailing separators tolerated).
- * The dir-browser lanes (listDirs/stat/ensureDir/cloneRepo) are NOT gated
- * by this — the HostRecord is their consent (council R-1, T5); this gate
- * narrows the always-on tree/preview rails to what the user opened.
+ * The dir-browser lanes (hosts:listDirs/hosts:stat/ensureDir/cloneRepo) are NOT
+ * gated by this — the HostRecord is their consent (council R-1, T5); this gate
+ * narrows the always-on tree/preview rails to what the user opened. Its callers
+ * are the tree rails only: `fs:listDir`, `fs:readFile`, `fs:exists`, `fs:stat`,
+ * `fs:isDirectory` (rows 93) and the remote `provider:getConfig` / `pty:create`
+ * gates, which hand it the RAW renderer string (row 94).
+ *
+ * The compare runs on `normalizeRemotePath` of BOTH sides, so `..` segments die
+ * before it: the lexical collapse happens in `joinPosix` +
+ * `normalizeProviderPath` AFTER a raw prefix compare, so a raw `startsWith` let
+ * `/proj/evil/../../secret` through the gate and then read the fixed config
+ * filenames out of `/secret` on the host (row 94).
  */
 export function isRemotePathInKnownProject(hostId: string, target: string): boolean {
+  const norm = normalizeRemotePath(target);
+  if (norm === null) return false;
   for (const p of loadState().projects) {
     if ((p.hostId ?? 'local') !== hostId) continue;
-    const root = p.path.replace(/\/+$/, '');
-    if (!root) continue;
-    if (target === root || target.startsWith(root + '/')) return true;
+    const root = normalizeRemotePath(p.path);
+    if (root === null) continue;
+    if (norm === root || norm.startsWith(`${root}/`)) return true;
   }
   return false;
 }
