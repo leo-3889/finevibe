@@ -293,19 +293,39 @@ jobs:
         # artifacts_only: no Apple secrets exist for gate builds, so build
         # UNSIGNED (CSC_IDENTITY_AUTO_DISCOVERY=false) and skip notarization
         # (an unsigned bundle cannot be notarized; release mode keeps both
-        # and fails loudly when the identity is missing).
+        # and fails loudly when the identity is missing). Row 71's
+        # `build.mac.forceCodeSigning: true` is what makes "fails loudly" real,
+        # and app-builder-lib rejects `identity=null` together with that flag
+        # (macPackager.js:217), so the gate leg overrides it as well.
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.artifacts_only && 'false' || 'true' }}
           DEBUG: ${{ inputs.artifacts_only && 'electron-builder' || '' }}
-        run: npm run build && npm run icons
-          && npx electron-builder --publish never --arm64 --x64 ${{ inputs.artifacts_only && '-c.mac.identity=null -c.mac.notarize=false' || '' }}
-
-      - name: Verify app icon in built bundles
-        # The mac target was the one packaging surface with no icon assertion
-        # (codesign and notarization say nothing about the tile). electron-builder
-        # copies build/icon.icns verbatim into Contents/Resources, so a byte
-        # comparison against the freshly generated master is exact.
         run: |
+          npm run build && npm run icons
+          unsigned=""
+          if [ "${{ inputs.artifacts_only }}" = "true" ]; then
+            unsigned="-c.mac.identity=null -c.mac.notarize=false"
+            unsigned="$unsigned -c.mac.forceCodeSigning=false"
+          fi
+          npx electron-builder --publish never --arm64 --x64 $unsigned
+
+      - name: Verify committed icon masters and app icon in built bundles
+        # The mac target is the one packaging surface codesign/notarization say
+        # nothing about, so the bundle's .icns is byte-compared against
+        # build/icon.icns below. That comparison alone is TAUTOLOGICAL for
+        # source freshness (row 80): the Build step just ran `npm run icons`, so
+        # a stale COMMITTED master regenerates to the current bytes and matches
+        # itself. Regenerating and diffing the tracked files is the assertion
+        # that binds the committed bytes to assets/icon-source.png, and it
+        # covers every generated asset (icns/ico/png plus the two NSIS BMPs,
+        # whose byte identity row 50 verified). scripts/build-icons.mjs is pure
+        # JS (png2icons + arithmetic BMPs), so the bytes are runner-independent.
+        run: |
+          npm run icons
+          if ! git diff --exit-code --name-status -- build/; then
+            echo '::error::build/ is stale - commit the output of npm run icons'
+            exit 1
+          fi
           for app in out/mac-arm64/FineVibe.app out/mac/FineVibe.app; do
             icns=$(find "$app/Contents/Resources" -maxdepth 1 -name '*.icns' -print -quit)
             if [ -z "$icns" ]; then
@@ -444,8 +464,10 @@ jobs:
           path: |
             out/*.AppImage
             out/*.deb
+            # No out/*.blockmap here: the AppImage carries its block map
+            # inline (app-builder-lib targets/appimage/appImageUtil.js) and
+            # fpm (deb) emits none, so the glob matched nothing.
             out/*.yml
-            out/*.blockmap
 
   build-windows:
     needs: [prepare]
@@ -511,6 +533,18 @@ jobs:
         # the single `publish` job below uploads every artifact.
         run: npm run build && npm run icons
           && npx electron-builder --win --publish never --x64
+
+      - name: Verify packed native modules target the Electron ABI
+        # Row 74: the two guards below only read PE resources, so nothing
+        # checked what the installer PACKS. The `npm ci` postinstall hook
+        # swallows install-app-deps failures and dist:win:local passes
+        # --config.npmRebuild=false, so a Node-ABI better_sqlite3.node - or a
+        # bundle missing node-pty's winpty/conpty dlls - shipped green and threw
+        # ERR_DLOPEN_FAILED / failed PTY spawns on every user machine. Same
+        # script, dir mode: it reads the packed bytes against the ABI recorded
+        # by @electron/rebuild. UNVERIFIED-RUNTIME: no binding is require()d and
+        # the app is never launched here.
+        run: node scripts/verify-win-exe.mjs out/win-unpacked
 
       - name: Verify Windows exe icon + version resources
         # Guard: a past release shipped the DEFAULT Electron icon because the

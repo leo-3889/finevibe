@@ -11,13 +11,16 @@
 // stamp (an unedited exe says "Electron"), and (2) the icon pixels: the FineVibe
 // tile is near-black, the Electron atom averages light. Both are checked directly
 // against the PE resource directory (no Windows API, no deps).
-// Usage: node scripts/verify-win-exe.mjs [path-to-exe]   (default: out/win-unpacked/FineVibe.exe)
+// A second mode takes the UNPACKED APP DIR instead of an exe and audits the
+// native modules packed inside it (row 74): see verifyPackedNative below.
+// Usage: node scripts/verify-win-exe.mjs [path-to-exe|path-to-unpacked-dir]
+//        (default exe: out/win-unpacked/FineVibe.exe)
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const exe = process.argv[2] ?? path.join(root, 'out', 'win-unpacked', 'FineVibe.exe');
+const target = process.argv[2] ?? path.join(root, 'out', 'win-unpacked', 'FineVibe.exe');
 
 const RT_ICON = 3;
 const RT_GROUP_ICON = 14;
@@ -31,8 +34,83 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-if (!fs.existsSync(exe)) fail(`${exe} not found - run the electron-builder dir phase first`);
+// --- Row 74: native-module mode (argument = the electron-builder unpacked dir) ---
+// The PE checks below only see icon/version resources, so they stay green while
+// the packed .node binaries target the wrong ABI. Both Windows build paths can
+// produce that: the postinstall hook swallows `install-app-deps` failures, and
+// `dist:win:local` passes `--config.npmRebuild=false`. UNVERIFIED-RUNTIME: the
+// bindings are never require()d (a foreign-ABI .node cannot load on the build
+// host anyway) - the checks read packed bytes only.
+if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
+  verifyPackedNative(target);
+  console.log('OK: packed native modules carry the Electron ABI recorded by the rebuild, and the win32 node-pty prebuilds are present');
+  process.exit(0);
+}
+
+if (!fs.existsSync(target)) fail(`${target} not found - run the electron-builder dir phase first`);
+const exe = target;
 const buf = fs.readFileSync(exe);
+
+// V8-ABI addons export `node_register_module_v<NODE_MODULE_VERSION>`; that
+// symbol name is in the binary, so the file bytes state which runtime the
+// loader will accept. N-API addons export `napi_register_module_v1` instead
+// (ABI-stable, nothing to compare) -> undefined here.
+function packedModuleAbi(file) {
+  const match = /node_register_module_v(\d+)/.exec(fs.readFileSync(file).toString('latin1'));
+  return match ? match[1] : undefined;
+}
+
+function verifyPackedNative(unpackedDir) {
+  const modules = path.join(unpackedDir, 'resources', 'app.asar.unpacked', 'node_modules');
+  if (!fs.existsSync(modules)) {
+    fail(`${modules} not found - pass the unpacked app dir (out/win-unpacked), not an exe`);
+  }
+
+  // 1. better-sqlite3 ships the Electron ABI, not the build host's Node ABI.
+  //    The anchor is node_modules/better-sqlite3/build/Release/.forge-meta:
+  //    @electron/rebuild (run by `electron-builder install-app-deps`) is its
+  //    ONLY writer and writes `<arch>--<NODE_MODULE_VERSION>` on every success
+  //    path (prebuildify / prebuild-install / node-pre-gyp / node-gyp). Plain
+  //    node-gyp and `npm rebuild` never touch it. The marker is NOT copied into
+  //    the bundle (electron-builder drops it), so it has to be read from the
+  //    build tree that produced it - and the packed binding must carry the
+  //    same NODE_MODULE_VERSION in its register symbol.
+  const binding = path.join(modules, 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
+  if (!fs.existsSync(binding)) fail(`${binding} missing - better-sqlite3 was not unpacked from app.asar (asarUnpack)`);
+  const metaFile = path.join(root, 'node_modules', 'better-sqlite3', 'build', 'Release', '.forge-meta');
+  if (!fs.existsSync(metaFile)) {
+    fail(`${path.relative(root, metaFile)} missing - better-sqlite3 was never rebuilt for the Electron ABI (postinstall swallows install-app-deps failures); run \`npx electron-builder install-app-deps\``);
+  }
+  const meta = fs.readFileSync(metaFile, 'utf8').trim();
+  const expectedAbi = /--(\d+)$/.exec(meta)?.[1];
+  if (!expectedAbi) fail(`${path.relative(root, metaFile)} is ${JSON.stringify(meta)}, expected "<arch>--<NODE_MODULE_VERSION>" as written by @electron/rebuild`);
+  const abi = packedModuleAbi(binding);
+  console.log(`${path.relative(root, binding)}: NODE_MODULE_VERSION ${abi ?? 'none (N-API build?)'} in the register symbol (build tree .forge-meta ${JSON.stringify(meta)})`);
+  if (abi !== expectedAbi) {
+    fail(`packed better_sqlite3.node targets ABI ${abi ?? '?'}, the Electron rebuild recorded ${expectedAbi} - every user hits ERR_DLOPEN_FAILED otherwise. Re-run \`npx electron-builder install-app-deps\` and rebuild (dist:win:local's --config.npmRebuild=false skips it).`);
+  }
+
+  // 2. node-pty's win32 bindings are N-API loaders that pull in winpty.dll /
+  //    conpty.dll and spawn winpty-agent.exe / OpenConsole.exe next to
+  //    app.asar. electron-builder strips .dll/.exe from node_modules for every
+  //    NON-Windows target (app-builder-lib appFileCopier
+  //    getNodeModuleExcludedExts), so the linux/mac bundles legitimately lack
+  //    them and only a Windows artifact can prove they survived.
+  const prebuilds = path.join(modules, 'node-pty', 'prebuilds');
+  if (!fs.existsSync(prebuilds)) fail(`${prebuilds} missing - node-pty was not unpacked from app.asar`);
+  const winDirs = fs.readdirSync(prebuilds).filter((d) => d.startsWith('win32-'));
+  if (!winDirs.length) fail(`${prebuilds} has no win32-* directory - node-pty would find no binding on Windows (lib/utils.js loadNativeModule)`);
+  const needed = ['pty.node', 'conpty.node', 'conpty_console_list.node', 'winpty.dll', 'winpty-agent.exe',
+    path.join('conpty', 'conpty.dll'), path.join('conpty', 'OpenConsole.exe')];
+  for (const dir of winDirs) {
+    for (const rel of needed) {
+      const file = path.join(prebuilds, dir, rel);
+      const size = fs.existsSync(file) ? fs.statSync(file).size : 0;
+      if (size === 0) fail(`node-pty ${dir}/${rel} missing or empty in ${path.relative(root, unpackedDir)} - Windows PTY spawn fails at runtime`);
+    }
+    console.log(`node-pty ${dir}: ${needed.length} required files present`);
+  }
+}
 
 // --- PE layout -> .rsrc file offset + RVA delta ---
 if (buf.readUInt16LE(0) !== 0x5a4d) fail('not an MZ executable');

@@ -9,7 +9,9 @@ name: Ubuntu package
 #   sudo apt install ./FineVibe-<version>-linux-amd64.deb
 #
 # Tagged releases already publish the .deb via release.yml's build-linux job;
-# this workflow is for ad-hoc installable packages from any branch.
+# this workflow is for ad-hoc installable packages from any branch. Only these
+# two workflows cut installable artifacts, so an artifact-name or Depends change
+# has to be gated in both (row 107).
 
 on:
   workflow_dispatch:
@@ -52,11 +54,39 @@ jobs:
         run: npx electron-builder --linux deb --x64 --publish never
 
       - name: Verify package
+        # Row 107: second artifact producer, so it repeats the two
+        # release-blocking assertions of release.yml's build-linux job: the
+        # exact published deb name (the launcher docs and every install command
+        # name FineVibe-<version>-linux-amd64.deb) and a Depends that still
+        # carries the Electron runtime libraries. Row 63: a deb whose Depends
+        # went empty/truncated installs fine and dies on libnss3 at first
+        # launch, so the field itself has to be asserted, not just the contents.
         run: |
-          dpkg-deb --info out/*.deb
-          dpkg-deb --contents out/*.deb | grep 'node-pty\|better_sqlite3'
-          dpkg-deb --contents out/*.deb | grep 'usr/share/icons/hicolor'
-          dpkg-deb --contents out/*.deb | grep 'usr/share/applications/finevibe.desktop'
+          version=$(node -p "require('./package.json').version")
+          deb="out/FineVibe-${version}-linux-amd64.deb"
+          if [ ! -f "$deb" ]; then
+            echo "::error::$deb is missing - that is the name the docs install"
+            ls -1 out/
+            exit 1
+          fi
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" > deb-contents.txt
+          grep 'node-pty\|better_sqlite3' deb-contents.txt
+          grep usr/share/icons/hicolor deb-contents.txt
+          grep usr/share/applications/finevibe.desktop deb-contents.txt
+          depends=$(dpkg-deb -f "$deb" Depends || true)
+          echo "Depends: $depends"
+          if [ -z "$depends" ]; then
+            echo "::error::$deb declares no Depends at all"
+            exit 1
+          fi
+          case "$depends" in
+            *libnss3*) ;;
+            *)
+              echo "::error::Depends lacks libnss3: $depends"
+              exit 1
+              ;;
+          esac
 
       - name: Upload package
         uses: actions/upload-artifact@v4
