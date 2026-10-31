@@ -7,7 +7,7 @@ import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
 import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
 import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { isWin } from '../platform.js';
@@ -198,6 +198,9 @@ function activateShellInstance(instance: ShellTerminalInstance): void {
     containerEl.appendChild(instance.element);
     instance.terminal.open(instance.element);
     attachCopyOnSelect(instance.terminal);
+    // Row 60: same mouse contract as the session and remote panes — a plain
+    // left-drag selects locally even when a TUI in the shell grabs the mouse.
+    attachMouseForwardingGate(instance.terminal);
     collapseArmedTextareaOnContextMenu(instance.terminal);
     loadWebglWithFallback(instance.terminal);
   }

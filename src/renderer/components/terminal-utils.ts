@@ -411,6 +411,50 @@ export function collapseArmedTextareaOnContextMenu(terminal: Terminal): void {
   });
 }
 
+type XtermCore = {
+  _selectionService?: {
+    shouldForceSelection?: (e: MouseEvent) => boolean;
+  } & Record<string, unknown>;
+  coreMouseService?: {
+    triggerMouseEvent?: (e: { button: number; action: number; alt: boolean }) => boolean;
+    __finevibeMouseGate?: boolean;
+  } & Record<string, unknown>;
+};
+
+/**
+ * Plain left-drag selects locally even under a TUI that grabs the mouse
+ * (pi-bolt writes SGR 1000/1002/1003/1006; xterm forwards plain drags to the
+ * app, so no selection ever existed and Copy opened greyed). VS Code's
+ * mouseForwarding model: `shouldForceSelection` claims every plain left press
+ * so xterm's mousedown gate skips forwarding and runs its own click/double/
+ * triple select, and the matching left-button reports are swallowed at
+ * `triggerMouseEvent` so a stray up/move from the document-level listeners
+ * (bound after a forwarded right/middle down) can't leak to the app.
+ * Alt+left, right (2), middle (1), hover (3) and wheel (4) stay forwarded.
+ * ponytail: touches xterm internals (_core._selectionService.shouldForceSelection, _core.coreMouseService.triggerMouseEvent), re-verify on @xterm/xterm upgrades.
+ */
+export function attachMouseForwardingGate(terminal: Terminal): void {
+  // jsdom fakes and half-constructed terminals have no _core.
+  const core = (terminal as unknown as { _core?: XtermCore })._core;
+  const selectionService = core?._selectionService;
+  const mouseService = core?.coreMouseService;
+  if (!selectionService?.shouldForceSelection || !mouseService?.triggerMouseEvent) return;
+  if (mouseService.__finevibeMouseGate) return;
+
+  const originalForceSelection = selectionService.shouldForceSelection;
+  selectionService.shouldForceSelection = (e: MouseEvent) =>
+    e.button === 0 && !e.altKey ? true : originalForceSelection.call(selectionService, e);
+
+  const originalTrigger = mouseService.triggerMouseEvent;
+  // xterm action codes: UP 0, DOWN 1, MOVE 32 (wheel reuses 0/1 with button 4).
+  mouseService.triggerMouseEvent = (event) =>
+    event.button === 0 && !event.alt && (event.action === 0 || event.action === 1 || event.action === 32)
+      ? false
+      : originalTrigger.call(mouseService, event);
+
+  mouseService.__finevibeMouseGate = true;
+}
+
 /**
  * Attaches shared key event handling to a terminal:
  * - Cmd/Ctrl+F: bubbles up to document (prevents xterm from consuming it)

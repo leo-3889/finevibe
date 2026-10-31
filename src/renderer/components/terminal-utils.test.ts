@@ -50,7 +50,8 @@ vi.mock('@xterm/addon-webgl', () => ({
   },
 }));
 
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, copySelection, copyText, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath, _resetClipboardCopyStateForTesting } from './terminal-utils.js';
+import { Terminal } from '@xterm/xterm';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, copySelection, copyText, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath, _resetClipboardCopyStateForTesting } from './terminal-utils.js';
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
 // P3: clipboard writes are fire-and-forget `ipcRenderer.send` — void, no
@@ -1077,5 +1078,135 @@ describe('quoteShellPath', () => {
     mockPlatform.isWin = true;
     expect(quoteShellPath('C:\\a"b.txt')).toBeNull();
     expect(quoteShellPath('x"y & calc.exe')).toBeNull();
+  });
+});
+describe('attachMouseForwardingGate', () => {
+  function makeFakeTerminal() {
+    const forwarded: unknown[] = [];
+    const terminal = {
+      _core: {
+        coreMouseService: {
+          triggerMouseEvent(event: { button: number; action: number; alt: boolean }) {
+            forwarded.push(event);
+            return true;
+          },
+        },
+        _selectionService: {
+          // The real one is mac/options dependent; a shiftKey check is enough
+          // to prove the wrapper delegates rather than always forcing. The
+          // this-guard pins the .call() this-preservation contract: calling
+          // the original detached throws and fails the suite.
+          __originalMarker: true,
+          shouldForceSelection(this: { __originalMarker?: boolean }, e: MouseEvent) {
+            if (!('__originalMarker' in this)) throw new Error('wrapper lost this');
+            return e.shiftKey;
+          },
+        },
+      },
+    };
+    return { terminal: terminal as any, forwarded };
+  }
+
+  it('swallows plain left DOWN/UP/MOVE without reaching the original', () => {
+    const { terminal, forwarded } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const trigger = terminal._core.coreMouseService.triggerMouseEvent;
+    // xterm action codes: DOWN 1, UP 0, MOVE 32.
+    for (const action of [1, 0, 32]) {
+      expect(trigger({ button: 0, action, alt: false })).toBe(false);
+    }
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it('forwards wheel, right, middle, alt-left and hover to the original', () => {
+    const { terminal, forwarded } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const trigger = terminal._core.coreMouseService.triggerMouseEvent;
+    expect(trigger({ button: 4, action: 1, alt: false })).toBe(true); // wheel
+    expect(trigger({ button: 2, action: 1, alt: false })).toBe(true); // right
+    expect(trigger({ button: 1, action: 1, alt: false })).toBe(true); // middle
+    expect(trigger({ button: 0, action: 1, alt: true })).toBe(true);  // alt+left
+    expect(trigger({ button: 3, action: 32, alt: false })).toBe(true); // hover
+    expect(forwarded).toHaveLength(5);
+  });
+
+  it('forces the native selection only for a plain left press', () => {
+    const { terminal } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const force = terminal._core._selectionService.shouldForceSelection;
+    expect(force(new MouseEvent('mousedown', { button: 0 }))).toBe(true);
+    // Alt+left stays the app escape hatch: the original (shift-only) answer stands.
+    expect(force(new MouseEvent('mousedown', { button: 0, altKey: true }))).toBe(false);
+    expect(force(new MouseEvent('mousedown', { button: 0, altKey: true, shiftKey: true }))).toBe(true);
+    expect(force(new MouseEvent('mousedown', { button: 2 }))).toBe(false);
+  });
+
+  it('is idempotent: a second attach adds no second swallow layer', () => {
+    const { terminal, forwarded } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const trigger = terminal._core.coreMouseService.triggerMouseEvent;
+    const force = terminal._core._selectionService.shouldForceSelection;
+    attachMouseForwardingGate(terminal);
+    expect(terminal._core.coreMouseService.triggerMouseEvent).toBe(trigger);
+    expect(terminal._core._selectionService.shouldForceSelection).toBe(force);
+    expect(trigger({ button: 0, action: 1, alt: false })).toBe(false);
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it('is a no-op on a terminal without _core (jsdom fakes)', () => {
+    expect(() => attachMouseForwardingGate({} as any)).not.toThrow();
+  });
+
+  // Rows 60/69 upgrade belt: every fake above hand-builds the seam names, so an
+  // @xterm/xterm 6 -> 7 rename of _selectionService/coreMouseService keeps them
+  // green while the real helper silently no-ops on its missing-seam guard. A real
+  // mounted Terminal pins both the seam names and the behavior delta on the object
+  // production actually patches.
+  it('patches the real xterm seams after open()', () => {
+    // The file-level beforeEach stubs `window` to the bridge-only shape the fakes
+    // read; a real Terminal needs the jsdom window (it takes `document` off it).
+    const view = document.defaultView as any;
+    vi.stubGlobal('window', view);
+    // jsdom ships no matchMedia; xterm's CoreBrowserService reads it off the
+    // parent window for the DPR.
+    view.matchMedia = () => ({
+      matches: false, addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {},
+    });
+    const terminal = new Terminal();
+    try {
+      // _selectionService is constructed inside open() — attaching earlier is the
+      // documented no-op, which is why every call site attaches after open().
+      expect((terminal as any)._core?._selectionService).toBeUndefined();
+      attachMouseForwardingGate(terminal);
+
+      terminal.open(document.createElement('div'));
+      const core = (terminal as any)._core;
+      const mouse = core.coreMouseService;
+      // With no protocol active the original forwards nothing, so there would be
+      // no delta to pin: ANY is what a mouse-grabbing TUI (fzf --mouse, lazygit,
+      // btop, vim mouse=) puts the service into.
+      mouse.activeProtocol = 'ANY';
+
+      // Original contract: mac → altKey && macOptionClickForcesSelection, else →
+      // shiftKey. Both falsy for a plain press, so the drag goes to the TUI.
+      const plainLeft = new MouseEvent('mousedown', { button: 0 });
+      expect(core._selectionService.shouldForceSelection(plainLeft)).toBe(false);
+      expect(mouse.triggerMouseEvent({ button: 0, action: 1, alt: false, col: 0, row: 0 })).toBe(true);
+
+      attachMouseForwardingGate(terminal);
+
+      expect(core._selectionService.shouldForceSelection(plainLeft)).toBe(true);
+      expect(mouse.triggerMouseEvent({ button: 0, action: 1, alt: false, col: 0, row: 0 })).toBe(false);
+      // Wheel stays forwarded; Alt+left stays the app escape hatch (the wrapper
+      // delegates, and the original says no for a shift-less press on either OS).
+      expect(mouse.triggerMouseEvent({ button: 4, action: 1, alt: false, col: 0, row: 0 })).toBe(true);
+      expect(core._selectionService.shouldForceSelection(new MouseEvent('mousedown', { button: 0, altKey: true }))).toBe(false);
+      expect(mouse.__finevibeMouseGate).toBe(true);
+    } finally {
+      terminal.dispose();
+      delete view.matchMedia;
+      vi.unstubAllGlobals();
+    }
   });
 });

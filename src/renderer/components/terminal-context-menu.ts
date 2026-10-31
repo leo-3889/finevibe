@@ -1,6 +1,6 @@
 import type { Terminal } from '@xterm/xterm';
 import { isMac } from '../platform.js';
-import { copySelection, pasteIntoTerminal } from './terminal-utils.js';
+import { copyText, pasteIntoTerminal } from './terminal-utils.js';
 import { t } from '../i18n.js';
 
 let activeMenu: HTMLElement | null = null;
@@ -32,7 +32,15 @@ export function showTerminalContextMenu(
   x: number,
   y: number,
   terminal: Terminal,
-  writeToPty: (data: string) => void
+  writeToPty: (data: string) => void,
+  // Snapshot of the selection taken at right-mousedown by the pane wiring.
+  // A TUI that enables SGR mouse reporting (pi-bolt: 1000;1002;1006) makes
+  // xterm forward the right-mousedown as an escape-sequence report via
+  // coreService.triggerDataEvent(report, true), which fires onUserInput — and
+  // SelectionService clears the selection on every user input, BEFORE the
+  // contextmenu event. Without the snapshot the menu opens with Copy greyed
+  // out for a selection the user just made.
+  snapshotSelection?: string
 ): void {
   hideTerminalContextMenu();
 
@@ -41,16 +49,21 @@ export function showTerminalContextMenu(
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  const hasSelection = terminal.hasSelection();
+  // A live selection wins (right-click inside one keeps the current behavior,
+  // incl. macOS word-select); fall back to the mousedown snapshot for the
+  // report-forwarding clear above. Copy stays disabled when both are empty.
+  const selectionText = terminal.hasSelection() ? terminal.getSelection() : (snapshotSelection ?? '');
 
   const copyItem = makeItem(t('contextMenu.terminal.copy'), isMac ? '⇧⌘C' : 'Ctrl+Shift+C');
-  if (!hasSelection) copyItem.classList.add('disabled');
-  if (hasSelection) {
+  if (selectionText === '') {
+    copyItem.classList.add('disabled');
+  } else {
+    const text = selectionText;
     copyItem.addEventListener('click', (e) => {
       e.stopPropagation();
       hideTerminalContextMenu();
       terminal.focus();
-      copySelection(terminal);
+      copyText(text);
     });
   }
   menu.appendChild(copyItem);
