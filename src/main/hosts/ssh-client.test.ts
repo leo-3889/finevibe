@@ -3,11 +3,13 @@ import { EventEmitter } from 'events';
 import type { HostRecord } from '../../shared/types';
 import {
   MAX_CACHED_CONNECTIONS,
+  MAX_EXEC_OUTPUT_BYTES,
   cachedConnectionCount,
   closeConnection,
   connect,
   connectConfigFor,
   exec,
+  execCapped,
   fingerprintOf,
   setClientFactoryForTests,
   sftpListDir,
@@ -128,6 +130,8 @@ class FakeClient extends EventEmitter {
   fakeSftp = new FakeSftp();
   /** Subsystem-open hang (audit T2 #1): the sftp() callback never fires. */
   sftpHang = false;
+  /** stdout chunks for exec(); null = the default `out:<command>` echo. */
+  execChunks: Buffer[] | null = null;
   constructor(config: { host?: string; hostVerifier?: (key: Buffer) => boolean }) {
     super();
     setTimeout(() => {
@@ -154,7 +158,9 @@ class FakeClient extends EventEmitter {
     setImmediate(() => {
       cb(null, stream);
       setImmediate(() => {
-        stream.emit('data', Buffer.from(`out:${command}`));
+        for (const chunk of this.execChunks ?? [Buffer.from(`out:${command}`)]) {
+          stream.emit('data', chunk);
+        }
         stream.emit('close', 0);
       });
     });
@@ -289,6 +295,23 @@ describe('exec', () => {
     const out = await exec(base, 'echo hi');
     expect(out).toBe('out:echo hi');
     expect(made).toHaveLength(1);
+  });
+
+  it('reports no truncation below the cap', async () => {
+    expect(await execCapped(base, 'echo hi')).toEqual({ out: 'out:echo hi', truncated: false });
+  });
+
+  // Audit row 45: the lane was unbounded (a command echoing a huge file grew
+  // main's heap without limit) while enrollment.ts documented a cap.
+  it('caps stdout at MAX_EXEC_OUTPUT_BYTES and flags the truncation', async () => {
+    await connect(base);
+    made[0].execChunks = [Buffer.alloc(MAX_EXEC_OUTPUT_BYTES, 0x61), Buffer.alloc(4096, 0x62)];
+    const res = await execCapped(base, 'cat huge');
+    expect(res.truncated).toBe(true);
+    expect(res.out.length).toBe(MAX_EXEC_OUTPUT_BYTES);
+    expect(res.out).not.toContain('b');
+    // exec() keeps its string contract: the capped head, the flag dropped.
+    expect((await exec(base, 'cat huge')).length).toBe(MAX_EXEC_OUTPUT_BYTES);
   });
 });
 

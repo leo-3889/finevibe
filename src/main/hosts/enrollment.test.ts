@@ -4,6 +4,7 @@ import type { HostRecord } from '../../shared/types';
 // Scripted fake ssh-client: exec responses keyed by command substring.
 const execLog: string[] = [];
 let execScript: (command: string) => string;
+let execTruncated = false;
 let connectImpl: (record: HostRecord, verify?: (fp: string) => boolean) => Promise<{ fingerprint: string }>;
 
 vi.mock('./ssh-client', () => ({
@@ -15,6 +16,14 @@ vi.mock('./ssh-client', () => ({
     void record;
     execLog.push(command);
     return execScript(command);
+  }),
+  // Row 45: the unenroll rewrite reads authorized_keys through the
+  // truncation-aware seam, so the fake carries the flag too.
+  MAX_EXEC_OUTPUT_BYTES: 1024 * 1024,
+  execCapped: vi.fn(async (record: HostRecord, command: string) => {
+    void record;
+    execLog.push(command);
+    return { out: execScript(command), truncated: execTruncated };
   }),
 }));
 
@@ -88,6 +97,7 @@ beforeEach(() => {
   updates.length = 0;
   statuses.length = 0;
   execScript = script({});
+  execTruncated = false;
   connectImpl = async () => ({ fingerprint: PIN });
   plane.readProviderFile.mockReset().mockResolvedValue(null);
   plane.writeProviderFile.mockReset().mockResolvedValue(undefined);
@@ -155,7 +165,7 @@ describe('enrollHost', () => {
     expect(res.ok).toBe(true);
     expect(res.steps.map((s) => s.step)).toEqual(['connect', 'env', 'key-deploy', 'prereqs', 'host-hooks', 'dirs']);
     expect(res.steps.every((s) => s.ok)).toBe(true);
-    expect(events).toEqual(['probing', 'enrolled']);
+    expect(events).toEqual(['probing', 'auth-ok', 'enrolled']);
     // Deploy appended exactly one marker block for this id.
     const deploy = execLog.find((c) => c.includes('authorized_keys && chmod'))!;
     expect(deploy).toContain(`# finevibe:${record.id} begin`);
@@ -254,7 +264,7 @@ describe('enrollHost', () => {
     expect(res.steps.some((s) => s.step === 'dirs')).toBe(true);
     // Success/partial paths persist via updateHost + emit (statuses[] is
     // only filled by the fail-path setEnrollmentStatus).
-    expect(events).toEqual(['probing', 'partial']);
+    expect(events).toEqual(['probing', 'auth-ok', 'partial']);
     expect(updates.some((u) => u.enrollmentStatus === 'partial')).toBe(true);
   });
 
@@ -273,6 +283,25 @@ describe('enrollHost', () => {
     const res = await enrollHost({ ...record, managedKey: false, authKind: 'key', privateKeyPath: '/x' }, () => {});
     expect(res.steps.some((s) => s.step === 'key-deploy')).toBe(false);
     expect(res.ok).toBe(true);
+  });
+
+  // Row 46: `probing` was emitted but never persisted, and `auth-ok` had no
+  // producer at all — a wizard closed after a good connect left `draft`.
+  it('persists the probing and auth-ok rungs, in order, before the final status', async () => {
+    execScript = script(fullScript);
+    await enrollHost(record, () => {});
+    expect(statuses.map((s) => [s[0], s[1]])).toEqual([
+      [record.id, 'probing'],
+      [record.id, 'auth-ok'],
+    ]);
+  });
+
+  it('never reaches auth-ok when the connect fails', async () => {
+    connectImpl = async () => {
+      throw new Error('All configured authentication methods failed');
+    };
+    await enrollHost(record, () => {});
+    expect(statuses.map((s) => s[1])).toEqual(['probing', 'failed']);
   });
 });
 
@@ -296,6 +325,19 @@ describe('unenrollHost', () => {
     execScript = script({ 'cat ~/.ssh/authorized_keys': 'ssh-rsa AAAAforeign\n' });
     const res = await unenrollHost(record);
     expect(res).toEqual({ ok: true, detail: 'no marker block present' });
+    expect(execLog.some((c) => c.includes('base64 -d'))).toBe(false);
+  });
+
+  // Row 33 × row 45: rewriting from an output the exec cap clipped would
+  // delete every key past the cap. Refuse, and leave the file alone.
+  it('refuses to rewrite a truncated authorized_keys', async () => {
+    execScript = script({
+      'cat ~/.ssh/authorized_keys': `# finevibe:${record.id} begin\nssh-ed25519 AAAAPUB finevibe\n# finevibe:${record.id} end\n`,
+    });
+    execTruncated = true;
+    const res = await unenrollHost(record);
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/truncated/);
     expect(execLog.some((c) => c.includes('base64 -d'))).toBe(false);
   });
 

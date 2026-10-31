@@ -23,6 +23,16 @@ export class HostValidationError extends Error {
   }
 }
 
+/**
+ * Audit row 44: the HostRecord fields a cached ssh2 Client was handshaked
+ * against — the endpoint plus what authenticates it. Changing any of them
+ * means the cached connection talks to something else than the record now
+ * describes, so the update path must `closeConnection` the old entry. A
+ * pin-only rotation is already covered inside ssh-client (the `verifiedPin`
+ * reuse gate); this covers host / port / user / key swaps.
+ */
+const CONNECTION_IDENTITY_FIELDS = ['host', 'port', 'user', 'authKind', 'managedKey', 'privateKeyPath'] as const;
+
 /** List all hosts (normalized copy — the store cache is the source). */
 export function listHosts(): HostRecord[] {
   return [...(loadState().hosts ?? [])];
@@ -68,16 +78,22 @@ export function createHost(draft: unknown): HostRecord {
 
 /**
  * Update mutable fields of an existing host. `id` is immutable; status and
- * probe fields update in place. Validates the merged record before saving.
+ * probe fields update in place. Validates the merged record before saving,
+ * then evicts the live ssh connection when an identity field actually changed
+ * (audit row 44) — main-internal callers (enrollment status, prereq refresh)
+ * never touch those fields, so they keep their connection warm.
  */
 export function updateHost(hostId: string, patch: Partial<Omit<HostRecord, 'id'>>): HostRecord {
   const state = loadState();
   const idx = state.hosts.findIndex((h) => h.id === hostId);
   if (idx === -1) throw new HostValidationError(`unknown host id ${hostId}`);
-  const merged = validateHostRecordShape({ ...state.hosts[idx], ...patch, id: hostId });
+  const previous = state.hosts[idx];
+  const merged = validateHostRecordShape({ ...previous, ...patch, id: hostId });
   if (!merged) throw new HostValidationError('patch produced an invalid record');
   state.hosts[idx] = merged;
   saveState(state);
+  // Persist first: a slow `client.end()` must never strand the write.
+  if (CONNECTION_IDENTITY_FIELDS.some((field) => previous[field] !== merged[field])) closeConnection(hostId);
   return merged;
 }
 

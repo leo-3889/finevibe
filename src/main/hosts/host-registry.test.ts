@@ -12,6 +12,9 @@ vi.mock('./secrets', () => ({ deleteHostSecret: vi.fn() }));
 vi.mock('./ssh-client', () => ({ closeConnection: vi.fn() }));
 
 import { HostValidationError, createHost, deleteHost, getHost, listHosts, setEnrollmentStatus, updateHost } from './host-registry';
+import { closeConnection } from './ssh-client';
+
+const clearCloseConnection = () => (vi.mocked(closeConnection)).mockClear();
 
 const DRAFT = {
   name: 'demo-host',
@@ -26,6 +29,7 @@ const DRAFT = {
 beforeEach(() => {
   state.hosts = [];
   saveState.mockClear();
+  clearCloseConnection();
 });
 
 describe('createHost', () => {
@@ -97,6 +101,32 @@ describe('updateHost / setEnrollmentStatus', () => {
     expect(() => updateHost('missing', { name: 'x' })).toThrow(/unknown host/);
     const rec = createHost(DRAFT);
     expect(() => updateHost(rec.id, { port: 0 })).toThrow(HostValidationError);
+  });
+});
+
+// Audit row 44: hosts:update never evicted the live ssh connection, so a
+// host/port/user/key swap kept every lane talking to the previous machine.
+describe('updateHost connection eviction', () => {
+  it('closes the cached connection when an identity field changes', () => {
+    const rec = createHost(DRAFT);
+    for (const patch of [{ host: '10.0.0.9' }, { port: 2222 }, { user: 'ops' }, { authKind: 'key', privateKeyPath: '/home/dev/.ssh/id_ed25519' }]) {
+      clearCloseConnection();
+      updateHost(rec.id, patch as Parameters<typeof updateHost>[1]);
+      expect(closeConnection).toHaveBeenCalledWith(rec.id);
+    }
+  });
+
+  it('does not evict when an identity field is re-sent unchanged', () => {
+    const rec = createHost(DRAFT);
+    updateHost(rec.id, { host: rec.host, port: rec.port, user: rec.user });
+    expect(closeConnection).not.toHaveBeenCalled();
+  });
+
+  it('keeps the connection warm for the main-owned status/probe writes', () => {
+    const rec = createHost(DRAFT);
+    updateHost(rec.id, { name: 'renamed', defaultFolder: '~/work', prerequisites: { claude: { ok: true } } });
+    setEnrollmentStatus(rec.id, 'enrolled');
+    expect(closeConnection).not.toHaveBeenCalled();
   });
 });
 

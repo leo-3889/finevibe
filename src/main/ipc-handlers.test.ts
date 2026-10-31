@@ -2232,6 +2232,21 @@ describe('ipcMain.on bodies are non-fatal', () => {
       warn.mockRestore();
     }
   });
+
+  // Audit row 43: `log:write` was the one `on` body registered without the
+  // safeOn wrapper — a dying console/log-file sink would have taken main down
+  // while it was only forwarding a renderer log line.
+  it('swallows a throw from the renderer log sink', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => { throw new Error('log sink died'); });
+    try {
+      expect(() => handlers.get('log:write')!({}, 'log', 'hello')).not.toThrow();
+      expect(warn).toHaveBeenCalledWith('log:write failed:', expect.any(Error));
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
 });
 
 // P1-14 / P2-127: the per-session banner is computed from the profiled

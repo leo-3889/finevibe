@@ -18,6 +18,15 @@ import { getHostSecret } from './secrets';
 /** Cap for the per-host connection cache (module-map-governance allowlist). */
 export const MAX_CACHED_CONNECTIONS = 32;
 
+/**
+ * Ceiling on one exec()'s stdout (audit row 45 — the lane was unbounded, so
+ * a command echoing a huge file could balloon main's heap). Past the cap the
+ * rest of the stream is drained and dropped; {@link execCapped} reports the
+ * truncation so a read-modify-write caller (unenroll's authorized_keys
+ * rewrite) can refuse instead of persisting a clipped copy.
+ */
+export const MAX_EXEC_OUTPUT_BYTES = 1024 * 1024;
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
 /** Sftp ops ride interactive lanes (config reads, sidecar polls): keep them
@@ -192,12 +201,20 @@ export function fingerprintOf(serverKey: Buffer): string {
   return `SHA256:${createHash('sha256').update(serverKey).digest('base64')}`;
 }
 
-/** Run `command` on `record`'s host; resolves with stdout. Closes the channel. */
-export function exec(record: HostRecord, command: string, opts?: { timeoutMs?: number }): Promise<string> {
+/**
+ * Run `command` on `record`'s host and resolve stdout plus the truncation
+ * flag. The channel always drains to close (the exit code decides resolve vs
+ * reject); only the stored bytes are capped.
+ */
+export function execCapped(
+  record: HostRecord,
+  command: string,
+  opts?: { timeoutMs?: number },
+): Promise<{ out: string; truncated: boolean }> {
   const timeout = opts?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
   return connect(record).then(
     ({ client }) =>
-      new Promise<string>((resolve, reject) => {
+      new Promise<{ out: string; truncated: boolean }>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`ssh exec timeout: ${command}`)), timeout);
         client.exec(command, (err, stream) => {
           if (err) {
@@ -205,13 +222,21 @@ export function exec(record: HostRecord, command: string, opts?: { timeoutMs?: n
             reject(err);
             return;
           }
-          let out = '';
+          const chunks: Buffer[] = [];
+          let bytes = 0;
+          let truncated = false;
           stream.on('data', (chunk: Buffer) => {
-            out += chunk.toString('utf8');
+            if (bytes >= MAX_EXEC_OUTPUT_BYTES) {
+              truncated = true;
+              return;
+            }
+            chunks.push(chunk);
+            bytes += chunk.length;
+            if (bytes > MAX_EXEC_OUTPUT_BYTES) truncated = true;
           });
           stream.on('close', (code: number | null) => {
             clearTimeout(timer);
-            if (code === 0) resolve(out);
+            if (code === 0) resolve({ out: Buffer.concat(chunks).subarray(0, MAX_EXEC_OUTPUT_BYTES).toString('utf8'), truncated });
             else reject(new Error(`ssh exec exit ${code}: ${command.slice(0, 80)}`));
           });
           stream.on('error', (e: Error) => {
@@ -221,6 +246,13 @@ export function exec(record: HostRecord, command: string, opts?: { timeoutMs?: n
         });
       }),
   );
+}
+
+/** Run `command` and resolve stdout, capped at {@link MAX_EXEC_OUTPUT_BYTES}.
+ * Callers whose output is re-persisted (read-modify-write) must use
+ * {@link execCapped} and honor `truncated`. */
+export function exec(record: HostRecord, command: string, opts?: { timeoutMs?: number }): Promise<string> {
+  return execCapped(record, command, opts).then((r) => r.out);
 }
 
 // --- sftp lane (per-host providers plan §3: the file plane) ---

@@ -1561,11 +1561,14 @@ export function registerIpcHandlers(): void {
   // blocks the renderer, and the renderer's own per-minute budget
   // (src/renderer/log.ts) plus installConsoleThrottle bound the volume.
   const RENDERER_LOG_LEVELS = new Set(['log', 'info', 'warn', 'error']);
-  ipcMain.on('log:write', (_event, level: unknown, message: unknown) => {
+  // P2-108 on-body contract (`safeOn`): a throw here — a console patched out,
+  // a log-file sink that died — must not take main down with it. There is no
+  // syncFallback: `log:write` is a send, the renderer never waits on it.
+  ipcMain.on('log:write', safeOn('log:write', (_event, level: unknown, message: unknown) => {
     if (typeof level !== 'string' || !RENDERER_LOG_LEVELS.has(level)) return;
     if (typeof message !== 'string') return;
     console[level as 'log' | 'info' | 'warn' | 'error'](`[renderer] ${message.slice(0, 2000)}`);
-  });
+  }));
 
 
   // Opt-in clipboard latency probes for the P0 paste bench. Off is the
