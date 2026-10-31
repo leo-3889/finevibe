@@ -31,7 +31,12 @@ jobs:
         run: npm ci
 
       - name: Build
+        # Row 80 pulled forward to every push: `npm run icons` regenerates the
+        # tracked build/ masters from assets/icon-source.png, so diffing them
+        # right after fails the push that left the committed bytes stale.
+        # release.yml has the same check, but it only fires at release time.
         run: npm run build && npm run icons
+          && git diff --exit-code -- build/
 
       - name: Typecheck
         run: npm run typecheck

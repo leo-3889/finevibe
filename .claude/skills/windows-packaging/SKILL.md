@@ -17,11 +17,22 @@ npm run dist:win:local
 # = build && icons
 #   → electron-builder --win dir --x64 --publish never \
 #       --config.npmRebuild=false --config.win.signAndEditExecutable=false
+#   → node scripts/verify-win-exe.mjs out/win-unpacked   (npm run win:verify:native)
+#       packed better_sqlite3.node must carry the ABI @electron/rebuild recorded in
+#       node_modules/better-sqlite3/build/Release/.forge-meta, plus node-pty's win32 prebuilds
 #   → node scripts/edit-win-exe.mjs     (stamp icon + version resources via the rcedit npm pkg)
+#   → node scripts/verify-win-exe.mjs   (npm run win:verify: the stamped exe's icon + version resources)
 #   → electron-builder --win nsis zip --prepackaged out/win-unpacked --x64 \
 #       --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false
+#   → npm run win:verify:setup, then out/win-unpacked is deleted
 # -> out/FineVibe-Setup-<version>.exe (+ .exe.blockmap + latest.yml) and the win zip
 ```
+
+The native check is fail-closed on purpose: `--config.npmRebuild=false` (blocker 1) skips
+the rebuild and `postinstall` swallows `install-app-deps` failures (blocker 3), so a
+Node-ABI `better_sqlite3.node` used to reach a Setup.exe with every other gate green. If
+it says `.forge-meta` is missing, run `npx electron-builder install-app-deps` and rebuild
+the dir phase — do not delete the check.
 
 **Scope: `win.target` is `[nsis, portable, zip]`, and `dist:win:local` builds `nsis` +
 `zip` only.** The portable exe (`FineVibe-<version>.exe`, `build.portable.artifactName`)
@@ -127,11 +138,18 @@ file, `9d7d0987`). The checks are one-liners; run them, then quote the result.
   to the Windows job, not to this skill's local flow (which signs nothing, by design).
 - Keep the `zip` win target: `bin/finevibe.js` hardcodes the asset name
   `FineVibe-<version>-win-<arch>.zip` (`:38`); npm installs break without it.
-- **`FINEVIBE_RELEASE_REPO` is not set anywhere in `.github/` today** — and both feed
-  readers refuse a built-in default (`src/main/auto-updater.ts:31-40` disables
-  auto-update with a warning; `bin/finevibe.js:22-31,480-482` refuses to download).
-  A release cut from this workflow therefore self-updates nothing. Verify:
-  `grep -rn FINEVIBE_RELEASE_REPO .github/` (zero hits = blocker is live).
+- **Packaged auto-update needs no CI environment.** electron-builder bakes the feed into
+  `resources/app-update.yml` from `build.publish`, and `src/main/auto-updater.ts` runs
+  against that file when `FINEVIBE_RELEASE_REPO` is unset — failing closed if it names a
+  repo other than `FORK_RELEASE_REPO`. `FINEVIBE_RELEASE_REPO` is only an OVERRIDE (a
+  malformed value disables auto-update rather than falling back to the baked feed), so
+  `grep -rn FINEVIBE_RELEASE_REPO .github/` returning zero hits is the expected state, not
+  a blocker — it was read as one while `initAutoUpdater` still required the variable.
+  The npm launcher still has no baked feed and refuses to download without it:
+  `grep -n FINEVIBE_RELEASE_REPO bin/finevibe.js`. A portable `.exe` never self-updates
+  (`PORTABLE_EXECUTABLE_DIR` gate), and the deb install is excluded too (linux feed ships
+  the AppImage only); the About pane reports those gates as the reason instead of firing
+  an `update:error` per manual click.
 - Cut a real version: `release.yml` `workflow_dispatch` mints version + changelog + tag;
   a `-dev` suffix becomes `~dev` in deb metadata and is a prerelease everywhere else.
 - CI builds on `windows-2022`, pinned deliberately: the `windows-latest` (2025) image

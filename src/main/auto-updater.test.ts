@@ -94,9 +94,55 @@ describe('auto-updater', () => {
     expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
   });
 
-  it('checkForUpdates delegates to autoUpdater', () => {
-    checkForUpdates();
+  it('checkForUpdates delegates to autoUpdater once init enabled the updater', () => {
+    initAutoUpdater();
+    expect(checkForUpdates()).toEqual({ checked: true });
     expect(autoUpdater.checkForUpdates).toHaveBeenCalled();
+  });
+
+  // Rows 57/64/65 (manual bypass): the About section renders its "Check for
+  // updates" button unconditionally, so a click on a gated install used to hit
+  // autoUpdater directly — one update:error per click on a deb (the linux feed
+  // ships the AppImage only) and an NSIS download over the portable layout.
+  it('manual check reports the deb gate and never calls autoUpdater', () => {
+    delete process.env.FINEVIBE_RELEASE_REPO;
+    useResourcesDir({ 'app-update.yml': BAKED_FEED, 'package-type': 'deb' });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      initAutoUpdater();
+      expect(checkForUpdates()).toEqual({ disabled: expect.stringContaining('deb install') });
+      vi.advanceTimersByTime(10_000);
+      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('manual check reports the portable gate and never calls autoUpdater', () => {
+    process.env.PORTABLE_EXECUTABLE_DIR = 'C:\\apps';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      initAutoUpdater();
+      expect(checkForUpdates()).toEqual({ disabled: expect.stringContaining('portable') });
+      vi.advanceTimersByTime(10_000);
+      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      delete process.env.PORTABLE_EXECUTABLE_DIR;
+    }
+  });
+
+  it('manual check reports a disabled feed decision instead of checking', () => {
+    delete process.env.FINEVIBE_RELEASE_REPO;
+    useResourcesDir({});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      initAutoUpdater();
+      expect(checkForUpdates()).toEqual({ disabled: expect.stringContaining('<unreadable>') });
+      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('quitAndInstall delegates to autoUpdater', () => {
@@ -150,10 +196,10 @@ describe('auto-updater', () => {
     }
   });
 
-  // Row 64: a packaged build has no user env to lean on (on mac the launcher
-  // runs `open --args`, which drops the caller environment), so with the env
-  // unset the updater must run against the baked fork feed — and must NOT call
-  // setFeedURL, which would replace the file electron-updater loads itself.
+  // Row 64: a packaged build launched from Finder/Dock has no environment to
+  // lean on at all, so with the env unset the updater must run against the baked
+  // fork feed — and must NOT call setFeedURL, which would replace the file
+  // electron-updater loads itself.
   it('runs the updater against the baked app-update.yml feed when FINEVIBE_RELEASE_REPO is unset', () => {
     delete process.env.FINEVIBE_RELEASE_REPO;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

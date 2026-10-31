@@ -45,7 +45,23 @@ export function createAboutSection(): SectionController {
       updateBtn.addEventListener('click', () => {
         updateBtn.disabled = true;
         updateStatus.textContent = t('about.updateChecking');
-        window.finevibe.update.checkNow().then(() => {
+        window.finevibe.update.checkNow().then((result) => {
+          // Rows 57/64/65: main gates auto-update per install (deb, portable,
+          // foreign/unreadable feed, malformed override) and reports the gate
+          // on this channel, so the pane shows the reason instead of claiming
+          // "Update available"/"Update failed" for a check that never ran.
+          // (window.finevibe is declared Promise<void> in renderer types.ts;
+          // invoke passes whatever the handler returns.)
+          // SAFETY: `update:checkNow` is `ipcMain.handle(..., () => checkForUpdates())`,
+          // so invoke resolves to auto-updater's UpdateCheckResult (or undefined
+          // from an older main); the renderer bridge type in types.ts still says
+          // Promise<void>, which is what the assertion below papers over.
+          const disabled = (result as unknown as { disabled?: string } | undefined)?.disabled;
+          if (disabled) {
+            updateStatus.textContent = disabled;
+            updateBtn.disabled = false;
+            return;
+          }
           // Every terminal branch unregisters the whole listener pair — a
           // pair left behind makes the next `update:available` event run
           // stale callbacks from this, already-finished check.

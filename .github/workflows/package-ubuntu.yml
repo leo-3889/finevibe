@@ -62,8 +62,17 @@ jobs:
         # went empty/truncated installs fine and dies on libnss3 at first
         # launch, so the field itself has to be asserted, not just the contents.
         run: |
-          version=$(node -p "require('./package.json').version")
-          deb="out/FineVibe-${version}-linux-amd64.deb"
+          # The name comes from build.linux.artifactName, not a second copy of
+          # the spelling: electron-builder expands ${arch} per target extension
+          # (builder-util getArtifactArchName), so the deb is amd64 while the
+          # AppImage leg of the same template reads x86_64.
+          deb="out/$(node -p '
+            const p = require("./package.json");
+            p.build.linux.artifactName
+              .replace(/\$\{version\}/g, p.version)
+              .replace(/\$\{arch\}/g, "amd64")
+              .replace(/\$\{ext\}/g, "deb");
+          ')"
           if [ ! -f "$deb" ]; then
             echo "::error::$deb is missing - that is the name the docs install"
             ls -1 out/

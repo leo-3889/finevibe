@@ -15,8 +15,30 @@ function sendToRenderer(channel: string, payload: Record<string, unknown>): void
   }
 }
 
-export function checkForUpdates(): void {
+// Rows 57/64/65 (manual bypass): initAutoUpdater makes the gate decision once
+// at startup, but the About section renders its "Check for updates" button
+// unconditionally and calls checkForUpdates() directly. Without this state a
+// manual click on a deb install fired one update:error per click (the linux
+// feed ships the AppImage only) and on a portable install started an NSIS
+// download that would install over the portable layout. null = enabled; a
+// string is the truthful reason the pane shows instead of "Update
+// available"/"Update failed".
+let disabledReason: string | null = null;
+
+export type UpdateCheckResult = { checked: true } | { disabled: string };
+
+export function checkForUpdates(): UpdateCheckResult {
+  if (disabledReason) return { disabled: disabledReason };
   autoUpdater.checkForUpdates().catch(() => {});
+  return { checked: true };
+}
+
+// Records why the updater is off (reachable from checkForUpdates) and returns
+// the init disposer.
+function disableAutoUpdater(reason: string, warn = false): () => void {
+  disabledReason = reason;
+  (warn ? console.warn : console.log)(`[auto-updater] ${reason}`);
+  return () => {};
 }
 
 export function quitAndInstall(): void {
@@ -37,8 +59,9 @@ export function quitAndInstall(): void {
 // (AppUpdater.loadUpdateConfig -> app.appUpdateConfigPath), so the packaged
 // path simply never calls setFeedURL. FINEVIBE_RELEASE_REPO only OVERRIDES it:
 // requiring that env var (the old behaviour) left every packaged build without
-// an updater, and on mac the launcher spawns through `open --args`
-// (bin/finevibe.js), which drops the caller's environment entirely.
+// an updater, which matters because a Finder/Dock launch carries no shell
+// environment at all (the launcher execs the app bundle directly —
+// bin/finevibe.js — so a launch from a terminal still carries the override).
 // The npm launcher has no baked feed and still requires the env var.
 const RELEASE_REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
@@ -88,12 +111,10 @@ export function initAutoUpdater(): () => void {
   // is set by the portable bootstrap, so its presence identifies this run;
   // portable installs update via the launcher/npm package path instead.
   if (process.env.PORTABLE_EXECUTABLE_DIR) {
-    console.log(
-      '[auto-updater] portable build (PORTABLE_EXECUTABLE_DIR is set) — skipping ' +
-      'auto-update; electron-updater cannot update a portable install. Update ' +
-      'through the npm launcher (npx finevibe) instead.',
+    return disableAutoUpdater(
+      'portable build (PORTABLE_EXECUTABLE_DIR is set): electron-updater cannot ' +
+      'update a portable install — update through the npm launcher (npx finevibe) instead.',
     );
-    return () => {};
   }
  
   // Row 57/65 posture: the linux channel file is ONE installer
@@ -105,22 +126,21 @@ export function initAutoUpdater(): () => void {
   // finds no .deb entry and errors on every check. Deb installs update
   // through apt (docs/packaging.md, "Update policy").
   if (readPackagedResource('package-type')?.trim() === 'deb') {
-    console.log(
-      '[auto-updater] deb install (resources/package-type is "deb") — skipping ' +
-      'auto-update; the linux release feed ships the AppImage only. Update with ' +
+    return disableAutoUpdater(
+      'deb install (resources/package-type is "deb"): the linux release feed ' +
+      'ships the AppImage only — update with ' +
       '`sudo apt install ./FineVibe-<version>-linux-amd64.deb` instead.',
     );
-    return () => {};
   }
 
   const overrideRepo = parseReleaseRepo(process.env.FINEVIBE_RELEASE_REPO);
   if (!overrideRepo && process.env.FINEVIBE_RELEASE_REPO?.trim()) {
-    console.warn(
-      `[auto-updater] FINEVIBE_RELEASE_REPO=${process.env.FINEVIBE_RELEASE_REPO} ` +
+    return disableAutoUpdater(
+      `FINEVIBE_RELEASE_REPO=${process.env.FINEVIBE_RELEASE_REPO} ` +
       'is not a valid "owner/repo" — auto-update disabled (a malformed override is ' +
       'never ignored in favour of the baked feed).',
+      true,
     );
-    return () => {};
   }
 
   if (overrideRepo) {
@@ -129,16 +149,17 @@ export function initAutoUpdater(): () => void {
   } else {
     const bakedRepo = readBakedFeedRepo();
     if (bakedRepo !== FORK_RELEASE_REPO) {
-      console.warn(
-        `[auto-updater] resources/app-update.yml feed is ${bakedRepo ?? '<unreadable>'}, ` +
+      return disableAutoUpdater(
+        `resources/app-update.yml feed is ${bakedRepo ?? '<unreadable>'}, ` +
         `expected ${FORK_RELEASE_REPO} — auto-update disabled (a fork build never ` +
         'self-updates from a foreign release feed).',
+        true,
       );
-      return () => {};
     }
     // No setFeedURL call: electron-updater loads that same file itself.
   }
 
+  disabledReason = null;
    autoUpdater.autoDownload = true;
    autoUpdater.autoInstallOnAppQuit = true;
  

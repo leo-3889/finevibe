@@ -2,12 +2,16 @@
   "extends": "./tsconfig.main.json",
   "compilerOptions": {
     "noEmit": true,
+    // scripts/*.test.ts (the verify-win-exe guard tests) sit outside src/, so
+    // the inherited rootDir would refuse them. No emit here, so widening is
+    // only a validity relaxation.
+    "rootDir": ".",
     "declaration": false,
     "composite": false,
     "module": "esnext",
     "moduleResolution": "bundler",
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/main/**/*.ts", "src/shared/**/*.ts"],
+  "include": ["src/main/**/*.ts", "src/shared/**/*.ts", "scripts/*.test.ts"],
   "exclude": []
 }

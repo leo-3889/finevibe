@@ -21,8 +21,10 @@ const APP_PATH = appPathForPlatform();
 // P1-7 (audit plan §1(iv), FORK identity): releases come ONLY from the fork
 // repo named by FINEVIBE_RELEASE_REPO. There is no built-in default — an
 // unset/malformed value means no feed, and a download then fails closed
-// rather than silently pulling upstream bytes into a fork install (the same
-// precedence the packaged auto-updater applies).
+// rather than silently pulling upstream bytes into a fork install. The
+// packaged auto-updater differs: it defaults to the feed electron-builder
+// bakes into resources/app-update.yml and treats this variable as an
+// override, while the launcher ships no such file, so here it is mandatory.
 function parseReleaseRepo(value) {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : null;
@@ -43,7 +45,7 @@ function getAssetName() {
     if (process.arch === 'arm64') {
       throw new Error(
         `No Windows arm64 release asset is published: FineVibe ships win-x64 only (which runs under Windows on ARM emulation). ` +
-        `Install the x64 build from ${RELEASES_URL ?? 'the GitHub releases (FINEVIBE_RELEASE_REPO)'}, or build from source — see audit row 86 for the arm64 build status.`,
+        `Install the x64 build from ${RELEASES_URL ?? 'the GitHub releases (FINEVIBE_RELEASE_REPO)'}, or build from source.`,
       );
     }
     return `FineVibe-${version}-win-x64.zip`;

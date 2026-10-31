@@ -41,7 +41,14 @@ Beyond the packaged installers, the same asset tree feeds:
   it accepts both the PE32+ app exe (4-part numeric `FileVersion` +
   `OriginalFilename=FineVibe.exe`) and the 32-bit PE32 NSIS Setup stub
   (its `FileVersion` must carry the app version core from
-  `package.json`).
+  `package.json`). `npm run win:verify:native` runs the same script against
+  the `out/win-unpacked` directory and audits the packed native modules
+  instead (row 74): the packed `better_sqlite3.node` register symbol must
+  carry the `NODE_MODULE_VERSION` that `@electron/rebuild` recorded in
+  `node_modules/better-sqlite3/build/Release/.forge-meta`, and node-pty's
+  `win32-*` prebuilds must be intact. Without it the local chain ships a
+  Node-ABI binding green — `--config.npmRebuild=false` skips the rebuild and
+  `postinstall` swallows `install-app-deps` failures.
 - **CI guard** — `release.yml`'s `build-windows` job runs the
   "Verify Windows exe icon + version resources" step
   (`.github/workflows/release.yml:357`): it renders the built exe's
@@ -166,9 +173,9 @@ deletes `out/win-unpacked` automatically after the nsis+zip legs.
 artifact tree (see [Build output
 directories](#build-output-directories)). `npm run dist:win:local` produces
 the standalone `out/FineVibe-Setup-<version>.exe` installer as one gated
-chain: dir build → `win:stamp` → `win:verify` → nsis+zip repack from
-`out/win-unpacked` → `win:verify:setup`, so a stamp/verify failure aborts
-before anything ships. `npm run clean` removes `dist/` and `out/`; an
+chain: dir build → `win:verify:native` → `win:stamp` → `win:verify` →
+nsis+zip repack from `out/win-unpacked` → `win:verify:setup`, so a native-ABI,
+stamp or identity failure aborts before anything ships. `npm run clean` removes `dist/` and `out/`; an
 unbuilt tree then fails fast — the `prestart`/`predev` gate
 (`scripts/require-built.js`) lists the missing artifacts before Electron
 starts, and the boot guard in `src/main/main.ts`
@@ -201,8 +208,9 @@ them ships with the repository's own metadata:
   packaged default — `AppUpdater.loadUpdateConfig` reads it when no feed URL
   is set — so a packaged build self-updates with zero user environment. The
   old behaviour (requiring `FINEVIBE_RELEASE_REPO`) left every packaged build
-  without an updater, and on macOS the launcher spawns through
-  `open --args`, which drops the caller's environment entirely. Set,
+  without an updater, which matters because a Finder/Dock launch carries no
+  shell environment at all; `bin/finevibe.js` now execs the app bundle
+  directly, so a launch from a terminal still carries the override. Set,
   `FINEVIBE_RELEASE_REPO` OVERRIDES the baked feed; a value that is not
   `owner/repo` disables auto-update instead of being silently ignored.
 - **npm launcher (`bin/finevibe.js`)** has no baked feed: `FINEVIBE_RELEASE_REPO`
@@ -213,6 +221,14 @@ baked feed against its fork constant (`FORK_RELEASE_REPO`, pinned to
 `build.publish` by `src/main/auto-updater.test.ts`) and disables itself with a
 warning when they differ, so foreign `resources/` bytes never feed a fork
 install.
+
+Those gates also cover the manual path. The About section always renders its
+"Check for updates" button, so `checkForUpdates()` reads the state
+`initAutoUpdater` decided at startup: when the updater is off (deb install,
+portable `.exe`, foreign or unreadable baked feed, malformed override) it
+returns `{ disabled: <reason> }` without touching `autoUpdater`, the
+`update:checkNow` channel carries that value, and the pane shows the reason
+instead of a false "Update available"/"Update failed".
 
 Per target:
 
