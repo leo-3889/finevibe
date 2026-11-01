@@ -39,9 +39,9 @@ This determines every gotcha that follows.
 esbuild only has the `.ts` loader configured. **It will not bundle any CSS the package ships.** If the library needs a stylesheet to work (the way `gridstack` and `@xterm/xterm` do):
 
 1. Add a copy step in `scripts/copy-assets.js` — `copyFile(node_modules/<pkg>/.../file.css, dist/renderer/<target>)`, where `dist` in that script is `dist/renderer`. Mirror the two existing precedents (`scripts/copy-assets.js:39-46`): **gridstack** → `dist/renderer/vendor/gridstack.min.css`, **xterm** → `dist/renderer/xterm.css`. `vendor/` is gridstack's choice, not a rule — pick the layout the component expects.
-2. Add a `<link rel="stylesheet" href="…">` to `src/renderer/index.html` to match the copy target (see the existing `styles.css` / `xterm.css` / `vendor/gridstack.min.css` links at `:9-11`).
+2. Add a `<link rel="stylesheet" href="…">` to `src/renderer/index.html` to match the copy target (see the existing `styles.css` / `xterm.css` / `vendor/gridstack.min.css` links at `:28-30`).
 
-If you skip step 2, the JS bundles fine but the component renders unstyled. (This is a property of the renderer build, not of `CLAUDE.md`: `npm run build:renderer` runs `scripts/build-renderer.mjs`, which configures esbuild with the `.ts` loader only — no CSS loader — prints the per-owner size breakdown, and fails the build over its `BUDGET_KIB` entry budget. Read that script, not `package.json`, for the esbuild options.)
+If you skip step 2, the JS bundles fine but the component renders unstyled. (This is a property of the renderer build, not of `CLAUDE.md`: `npm run build:renderer` runs `scripts/build-renderer.mjs`, which configures esbuild with the `.ts` loader only — no CSS loader — prints the per-owner size breakdown, and fails the build over either of its two budgets: `ENTRY_BUDGET_KIB` (entry chunk) and `TOTAL_BUDGET_KIB` (all shipped JS), `scripts/build-renderer.mjs:31-32`. Read that script, not `package.json`, for the esbuild options.)
 
 ## Step 3 — Native module gotcha (`.node` binaries)
 
@@ -76,7 +76,8 @@ Then confirm the dependency actually works end to end:
 
 ## Step 6 — Packaging sanity check
 
-electron-builder packages only `dist/main/**`, `dist/preload/**`, `dist/renderer/**`:
+electron-builder packages only `dist/main/**`, `dist/preload/**`, `dist/renderer/**` — plus the one
+exception `build/icon.png` (the exact `build.files` entry that carries the packaged window icon):
 - Renderer deps are safe — they're bundled into `dist/renderer/index.js`.
 - Main/preload deps resolve from the packaged production `node_modules` at runtime, so they must be in `dependencies` (not `devDependencies`). Keep build-only tooling (bundlers, types, test libs) in `devDependencies`.
 

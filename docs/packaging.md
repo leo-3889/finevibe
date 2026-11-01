@@ -15,7 +15,8 @@ derives the packaged assets. Every packaging entrypoint runs it before
 
 | Asset | Consumers |
 |---|---|
-| `build/icon.png` | `build.icon` + linux icon; shipped in the asar and used as the window icon (`src/main/main.ts`) |
+| `build/icon.png` | shipped in the asar (the exact `build/icon.png` entry in `build.files`) and used as the window icon (`src/main/main.ts`; packaged location pinned by `src/main/main.test.ts`). There is no top-level `build.icon` key |
+| `build/icons/<N>x<N>.png` | linux icon — the 9-size hicolor set (16–1024) that `build.linux.icon` points at as a *directory* (`scripts/build-icons.mjs`, `82cedc74`): the deb's `/usr/share/icons/hicolor/<size>/apps/finevibe.png`, the `.desktop` `Icon=`, and the icons the npm launcher installs into `$XDG_DATA_HOME/icons/hicolor` from the AppImage extract |
 | `build/icon.icns` | macOS (`build.mac.icon`) |
 | `build/icon.ico` | Windows (`build.win.icon`, 16–256px sizes; also `win:stamp`'s rcedit icon and the NSIS `MUI_ICON`) |
 | `build/installerHeader.bmp` | NSIS assisted-wizard header strip, 150×57 (`MUI_HEADERIMAGE_BITMAP`) |
@@ -30,7 +31,7 @@ master and `build/` assets.
 Beyond the packaged installers, the same asset tree feeds:
 
 - **Renderer favicon** — `scripts/copy-assets.js:47` copies
-  `build/icon.png` into the renderer dist; `src/renderer/index.html:8`
+  `build/icon.png` into the renderer dist; `src/renderer/index.html:27`
   links it as `rel="icon"`.
 - **Windows app exe stamp** — `scripts/edit-win-exe.mjs` writes
   `build/icon.ico` + version resources into
@@ -51,7 +52,7 @@ Beyond the packaged installers, the same asset tree feeds:
   `postinstall` swallows `install-app-deps` failures.
 - **CI guard** — `release.yml`'s `build-windows` job runs the
   "Verify Windows exe icon + version resources" step
-  (`.github/workflows/release.yml:357`): it renders the built exe's
+  (`.github/workflows/release.yml:549`): it renders the built exe's
   embedded 32px icon and fails if it matches the default Electron icon,
   then asserts `ProductName` and the `FileVersion` shape.
 - **macOS bundle icon** — `release.yml`'s `build` job compares
@@ -125,9 +126,11 @@ Versions with a `-dev` suffix normalize to dpkg
 Mac is the one platform with NO `artifactName` (row 72), and the missing line is
 a contract rather than an oversight: the mac artifacts keep electron-builder's
 default names — zips `FineVibe-<version>-mac.zip` / `FineVibe-<version>-arm64-mac.zip`
-(`ArchiveTarget.js:23-30`, `${productName}-${version}[-${arch}]-${os}.${ext}`,
+(`app-builder-lib/out/targets/ArchiveTarget.js:23-30`,
+`${productName}-${version}[-${arch}]-${os}.${ext}`,
 the arch part dropping for the default arch x64) and dmgs
-`FineVibe-<version>.dmg` / `FineVibe-<version>-arm64.dmg` (`dmg.js:25`) —
+`FineVibe-<version>.dmg` / `FineVibe-<version>-arm64.dmg`
+(`dmg-builder/out/dmg.js:25-27`) —
 because `bin/finevibe.js getAssetName` downloads the mac zip under exactly those
 two spellings.
 Setting `build.mac.artifactName` replaces the pattern for BOTH mac targets, so
@@ -141,6 +144,10 @@ release against those two spellings before anything else. A comment cannot live
 next to `build.mac` itself: electron-builder validates `build` with
 `additionalProperties: false` (`app-builder-lib/scheme.json`), so any extra key
 — even `"//"` — fails the build.
+
+Every `node_modules` cite in this section (`ArchiveTarget.js`,
+`dmg-builder/out/dmg.js`, `macPackager.js`, `macCodeSign.js`) is against
+**electron-builder 26.8.1** — a bump invalidates the line numbers, re-derive them.
 
 `build.mac.forceCodeSigning: true` keeps a mac build honest: app-builder-lib's
 `fallBackToAdhoc` (`macPackager.js:215`) otherwise signs arm64 builds with a
@@ -159,7 +166,10 @@ release runs keep the flag and the loud failure.
 `dist/preload`, `dist/renderer`). Every electron-builder artifact —
 Setup.exe, zips, portable exe, `win-unpacked/`, `latest.yml`, blockmaps,
 debs, AppImages, dmgs — lands in `out/`, set by
-`build.directories.output`. The split means wiping builder artifacts never
+`build.directories.output`. `npm run build:renderer` starts by deleting
+`dist/renderer` (`scripts/build-renderer.mjs:37`, `676a5070`), so a rebuild can
+never leave an orphan chunk from an earlier bundle behind in the tree that gets
+packed. The split means wiping builder artifacts never
 destroys the compiled tree (and vice versa); CI upload globs and local
 verification commands read `out/*`. `npm run pack` / `npm run dist` /
 `npm run dist:win:local` all write there; the local Windows flow also

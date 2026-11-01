@@ -53,7 +53,7 @@ replaces exactly the icon/version resources they skip.
 | # | Failure text | Cause | Release fix | Local bypass (and its cost) |
 |---|---|---|---|---|
 | 1 | `node-gyp: Could not find any Visual Studio installation` on `moduleName=node-pty` | pack-time `@electron/rebuild` compiles node-pty from source; no VS C++ toolchain (`vswhere` absent). `better-sqlite3` **succeeds** — it downloads a per-ABI prebuild | install VS 2022 Build Tools (C++ workload), or build on the CI `windows-2022` runner which has it | `--config.npmRebuild=false`. Safe: node-pty ships N-API prebuilds (`prebuilds/win32-x64/{pty,conpty,conpty_console_list}.node`, `conpty/conpty.dll`, `winpty.dll`, `winpty-agent.exe`) and electron-builder auto-unpacks `*.node` |
-| 2 | `ERROR: Cannot create symbolic link : A required privilege is not held by the client` extracting `winCodeSign-2.6.0.7z` (the `darwin/10.12/lib/*.dylib` symlinks) | electron-builder runs rcedit (exe metadata + asar-integrity resource) from that archive; the account lacks `SeCreateSymbolicLinkPrivilege` (Developer Mode off, not elevated) | enable Windows Developer Mode, run from an elevated shell, or build on CI | `--config.win.signAndEditExecutable=false` in **both** electron-builder phases, then stamp the exe: `npm run win:stamp` (`scripts/edit-win-exe.mjs`) drives the `rcedit` npm package, whose binary ships directly in `node_modules/rcedit/bin` — no winCodeSign extraction. Sets icon, 4-part file/product version, product name, file description, company name, original filename. **Cost: the Setup.exe installer-stub icon itself stays default NSIS** (rcedit on the installer stub hits the same blocker) and nothing is signed; the app exe and installed shortcuts carry the FineVibe identity. On 26.8.1 electron-builder still updates the asar-integrity resource of `FineVibe.exe` in the dir phase. Developer Mode/elevation remains the full fix — never ship a release built this way |
+| 2 | `ERROR: Cannot create symbolic link : A required privilege is not held by the client` extracting `winCodeSign-2.6.0.7z` (the `darwin/10.12/lib/*.dylib` symlinks) | electron-builder runs rcedit (exe metadata + asar-integrity resource) from that archive; the account lacks `SeCreateSymbolicLinkPrivilege` (Developer Mode off, not elevated) | enable Windows Developer Mode, run from an elevated shell, or build on CI | `--config.win.signAndEditExecutable=false` in **both** electron-builder phases, then stamp the exe: `npm run win:stamp` (`scripts/edit-win-exe.mjs`) drives the `rcedit` npm package, whose binary ships directly in `node_modules/rcedit/bin` — no winCodeSign extraction. Sets icon, 4-part file/product version, product name, file description, company name, original filename. **Cost: nothing is signed.** The app exe, the installed shortcuts and the Setup.exe stub all carry the FineVibe identity — the stub is stamped by makensis itself (`app-builder-lib/out/targets/nsis/NsisTarget.js:196` sets `MUI_ICON`/`MUI_UNICON` from `build/icon.ico`), and `npm run win:verify:setup` audits it; the symlink blocker never touches the installer. On 26.8.1 electron-builder still updates the asar-integrity resource of `FineVibe.exe` in the dir phase. Developer Mode/elevation remains the full fix — never ship a release built this way |
 | 3 | `ENOENT ... rename 'out\win-unpacked\electron.exe' -> 'FineVibe.exe'` | a stale `out/win-unpacked` from an aborted run | delete the stale output and rebuild | `dist:win:local` cleans it itself (Gotcha 2); manual dir-phase flows delete `out/win-unpacked` first |
 
 **Pre-seeding the winCodeSign cache does not work.** The extraction directory name is a
@@ -136,8 +136,10 @@ file, `9d7d0987`). The checks are one-liners; run them, then quote the result.
   Integrity story on Windows is the `SHA256SUMS.txt` the publish job ships.
   Authenticode means a real cert + `certificateFile`/`CSC_LINK` + CI secrets — a change
   to the Windows job, not to this skill's local flow (which signs nothing, by design).
-- Keep the `zip` win target: `bin/finevibe.js` hardcodes the asset name
-  `FineVibe-<version>-win-<arch>.zip` (`:38`); npm installs break without it.
+- Keep the `zip` win target: `bin/finevibe.js` names the Windows asset
+  `FineVibe-<version>-win-x64.zip` — hardcoded x64 (`:51`), with arm64 refused up
+  front (`:45-50`, `bcd96c3d`) because no win-arm64 asset ships; `win` is x64-only
+  (docs/FEATURES.md §28). npm installs break without the zip.
 - **Packaged auto-update needs no CI environment.** electron-builder bakes the feed into
   `resources/app-update.yml` from `build.publish`, and `src/main/auto-updater.ts` runs
   against that file when `FINEVIBE_RELEASE_REPO` is unset — failing closed if it names a
@@ -153,7 +155,7 @@ file, `9d7d0987`). The checks are one-liners; run them, then quote the result.
 - Cut a real version: `release.yml` `workflow_dispatch` mints version + changelog + tag;
   a `-dev` suffix becomes `~dev` in deb metadata and is a prerelease everywhere else.
 - CI builds on `windows-2022`, pinned deliberately: the `windows-latest` (2025) image
-  breaks node-gyp's Visual Studio detection when compiling node-pty (`release.yml:336-338`,
+  breaks node-gyp's Visual Studio detection when compiling node-pty (`release.yml:474-476`,
   `ci.yml:17-19`). Don't "modernize" the runner label.
 
 ## Test-suite reality on a Windows dev box

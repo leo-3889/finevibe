@@ -7,7 +7,7 @@ description: This skill MUST be used whenever the task involves the repo's work 
 
 ## Preflight: `todos/` is local-only
 
-`todos/` is **gitignored** (`.gitignore:42`) while this skill is committed. On a fresh
+`todos/` is **gitignored** (`.gitignore:47`) while this skill is committed. On a fresh
 clone `ls todos/` is empty and there is nothing to audit — say so, and audit git history +
 `docs/` instead. Everything below assumes the owner's tree, where the queue exists:
 `ls todos/ && git check-ignore -v todos` proves which case you are in.
@@ -158,9 +158,9 @@ passing, and say which leg produced each number.
 
 - `rebuild` is the integration branch and exists on **no remote** — verify with
   `git branch -r --contains rebuild` (empty today). Ahead of `fork/main` by
-  `git rev-list --count fork/main..rebuild` (9 today; the number moves with every rebase —
-  it was 111 when this skill was written, and the 2026-10-19/20 program's history was
-  re-hashed by the rewrite). No push without asking.
+  `git rev-list --count fork/main..rebuild` — measure it, never quote a stored number
+  (every rebase moves it; that is why the count this skill used to print is gone).
+  No push without asking.
 - Remotes today: `fork` = `https://github.com/leo-3889/finevibe.git` (push), `origin` =
   `https://github.com/elirantutia/vibeyard.git` (fetch; push is refused by config).
 - `todos/archives/fork-rebuildable-on-origin.md` (local-only, gitignored): upstream's PR #167 breaks if the
