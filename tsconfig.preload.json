@@ -9,6 +9,6 @@
     "declaration": true,
     "composite": true
   },
-  "exclude": ["src/preload/**/*.test.ts"],
+  "exclude": ["src/preload/**/*.test.ts", "src/shared/**/*.test.ts"],
   "include": ["src/preload/**/*.ts", "src/shared/**/*.ts"]
 }
