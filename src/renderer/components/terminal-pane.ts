@@ -226,7 +226,10 @@ export function createTerminalPane(
   });
 
   attachFileDropHandler(terminal, element, writeToPty, () => instance.ptyReady && !instance.exited);
-  attachMouseForwardingGate(terminal);
+  // NOTE: the mouse-forwarding gate is NOT attached here - _selectionService
+  // is constructed inside terminal.open(), and attaching earlier is a silent
+  // no-op (row 60 regressed exactly this way in production for months). It
+  // lives in attachToContainer(), right after open().
 
   // pi-bolt et al. enable SGR mouse reporting (1006): xterm forwards the
   // right-mousedown as an escape report via triggerDataEvent(report, true),
@@ -385,6 +388,9 @@ export function attachToContainer(sessionId: string, container: HTMLElement): vo
     attachCopyOnSelect(instance.terminal);
     collapseArmedTextareaOnContextMenu(instance.terminal);
     loadWebglWithFallback(instance.terminal);
+    // After open(), or it no-ops (see the note in createTerminal): plain-left
+    // drag must stay a LOCAL selection even under SGR-mouse TUIs (rows 60/69).
+    attachMouseForwardingGate(instance.terminal);
   } else if (instance.element.parentElement !== container) {
     container.appendChild(instance.element);
   }

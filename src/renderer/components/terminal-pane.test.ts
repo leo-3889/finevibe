@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContextWindowInfo, CostInfo } from '../../shared/types.js';
 
@@ -1121,5 +1122,23 @@ describe('spawn failure surface (a0ee463)', () => {
     expect(mockPtyCreate).toHaveBeenLastCalledWith('fail-3', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined);
     // Recovery clears the failure overlay.
     expect(instance.element.querySelector('.terminal-exit-overlay')).toBeNull();
+  });
+});
+
+// Row 60 regression lock: the gate silently no-ops when attached before
+// terminal.open() (_selectionService does not exist yet), and the pre-fix call
+// site sat in createTerminal - so the whole session-pane lane shipped without
+// local drag selection under SGR-mouse TUIs while every unit test stayed green.
+// The FakeTerminal above cannot catch that (its open() is a no-op), so pin the
+// call ORDER in the source itself.
+describe('mouse gate attach order (row 60)', () => {
+  it('attaches attachMouseForwardingGate only after terminal.open()', () => {
+    const src = readFileSync(new URL('./terminal-pane.ts', import.meta.url), 'utf8');
+    const openAt = src.indexOf('.terminal.open(');
+    const gateAt = src.indexOf('attachMouseForwardingGate(instance.terminal)');
+    expect(openAt).toBeGreaterThan(-1);
+    expect(gateAt).toBeGreaterThan(-1);
+    expect(gateAt).toBeGreaterThan(openAt);
+    expect(src).not.toMatch(/attachMouseForwardingGate\(terminal\)/); // no pre-open call left
   });
 });
