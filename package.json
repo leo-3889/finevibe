@@ -110,7 +110,7 @@
         "deb"
       ],
       "category": "Development",
-      "icon": "build/icon.png"
+      "icon": "build/icons"
     },
     "deb": {
       "publish": null,
