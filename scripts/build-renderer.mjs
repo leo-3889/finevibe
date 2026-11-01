@@ -15,7 +15,7 @@
 // packaged app pays nothing while a pasted
 // renderer stack trace stays symbolicable by anyone holding the matching build.
 import { build } from 'esbuild';
-import { statSync } from 'node:fs';
+import { rmSync, statSync } from 'node:fs';
 
 const DEV = process.argv.includes('--dev');
 const OUT_DIR = 'dist/renderer';
@@ -30,6 +30,11 @@ const OUT = `${OUT_DIR}/index.js`;
 // Raising either is a deliberate act: do it in a commit that says why.
 const ENTRY_BUDGET_KIB = 350;
 const TOTAL_BUDGET_KIB = 1400;
+
+// esbuild never removes old chunks; with content-hashed names every edit
+// leaves orphans behind, and build.files ships the whole dir. Clean first so
+// the package carries exactly what this build produced.
+rmSync(OUT_DIR, { recursive: true, force: true });
 
 const result = await build({
   entryPoints: ['src/renderer/index.ts'],
