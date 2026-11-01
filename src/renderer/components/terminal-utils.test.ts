@@ -1319,7 +1319,11 @@ describe('quoteShellPath', () => {
 describe('attachMouseForwardingGate', () => {
   function makeFakeTerminal() {
     const forwarded: unknown[] = [];
+    // The public Terminal.hasSelection() the button-2 clause reads; mutable so a
+    // test pins both answers without mounting a buffer.
+    const selection = { has: false };
     const terminal = {
+      hasSelection: () => selection.has,
       _core: {
         coreMouseService: {
           triggerMouseEvent(event: { button: number; action: number; alt: boolean }) {
@@ -1340,7 +1344,7 @@ describe('attachMouseForwardingGate', () => {
         },
       },
     };
-    return { terminal: terminal as any, forwarded };
+    return { terminal: terminal as any, forwarded, selection };
   }
 
   it('swallows plain left DOWN/UP/MOVE without reaching the original', () => {
@@ -1375,6 +1379,26 @@ describe('attachMouseForwardingGate', () => {
     expect(force(new MouseEvent('mousedown', { button: 0, altKey: true }))).toBe(false);
     expect(force(new MouseEvent('mousedown', { button: 0, altKey: true, shiftKey: true }))).toBe(true);
     expect(force(new MouseEvent('mousedown', { button: 2 }))).toBe(false);
+  });
+
+  it('claims the right-click copy while a selection is live', () => {
+    const { terminal, selection } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const force = terminal._core._selectionService.shouldForceSelection;
+    // A finished drag must survive the right-click that copies it: the press is
+    // claimed, so xterm never forwards it and the selection stays readable.
+    selection.has = true;
+    expect(force(new MouseEvent('mousedown', { button: 2 }))).toBe(true);
+  });
+
+  it('forwards the right-click to the TUI when nothing is selected', () => {
+    const { terminal } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const force = terminal._core._selectionService.shouldForceSelection;
+    // No selection: the original (shift-only) answer stands, so vim/pi right-click
+    // behavior is exactly as before this clause.
+    expect(force(new MouseEvent('mousedown', { button: 2 }))).toBe(false);
+    expect(force(new MouseEvent('mousedown', { button: 2, shiftKey: true }))).toBe(true);
   });
 
   it('is idempotent: a second attach adds no second swallow layer', () => {

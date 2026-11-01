@@ -437,8 +437,11 @@ type XtermCore = {
  * triple select, and the matching left-button reports are swallowed at
  * `triggerMouseEvent` so a stray up/move from the document-level listeners
  * (bound after a forwarded right/middle down) can't leak to the app.
- * Alt+left, right (2), middle (1), hover (3) and wheel (4) stay forwarded.
- * ponytail: touches xterm internals (_core._selectionService.shouldForceSelection, _core.coreMouseService.triggerMouseEvent), re-verify on @xterm/xterm upgrades.
+ * Alt+left, middle (1), hover (3) and wheel (4) stay forwarded. Right (2) stays
+ * forwarded while nothing is selected; once a selection is live it is claimed so
+ * the copy right-click lands locally instead of reaching the TUI (the button-2
+ * clause below). The button-2 clause uses the public `terminal.hasSelection()`.
+ * ponytail: touches xterm internals (_core._selectionService.shouldForceSelection, _core.coreMouseService.triggerMouseEvent), verified against @xterm/xterm 6.0.0, re-verify on upgrades.
  */
 export function attachMouseForwardingGate(terminal: Terminal): void {
   // jsdom fakes and half-constructed terminals have no _core.
@@ -451,8 +454,17 @@ export function attachMouseForwardingGate(terminal: Terminal): void {
   if (mouseService.__finevibeMouseGate) return;
 
   const originalForceSelection = selectionService.shouldForceSelection;
-  selectionService.shouldForceSelection = (e: MouseEvent) =>
-    e.button === 0 && !e.altKey ? true : originalForceSelection.call(selectionService, e);
+  selectionService.shouldForceSelection = (e: MouseEvent) => {
+    if (e.button === 0 && !e.altKey) return true;
+    // A finished selection must survive the right-click that copies it, so the
+    // press is claimed (not forwarded) whenever one is live — xterm's own
+    // `SelectionService.handleMouseDown` returns early for button 2 with a
+    // selection, so the drag stays intact for the context-menu/keyboard copy.
+    // With no selection the original answer stands: right-click keeps forwarding
+    // to the TUI (vim/pi right-click behavior unchanged).
+    if (e.button === 2 && terminal.hasSelection()) return true;
+    return originalForceSelection.call(selectionService, e);
+  };
 
   const originalTrigger = mouseService.triggerMouseEvent;
   // xterm action codes: UP 0, DOWN 1, MOVE 32 (wheel reuses 0/1 with button 4).
