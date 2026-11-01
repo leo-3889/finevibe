@@ -180,6 +180,27 @@ describe('hosts-section', () => {
     expect(api.create).not.toHaveBeenCalled();
   });
 
+  it('wizard: a rejected create surfaces the reason and adds no card (no phantom tab)', async () => {
+    // Phantom host: `hosts:create` is the ONLY writer of a host record, so a
+    // rejected draft must leave nothing behind for the sidebar to show. An
+    // optimistic card / a post-failure reload puts a host tab on screen for a
+    // record main never persisted, and every verb on that tab then answers
+    // `Unknown host <id>` (the owner screenshot: Browse demo-host → No subfolders).
+    api.generateKey.mockResolvedValue({ id: 'gen1', privateKeyPath: '/cfg/hosts/gen1/id_ed25519', publicKey: 'ssh-ed25519 x' });
+    api.create.mockRejectedValue(new Error('invalid host draft: failed validateHostRecordShape'));
+    const { container } = await mount();
+    (container.querySelector('.hosts-add-btn') as HTMLButtonElement).click();
+    const onConfirm = modal.showModal.mock.calls[0][2] as (v: Record<string, string>) => Promise<void>;
+    await onConfirm({ name: 'demo-host', user: 'leo', host: 'host-a.local', port: '22', authKind: 'key', keyPath: '', secret: '' });
+    expect(modal.setModalError).toHaveBeenCalledWith('host', 'invalid host draft: failed validateHostRecordShape');
+    expect(modal.closeModal).not.toHaveBeenCalled();
+    // `hosts:list` ran exactly once (the mount); a failed create re-reads
+    // nothing, so the host-tab row — fed by the same `hosts:list` cache — gains
+    // no tab, and the card list stays empty.
+    expect(api.list).toHaveBeenCalledTimes(1);
+    expect(container.querySelectorAll('.hosts-card').length).toBe(0);
+  });
+
   it('wizard: provider sync checkboxes persist as settingsSync.providers', async () => {
     api.create.mockImplementation(async (draft: HostRecord) => ({ ...host(), ...draft }));
     api.test.mockResolvedValue({ ok: true, hostKeyChanged: false, steps: steps(true) });

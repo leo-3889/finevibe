@@ -323,16 +323,31 @@ function graftMainOwnedState(state: PersistedState): void {
  * flow calls `hosts:create`, which persists main-side), so it is kept — the two
  * rules above already make its read and its unlink safe — but it starts as a
  * fresh `createHost` record does: `draft`, unpinned, unprobed.
+ *
+ * Registry MEMBERSHIP is main-owned too (phantom-host bug, demo-host): the renderer
+ * persists the whole state from its boot-time `store:load` snapshot, and a host
+ * added later (Settings → Hosts, `hosts:create`) never enters that snapshot, so
+ * the next renderer persist carried `hosts: []` (or the pre-add list). The old
+ * empty-list early return treated that as "nothing to graft" and wrote the
+ * shortened list through `stateCache` + disk: main's registry — and the record
+ * `gateHost`/`hosts:openShell` read — disappeared while the sidebar's tab (fed
+ * by the separate `hosts:list` cache, refreshed only on `hosts:status`) stayed
+ * on screen, giving a tab whose every verb answers `Unknown host <id>`.
+ * Hosts are added and removed only through `hosts:create` / `hosts:delete`, both
+ * main-side, so a payload listing fewer hosts than main has is a stale copy,
+ * never a deletion: every record main has and the payload lacks goes back in.
  */
 function graftMainOwnedHosts(state: PersistedState): void {
-  const hosts = state.hosts;
-  if (!hosts || hosts.length === 0) return;
+  const authoritative = stateCache?.hosts ?? [];
+  const hosts = state.hosts ?? [];
   const userData = app.getPath('userData');
-  const known = new Map((stateCache?.hosts ?? []).map((host) => [host.id, host]));
+  const known = new Map(authoritative.map((host) => [host.id, host]));
+  const listed = new Set<string>();
   for (const host of hosts) {
     // Garbage entries (a payload is not the store grammar) are left alone here;
     // `loadState`'s `validateHostRecordShape` is what drops them.
     if (!host || typeof host !== 'object') continue;
+    listed.add(host.id);
     const stored = known.get(host.id);
     const storedPath = stored?.privateKeyPath;
     if (host.privateKeyPath !== storedPath
@@ -359,6 +374,11 @@ function graftMainOwnedHosts(state: PersistedState): void {
     host.hostKeyFingerprint = stored.hostKeyFingerprint;
     host.prerequisites = stored.prerequisites;
   }
+  // Re-assert membership: main's records the payload never mentioned.
+  for (const host of authoritative) {
+    if (!listed.has(host.id)) hosts.push(host);
+  }
+  state.hosts = hosts;
 }
 
 export function saveState(state: PersistedState): void {

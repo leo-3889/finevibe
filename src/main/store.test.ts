@@ -565,7 +565,68 @@ describe('main-owned host fields survive renderer writes (rows 31/34)', () => {
     expect(() => saveState({ ...makeDefaultState(), hosts: [null as unknown as HostRecord, 'x' as unknown as HostRecord] })).not.toThrow();
     vi.advanceTimersByTime(300);
 
-    expect(writtenHosts()).toEqual([null, 'x']);
+    // The garbage entries pass through untouched (the loader drops them); main's
+    // own record is re-appended below them — membership is main-owned too.
+    expect(writtenHosts()).toMatchObject([null, 'x', { id: HOST_ID }]);
+  });
+
+  // Phantom host (owner screenshot: sidebar tab "demo-host", every remote verb
+  // answering `Unknown host 27b17b23-…`, state.json `"hosts": []`). The
+  // renderer persists the WHOLE state from its boot-time `store:load` snapshot,
+  // and a host added after boot (`hosts:create`) is not in it, so the payload
+  // carried no hosts at all. The old `hosts.length === 0` early return graded
+  // that as "nothing to graft" and wrote the shortened list through both the
+  // cache (so `getHost`/`gateHost` lost the record) and disk, while the sidebar's
+  // tab — fed by the separate `hosts:list` cache, reloaded only on
+  // `hosts:status` — stayed on screen as a tab that could never browse.
+  it('restores the hosts a renderer whole-state snapshot never saw', () => {
+    seedMainCache(mainHost());
+
+    saveState({ ...makeDefaultState(), hosts: [] });
+    vi.advanceTimersByTime(300);
+
+    expect(writtenHosts()).toMatchObject([{ id: HOST_ID, enrollmentStatus: 'enrolled', hostKeyFingerprint: PIN }]);
+    // The in-memory cache is what `hosts:list` / `gateHost` read mid-session, so
+    // the wipe had to die there too — not just on disk.
+    expect(loadState().hosts.map((h) => h.id)).toEqual([HOST_ID]);
+  });
+
+  it('restores hosts from a payload with no hosts key at all', () => {
+    seedMainCache(mainHost());
+
+    const { hosts: _dropped, ...noHostsKey } = makeDefaultState();
+    saveState(noHostsKey as PersistedState);
+    vi.advanceTimersByTime(300);
+
+    expect(writtenHosts()).toMatchObject([{ id: HOST_ID }]);
+  });
+
+  it('keeps a pre-add host in the payload AND the host added after boot', () => {
+    const oldHost = mainHost({ id: 'aaaa0000-0000-4000-8000-000000000001', name: 'old' });
+    const addedLater = mainHost({ id: 'aaaa0000-0000-4000-8000-000000000002', name: 'demo-host' });
+    seedMainCache(oldHost, addedLater);
+
+    // The renderer's snapshot lists only the host that existed at boot.
+    saveState({ ...makeDefaultState(), hosts: [{ ...oldHost, enrollmentStatus: 'draft' }] });
+    vi.advanceTimersByTime(300);
+
+    const hosts = writtenHosts();
+    expect(hosts.map((h) => h.id)).toEqual([oldHost.id, addedLater.id]);
+    // Membership restore is not a licence to trust the payload's fields: the
+    // listed host is still re-grafted, the unlisted one is main's own record.
+    expect(hosts[0]).toMatchObject({ enrollmentStatus: 'enrolled' });
+  });
+
+  it('does not resurrect a host main itself deleted', () => {
+    // The `hosts:delete` idiom: main removed the record from the cache it then
+    // saves, so an empty payload list is the truth, not a stale snapshot.
+    const cache = seedMainCache(mainHost());
+    cache.hosts = [];
+
+    saveState({ ...makeDefaultState(), hosts: [] });
+    vi.advanceTimersByTime(300);
+
+    expect(writtenHosts()).toEqual([]);
   });
 });
 
