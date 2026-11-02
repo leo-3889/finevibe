@@ -123,6 +123,12 @@ describe('Setup section host scope', () => {
     expect(collect(container, 'setup-provider-header').map((n) => n.textContent)).toEqual(['Claude Code', 'Pi']);
   });
 
+  it('Host scope row renders ABOVE the provider scan (top-level control)', async () => {
+    const container = await render();
+    expect(container.children[0].className).toContain('modal-toggle-field');
+    expect(container.children[1].className).toContain('setup-section');
+  });
+
   it('scope change drives setActiveHost (sidebar-synced) and a re-render', async () => {
     await render();
     selectState.instances.get('setup-host-scope')!.onChange!('host-1');

@@ -1,12 +1,11 @@
-export interface TeamInstance {
-  sessionId: string;
-  projectId: string;
-  element: HTMLElement;
-  destroy(): void;
-}
+import { createTabRegistry, type TabInstance } from '../tab-instance-registry';
 
-export const instances = new Map<string, TeamInstance>();
+export type TeamInstance = TabInstance;
+
+const registry = createTabRegistry<TeamInstance>();
+
+export const instances = registry.instances;
 
 export function getTeamInstance(sessionId: string): TeamInstance | undefined {
-  return instances.get(sessionId);
+  return registry.getInstance(sessionId);
 }

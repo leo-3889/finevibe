@@ -1,14 +1,13 @@
-export interface KanbanInstance {
-  sessionId: string;
-  projectId: string;
-  element: HTMLElement;
-  destroy(): void;
-}
+import { createTabRegistry, type TabInstance } from '../tab-instance-registry';
 
-export const instances = new Map<string, KanbanInstance>();
+export type KanbanInstance = TabInstance;
+
+const registry = createTabRegistry<KanbanInstance>();
+
+export const instances = registry.instances;
 
 export function getKanbanInstance(sessionId: string): KanbanInstance | undefined {
-  return instances.get(sessionId);
+  return registry.getInstance(sessionId);
 }
 
 /**

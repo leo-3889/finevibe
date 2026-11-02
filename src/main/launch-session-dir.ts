@@ -95,6 +95,27 @@ export function remoteLaunchSessionDir(providerId: LaunchSessionProvider, uiSess
 }
 
 /**
+ * The argv value for a Pi-compatible `--append-system-prompt`.
+ *
+ * Pi, Pi-Bolt and OMP accept a FILE PATH there ("append text or file
+ * contents"), which is how a prompt carrying a double quote reaches the CLI
+ * on Windows: an npm-installed CLI is a `.cmd` shim, so the spawn goes
+ * through `cmd.exe`, and cmd has no escape for a literal `"` (pty-manager's
+ * `quoteArgForCmdExe` rejects such argv rather than producing an injectable
+ * command line). The prompt is therefore written into the launch's own
+ * session dir — pruned with it — and referenced by path (Windows file names
+ * can never contain a quote). POSIX launches, quote-free prompts, and remote
+ * (SSH-host) launches — where a local path is unreadable — stay inline.
+ */
+export function systemPromptArg(prompt: string, sessionDir: string, isRemote = false): string {
+  if (!isWin || isRemote || !prompt.includes('"')) return prompt;
+  const file = path.join(sessionDir, 'system-prompt.md');
+  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.writeFileSync(file, prompt, 'utf8');
+  return file;
+}
+
+/**
  * Retention window for per-launch dirs. A launch's transcripts are the only
  * thing inside, and global search surfaces them by mtime, so a dir with no
  * activity for 30 days is dead weight: unbounded growth on disk plus ~2 sync

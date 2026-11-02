@@ -10,11 +10,11 @@ import { getFullPath } from '../pty-manager';
 import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { collectProfileRoots, TranscriptDiscoveryScan } from './transcript-utils';
 import { piAgentDir, piSessionsRoot } from './pi-transcripts';
-import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync, readTranscriptTitleWithSessionInfoSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync, readTranscriptTitleWithSessionInfoSync, seedLaunchTranscript } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession, stopPiSessionWatcher } from '../pi-session-watcher';
 import { writeCliSessionId } from '../hook-status';
-import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMetaCached, listLaunchSessionDirs, profileIdForConfigDir } from '../launch-session-dir';
+import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMetaCached, listLaunchSessionDirs, profileIdForConfigDir, systemPromptArg } from '../launch-session-dir';
 
 const binaryCache = { path: null as string | null };
 
@@ -92,7 +92,7 @@ export class PiProvider implements CliProvider {
     return env;
   }
 
-  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
+  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string; remote?: boolean }): string[] {
     const args: string[] = [];
     // Every launch stores its transcripts in its own dir — the
     // process-scoped ownership signal the sessions watcher adopts by.
@@ -113,7 +113,7 @@ export class PiProvider implements CliProvider {
       args.push(...tokenizeArgs(opts.extraArgs));
     }
     if (opts.systemPrompt) {
-      args.push('--append-system-prompt', opts.systemPrompt);
+      args.push('--append-system-prompt', systemPromptArg(opts.systemPrompt, sessionDir, opts.remote));
     }
     if (opts.initialPrompt) {
       // Pi takes the initial prompt as a positional message arg.
@@ -194,6 +194,16 @@ export class PiProvider implements CliProvider {
     }
     startPiSessionWatcher();
     registerPendingPiSession(sessionId, cwd, configDir, { sessionDir, knownCliId });
+    // Seed the transcript file AFTER registration (the registration
+    // snapshot would freeze out a pre-existing file) so the CLI's
+    // `--session-id` lookup finds it and starts silent — without it every
+    // fresh launch prints "Warning: No project session found with id ...".
+    // Best-effort: a failed seed only restores the old warning.
+    try {
+      seedLaunchTranscript(sessionDir, knownCliId, cwd);
+    } catch (err) {
+      console.warn(`pi: transcript seed failed for ${sessionId}:`, err);
+    }
   }
 
   // A resumed session already knows its cli id, so it is seeded as an

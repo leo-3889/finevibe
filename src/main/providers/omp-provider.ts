@@ -10,7 +10,7 @@ import { ompSessionsRoot, readTranscriptTitleSync } from './omp-transcripts';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession, stopOmpSessionWatcher } from '../omp-session-watcher';
-import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMetaCached, listLaunchSessionDirs, profileIdForConfigDir } from '../launch-session-dir';
+import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMetaCached, listLaunchSessionDirs, profileIdForConfigDir, systemPromptArg } from '../launch-session-dir';
 
 const binaryCache = { path: null as string | null };
 
@@ -104,7 +104,7 @@ export class OmpProvider implements CliProvider {
     }
     return env;
   }
-  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[] {
+  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string; remote?: boolean }): string[] {
     const args: string[] = [];
     // Every launch stores its transcripts in its own dir — the
     // process-scoped ownership signal the sessions watcher adopts by.
@@ -120,7 +120,7 @@ export class OmpProvider implements CliProvider {
       args.push(...tokenizeArgs(opts.extraArgs));
     }
     if (opts.systemPrompt) {
-      args.push('--append-system-prompt', opts.systemPrompt);
+      args.push('--append-system-prompt', systemPromptArg(opts.systemPrompt, sessionDir, opts.remote));
     }
     if (opts.initialPrompt) {
       // OMP takes the initial prompt as a positional message arg.

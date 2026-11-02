@@ -40,7 +40,12 @@ export interface CliProvider {
    */
   validatePrerequisitesAsync?(): Promise<boolean>;
   buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string>;
-  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string }): string[];
+  /**
+   * `remote` = the command runs on an SSH host, so any LOCAL file a prompt is
+   * redirected to (Pi-compatible `--append-system-prompt` on Windows) is
+   * unreadable there and the value must stay a literal argument.
+   */
+  buildArgs(opts: { sessionId: string; cliSessionId: string | null; isResume: boolean; extraArgs: string; initialPrompt?: string; systemPrompt?: string; remote?: boolean }): string[];
   installHooks(win?: BrowserWindow | null, projectPath?: string): Promise<void>;
   installStatusScripts(): void;
   cleanup(): void;

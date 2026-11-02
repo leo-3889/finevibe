@@ -15,7 +15,15 @@ git diff --check
 
 `npm start` builds before launching. There is no hot reload.
 
-Internal working docs (audit status, incident notes, work queue) live in the local-only `todos/` folder — it is gitignored and never committed.
+## Todos layout (local-only, gitignored)
+
+`todos/` is never committed. Its shape is fixed:
+
+- `todos/AUDIT_STATUS.md` — the ONLY audit result file: open bugs + open improvements, always consolidated. Never create a second live audit, agenda, or owner file — merge into it.
+- `todos/features/` — ALL feature plans (plus their runbooks/checklists).
+- `todos/archives/` — everything closed. The moment any part of an audit (a row, a phase, a whole audit doc) is done, it moves here in the same session, as a dated copy; the live file keeps only open items. A closed feature plan moves here too.
+
+When work is complete, propose an audit of the work done to the user (what changed, evidence, risks) and run it on their go-ahead. The audit's findings then follow this layout: open items stay in `AUDIT_STATUS.md`, closed phases move to `archives/`.
 
 ## Current contracts
 
@@ -36,7 +44,7 @@ After implementation, review changed code for correctness and unnecessary comple
 
 ## Git history constraint (standing)
 
-The fork `leo-3889/finevibe` MUST stay able to rebuild/rebase onto `origin` (`elirantutia/vibeyard` main). NEVER force-push or history-rewrite `feat/multi-provider-status-and-profile-scoping` (it backs open upstream PR #167 — its published history is not ours to change) and never rewrite pre-rename commits. Keep `origin` fetchable: do not prune the remote, its refs, or fetched objects the fork descends from. Rebuild recipe: temp branch off `main` → `git fetch origin && git rebase origin/main` on it → full gate at the rebased tip → fast-forward `main` (no merge commit, no force) → push. If the recipe ever needs a force-push, merge commit, or rewrite to finish, the constraint is already broken — fix the history first, never the recipe. (Full text: `todos/fork-rebuildable-on-origin.md`, local-only.)
+The fork `leo-3889/finevibe` MUST stay able to rebuild/rebase onto `origin` (`elirantutia/vibeyard` main). NEVER force-push or history-rewrite `feat/multi-provider-status-and-profile-scoping` (it backs open upstream PR #167 — its published history is not ours to change) and never rewrite pre-rename commits. Keep `origin` fetchable: do not prune the remote, its refs, or fetched objects the fork descends from. Rebuild recipe: temp branch off `main` → `git fetch origin && git rebase origin/main` on it → full gate at the rebased tip → fast-forward `main` (no merge commit, no force) → push. If the recipe ever needs a force-push, merge commit, or rewrite to finish, the constraint is already broken — fix the history first, never the recipe. (Full text: `todos/archives/fork-rebuildable-on-origin.md`, local-only.)
 
 ## Skills
 
