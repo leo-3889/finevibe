@@ -34,9 +34,21 @@ Perform a full release: generate release notes, bump version, commit, tag, and p
   - Changelog entries generated
   - Commit hash
   - Tag name
-- Ask the user to confirm before pushing. If confirmed:
-  - `git push origin main`
-  - `git push origin v<version>`
+- Ask the user to confirm before pushing. If confirmed, push to the **fork** remote
+  (this repo's `origin` is the upstream `elirantutia/vibeyard` checkout URL and pushing
+  it is refused by the standing fork-rebuild constraint — see
+  [docs/git-history.md](../../docs/git-history.md)):
+  - `git push fork main`
+  - `git push fork v<version>`
+- If the `fork` remote is not configured, show `git remote -v` and ask the user which
+  remote publishes this fork before pushing anything.
 - If denied, inform the user the commit and tag are local and can be undone.
+
+Pushing the tag publishes nothing by itself: the artifact matrix, the GitHub Release and
+the npm publish all come from the **Release** workflow, which is
+`workflow_dispatch`-only (`.github/workflows/release.yml`). Inside that runner, the
+workflow's own `git push origin …` is correct — there `origin` is the GitHub repo the
+workflow runs in, not the upstream URL. The full sequence, including the
+`artifacts_only` gate leg, is documented in [docs/release.md](../../docs/release.md).
 
 $ARGUMENTS

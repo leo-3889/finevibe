@@ -14,6 +14,8 @@ updated in the same commit.
 | [performance.md](performance.md) | Search/preview/cache limits, event retention, boot/bundle instrumentation and the measured budget |
 | [ui-conventions.md](ui-conventions.md) | Renderer components, CSS theme variables, i18n and project layout conventions |
 | [packaging.md](packaging.md) | Artifact matrix, deb build requirements, the release feed and verification |
+| [release.md](release.md) | The release sequence: `workflow_dispatch` inputs, job order, which remote pushes, post-publish verification |
+| [git-history.md](git-history.md) | The standing fork-rebuild constraint: the rebase recipe, the never-force-push branch, which remote pushes |
 
 Related files at the repository root:
 
