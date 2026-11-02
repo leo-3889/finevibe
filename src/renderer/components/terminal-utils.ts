@@ -485,7 +485,7 @@ type XtermCore = {
     shouldForceSelection?: (e: MouseEvent) => boolean;
   } & Record<string, unknown>;
   coreMouseService?: {
-    triggerMouseEvent?: (e: { button: number; action: number; alt: boolean }) => boolean;
+    triggerMouseEvent?: (e: { button: number; action: number; alt: boolean; shift?: boolean }) => boolean;
     __finevibeMouseGate?: boolean;
   } & Record<string, unknown>;
 };
@@ -517,7 +517,18 @@ export function attachMouseForwardingGate(terminal: Terminal): void {
 
   const originalForceSelection = selectionService.shouldForceSelection;
   selectionService.shouldForceSelection = (e: MouseEvent) => {
-    if (e.button === 0 && !e.altKey) return true;
+    if (e.button === 0) {
+      // Row 69 (owner decision): the "TUI mouse mode" preference INVERTS the
+      // convention — plain-left forwards to mouse-tracking apps, local
+      // selection is Shift+drag (the standard xterm chord), and on macOS
+      // Option+drag selects too (the platform convention
+      // macOptionClickForcesSelection cannot express in this renderer).
+      // Read per press: the preference toggles live, no pane re-attach.
+      if (appState.preferences.tuiMouseMode === true) {
+        return e.shiftKey || (isMac && e.altKey);
+      }
+      if (!e.altKey) return true;
+    }
     // A finished selection must survive the right-click that copies it, so the
     // press is claimed (not forwarded) whenever one is live — xterm's own
     // `SelectionService.handleMouseDown` returns early for button 2 with a
@@ -530,10 +541,17 @@ export function attachMouseForwardingGate(terminal: Terminal): void {
 
   const originalTrigger = mouseService.triggerMouseEvent;
   // xterm action codes: UP 0, DOWN 1, MOVE 32 (wheel reuses 0/1 with button 4).
-  mouseService.triggerMouseEvent = (event) =>
-    event.button === 0 && !event.alt && (event.action === 0 || event.action === 1 || event.action === 32)
+  mouseService.triggerMouseEvent = (event) => {
+    // Swallow the left-button reports only for presses that force-selection
+    // CLAIMED — the claiming chord is per-mode (plain-left, or Shift/Option
+    // under TUI mouse mode), so the swallow test reads the same preference.
+    const localChord = appState.preferences.tuiMouseMode === true
+      ? (event.shift === true || (isMac && event.alt))
+      : !event.alt;
+    return event.button === 0 && localChord && (event.action === 0 || event.action === 1 || event.action === 32)
       ? false
       : originalTrigger.call(mouseService, event);
+  };
 
   mouseService.__finevibeMouseGate = true;
 }

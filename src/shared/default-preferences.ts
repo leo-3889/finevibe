@@ -30,5 +30,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   readinessExcludedProviders: [],
   sidebarViews: { gitPanel: true, sessionHistory: true, discussions: true, fileTree: true, activeSessions: true },
   boardCardMetrics: true,
+  tuiMouseMode: false,
   defaultProjectsFolder: '',
 };

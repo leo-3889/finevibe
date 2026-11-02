@@ -450,8 +450,8 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
 
   menu.appendChild(renameItem);
   if (isCli) {
-    // Registry picker (parent §11): the remote spellings are the adopted
-    // hostId (migration) or a legacy sshHost the picker overwrites on write.
+    // Registry picker (parent §11): hostId is the only remote spelling — the
+    // legacy free-text sshHost is retired, stripped at load.
     const sessionRemote = !!session.hostId && session.hostId !== LOCAL_HOST_ID;
     const sshItem = document.createElement('div');
     sshItem.className = 'tab-context-menu-item';
@@ -462,7 +462,7 @@ function showTabContextMenu(x: number, y: number, project: ProjectRecord, sessio
       pickSessionHost(session);
     });
     menu.appendChild(sshItem);
-    if (sessionRemote || session.sshHost) {
+    if (sessionRemote) {
       const sshClearItem = document.createElement('div');
       sshClearItem.className = 'tab-context-menu-item';
       sshClearItem.textContent = t('contextMenu.tab.sshHostClear');

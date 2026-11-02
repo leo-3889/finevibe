@@ -151,8 +151,6 @@ export interface SessionRecord {
   cost?: CostInfo;
   contextWindow?: ContextWindowInfo;
   remoteHostName?: string;
-  /** Persisted: host this session launches through over SSH (`user@host` or `host`), validated by shared/ssh-host.ts. */
-  sshHost?: string;
   shareMode?: ShareMode;
   browserTabUrl?: string;
   /** When true, the browser-tab webview uses an isolated partition that doesn't see imported cookies/passwords. */
@@ -651,6 +649,9 @@ export interface Preferences {
   readinessExcludedProviders?: ProviderId[];
   sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;
+  /** Row 69 (owner decision): true = plain-left forwards to mouse-tracking
+   * TUIs; local selection is Shift+drag (macOS: Option+drag too). */
+  tuiMouseMode?: boolean;
   chromeImport?: ChromeImportSummary;
 }
 

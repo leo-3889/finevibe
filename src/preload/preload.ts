@@ -503,3 +503,12 @@ contextBridge.exposeInMainWorld(
   '__FINEVIBE_CLIPBOARD_TIMING__',
   process.env.FINEVIBE_CLIPBOARD_TIMING === '1'
 );
+
+// Row 121 resize trace: same forwarding idiom — the renderer's `fit`/`data`
+// probes read this global (terminal-pane.ts); without the bridge the H2/H5
+// discriminating points stayed dark even with the env set (found in the
+// 2026-11-05 repro).
+contextBridge.exposeInMainWorld(
+  '__FINEVIBE_RESIZE_TRACE__',
+  process.env.FINEVIBE_RESIZE_TRACE === '1'
+);

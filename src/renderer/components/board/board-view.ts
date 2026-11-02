@@ -9,6 +9,7 @@ import { showBoardHelpDialog } from './board-help-dialog.js';
 import { t } from '../../i18n.js';
 import { instances as kanbanInstances, getKanbanProjectIdForElement } from '../kanban/instance.js';
 import type { TagDefinition, BoardData } from '../../../shared/types.js';
+import { getStatus } from '../../session-activity.js';
 import {
   setSearchQuery, getSearchQuery, toggleTagFilter, isTagFilterActive,
   hasActiveFilters, getFilteredTasks, onFilterChange, getActiveTagFilters,
@@ -308,6 +309,18 @@ function textHash(text: string): number {
   return h >>> 0;
 }
 
+// Row 7 (P2-65 residual): coarse per-task status bucket. A session going
+// live WITHOUT an id change (▶ on a task already in Active) kept the
+// id-based key equal, so the card never rebuilt — and the status dot's DOM
+// does not exist on a never-live card, so the targeted status patch cannot
+// create it. The bucket flips only on idle↔live↔done transitions (a few per
+// session life), keeping rebuilds rare; per-tick status TEXT/cost updates
+// keep riding the cheap patch path inside a live card.
+const STATUS_BUCKET: Record<string, string> = { working: 'L', waiting: 'L', input: 'L', completed: 'D', idle: 'I' };
+function statusBucket(sessionId: string | undefined): string {
+  return sessionId ? STATUS_BUCKET[getStatus(sessionId)] ?? '' : '';
+}
+
 export function boardChangeKey(board: BoardData): string {
   const cols = [...board.columns]
     .sort((a, b) => a.order - b.order)
@@ -325,7 +338,7 @@ export function boardChangeKey(board: BoardData): string {
     // run/resume glyph and gate the live status/metrics rows — a run or
     // resume (board-session-sync writes them) is invisible until the key
     // sees them.
-    .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}:${tk.sessionId ?? ''}:${tk.cliSessionId ?? ''}:${tk.providerId ?? ''}`)
+    .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}:${tk.sessionId ?? ''}:${tk.cliSessionId ?? ''}:${tk.providerId ?? ''}:${statusBucket(tk.sessionId)}`)
     .join(',');
   const filters = `${getSearchQuery()}\u0000${[...getActiveTagFilters()].sort().join('+')}`;
   // I4: the gate toggle is visible (the ✓ on the settings menu item), so it belongs

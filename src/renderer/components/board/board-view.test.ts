@@ -11,8 +11,9 @@ vi.mock('../../provider-availability.js', () => ({
   getProviderCapabilities: vi.fn(),
   hasMultipleAvailableProviders: vi.fn(() => false),
 }));
+const mockGetStatus = vi.hoisted(() => vi.fn((): string | null => null));
 vi.mock('../../session-activity.js', () => ({
-  getStatus: vi.fn(() => null),
+  getStatus: mockGetStatus,
   onChange: vi.fn(() => () => {}),
   STATUS_GLYPH: { working: '\u25C6', idle: '\u25C7', error: '\u25CF' },
 }));
@@ -473,5 +474,25 @@ describe('board-view settings menu (I4 lead Done-gate)', () => {
     const before = boardChangeKey(board);
     board.leadGate = true;
     expect(boardChangeKey(board)).not.toBe(before);
+  });
+
+  it('row 7: a session going live with NO id change moves the key (the dot DOM needs the rebuild)', () => {
+    // P2-65 residual: the id-based key stayed equal when ▶ on an Active task
+    // first set a status, so the card never rebuilt — and the status dot's
+    // DOM does not exist on a never-live card, so the targeted patch cannot
+    // create it. The coarse idle/live/done bucket flips the key on the
+    // transition.
+    setupBoard(true);
+    const board = appState.activeProject!.board!;
+    board.tasks = [{ id: 't7', columnId: board.columns[0].id, order: 0, title: 'x', prompt: 'p', sessionId: 's7' } as never];
+    mockGetStatus.mockReturnValue('idle');
+    const before = boardChangeKey(board);
+    mockGetStatus.mockReturnValue('working');
+    const live = boardChangeKey(board);
+    expect(live).not.toBe(before);
+    // …and a working→waiting tick (same bucket) does NOT rebuild: the cheap
+    // in-card patch path stays the per-tick mechanism.
+    mockGetStatus.mockReturnValue('waiting');
+    expect(boardChangeKey(board)).toBe(live);
   });
 });

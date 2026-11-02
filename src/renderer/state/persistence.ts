@@ -36,11 +36,12 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
     if (validated) hosts.push(validated);
   }
   state.hosts = hosts;
-  // Legacy sshHost adoption runs before the hostId defaults (parent §11),
-  // mirroring store.ts on main: a session tagged with a registry hostname
-  // adopts the host id; unregistered/ambiguous targets keep the (inert)
-  // sshHost tag — the legacy wrap is retired, the hostId normalization
-  // below pins them to LOCAL_HOST_ID.
+  // Legacy sshHost adoption runs before the hostId defaults (parent §11
+  // retire tail), mirroring store.ts on main: a session tagged with a registry
+  // hostname adopts the host id and every legacy sshHost key is stripped, so
+  // an old state.json hydrates safely and the retired field never reaches the
+  // UI or a re-save. Unregistered/ambiguous targets get no hostId; the
+  // normalization below pins them to LOCAL_HOST_ID.
   migrateLegacySessionSshHosts(state.projects, hosts);
   // Per-host providers plan §2: pre-existing profiles and sessions carry no
   // hostId — normalize 'local' once at load, mirroring store.ts on main.

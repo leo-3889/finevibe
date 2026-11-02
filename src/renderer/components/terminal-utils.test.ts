@@ -1381,6 +1381,29 @@ describe('attachMouseForwardingGate', () => {
     expect(force(new MouseEvent('mousedown', { button: 2 }))).toBe(false);
   });
 
+  it('row 69 TUI mouse mode: plain-left forwards to the app, Shift+drag selects', () => {
+    const prefs = mockPreferences as { tuiMouseMode?: boolean };
+    const prev = prefs.tuiMouseMode;
+    prefs.tuiMouseMode = true;
+    try {
+      const { terminal, forwarded } = makeFakeTerminal();
+      attachMouseForwardingGate(terminal);
+      const force = terminal._core._selectionService.shouldForceSelection;
+      // Plain left is NO LONGER claimed — it reaches the mouse-tracking TUI.
+      expect(force(new MouseEvent('mousedown', { button: 0 }))).toBe(false);
+      // Shift+drag is the selection chord; Alt+left keeps app semantics on
+      // non-mac (the mac Option+drag clause is isMac-gated; jsdom is non-mac).
+      expect(force(new MouseEvent('mousedown', { button: 0, shiftKey: true }))).toBe(true);
+      expect(force(new MouseEvent('mousedown', { button: 0, altKey: true }))).toBe(false);
+      const trigger = terminal._core.coreMouseService.triggerMouseEvent;
+      expect(trigger({ button: 0, action: 1, alt: false })).toBe(true); // plain DOWN → app
+      expect(trigger({ button: 0, action: 1, alt: false, shift: true })).toBe(false); // selection press swallowed
+      expect(forwarded).toHaveLength(1);
+    } finally {
+      prefs.tuiMouseMode = prev;
+    }
+  });
+
   it('claims the right-click copy while a selection is live', () => {
     const { terminal, selection } = makeFakeTerminal();
     attachMouseForwardingGate(terminal);
