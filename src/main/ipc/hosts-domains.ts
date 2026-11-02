@@ -123,6 +123,13 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
     // invalidation idiom covers — an edited user/host/port must not leave
     // `~` expanding to the previous account's home (unconditional drop is
     // cheap: the cache re-probes lazily on the next `~`-anchored call).
+    //
+    // Row 35: the per-host pin store (`hosts/<id>/known_hosts`) is deliberately
+    // NOT touched here. Deleting it on an edit would drop the app's `ssh` lanes
+    // back to the user's ~/.ssh — a silent trust downgrade. Leaving it means the
+    // stale token makes the next app `ssh` refuse (fail closed); recovery is
+    // re-enrollment, the only lane holding a live pin-verified key to seed from.
+    // Same reasoning covers hosts:approveHostKey, which has no live connection.
     invalidateRemoteHome(id);
     return merged;
   });

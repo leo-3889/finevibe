@@ -48,6 +48,12 @@ vi.hoisted(() => {
 const mockGetHost = vi.hoisted(() => vi.fn(() => null as unknown));
 vi.mock('./hosts/host-registry', () => ({ getHost: mockGetHost }));
 
+// Row 35: the trust argv is built from the record + whether the key has a stored
+// passphrase. Stub the secret store; the option's own semantics are pinned in
+// hosts/host-trust.test.ts.
+const mockGetHostSecret = vi.hoisted(() => vi.fn((_key: string): string | null => null));
+vi.mock('./hosts/secrets', () => ({ getHostSecret: mockGetHostSecret }));
+
 vi.mock('node-pty', () => ({
   default: { spawn: mockSpawn },
   spawn: mockSpawn,
@@ -685,6 +691,54 @@ describe('per-host SSH trust store argv (audit row 35)', () => {
       '--',
       '192.168.1.50', // pii-allow: synthetic LAN fixture
     ]);
+    // The exact path, and exactly ONE trust file: -o UserKnownHostsFile
+    // REPLACES the default list, so a seeded FineVibe lane never consults
+    // ~/.ssh/known_hosts (the split-trust story this row closes).
+    const files = (mockSpawn.mock.calls[0][1] as string[]).filter((a) => a.startsWith('UserKnownHostsFile='));
+    expect(files).toEqual([`UserKnownHostsFile=${trustPath}`]);
+  });
+
+  // Row 35 follow-up: a key-auth host's pane must not sit on ssh's password
+  // prompts after a failed key auth; password-auth hosts keep the prompt.
+  it('key-auth lanes also carry NumberOfPasswordPrompts=0 (both spawn sites)', () => {
+    mockExistsSync.mockImplementation((p) => String(p) === trustPath);
+    mockGetHost.mockReturnValue({ ...labRecord, authKind: 'key' });
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    spawnShellPty('sh-key', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
+    expect(mockSpawn.mock.calls[0][1]).toEqual([
+      '-tt',
+      '-o',
+      `UserKnownHostsFile=${trustPath}`,
+      '-o',
+      'StrictHostKeyChecking=yes',
+      '-o',
+      'NumberOfPasswordPrompts=0',
+      '-p',
+      '2222',
+      '--',
+      '192.168.1.50', // pii-allow: synthetic LAN fixture
+    ]);
+
+    const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
+    expect(spec.argv.slice(0, 11)).toEqual([
+      '-tt',
+      '-o',
+      `UserKnownHostsFile=${trustPath}`,
+      '-o',
+      'StrictHostKeyChecking=yes',
+      '-o',
+      'NumberOfPasswordPrompts=0',
+      '-p',
+      '2222',
+      '--',
+      'dev@192.168.1.50',
+    ]);
+
+    // Passphrase-protected key: the pane prompt is the only unlock path, so the
+    // flag is dropped (the keychain passphrase never reaches the system ssh).
+    mockGetHostSecret.mockImplementation((key: string) => (key === 'keypass:lab' ? 'hunter2' : null));
+    spawnShellPty('sh-keypass', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
+    expect(mockSpawn.mock.calls[1][1]).not.toContain('NumberOfPasswordPrompts=0');
   });
 
   it('shell lane: no seeded store, and no hostId, emit NO -o flags (passthrough)', () => {
