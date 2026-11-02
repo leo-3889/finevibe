@@ -600,10 +600,12 @@ export function resolveProviderBinary(providerId: ProviderId, hostId?: string): 
 
 /**
  * The provider launch command as one string for the remote login shell:
- * the binary's basename (Windows `.CMD`/`.EXE` shims carry the same stem as
- * the POSIX command) plus every argument, each POSIX-quoted. The local
- * absolute path does not exist on the remote — the remote login shell's PATH
- * resolves the remote's own install.
+ * the prereq's recorded path — an ABSOLUTE path on the host, from
+ * `HostRecord.prerequisites` (probed there; never a local path, never
+ * reduced to a basename; row 113) — plus every argument, each POSIX-quoted.
+ * A provider with no ok prereq is refused upstream (`resolveProviderBinary`).
+ * The Windows `.CMD`/`.EXE` stem rule belongs to the LOCAL lane
+ * (`resolveWindowsShell`), not this one.
  */
 function remoteCommand(bin: string, argv: string[], homeTokens: Set<string>): string {
   // `homeTokens` (the home-relative session dir, and on a resume the

@@ -58,9 +58,11 @@ export function parseSshHost(raw: string): SshHostRef | null {
  * retire", one release carrying both spellings). A session tagged with the
  * hostname of a registry host adopts that host's id and drops the free
  * text. An unregistered or AMBIGUOUS hostname keeps `sshHost` untouched —
- * the pty-manager legacy wrap still honors it, so no session loses its
- * launch target. Run at every load boundary (main store.ts, renderer
- * hydrate), same once-at-load rule as the hostId normalization.
+ * the tag is INERT since the legacy pty-manager wrap was retired (row 113:
+ * launches speak hostId only), and the hostId normalization that follows
+ * this migration pins such a session to LOCAL_HOST_ID, so no launch ever
+ * targets an unregistered host. Run at every load boundary (main store.ts,
+ * renderer hydrate), same once-at-load rule as the hostId normalization.
  */
 export function migrateLegacySessionSshHosts(
   projects: readonly ProjectRecord[],
