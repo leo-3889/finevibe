@@ -331,6 +331,13 @@ export function getFullPathAsync(): Promise<string> {
     }
     const shell = defaultPosixShell();
     try {
+      // ponytail (review 8dddea9a ℹ️6): the sync twin silences stderr via
+      // stdio:'ignore'; execFile's async API ALWAYS pipes stdout+stderr into
+      // maxBuffer (1 MB each) and its typing refuses a stdio option — the
+      // parity is inexpressible short of spawn+manual pipes. Ceiling: a login
+      // shell writing >1 MB on the probe's stderr rejects → fallback PATH
+      // (nvm bins lost for that spawn). Upgrade path: raw spawn if a real
+      // profile ever trips it.
       const { stdout } = await execFileP(
         shell,
         ['-ilc', `echo "${PATH_MARKER_BEGIN}${'${PATH}'}${PATH_MARKER_END}"`],
@@ -1005,11 +1012,6 @@ export async function spawnPty(
       return;
     }
 
-    if (ptys.has(sessionId)) {
-      replacedPtys.add(ptys.get(sessionId)!.process);
-      killPty(sessionId);
-    }
-
     // Remote-host sessions poll their status sidecar on the host over the
     // sftp seam (per-host providers plan §3); local ones keep the STATUS_DIR
     // watcher. registerSession is implied by registerRemoteStatus.
@@ -1074,6 +1076,13 @@ export async function spawnPty(
       }
     }
 
+    // Replace guard LAST before the spawn (review 8dddea9a 🟡3): every await
+    // on this lane (PATH probe, binary probe, keychain, hooks) sits BEFORE
+    // this block, so no window remains between check-then-act and ptys.set.
+    if (ptys.has(sessionId)) {
+      replacedPtys.add(ptys.get(sessionId)!.process);
+      killPty(sessionId);
+    }
     const { shell, args: spawnArgs } = spawnCommand;
     let ptyProcess: pty.IPty;
     try {
@@ -1228,6 +1237,13 @@ export async function spawnShellPty(
    * store (audit row 35); without it the lane uses the user's known_hosts. */
   remote?: { hostId?: string; host: string; port: number; defaultFolder?: string },
 ): Promise<void> {
+  // Row 17 review (8dddea9a findings 1-2): the PATH await below reopened the
+  // kill/replace window this function used to close atomically. Register in
+  // flight so a tab-close during the probe leaves a pendingKill (killPty
+  // consults spawningInFlight), and re-run the replace guard after the await
+  // — two invokes (Retry overlay during a slow probe) must not both pass it.
+  spawningInFlight.add(sessionId);
+  try {
   if (ptys.has(sessionId)) {
     replacedPtys.add(ptys.get(sessionId)!.process);
     killPty(sessionId);
@@ -1243,6 +1259,16 @@ export async function spawnShellPty(
     ? (process.env.COMSPEC || 'cmd.exe')
     : interactiveShell();
   const shellEnv = withUtf8Locale({ ...process.env, PATH: await getFullPathAsync() });
+  if (ptys.has(sessionId)) {
+    replacedPtys.add(ptys.get(sessionId)!.process);
+    killPty(sessionId);
+  }
+  if (pendingKills.delete(sessionId)) {
+    // Closed during the probe: the in-flight marker above caught the kill.
+    unregisterSession(sessionId);
+    spawningInFlight.delete(sessionId);
+    return;
+  }
   // Remote branch: the PTY runs system ssh; the remote login shell answers
   // there. `--` stops ssh from parsing the host token as an option (the
   // registry grammar already gates it), matching the resolveLaunchSpec wrap.
@@ -1284,6 +1310,14 @@ export async function spawnShellPty(
   });
 
   ptys.set(sessionId, { process: ptyProcess, sessionId });
+  // A killPty that arrived while this spawn was in flight addressed it —
+  // the entry exists now, so killPty reaches the process (mirrors spawnPty).
+  if (pendingKills.delete(sessionId)) {
+    killPty(sessionId);
+  }
+  } finally {
+    spawningInFlight.delete(sessionId);
+  }
 }
 
 export function killAllPtys(): void {

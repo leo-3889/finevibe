@@ -83,6 +83,10 @@ function keychainEntryExists(service: string): boolean {
 /** Async twin of {@link keychainEntryExists} (row 17 spawn lane). */
 async function keychainEntryExistsAsync(service: string): Promise<boolean> {
   try {
+    // ponytail (review 8dddea9a ℹ️8): the sync twin's stdio:'ignore' is
+    // inexpressible in execFile's async typing (it always pipes into
+    // maxBuffer=1 MB). `find-generic-password` without -g prints attribute
+    // metadata only (kilobytes); ceiling is far above the real output.
     await execFileP('/usr/bin/security', ['find-generic-password', '-s', service], { timeout: 3000 });
     return true;
   } catch {

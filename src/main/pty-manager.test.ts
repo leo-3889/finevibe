@@ -4,7 +4,7 @@ import * as path from 'path';
 import type * as PlatformModule from './platform';
 import { isLinux, isMac, isWin } from './platform';
 
-const { mockSpawn, mockWrite, mockResize, mockKill, mockExecSync, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
+const { mockSpawn, mockWrite, mockResize, mockKill, mockExecSync, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation, mockKeychainIsolationAsync } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockWrite: vi.fn(),
   mockResize: vi.fn(),
@@ -14,6 +14,7 @@ const { mockSpawn, mockWrite, mockResize, mockKill, mockExecSync, mockExecFile, 
   mockExecSync: vi.fn((..._args: any[]): string => { throw new Error('not found'); }),
   mockExecFile: vi.fn(),
   mockKeychainIsolation: vi.fn(() => ({ status: 'supported' as 'supported' | 'unsupported' | 'unknown', version: null as string | null })),
+  mockKeychainIsolationAsync: vi.fn(async () => ({ status: 'supported' as 'supported' | 'unsupported' | 'unknown', version: null as string | null })),
   mockNvmDefaultNodeBinDir: vi.fn(() => null as string | null),
 }));
 
@@ -98,9 +99,11 @@ vi.mock('./providers/nvm', () => ({
 
 vi.mock('./claude-keychain', () => ({
   getKeychainIsolationStatus: mockKeychainIsolation,
-  // Row 17: the spawn lane gates profile launches on the async twin; it
-  // delegates to the same knob so a case programs one verdict for both lanes.
-  getKeychainIsolationStatusAsync: vi.fn(async () => mockKeychainIsolation()),
+  // Row 17: the spawn lane gates profile launches on the async twin. Separate
+  // spies per twin (review 8dddea9a 🟡5): a test asserts the SPAWN LANE calls
+  // the async twin and never the sync one — one knob for both let a regression
+  // to the blocking sync probe pass every test.
+  getKeychainIsolationStatusAsync: mockKeychainIsolationAsync,
 }));
 
 // P1-14: the per-spawn profile install goes through settings-guard's consent
@@ -158,6 +161,7 @@ beforeEach(() => {
   resetPathCache();
   mockExistsSync.mockReturnValue(false);
   mockKeychainIsolation.mockReturnValue({ status: 'supported', version: null });
+  mockKeychainIsolationAsync.mockResolvedValue({ status: 'supported', version: null });
   initProviders();
 });
 
@@ -459,11 +463,17 @@ describe('spawnPty', () => {
 
   it('reports a Claude profile blocked by keychain isolation as spawn-rejected (no PTY)', async () => {
     mockKeychainIsolation.mockReturnValue({ status: 'unsupported', version: '2.1.19' });
+    mockKeychainIsolationAsync.mockResolvedValue({ status: 'unsupported', version: '2.1.19' });
     const onData = vi.fn();
     const onExit = vi.fn();
 
     await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', onData, onExit, '/profiles/work');
 
+    // Review 8dddea9a 🟡5: the spawn lane must gate on the ASYNC twin — the
+    // sync one re-blocks the main process (3 s `which` + 3 s `--version` +
+    // N x `security`) and is exactly what row 17 removed.
+    expect(mockKeychainIsolationAsync).toHaveBeenCalled();
+    expect(mockKeychainIsolation).not.toHaveBeenCalled();
     expect(mockSpawn).not.toHaveBeenCalled();
     expect(onData).toHaveBeenCalledTimes(1);
     expect(onData.mock.calls[0][0]).toContain('keychain login, mixing the accounts');
@@ -503,6 +513,7 @@ describe('spawnPty', () => {
 
   it('runs no profile install when the keychain guardrail blocks the spawn', async () => {
     mockKeychainIsolation.mockReturnValue({ status: 'unsupported', version: '2.1.19' });
+    mockKeychainIsolationAsync.mockResolvedValue({ status: 'unsupported', version: '2.1.19' });
 
     await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn(), '/profiles/work');
 
@@ -1722,9 +1733,9 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
     // The reset also drops the beforeEach default (a failing probe), which the
     // async spawnShellPty below needs before it reaches pgrep (row 17).
     execFile.mockReset();
-    execFile.mockImplementation((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+    execFile.mockImplementation(((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
       if (typeof cb === 'function') cb(new Error('not found'));
-    });
+    }) as never);
     const proc = createMockPtyProcess();
     (proc as unknown as { pid: number }).pid = 1000;
     mockSpawn.mockReturnValue(proc);
@@ -1750,9 +1761,9 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
   it('returns null for getPtyCwd on Linux when the /proc readlink fails', async () => {
     const { pm, execFile, readlinkSync } = await importPosixPtyManager('linux');
     execFile.mockReset();
-    execFile.mockImplementation((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+    execFile.mockImplementation(((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
       if (typeof cb === 'function') cb(new Error('not found'));
-    });
+    }) as never);
 
     const proc = createMockPtyProcess();
     (proc as unknown as { pid: number }).pid = 1000;
