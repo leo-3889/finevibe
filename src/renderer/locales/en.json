@@ -20,6 +20,7 @@
     "autoNameSessions": "Auto-name sessions from the CLI's session title (Claude, OMP, Pi, Pi-Bolt)",
     "confirmClosingActiveSession": "Confirm closing an active session",
     "copyOnSelect": "Copy on select",
+    "leadReviews": "Lead reviews: on session completion, the project lead runs one hidden review of the session (projects with a lead and review mode on-complete)",
     "askAiFocus": "Ask AI opens the new session in",
     "askAiFocusSwitch": "a new focused tab",
     "askAiFocusStay": "the background — keep my tab",
