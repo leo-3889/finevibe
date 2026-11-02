@@ -40,6 +40,7 @@ vi.mock('../hosts/host-registry', () => ({
 vi.mock('../hosts/enrollment', () => ({ enrollHost, testHost: vi.fn(), unenrollHost: vi.fn() }));
 vi.mock('../hosts/settings-sync', () => ({ syncSettingsToHost: vi.fn() }));
 vi.mock('../hosts/remote-fs', () => ({
+  invalidateRemoteHome: vi.fn(),
   cloneRemoteRepo: vi.fn(),
   ensureRemoteDir: vi.fn(),
   listRemoteDirs: vi.fn(),

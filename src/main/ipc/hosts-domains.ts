@@ -19,7 +19,7 @@ import * as fs from 'fs';
 import { HostValidationError, getHost, listHosts, createHost, updateHost, deleteHost } from '../hosts/host-registry';
 import { enrollHost, testHost, unenrollHost } from '../hosts/enrollment';
 import { syncSettingsToHost } from '../hosts/settings-sync';
-import { cloneRemoteRepo, ensureRemoteDir, listRemoteDirs, statRemotePath } from '../hosts/remote-fs';
+import { cloneRemoteRepo, ensureRemoteDir, listRemoteDirs, statRemotePath, invalidateRemoteHome } from '../hosts/remote-fs';
 import { generateManagedKeypair, isManagedKeyPath, isRendererKeyPathAllowed } from '../hosts/keys';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from '../hosts/secrets';
 import { spawnShellPty } from '../pty-manager';
@@ -118,11 +118,18 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
     }
     const keyPatch = gateKeyPatch('hosts:update', app.getPath('userData'), editable.privateKeyPath, getHost(id)?.privateKeyPath);
     if (keyPatch) Object.assign(editable, keyPatch);
-    return updateHost(id, editable as Partial<Omit<HostRecord, 'id'>>);
+    const merged = updateHost(id, editable as Partial<Omit<HostRecord, 'id'>>);
+    // Row 129 review: the home cache is the per-host memo the connection-
+    // invalidation idiom covers — an edited user/host/port must not leave
+    // `~` expanding to the previous account's home (unconditional drop is
+    // cheap: the cache re-probes lazily on the next `~`-anchored call).
+    invalidateRemoteHome(id);
+    return merged;
   });
 
   ipcMain.handle('hosts:delete', (_event, id: string) => {
     deleteHost(id);
+    invalidateRemoteHome(id);
   });
 
   // Open a plain `ssh -tt` shell tab on an enrolled host (Phase 1 verb).
@@ -220,7 +227,9 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
   ipcMain.handle('hosts:unenroll', async (_event, id: string) => {
     const record = getHost(id);
     if (!record) return { ok: false, detail: 'unknown host' };
-    return unenrollHost(record);
+    const res = await unenrollHost(record);
+    invalidateRemoteHome(id);
+    return res;
   });
 
   // Settings push (per-host providers T3, UR-5): the renderer sends ids

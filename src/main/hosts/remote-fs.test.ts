@@ -321,9 +321,10 @@ describe('cloneRemoteRepo', () => {
     sftp.entries.mockResolvedValue([dirEntry('x', true)]);
     await expect(cloneRemoteRepo('h1', 'https://github.com/o/r', '~/r'))
       .resolves.toMatchObject({ ok: false, error: expect.stringContaining('not empty') });
-    // Row 129: the pre-check stats the ABSOLUTE destination, and the only exec
-    // that ran is the cached home probe — never the clone.
+    // Row 129: the pre-check stats AND lists the ABSOLUTE destination, and the
+    // only exec that ran is the cached home probe — never the clone.
     expect(sftp.stat).toHaveBeenCalledWith(enrolled, '/home/dev/r', { timeoutMs: 10000 });
+    expect(sftp.entries).toHaveBeenCalledWith(enrolled, '/home/dev/r', { timeoutMs: 10000 });
     expect(vi.mocked(exec).mock.calls.every(([, cmd]) => !cmd.startsWith('git clone'))).toBe(true);
   });
 

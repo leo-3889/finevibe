@@ -427,7 +427,7 @@ export async function cloneRemoteRepo(
       return { ok: false, error: `Destination exists and is not a directory: ${dest}` };
     }
     if (stat !== null) {
-      const entries = await sftpListDirEntries(gate.record, dest, { timeoutMs: LIST_TIMEOUT_MS });
+      const entries = await sftpListDirEntries(gate.record, cloneDest, { timeoutMs: LIST_TIMEOUT_MS });
       if (entries !== null && entries.length > 0) {
         return { ok: false, error: `Destination is not empty: ${dest}` };
       }

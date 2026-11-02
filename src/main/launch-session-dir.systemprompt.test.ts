@@ -62,14 +62,20 @@ describe('systemPromptArg (Windows cmd.exe quote gate)', () => {
  * Audit 108 — the Pi/Pi-Bolt/OMP `--append-system-prompt` value is "text OR
  * FILE CONTENTS": a one-line prompt that spells an existing file is replaced
  * by that file's contents (verified live on omp/18.15.0 — see the guard's
- * comment). The prefix flips the CLI into text mode; everything else must
- * reach the CLI byte-identical.
+ * comment). On POSIX the prefix flips the CLI into text mode
+ * (`launch-session-dir.systemprompt.posix.test.ts`); on Windows the newline
+ * trick is the byte the `cmd.exe /c` fallback truncates at, so the file
+ * branch takes the case — and everything else must reach the CLI
+ * byte-identical.
  */
 describe('systemPromptArg (audit 108 path-spelling guard)', () => {
-  it('prefixes a one-line prompt that spells an existing file', () => {
+  it('routes a one-line prompt that spells an existing file into the session-dir file (Windows: cmd.exe truncates the newline trick)', () => {
     const file = path.join(dir, 'cmo-persona.md');
     fs.writeFileSync(file, 'You are the CMO.', 'utf8');
-    expect(systemPromptArg(file, path.join(dir, 'guard'))).toBe(`\n${file}`);
+    const out = path.join(dir, 'guard');
+    const written = systemPromptArg(file, out);
+    expect(written).toBe(path.join(out, 'system-prompt.md'));
+    expect(fs.readFileSync(written, 'utf8')).toBe(file);
   });
 
   it('leaves a prompt spelling a missing path byte-identical', () => {

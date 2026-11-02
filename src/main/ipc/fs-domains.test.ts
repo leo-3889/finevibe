@@ -36,6 +36,7 @@ vi.mock('electron', () => ({
 // module loads.
 vi.mock('../store', () => ({ loadState: () => ({ preferences: {} }) }));
 vi.mock('../hosts/remote-fs', () => ({
+  invalidateRemoteHome: vi.fn(),
   isRemotePathInKnownProject: vi.fn(), listRemoteDir: vi.fn(), readRemoteFile: vi.fn(),
   statRemotePath: vi.fn(), walkRemoteFiles: vi.fn(),
 }));
