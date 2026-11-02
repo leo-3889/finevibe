@@ -4,11 +4,13 @@ import * as fs from 'fs';
 import { getProvider } from './providers/registry';
 import { getGitFiles } from './git-status';
 import { resolveLaunchSpec } from './pty-manager';
-import { loadState } from './store';
+import { loadState, saveState } from './store';
 import { sendToMainWindow } from './main-window';
 import { evictOldest } from './bounded-map';
+import { launchSessionDir, ensureLaunchSessionDir } from './launch-session-dir';
 import { normalizeLeadReview } from '../shared/lead-review';
-import { LOCAL_HOST_ID } from '../shared/types';
+import { LEAD_CHARTER_MAX_BYTES, LOCAL_HOST_ID } from '../shared/types';
+import type { LaunchSessionProvider } from './launch-session-dir';
 import type { LoadedState } from './store';
 import type {
   LeadReviewVerdict,
@@ -77,9 +79,17 @@ const LEAD_REVIEW_PROMPT =
 /** Session ids claimed for a review (FIFO-capped by LEAD_REVIEWED_SESSIONS_MAX). */
 const reviewedSessions = new Set<string>();
 
+// Review 7c3238b9-3: reviews are billable CLI runs; a completion burst must
+// not fan out. One in flight; the rest skip with a log (the claim already
+// landed, so a skipped session stays skipped — v1 accepts the loss, the plan
+// asks for cost discipline first).
+export const LEAD_REVIEW_MAX_CONCURRENT = 1;
+let inFlightReviews = 0;
+
 /** @internal Test-only: drop the one-review-per-session ledger. */
 export function _resetLeadReviewForTesting(): void {
   reviewedSessions.clear();
+  inFlightReviews = 0;
 }
 
 /** What the transcript poller knows about the session it just saw complete —
@@ -130,8 +140,20 @@ export function resolveLeadReviewTarget(
     return { target: null, skip: 'lead review off for project' };
   }
   if (session.hostId && session.hostId !== LOCAL_HOST_ID) return { target: null, skip: 'remote session' };
+  // Review 7c3238b9-6: a session under a REGISTRY-HOST project whose record
+  // normalized to LOCAL_HOST_ID would execFile with cwd = a host path
+  // (fails safe at ENOENT, but burns the one-time claim - skip at the gate).
+  if (project.hostId && project.hostId !== LOCAL_HOST_ID) return { target: null, skip: 'remote project' };
   if (isSwarmMemberSession(project, session)) return { target: null, skip: 'swarm member' };
   if (!session.cliSessionId) return { target: null, skip: 'no cli session id' };
+  // One review per session EVER survives restart (review 7c3238b9-2): the
+  // in-memory Set is only the hot path; the record is the durable claim.
+  if (session.leadReviewedAt) return { target: null, skip: 'already reviewed' };
+  // Review 7c3238b9-5: the charter cap is enforced renderer-side on the
+  // INJECTION paths (session-factory); main must not re-trust state.json.
+  if (Buffer.byteLength(lead.charter, 'utf8') > LEAD_CHARTER_MAX_BYTES) {
+    return { target: null, skip: `charter over ${LEAD_CHARTER_MAX_BYTES}-byte cap` };
+  }
   return { target: { project, session, lead }, skip: null };
 }
 
@@ -144,10 +166,12 @@ export function resolveLeadReviewTarget(
 export function parseLeadVerdict(text: string): { verdict: LeadReviewVerdict; summary: string } | null {
   const lines = text.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /^\s*VERDICT:\s*(APPROVED|FLAGGED)\b\s*(.*)$/i.exec(lines[i]);
+    // Review 7c3238b9-8: markdown-wrapped answers (`**VERDICT: APPROVED**`)
+    // are common CLI output; the anchor stays line-start, the bold is eaten.
+    const m = /^\s*\*{0,2}VERDICT:\s*(APPROVED|FLAGGED)\b\*{0,2}\s*(.*)$/i.exec(lines[i]);
     if (!m) continue;
     const verdict = m[1].toUpperCase() === 'APPROVED' ? 'approved' : 'flagged';
-    let summary = m[2].trim();
+    let summary = m[2].trim().replace(/\*+$/, '');
     if (!summary) {
       for (let j = i + 1; j < lines.length; j++) {
         if (lines[j].trim()) {
@@ -246,15 +270,24 @@ function readTranscriptTail(ref: LeadReviewSessionRef): string {
  * Spawn the hidden review run and land its verdict. Reuses the shipped launch
  * lane (`resolveLaunchSpec`) so argv/env/profile handling is EXACTLY the
  * provider's normal spawn — minus the PTY: `execFile` argv array, no shell,
- * `input: ''` so the CLI sees EOF on stdin and exits instead of sitting in a
- * TUI loop until the timeout kill.
+ * stdin closed via `child.stdin.end()` so the CLI sees EOF and exits instead
+ * of sitting in a TUI loop until the timeout kill. `planModeArg` (enforced by
+ * the caller) puts the agent on the provider's read-only plan lane — the
+ * review must never run with default write tools.
  */
-async function runLeadReview(target: LeadReviewTarget, ref: LeadReviewSessionRef): Promise<void> {
+async function runLeadReview(target: LeadReviewTarget, ref: LeadReviewSessionRef, planModeArg: string): Promise<void> {
   const { project, lead } = target;
   const files = await getGitFiles(project.path);
   const filesTouched = Array.from(new Set(files.map((f) => f.path)));
   const digest = composeLeadDigest(filesTouched, readTranscriptTail(ref));
   const reviewId = crypto.randomUUID();
+  // Review 7c3238b9-4: every PTY launch pre-creates its session dir
+  // (onSessionStarted/Resumed); a CLI that does not mkdir its own
+  // --session-dir would die at startup with only "no verdict" visible.
+  // The pi family owns that lane — cover exactly its providers.
+  if (ref.providerId === 'pi' || ref.providerId === 'pi-bolt' || ref.providerId === 'omp') {
+    ensureLaunchSessionDir(launchSessionDir(ref.providerId as LaunchSessionProvider, reviewId));
+  }
   let spec;
   try {
     spec = resolveLaunchSpec({
@@ -275,49 +308,60 @@ async function runLeadReview(target: LeadReviewTarget, ref: LeadReviewSessionRef
     return;
   }
 
-  const child = execFile(
-    spec.executable,
-    spec.argv,
-    {
-      cwd: project.path,
-      env: spec.env,
-      timeout: LEAD_REVIEW_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: LEAD_REVIEW_OUTPUT_MAX_BYTES,
-      windowsHide: true,
-    },
-    (err, stdout, stderr) => {
-      const label = `session ${target.session.id} (project ${project.id})`;
-      if (err && (err as { killed?: boolean }).killed) {
-        console.warn(`[lead-review] timed out after ${LEAD_REVIEW_TIMEOUT_MS} ms, killed: ${label}`);
-        return;
-      }
-      // A non-zero exit with a verdict line still counts (a CLI can exit 1
-      // after answering); only output is required.
-      const parsed = parseLeadVerdict(`${stdout}\n${stderr}`);
-      if (!parsed) {
-        console.log(`[lead-review] no verdict in output, dropped: ${label}`);
-        return;
-      }
-      const note = normalizeLeadReview({
-        v: 1,
-        sessionId: target.session.id,
-        verdict: parsed.verdict,
-        summary: parsed.summary,
-        createdAt: Date.now(),
-      });
-      if (!note) {
-        console.log(`[lead-review] verdict note rejected by shape gate: ${label}`);
-        return;
-      }
-      sendToMainWindow('lead:review', note, project.id);
-    },
-  );
-  // EOF on stdin. Every provider binary is a TUI on this lane (no print-mode
-  // flag exists in `buildArgs`), and an interactive CLI that is handed a prompt
-  // on a pipe it never sees closed waits on input for the whole
-  // LEAD_REVIEW_TIMEOUT_MS budget before the kill above ends it.
-  child.stdin?.end();
+  // The in-flight slot (concurrency cap) spans the CHILD's life, not the
+  // dispatch: resolve only from the execFile callback.
+  await new Promise<void>((resolve) => {
+    const child = execFile(
+      spec.executable,
+      // Read-only grant last in argv (flag-value pairs ride the provider's own
+      // spelling, e.g. `--permission-mode plan`); CLIs accept flags after the
+      // positional prompt.
+      [...spec.argv, ...planModeArg.split(/\s+/).filter(Boolean)],
+      {
+        cwd: project.path,
+        env: spec.env,
+        timeout: LEAD_REVIEW_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+        maxBuffer: LEAD_REVIEW_OUTPUT_MAX_BYTES,
+        windowsHide: true,
+      },
+      (err, stdout, stderr) => {
+        try {
+          const label = `session ${target.session.id} (project ${project.id})`;
+          if (err && (err as { killed?: boolean }).killed) {
+            console.warn(`[lead-review] timed out after ${LEAD_REVIEW_TIMEOUT_MS} ms, killed: ${label}`);
+            return;
+          }
+          // A non-zero exit with a verdict line still counts (a CLI can exit 1
+          // after answering); only output is required.
+          const parsed = parseLeadVerdict(`${stdout}\n${stderr}`);
+          if (!parsed) {
+            console.log(`[lead-review] no verdict in output, dropped: ${label}`);
+            return;
+          }
+          const note = normalizeLeadReview({
+            v: 1,
+            sessionId: target.session.id,
+            verdict: parsed.verdict,
+            summary: parsed.summary,
+            createdAt: Date.now(),
+          });
+          if (!note) {
+            console.log(`[lead-review] verdict note rejected by shape gate: ${label}`);
+            return;
+          }
+          sendToMainWindow('lead:review', note, project.id);
+        } finally {
+          resolve();
+        }
+      },
+    );
+    // EOF on stdin. Every provider binary is a TUI on this lane (no print-mode
+    // flag exists in `buildArgs`), and an interactive CLI that is handed a prompt
+    // on a pipe it never sees closed waits on input for the whole
+    // LEAD_REVIEW_TIMEOUT_MS budget before the kill above ends it.
+    child.stdin?.end();
+  });
 }
 
 /**
@@ -337,6 +381,19 @@ export function requestLeadReview(sessionId: string, ref: LeadReviewSessionRef):
       console.log(`[lead-review] skipped (no system-prompt lane on ${ref.providerId}): ${sessionId}`);
       return;
     }
+    // Review 7c3238b9-1 (plan mandate: "tools read-only by grant"): the
+    // hidden agent is transcript-fed and UI-invisible, so v1 spawns ONLY on
+    // the plan/read-only lane — a provider without a verified planModeArg
+    // (the pi family today) is skipped, never run with default write tools.
+    const planModeArg = getProvider(ref.providerId).meta.capabilities.planModeArg;
+    if (!planModeArg) {
+      console.log(`[lead-review] skipped (no read-only plan-mode grant on ${ref.providerId}): ${sessionId}`);
+      return;
+    }
+    if (inFlightReviews >= LEAD_REVIEW_MAX_CONCURRENT) {
+      console.log(`[lead-review] skipped (concurrency cap ${LEAD_REVIEW_MAX_CONCURRENT}): ${sessionId}`);
+      return;
+    }
     const { target, skip } = resolveLeadReviewTarget(loadState(), sessionId);
     if (!target) {
       // `lead review off for project` is the overwhelmingly common case —
@@ -348,9 +405,19 @@ export function requestLeadReview(sessionId: string, ref: LeadReviewSessionRef):
     }
     reviewedSessions.add(sessionId);
     evictOldest(reviewedSessions, LEAD_REVIEWED_SESSIONS_MAX);
-    void runLeadReview(target, ref).catch((err) => {
-      console.warn(`[lead-review] run failed: ${(err as Error).message}`);
-    });
+    // The durable claim (review 7c3238b9-2): the in-memory Set resets on
+    // restart, the session record does not — a RESUMED completed session
+    // must not re-bill a review.
+    target.session.leadReviewedAt = Date.now();
+    saveState(loadState());
+    inFlightReviews++;
+    void runLeadReview(target, ref, planModeArg)
+      .catch((err) => {
+        console.warn(`[lead-review] run failed: ${(err as Error).message}`);
+      })
+      .finally(() => {
+        inFlightReviews--;
+      });
   } catch (err) {
     console.warn(`[lead-review] skipped (gate threw): ${(err as Error).message}`);
   }

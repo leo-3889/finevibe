@@ -294,6 +294,18 @@ describe('on-complete lead review hook (I3)', () => {
     expect(mockRequestLeadReview).not.toHaveBeenCalled();
   });
 
+  it('requests on the TRANSITION only — repeated completed polls do not re-request (review 7c3238b9-2)', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'completed' }, path: '/t.jsonl' });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    expect(mockRequestLeadReview).toHaveBeenCalledTimes(1);
+    // A size/mtime append keeps the tail reading `completed`: level, not edge
+    // — the trigger must stay silent (the durable record claim is lock two).
+    writeTranscript();
+    vi.advanceTimersByTime(2000);
+    expect(mockRequestLeadReview).toHaveBeenCalledTimes(1);
+  });
+
   it('requests nothing when the .status write failed (no completion surfaced)', () => {
     provider = makeProvider({ polledStatus: true, status: { value: 'completed' }, path: '/t.jsonl' });
     mockWriteStatus.mockImplementationOnce(() => {

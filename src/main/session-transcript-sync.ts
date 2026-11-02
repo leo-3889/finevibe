@@ -424,6 +424,10 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
       if (status) {
         try {
           writeStatus(sessionId, status);
+          // Review 7c3238b9-2: EDGE trigger — registering a RESUMED session
+          // whose transcript already reads `completed` must not re-bill a
+          // review (the durable claim in lead-review is the second lock).
+          const prevStatus = e.lastStatus;
           e.lastStatus = status;
           // Lead review (team-lead-persona-plan I3): this is the single LOCAL
           // choke point where a polled transcript status surfaces, so it is
@@ -431,7 +435,7 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
           // (syncEntryRemote) deliberately never calls it — v1 reviews local
           // sessions only — and the lead module owns every cost guard
           // (one review per session, lead-enabled project, kill switch).
-          if (status === 'completed') {
+          if (status === 'completed' && prevStatus !== 'completed') {
             requestLeadReview(sessionId, {
               providerId: e.providerId,
               cliSessionId: e.cliSessionId,

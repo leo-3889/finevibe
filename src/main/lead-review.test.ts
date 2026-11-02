@@ -1,4 +1,5 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { LEAD_CHARTER_MAX_BYTES } from '../shared/types';
 import type { ChildProcess } from 'child_process';
 
 // The launch lane, the git lane, the state store and the window push are all
@@ -8,6 +9,7 @@ const mockResolveLaunchSpec = vi.hoisted(() => vi.fn());
 const mockGetGitFiles = vi.hoisted(() => vi.fn());
 const mockLoadState = vi.hoisted(() => vi.fn());
 const mockSend = vi.hoisted(() => vi.fn());
+const mockSaveState = vi.hoisted(() => vi.fn());
 const mockGetProvider = vi.hoisted(() => vi.fn());
 const mockFs = vi.hoisted(() => ({
   openSync: vi.fn(() => 7),
@@ -20,9 +22,10 @@ vi.mock('child_process', () => ({ execFile: mockExecFile }));
 vi.mock('fs', () => mockFs);
 vi.mock('./pty-manager', () => ({ resolveLaunchSpec: mockResolveLaunchSpec }));
 vi.mock('./git-status', () => ({ getGitFiles: mockGetGitFiles }));
-vi.mock('./store', () => ({ loadState: mockLoadState }));
+vi.mock('./store', () => ({ loadState: mockLoadState, saveState: mockSaveState }));
 vi.mock('./main-window', () => ({ sendToMainWindow: mockSend }));
 vi.mock('./providers/registry', () => ({ getProvider: mockGetProvider }));
+vi.mock('./launch-session-dir', () => ({ launchSessionDir: vi.fn(() => '/tmp/review-dir'), ensureLaunchSessionDir: vi.fn() }));
 
 import {
   LEAD_REVIEW_DIGEST_MAX_BYTES,
@@ -121,7 +124,7 @@ beforeEach(() => {
   mockExecFile.mockReturnValue({ stdin: { end: vi.fn() } } as unknown as ChildProcess);
   mockGetProvider.mockReturnValue({
     getTranscriptPath: vi.fn(() => '/tmp/transcript.jsonl'),
-    meta: { capabilities: { systemPromptInjection: true } },
+    meta: { capabilities: { systemPromptInjection: true, planModeArg: '--plan-x' } },
   });
 });
 
@@ -308,7 +311,7 @@ describe('requestLeadReview', () => {
     expect(mockResolveLaunchSpec.mock.calls[0][0].systemPrompt).toContain('Files touched:\nsrc/a.ts');
     const [executable, argv] = mockExecFile.mock.calls[0] as [string, string[]];
     expect(executable).toBe('/usr/bin/claude');
-    expect(argv).toEqual(['--append-system-prompt', 'charter', 'review?']);
+    expect(argv).toEqual(['--append-system-prompt', 'charter', 'review?', '--plan-x']);
     expect(execOptions()).toMatchObject({
       cwd: PROJECT_PATH,
       env: { PATH: '/usr/bin' },
@@ -401,7 +404,7 @@ describe('requestLeadReview', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     mockGetProvider.mockReturnValue({
       getTranscriptPath: vi.fn(() => '/t.jsonl'),
-      meta: { capabilities: { systemPromptInjection: false } },
+      meta: { capabilities: { systemPromptInjection: false, planModeArg: '--plan-x' } },
     });
     requestLeadReview(SESSION_ID, { ...REF, providerId: 'copilot' });
     await flush();
@@ -425,7 +428,7 @@ describe('requestLeadReview', () => {
     const getTranscriptPath = vi.fn(() => '/tmp/transcript.jsonl');
     mockGetProvider.mockReturnValue({
       getTranscriptPath,
-      meta: { capabilities: { systemPromptInjection: true } },
+      meta: { capabilities: { systemPromptInjection: true, planModeArg: '--plan-x' } },
     });
     const payload = Buffer.from('the newest turn', 'utf8');
     mockFs.fstatSync.mockReturnValueOnce({ size: payload.length });
@@ -439,5 +442,69 @@ describe('requestLeadReview', () => {
     expect(getTranscriptPath).toHaveBeenCalledWith('cli-1', REF.cwd, REF.configDir, REF.sessionDir);
     expect(mockFs.closeSync).toHaveBeenCalledWith(7);
     expect(mockResolveLaunchSpec.mock.calls[0][0].systemPrompt).toContain('the newest turn');
+  });
+});
+
+describe('review fixes (7c3238b9)', () => {
+  it('skips providers WITHOUT a read-only plan-mode grant (no default-tool agent)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    mockGetProvider.mockReturnValue({
+      getTranscriptPath: vi.fn(() => '/tmp/t.jsonl'),
+      meta: { capabilities: { systemPromptInjection: true } },
+    });
+    requestLeadReview(SESSION_ID, REF);
+    await flush();
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('no read-only plan-mode grant'));
+  });
+
+  it('caps concurrency: a second completion while one runs skips with a log', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    requestLeadReview(SESSION_ID, REF);
+    await flush(); // the spawn is async past getGitFiles; let it reach execFile
+    requestLeadReview('other-session', { ...REF });
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('concurrency cap'));
+  });
+
+  it('claims the review on the SESSION RECORD and persists it (survives restart)', async () => {
+    const state = mockLoadState();
+    requestLeadReview(SESSION_ID, REF);
+    await flush();
+    const session = state.projects[0].sessions.find((x) => x.id === SESSION_ID);
+    expect(typeof session.leadReviewedAt).toBe('number');
+    expect(mockSaveState).toHaveBeenCalled();
+    _resetLeadReviewForTesting();
+    requestLeadReview(SESSION_ID, REF);
+    await flush();
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips a session under a REMOTE project (registry-host cwd is not a local path)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const state = mockLoadState();
+    state.projects[0].hostId = 'host-1';
+    requestLeadReview(SESSION_ID, REF);
+    await flush();
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('remote project'));
+  });
+
+  it('skips an over-cap charter hand-edited into state.json (the cap is not renderer-only)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const state = mockLoadState();
+    state.projects[0].lead!.charter = 'x'.repeat(LEAD_CHARTER_MAX_BYTES + 1);
+    requestLeadReview(SESSION_ID, REF);
+    await flush();
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('cap'));
+  });
+
+  it('parses markdown-wrapped verdicts', () => {
+    expect(parseLeadVerdict('notes\n**VERDICT: APPROVED** — ship it')).toEqual({
+      verdict: 'approved',
+      summary: '— ship it',
+    });
+    expect(parseLeadVerdict('**VERDICT: FLAGGED**')).toEqual({ verdict: 'flagged', summary: '' });
   });
 });
