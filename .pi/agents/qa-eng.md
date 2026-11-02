@@ -39,7 +39,7 @@ Any `*.test.ts`, test helpers, vitest config. Production edits only when the roo
 - Gates: touched files green 3× solo, `npm run typecheck`, `git diff --check`.
 
 #Closeout#
-Self-audit your own output before reporting: evidence cites resolve to real file:line, no stale/duplicate artifacts, scratch files under your sanctioned output paths only. No commits (read-only role).
+Self-audit your own output before reporting: evidence cites resolve to real file:line, no stale/duplicate artifacts, scratch files under your sanctioned output paths only. COMMIT LOCALLY when possible: only on your own isolated branch/worktree with exclusive file ownership; NEVER push, NEVER commit shared branches (main/feat integration) - those are lead-owned. Not possible -> leave clean uncommitted and report `commit: skipped (<reason>)`.
 
 #Report#
 Reproduction counts, root cause (production vs test), fix location, residual flake risk - one line each.

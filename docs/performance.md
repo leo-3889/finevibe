@@ -160,8 +160,8 @@ below drove the real modules — bundled with esbuild, `electron` stubbed — ex
 startup row, which ran the real Electron app in the dev tree (not packaged); no gate ran
 concurrently, so no vitest contention. **The W2 harnesses themselves no longer exist**
 (the agent workspace holding them was dissolved on 2026-10-21). Their periodic
-successors — `dev/perf/s3-idle-growth.js`, `dev/perf/…po06-watcher-cost.js`,
-`dev/perf/…f2-codex-spike.js`, `dev/perf/…f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md`; all four plus that
+successors — `dev/perf/s3-idle-growth.js`, `dev/perf/po06-watcher-cost.js`,
+`dev/perf/f2-codex-spike.js`, `dev/perf/f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md`; all four plus that
 README are tracked — `.gitignore` narrows the sandbox to `dev/*` and un-ignores `dev/perf/`
 and `dev/audit/`, so a fresh clone resolves the weekly `perf.yml` harness steps),
 driven by [`.github/workflows/perf.yml`](../.github/workflows/perf.yml) weekly + on
