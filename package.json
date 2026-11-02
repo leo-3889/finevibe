@@ -63,6 +63,7 @@
     "dist:win:local": "npm run build && npm run icons && npx electron-builder --win dir --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && npm run win:verify:native && npm run win:stamp && npm run win:verify && npx electron-builder --win nsis zip --prepackaged out/win-unpacked --x64 --publish never --config.npmRebuild=false --config.win.signAndEditExecutable=false && npm run win:verify:setup && node -e \"require('fs').rmSync('out/win-unpacked',{recursive:true,force:true})\"",
     "clean": "node -e \"const fs=require('fs');for(const p of ['dist','out','coverage'])fs.rmSync(p,{recursive:true,force:true});for(const f of fs.readdirSync('.').filter(f=>f.endsWith('.tsbuildinfo')))fs.rmSync(f)\"",
     "clean:caches": "node scripts/clean-caches.js",
+    "hooks:install": "git config core.hooksPath .githooks",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

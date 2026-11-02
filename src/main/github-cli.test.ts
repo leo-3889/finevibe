@@ -122,11 +122,11 @@ describe('listPullRequests', () => {
     simulateExecFile(null, '/usr/local/bin/gh\n');
     simulateExecFile(null, '[]');
 
-    const result = await listPullRequests('leo-3889/leo-3889.github.io', { state: 'open', max: 5 });
+    const result = await listPullRequests('octo/example.github.io', { state: 'open', max: 5 });
 
     expect(result.ok).toBe(true);
     const [, args] = mockExecFile.mock.calls[1] as unknown as [string, string[]];
-    expect(args[1]).toMatch(/^repos\/leo-3889\/leo-3889\.github\.io\/pulls\?/);
+    expect(args[1]).toMatch(/^repos\/octo\/example\.github\.io\/pulls\?/);
     expect(args[1]).not.toContain('%2e');
   });
 

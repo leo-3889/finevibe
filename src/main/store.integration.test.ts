@@ -214,7 +214,7 @@ describe('main-owned gate root set (P1-12)', () => {
   });
 });
 
-// Phantom host (owner screenshot, demo-host / host-a.local): the sidebar showed a
+// Phantom host (user screenshot, remote1 / workbox.local): the sidebar showed a
 // host tab whose every verb answered `Unknown host 27b17b23-…`, while
 // state.json held `"hosts": []`. The chain: Settings → Hosts calls
 // `hosts:create` (main persists), the renderer's own `state.hosts` stays the
@@ -231,10 +231,10 @@ describe('host registry survives a renderer whole-state persist', () => {
   let remoteFs: typeof import('./hosts/remote-fs');
 
   const keyPath = () => path.join(testHome.path, '.ssh', 'id_ed25519');
-  const draft = (name = 'demo-host') => ({
+  const draft = (name = 'remote1') => ({
     name,
-    user: 'leo',
-    host: 'host-a.local',
+    user: 'dev',
+    host: 'workbox.local',
     port: 22,
     authKind: 'key',
     privateKeyPath: keyPath(),
@@ -273,7 +273,7 @@ describe('host registry survives a renderer whole-state persist', () => {
     // (a) visible to main's readers AND durable: the phantom's signature was a
     // record the renderer could see and main could not find.
     expect(registry.listHosts().map((h) => h.id)).toEqual([record.id]);
-    expect(registry.getHost(record.id)?.name).toBe('demo-host');
+    expect(registry.getHost(record.id)?.name).toBe('remote1');
     expect(diskHostIds()).toEqual([record.id]);
 
     // (b) the browse gate on a draft host: refused for not being ENROLLED, i.e.

@@ -354,7 +354,7 @@ describe('canonicalPath caches (P2-59)', () => {
 
 // The one resolve step every `fs:` channel applies to a renderer path:
 // expand, then `path.resolve`. The renderer composes `<folder>/<name>` with
-// `/` joins, so Windows receives `E:\AI/sample-project` verbatim — the mixed
+// `/` joins, so Windows receives `E:\AI/Acme` verbatim — the mixed
 // spelling is what used to be persisted as the project path.
 describe('resolveUserPath', () => {
   it('expands ~ to the resolved home dir', () => {
@@ -362,19 +362,19 @@ describe('resolveUserPath', () => {
   });
 
   it('expands ~/x to home/x', () => {
-    expect(resolveUserPath('~/git/sample-project')).toBe(path.resolve(home, 'git', 'sample-project'));
+    expect(resolveUserPath('~/git/Acme')).toBe(path.resolve(home, 'git', 'Acme'));
   });
 
   it('resolves a relative path against the cwd', () => {
-    expect(resolveUserPath('relative/sample-project')).toBe(path.resolve('relative', 'sample-project'));
+    expect(resolveUserPath('relative/Acme')).toBe(path.resolve('relative', 'Acme'));
   });
 
   it('normalizes a mixed-separator absolute path to the platform spelling', () => {
-    expect(resolveUserPath(`${home}/git/sample-project`)).toBe(path.resolve(home, 'git', 'sample-project'));
+    expect(resolveUserPath(`${home}/git/Acme`)).toBe(path.resolve(home, 'git', 'Acme'));
   });
 
   it('collapses a .. segment', () => {
-    expect(resolveUserPath(path.join(home, 'git', '..', 'sample-project'))).toBe(path.resolve(home, 'sample-project'));
+    expect(resolveUserPath(path.join(home, 'git', '..', 'Acme'))).toBe(path.resolve(home, 'Acme'));
   });
 
   it('leaves $NAME unexpanded on POSIX (a literal %NAME% is filename data)', () => {
@@ -390,20 +390,20 @@ describe('resolveUserPath Windows spellings', () => {
     platformStub.isWin = false;
   });
 
-  it('normalizes the renderer\'s E:\\AI/sample-project to E:\\AI\\sample-project', () => {
+  it('normalizes the renderer\'s E:\\AI/Acme to E:\\AI\\Acme', () => {
     platformStub.isWin = true;
-    expect(resolveUserPath('E:\\AI/sample-project')).toBe('E:\\AI\\sample-project');
+    expect(resolveUserPath('E:\\AI/Acme')).toBe('E:\\AI\\Acme');
   });
 
   it('expands the ~\\ spelling users type into preferences', () => {
     platformStub.isWin = true;
-    expect(resolveUserPath('~\\git\\sample-project')).toBe(path.resolve(home, 'git', 'sample-project'));
+    expect(resolveUserPath('~\\git\\Acme')).toBe(path.resolve(home, 'git', 'Acme'));
   });
 
   it('expands %APPDATA% before resolving', () => {
     platformStub.isWin = true;
     process.env[ENV] = 'C:\\Users\\me\\AppData\\Roaming';
-    expect(resolveUserPath(`%${ENV}%\\projects\\sample-project`))
-      .toBe('C:\\Users\\me\\AppData\\Roaming\\projects\\sample-project');
+    expect(resolveUserPath(`%${ENV}%\\projects\\Acme`))
+      .toBe('C:\\Users\\me\\AppData\\Roaming\\projects\\Acme');
   });
 });

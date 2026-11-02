@@ -40,14 +40,14 @@ describe('serializeForSave', () => {
 
   it('strips per-session envVars — typed secrets must not reach disk (P2-101)', () => {
     const out = serializeForSave(
-      baseState({ envVars: 'ANTHROPIC_API_KEY=sk-ant-secret\nFOO=bar' }),
+      baseState({ envVars: 'ANTHROPIC_API_KEY=sk-ant-secret\nFOO=bar' }), // pii-allow: synthetic key fixture
     );
     const s = out.projects[0].sessions[0];
     expect('envVars' in s).toBe(false);
   });
 
   it('keeps project.defaultEnv — the keep-env UX is an explicit opt-in (P2-101)', () => {
-    const state = baseState({ envVars: 'ANTHROPIC_API_KEY=sk-ant-secret' });
+    const state = baseState({ envVars: 'ANTHROPIC_API_KEY=sk-ant-secret' }); // pii-allow: synthetic key fixture
     state.projects[0].defaultEnv = 'FOO=bar';
     const out = serializeForSave(state);
     expect(out.projects[0].defaultEnv).toBe('FOO=bar');
@@ -165,11 +165,11 @@ describe('hydrateLoadedState', () => {
   });
 
   it('keeps a persisted non-local hostId untouched', () => {
-    const state = baseState({ hostId: 'demo-host' });
+    const state = baseState({ hostId: 'remote1' });
 
     hydrateLoadedState(state, {} as Preferences);
 
-    expect(state.projects[0].sessions[0].hostId).toBe('demo-host');
+    expect(state.projects[0].sessions[0].hostId).toBe('remote1');
   });
 });
 

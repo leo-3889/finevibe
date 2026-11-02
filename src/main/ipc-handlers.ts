@@ -1316,7 +1316,7 @@ export function registerIpcHandlers(): void {
         return st.ok && st.isDirectory === true;
       }
       // resolveUserPath: the renderer spells this path with `/` joins on
-      // Windows (`E:\AI/sample-project`), and a mixed spelling must never reach
+      // Windows (`E:\AI/Acme`), and a mixed spelling must never reach
       // statSync, the gate, or the persisted project path.
       const expanded = resolveUserPath(filePath);
       // P2-38: this is fs:exists' existence oracle with a second spelling

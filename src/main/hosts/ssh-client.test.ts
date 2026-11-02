@@ -174,7 +174,7 @@ const base: HostRecord = {
   id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
   name: 'test',
   user: 'dev',
-  host: '203.0.113.9',
+  host: '192.0.2.242',
   port: 2222,
   authKind: 'password',
   managedKey: false,
@@ -214,7 +214,7 @@ describe('connect', () => {
   it('resolves with client + SHA256 fingerprint', async () => {
     const { client, fingerprint } = await connect(base);
     expect(client).toBe(made[0]);
-    expect(fingerprint).toBe(fingerprintOf(Buffer.from('key-for-203.0.113.9')));
+    expect(fingerprint).toBe(fingerprintOf(Buffer.from('key-for-192.0.2.242')));
     expect(fingerprint.startsWith('SHA256:')).toBe(true);
   });
 
@@ -245,7 +245,7 @@ describe('connect', () => {
 });
 
 describe('host-key pin enforcement (audit row 30)', () => {
-  const serverPin = fingerprintOf(Buffer.from('key-for-203.0.113.9'));
+  const serverPin = fingerprintOf(Buffer.from('key-for-192.0.2.242'));
   // Each case uses its own host id (cache isolation); the global afterEach
   // only closes base.id.
   afterEach(() => {

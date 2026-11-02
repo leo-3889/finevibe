@@ -53,14 +53,14 @@ vi.mock('./remote-dir-browser.js', () => ({
 }));
 
 const HOST = {
-  id: 'h1', name: 'demo-host', user: 'dev', host: '10.0.0.2', port: 22,
+  id: 'h1', name: 'remote1', user: 'dev', host: '10.0.0.2', port: 22, // pii-allow: synthetic LAN fixture
   authKind: 'key', managedKey: true, enrollmentStatus: 'enrolled',
   defaultFolder: '/home/dev/dev',
 };
 vi.mock('../host-registry.js', () => ({
   getHost: vi.fn((id: string) => (id === 'h1' ? HOST : null)),
   getHostColor: vi.fn(() => '#ff0000'),
-  getHostName: vi.fn((id: string) => (id === 'h1' ? 'demo-host' : 'Local')),
+  getHostName: vi.fn((id: string) => (id === 'h1' ? 'remote1' : 'Local')),
   onHostsChange: vi.fn(() => () => {}),
 }));
 

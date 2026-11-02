@@ -375,9 +375,9 @@ describe('Add-project default-projects-folder prefill', () => {
     promptNewProject();
     expect(input('modal-project-path').value).toBe('E:\\AI');
     const nameInput = input('modal-project-name');
-    nameInput.value = 'sample-project';
+    nameInput.value = 'Acme';
     nameInput.dispatchEvent(new Event('input'));
-    expect(input('modal-project-path').value).toBe('E:\\AI\\sample-project');
+    expect(input('modal-project-path').value).toBe('E:\\AI\\Acme');
   });
 
   it('leaves the path alone once the user edited it', async () => {
@@ -494,10 +494,10 @@ describe('Add-project checkout-and-create flow', () => {
 
   it('registers the path main resolved, not the spelling that was typed', async () => {
     const { promptNewProject, addProject } = await setup('');
-    fsStub.ensureDirectory.mockResolvedValueOnce({ ok: true, path: 'E:\\AI\\sample-project' });
+    fsStub.ensureDirectory.mockResolvedValueOnce({ ok: true, path: 'E:\\AI\\Acme' });
     promptNewProject();
-    await modalMock.onConfirm!({ 'project-name': 'sample-project', 'project-path': 'E:\\AI/sample-project', profile: '' });
-    expect(addProject).toHaveBeenCalledWith('sample-project', 'E:\\AI\\sample-project', undefined);
+    await modalMock.onConfirm!({ 'project-name': 'Acme', 'project-path': 'E:\\AI/Acme', profile: '' });
+    expect(addProject).toHaveBeenCalledWith('Acme', 'E:\\AI\\Acme', undefined);
   });
 
   it('keeps the manual flow gated: a directory main cannot create shows the error', async () => {

@@ -324,7 +324,7 @@ function graftMainOwnedState(state: PersistedState): void {
  * rules above already make its read and its unlink safe — but it starts as a
  * fresh `createHost` record does: `draft`, unpinned, unprobed.
  *
- * Registry MEMBERSHIP is main-owned too (phantom-host bug, demo-host): the renderer
+ * Registry MEMBERSHIP is main-owned too (phantom-host bug, remote1): the renderer
  * persists the whole state from its boot-time `store:load` snapshot, and a host
  * added later (Settings → Hosts, `hosts:create`) never enters that snapshot, so
  * the next renderer persist carried `hosts: []` (or the pre-add list). The old

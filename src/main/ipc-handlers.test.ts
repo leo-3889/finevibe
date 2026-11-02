@@ -898,7 +898,7 @@ describe('store:save-sync (S1-03)', () => {
 // so there is no path around the graft, and no channel that quietly loses hosts.
 describe('store:save / store:save-sync pass renderer hosts to the store graft (rows 31/34)', () => {
   const forgedHost = {
-    id: 'h1', name: 'demo-host', user: 'dev', host: '203.0.113.9', port: 22,
+    id: 'h1', name: 'remote1', user: 'dev', host: '192.0.2.242', port: 22,
     authKind: 'key', privateKeyPath: '~/.ssh/id_ed25519', managedKey: true,
     enrollmentStatus: 'enrolled',
   };
@@ -3170,7 +3170,7 @@ describe('home-outside consent cache cap (B1)', () => {
 // answering with ITS resolved + canonical spelling. As a pre-project WRITE it
 // takes fs:cloneRepo's gate shape, and a denied consent is an ERROR: the old
 // fs:isDirectory `false` conflated "you pressed Cancel" with "the folder is
-// not there", which is how an existing `E:\AI\sample-project` came to be reported
+// not there", which is how an existing `E:\AI\Acme` came to be reported
 // as non-existent on a non-home drive.
 describe('fs:ensureDirectory', () => {
   // The gate admits the home tree, and these fixtures live in `os.tmpdir()`: under
@@ -3222,13 +3222,13 @@ describe('fs:ensureDirectory', () => {
   it('answers the renderer\'s `/`-joined spelling with the resolved path', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
     try {
-      // `${root}/sample-project` is what the modal sends on Windows
+      // `${root}/Acme` is what the modal sends on Windows
       // (`E:\AI` + '/' + name); the answer is the platform spelling.
-      await expect(handlers.get('fs:ensureDirectory')!({}, `${root}/sample-project`)).resolves.toEqual({
+      await expect(handlers.get('fs:ensureDirectory')!({}, `${root}/Acme`)).resolves.toEqual({
         ok: true,
-        path: path.join(fs.realpathSync(root), 'sample-project'),
+        path: path.join(fs.realpathSync(root), 'Acme'),
       });
-      expect(fs.statSync(path.join(root, 'sample-project')).isDirectory()).toBe(true);
+      expect(fs.statSync(path.join(root, 'Acme')).isDirectory()).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -3253,13 +3253,13 @@ describe('fs:ensureDirectory', () => {
 
   it('creates a missing directory inside an allowed root recursively and answers its path', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
-    const target = path.join(root, 'sample-project', 'nested');
+    const target = path.join(root, 'Acme', 'nested');
     // No mockImplementation: the spy calls through, so the directory is real.
     const mkdir = vi.spyOn(fs.promises, 'mkdir');
     try {
       await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toEqual({
         ok: true,
-        path: path.join(fs.realpathSync(root), 'sample-project', 'nested'),
+        path: path.join(fs.realpathSync(root), 'Acme', 'nested'),
       });
       expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
       expect(fs.statSync(target).isDirectory()).toBe(true);
@@ -3478,7 +3478,7 @@ describe('P2-110: the five channels the coverage map overclaimed', () => {
 describe('per-host provider channels (per-host providers T1)', () => {
   const freshProbeAt = new Date().toISOString();
   const lab = {
-    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 22,
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 22, // pii-allow: synthetic LAN fixture
     prerequisites: { pi: { ok: true, path: '/home/dev/.local/bin/pi' } },
     lastProbeAt: freshProbeAt,
   };

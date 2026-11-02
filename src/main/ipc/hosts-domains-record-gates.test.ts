@@ -76,7 +76,7 @@ beforeEach(() => {
 describe('hosts:update field allowlist (audit 31)', () => {
   it('drops renderer patches for main-owned fields', () => {
     const patch = {
-      name: 'demo-host', user: 'dev', host: '203.0.113.9', port: 22, authKind: 'password',
+      name: 'remote1', user: 'dev', host: '192.0.2.242', port: 22, authKind: 'password',
       // The forged consent + probe state: none of these may reach the registry.
       enrollmentStatus: 'enrolled', enrollmentDetail: 'forged',
       hostKeyFingerprint: VALID_PIN, prerequisites: { claude: { ok: true, path: '$(rm -rf /)' } },
@@ -84,7 +84,7 @@ describe('hosts:update field allowlist (audit 31)', () => {
       managedKey: true, id: 'evil',
     };
     expect(call('hosts:update', 'h1', patch)).toEqual({
-      name: 'demo-host', user: 'dev', host: '203.0.113.9', port: 22, authKind: 'password',
+      name: 'remote1', user: 'dev', host: '192.0.2.242', port: 22, authKind: 'password',
     });
   });
 
@@ -156,10 +156,10 @@ describe('hosts key-path containment (audit 34)', () => {
   });
 
   it('hosts:create gates the draft the same way', () => {
-    expect(() => call('hosts:create', { name: 'demo-host', privateKeyPath: join(TMP_ROOT, 'stolen', 'id_ed25519') }))
+    expect(() => call('hosts:create', { name: 'remote1', privateKeyPath: join(TMP_ROOT, 'stolen', 'id_ed25519') }))
       .toThrow(/privateKeyPath/);
     expect(registry.createHost).not.toHaveBeenCalled();
-    call('hosts:create', { name: 'demo-host', privateKeyPath: MANAGED_KEY, managedKey: false });
+    call('hosts:create', { name: 'remote1', privateKeyPath: MANAGED_KEY, managedKey: false });
     expect(registry.createHost).toHaveBeenLastCalledWith(
       expect.objectContaining({ privateKeyPath: MANAGED_KEY, managedKey: true }),
     );

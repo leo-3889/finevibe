@@ -4,9 +4,9 @@ import type { HostRecord, ProjectRecord, SessionRecord } from './types';
 
 const VALID_HOST: HostRecord = {
   id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
-  name: 'demo-host',
+  name: 'remote1',
   user: 'dev',
-  host: '203.0.113.9',
+  host: '192.0.2.242',
   port: 22,
   authKind: 'key',
   privateKeyPath: '/home/finevibe/hosts/3f2504e0-4f89-41d3-9a0c-0305e82c3301/id_ed25519',
@@ -18,7 +18,7 @@ describe('parseSshHost', () => {
   it('accepts plain hosts', () => {
     expect(parseSshHost('myserver')).toEqual({ host: 'myserver' });
     expect(parseSshHost(' lab.example.com ')).toEqual({ host: 'lab.example.com' });
-    expect(parseSshHost('10.0.0.8')).toEqual({ host: '10.0.0.8' });
+    expect(parseSshHost('10.0.0.8')).toEqual({ host: '10.0.0.8' }); // pii-allow: synthetic LAN fixture
   });
 
   it('accepts user@host and normalizes', () => {
@@ -86,10 +86,10 @@ describe('validateHostRecordShape', () => {
   });
 
   it('normalizes: trims name, lowercases id, drops unknown keys', () => {
-    const raw = { ...VALID_HOST, name: '  demo-host  ', id: VALID_HOST.id.toUpperCase(), smuggled: 'x' };
+    const raw = { ...VALID_HOST, name: '  remote1  ', id: VALID_HOST.id.toUpperCase(), smuggled: 'x' };
     const out = validateHostRecordShape(raw);
     expect(out).not.toBeNull();
-    expect(out?.name).toBe('demo-host');
+    expect(out?.name).toBe('remote1');
     expect(out?.id).toBe(VALID_HOST.id);
     expect('smuggled' in (out as object)).toBe(false);
   });
@@ -118,7 +118,7 @@ describe('validateHostRecordShape', () => {
 
 describe('isRegistryHostTarget', () => {
   it('accepts what the registry stores, incl. bracketed IPv6 (audit T1 #2)', () => {
-    expect(isRegistryHostTarget('dev', '203.0.113.9')).toBe(true);
+    expect(isRegistryHostTarget('dev', '192.0.2.242')).toBe(true);
     expect(isRegistryHostTarget('dev', 'host.example.com')).toBe(true);
     expect(isRegistryHostTarget('dev', '[::1]')).toBe(true);
   });

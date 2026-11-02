@@ -17,9 +17,9 @@ import { closeConnection } from './ssh-client';
 const clearCloseConnection = () => (vi.mocked(closeConnection)).mockClear();
 
 const DRAFT = {
-  name: 'demo-host',
+  name: 'remote1',
   user: 'dev',
-  host: '203.0.113.9',
+  host: '192.0.2.242',
   port: 22,
   authKind: 'password',
   managedKey: false,
@@ -36,15 +36,15 @@ describe('createHost', () => {
   it('generates an id, validates, persists', () => {
     const rec = createHost(DRAFT);
     expect(rec.id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(rec.name).toBe('demo-host');
+    expect(rec.name).toBe('remote1');
     expect(state.hosts).toHaveLength(1);
     expect(saveState).toHaveBeenCalledTimes(1);
   });
 
   it('defaults the port to 22 and trims the name', () => {
-    const rec = createHost({ ...DRAFT, port: undefined, name: '  demo-host ' });
+    const rec = createHost({ ...DRAFT, port: undefined, name: '  remote1 ' });
     expect(rec.port).toBe(22);
-    expect(rec.name).toBe('demo-host');
+    expect(rec.name).toBe('remote1');
   });
 
   // per-host providers T1: identity color assigned at creation, round-robin
@@ -85,8 +85,8 @@ describe('updateHost / setEnrollmentStatus', () => {
     const rec = createHost(DRAFT);
     // The smuggled `id` models a hostile/caller-side patch: the type forbids it,
     // the registry must still keep the record's own id.
-    const updated = updateHost(rec.id, { name: 'demo-host-2', id: 'evil' } as unknown as Parameters<typeof updateHost>[1]);
-    expect(updated.name).toBe('demo-host-2');
+    const updated = updateHost(rec.id, { name: 'remote1-2', id: 'evil' } as unknown as Parameters<typeof updateHost>[1]);
+    expect(updated.name).toBe('remote1-2');
     expect(updated.id).toBe(rec.id);
   });
 

@@ -41,7 +41,7 @@ import {
 vi.mock('./host-registry', () => ({ getHost: vi.fn() }));
 
 const enrolled: HostRecord = {
-  id: 'h1', name: 'demo-host', user: 'dev', host: '203.0.113.9', port: 22,
+  id: 'h1', name: 'remote1', user: 'dev', host: '192.0.2.242', port: 22,
   authKind: 'key', managedKey: true, enrollmentStatus: 'enrolled',
   prerequisites: { git: { ok: true, path: '/usr/bin/git' } },
 };

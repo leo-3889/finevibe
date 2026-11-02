@@ -460,7 +460,7 @@ describe('resolveLaunchSpec (T2)', () => {
   // --- per-host providers T1: registry-host launches (plan §9 golden) ------
 
   const labRecord = {
-    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 2222,
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 2222, // pii-allow: synthetic LAN fixture
     prerequisites: { omp: { ok: true, path: '/home/dev/.local/bin/omp' } },
   };
 
@@ -485,7 +485,7 @@ describe('resolveLaunchSpec (T2)', () => {
     mockGetHost.mockReturnValue(labRecord);
     const spec = resolveLaunchSpec({ ...base, hostId: 'lab', configDir: '/home/dev/.finevibe/profiles/p1' });
     expect(spec.executable).toBe('ssh');
-    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']);
+    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']); // pii-allow: synthetic LAN fixture
     const cmd = spec.argv[5] as string;
     // The remote binary is the prereq's ABSOLUTE path (used verbatim, not a
     // basename); the profile's config dir AND the session id ride in the

@@ -139,13 +139,13 @@ describe('loadState', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({
       version: 1,
       projects: [{ id: 'p1', name: 'Test', path: '/test', activeSessionId: null, layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
-        sessions: [{ id: 's1', createdAt: 1 }, { id: 's2', createdAt: 2, hostId: 'demo-host' }] }],
+        sessions: [{ id: 's1', createdAt: 1 }, { id: 's2', createdAt: 2, hostId: 'remote1' }] }],
       activeProjectId: 'p1',
       profiles: [{ id: 'pr1', name: 'Work', providerId: 'claude', configDir: '/c', managed: true, createdAt: 1 }],
       preferences: { ...DEFAULT_PREFERENCES },
     }));
     const loaded = loadState();
-    expect(loaded.projects[0].sessions.map((s) => s.hostId)).toEqual(['local', 'demo-host']);
+    expect(loaded.projects[0].sessions.map((s) => s.hostId)).toEqual(['local', 'remote1']);
     expect(loaded.profiles?.[0].hostId).toBe('local');
   });
 
@@ -424,9 +424,9 @@ describe('main-owned host fields survive renderer writes (rows 31/34)', () => {
   function mainHost(overrides: Partial<HostRecord> = {}): HostRecord {
     return {
       id: HOST_ID,
-      name: 'demo-host',
+      name: 'remote1',
       user: 'dev',
-      host: '203.0.113.9',
+      host: '192.0.2.242',
       port: 22,
       authKind: 'key',
       privateKeyPath: MANAGED_KEY,
@@ -570,7 +570,7 @@ describe('main-owned host fields survive renderer writes (rows 31/34)', () => {
     expect(writtenHosts()).toMatchObject([null, 'x', { id: HOST_ID }]);
   });
 
-  // Phantom host (owner screenshot: sidebar tab "demo-host", every remote verb
+  // Phantom host (user screenshot: sidebar tab "remote1", every remote verb
   // answering `Unknown host 27b17b23-…`, state.json `"hosts": []`). The
   // renderer persists the WHOLE state from its boot-time `store:load` snapshot,
   // and a host added after boot (`hosts:create`) is not in it, so the payload
@@ -603,7 +603,7 @@ describe('main-owned host fields survive renderer writes (rows 31/34)', () => {
 
   it('keeps a pre-add host in the payload AND the host added after boot', () => {
     const oldHost = mainHost({ id: 'aaaa0000-0000-4000-8000-000000000001', name: 'old' });
-    const addedLater = mainHost({ id: 'aaaa0000-0000-4000-8000-000000000002', name: 'demo-host' });
+    const addedLater = mainHost({ id: 'aaaa0000-0000-4000-8000-000000000002', name: 'remote1' });
     seedMainCache(oldHost, addedLater);
 
     // The renderer's snapshot lists only the host that existed at boot.
