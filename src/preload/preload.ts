@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ImportableLegacyProject } from '../shared/types';
 import type { DiskHealth, PerfStats } from '../shared/types';
-import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, HostRecord } from '../shared/types';
+import type { CostData, ProviderId, CliProviderMeta, StatsCache, ReadinessResult, ToolFailureData, SettingsWarningData, SettingsValidationResult, StatusLineConflictData, InspectorEvent, CliSessionStatus, GitWorktree, McpResult, ProviderConfig, ReadFileResult, FileStatResult, TopFilesResult, FsChange, DeepSearchResult, GithubFetchResult, GithubRepo, ChromeProfile, ChromeImportOptions, ChromeImportProgress, ChromeImportResult, ClipboardSource, ClipboardPastePayload, StartupPrefs, ArchivedSession, HostRecord, LeadReviewNote } from '../shared/types';
 // Mirrors ZOOM_MIN/ZOOM_MAX from src/shared/types.ts. These two values are
 // duplicated rather than imported because the main window runs with
 // sandbox: true, and a sandboxed preload's polyfilled require cannot load
@@ -231,6 +231,10 @@ export interface FineVibeApi {
     onCloseSession(callback: () => void): () => void;
     onOpenPreferences(callback: () => void): () => void;
     rebuild(debugMode: boolean): Promise<void>;
+  };
+  lead: {
+    /** One lead-review verdict produced main-side (I3): the note + the project it belongs to. */
+    onReview(callback: (note: LeadReviewNote, projectId: string) => void): () => void;
   };
 }
 
@@ -480,6 +484,10 @@ const api: FineVibeApi = {
     onCloseSession: (cb) => onChannel('menu:close-session', cb),
     onOpenPreferences: (cb) => onChannel('menu:open-preferences', cb),
     rebuild: (debugMode) => ipcRenderer.invoke('menu:rebuild', debugMode),
+  },
+  lead: {
+    onReview: (cb) =>
+      onChannel('lead:review', (note, projectId) => cb(note as LeadReviewNote, projectId as string)),
   },
 };
 

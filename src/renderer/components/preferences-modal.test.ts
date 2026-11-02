@@ -468,3 +468,49 @@ describe('Enter confirmation is stack-aware', () => {
     expect(overlay.style.display).toBe('none');
   });
 });
+
+describe('General section lead-review kill switch (I3)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    selectState.reset();
+    docBody = makeElement('body');
+
+    vi.stubGlobal('document', {
+      documentElement: { dataset: {} as Record<string, string> },
+      body: docBody,
+      getElementById(id: string) { return findById(docBody, id); },
+      createElement(tagName: string) { return makeElement(tagName); },
+      createTextNode(text: string) { return { textContent: text }; },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+
+    vi.stubGlobal('window', {
+      finevibe: {
+        provider: { listProviders: vi.fn(async () => []), checkBinary: vi.fn(async () => true) },
+        menu: { rebuild: vi.fn() },
+        app: { getVersion: vi.fn(async () => '0.0.0'), openExternal: vi.fn() },
+      },
+    });
+  });
+
+  it('shows the toggle ON for an absent pref and writes the answer through on Done', async () => {
+    const { showPreferencesModal } = await import('./preferences-modal.js');
+
+    showPreferencesModal();
+    selectPreferencesSection('general');
+
+    // mockState.preferences carries no `leadReviewsEnabled`: absent = ON.
+    const toggle = getElement('pref-lead-reviews');
+    expect(toggle.type).toBe('checkbox');
+    expect(toggle.checked).toBe(true);
+
+    toggle.checked = false;
+    findInTree(docBody, (node) => node.className === 'btn-primary')!.dispatchEvent({ type: 'click' });
+
+    expect(mockState.setPreferences).toHaveBeenCalledWith(
+      expect.objectContaining({ leadReviewsEnabled: false }),
+    );
+  });
+});

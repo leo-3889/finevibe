@@ -82,3 +82,21 @@ Rules, pinned by `src/renderer/state/session-factory.test.ts` (argv per provider
 - **Cap, never truncate — and it gates injection, not the record.** The charter is capped at `LEAD_CHARTER_MAX_BYTES` (4 KiB UTF-8, `src/shared/types.ts`) by the settings dialog; a hand-edited `state.json` charter over the cap makes `composeLeadLaunch` throw naming the size **on the paths that inject**, and the pane surfaces the refusal on the spawn overlay instead of shipping a clipped charter. A no-injection launch (no lane + no queued prompt) never throws — it carries no charter.
 - **Windows ceiling: a quote-bearing charter can refuse a cmd-fallback spawn.** The charter rides the existing prompt lanes verbatim; `systemPromptArg` redirects a Windows system prompt containing a double quote into `system-prompt.md` (above), which covers the systemPrompt lane. The initial-prompt-lane prefix (Copilot/Gemini) has no file redirect: on the `cmd.exe /c` fallback `quoteArgForCmdExe` rejects argv containing unrepresentable double quotes, so a charter embedding `"` refuses that spawn (the shim-direct path is unaffected). Operator fix: reword the charter; product fix would be a file redirect for `-i` — not built (ponytail).
 - Session-scoped by construction: M2's review spawns and M3's resident lead are separate lanes and are not injected here. Swarm-mode panes are ordinary launches, so they ride the same charter (plan §Injection: "every provider launch in that project").
+
+## On-complete lead review spawn (M2 / I3)
+
+The lead's "accountable" half runs a SECOND, hidden spawn of the project's provider binary per reviewed session (`src/main/lead-review.ts`, `runLeadReview`). It is not a PTY launch and not a tab: `execFile` with the argv array (no shell), the project path as cwd, `stdin` ended immediately (a provider binary on this lane is a TUI, and an interactive CLI handed a prompt through a pipe it never sees closed would sit reading stdin until the timeout kill), `timeout: LEAD_REVIEW_TIMEOUT_MS` with `killSignal: 'SIGKILL'`, and `maxBuffer: LEAD_REVIEW_OUTPUT_MAX_BYTES`.
+
+argv/env come from the SAME `resolveLaunchSpec` a PTY launch uses (`pty-manager.ts`), with `cliSessionId: null`, `isResume: false`, `extraArgs: ''`, `envVars: ''` and the reviewed session's `configDir`, so the profile isolation, session-dir and quoting rules of the table above apply verbatim to the review spawn. A launch the lane refuses (e.g. an unsupported flag combination) is a logged skip, never a crash.
+
+| Slot | Content |
+|------|---------|
+| `systemPrompt` | `<charter>\n\n` + the digest: `Files touched:\n<paths>` (the existing `git status --porcelain=v2` lane, `getGitFiles(project.path)`, deduped) + `\n\nTranscript tail:\n` (the tail the transcript poller resolved for the reviewed session) |
+| `initialPrompt` | the review question: "Review the session per the charter. Reply with exactly one line: VERDICT: APPROVED or VERDICT: FLAGGED, then a one-line summary." |
+
+Rules, pinned by `src/main/lead-review.test.ts`:
+
+- **Only the system-prompt lane.** `systemPromptInjection: true` providers (Claude, Codex, Pi, Pi-Bolt, OMP) are reviewable. Copilot and Gemini have no system-prompt flag, so their spawn would carry the question with no charter — a verdict from a lead that was never told the rules — and the gate skips them with a log line. v1 coverage gap, not a bug.
+- **Digest cap `LEAD_REVIEW_DIGEST_MAX_BYTES` (16 KiB UTF-8).** Files list first (whole lines, `…` marks the dropped rest), transcript tail trimmed from the FRONT (newest turns kept); the composed digest never exceeds the cap, so the whole argv argument stays under charter cap + 16 KiB.
+- **Local sessions only, one spawn per session ever.** The trigger is the LOCAL transcript-poll status surface (`session-transcript-sync.ts syncEntry`); the remote twin never calls it, and the ledger of reviewed sessions is FIFO-capped (`LEAD_REVIEWED_SESSIONS_MAX`).
+- **Verdict text is the contract.** Parsed from stdout+stderr: the newest line matching `^\s*VERDICT:\s*(APPROVED|FLAGGED)` wins (an echoed prompt sits before the answer), summary = rest of that line, else the next non-empty line. Anything unparseable is dropped with one log line — no invented verdicts.

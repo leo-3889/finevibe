@@ -42,6 +42,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
   let autoTitleCheckbox: HTMLInputElement | null = null;
   let confirmCloseCheckbox: HTMLInputElement | null = null;
   let copyOnSelectCheckbox: HTMLInputElement | null = null;
+  let leadReviewsCheckbox: HTMLInputElement | null = null;
   let projectsFolderValue: string | null = null;
   let askAiFocusSelect: CustomSelectInstance | null = null;
 
@@ -182,6 +183,13 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       copyOnSelectCheckbox = copyOnSelect.checkbox;
       container.appendChild(copyOnSelect.row);
 
+      // Lead review kill switch (team-lead-persona-plan I3): the project's own
+      // `lead.enabled` + review mode decides WHERE reviews run; this decides
+      // whether main spawns ANY of them. ON by default.
+      const leadReviews = toggleRow('pref-lead-reviews', t('general.leadReviews'), appState.preferences.leadReviewsEnabled ?? true);
+      leadReviewsCheckbox = leadReviews.checkbox;
+      container.appendChild(leadReviews.row);
+
       // Default projects folder: the root Add-project pre-fills as
       // `<folder>/<name>` and where a git-URL checkout lands. The chosen
       // folder reads as plain text under the label (no editable field); the
@@ -262,6 +270,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       if (autoTitleCheckbox) patch.autoTitleEnabled = autoTitleCheckbox.checked;
       if (confirmCloseCheckbox) patch.confirmCloseWorkingSession = confirmCloseCheckbox.checked;
       if (copyOnSelectCheckbox) patch.copyOnSelect = copyOnSelectCheckbox.checked;
+      if (leadReviewsCheckbox) patch.leadReviewsEnabled = leadReviewsCheckbox.checked;
       if (providerSelect) patch.defaultProvider = providerSelect.getValue() as ProviderId;
       if (askAiFocusSelect) patch.askAiFocus = askAiFocusSelect.getValue() as 'switch' | 'stay';
       if (projectsFolderValue !== null) patch.defaultProjectsFolder = projectsFolderValue.trim();

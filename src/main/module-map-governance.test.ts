@@ -92,6 +92,7 @@ const ALLOWLIST: Record<string, string> = {
   'connections@hosts/ssh-client.ts': 'capped:MAX_CACHED_CONNECTIONS (FIFO evict oldest ssh2 client; closeConnection drops per host)',
   'remoteHomeCache@hosts/remote-fs.ts': 'capped:MAX_REMOTE_HOME_CACHE (LRU re-insert on hit; keys are host ids, row 129 home probe memo)',
   'cache@hosts/secrets.ts': 'capped:MAX_CACHED_SECRETS (LRU; audit row 46 — the ciphertext file is the source, every mutation is a read-modify-write of it)',
+  'reviewedSessions@lead-review.ts': 'capped:LEAD_REVIEWED_SESSIONS_MAX (FIFO evict oldest reviewed-session id; one review per session, keys are UI session ids)',
 
   // teardown: cleared on watcher/file stop, session exit, store invalidate,
   // provider stop and app shutdown — every key has an owner-side drop.
