@@ -12,6 +12,7 @@ import { removeSession as removeContextSession, getContext, getContextSeverity, 
 import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
+import { composeLeadLaunch } from '../state/session-factory.js';
 import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { openExternal } from '../open-external.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
@@ -317,15 +318,27 @@ export async function spawnTerminal(sessionId: string): Promise<void> {
   let initialPrompt: string | undefined;
   if (instance.pendingPrompt && getProviderCapabilities(instance.providerId)?.pendingPromptTrigger === 'startup-arg') {
     initialPrompt = instance.pendingPrompt;
-    instance.pendingPrompt = null;
   }
   let systemPrompt: string | undefined;
   if (instance.pendingSystemPrompt) {
     systemPrompt = instance.pendingSystemPrompt;
-    instance.pendingSystemPrompt = null;
   }
+  // Lead charter injection (team-lead-persona-plan M1): the single spawn choke
+  // point, so every provider launch in an enabled-lead project carries the
+  // charter and an absent/disabled lead costs zero argv delta.
+  const lead = appState.findSessionWithProject(sessionId)?.project.lead;
   try {
-    await window.finevibe.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, initialPrompt, systemPrompt, instance.envVars, instance.configDir);
+    const launch = composeLeadLaunch({
+      lead,
+      systemPromptInjection: getProviderCapabilities(instance.providerId)?.systemPromptInjection === true,
+      systemPrompt,
+      initialPrompt,
+    });
+    // The queued prompts are consumed here, not above: an oversize-charter
+    // refusal must leave them intact for the overlay's Retry spawn.
+    if (launch.initialPrompt) instance.pendingPrompt = null;
+    if (launch.systemPrompt) instance.pendingSystemPrompt = null;
+    await window.finevibe.pty.create(sessionId, instance.projectPath, instance.cliSessionId, instance.isResume, instance.args, instance.providerId, launch.initialPrompt, launch.systemPrompt, instance.envVars, instance.configDir);
   } catch (err) {
     // pty:create rejected (missing binary, ConPTY failure, provider spawn
     // error). Callers fire spawnTerminal un-awaited, so a throw here becomes

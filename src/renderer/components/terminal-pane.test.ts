@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ContextWindowInfo, CostInfo } from '../../shared/types.js';
+import type { ContextWindowInfo, CostInfo, ProjectLead, ProjectRecord, SessionRecord } from '../../shared/types.js';
 import { RESIZE_COALESCE_MS } from './terminal-utils.js';
 
 const providerCaps = new Map([
-  ['claude', { costTracking: true, contextWindow: true, pendingPromptTrigger: 'startup-arg' }],
-  ['gemini', { costTracking: false, contextWindow: false, pendingPromptTrigger: 'startup-arg' }],
-  ['codex', { costTracking: false, contextWindow: false, pendingPromptTrigger: 'startup-arg' }],
+  ['claude', { costTracking: true, contextWindow: true, pendingPromptTrigger: 'startup-arg', systemPromptInjection: true }],
+  ['gemini', { costTracking: false, contextWindow: false, pendingPromptTrigger: 'startup-arg', systemPromptInjection: false }],
+  ['codex', { costTracking: false, contextWindow: false, pendingPromptTrigger: 'startup-arg', systemPromptInjection: true }],
+  ['copilot', { costTracking: false, contextWindow: false, pendingPromptTrigger: 'startup-arg', systemPromptInjection: false }],
 ]);
 
 const mockPtyWrite = vi.fn();
@@ -1191,5 +1192,88 @@ describe('mouse gate attach order (row 60)', () => {
     expect(gateAt).toBeGreaterThan(-1);
     expect(gateAt).toBeGreaterThan(openAt);
     expect(src).not.toMatch(/attachMouseForwardingGate\(terminal\)/); // no pre-open call left
+  });
+});
+
+// --- P2 I1b: lead charter injection at spawn (team-lead-persona-plan M1) ---
+
+/** Register one session in appState's index with an optional project lead,
+ * bypassing the mutators (their persist() needs the state IPC the stub lacks).
+ * `state` is the module instance the test just imported: `vi.resetModules()`
+ * gives every dynamic import of state.js its own appState singleton. */
+function seedLeadSession(state: typeof import('../state.js'), sessionId: string, lead?: ProjectLead): void {
+  state._resetForTesting();
+  const session = { id: sessionId, name: 'S', providerId: 'claude', cliSessionId: null, createdAt: '2026-01-01T00:00:00.000Z' } as SessionRecord;
+  const project = {
+    id: 'p-lead', name: 'P', path: '/project', sessions: [session], activeSessionId: sessionId,
+    layout: { mode: 'tabs', splitPanes: [], splitDirection: 'horizontal' },
+    ...(lead ? { lead } : {}),
+  } as ProjectRecord;
+  state.appState.projects.push(project);
+  (state.appState as unknown as { sessionIndex: Map<string, { project: ProjectRecord; session: SessionRecord }> })
+    .sessionIndex.set(sessionId, { project, session });
+}
+
+describe('spawn lead charter injection', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.stubGlobal('document', new FakeDocument());
+    vi.stubGlobal('window', makeWindowStub());
+    vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: mockClipboardWrite } });
+  });
+
+  it('system-prompt lane: the charter rides systemPrompt with no queued prompt', async () => {
+    const { createTerminalPane, spawnTerminal } = await import('./terminal-pane.js');
+    seedLeadSession(await import('../state.js'), 'lead-1', { name: 'Dana', charter: 'Own the release train.', enabled: true });
+    createTerminalPane('lead-1', '/project', null, false, '', 'claude');
+    await spawnTerminal('lead-1');
+
+    expect((window as any).finevibe.pty.create).toHaveBeenCalledWith(
+      'lead-1', '/project', null, false, '', 'claude', undefined, 'Own the release train.', '', undefined);
+  });
+
+  it('system-prompt lane: a queued team prompt stays first, the fenced charter follows', async () => {
+    const { createTerminalPane, setPendingSystemPrompt, spawnTerminal } = await import('./terminal-pane.js');
+    seedLeadSession(await import('../state.js'), 'lead-2', { name: 'Dana', charter: 'Own the release train.', enabled: true });
+    createTerminalPane('lead-2', '/project', null, false, '', 'codex');
+    setPendingSystemPrompt('lead-2', 'You are the CMO.');
+    await spawnTerminal('lead-2');
+
+    const systemPrompt = (window as any).finevibe.pty.create.mock.calls[0][7];
+    expect(systemPrompt).toBe('You are the CMO.\n\n[Project lead - Dana]\nOwn the release train.\n[/Project lead]');
+  });
+
+  it('no system-prompt lane: the charter is fenced in front of the queued prompt', async () => {
+    const { createTerminalPane, setPendingPrompt, spawnTerminal } = await import('./terminal-pane.js');
+    seedLeadSession(await import('../state.js'), 'lead-3', { name: 'Dana', charter: 'Own the release train.', enabled: true });
+    createTerminalPane('lead-3', '/project', null, false, '', 'copilot');
+    setPendingPrompt('lead-3', 'fix the bug');
+    await spawnTerminal('lead-3');
+
+    expect((window as any).finevibe.pty.create).toHaveBeenCalledWith(
+      'lead-3', '/project', null, false, '', 'copilot',
+      '[Project lead - Dana]\nOwn the release train.\n[/Project lead]\n\nfix the bug', undefined, '', undefined);
+  });
+
+  it('disabled lead: pty.create receives the parameters untouched', async () => {
+    const { createTerminalPane, setPendingPrompt, spawnTerminal } = await import('./terminal-pane.js');
+    seedLeadSession(await import('../state.js'), 'lead-4', { name: 'Dana', charter: 'Own the release train.', enabled: false });
+    createTerminalPane('lead-4', '/project', null, false, '', 'claude');
+    setPendingPrompt('lead-4', 'fix the bug');
+    await spawnTerminal('lead-4');
+
+    expect((window as any).finevibe.pty.create).toHaveBeenCalledWith(
+      'lead-4', '/project', null, false, '', 'claude', 'fix the bug', undefined, '', undefined);
+  });
+
+  it('oversize charter: the spawn is refused (no truncated charter reaches argv)', async () => {
+    const { createTerminalPane, spawnTerminal } = await import('./terminal-pane.js');
+    seedLeadSession(await import('../state.js'), 'lead-5', { name: 'Dana', charter: 'x'.repeat(4097), enabled: true });
+    createTerminalPane('lead-5', '/project', null, false, '', 'claude');
+    await spawnTerminal('lead-5');
+
+    expect((window as any).finevibe.pty.create).not.toHaveBeenCalled();
   });
 });
