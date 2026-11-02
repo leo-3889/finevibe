@@ -30,6 +30,7 @@ vi.mock('./pi-compatible-transcripts', () => ({
   readSessionExitReasonSync: vi.fn(),
   readTranscriptTitleSync: vi.fn(() => null),
   readTranscriptTitleWithSessionInfoSync: vi.fn(),
+  seedLaunchTranscript: vi.fn(),
 }));
 
 import * as path from 'path';
@@ -255,6 +256,42 @@ describe('session id discovery hooks', () => {
     });
     // The launch's own dir is searched first for the adopted transcript.
     expect(findTranscriptPathInFlatDir).toHaveBeenCalledWith(sessionDirFor('ui-4'), 'cli-9', '/proj');
+  });
+
+  // Audit row 36: a registry-host launch writes its transcripts on the HOST, so
+  // the fresh branch must create NO local state — the local watcher would adopt
+  // a local file that can never be written.
+  describe('remote (registry-host) launches', () => {
+    const hostDir = (uiSessionId: string) => `~/.finevibe/sessions/omp/${uiSessionId}`;
+
+    it('onSessionStarted creates no local state and registers no local watcher', () => {
+      provider.onSessionStarted!('ui-r', '/srv/app', {} as any, '/profiles/work', 'lab');
+      expect(mockStartOmpSessionWatcher).not.toHaveBeenCalled();
+      expect(mockRegisterPendingOmpSession).not.toHaveBeenCalled();
+      // OMP generates its own id on the host (no `--session-id` to pin), so
+      // nothing is attributable there before a resume — documented limit.
+      expect(provider.getLaunchCliSessionId!('ui-r')).toBeNull();
+      expect(provider.buildArgs({ sessionId: 'ui-r', cliSessionId: null, isResume: false, extraArgs: '', remote: true }))
+        .toEqual(['--session-dir', hostDir('ui-r')]);
+    });
+
+    it('onSessionResumed resolves nothing locally and resumes by bare id under the HOST dir', () => {
+      provider.onSessionResumed!('ui-r3', '/srv/app', {} as any, '/profiles/work', 'cli-9', 'lab');
+      expect(findTranscriptPathInFlatDir).not.toHaveBeenCalled();
+      expect(findTranscriptPathSync).not.toHaveBeenCalled();
+      expect(mockRegisterPendingOmpSession).not.toHaveBeenCalled();
+      expect(mockStartOmpSessionWatcher).not.toHaveBeenCalled();
+      // The controller's transcript path never reaches the host argv (row 97).
+      expect(provider.buildArgs({ sessionId: 'ui-r3', cliSessionId: 'cli-9', isResume: true, extraArgs: '', remote: true }))
+        .toEqual(['--session-dir', hostDir('ui-r3'), '--resume', 'cli-9']);
+    });
+
+    it('a LOCAL launch is unchanged: watcher registration on the local dir', () => {
+      provider.onSessionStarted!('ui-local', '/proj', {} as any);
+      expect(mockRegisterPendingOmpSession).toHaveBeenCalledWith('ui-local', '/proj', undefined, {
+        sessionDir: sessionDirFor('ui-local'),
+      });
+    });
   });
   it('readSessionTitle reads the title from the given transcript path', () => {
     vi.mocked(readTranscriptTitleSync).mockReturnValue('My CLI title');

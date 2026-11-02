@@ -27,6 +27,7 @@ vi.mock('./pi-compatible-transcripts', () => ({
   readTranscriptStatusSync: vi.fn(),
   readSessionExitReasonSync: vi.fn(),
   readTranscriptTitleWithSessionInfoSync: vi.fn(),
+  seedLaunchTranscript: vi.fn(),
 }));
 
 import * as fs from 'fs';
@@ -34,13 +35,14 @@ import * as path from 'path';
 import { resolveBinary, validateBinaryExists } from './resolve-binary';
 import { startPiSessionWatcher, registerPendingPiSession, unregisterPiSession } from '../pi-session-watcher';
 import { PiProvider, _resetCachedPath } from './pi-provider';
-import { findTranscriptPathSync, findTranscriptPathInFlatDir, readTranscriptStatusSync, readSessionExitReasonSync, readTranscriptTitleWithSessionInfoSync } from './pi-compatible-transcripts';
+import { findTranscriptPathSync, findTranscriptPathInFlatDir, readTranscriptStatusSync, readSessionExitReasonSync, readTranscriptTitleWithSessionInfoSync, seedLaunchTranscript } from './pi-compatible-transcripts';
 const mockReadFile = vi.mocked(fs.promises.readFile);
 const mockResolveBinary = vi.mocked(resolveBinary);
 const mockValidateBinaryExists = vi.mocked(validateBinaryExists);
 const mockStartPiSessionWatcher = vi.mocked(startPiSessionWatcher);
 const mockRegisterPendingPiSession = vi.mocked(registerPendingPiSession);
 const mockUnregisterPiSession = vi.mocked(unregisterPiSession);
+const mockSeedLaunchTranscript = vi.mocked(seedLaunchTranscript);
 
 /** userData served by test/electron-stub.ts — 'electron' is aliased to it in vitest.config.ts. */
 const MOCK_USER_DATA = '/mock/app-path';
@@ -245,6 +247,54 @@ describe('session id discovery hooks', () => {
     });
     // The launch's own dir is searched first for the adopted transcript.
     expect(findTranscriptPathInFlatDir).toHaveBeenCalledWith(sessionDirFor('ui-4'), 'cli-9', '/proj');
+  });
+});
+
+// Audit row 36: a registry-host launch writes its transcripts on the HOST, so
+// the fresh branch must create NO local state (dir, sidecar, seed, watcher
+// registration) — the local watcher adopts the empty local seed and the tab
+// stays blank for the session's whole life. The host-plane sync is registered
+// by pty:create from the pinned id exposed below.
+describe('remote (registry-host) launches', () => {
+  const hostDir = (uiSessionId: string) => `~/.finevibe/sessions/pi/${uiSessionId}`;
+
+  it('onSessionStarted creates no local state and publishes the pinned id', () => {
+    provider.onSessionStarted!('ui-r', '/srv/app', {} as any, '/profiles/work', 'lab');
+    // The id the argv pins is what the host-plane mirror resolves against.
+    const pinned = provider.getLaunchCliSessionId!('ui-r');
+    expect(pinned).toMatch(/^[0-9a-f-]{36}$/);
+    expect(mockSeedLaunchTranscript).not.toHaveBeenCalled();
+    expect(mockRegisterPendingPiSession).not.toHaveBeenCalled();
+    expect(mockStartPiSessionWatcher).not.toHaveBeenCalled();
+    const touchedLocalDir = vi.mocked(fs.mkdirSync).mock.calls.some((c) => String(c[0]).includes('pi-sessions'));
+    expect(touchedLocalDir).toBe(false);
+  });
+
+  it('the fresh argv carries the HOST session dir plus the pinned id', () => {
+    provider.onSessionStarted!('ui-r2', '/srv/app', {} as any, undefined, 'lab');
+    expect(provider.buildArgs({ sessionId: 'ui-r2', cliSessionId: null, isResume: false, extraArgs: '', remote: true }))
+      .toEqual(['--session-dir', hostDir('ui-r2'), '--session-id', expect.any(String)]);
+  });
+
+  it('onSessionResumed resolves nothing locally and resumes by bare id under the HOST dir', () => {
+    provider.onSessionResumed!('ui-r3', '/srv/app', {} as any, '/profiles/work', 'cli-9', 'lab');
+    expect(findTranscriptPathInFlatDir).not.toHaveBeenCalled();
+    expect(findTranscriptPathSync).not.toHaveBeenCalled();
+    expect(mockRegisterPendingPiSession).not.toHaveBeenCalled();
+    expect(mockStartPiSessionWatcher).not.toHaveBeenCalled();
+    // A bare id is what the host CLI resolves inside --session-dir; the
+    // controller's transcript path never reaches the host argv (row 97).
+    expect(provider.buildArgs({ sessionId: 'ui-r3', cliSessionId: 'cli-9', isResume: true, extraArgs: '', remote: true }))
+      .toEqual(['--session-dir', hostDir('ui-r3'), '--session', 'cli-9']);
+  });
+
+  it('a LOCAL launch is unchanged: seed + watcher on the local dir', () => {
+    provider.onSessionStarted!('ui-local', '/proj', {} as any);
+    expect(mockSeedLaunchTranscript).toHaveBeenCalled();
+    expect(mockRegisterPendingPiSession).toHaveBeenCalledWith('ui-local', '/proj', undefined, {
+      sessionDir: sessionDirFor('ui-local'),
+      knownCliId: expect.any(String),
+    });
   });
 });
 

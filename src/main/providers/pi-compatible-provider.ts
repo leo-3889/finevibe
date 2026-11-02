@@ -13,8 +13,9 @@ import { collectProfileRoots, TranscriptDiscoveryScan } from './transcript-utils
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync, seedLaunchTranscript } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
 import { writeCliSessionId } from '../hook-status';
-import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMetaCached, listLaunchSessionDirs, profileIdForConfigDir, systemPromptArg } from '../launch-session-dir';
+import { launchSessionDir, launchSessionBaseDir, ensureLaunchSessionDir, remoteLaunchSessionDir, writeLaunchSessionMeta, readLaunchSessionMetaCached, listLaunchSessionDirs, profileIdForConfigDir, systemPromptArg } from '../launch-session-dir';
 import type { LaunchSessionProvider } from '../launch-session-dir';
+import { LOCAL_HOST_ID } from '../../shared/types';
 
 /**
  * The ONE implementation of the three Pi-compatible providers — Pi, Pi-Bolt
@@ -84,6 +85,8 @@ export interface PiCompatibleProviderConfig {
  *    is still on disk (the CLIs append to it in place), else the bare id.
  */
 interface PiCompatibleLaunchState {
+  /** The exclusive `--session-dir`: local userData path, or the host-side
+   * `~/…` spelling for a registry-host launch (audit row 36). */
   sessionDir: string;
   knownCliId: string | null;
   resumeTarget: string | null;
@@ -257,11 +260,38 @@ export function createPiCompatibleProvider(config: PiCompatibleProviderConfig) {
     // its id before the first write and the watcher adopts the file carrying
     // exactly that id; an unpinned one (OMP) adopts the first transcript to
     // appear there — the dir guarantees it is this process's.
-    onSessionStarted(sessionId: string, cwd: string, _win: BrowserWindow, configDir?: string): void {
-      const sessionDir = launchSessionDir(config.id, sessionId);
-      ensureLaunchSessionDir(sessionDir);
+    //
+    // A REMOTE launch (audit row 36) writes its transcripts on the HOST, under
+    // `remoteLaunchSessionDir` — the same derivation the spawn argv carries.
+    // Nothing local describes that file: creating the local dir, seeding it,
+    // and registering the LOCAL watcher would make the watcher adopt the empty
+    // local seed (single-unclaimed-file rule, no header read) and register a
+    // sync on a path that can never be written — a blank title/status for the
+    // session's whole life. So a remote launch creates NO local state; the
+    // host-plane sync (sftp listing of the launch dir) is registered by the
+    // pty:create handler from getLaunchCliSessionId(), mirroring the RESUME
+    // branch that already threads the host there.
+    onSessionStarted(sessionId: string, cwd: string, _win: BrowserWindow, configDir?: string, hostId?: string): void {
+      const remote = hostId !== undefined && hostId !== LOCAL_HOST_ID;
+      const sessionDir = remote
+        ? remoteLaunchSessionDir(config.id, sessionId)
+        : launchSessionDir(config.id, sessionId);
       const knownCliId = config.pinsSessionId ? randomUUID() : null;
       launchStates.set(sessionId, { sessionDir, knownCliId, resumeTarget: null });
+      if (remote) {
+        // The pinned id travels in the argv (`--session-id`), so publish it
+        // now: the history panel shows the CLI id from spawn, and the host-
+        // plane mirror can resolve `<stamp>_<id>.jsonl` on the host.
+        if (knownCliId) {
+          try {
+            writeCliSessionId(sessionId, knownCliId);
+          } catch (err) {
+            console.warn(`${config.id}: early session-id publish failed for ${sessionId}:`, err);
+          }
+        }
+        return;
+      }
+      ensureLaunchSessionDir(sessionDir);
       writeLaunchSessionMeta(sessionDir, { providerId: config.id, cwd, configDir, createdAt: new Date().toISOString() });
       if (knownCliId) {
         // The id is known now, so publish it immediately: the history panel shows
@@ -296,13 +326,26 @@ export function createPiCompatibleProvider(config: PiCompatibleProviderConfig) {
     // unidentified pending entry. That is what lets a later `/clear` — a
     // brand-new transcript under a new id in the launch's own dir — be
     // re-adopted instead of the tab freezing on the pre-clear file.
-    onSessionResumed(sessionId: string, cwd: string, _win: BrowserWindow, configDir: string | undefined, cliSessionId: string): void {
-      const sessionDir = launchSessionDir(config.id, sessionId);
-      ensureLaunchSessionDir(sessionDir);
+    //
+    // A REMOTE resume (audit row 36) resolves nothing locally: the transcript
+    // lives on the host, the CLI looks the bare id up in its `--session-dir`,
+    // and pushing the controller's resolved path into the host argv would leak
+    // a path that machine cannot read (sibling row 97). The host-plane title/
+    // status sync is registered by the pty:create resume branch, which uses
+    // this same dir derivation.
+    onSessionResumed(sessionId: string, cwd: string, _win: BrowserWindow, configDir: string | undefined, cliSessionId: string, hostId?: string): void {
+      const remote = hostId !== undefined && hostId !== LOCAL_HOST_ID;
+      const sessionDir = remote
+        ? remoteLaunchSessionDir(config.id, sessionId)
+        : launchSessionDir(config.id, sessionId);
       // Legacy transcripts live in the default/profile trees; a post-`/clear`
       // one lives in a previous launch's dir. Resolve before seeding.
-      const adoptedFile = this.getTranscriptPath(cliSessionId, cwd, configDir, sessionDir);
+      const adoptedFile = remote
+        ? null
+        : this.getTranscriptPath(cliSessionId, cwd, configDir, sessionDir);
       launchStates.set(sessionId, { sessionDir, knownCliId: cliSessionId, resumeTarget: adoptedFile ?? cliSessionId });
+      if (remote) return;
+      ensureLaunchSessionDir(sessionDir);
       writeLaunchSessionMeta(sessionDir, { providerId: config.id, cwd, configDir, createdAt: new Date().toISOString() });
       config.watcher.start();
       config.watcher.registerPending(sessionId, cwd, configDir, { sessionDir, knownCliId: cliSessionId, adoptedFile: adoptedFile ?? undefined });
@@ -311,6 +354,11 @@ export function createPiCompatibleProvider(config: PiCompatibleProviderConfig) {
     onSessionExited(sessionId: string): void {
       launchStates.delete(sessionId);
       config.watcher.unregister(sessionId);
+    }
+
+    /** The id a fresh launch pinned with `--session-id` (null: OMP, resumes). */
+    getLaunchCliSessionId(sessionId: string): string | null {
+      return launchStates.get(sessionId)?.knownCliId ?? null;
     }
 
     getTranscriptPath(cliSessionId: string, projectPath: string, configDir?: string, sessionDir?: string): string | null {

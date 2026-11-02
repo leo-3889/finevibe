@@ -90,8 +90,20 @@ export interface CliProvider {
    * Begin CLI session-id discovery for a freshly spawned session. Only
    * providers without a hook system that reports the id implement this
    * (codex tails history.jsonl, pi watches its sessions tree).
+   *
+   * `hostId` is the registry host of a REMOTE launch (undefined/`local` =
+   * a local launch). Providers that track on-disk state locally MUST skip
+   * the local dir/watcher work for a remote launch — see
+   * pi-compatible-provider's audit row 36 branch.
    */
-  onSessionStarted?(sessionId: string, cwd: string, win: BrowserWindow, configDir?: string): void;
+  onSessionStarted?(sessionId: string, cwd: string, win: BrowserWindow, configDir?: string, hostId?: string): void;
+  /**
+   * The CLI session id this launch pinned for a FRESH session (the id
+   * `onSessionStarted` generated and put in the argv), or null when the CLI
+   * generates its own. Callers that must attribute an on-disk transcript
+   * before the id is discoverable — the remote transcript mirror — use this.
+   */
+  getLaunchCliSessionId?(sessionId: string): string | null;
   /**
    * Re-attach to on-disk state for a RESUMED session — one spawned with a
    * known `cliSessionId`, so `onSessionStarted` discovery never runs for
@@ -101,8 +113,12 @@ export interface CliProvider {
    * the CLI starts a brand-new transcript under a new id in the same dir,
    * and the watcher re-adopts it (handing the new id to the transcript
    * sync) instead of the tab freezing on the pre-clear conversation.
+   *
+   * `hostId` is the registry host of a REMOTE launch (undefined/`local` =
+   * a local launch): a remote transcript is not on the controller's disk,
+   * so nothing local is created, scanned or watched for it.
    */
-  onSessionResumed?(sessionId: string, cwd: string, win: BrowserWindow, configDir: string | undefined, cliSessionId: string): void;
+  onSessionResumed?(sessionId: string, cwd: string, win: BrowserWindow, configDir: string | undefined, cliSessionId: string, hostId?: string): void;
   /**
    * The CLI's own title read from a resolved transcript path, or null when
    * it has none yet. Only meaningful for providers with

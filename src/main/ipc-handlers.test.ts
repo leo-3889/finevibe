@@ -267,6 +267,8 @@ function makeProvider(): CliProvider {
     meta: { id: 'claude', capabilities: { hookStatus: false } },
     onSessionStarted: vi.fn(() => { calls.push('started'); }),
     onSessionResumed: vi.fn(() => { calls.push('resumed'); }),
+    // The Pi/Pi-Bolt shape: a fresh launch pins this id in the argv.
+    getLaunchCliSessionId: vi.fn(() => 'pinned-cli'),
     onSessionExited: vi.fn(() => { calls.push('exited'); }),
     validateSettings: vi.fn(() => ({ statusLine: 'ok', hooks: 'complete' })),
     reinstallSettings: vi.fn(),
@@ -1458,7 +1460,7 @@ describe('pty:create provider hooks', () => {
     // Without onSessionResumed a resumed session never joins the Pi/OMP
     // sessions-tree watcher, so a later /clear is never re-adopted.
     expect(mockRegisterSync).toHaveBeenCalledWith('ui-1', 'pi', 'cli-1', '/proj', '/profiles/work', { sessionDir: expect.stringContaining('pi-sessions') });
-    expect(provider.onSessionResumed).toHaveBeenCalledWith('ui-1', '/proj', fakeWin, '/profiles/work', 'cli-1');
+    expect(provider.onSessionResumed).toHaveBeenCalledWith('ui-1', '/proj', fakeWin, '/profiles/work', 'cli-1', undefined);
     expect(calls).toEqual(['resumed']);
     expect(provider.onSessionStarted).not.toHaveBeenCalled();
   });
@@ -1468,7 +1470,7 @@ describe('pty:create provider hooks', () => {
     // Pi-Bolt owns a third launch base — the seed must name pi-bolt-sessions,
     // not the Pi/OMP dirs (launch-session-dir.ts:44-46).
     expect(mockRegisterSync).toHaveBeenCalledWith('ui-1', 'pi-bolt', 'cli-1', '/proj', '/profiles/work', { sessionDir: expect.stringContaining('pi-bolt-sessions') });
-    expect(provider.onSessionResumed).toHaveBeenCalledWith('ui-1', '/proj', fakeWin, '/profiles/work', 'cli-1');
+    expect(provider.onSessionResumed).toHaveBeenCalledWith('ui-1', '/proj', fakeWin, '/profiles/work', 'cli-1', undefined);
     expect(calls).toEqual(['resumed']);
   });
 
@@ -1477,6 +1479,72 @@ describe('pty:create provider hooks', () => {
     await create('ui-1', 'cli-1', { isResume: true });
     expect(mockRegisterSync).toHaveBeenCalled();
     expect(calls).toEqual([]);
+  });
+
+  // Audit row 36: the provider hook is the only place that knows a launch's
+  // transcripts live on the HOST, so the trailing hostId must reach it. A
+  // dropped argument is a silent regression: the provider creates local dirs,
+  // seeds a local transcript and registers the LOCAL watcher, and the tab
+  // stays blank for the session's whole life.
+  it('threads the registry host to onSessionStarted on a REMOTE fresh launch', async () => {
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
+    await handlers.get('pty:create')!(
+      {}, 'rmt-1', '/proj', null, false, '', 'pi', undefined, undefined, '',
+      undefined, 'lab',
+    );
+    expect(provider.onSessionStarted).toHaveBeenCalledWith('rmt-1', '/proj', fakeWin, undefined, 'lab');
+    expect(provider.onSessionResumed).not.toHaveBeenCalled();
+    // Audit row 36: the pinned id makes the HOST-side transcript attributable
+    // from its first append, so the host-plane mirror starts at spawn — with
+    // the host dir spelling the argv carries, never the local userData path.
+    expect(mockRegisterSync).toHaveBeenCalledWith(
+      'rmt-1', 'pi', 'pinned-cli', '/proj', undefined,
+      { sessionDir: '~/.finevibe/sessions/pi/rmt-1', hostId: 'lab' },
+    );
+  });
+
+  it('registers no fresh-session sync when the launch pins no id (OMP)', async () => {
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
+    vi.mocked(provider.getLaunchCliSessionId!).mockReturnValueOnce(null);
+    await handlers.get('pty:create')!(
+      {}, 'rmt-omp', '/proj', null, false, '', 'omp', undefined, undefined, '',
+      undefined, 'lab',
+    );
+    expect(provider.onSessionStarted).toHaveBeenCalled();
+    expect(mockRegisterSync).not.toHaveBeenCalled();
+  });
+
+  it('registers no fresh-session sync for a LOCAL launch (the watcher owns it)', async () => {
+    await create('local-fresh', null);
+    expect(provider.onSessionStarted).toHaveBeenCalledWith('local-fresh', '/proj', fakeWin, undefined, undefined);
+    expect(mockRegisterSync).not.toHaveBeenCalled();
+  });
+
+  it('threads the registry host to onSessionResumed on a REMOTE resume', async () => {
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
+    await handlers.get('pty:create')!(
+      {}, 'rmt-2', '/proj', 'cli-9', true, '', 'pi', undefined, undefined, '',
+      '/profiles/work', 'lab',
+    );
+    expect(provider.onSessionResumed).toHaveBeenCalledWith('rmt-2', '/proj', fakeWin, '/profiles/work', 'cli-9', 'lab');
+    expect(provider.onSessionStarted).not.toHaveBeenCalled();
+    // The host-plane sync is registered by this handler, not the provider, so
+    // a resume registers exactly once with the HOST dir (isSameSync dedupe).
+    expect(mockRegisterSync).toHaveBeenCalledWith(
+      'rmt-2', 'pi', 'cli-9', '/proj', '/profiles/work',
+      { sessionDir: '~/.finevibe/sessions/pi/rmt-2', hostId: 'lab' },
+    );
+  });
+
+  it('threads no host to a LOCAL resume', async () => {
+    await create('local-1', 'cli-1', { isResume: true });
+    expect(provider.onSessionResumed).toHaveBeenCalledWith('local-1', '/proj', fakeWin, undefined, 'cli-1', undefined);
   });
 });
 

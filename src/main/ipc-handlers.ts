@@ -454,6 +454,16 @@ export function registerIpcHandlers(): void {
     // WRONG machine. Remote launches are therefore contained against the project
     // roots recorded FOR THAT HOST (remote-fs' rule, no local disk touched).
     const remoteLaunchHost = hostId !== undefined && hostId !== LOCAL_HOST_ID ? hostId : undefined;
+    // The launch's transcript dir on the plane the CLI runs on, ONE derivation
+    // for both registration branches (audit T2 #5 + row 36): the host-side
+    // spelling a registry-host launch's argv carries, else the local launch dir;
+    // only the Pi-compatible providers take a `--session-dir`.
+    const launchSessionDir =
+      providerId === 'pi' || providerId === 'pi-bolt' || providerId === 'omp'
+        ? remoteLaunchHost !== undefined
+          ? remoteLaunchSessionDir(providerId, sessionId)
+          : resolveLaunchSessionDir(providerId, sessionId)
+        : undefined;
     if (remoteLaunchHost !== undefined) {
       if (!isRemotePathInKnownProject(remoteLaunchHost, cwd)) {
         rejectLaunch(`Refused to launch: the working directory ${cwd} is not a known project of host ${JSON.stringify(remoteLaunchHost)}.`);
@@ -490,21 +500,32 @@ export function registerIpcHandlers(): void {
       // Audit T2 #5: a remote launch's dir is the HOST-side spelling (the
       // same remoteLaunchSessionDir the spawn argv carries — one derivation,
       // both planes; a local userData path can never exist on the host).
-      const sessionDir =
-        hostId !== undefined && hostId !== LOCAL_HOST_ID
-          ? providerId === 'pi' || providerId === 'pi-bolt' || providerId === 'omp'
-            ? remoteLaunchSessionDir(providerId, sessionId)
-            : undefined
-          : resolveLaunchSessionDir(providerId, sessionId);
-      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir, hostId });
+      registerTranscriptSync(sessionId, providerId, cliSessionId, cwd, configDir, { sessionDir: launchSessionDir, hostId });
       // ...and let the provider re-attach to its own on-disk state,
       // seeding the sessions watcher as an ADOPTED entry (known id +
       // existing transcript path) so a later `/clear` — a brand-new
       // transcript under a new id in the launch's own dir — is
       // re-adopted instead of the tab freezing on the pre-clear file.
-      provider.onSessionResumed?.(sessionId, cwd, win, configDir, cliSessionId);
+      provider.onSessionResumed?.(sessionId, cwd, win, configDir, cliSessionId, remoteLaunchHost);
     } else {
-      provider.onSessionStarted?.(sessionId, cwd, win, configDir);
+      provider.onSessionStarted?.(sessionId, cwd, win, configDir, remoteLaunchHost);
+      // Audit row 36: a REMOTE fresh Pi/Pi-Bolt launch writes its transcript on
+      // the HOST, so the provider's local sessions watcher never sees it and the
+      // tab would stay blank for the session's whole life. The launch pinned
+      // its CLI id in the argv (`--session-id`), so the host-side transcript is
+      // attributable from its first append — register the same host-plane sync
+      // the RESUME branch above uses, with the same host dir derivation.
+      // OMP pins no id (it generates one on the host), so it has nothing to
+      // attribute and stays blank until resumed (docs/provider-contracts.md).
+      if (remoteLaunchHost !== undefined) {
+        const pinnedCliId = provider.getLaunchCliSessionId?.(sessionId) ?? null;
+        if (pinnedCliId) {
+          registerTranscriptSync(sessionId, providerId, pinnedCliId, cwd, configDir, {
+            sessionDir: launchSessionDir,
+            hostId: remoteLaunchHost,
+          });
+        }
+      }
     }
 
     const launchStartedAt = Date.now();
