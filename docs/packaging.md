@@ -323,17 +323,22 @@ launcher the same menu/dock identity as the deb. Wayland docks ignore the
 `StartupWMClass=FineVibe`, so that value must stay in sync with the app's
 `WM_CLASS`.
 
-### AppImage FUSE requirement (Ubuntu 24.04)
+### AppImage launch posture: always extract-and-run (Ubuntu 24.04)
 
 A bare AppImage mounts itself through FUSE: its runtime `dlopen`s
 `libfuse.so.2` at startup. Ubuntu 24.04 no longer ships `libfuse2`, so
 launching the downloaded AppImage there dies before any window appears with
-`dlopen libfuse.so.2: No such file or directory`. The npm launcher probes
-`/dev/fuse` and, when it is missing, launches the AppImage with
-`APPIMAGE_EXTRACT_AND_RUN=1` (the runtime then extracts to a temp dir on
-every start — works everywhere, costs a temp copy per launch), and writes
-the same `env APPIMAGE_EXTRACT_AND_RUN=1 …` prefix into the installed
-`.desktop` `Exec` so desktop launches take the same path. Only the Exec
+`dlopen libfuse.so.2: No such file or directory`. `/dev/fuse` is NOT a usable
+probe for that capability: fuse3 creates the node on 24.04, so the probe
+reports "mountable" on exactly the systems where the mount then fails — a
+dead mount and no window. The npm launcher therefore ALWAYS takes the
+self-extraction path: the spawn carries `APPIMAGE_EXTRACT_AND_RUN=1` (the
+runtime extracts to a temp dir on every start — works everywhere, costs a
+temp copy per launch), and writes the same `env APPIMAGE_EXTRACT_AND_RUN=1 …`
+prefix into the installed `.desktop` `Exec` so desktop launches take the same
+path. The FUSE mount path is opt-in only: `FINEVIBE_APPIMAGE_MOUNT=1` on a
+host that also has `/dev/fuse` (the probe survives purely as that opt-in's
+precondition). Only the Exec
 *program* is replaced there: the embedded entry's arguments carry over, which
 is how `--no-sandbox` (electron-builder ships `Exec=AppRun --no-sandbox %U`,
 the bundled `chrome-sandbox` being 0755 non-setuid) survives the rewrite —
