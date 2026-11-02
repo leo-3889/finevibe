@@ -126,11 +126,12 @@ Versions with a `-dev` suffix normalize to dpkg
 Mac is the one platform with NO `artifactName` (row 72), and the missing line is
 a contract rather than an oversight: the mac artifacts keep electron-builder's
 default names — zips `FineVibe-<version>-mac.zip` / `FineVibe-<version>-arm64-mac.zip`
-(`app-builder-lib/out/targets/ArchiveTarget.js:23-30`,
-`${productName}-${version}[-${arch}]-${os}.${ext}`,
-the arch part dropping for the default arch x64) and dmgs
+(`ArchiveTarget.build`, `app-builder-lib/…/out/targets/ArchiveTarget.js:30`,
+`${productName}-${version}[-${arch}]-${os}.${ext}`; the arch part drops for the
+default arch x64 through that line's ternary) and dmgs
 `FineVibe-<version>.dmg` / `FineVibe-<version>-arm64.dmg`
-(`dmg-builder/out/dmg.js:25-27`) —
+(`DmgTarget.build`, `dmg-builder/…/out/dmg.js:25`; there the arch drops through
+`expandArtifactNamePattern`'s `skipDefaultArch` instead) —
 because `bin/finevibe.js getAssetName` downloads the mac zip under exactly those
 two spellings.
 Setting `build.mac.artifactName` replaces the pattern for BOTH mac targets, so
@@ -145,17 +146,24 @@ next to `build.mac` itself: electron-builder validates `build` with
 `additionalProperties: false` (`app-builder-lib/scheme.json`), so any extra key
 — even `"//"` — fails the build.
 
-Every `node_modules` cite in this section (`ArchiveTarget.js`,
-`dmg-builder/out/dmg.js`, `macPackager.js`, `macCodeSign.js`) is against
-**electron-builder 26.8.1** — a bump invalidates the line numbers, re-derive them.
+The cites in this section are installed-file anchors, not repo pointers: the `…`
+stands for the `node_modules/` root the doc pointer checker skips by design, so
+open the file under `node_modules/` to check it. All of them are read against
+**electron-builder 26.8.1** (`npm ls electron-builder`) — a bump invalidates the
+line numbers, re-derive them.
 
 `build.mac.forceCodeSigning: true` keeps a mac build honest: app-builder-lib's
-`fallBackToAdhoc` (`macPackager.js:215`) otherwise signs arm64 builds with a
-fresh ad-hoc identity whenever the real identity is missing, so each release
+`fallBackToAdhoc` (`MacPackager.sign`,
+`app-builder-lib/…/out/macPackager.js:215`, consumed at `:249-252`) otherwise
+signs arm64 builds with a fresh ad-hoc identity whenever the real identity is
+missing, so each release
 carries a different signer and macOS treats the update as a different app.
 With the flag the same build fails loudly instead
-(`reportError` → throw, `macCodeSign.js:75`). Because app-builder-lib rejects
-`identity: null` combined with the flag (`macPackager.js:217`), the
+(`reportError` → throw,
+`app-builder-lib/…/out/codeSign/macCodeSign.js:75-76`). Because app-builder-lib
+rejects `identity: null` combined with the flag (`MacPackager.sign`'s
+`qualifier === null` guard,
+`app-builder-lib/…/out/macPackager.js:217-218`), the
 `artifacts_only` gate leg of `release.yml` overrides both
 (`-c.mac.identity=null -c.mac.notarize=false -c.mac.forceCodeSigning=false`);
 release runs keep the flag and the loud failure.
