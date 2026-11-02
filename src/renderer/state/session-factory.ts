@@ -160,18 +160,27 @@ export function composeLeadLaunch(opts: {
   // `charter` is typed required, but state.json is user-editable: a record
   // missing it must stay the absent feature, not throw at spawn.
   if (!lead?.enabled || !(lead.charter ?? '').trim()) return { systemPrompt, initialPrompt };
-  const bytes = charterBytes(lead.charter);
-  if (bytes > LEAD_CHARTER_MAX_BYTES) {
-    throw new Error(t('sidebar.projectSettings.leadCharterTooLong', { size: bytes, max: LEAD_CHARTER_MAX_BYTES }));
-  }
   const fenced = `[Project lead - ${lead.name}]\n${lead.charter}\n[/Project lead]`;
   if (opts.systemPromptInjection) {
+    assertLeadCharterCap(lead);
     return {
       systemPrompt: systemPrompt ? `${systemPrompt.trimEnd()}\n\n${fenced}` : lead.charter,
       initialPrompt,
     };
   }
-  return { systemPrompt, initialPrompt: initialPrompt ? `${fenced}\n\n${initialPrompt}` : initialPrompt };
+  // No system-prompt lane and no queued prompt: nothing is injected (the
+  // charter alone as a positional prompt would read as a user request), so
+  // an over-cap charter must NOT refuse this launch - it carries nothing.
+  if (!initialPrompt) return { systemPrompt, initialPrompt };
+  assertLeadCharterCap(lead);
+  return { systemPrompt, initialPrompt: `${fenced}\n\n${initialPrompt}` };
+}
+
+function assertLeadCharterCap(lead: ProjectLead): void {
+  const bytes = charterBytes(lead.charter);
+  if (bytes > LEAD_CHARTER_MAX_BYTES) {
+    throw new Error(t('sidebar.projectSettings.leadCharterTooLong', { size: bytes, max: LEAD_CHARTER_MAX_BYTES }));
+  }
 }
 
 /**

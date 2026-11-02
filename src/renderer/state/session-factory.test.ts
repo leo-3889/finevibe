@@ -143,6 +143,14 @@ describe('composeLeadLaunch', () => {
       .toEqual({ systemPrompt: undefined, initialPrompt: undefined });
   });
 
+  it('over-cap charter on a NO-INJECTION path does not throw (cap gates injection, not the record)', () => {
+    // Copilot/Gemini launch with no queued prompt injects nothing, so an
+    // over-cap charter must not refuse it - the launch carries no charter.
+    const over = 'x'.repeat(LEAD_CHARTER_MAX_BYTES + 1);
+    expect(composeLeadLaunch({ lead: makeLead({ charter: over }), systemPromptInjection: false }))
+      .toEqual({ systemPrompt: undefined, initialPrompt: undefined });
+  });
+
   it('oversize charter throws naming the cap instead of truncating', () => {
     expect(() => composeLeadLaunch({ lead: makeLead({ charter: 'x'.repeat(LEAD_CHARTER_MAX_BYTES + 1) }), systemPromptInjection: true }))
       .toThrow(`Charter is ${LEAD_CHARTER_MAX_BYTES + 1} bytes; the cap is ${LEAD_CHARTER_MAX_BYTES} bytes.`);
