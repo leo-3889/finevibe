@@ -246,6 +246,16 @@
     "title": "Board",
     "helpTooltip": "About the board",
     "helpAriaLabel": "About the board",
+    "settingsTooltip": "Board settings",
+    "settingsAriaLabel": "Board settings",
+    "settings": {
+      "leadGate": "Require lead approval for Done",
+      "leadGateNeedsLead": "Require lead approval for Done (enable the project lead first)"
+    },
+    "leadGate": {
+      "refusalFlagged": "The lead flagged this run — the card stays out of Done.",
+      "refusalUnreviewed": "No lead review yet — the lead gate keeps this card out of Done."
+    },
     "searchPlaceholder": "Search tasks",
     "newTaskButton": "New task",
     "filterLabel": "Filter",

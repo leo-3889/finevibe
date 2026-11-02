@@ -246,6 +246,16 @@
     "title": "看板",
     "helpTooltip": "关于看板",
     "helpAriaLabel": "关于看板",
+    "settingsTooltip": "看板设置",
+    "settingsAriaLabel": "看板设置",
+    "settings": {
+      "leadGate": "移入「完成」需负责人批准",
+      "leadGateNeedsLead": "移入「完成」需负责人批准（先在项目设置中启用负责人）"
+    },
+    "leadGate": {
+      "refusalFlagged": "负责人已标记此次运行 —— 该卡片不能移入「完成」。",
+      "refusalUnreviewed": "尚无负责人评审 —— 负责人门槛阻止该卡片移入「完成」。"
+    },
     "searchPlaceholder": "搜索任务",
     "newTaskButton": "新建任务",
     "filterLabel": "筛选",

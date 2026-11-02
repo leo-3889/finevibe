@@ -277,3 +277,38 @@ describe('hydrateLoadedState githubLastSeen age prune (PA-31)', () => {
     expect('githubLastSeen' in state.projects[0]).toBe(false);
   });
 });
+
+// team-lead-persona-plan M2b / I4: the Done-gate is an additive board key, so its
+// persistence contract is “rides the whole-state write, survives hydrate, and
+// writes nothing when the board never opted in”.
+describe('board leadGate round-trip (I4 Done-gate)', () => {
+  const gatedState = (): PersistedState => {
+    const state = baseState({});
+    state.projects[0].board = {
+      columns: [
+        { id: 'c-inbox', title: 'Backlog', order: 0, behavior: 'inbox' },
+        { id: 'c-done', title: 'Done', order: 1, behavior: 'terminal' },
+      ],
+      tasks: [],
+      leadGate: true,
+    };
+    return state;
+  };
+
+  it('persists the per-board gate through save → hydrate', () => {
+    const out = serializeForSave(gatedState());
+    hydrateLoadedState(out, {} as Preferences);
+    expect(out.projects[0].board?.leadGate).toBe(true);
+  });
+
+  it('writes no gate key for a board that never opted in (zero delta)', () => {
+    const state = gatedState();
+    delete state.projects[0].board!.leadGate;
+
+    const out = serializeForSave(state);
+    hydrateLoadedState(out, {} as Preferences);
+
+    expect(out.projects[0].board).toBeDefined();
+    expect('leadGate' in out.projects[0].board!).toBe(false);
+  });
+});
