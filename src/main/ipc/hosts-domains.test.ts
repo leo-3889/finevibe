@@ -53,6 +53,10 @@ vi.mock('../hosts/keys', () => ({
 }));
 vi.mock('../pty-manager', () => ({ spawnShellPty: vi.fn() }));
 vi.mock('../main-window', () => ({ getMainWindow: vi.fn(() => null) }));
+// Row 35: the pin store's only writer is enrollment (it is the one lane with a
+// live, pin-verified handshake key). These handlers must leave the file alone.
+const mockSeedHostTrustStore = vi.hoisted(() => vi.fn(() => '/tmp/userData/hosts/lab/known_hosts'));
+vi.mock('../hosts/host-trust', () => ({ seedHostTrustStore: mockSeedHostTrustStore }));
 
 import { registerHostsDomains } from './hosts-domains';
 
@@ -103,6 +107,42 @@ describe('hosts:stat (dir-browser lane, row 93)', () => {
     await expect(call('hosts:stat', 'lab', '/srv/brand-new-folder'))
       .resolves.toMatchObject({ ok: true, isDirectory: true });
     expect(statRemotePath).toHaveBeenCalledWith('lab', '/srv/brand-new-folder');
+  });
+});
+
+// Row 35 writer hygiene: `<userData>/hosts/<id>/known_hosts` is seeded by
+// enrollment from the handshake key that passed the pin gate — the only lane
+// that has a live key. Every other mutation must leave it untouched: deleting
+// it on an edit would silently drop the lane back to the user's ~/.ssh
+// (a trust downgrade), rewriting it from the pin is impossible (a SHA256 hash
+// is not a key). Stale pin = hard refuse = re-enroll, which is the fail-closed
+// contract in docs/hosts.md.
+describe('pin store has one writer (row 35)', () => {
+  const enrolled = {
+    id: 'lab',
+    enrollmentStatus: 'enrolled',
+    hostKeyFingerprint: `SHA256:${'A'.repeat(43)}=`,
+  } as HostRecord;
+
+  beforeEach(() => mockSeedHostTrustStore.mockClear());
+
+  it('hosts:update (identity + key edits) and approveHostKey never touch it', () => {
+    getHost.mockReturnValue(enrolled);
+    call('hosts:update', 'lab', { host: '198.51.100.7', port: 2222, privateKeyPath: '/tmp/new-key' }); // pii-allow: RFC 5737
+    call('hosts:approveHostKey', 'lab', `SHA256:${'B'.repeat(43)}=`);
+    call('hosts:delete', 'lab');
+    expect(mockSeedHostTrustStore).not.toHaveBeenCalled();
+    // The update/approve paths did run (so the assertion above is not vacuous).
+    expect(updateHost).toHaveBeenCalled();
+  });
+
+  it('hosts:enroll delegates to enrollment.ts — the handler itself never seeds', async () => {
+    getHost.mockReturnValue(enrolled);
+    await call('hosts:enroll', 'lab');
+    // The seed call site is enrollment's (pinned in enrollment.test.ts: `seeds
+    // the app trust store from the key that passed the pin gate`); the IPC layer
+    // must not grow a second one.
+    expect(mockSeedHostTrustStore).not.toHaveBeenCalled();
   });
 });
 

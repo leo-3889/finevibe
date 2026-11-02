@@ -159,6 +159,10 @@ export interface SessionRecord {
   browserIsolated?: boolean;
   /** Persisted: identifies which TeamMember spawned this session, if any. */
   teamMemberId?: string;
+  /** Durable lead-review claim (I3, review 7c3238b9-2): set when the session's
+   * one lifetime on-complete review is claimed, so a restart/resume cannot
+   * re-bill it. Absent = never reviewed. */
+  leadReviewedAt?: number;
   /** Persisted, sticky: which Profile backs this session's CLI config dir. Resume must reuse it. */
   profileId?: string;
   /** Transient: initial prompt to inject on first spawn. Not persisted. */
