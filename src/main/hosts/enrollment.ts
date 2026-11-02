@@ -317,8 +317,6 @@ export async function enrollHost(
   try {
     await connect(record, { verifyHostKey: (fp) => fp === pin });
     steps.push({ step: 'connect', ok: true });
-    // Row 118: a rotation has to reach the record, not just this connect.
-    if (pin && record.hostKeyFingerprint !== pin) updateHost(record.id, { hostKeyFingerprint: pin });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     steps.push({ step: 'connect', ok: false, detail: msg });
