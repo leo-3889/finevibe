@@ -24,7 +24,7 @@ import { getKeychainIsolationStatus } from '../claude-keychain';
 import { LOCAL_HOST_ID, type ProviderId } from '../../shared/types';
 
 export interface SupportDomainsDeps {
-  /** Git-target gate from ipc-handlers (readiness uses the same root rule as git:*). */
+  /** Git-target gate (ipc/git-domains.ts, forwarded by ipc-handlers): readiness uses the same root rule as git:*. */
   requireGitRoot: (channel: string, projectPath: string) => string;
 }
 

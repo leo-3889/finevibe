@@ -84,7 +84,7 @@ const ALLOWLIST: Record<string, string> = {
   'metaCache@codex-session-watcher.ts': 'capped:MAX_META_CACHE_ENTRIES (rollout meta LRU)',
   'targetCanonicalCache@fs-utils.ts': 'capped:TARGET_CANONICAL_CACHE_MAX (LRU + TTL)',
   'metaCache@launch-session-dir.ts': 'capped:META_CACHE_MAX (FIFO evict oldest dir meta)',
-  'gitWatchedRoots@ipc-handlers.ts': 'capped:MAX_GIT_WATCHED_ROOTS (FIFO evict oldest root)',
+  'gitWatchedRoots@ipc/git-domains.ts': 'capped:MAX_GIT_WATCHED_ROOTS (FIFO evict oldest root; row 26 slice 6 repath from ipc-handlers.ts)',
   'foldsCaseByDir@settings-guard.ts': 'capped:FOLDS_CASE_BY_DIR_MAX (FIFO evict oldest probed dir)',
   'statusTailCache@providers/pi-compatible-transcripts.ts': 'capped:MAX_STATUS_TAIL_CACHE (FIFO evict oldest tail)',
   'textCache@session-deep-search.ts': 'capped:MAX_CACHE_ENTRIES + MAX_CACHE_CHARS (LRU evict oldest)',

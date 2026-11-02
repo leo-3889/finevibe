@@ -227,12 +227,12 @@ export async function listRemoteDir(
 /**
  * R2 Phase 4a (`docs/hosts.md` §R2 backlog): the `fs:listFiles` sibling for a
  * remote project — a recursive sftp walk mirroring the local non-git fallback
- * walk (`ipc-handlers.ts walkProjectFiles`): DFS in readdir order, same depth
+ * walk (`ipc/fs-domains.ts walkProjectFiles`): DFS in readdir order, same depth
  * cap, same ignore set, dotfiles skipped. The file cap is the per-dir
  * MAX_REMOTE_LIST_ENTRIES as a TOTAL bound (one project's whole listing stays
  * ~80 KB over the wire, matching the payload-bounding rule of the sibling
  * caps); the local 5000 cap is a git-ls-files bound, not a wire bound.
- * Results are cached by the caller (ipc-handlers `getCachedFiles`). */
+ * Results are cached by the caller (ipc/fs-domains.ts `getCachedFiles`). */
 const REMOTE_WALK_IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '__pycache__']);
 const REMOTE_WALK_MAX_DEPTH = 5;
 

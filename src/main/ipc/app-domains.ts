@@ -8,7 +8,8 @@
  *
  * The two injected values are exactly the closure state these nine handlers
  * captured:
- *  - `requireGitRoot`: the git/project gate `github:detectRepo` calls;
+ *  - `requireGitRoot`: the git/project gate `github:detectRepo` calls (it lives
+ *    in `ipc/git-domains.ts` since row 26 slice 6, forwarded from here);
  *  - `getBrowserPreloadPath`: the `__dirname`-relative preload path, which
  *    must keep computing inside `ipc-handlers.ts` (a module move would
  *    silently rebase `__dirname`).
