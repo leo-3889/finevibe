@@ -24,11 +24,18 @@ vi.mock('./provider-availability.js', () => ({
   getProviderCapabilities: vi.fn(),
 }));
 
+// I4: the gate refuses OUT LOUD; the toast is DOM-only, so it is spied, not run
+// (this suite is node-env, there is no document).
+vi.mock('./board-notice.js', () => ({ showBoardNotice: vi.fn() }));
+
 import { appState, _resetForTesting } from './state';
+import { showBoardNotice } from './board-notice';
+import { t } from './i18n';
+import type { BoardTask, LeadReviewNote, ProjectRecord } from '../shared/types';
 import {
   getBoard, getColumnByBehavior, getTasksForColumn,
   getTaskBySessionId, getTaskByCliSessionId,
-  addTask, updateTask, deleteTask, moveTask,
+  addTask, updateTask, deleteTask, moveTask, isLeadGateBlocked, setLeadGate,
   addColumn, renameColumn, deleteColumn, reorderColumns,
   addTag, removeTag, updateTagColor,
   addTagToTask, removeTagFromTask, getTagColor, getTagCount,
@@ -290,6 +297,170 @@ describe('board-state', () => {
       const task = addTask({ title: 'Test', prompt: 'p' })!;
       moveTask(task.id, 'non-existent-column', 0);
       expect(task.columnId).toBe('col-backlog'); // unchanged
+    });
+
+    it('reports a committed move as true (I4: callers can tell commit from refusal)', () => {
+      const task = addTask({ title: 'T', prompt: 'p' })!;
+      expect(moveTask(task.id, 'col-running', 0)).toBe(true);
+      expect(moveTask(task.id, 'nope', 0)).toBe(false);
+    });
+  });
+
+  // team-lead-persona-plan M2b / increment I4. The gate is one predicate in front of
+  // the single card-landing choke point (moveTask) plus the modal's column write
+  // (updateTask), so the suite pins the predicate's whole decision table once, and
+  // the refusal's user-notice (a refusal is never silent).
+  describe('lead Done-gate (I4)', () => {
+    const note = (verdict: LeadReviewNote['verdict'], sessionId = 'sess-1'): LeadReviewNote => ({
+      v: 1, sessionId, verdict, summary: 'done fine', createdAt: 1,
+    });
+
+    /** Opt the board in and give the project an enabled lead. */
+    function gateOn(leadEnabled = true): ProjectRecord {
+      const project = appState.activeProject!;
+      project.board!.leadGate = true;
+      project.lead = { name: 'Lead', charter: 'c', enabled: leadEnabled };
+      return project;
+    }
+
+    // addTask builds the card from a fixed field list (it never carries a session
+    // verdict), so a card that has RUNNED is written through updateTask — the same
+    // route board-session-sync/lead-review use.
+    function runCard(extra: Partial<BoardTask>): BoardTask {
+      const task = addTask({ title: 'T', prompt: 'p', columnId: extra.columnId })!;
+      updateTask(task.id, extra);
+      return task;
+    }
+
+    const noticeText = (): string => String(vi.mocked(showBoardNotice).mock.calls[0]?.[0] ?? '');
+
+    it('refuses an unreviewed card into the terminal column and says why', () => {
+      gateOn();
+      const task = runCard({ sessionId: 'sess-1' });
+      expect(moveTask(task.id, 'col-done', 0)).toBe(false);
+      expect(task.columnId).toBe('col-backlog');
+      expect(showBoardNotice).toHaveBeenCalledTimes(1);
+      expect(noticeText()).toBe(t('board.leadGate.refusalUnreviewed'));
+    });
+
+    it('refuses a flagged card and names the flag, not the missing review', () => {
+      gateOn();
+      const task = runCard({ sessionId: 'sess-1', leadReview: note('flagged') });
+      expect(moveTask(task.id, 'col-done', 0)).toBe(false);
+      expect(task.columnId).toBe('col-backlog');
+      expect(noticeText()).toBe(t('board.leadGate.refusalFlagged'));
+    });
+
+    it('lets a lead-approved card into Done', () => {
+      gateOn();
+      const task = runCard({ sessionId: 'sess-1', leadReview: note('approved') });
+      expect(moveTask(task.id, 'col-done', 0)).toBe(true);
+      expect(task.columnId).toBe('col-done');
+      expect(showBoardNotice).not.toHaveBeenCalled();
+    });
+
+    it('moves a manual card (no session ever ran) freely — nothing to review', () => {
+      gateOn();
+      const task = addTask({ title: 'T', prompt: 'p' })!;
+      expect(moveTask(task.id, 'col-done', 0)).toBe(true);
+      expect(task.columnId).toBe('col-done');
+    });
+
+    it('gates a post-restart card by cliSessionId (load clears sessionId)', () => {
+      gateOn();
+      const task = runCard({ cliSessionId: 'cli-1' });
+      expect(isLeadGateBlocked(task, 'col-done')).toBe(true);
+      expect(moveTask(task.id, 'col-done', 0)).toBe(false);
+    });
+
+    it('is inert with leadGate off, and with the gate on but no enabled lead (zero delta)', () => {
+      const project = appState.activeProject!;
+      project.lead = { name: 'Lead', charter: 'c', enabled: true };
+      const ungated = runCard({ sessionId: 'sess-1' });
+      expect(moveTask(ungated.id, 'col-done', 0)).toBe(true);
+
+      // Gate on, lead absent entirely.
+      delete project.lead;
+      project.board!.leadGate = true;
+      const leadless = runCard({ sessionId: 'sess-2' });
+      expect(moveTask(leadless.id, 'col-done', 0)).toBe(true);
+
+      // Gate on, lead present but disabled.
+      project.lead = { name: 'Lead', charter: 'c', enabled: false };
+      const disabled = runCard({ sessionId: 'sess-3' });
+      expect(moveTask(disabled.id, 'col-done', 0)).toBe(true);
+      expect(showBoardNotice).not.toHaveBeenCalled();
+    });
+
+    it('gates only terminal landings: Active/none columns and Done-internal reorders stay free', () => {
+      gateOn();
+      const task = runCard({ sessionId: 'sess-1' });
+      expect(moveTask(task.id, 'col-running', 0)).toBe(true);
+      expect(moveTask(task.id, 'col-backlog', 0)).toBe(true);
+      // Land it on an approval, then flag it: a reorder inside Done is not a landing.
+      task.leadReview = note('approved');
+      expect(moveTask(task.id, 'col-done', 0)).toBe(true);
+      task.leadReview = note('flagged');
+      expect(moveTask(task.id, 'col-done', 0)).toBe(true);
+      expect(showBoardNotice).not.toHaveBeenCalled();
+    });
+
+    it('gates the project named by projectId, not whichever project is focused', () => {
+      const gatedProject = gateOn();
+      const task = runCard({ sessionId: 'sess-9', columnId: 'col-running' });
+
+      // An ungated project takes focus; the gated card is still refused by its own id.
+      const other = appState.addProject('Other', '/other');
+      other.board = {
+        columns: [
+          { id: 'o-backlog', title: 'Backlog', order: 0, behavior: 'inbox' },
+          { id: 'o-done', title: 'Done', order: 1, behavior: 'terminal' },
+        ],
+        tasks: [],
+      };
+      appState.setActiveProject(other.id);
+      expect(moveTask(task.id, 'col-done', 0, gatedProject.id)).toBe(false);
+      expect(task.columnId).toBe('col-running');
+
+      // A card that ran on the ungated focused project moves freely (no gate, no lead).
+      const free = addTask({ title: 'O', prompt: 'p', columnId: 'o-backlog' })!;
+      updateTask(free.id, { sessionId: 'sess-x' });
+      expect(moveTask(free.id, 'o-done', 0)).toBe(true);
+      expect(free.columnId).toBe('o-done');
+    });
+
+    it('drops a gated column write from updateTask (the modal picker) and keeps the rest of the save', () => {
+      gateOn();
+      const task = runCard({ sessionId: 'sess-1' });
+      updateTask(task.id, { title: 'Renamed', columnId: 'col-done' });
+      expect(task.title).toBe('Renamed');
+      expect(task.columnId).toBe('col-backlog');
+      expect(noticeText()).toBe(t('board.leadGate.refusalUnreviewed'));
+    });
+
+    it('leaves every non-column updateTask write untouched (zero delta for verdict/session sync)', () => {
+      gateOn();
+      const task = runCard({ sessionId: 'sess-1' });
+      updateTask(task.id, { leadReview: note('approved') });
+      expect(task.leadReview?.verdict).toBe('approved');
+      updateTask(task.id, { cliSessionId: 'cli-1' });
+      expect(task.cliSessionId).toBe('cli-1');
+      expect(showBoardNotice).not.toHaveBeenCalled();
+    });
+
+    it('setLeadGate writes the key on and deletes it off (an ungated board serializes as before I4)', () => {
+      const board = getBoard()!;
+      setLeadGate(true);
+      expect(board.leadGate).toBe(true);
+      setLeadGate(false);
+      expect('leadGate' in board).toBe(false);
+    });
+
+    it('isLeadGateBlocked is inert without a board', () => {
+      const project = appState.activeProject!;
+      const task = runCard({ sessionId: 'sess-1' });
+      delete project.board;
+      expect(isLeadGateBlocked(task, 'col-done')).toBe(false);
     });
   });
 

@@ -1,5 +1,7 @@
 import { appState } from './state.js';
-import type { BoardTask, BoardColumn, BoardData, ColumnBehavior, TagDefinition } from '../shared/types.js';
+import { showBoardNotice } from './board-notice.js';
+import { t } from './i18n.js';
+import type { BoardTask, BoardColumn, BoardData, ColumnBehavior, ProjectRecord, TagDefinition } from '../shared/types.js';
 
 // C5G-08: growth caps for persisted board data. Entries are written to the
 // project board in the state store, so an unbounded board bloats every save;
@@ -9,8 +11,12 @@ export const MAX_BOARD_COLUMNS = 50;
 export const MAX_BOARD_TASKS = 2000;
 export const MAX_BOARD_TAGS = 100;
 
+function resolveProject(projectId?: string): ProjectRecord | undefined {
+  return projectId ? appState.projects.find(p => p.id === projectId) : appState.activeProject;
+}
+
 export function getBoard(projectId?: string): BoardData | undefined {
-  return (projectId ? appState.projects.find(p => p.id === projectId) : appState.activeProject)?.board;
+  return resolveProject(projectId)?.board;
 }
 
 export function getColumnByBehavior(behavior: ColumnBehavior, projectId?: string): BoardColumn | undefined {
@@ -74,6 +80,48 @@ export function addTask(partial: Partial<BoardTask>): BoardTask | undefined {
   return task;
 }
 
+/**
+ * The Kanban Done-gate (team-lead-persona-plan M2b, increment I4): on a board with
+ * `leadGate` in a lead-enabled project, a card that has RUN lands in a
+ * `behavior: 'terminal'` column only on a lead-APPROVED review. Pure predicate, so
+ * `moveTask` and the modal's `updateTask` column write share one rule, and the rule
+ * reads only what it needs:
+ * - gate off (`!board.leadGate`) or project lead absent/disabled → never blocks
+ *   (zero behavior delta, the pre-I4 path);
+ * - target column is not terminal, or the card already lives there (a reorder inside
+ *   Done is not a landing) → never blocks;
+ * - a card with NO session at all (a hand-written card, nothing was ever run, so
+ *   there is nothing to review) → moves freely. `sessionId` is cleared at load
+ *   (state/persistence.ts), so a card whose session ran is still recognised by its
+ *   `cliSessionId` — that is the post-restart shape;
+ * - reviewed: `approved` passes, `flagged` and no-verdict-at-all are refused.
+ */
+export function isLeadGateBlocked(task: BoardTask, toColumnId: string, projectId?: string): boolean {
+  const project = resolveProject(projectId);
+  const board = project?.board;
+  if (!project?.lead?.enabled || !board?.leadGate) return false;
+  if (board.columns.find(c => c.id === toColumnId)?.behavior !== 'terminal') return false;
+  if (task.columnId === toColumnId) return false;
+  if (!task.sessionId && !task.cliSessionId) return false;
+  return task.leadReview?.verdict !== 'approved';
+}
+
+function leadGateMessage(task: BoardTask): string {
+  return task.leadReview?.verdict === 'flagged'
+    ? t('board.leadGate.refusalFlagged')
+    : t('board.leadGate.refusalUnreviewed');
+}
+
+/** Toggle the per-board Done-gate. Off DELETES the key, so a board that is not gated
+ * serializes exactly as it did before I4 (the additive-key idiom). */
+export function setLeadGate(enabled: boolean, projectId?: string): void {
+  const board = getBoard(projectId);
+  if (!board) return;
+  if (enabled) board.leadGate = true;
+  else delete board.leadGate;
+  appState.notifyBoardChanged();
+}
+
 export function updateTask(taskId: string, updates: Partial<BoardTask>, projectId?: string): void {
   const board = getBoard(projectId);
   if (!board) return;
@@ -81,6 +129,13 @@ export function updateTask(taskId: string, updates: Partial<BoardTask>, projectI
   if (!task) return;
   const safeUpdates = { ...updates };
   if (safeUpdates.columnId && !board.columns.some(c => c.id === safeUpdates.columnId)) {
+    delete safeUpdates.columnId;
+  }
+  // The task modal's Column picker is a column write like any other (I4): the gate
+  // sees the PRE-write card (a landing, not a reorder) and drops the column change,
+  // naming the refusal — the rest of the save still lands.
+  if (safeUpdates.columnId && isLeadGateBlocked(task, safeUpdates.columnId, projectId)) {
+    showBoardNotice(leadGateMessage(task));
     delete safeUpdates.columnId;
   }
   if (safeUpdates.assigneeId && !appState.getTeamMemberById(safeUpdates.assigneeId)) {
@@ -107,12 +162,21 @@ export function deleteTask(taskId: string): void {
   appState.notifyBoardChanged();
 }
 
-export function moveTask(taskId: string, toColumnId: string, toOrder: number, projectId?: string): void {
+/** Returns false when the write was refused (unknown ids, or the lead Done-gate);
+ * a refusal names itself to the user (`showBoardNotice`), never silently. */
+export function moveTask(taskId: string, toColumnId: string, toOrder: number, projectId?: string): boolean {
   const board = getBoard(projectId);
-  if (!board) return;
+  if (!board) return false;
   const task = board.tasks.find(t => t.id === taskId);
-  if (!task) return;
-  if (!board.columns.some(c => c.id === toColumnId)) return;
+  if (!task) return false;
+  if (!board.columns.some(c => c.id === toColumnId)) return false;
+  // The one choke point every card landing passes through — drag (board-dnd.ts),
+  // the run-completion auto-move (board-session-sync.ts), Run → Active
+  // (board-card.ts, never terminal) — so the gate lives here, not per call site.
+  if (isLeadGateBlocked(task, toColumnId, projectId)) {
+    showBoardNotice(leadGateMessage(task));
+    return false;
+  }
 
   const fromColumnId = task.columnId;
 
@@ -136,6 +200,7 @@ export function moveTask(taskId: string, toColumnId: string, toOrder: number, pr
   task.updatedAt = Date.now();
 
   appState.notifyBoardChanged();
+  return true;
 }
 
 export function addColumn(title: string, afterColumnId?: string): BoardColumn | undefined {
