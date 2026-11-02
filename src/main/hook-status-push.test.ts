@@ -90,7 +90,10 @@ function flushPushWindow(): void {
  * tests are built on.
  */
 async function runSweep(ms: number): Promise<void> {
-  for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(i === 0 ? ms : 0);
+  // Drain generously: one sweep chains readdir → batched stats → per-file
+  // reads; a short drain leaves pollInFlight=true and the NEXT test's tick is
+  // swallowed by the in-flight guard (PA-09 flake, review a922ffa0).
+  for (let i = 0; i < 25; i++) await vi.advanceTimersByTimeAsync(i === 0 ? ms : 0);
 }
 
 function sendsFor(channel: string): unknown[][] {

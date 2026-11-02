@@ -48,6 +48,7 @@ import {
   buildStatusLinePython,
   PUSH_DEBOUNCE_MS,
   SAFETY_NET_POLL_MS,
+  REMOTE_SIDECAR_POLL_MS,
   installStatusLineScript,
   startWatching,
   resyncAllSessions,
@@ -908,17 +909,19 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     registerRemoteStatus('sess-3', 'lab');
     registerRemoteStatus('sess-3b', 'lab');
     vi.mocked(readProviderFileWindow).mockRejectedValue(new Error('connection closed'));
-    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS); // tick@30s: first failure cools the host, second entry skipped
+    // Row 18 (review a922ffa0): the sidecar rides its own REMOTE_SIDECAR_POLL_MS
+    // (15 s) lane — the 30 s local safety net no longer paces it.
+    await vi.advanceTimersByTimeAsync(REMOTE_SIDECAR_POLL_MS); // tick@15s: first failure cools the host, second entry skipped
     expect(readProviderFileWindow).toHaveBeenCalledTimes(1);
     vi.mocked(readProviderFileWindow).mockClear();
     // Audit T2 #2: a tick inside the cooldown window (30 s from the failure
-    // at t=30 s, i.e. until t=60 s) probes the host ZERO times (per session,
+    // at t=15 s, i.e. until t=45 s) probes the host ZERO times (per session,
     // per tick each used to re-pay a ~11 s connect).
-    await vi.advanceTimersByTimeAsync(15_000); // tick@45s: inside the cooldown armed at t=30s
+    await vi.advanceTimersByTimeAsync(REMOTE_SIDECAR_POLL_MS); // tick@30s: inside the cooldown armed at t=15s
     expect(readProviderFileWindow).not.toHaveBeenCalled();
     // Past the cooldown the host is probed again and delivers.
     vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
-    await vi.advanceTimersByTimeAsync(15_000); // tick@60s: window expired → probe
+    await vi.advanceTimersByTimeAsync(REMOTE_SIDECAR_POLL_MS); // tick@45s: window expired → probe
     expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-3', 'completed', 'Stop');
   });
 

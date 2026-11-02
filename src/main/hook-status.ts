@@ -62,6 +62,7 @@ const lastMtimes = new Map<string, number>();
  */
 const pendingPushes = new Set<string>();
 let pushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let rearmTimer: ReturnType<typeof setTimeout> | null = null;
 let pushWindowWin: BrowserWindow | null = null;
 const eventReaders = new Map<string, BoundedEventReader>();
 const eventContinuations = new Map<string, ReturnType<typeof setTimeout>>();
@@ -446,6 +447,11 @@ let pollInFlight = false;
 export const PUSH_DEBOUNCE_MS = 150;
 export const SAFETY_NET_POLL_MS = 30_000;
 export const WATCHER_DOWN_POLL_MS = 2_000;
+/** Remote sidecar cadence (audit T2 #2 lane): the 30 s local safety net must
+ * NOT pace the remote sweep — pre-row-18 the sidecar kicked every sweep tick
+ * (2 s poll) behind a 15 s per-host cooldown; 30 s was a silent 2x regression
+ * (review a922ffa0). Its own timer, same 15 s effective rate. */
+export const REMOTE_SIDECAR_POLL_MS = 15_000;
 const STAT_CONCURRENCY = 16;
 let pollMs = SAFETY_NET_POLL_MS;
 
@@ -457,10 +463,10 @@ async function pollForChanges(win: BrowserWindow): Promise<void> {
   // docs/performance.md already claimed every poller "is a no-op while its
   // registry is empty"; for this one the claim was false.
   if (knownSessionIds.size === 0) return;
-  // The remote sidecar sweep runs on its OWN in-flight flag (audit T2 #2):
-  // a slow/down host paces itself (per-host cooldown) and never stalls the
-  // local STATUS_DIR sweep that shares this tick.
-  if (remoteStatuses.size > 0) void sweepRemoteStatuses(win);
+  // (Row 18 review a922ffa0: the sidecar kick moved OUT of this tick — it
+  // rides REMOTE_SIDECAR_POLL_MS on its own timer so the 30 s safety net does
+  // not halve the remote cadence. It never shared work with this sweep beyond
+  // the tick, and still runs on its own in-flight flag (audit T2 #2).)
   pollInFlight = true;
 
   try {
@@ -572,6 +578,22 @@ function startPolling(win: BrowserWindow): void {
  * Deliberately does NOT go through stopPolling: the mtime bookkeeping must
  * survive a cadence switch, or every file would be re-delivered at once.
  */
+let sidecarInterval: ReturnType<typeof setInterval> | null = null;
+
+function startSidecarLane(win: BrowserWindow): void {
+  stopSidecarLane();
+  sidecarInterval = setInterval(() => {
+    if (win.isDestroyed() || remoteStatuses.size === 0) return;
+    void sweepRemoteStatuses(win);
+  }, REMOTE_SIDECAR_POLL_MS);
+  sidecarInterval.unref?.();
+}
+
+function stopSidecarLane(): void {
+  if (sidecarInterval) clearInterval(sidecarInterval);
+  sidecarInterval = null;
+}
+
 function applyPollCadence(win: BrowserWindow): void {
   const want = watcher ? SAFETY_NET_POLL_MS : WATCHER_DOWN_POLL_MS;
   if (!pollInterval || want === pollMs) return;
@@ -581,6 +603,7 @@ function applyPollCadence(win: BrowserWindow): void {
 }
 
 function stopPolling(): void {
+  stopSidecarLane();
   if (pollInterval) {
     clearInterval(pollInterval);
     pollInterval = null;
@@ -618,15 +641,32 @@ function queuePush(win: BrowserWindow, changedPath: string): void {
 function flushPush(): void {
   pushDebounceTimer = null;
   const win = pushWindowWin;
+  // Destroyed window: KEEP the queue (bounded by filename count) — the next
+  // push from the new window flushes it and the safety-net sweep covers the
+  // gap. Consuming it here would silently drop the delivery (a922ffa0).
+  if (!win || win.isDestroyed()) return;
   const names = [...pendingPushes];
   pendingPushes.clear();
-  if (!win || win.isDestroyed()) return;
-  for (const filename of names) handleFileChange(win, filename);
+  for (const filename of names) {
+    handleFileChange(win, filename);
+    // Record what the push delivered (a922ffa0): without this the sweep's
+    // mtime gate sees a stale prev and re-delivers the same content. A write
+    // landing between delivery and this stat is push-delivered by its own
+    // event, so recording the post-delivery stat cannot strand a change.
+    void fs.promises
+      .stat(path.join(STATUS_DIR, filename))
+      .then((st) => { lastMtimes.set(filename, st.mtimeMs); })
+      .catch(() => { /* vanished between delivery and stat: PA-23 sweep drops it */ });
+  }
 }
 
 /** Teardown: a flush armed inside the debounce window must not fire after quit
  * and re-deliver into a destroyed window (or recreate STATUS_DIR). */
 function clearPushLane(): void {
+  if (rearmTimer) {
+    clearTimeout(rearmTimer);
+    rearmTimer = null;
+  }
   if (pushDebounceTimer) clearTimeout(pushDebounceTimer);
   pushDebounceTimer = null;
   pendingPushes.clear();
@@ -668,14 +708,20 @@ function restartWatcher(win: BrowserWindow): void {
     // next time. PA-09: with no push lane to lean on, the sweep goes back to
     // its fast 2 s cadence until the restart below lands.
     applyPollCadence(win);
-    setTimeout(() => {
+    // Tracked (a922ffa0): an untracked re-arm survived cleanupAll and rebuilt
+    // the watcher — and STATUS_DIR — after quit.
+    if (rearmTimer) clearTimeout(rearmTimer);
+    rearmTimer = setTimeout(() => {
+      rearmTimer = null;
       if (!watcher && !win.isDestroyed()) restartWatcher(win);
     }, 5000);
+    rearmTimer.unref?.();
   });
   watcher = w;
   w.add(STATUS_DIR);
 
   startPolling(win);
+  startSidecarLane(win);
 }
 
 export function resyncAllSessions(win: BrowserWindow): void {

@@ -174,6 +174,7 @@ Numbers owned by `src/main/hook-status.ts` (exported constants) and pinned by
 | Push lane | `PUSH_DEBOUNCE_MS` = 150 ms | Normal case: fs-notification latency (ms) + one coalescing window per filename. One logical write is several raw events (the atomic `.status.tmp` + `mv`, the statusLine's truncate-then-write), and the window turns them into ONE delivery of the final content. |
 | Safety-net sweep | `SAFETY_NET_POLL_MS` = 30 s | Worst case ONLY on the paths a push lane structurally cannot see: dropped inotify handles (`EMFILE`), the up-to-5 s gap while a dead watcher is rebuilt, a `STATUS_DIR` on a network mount whose notifications stop reporting, and a write whose mtime shares the previous write's tick on a coarse-mtime filesystem (1 s tmpfs, HFS+) — the case the sweep's `mtimeMs !==` gate documents. |
 | Watcher dead | `WATCHER_DOWN_POLL_MS` = 2 s | With no push lane at all the sweep runs at the old fast cadence until the watch restarts (5 s after the error). |
+| Remote sidecar | `REMOTE_SIDECAR_POLL_MS` = 15 s | Remote-session status files are NOT in the local `STATUS_DIR` — their sftp sweep rides its own 15 s lane (audit T2 #2 per-host cooldown unchanged). The 30 s local safety net does not pace it (row 18 review: 30 s there was a silent 2x remote regression). |
 
 The arithmetic the rest of the status contract may rely on: a hook write
 reaches the renderer in ~150 ms normally and in **≤30 s** in the documented
