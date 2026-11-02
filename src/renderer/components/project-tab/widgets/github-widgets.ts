@@ -193,116 +193,146 @@ function createPollCadence(getIntervalMs: () => number): {
   };
 }
 
-function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
-  const projectId = host.projectId;
-
-  function getConfig(): GithubConfig {
-    return { ...DEFAULT_GITHUB_CONFIG, ...host.getConfig<Partial<GithubConfig>>() };
-  }
-
-  const { root, repoLabel, body } = createGithubShell(kind, () => {
-    markAllReadInProject(projectId);
-    render();
-  });
-  const repo = createRepoResolver(projectId, getConfig);
-  const cadence = createPollCadence(() => Math.max(60_000, getConfig().refreshSeconds * 1000));
-
-  let items: GithubItem[] = [];
+// Row 28t: the widget's paint state, hoisted out of makeGithubWidget's closure
+// so the paint and the fetch lane can be plain functions. `generation` retires a
+// stale response, `destroyed` is the latch every async lane checks before it
+// touches the DOM.
+type GithubView = {
+  items: GithubItem[];
   // Review 24db32b8 #3: the ids THIS listing kind renders. Issues and PRs share
   // the `${repo}#${number}` id space, so the exhaustive prune is scoped to the
   // caller's own ids — otherwise each widget's poll deletes the sibling's.
-  let ingestedIds = new Set<string>();
-  let loading = false;
-  let lastError: string | null = null;
-  let destroyed = false;
-  let refreshGeneration = 0;
+  ingestedIds: Set<string>;
+  loading: boolean;
+  lastError: string | null;
+  destroyed: boolean;
+  generation: number;
+};
 
-  function render(): void {
-    if (destroyed) return;
-    body.innerHTML = '';
-    repoLabel.textContent = repo.current() ?? 'No repo configured';
+// The widget's collaborators, read at call time exactly where the inlined
+// closures read them (nothing is sampled at construction).
+type GithubListDeps = {
+  kind: ListKind;
+  projectId: string;
+  getConfig: () => GithubConfig;
+  repo: ReturnType<typeof createRepoResolver>;
+  cadence: ReturnType<typeof createPollCadence>;
+  paint: () => void;
+};
 
-    if (lastError) {
-      body.appendChild(makeGithubMessage('widget-github-error', lastError));
-      return;
-    }
+function createGithubViewState(): GithubView {
+  return {
+    items: [],
+    ingestedIds: new Set<string>(),
+    loading: false,
+    lastError: null,
+    destroyed: false,
+    generation: 0,
+  };
+}
 
-    if (loading && items.length === 0) {
-      body.appendChild(makeGithubMessage('widget-github-loading', 'Loading…'));
-      return;
-    }
+// Row 28t: the widget's single paint — a pure function of the view state, the
+// repo cache and the shell. Owns the display-priority order: error > first-load
+// spinner > no-repo > empty list > rows, and paints nothing once destroyed.
+function renderGithubList(
+  view: GithubView,
+  deps: GithubListDeps,
+  body: HTMLDivElement,
+  repoLabel: HTMLSpanElement,
+): void {
+  if (view.destroyed) return;
+  body.innerHTML = '';
+  repoLabel.textContent = deps.repo.current() ?? 'No repo configured';
 
-    if (!repo.current()) {
-      body.appendChild(makeGithubMessage('widget-github-empty', 'No GitHub remote detected. Open settings to set a repo.'));
-      return;
-    }
-
-    if (items.length === 0) {
-      const text = kind === 'prs' ? 'No pull requests.' : 'No issues.';
-      body.appendChild(makeGithubMessage('widget-github-empty', text));
-      return;
-    }
-
-    for (const item of items) {
-      body.appendChild(buildGithubRow(kind, projectId, repo.current()!, item, render));
-    }
+  if (view.lastError) {
+    body.appendChild(makeGithubMessage('widget-github-error', view.lastError));
+    return;
   }
 
-  async function refresh(): Promise<void> {
-    if (destroyed) return;
-    cadence.markRefresh();
-    const generation = ++refreshGeneration;
-    loading = true;
-    lastError = null;
-    render();
-
-    const listedRepo = await repo.ensure();
-    if (destroyed || generation !== refreshGeneration) return;
-    if (!listedRepo) {
-      loading = false;
-      render();
-      return;
-    }
-
-    if (!(await window.finevibe.github.isAvailable())) {
-      if (destroyed || generation !== refreshGeneration) return;
-      lastError = 'gh CLI not installed. Install from cli.github.com and run `gh auth login`.';
-      loading = false;
-      render();
-      return;
-    }
-
-    if (destroyed || generation !== refreshGeneration) return;
-    const cfg = getConfig();
-    const result = kind === 'prs'
-      ? await window.finevibe.github.listPRs(listedRepo, cfg.state, cfg.max)
-      : await window.finevibe.github.listIssues(listedRepo, cfg.state, cfg.max);
-    if (destroyed || generation !== refreshGeneration) return;
-
-    if (!result.ok) {
-      lastError = result.error ?? 'Failed to fetch from GitHub.';
-      cadence.armBackoff(lastError);
-      loading = false;
-      render();
-      return;
-    }
-
-    items = result.items ?? [];
-    // The listing is the whole truth for this repo when it came back under the
-    // cap the CLI asked GitHub for — let the unread store drop stale ids.
-    const effectiveMax = Math.min(Math.max(cfg.max, 1), GITHUB_MAX_PER_PAGE);
-    const scope = ingestedIds;
-    ingestedIds = new Set(items.map((item) => makeItemId(listedRepo, item.number)));
-    ingestItems(projectId, listedRepo, items, items.length < effectiveMax, scope);
-    cadence.clearBackoff();
-    loading = false;
-    render();
+  if (view.loading && view.items.length === 0) {
+    body.appendChild(makeGithubMessage('widget-github-loading', 'Loading…'));
+    return;
   }
 
+  if (!deps.repo.current()) {
+    body.appendChild(makeGithubMessage('widget-github-empty', 'No GitHub remote detected. Open settings to set a repo.'));
+    return;
+  }
+
+  if (view.items.length === 0) {
+    const text = deps.kind === 'prs' ? 'No pull requests.' : 'No issues.';
+    body.appendChild(makeGithubMessage('widget-github-empty', text));
+    return;
+  }
+
+  for (const item of view.items) {
+    body.appendChild(buildGithubRow(deps.kind, deps.projectId, deps.repo.current()!, item, deps.paint));
+  }
+}
+
+// Row 28t: the fetch lane. Owns the generation guard: a response is applied only
+// while the widget is alive AND this is the newest request, so an older error can
+// never paint over a newer success; every early exit clears `loading` first.
+async function refreshGithubList(view: GithubView, deps: GithubListDeps): Promise<void> {
+  if (view.destroyed) return;
+  deps.cadence.markRefresh();
+  const generation = ++view.generation;
+  view.loading = true;
+  view.lastError = null;
+  deps.paint();
+
+  const listedRepo = await deps.repo.ensure();
+  if (view.destroyed || generation !== view.generation) return;
+  if (!listedRepo) {
+    view.loading = false;
+    deps.paint();
+    return;
+  }
+
+  if (!(await window.finevibe.github.isAvailable())) {
+    if (view.destroyed || generation !== view.generation) return;
+    view.lastError = 'gh CLI not installed. Install from cli.github.com and run `gh auth login`.';
+    view.loading = false;
+    deps.paint();
+    return;
+  }
+
+  if (view.destroyed || generation !== view.generation) return;
+  const cfg = deps.getConfig();
+  const result = deps.kind === 'prs'
+    ? await window.finevibe.github.listPRs(listedRepo, cfg.state, cfg.max)
+    : await window.finevibe.github.listIssues(listedRepo, cfg.state, cfg.max);
+  if (view.destroyed || generation !== view.generation) return;
+
+  if (!result.ok) {
+    view.lastError = result.error ?? 'Failed to fetch from GitHub.';
+    deps.cadence.armBackoff(view.lastError);
+    view.loading = false;
+    deps.paint();
+    return;
+  }
+
+  view.items = result.items ?? [];
+  // The listing is the whole truth for this repo when it came back under the
+  // cap the CLI asked GitHub for — let the unread store drop stale ids.
+  const effectiveMax = Math.min(Math.max(cfg.max, 1), GITHUB_MAX_PER_PAGE);
+  const scope = view.ingestedIds;
+  view.ingestedIds = new Set(view.items.map((item) => makeItemId(listedRepo, item.number)));
+  ingestItems(deps.projectId, listedRepo, view.items, view.items.length < effectiveMax, scope);
+  deps.cadence.clearBackoff();
+  view.loading = false;
+  deps.paint();
+}
+
+// Row 28t: the widget's outside world — the throttled visibility refresh, the
+// unread-store notify filtered to this project, the git:changed repo-cache
+// invalidation, and the first refresh that arms the poll on a LIVE widget.
+// Returns the teardown `destroy()` runs.
+function attachGithubTriggers(view: GithubView, deps: GithubListDeps): () => void {
   const onVisibility = () => {
     if (document.hidden) return;
-    if (cadence.recentlyRefreshed()) return;
-    void refresh();
+    if (deps.cadence.recentlyRefreshed()) return;
+    void refreshGithubList(view, deps);
   };
   document.addEventListener('visibilitychange', onVisibility);
 
@@ -317,31 +347,60 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   // store notify carries the project: a sibling project's widget polling is
   // not this widget's business (review 24db32b8 #2). `undefined` = paint.
   const unsubUnread = onUnreadChange((pid) => {
-    if (pid && pid !== projectId) return;
-    render();
+    if (pid && pid !== deps.projectId) return;
+    deps.paint();
   });
 
   // C4G-05: the repo caches lived for the widget's lifetime, so a remote added,
   // changed, or removed after the first detect left the widget on the old repo
   // (or pinned to the C3RP-15 negative cache). `git:changed` is the debounced
   // per-project signal git-status.ts already subscribes to.
-  const unwatchGitChanged = window.finevibe.git?.onChanged?.(() => repo.reset());
+  const unwatchGitChanged = window.finevibe.git?.onChanged?.(() => deps.repo.reset());
 
-  void refresh().then(() => {
-    if (!destroyed) cadence.start(() => void refresh());
+  void refreshGithubList(view, deps).then(() => {
+    if (!view.destroyed) deps.cadence.start(() => void refreshGithubList(view, deps));
   });
+
+  return () => {
+    document.removeEventListener('visibilitychange', onVisibility);
+    unsubUnread();
+    unwatchGitChanged?.();
+  };
+}
+
+function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
+  const projectId = host.projectId;
+
+  function getConfig(): GithubConfig {
+    return { ...DEFAULT_GITHUB_CONFIG, ...host.getConfig<Partial<GithubConfig>>() };
+  }
+
+  const view = createGithubViewState();
+  const { root, repoLabel, body } = createGithubShell(kind, () => {
+    markAllReadInProject(projectId);
+    paint();
+  });
+  const repo = createRepoResolver(projectId, getConfig);
+  const cadence = createPollCadence(() => Math.max(60_000, getConfig().refreshSeconds * 1000));
+
+  // Late-bound: the shell's Mark-all-read handler and every row's rerender call
+  // this, and both exist before `deps` is wired below.
+  function paint(): void {
+    renderGithubList(view, deps, body, repoLabel);
+  }
+
+  const deps: GithubListDeps = { kind, projectId, getConfig, repo, cadence, paint };
+  const detach = attachGithubTriggers(view, deps);
 
   return {
     element: root,
     destroy() {
-      destroyed = true;
+      view.destroyed = true;
       cadence.stop();
-      document.removeEventListener('visibilitychange', onVisibility);
-      unsubUnread();
-      unwatchGitChanged?.();
+      detach();
     },
     refresh() {
-      void refresh();
+      void refreshGithubList(view, deps);
     },
   };
 }

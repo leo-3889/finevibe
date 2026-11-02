@@ -20,6 +20,7 @@ import { isMac, isWin, shouldDisableHardwareAcceleration } from './platform';
 import { APP_INDEX_URL, installAppScheme, isAppDocumentUrl, registerAppScheme } from './app-scheme';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
+import type { CliProvider } from './providers/provider';
 import { isHttpUrl } from '../shared/url';
 import { migrateLegacyUserData, retireLegacyUserData } from './userdata-migration';
 import { startSessionRetentionSweeps } from './launch-session-dir';
@@ -41,12 +42,16 @@ import { getMainWindow, restoredWindowBounds, saveWindowBounds, showAndFocusWind
 if (!process.env.VITEST) installConsoleThrottle();
 let mainWindow: BrowserWindow | null = null;
 let stopDiskHealthPreflight: (() => void) | null = null;
-
+// C4S-06: updater disposer (startup timeout + 4 h interval). Armed in
+// registerWindowBoundHandlers, run by runQuitCleanup: module scope so both lanes
+// share one binding. It is `null` until the window exists, exactly the state the
+// startMainProcess-local `let` it replaced had at every earlier read.
+let disposeAutoUpdater: (() => void) | null = null;
 // The UI boots ONLY for the single-instance lock winner:
-// startMainProcess() (below createWindow) owns the second-instance,
-// whenReady, before-quit and window-all-closed registrations, and the
-// requestSingleInstanceLock gate at the END of this module calls it for
-// the winner alone. The loser quits without constructing anything.
+// startMainProcess() (below createWindow) drives the boot phases — the
+// second-instance handler, the whenReady renderer-boot chain and the close/quit
+// lanes — and the requestSingleInstanceLock gate at the END of this module
+// calls it for the winner alone. The loser quits without constructing anything.
 
 // Audit row 90: the window-close / app-quit split. macOS users must be able to
 // close the window and keep the app running (dock-resident). Every close used to
@@ -102,7 +107,6 @@ const BROWSER_GUEST_PRELOAD = path.join(__dirname, '..', '..', 'preload', 'prelo
 // The renderer entry the main window loads. Module scope: the not-built
 // boot guard (rendererIsBuilt) and createWindow must agree on ONE path.
 const RENDERER_INDEX_PATH = path.join(__dirname, '..', '..', 'renderer', 'index.html');
-
 
 // The app UI only ever needs clipboard reads (copy path) and its own desktop
 // notifications; camera/mic/geolocation/MIDI are denied for the host renderer
@@ -294,14 +298,15 @@ function rendererIsBuilt(): boolean {
   return false;
 }
 
+// Row 28t: startMainProcess decomposed into one named function per boot phase.
+// The phases own their own invariants (each doc comment names it); the call
+// order in startMainProcess / runRendererBoot IS the boot order — no phase may
+// be reordered by its extraction.
 
-function startMainProcess(): void {
-  // C4S-06: updater disposer (startup timeout + 4 h interval); quit runs it.
-  let disposeAutoUpdater: (() => void) | null = null;
-  // First: the identity must be stamped on the process before the first
-  // window (taskbar button) exists. See claimWindowsIdentity above.
-  claimWindowsIdentity();
-
+// Boot phase: the two legacy user-data passes. Owns the invariant that the copy
+// runs BEFORE the ledger-gated retirement, and that neither pass can abort the
+// boot — each swallows its own failure.
+function migrateAndRetireLegacyUserData(): void {
   // Release gate (AUDIT_STATUS "Rename on the CURRENT tree"): the
   // vibeyard -> finevibe cutover (4fc533c) renamed BOTH user-data trees -
   // the store tree (`~/.vibeyard` -> `~/.finevibe`, store.ts) and Electron
@@ -344,256 +349,280 @@ function startMainProcess(): void {
   } catch (error) {
     console.error('[userdata-retirement] failed; legacy data left untouched', error);
   }
-  markBoot('identity+migrate');
+}
 
-  // Winner-only: a relaunch while the app runs focuses the existing
-  // window, so launching again behaves like "focus FineVibe".
-  app.on('second-instance', () => {
-    const win = mainWindow && !mainWindow.isDestroyed()
-      ? mainWindow
-      : getMainWindow();
-    if (win && !win.isDestroyed()) {
-      showAndFocusWindow(win);
+// Boot phase (pre-`ready` handler): the log tee, the app:// handler and the
+// three stale-dir sweeps, in this exact order — the log file FIRST so every
+// later boot line (including a sweep failure) is on disk for a packaged app
+// with no console, the scheme handler before the first window loads, and the
+// provider registry before anything reads a profile.
+function runPreIpcBootSweeps(): void {
+  // Tee the (already throttled) console into <logs>/finevibe.log FIRST, so
+  // every boot sweep and every later failure is on disk — packaged apps
+  // have no console the user can read (owner request 2026-10-26). VITEST
+  // gate mirrors the throttle above: test console spies stay pristine.
+  if (!process.env.VITEST) installLogFile(app.getPath('logs'));
+  markBoot('ready');
+  // Serve the built renderer over app:// (registered at module scope). Must
+  // run before the first window loads; the root is the directory index.html
+  // lives in, so a moved build tree moves the served root with it.
+  installAppScheme(path.dirname(RENDERER_INDEX_PATH));
+  // P2-47 pin (boot call site; the after-import sweep lives in
+  // ipc-handlers.ts chromeImport:run): quit/crash mid-import used to
+  // leave the Chrome cookie snapshot in the OS temp dir for the
+  // machine's life. Sweep stale finevibe-chrome-import-* dirs at boot,
+  // mirroring the finevibe-screenshots prune's 24h bound — an in-flight
+  // fresh dir is never touched. Never throws; tmpdir-sized, negligible
+  // on the boot path.
+  sweepImportTempDirs();
+  // A5: isolated browser partitions are per-session ephemera — every
+  // `session:release` removes its own jar (ipc-handlers.ts), but a quit
+  // or crash between close and release leaves `finevibe-browser-iso-*`
+  // dirs under userData/Partitions for the machine's life. Sweep all of
+  // them at boot; no live session exists this early, so every
+  // re-validating iso dir is by definition orphaned. Never throws.
+  removeIsoPartitionDirs(app.getPath('userData'));
+  // A4: Pi/OMP session-dir retention used to be armed ONLY by the first
+  // Pi/OMP launch — an install that never launches one grew the two base
+  // dirs forever. Sweep both bases at boot (setImmediate, off the boot
+  // path), re-arm every 24 h with the 2 GiB per-base quota, and run the
+  // enumeration-cache TTL sweep on every daily tick.
+  startSessionRetentionSweeps(sweepEnumerationCaches);
+  initProviders();
+  markBoot('sweeps');
+}
+
+// Boot phase: the one `ipcMain.on` main.ts registers directly (the C2M-09 note
+// is in the body). Registered before registerIpcHandlers() so the channel exists
+// for the window's whole lifetime.
+function registerIsolatedStorageIpc(): void {
+  // P2-100 companion (renderer: components/browser-tab/pane.ts isolation toggle).
+  // The toggle rebuilds the pane on the SAME sessionId, so the
+  // isolated partition name is identical before and after; the renderer
+  // must clear that jar on every toggle and `clearStorageData` lives in
+  // main. Restricted to the isolated-partition pattern with the same
+  // format guard as `session:release` (ipc-handlers.ts) — the shared
+  // default partition (every other browser tab, the imported Chrome jar)
+  // is not clearable from the renderer.
+  // C2M-09 (SEC-02 class): main.ts registers no safeOn — the wrapper lives
+  // in ipc-handlers.ts — so the P2-108 rule applies inline: an `ipcMain.on`
+  // body that throws is a fatal main-process exception that kills every
+  // live PTY and window. A partition whose storage is locked (Windows
+  // EBUSY) must degrade to a logged warning.
+  ipcMain.on('browser:clearIsolatedStorage', (_event, sessionId: unknown) => {
+    try {
+      if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return;
+      const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
+      // Existence guard: releasing/clearing a session that never browsed in
+      // isolation must not materialise a partition via fromPartition().
+      if (!fs.existsSync(partDir)) return;
+      session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
+        .clearStorageData()
+        .catch((err) => console.warn('clearStorageData failed:', err));
+    } catch (err) {
+      console.warn('browser:clearIsolatedStorage failed:', err);
+    }
+  });
+}
+
+// Boot phase: the IPC surface and the app menu. The menu reads the persisted
+// debug-mode pref, so the state load belongs here, not in the caller.
+function registerIpcAndMenu(): void {
+  registerIpcHandlers();
+  const state = loadState();
+  createAppMenu(state.preferences?.debugMode ?? false);
+  markBoot('ipc');
+}
+
+// Boot phase: the proactive disk-health watcher. Owns the module-scope
+// disposer — runQuitCleanup is the only other reader, and a re-armed
+// preflight must never leak the previous one.
+function startDiskHealthMonitor(): void {
+  // 2026-10-23: proactive disk-health preflight. Warn ONCE, before writes
+  // start failing, when the userData volume runs low — one banner instead of
+  // a per-write ENOSPC stack storm. Emits on state transitions only (see
+  // disk-health.ts), so a full disk is a single warning, not a flood.
+  stopDiskHealthPreflight = startDiskHealthPreflight({
+    getUserDataPath: () => app.getPath('userData'),
+    onStatus: (status) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('disk-health:status', status);
+    },
+  });
+}
+
+// Boot phase (post-window): every handler that needs a LIVE WINDOW and gates on
+// nothing (S1-01) — the updater, the first-paint boot marks, the perf sampler
+// and its renderer echo, the macOS dock 'activate' re-create and the
+// sleep-resume resync. None of these may sit behind an await.
+function registerWindowBoundHandlers(): void {
+  // S1-01: the updater and the activate/resume handlers used to be
+  // registered at the very END of this chain, behind the awaited provider
+  // probe fan-out, the Python probe, the statusLine-consent modal (whose
+  // promise resolves only on a renderer click) and the installHooks
+  // fan-out (fs writes that can throw EACCES). A rejection there — or the
+  // modal simply staying open — left the updater, the macOS dock
+  // 'activate' re-create and the sleep-resume resync permanently
+  // unregistered, and turned any installHooks throw into an unhandled
+  // rejection (Electron: crash dialog). They gate on nothing: register
+  // them the moment the window exists.
+  disposeAutoUpdater = initAutoUpdater();
+  // Audit P1: first-paint is the boot number a user feels; everything after
+  // it reports as a post-window phase. The sampler pushes RSS/heap/handle
+  // counts to the renderer debug ring (Ctrl+Shift+D) every minute.
+  markBoot('window');
+  finishBoot('window-shown');
+  startPerfSampler(() => mainWindow);
+  // The renderer echoes its own parse+paint time on this channel; the
+  // summary lands in the same log stream, so one launch reads top-to-bottom.
+  ipcMain.on('perf:reportBoot', (_event, ms: unknown) => reportRendererBoot(ms));
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    } else {
+      const win = getMainWindow();
+      if (win) {
+        // Audit row 91: the dock click that lands on an existing minimized or
+        // hidden window has to bring it back, not just resync it — without the
+        // restore/focus the status updates painted behind a window that never
+        // reappeared.
+        showAndFocusWindow(win);
+        restartAndResync(win);
+      }
     }
   });
 
-  app.whenReady().then(async () => {
-    // Tee the (already throttled) console into <logs>/finevibe.log FIRST, so
-    // every boot sweep and every later failure is on disk — packaged apps
-    // have no console the user can read (owner request 2026-10-26). VITEST
-    // gate mirrors the throttle above: test console spies stay pristine.
-    if (!process.env.VITEST) installLogFile(app.getPath('logs'));
-    markBoot('ready');
-    // Serve the built renderer over app:// (registered at module scope). Must
-    // run before the first window loads; the root is the directory index.html
-    // lives in, so a moved build tree moves the served root with it.
-    installAppScheme(path.dirname(RENDERER_INDEX_PATH));
-    // P2-47 pin (boot call site; the after-import sweep lives in
-    // ipc-handlers.ts chromeImport:run): quit/crash mid-import used to
-    // leave the Chrome cookie snapshot in the OS temp dir for the
-    // machine's life. Sweep stale finevibe-chrome-import-* dirs at boot,
-    // mirroring the finevibe-screenshots prune's 24h bound — an in-flight
-    // fresh dir is never touched. Never throws; tmpdir-sized, negligible
-    // on the boot path.
-    sweepImportTempDirs();
-    // A5: isolated browser partitions are per-session ephemera — every
-    // `session:release` removes its own jar (ipc-handlers.ts), but a quit
-    // or crash between close and release leaves `finevibe-browser-iso-*`
-    // dirs under userData/Partitions for the machine's life. Sweep all of
-    // them at boot; no live session exists this early, so every
-    // re-validating iso dir is by definition orphaned. Never throws.
-    removeIsoPartitionDirs(app.getPath('userData'));
-    // A4: Pi/OMP session-dir retention used to be armed ONLY by the first
-    // Pi/OMP launch — an install that never launches one grew the two base
-    // dirs forever. Sweep both bases at boot (setImmediate, off the boot
-    // path), re-arm every 24 h with the 2 GiB per-base quota, and run the
-    // enumeration-cache TTL sweep on every daily tick.
-    startSessionRetentionSweeps(sweepEnumerationCaches);
-    initProviders();
-    markBoot('sweeps');
-
-    // PA-01: the all-missing guard used to run BEFORE the window existed —
-    // six serial spawn-bound probes (up to 2.4 s of `which`/`npm prefix -g`
-    // spawns, W2-06) in front of the first paint. IPC/menu/window first;
-    // the probes run below, parallel, after the window is up. The window
-    // briefly flashing on the all-providers-missing path is the accepted
-    // trade for a first paint that never waits on a probe.
-
-    // P2-100 companion (renderer: components/browser-tab/pane.ts isolation
-    // toggle). The toggle rebuilds the pane on the SAME sessionId, so the
-    // isolated partition name is identical before and after; the renderer
-    // must clear that jar on every toggle and `clearStorageData` lives in
-    // main. Restricted to the isolated-partition pattern with the same
-    // format guard as `session:release` (ipc-handlers.ts) — the shared
-    // default partition (every other browser tab, the imported Chrome jar)
-    // is not clearable from the renderer.
-    // C2M-09 (SEC-02 class): main.ts registers no safeOn — the wrapper lives
-    // in ipc-handlers.ts — so the P2-108 rule applies inline: an `ipcMain.on`
-    // body that throws is a fatal main-process exception that kills every
-    // live PTY and window. A partition whose storage is locked (Windows
-    // EBUSY) must degrade to a logged warning.
-    ipcMain.on('browser:clearIsolatedStorage', (_event, sessionId: unknown) => {
-      try {
-        if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return;
-        const partDir = path.join(app.getPath('userData'), 'Partitions', `finevibe-browser-iso-${sessionId}`);
-        // Existence guard: releasing/clearing a session that never browsed in
-        // isolation must not materialise a partition via fromPartition().
-        if (!fs.existsSync(partDir)) return;
-        session.fromPartition(`persist:finevibe-browser-iso-${sessionId}`)
-          .clearStorageData()
-          .catch((err) => console.warn('clearStorageData failed:', err));
-      } catch (err) {
-        console.warn('browser:clearIsolatedStorage failed:', err);
-      }
-    });
-    registerIpcHandlers();
-    const state = loadState();
-    createAppMenu(state.preferences?.debugMode ?? false);
-    markBoot('ipc');
-    // Boot guard (rendererIsBuilt): an unbuilt tree fails with the
-    // not-built dialog, never a silent window death. Quit BEFORE the first
-    // window — the close-confirm watchdog, the disk-health preflight and
-    // the provider probes below all assume a live renderer.
-    if (!rendererIsBuilt()) return;
-    createWindow();
-    // 2026-10-23: proactive disk-health preflight. Warn ONCE, before writes
-    // start failing, when the userData volume runs low — one banner instead of
-    // a per-write ENOSPC stack storm. Emits on state transitions only (see
-    // disk-health.ts), so a full disk is a single warning, not a flood.
-    stopDiskHealthPreflight = startDiskHealthPreflight({
-      getUserDataPath: () => app.getPath('userData'),
-      onStatus: (status) => {
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('disk-health:status', status);
-      },
-    });
-    // S1-01: the updater and the activate/resume handlers used to be
-    // registered at the very END of this chain, behind the awaited provider
-    // probe fan-out, the Python probe, the statusLine-consent modal (whose
-    // promise resolves only on a renderer click) and the installHooks
-    // fan-out (fs writes that can throw EACCES). A rejection there — or the
-    // modal simply staying open — left the updater, the macOS dock
-    // 'activate' re-create and the sleep-resume resync permanently
-    // unregistered, and turned any installHooks throw into an unhandled
-    // rejection (Electron: crash dialog). They gate on nothing: register
-    // them the moment the window exists.
-    disposeAutoUpdater = initAutoUpdater();
-    // Audit P1: first-paint is the boot number a user feels; everything after
-    // it reports as a post-window phase. The sampler pushes RSS/heap/handle
-    // counts to the renderer debug ring (Ctrl+Shift+D) every minute.
-    markBoot('window');
-    finishBoot('window-shown');
-    startPerfSampler(() => mainWindow);
-    // The renderer echoes its own parse+paint time on this channel; the
-    // summary lands in the same log stream, so one launch reads top-to-bottom.
-    ipcMain.on('perf:reportBoot', (_event, ms: unknown) => reportRendererBoot(ms));
-
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      } else {
-        const win = getMainWindow();
-        if (win) {
-          // Audit row 91: the dock click that lands on an existing minimized or
-          // hidden window has to bring it back, not just resync it — without the
-          // restore/focus the status updates painted behind a window that never
-          // reappeared.
-          showAndFocusWindow(win);
-          restartAndResync(win);
-        }
-      }
-    });
-
-    powerMonitor.on('resume', () => {
-      const win = getMainWindow();
-      if (win) {
-        restartAndResync(win);
-      }
-    });
-
-
-    // PA-01: cross-launch probe cache (resolved path + availability +
-    // binary mtime, mtime-invalidated per entry) lives in userData;
-    // main.ts owns the userData wiring so resolve-binary stays
-    // electron-free.
-    configureProbeCacheDir(app.getPath('userData'));
-
-    // PA-01: probes are spawn-bound (`which`, `npm prefix -g`) — fan every
-    // provider's async probe out concurrently, off the main thread.
-    // Providers without the async probe (tests, future registrations) fall
-    // back to the sync one.
-    const providers = getAllProviders();
-    // C2M-02: PA-01 moved the probes off the sync path, but the first PTY
-    // SPAWN still paid getFullPath() synchronously — POSIX:
-    // `execSync($SHELL -ilc …)`, 0.2-1.5 s on nvm/p10k setups; Windows: two
-    // `reg query` execSyncs — blocking main for the duration of every
-    // window's paint and every other PTY's traffic. Warm the cache the spawn
-    // reads, in parallel with the probes. The probes reach the same cache
-    // through resolve-binary's freshness gate; this prewarm does not depend
-    // on provider coverage. getFullPathAsync never rejects (every probe
-    // failure composes a fallback PATH), so it cannot fail the boot chain.
-    const [availability] = await Promise.all([
-      Promise.all(providers.map(p => (
-        p.validatePrerequisitesAsync
-          ? p.validatePrerequisitesAsync()
-          : Promise.resolve(p.validatePrerequisites())
-      ))),
-      getFullPathAsync(),
-    ]);
-    const missing = providers.filter((_, i) => !availability[i]);
-    for (const p of missing) {
-      console.warn(`Provider "${p.meta.displayName}" not available`);
+  powerMonitor.on('resume', () => {
+    const win = getMainWindow();
+    if (win) {
+      restartAndResync(win);
     }
-    if (missing.length === providers.length) {
-      const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
-      dialog.showErrorBox(
-        'FineVibe — No CLI Provider Found',
-        `FineVibe needs at least one supported CLI provider installed to run.\n\n` +
-          `Install one of the following, then restart FineVibe:\n\n${bullets}`,
-      );
-      // PA-01: with the window up first, a bare app.quit() would land on
-      // the close-confirm gate (before-quit → app:confirmClose) and prompt
-      // "Close FineVibe?" on top of the fatal dialog. This quit IS the
-      // confirmed exit.
-      setCloseConfirmed(true);
-      app.quit();
-      return;
+  });
+}
+
+// Boot phase (post-window): the provider probes and the spawn-PATH prewarm,
+// fanned out in parallel (PA-01). Returns the AVAILABLE providers for
+// installProviderHooks; returns null when NONE is available — the fatal dialog
+// has been shown and the confirmed quit is in flight, so the boot chain stops.
+async function probeProvidersAfterWindow(): Promise<CliProvider[] | null> {
+  // PA-01: cross-launch probe cache (resolved path + availability +
+  // binary mtime, mtime-invalidated per entry) lives in userData;
+  // main.ts owns the userData wiring so resolve-binary stays
+  // electron-free.
+  configureProbeCacheDir(app.getPath('userData'));
+
+  // PA-01: probes are spawn-bound (`which`, `npm prefix -g`) — fan every
+  // provider's async probe out concurrently, off the main thread.
+  // Providers without the async probe (tests, future registrations) fall
+  // back to the sync one.
+  const providers = getAllProviders();
+  // C2M-02: PA-01 moved the probes off the sync path, but the first PTY
+  // SPAWN still paid getFullPath() synchronously — POSIX:
+  // `execSync($SHELL -ilc …)`, 0.2-1.5 s on nvm/p10k setups; Windows: two
+  // `reg query` execSyncs — blocking main for the duration of every
+  // window's paint and every other PTY's traffic. Warm the cache the spawn
+  // reads, in parallel with the probes. The probes reach the same cache
+  // through resolve-binary's freshness gate; this prewarm does not depend
+  // on provider coverage. getFullPathAsync never rejects (every probe
+  // failure composes a fallback PATH), so it cannot fail the boot chain.
+  const [availability] = await Promise.all([
+    Promise.all(providers.map(p => (
+      p.validatePrerequisitesAsync
+        ? p.validatePrerequisitesAsync()
+        : Promise.resolve(p.validatePrerequisites())
+    ))),
+    getFullPathAsync(),
+  ]);
+  const missing = providers.filter((_, i) => !availability[i]);
+  for (const p of missing) {
+    console.warn(`Provider "${p.meta.displayName}" not available`);
+  }
+  if (missing.length === providers.length) {
+    const bullets = providers.map(p => `  • ${p.meta.displayName}`).join('\n');
+    dialog.showErrorBox(
+      'FineVibe — No CLI Provider Found',
+      `FineVibe needs at least one supported CLI provider installed to run.\n\n` +
+        `Install one of the following, then restart FineVibe:\n\n${bullets}`,
+    );
+    // PA-01: with the window up first, a bare app.quit() would land on
+    // the close-confirm gate (before-quit → app:confirmClose) and prompt
+    // "Close FineVibe?" on top of the fatal dialog. This quit IS the
+    // confirmed exit.
+    setCloseConfirmed(true);
+    app.quit();
+    return null;
+  }
+  return providers.filter((_, i) => availability[i]);
+}
+
+// Boot phase: the async Python probe. The await is load-bearing (PA-16):
+// installProviderHooks bakes the live pythonBin binding into the generated
+// hook commands, so the binding is re-pointed before any install runs. The
+// phase marks are inside it so the boot log keeps its post-window split.
+async function warnIfPythonMissing(): Promise<void> {
+  // PA-16: async Python probe (was 2×execSync(timeout 3000) straight
+  // after createWindow — up to 6 s of main-thread block on first paint).
+  // Awaiting it here does not block the paint — the window is up. The
+  // await exists because installHooks below bakes the live pythonBin
+  // binding into the generated hook commands, so the binding must be
+  // re-pointed (setPythonBin mutates it in place; nothing synchronous
+  // gates on it) before the installs run.
+  const pythonWarning = await checkPythonAvailable();
+  markBoot('python');
+  finishBootPhase('post-window');
+  if (pythonWarning) {
+    console.warn(pythonWarning);
+    const owner = mainWindow;
+    if (owner && !owner.isDestroyed()) {
+      dialog.showMessageBox(owner, {
+        type: 'warning',
+        title: 'FineVibe — Python Not Found',
+        message: pythonWarning,
+      });
     }
+  }
+}
 
-    // PA-16: async Python probe (was 2×execSync(timeout 3000) straight
-    // after createWindow — up to 6 s of main-thread block on first paint).
-    // Awaiting it here does not block the paint — the window is up. The
-    // await exists because installHooks below bakes the live pythonBin
-    // binding into the generated hook commands, so the binding must be
-    // re-pointed (setPythonBin mutates it in place; nothing synchronous
-    // gates on it) before the installs run.
-    const pythonWarning = await checkPythonAvailable();
-    markBoot('python');
-    finishBootPhase('post-window');
-    if (pythonWarning) {
-      console.warn(pythonWarning);
-      const owner = mainWindow;
-      if (owner && !owner.isDestroyed()) {
-        dialog.showMessageBox(owner, {
-          type: 'warning',
-          title: 'FineVibe — Python Not Found',
-          message: pythonWarning,
-        });
-      }
-    }
+// Boot phase: hook + status-script installs for the available providers,
+// fire-and-forget with a per-provider catch (PA-26/S1-01) — a failed install
+// is a logged warning, never a rejected boot chain.
+function installProviderHooks(providers: CliProvider[]): void {
+  // PA-26: install hooks and status scripts for available providers
+  // (after window creation so dialogs can attach). Each provider owns a
+  // disjoint config dir (~/.claude, ~/.codex, ~/.gemini, …), so the
+  // installs are independent. S1-01: fire-and-forget with a per-provider
+  // catch — the await used to gate the updater/activate/resume
+  // registrations (now done right after createWindow) on every provider's
+  // IO AND on the statusLine-consent modal (resolved only by a renderer
+  // click), and any throw (EACCES on ~/.claude, AV lock on Windows)
+  // became an unhandled rejection. A failed install is a logged warning:
+  // the provider still runs, hooks just stay uninstalled until the next
+  // spawn/Fix Settings.
+  for (const provider of providers) {
+    void provider.installHooks(mainWindow)
+      .then(() => provider.installStatusScripts())
+      .catch((err: unknown) => console.warn(
+        `Provider "${provider.meta.displayName}" hook install failed:`,
+        (err as Error)?.message ?? err,
+      ));
+  }
+}
 
-    // PA-26: install hooks and status scripts for available providers
-    // (after window creation so dialogs can attach). Each provider owns a
-    // disjoint config dir (~/.claude, ~/.codex, ~/.gemini, …), so the
-    // installs are independent. S1-01: fire-and-forget with a per-provider
-    // catch — the await used to gate the updater/activate/resume
-    // registrations (now done right after createWindow) on every provider's
-    // IO AND on the statusLine-consent modal (resolved only by a renderer
-    // click), and any throw (EACCES on ~/.claude, AV lock on Windows)
-    // became an unhandled rejection. A failed install is a logged warning:
-    // the provider still runs, hooks just stay uninstalled until the next
-    // spawn/Fix Settings.
-    for (const provider of providers.filter((_, i) => availability[i])) {
-      void provider.installHooks(mainWindow)
-        .then(() => provider.installStatusScripts())
-        .catch((err: unknown) => console.warn(
-          `Provider "${provider.meta.displayName}" hook install failed:`,
-          (err as Error)?.message ?? err,
-        ));
-    }
-
-
-    })
-    // S1-01: nothing below this point may crash the app: a rejected boot
-  // chain (probe spawn failure, dialog API failure) used to surface as an
-  // unhandled rejection — Electron shows a crash dialog and exits on
-  // Node's throw-by-default policy. Log loudly; the window is already up.
-  .catch((err: unknown) => {
+// Boot phase (rejection sink): S1-01 — nothing after the window may crash the
+// app. A rejected boot chain used to surface as an unhandled rejection:
+// Electron shows a crash dialog and exits on Node's throw-by-default policy.
+function handleBootFailure(err: unknown): void {
     console.error('FineVibe startup failed after window creation:', err);
     dialog.showErrorBox(
       'FineVibe — Partial Startup Failure',
       `Some startup steps failed. FineVibe is running, but CLI hooks may not be installed:\n\n${(err as Error)?.message ?? String(err)}`,
     );
-  });
+}
+
+// Boot phase: the close/quit lanes. Registered synchronously in
+// startMainProcess (not inside whenReady) so they exist for the whole life of
+// the winner process, and so `quitRequested` is written and read in one place.
+function registerCloseLanes(): void {
 
   // C4S-07 + audit row 90: the renderer's confirmed reply, registered here
   // because the quit/window-close decision belongs beside the lanes that set
@@ -636,25 +665,7 @@ function startMainProcess(): void {
       requestConfirmClose();
       return;
     }
-    disposeAutoUpdater?.();
-    flushState();
-    stopPerfSampler();
-    stopDiskHealthPreflight?.();
-    stopDiskHealthPreflight = null;
-    const win = getMainWindow();
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('app:quitting');
-    }
-    killAllPtys();
-    stopGitWatcher();
-    stopAllFileWatchers();
-    // Close any open MCP inspector connections (the pane-close path disconnects
-    // its own session; this catches connections left open at quit).
-    void disconnectAll();
-    // Cleanup all providers
-    for (const provider of getAllProviders()) {
-      provider.cleanup();
-    }
+    runQuitCleanup();
   });
 
   app.on('window-all-closed', () => {
@@ -662,6 +673,86 @@ function startMainProcess(): void {
       app.quit();
     }
   });
+}
+
+// Quit teardown: everything the app owns, released in quit order — updater
+// disposer, state flush, then the watchers/PTYs/providers behind the
+// `app:quitting` notice.
+function runQuitCleanup(): void {
+  disposeAutoUpdater?.();
+  flushState();
+  stopPerfSampler();
+  stopDiskHealthPreflight?.();
+  stopDiskHealthPreflight = null;
+  const win = getMainWindow();
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('app:quitting');
+  }
+  killAllPtys();
+  stopGitWatcher();
+  stopAllFileWatchers();
+  // Close any open MCP inspector connections (the pane-close path disconnects
+  // its own session; this catches connections left open at quit).
+  void disconnectAll();
+  // Cleanup all providers
+  for (const provider of getAllProviders()) {
+    provider.cleanup();
+  }
+}
+
+// The post-`ready` renderer boot: the phases in the order each one depends on.
+// The caller attaches the rejection sink; this function never escapes into the
+// module body.
+async function runRendererBoot(): Promise<void> {
+  runPreIpcBootSweeps();
+
+  // PA-01: the all-missing guard used to run BEFORE the window existed —
+  // six serial spawn-bound probes (up to 2.4 s of `which`/`npm prefix -g`
+  // spawns, W2-06) in front of the first paint. IPC/menu/window first;
+  // the probes run below, parallel, after the window is up. The window
+  // briefly flashing on the all-providers-missing path is the accepted
+  // trade for a first paint that never waits on a probe.
+
+  registerIsolatedStorageIpc();
+  registerIpcAndMenu();
+
+  // Boot guard (rendererIsBuilt): an unbuilt tree fails with the
+  // not-built dialog, never a silent window death. Quit BEFORE the first
+  // window — the close-confirm watchdog, the disk-health preflight and
+  // the provider probes below all assume a live renderer.
+  if (!rendererIsBuilt()) return;
+  createWindow();
+  startDiskHealthMonitor();
+  registerWindowBoundHandlers();
+
+  const available = await probeProvidersAfterWindow();
+  if (!available) return;
+
+  await warnIfPythonMissing();
+  installProviderHooks(available);
+}
+
+function startMainProcess(): void {
+  // First: the identity must be stamped on the process before the first
+  // window (taskbar button) exists. See claimWindowsIdentity above.
+  claimWindowsIdentity();
+  migrateAndRetireLegacyUserData();
+  markBoot('identity+migrate');
+
+  // Winner-only: a relaunch while the app runs focuses the existing
+  // window, so launching again behaves like "focus FineVibe".
+  app.on('second-instance', () => {
+    const win = mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow
+      : getMainWindow();
+    if (win && !win.isDestroyed()) {
+      showAndFocusWindow(win);
+    }
+  });
+
+  app.whenReady().then(() => runRendererBoot()).catch(handleBootFailure);
+
+  registerCloseLanes();
 }
 
 // Single-instance gate. A second launch must not start a second main
