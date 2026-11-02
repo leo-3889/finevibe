@@ -9,19 +9,43 @@
 // free — over the wire, polling is the only option and batching all dirs into
 // one shared tick is the upgrade path if watch counts ever grow.
 //
-// Cap: MAX_REMOTE_WATCHES (module-map governance) — the renderer already caps
-// its watched set per project (file-tree unwatchSubtree on collapse); this is
-// the global backstop. FIFO eviction, matching the file-watcher idiom.
+// Caps (module-map governance): MAX_REMOTE_WATCHES bounds the watched-path
+// set, MAX_REMOTE_WATCHED_HOSTS bounds the fan-out across registry hosts.
+// Both evict FIFO via `evictOldest`, matching the file-watcher idiom. Teardown
+// lives in {@link stopAllRemoteWatchers}, called from main.ts next to
+// `stopAllFileWatchers` (window closed + quit cleanup).
 
 import type { BrowserWindow } from 'electron';
 import type { FsChange } from '../../shared/types';
 import { sftpListDirEntries } from './ssh-client';
 import { getHost } from './host-registry';
 import { normalizeRemotePath } from './remote-fs';
+import { evictOldest } from '../bounded-map';
 import { LOCAL_HOST_ID } from '../../shared/types';
 
-const REMOTE_POLL_MS = 5_000;
+/** Poll period per watched remote directory, and the timeout of the one sftp
+ * readdir each poll issues (a poll that outlives its own interval would
+ * stack, so the two numbers are deliberately the same). Remote tree updates
+ * are therefore up to this stale — the local watcher is event-driven because
+ * the OS gives notifications for free; over the wire polling is the only
+ * option, and 5 s is the latency/bandwidth trade (a 200-watch set is 40
+ * readdir/s). */
+export const REMOTE_POLL_MS = 5_000;
+
+/** Watched-path cap (module-map governance for `watches`): the renderer
+ * already caps its watched set per project (the file tree unwatches subtrees
+ * on collapse); this is the global backstop. One entry = one interval + one
+ * entry-name snapshot. FIFO-evicted, like file-watcher's MAX_FOLDER_WATCHES:
+ * an evicted directory stops pushing `fs:changed` until it is re-opened. */
 export const MAX_REMOTE_WATCHES = 200;
+
+/** Distinct-host cap: the path cap bounds the poll rate, this bounds the
+ * number of ssh connections the polls keep warm (a watch on 30 hosts is 30
+ * connections for a handful of trees). Enforced against the `watches` map
+ * itself — the host owning the oldest remaining watch loses ALL its watches,
+ * so admitting one new host always frees a slot and no second collection (and
+ * no second allowlist entry) is needed. */
+export const MAX_REMOTE_WATCHED_HOSTS = 8;
 
 interface RemoteWatch {
   hostId: string;
@@ -36,8 +60,43 @@ interface RemoteWatch {
 
 const watches = new Map<string, RemoteWatch>();
 let currentWin: BrowserWindow | null = null;
+let capWarned = false;
 
 const watchKey = (hostId: string, dir: string): string => `${hostId}|${dir}`;
+const hostOfKey = (key: string): string => key.slice(0, key.indexOf('|'));
+
+function dropWatch(key: string): void {
+  const watch = watches.get(key);
+  if (watch) clearInterval(watch.timer);
+  watches.delete(key);
+}
+
+/** Make room for one more watch: FIFO-drop the oldest polls past the path cap,
+ * then evict the whole oldest host when `hostId` is new and the host set is
+ * full (both are graceful degradations — an evicted watch re-arms on the next
+ * `fs:watchDir`, exactly like an unwatched directory). */
+function makeRoom(hostId: string): void {
+  evictOldest(watches, MAX_REMOTE_WATCHES - 1, (oldest) => {
+    dropWatch(oldest);
+    warnCap(`MAX_REMOTE_WATCHES=${MAX_REMOTE_WATCHES}; evicted ${oldest}`);
+  });
+  const hosts = new Set<string>();
+  for (const key of watches.keys()) hosts.add(hostOfKey(key));
+  if (hosts.has(hostId) || hosts.size < MAX_REMOTE_WATCHED_HOSTS) return;
+  // Set insertion order is Map insertion order, so the first host is the one
+  // whose oldest watch is the oldest — the same FIFO candidate as above.
+  const oldestHost = hosts.values().next().value as string;
+  for (const key of [...watches.keys()]) {
+    if (hostOfKey(key) === oldestHost) dropWatch(key);
+  }
+  warnCap(`MAX_REMOTE_WATCHED_HOSTS=${MAX_REMOTE_WATCHED_HOSTS}; evicted every watch on ${oldestHost}`);
+}
+
+function warnCap(message: string): void {
+  if (capWarned) return;
+  capWarned = true;
+  console.warn(`[remote-watch] ${message}`);
+}
 
 export function setRemoteWatchWindow(win: BrowserWindow): void {
   currentWin = win;
@@ -105,14 +164,7 @@ export function watchRemoteDir(hostId: string, dirPath: string): void {
   if (dir === null) return;
   const key = watchKey(hostId, dir);
   if (watches.has(key)) return;
-  if (watches.size >= MAX_REMOTE_WATCHES) {
-    const oldest = watches.keys().next();
-    if (!oldest.done) {
-      const evicted = watches.get(oldest.value);
-      if (evicted) clearInterval(evicted.timer);
-      watches.delete(oldest.value);
-    }
-  }
+  makeRoom(hostId);
   const watch: RemoteWatch = {
     hostId,
     dir,
@@ -130,11 +182,21 @@ export function unwatchRemoteDir(hostId: string, dirPath: string): void {
   if (hostId === LOCAL_HOST_ID) return;
   const dir = normalizeRemotePath(dirPath);
   if (dir === null) return;
-  const key = watchKey(hostId, dir);
-  const watch = watches.get(key);
-  if (!watch) return;
-  clearInterval(watch.timer);
-  watches.delete(key);
+  dropWatch(watchKey(hostId, dir));
+}
+
+/**
+ * Teardown bound: clear every poll interval and every snapshot, and release
+ * the window. Registered in main.ts beside {@link stopAllFileWatchers} — on
+ * `mainWindow.on('closed')` (a re-opened window re-issues `fs:watchDir`, which
+ * must re-point `fs:changed` at the NEW window instead of early-returning on
+ * the existing watch with the destroyed one latched) and in quit cleanup, so
+ * no interval outlives the window/app that started it.
+ */
+export function stopAllRemoteWatchers(): void {
+  for (const key of [...watches.keys()]) dropWatch(key);
+  capWarned = false;
+  currentWin = null;
 }
 
 /** Test hook: current watch keys (also used by the renderer teardown tests). */
