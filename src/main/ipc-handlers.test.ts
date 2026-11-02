@@ -36,6 +36,7 @@ const mockUnregisterSync = vi.hoisted(() => vi.fn(() => { calls.push('unregister
 const mockGetProvider = vi.hoisted(() => vi.fn());
 const mockGetAvailableAsync = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const mockGetSyncedPath = vi.hoisted(() => vi.fn((): string | null => null));
+const mockIsRemoteSynced = vi.hoisted(() => vi.fn((): boolean => false));
 const mockRegisterSession = vi.hoisted(() => vi.fn());
 
 // Modules the handler-under-test imports but this suite never exercises: a
@@ -131,6 +132,7 @@ vi.mock('./session-transcript-sync', () => ({
   registerTranscriptSync: mockRegisterSync,
   unregisterTranscriptSync: mockUnregisterSync,
   getSyncedTranscriptPath: mockGetSyncedPath,
+  isRemoteSyncedSession: mockIsRemoteSynced,
 }));
 
 vi.mock('./providers/registry', () => ({
@@ -1772,6 +1774,23 @@ describe('pty:exit crash reason', () => {
     exitCallback()(1);
     expect(provider.readSessionExitReason).toHaveBeenCalledWith('/sessions/dir-a/2026.jsonl');
     expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, 'unhandled_rejection', undefined);
+  });
+
+  it('skips the local exit-reason read for a remote-host session (row 36 ceiling)', async () => {
+    // The transcript lives on the host; reading the mirrored/derived path on
+    // the controller fs probes a path that is not this session's file. The
+    // exit must carry the generic PTY reason instead.
+    provider.readSessionExitReason = vi.fn(() => ({ reason: 'unhandled_rejection', kind: 'fatal' }));
+    mockGetSyncedPath.mockReturnValue('/sessions/dir-a/2026.jsonl');
+    mockIsRemoteSynced.mockReturnValue(true);
+    try {
+      await create('ui-1', 'cli-1', { isResume: true });
+      exitCallback()(1);
+      expect(provider.readSessionExitReason).not.toHaveBeenCalled();
+      expect(fakeWin.webContents.send).toHaveBeenCalledWith('pty:exit', 'ui-1', 1, undefined, 'exited with code 1', undefined);
+    } finally {
+      mockIsRemoteSynced.mockReturnValue(false);
+    }
   });
 
   it('sends the spawn-rejected sentinel verbatim when no PTY ever existed', async () => {

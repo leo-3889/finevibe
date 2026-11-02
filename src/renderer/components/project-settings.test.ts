@@ -34,11 +34,11 @@ it('offers providers without profiles, scopes profiles on change, saves and take
   promptProjectSettings({ id: 'project', defaultProvider: 'claude' } as ProjectRecord);
   const selects = document.querySelectorAll('.custom-select');
   const trigger = selects[0].querySelector('button')!;
-  // The lead card adds a text row, so the shared modal now takes focus on the
-  // next frame (its text-field path) instead of synchronously on the first
-  // control. Flush that frame and pin the contract: focus lands in the dialog.
-  await new Promise(resolve => requestAnimationFrame(resolve));
-  expect(document.activeElement).toBe(document.getElementById('modal-lead-name'));
+  // Focus contract: the modal focuses the FIRST row control in DOM order, so
+  // the lead card's text row cannot hijack focus from the provider row (the
+  // select trigger is a button). Focus is synchronous - no rAF path.
+  expect(document.activeElement).toBe(trigger);
+  expect(document.getElementById('modal-lead-name')).not.toBe(document.activeElement);
   trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
   trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   expect((document.getElementById('modal-provider') as HTMLInputElement).value).toBe('omp');
@@ -122,9 +122,13 @@ describe('lead card (team-lead-persona-plan M1)', () => {
     charter().value = 'a'.repeat(4097);
     document.getElementById('modal-confirm')!.click();
     expect(saveLead).not.toHaveBeenCalled();
+    // Partial-save pin: the refusal happens BEFORE any write, so the coding
+    // defaults edited in the same dialog pass must not have been persisted.
+    expect(save).not.toHaveBeenCalled();
     expect(document.getElementById('modal-error-lead-charter')).not.toBeNull();
     charter().value = 'a'.repeat(4096);
     document.getElementById('modal-confirm')!.click();
     expect(saveLead).toHaveBeenCalledWith('project', expect.objectContaining({ enabled: true }));
+    expect(save).toHaveBeenCalledWith('project', undefined, undefined);
   });
 });

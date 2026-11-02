@@ -11,7 +11,7 @@ import { getHost } from './hosts/host-registry';
 import { refreshHostTools } from './hosts/enrollment';
 import { isRemotePathInKnownProject } from './hosts/remote-fs';
 import { startWatching, cleanupSessionStatus, resyncAllSessions, registerSession } from './hook-status';
-import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath } from './session-transcript-sync';
+import { registerTranscriptSync, unregisterTranscriptSync, getSyncedTranscriptPath, isRemoteSyncedSession } from './session-transcript-sync';
 import type { SessionExitReason } from './providers/pi-compatible-transcripts';
 import { notifyGitChanged, onGitChanged } from './git-watcher';
 import { registerMcpHandlers } from './mcp-ipc-handlers';
@@ -577,7 +577,11 @@ export function registerIpcHandlers(): void {
           // dir. Gate the whole resolution on the consumer.
           let reason: SessionExitReason | null = null;
           let transcriptPath: string | null = null;
-          if (provider.readSessionExitReason) {
+          // Remote launches keep their transcript on the host: a local-fs read
+          // of the mirrored path would probe a controller path that is not
+          // this session's file (and for fresh remote launches exists only as
+          // the sync lane's business). Exit reason stays the generic PTY one.
+          if (provider.readSessionExitReason && !isRemoteSyncedSession(sessionId)) {
             transcriptPath = getSyncedTranscriptPath(sessionId);
             if (!transcriptPath && cliSessionId) {
               try {
