@@ -1,5 +1,5 @@
 import { appState } from '../../state.js';
-import { getBoard, addTag, removeTag, updateTagColor, getTagCount, TAG_COLORS } from '../../board-state.js';
+import { getBoard, addTag, removeTag, updateTagColor, getTagCount, setLeadGate, TAG_COLORS } from '../../board-state.js';
 import { createColumnElement } from './board-column.js';
 import { showTaskModal } from './board-task-modal.js';
 import { initBoardDnd, isDragActive, addDragEndCallback } from './board-dnd.js';
@@ -130,6 +130,21 @@ function createBoardView(): HTMLElement {
 
   titleGroup.appendChild(title);
   titleGroup.appendChild(helpBtn);
+
+  // Board settings (I4): the board has no settings surface of its own, so the
+  // one per-board switch rides a header gear next to the help `?`, opened as a
+  // context menu (the board's existing menu idiom, board-context-menu.ts).
+  const settingsBtn = document.createElement('button');
+  settingsBtn.className = 'board-help-btn board-settings-btn';
+  settingsBtn.title = t('board.settingsTooltip');
+  settingsBtn.setAttribute('aria-label', t('board.settingsAriaLabel'));
+  settingsBtn.textContent = '\u2699';
+  settingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    showBoardSettingsMenu(e.clientX, e.clientY);
+  });
+
+  titleGroup.appendChild(settingsBtn);
 
   const actions = document.createElement('div');
   actions.className = 'board-header-actions';
@@ -313,7 +328,9 @@ export function boardChangeKey(board: BoardData): string {
     .map(tk => `${tk.id}:${tk.columnId}:${tk.order}:${tk.assigneeId ?? ''}:${(tk.tags ?? []).join('+')}:${textHash(`${tk.title}\u0002${tk.prompt}\u0002${tk.notes ?? ''}`)}:${tk.sessionId ?? ''}:${tk.cliSessionId ?? ''}:${tk.providerId ?? ''}`)
     .join(',');
   const filters = `${getSearchQuery()}\u0000${[...getActiveTagFilters()].sort().join('+')}`;
-  return `${cols}\u0001${tags}\u0001${tasks}\u0001${filters}\u0001${appState.preferences.boardCardMetrics ?? true}`;
+  // I4: the gate toggle is visible (the ✓ on the settings menu item), so it belongs
+  // in the key — without it the menu would show a stale checkmark after a toggle.
+  return `${cols}\u0001${tags}\u0001${tasks}\u0001${filters}\u0001${appState.preferences.boardCardMetrics ?? true}\u0001${board.leadGate ? 1 : 0}`;
 }
 
 export function hideBoardView(): void {
@@ -347,6 +364,27 @@ export function resetBoardViewIf(paneEl: HTMLElement): void {
   if (!instance) return;
   instance.root.remove();
   viewInstances.delete(paneEl);
+}
+
+/** The board's settings menu (I4). One item today: the per-board lead Done-gate.
+ * A checked item is a `\u2713 ` prefix — MenuOption has no checked state, and the
+ * tag-color menu already spells selection in the label. The gate is inert without
+ * an enabled project lead, so the item is disabled + says what to enable first.
+ * Operates on `getBoard()` (the active project's board) — the same resolution the
+ * column/tag context menus already use. */
+export function showBoardSettingsMenu(x: number, y: number): void {
+  const board = getBoard();
+  if (!board) return;
+  const gated = board.leadGate === true;
+  const leadReady = appState.activeProject?.lead?.enabled === true;
+  const label = gated ? `\u2713 ${t('board.settings.leadGate')}` : t('board.settings.leadGate');
+  showContextMenu(x, y, [
+    {
+      label: leadReady ? label : t('board.settings.leadGateNeedsLead'),
+      action: () => setLeadGate(!gated),
+      disabled: !leadReady,
+    },
+  ]);
 }
 
 function activeKanbanContainer(): HTMLElement | null {

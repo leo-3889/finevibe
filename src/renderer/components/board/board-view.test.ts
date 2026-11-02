@@ -39,7 +39,10 @@ vi.mock('../../board-state.js', async (importOriginal) => {
 
 import { appState, _resetForTesting } from '../../state.js';
 import { addTask, updateTask } from '../../board-state.js';
-import { initBoard, renderBoard, resetBoardView, resetBoardViewIf } from './board-view.js';
+import { showContextMenu } from './board-context-menu.js';
+import { initBoard, renderBoard, resetBoardView, resetBoardViewIf, boardChangeKey } from './board-view.js';
+import { t } from '../../i18n.js';
+import type { MenuOption } from './board-context-menu.js';
 import { instances as kanbanInstances } from '../kanban/instance.js';
 import type { ProjectRecord } from '../../../shared/types.js';
 
@@ -405,5 +408,70 @@ describe('board-view change key providerId (P2-65)', () => {
     updateTask(task.id, { providerId: before === 'codex' ? 'claude' : 'codex' });
     const after = container.querySelector('.tab-provider-icon')!.getAttribute('alt');
     expect(after).not.toBe(before);
+  });
+});
+
+// team-lead-persona-plan M2b / increment I4: the board has no settings surface, so
+// the one per-board switch (the lead Done-gate) rides a header gear opened as the
+// board's context menu. The gate decision table lives in board-state.test.ts; this
+// suite pins the surface: the item exists, is enabled only with an enabled lead,
+// writes board.leadGate, and the change key sees the toggle.
+describe('board-view settings menu (I4 lead Done-gate)', () => {
+  function setupBoard(leadEnabled: boolean | null): { container: HTMLElement; project: NonNullable<ReturnType<typeof appState.activeProject>> } {
+    const container = setupKanban();
+    const project = appState.activeProject!;
+    if (leadEnabled !== null) project.lead = { name: 'Lead', charter: 'c', enabled: leadEnabled };
+    initBoard();
+    renderBoard();
+    return { container, project };
+  }
+
+  function clickGear(container: HTMLElement): void {
+    vi.mocked(showContextMenu).mockClear();
+    (container.querySelector('.board-settings-btn') as HTMLButtonElement).click();
+  }
+
+  const menuItems = (): MenuOption[] => {
+    const calls = vi.mocked(showContextMenu).mock.calls;
+    return calls[calls.length - 1][2];
+  };
+
+  it('offers the gate toggle and writes board.leadGate through setLeadGate', () => {
+    const { container, project } = setupBoard(true);
+    clickGear(container);
+    const items = menuItems();
+    expect(items).toHaveLength(1);
+    expect(items[0].disabled).toBeFalsy();
+    // Unchecked: MenuOption has no checked state, so the label spells it.
+    expect(items[0].label).toBe(t('board.settings.leadGate'));
+
+    items[0].action();
+    expect(project.board!.leadGate).toBe(true);
+
+    clickGear(container);
+    expect(menuItems()[0].label).toBe(`\u2713 ${t('board.settings.leadGate')}`);
+    menuItems()[0].action();
+    // Off DELETES the key: an ungated board serializes exactly as before I4.
+    expect('leadGate' in project.board!).toBe(false);
+  });
+
+  it('disables the item and names what to enable first when the project has no enabled lead', () => {
+    const { container, project } = setupBoard(null);
+    clickGear(container);
+    expect(menuItems()[0].disabled).toBe(true);
+    expect(menuItems()[0].label).toBe(t('board.settings.leadGateNeedsLead'));
+    expect(project.board!.leadGate).toBeUndefined();
+
+    const disabled = setupBoard(false);
+    clickGear(disabled.container);
+    expect(menuItems()[0].disabled).toBe(true);
+  });
+
+  it('re-renders on a gate toggle (the checkmark is visible state)', () => {
+    setupBoard(true);
+    const board = appState.activeProject!.board!;
+    const before = boardChangeKey(board);
+    board.leadGate = true;
+    expect(boardChangeKey(board)).not.toBe(before);
   });
 });

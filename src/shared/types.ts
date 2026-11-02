@@ -400,6 +400,13 @@ export interface BoardData {
   columns: BoardColumn[];
   tasks: BoardTask[];
   tags?: TagDefinition[];
+  /** Kanban Done-gate (team-lead-persona-plan M2b, increment I4), opt-in per board:
+   * a card whose session has run lands in a `behavior: 'terminal'` column only with a
+   * lead-approved `leadReview` (board-state.ts `isLeadGateBlocked`). Additive: the key
+   * is written ONLY when on (`setLeadGate` deletes it on off), so an old state file has
+   * no gate and a board that never opted in serializes identically to before. The gate
+   * is inert unless the project also has `lead.enabled` — see docs/FEATURES.md §3. */
+  leadGate?: boolean;
 }
 
 /** UTF-8 budget for a lead charter (team-lead-persona-plan M1). The charter
