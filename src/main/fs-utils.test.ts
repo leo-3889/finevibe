@@ -18,7 +18,7 @@ vi.mock('./platform', () => ({ get isWin() { return platformStub.isWin; } }));
 
 import {
   expandUserPath, resolveUserPath, isBinaryBuffer, isMacPackagePath,
-  canonicalPath, canonicalRoot,
+  canonicalPath, canonicalRoot, isWithin,
   invalidateCanonicalPathCache, invalidateCanonicalPathIfRootsChanged,
   TARGET_CANONICAL_CACHE_MAX, TARGET_CANONICAL_TTL_MS, ROOT_CANONICAL_CACHE_MAX,
 } from './fs-utils';
@@ -405,5 +405,27 @@ describe('resolveUserPath Windows spellings', () => {
     process.env[ENV] = 'C:\\Users\\me\\AppData\\Roaming';
     expect(resolveUserPath(`%${ENV}%\\projects\\Acme`))
       .toBe('C:\\Users\\me\\AppData\\Roaming\\projects\\Acme');
+  });
+});
+
+// Row 26 slice 5: the predicate the fs read/enumerate gates and the git root
+// gate share, moved here from ipc-handlers.ts (it must live where both can
+// import it without a domain module importing back into ipc-handlers.ts).
+describe('isWithin', () => {
+  const root = path.resolve('/mock/home/Acme');
+
+  it('accepts the root itself and its subtree, rejects siblings and escapes', () => {
+    expect(isWithin(root, root)).toBe(true);
+    expect(isWithin(root, path.join(root, 'src', 'main.ts'))).toBe(true);
+    expect(isWithin(root, path.join(path.dirname(root), 'Other'))).toBe(false);
+    expect(isWithin(root, path.join(root, '..', 'Other'))).toBe(false);
+    // The sibling-prefix trap: /mock/home/AcmeEvil is not inside Acme.
+    expect(isWithin(root, `${root}Evil`)).toBe(false);
+  });
+
+  it('is the containment check the canonical gates feed it', () => {
+    // The gate shape (canonicalRoot root, canonicalPath target) stays true for
+    // a nested target, so the move keeps isWithinKnownProject's semantics.
+    expect(isWithin(canonicalRoot(root), canonicalPath(path.join(root, 'a', 'b')))).toBe(true);
   });
 });

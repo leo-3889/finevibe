@@ -237,9 +237,15 @@ vi.mock('./hosts/remote-fs', async (importOriginal) => {
 });
 
 import {
-  registerIpcHandlers, uidScopedTempDir, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
-  sweepEnumerationCaches, ENUMERATE_CACHE_MAX, TOP_FILES_CACHE_MAX, OUTSIDE_HOME_CONSENT_MAX,
+  registerIpcHandlers, uidScopedTempDir,
 } from './ipc-handlers';
+// Row 26 slice 5: the fs gates, consent cache and enumeration caches moved to
+// ipc/fs-domains.ts with the fs:* handlers; the tests reach them there (the
+// registrations themselves still come through registerIpcHandlers below).
+import {
+  _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
+  sweepEnumerationCaches, ENUMERATE_CACHE_MAX, TOP_FILES_CACHE_MAX, OUTSIDE_HOME_CONSENT_MAX,
+} from './ipc/fs-domains';
 import { isManagedMcpConfigDir, removeMcpServer } from './claude-cli';
 import { loadState } from './store';
 import { shouldWarnStatusLine, getDirConsent, recordDirConsent } from './settings-guard';
