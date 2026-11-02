@@ -18,6 +18,20 @@ import { startOmpSessionWatcher, registerPendingOmpSession, unregisterOmpSession
  *    clears the `configReading` capability.
  *  - Title lives in the transcript head (`type:"title"`, mirrored into the
  *    session header), not in Pi's `session_info` entries.
+ *  - `--append-system-prompt` accepts a FILE PATH, not just literal text
+ *    (audit row 37 CLOSED, omp/18.15.0, 2026-11-02): `omp --help` documents it
+ *    as "Append text or file contents to the system prompt" and a live run
+ *    proved the read — with `/tmp/omp spike/quote"test.md` holding the
+ *    directive "reply with exactly ZISKAPPEND9",
+ *    `omp --append-system-prompt "/tmp/omp spike/quote\"test.md" -p "say ok"`
+ *    printed `ZISKAPPEND9`, the same value prefixed with a newline printed
+ *    `ok` (text mode), and strace showed
+ *    `openat(AT_FDCWD, "/tmp/omp spike/quote\"test.md", O_RDONLY|O_NONBLOCK|O_LARGEFILE|O_CLOEXEC) = 21`
+ *    for the first run only. A quote and a space in the path are no obstacle:
+ *    omp reads the path directly (no shell), so the Windows `system-prompt.md`
+ *    redirect in `systemPromptArg` is valid for OMP as it is for Pi/Pi-Bolt —
+ *    and a one-line charter spelling an existing path is a silent
+ *    substitution, which is what that function's guard prefixes away.
  */
 export class OmpProvider extends createPiCompatibleProvider({
   id: 'omp',

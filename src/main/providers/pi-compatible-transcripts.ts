@@ -320,7 +320,7 @@ export function sessionExitReasonFromTail(tail: string | null): SessionExitReaso
     if (e.type === 'custom' && e.customType === 'session_exit') {
       return {
         reason: String(e.data?.reason ?? 'unknown'),
-        ...(e.data?.kind !== undefined ? { kind: String(e.data.kind) } : {}),
+        ...(e.data?.kind === undefined ? {} : { kind: String(e.data.kind) }),
         ...(typeof e.timestamp === 'string' ? { timestamp: e.timestamp } : {}),
       };
     }
@@ -411,6 +411,26 @@ export async function readSessionHeaderAsync(filePath: string): Promise<Compatib
 }
 
 /**
+ * Audit 109v — ACCEPTED LIMIT. The seed header pins Pi's CURRENT_SESSION_VERSION
+ * (`3`), the exact line the CLI writes on create. There is no cheap probe to
+ * read at seed time: the only version probe in the codebase is
+ * `claude-version.ts getClaudeVersion`, a 3 s `execSync`, and the Pi family has
+ * none — a spawn per launch on the PTY hot path costs more (a blocking probe
+ * before every Pi/Pi-Bolt terminal) than the mismatch it would prevent, since
+ * the seed exists only so the CLI's `--session-id` lookup HITS: the CLI opens
+ * the file and appends, and today's Pi/Pi-Bolt accept a v3 header without
+ * migrating it.
+ *
+ * Ceiling: if the Pi family bumps CURRENT_SESSION_VERSION behind a required
+ * shape change, a seed file is an old-version transcript the CLI migrates (or
+ * refuses) at open. Owner-visible note: docs/provider-contracts.md
+ * launch-arguments paragraph (the audit-109v accepted-limit sentence) — bump
+ * this constant with the CLI, pinned by
+ * `pi-compatible-transcripts.test.ts §seedLaunchTranscript`.
+ */
+export const SEED_SESSION_VERSION = 3;
+
+/**
  * Seed an empty transcript (header line only) for a fresh Pi/Pi-Bolt
  * launch that pins `--session-id <id>`: the CLI looks the id up in its
  * `--session-dir` before creating, and warns
@@ -424,9 +444,13 @@ export async function readSessionHeaderAsync(filePath: string): Promise<Compatib
 export function seedLaunchTranscript(sessionDir: string, cliSessionId: string, cwd: string): void {
   const timestamp = new Date().toISOString();
   const file = path.join(sessionDir, `${timestamp.replace(/[:.]/g, '-')}_${cliSessionId}.jsonl`);
-  // version 3: Pi's CURRENT_SESSION_VERSION — the exact line the CLI would
-  // write on create (pi-bolt-provider contract tests pin the format).
-  const header = { type: 'session', version: 3, id: cliSessionId, timestamp, cwd: path.resolve(cwd) };
+  const header = {
+    type: 'session',
+    version: SEED_SESSION_VERSION,
+    id: cliSessionId,
+    timestamp,
+    cwd: path.resolve(cwd),
+  };
   fs.writeFileSync(file, `${JSON.stringify(header)}\n`, { flag: 'wx' });
 }
 
@@ -723,7 +747,7 @@ export async function indexCompatibleTranscript(transcriptPath: string): Promise
         for (const block of c) {
           if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text'
             && typeof (block as { text?: unknown }).text === 'string') {
-            text += (block as { text: string }).text + '\n';
+            text += `${(block as { text: string }).text}\n`;
           }
         }
       }
