@@ -14,7 +14,9 @@ const MAX_WATCHES = 2000;
 // a panel that lags a minute per stage/commit reads as broken. On the first
 // error the module falls back to a periodic rescan: notify() is the rescan
 // trigger the renderer + the Quick Open cache already listen for, on the
-// 2s watchdog cadence the main-side watchers use (hook-status POLL_MS).
+// 2s watchdog cadence the main-side watchers use (hook-status
+// WATCHER_DOWN_POLL_MS — its slow lane, 30 s, is a safety net for a WATCHED
+// dir, which is not what a dead inotify handle leaves here).
 const RESCAN_POLL_MS = 2000;
 let rescanTimer: ReturnType<typeof setInterval> | null = null;
 let watcherErrorWarned = false;

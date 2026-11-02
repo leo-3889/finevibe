@@ -30,10 +30,10 @@ const stubWin = {
 } as never;
 
 function statusesSent(): string[] {
-  // Consecutive-dedupe: the sidecar write fires two fs.watch events
-  // (rename + change), so every write is delivered twice; the renderer's
-  // setStatus dedupes identical values, so the MEANINGFUL signal is the
-  // deduped sequence.
+  // Consecutive-dedupe: the renderer's setStatus dedupes identical values, so
+  // the MEANINGFUL signal is the deduped sequence. (Row 18 made the raw stream
+  // one delivery per write — the push lane coalesces the write's fs events into
+  // one pass per filename — but this test reads the deduped view either way.)
   const out: string[] = [];
   for (const s of sent) {
     if (s.channel !== 'session:hookStatus' || s.args[0] !== sid) continue;

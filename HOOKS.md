@@ -136,8 +136,13 @@ guarantee of eventual completion. Any later hook event cancels it.
 2. **File watching** (`hook-status.ts`) — the main process watches `STATUS_DIR`
    (`getStatusDir()`: `<tmpdir>/finevibe-<uid>` on POSIX — the uid suffix gives
    each user a private directory on the shared `/tmp`, mode `0700`; bare
-   `<tmpdir>\finevibe` on Windows, where `%TEMP%` is already per-user) via
-   `fs.watch()` plus a 2s polling fallback.
+   `<tmpdir>\finevibe` on Windows, where `%TEMP%` is already per-user) with a
+   **push-first lane**: a non-recursive chokidar watch over the directory
+   forwards every change through the per-file processor, coalesced per filename
+   over `PUSH_DEBOUNCE_MS` (150 ms). A slow `SAFETY_NET_POLL_MS` (30 s) sweep is
+   the backstop for events the OS never delivered, and the sweep drops to
+   `WATCHER_DOWN_POLL_MS` (2 s) while the watch is dead. See
+   [Delivery timing](#delivery-timing-contract).
    Every generated Python script reads stdin as UTF-8: the body carries a
    `sys.stdin.reconfigure(encoding="utf-8")` guard and every Windows
    invocation passes `-X utf8` — Python <3.15 decodes stdin with the ANSI
@@ -158,6 +163,25 @@ guarantee of eventual completion. Any later hook event cancels it.
 | `.toolfailure` | `PostToolUseFailure`, plus a token-capped `Read` (see below) | `tool_name`, `tool_input`, `error` |
 | `.events` | Every event's capture script | Append-only JSONL inspector timeline — no on-disk cap (the 64 KiB bound is the reader's per-turn budget; retention is enforced renderer-side); see [event retention](docs/performance.md#inspector-event-retention) |
 | `.subagents` | `SubagentStart`/`SubagentStop`/`PostToolUse`/`SessionStart` | `{n, t}` in-flight counter (Stop fallback only; never forwarded to the renderer) |
+
+### Delivery timing (contract)
+
+Numbers owned by `src/main/hook-status.ts` (exported constants) and pinned by
+`src/main/hook-status-push.test.ts`:
+
+| Path | Number | Meaning |
+|---|---|---|
+| Push lane | `PUSH_DEBOUNCE_MS` = 150 ms | Normal case: fs-notification latency (ms) + one coalescing window per filename. One logical write is several raw events (the atomic `.status.tmp` + `mv`, the statusLine's truncate-then-write), and the window turns them into ONE delivery of the final content. |
+| Safety-net sweep | `SAFETY_NET_POLL_MS` = 30 s | Worst case ONLY on the paths a push lane structurally cannot see: dropped inotify handles (`EMFILE`), the up-to-5 s gap while a dead watcher is rebuilt, a `STATUS_DIR` on a network mount whose notifications stop reporting, and a write whose mtime shares the previous write's tick on a coarse-mtime filesystem (1 s tmpfs, HFS+) — the case the sweep's `mtimeMs !==` gate documents. |
+| Watcher dead | `WATCHER_DOWN_POLL_MS` = 2 s | With no push lane at all the sweep runs at the old fast cadence until the watch restarts (5 s after the error). |
+
+The arithmetic the rest of the status contract may rely on: a hook write
+reaches the renderer in ~150 ms normally and in **≤30 s** in the documented
+worst case. Nothing on the status path pins a tighter number; the only latency
+ceiling downstream is the renderer's 10 min `STOP_FALLBACK_MS` completion
+backstop, keyed on renderer silence, which 30 s clears by two orders of
+magnitude. The sweep is a no-op while no session is registered (PA-09), so an
+idle app touches `STATUS_DIR` zero times.
 
 ### The token-capped `Read` case
 
