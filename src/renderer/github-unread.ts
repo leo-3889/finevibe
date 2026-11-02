@@ -1,14 +1,17 @@
 import { appState } from './state.js';
 import type { GithubItem } from '../shared/types.js';
 
-type ChangeCallback = () => void;
+/** `projectId` is the project whose set moved; undefined = "every subscriber paints". */
+type ChangeCallback = (projectId?: string) => void;
 
 /** Map<projectId, Set<itemId>> of items currently unread for that project. */
 const unreadByProject = new Map<string, Set<string>>();
 const listeners: ChangeCallback[] = [];
 
-function notify(): void {
-  for (const cb of listeners) cb();
+function notify(projectId?: string): void {
+  // Snapshot: a subscriber that unsubscribes during the pass (widget teardown
+  // off a mutation) must not splice a later listener out of the live array.
+  for (const cb of [...listeners]) cb(projectId);
 }
 
 export function makeItemId(repo: string, number: number): string {
@@ -22,8 +25,20 @@ export function makeItemId(repo: string, number: number): string {
  * whole truth for that repo (fewer items than the fetch cap), which lets ids
  * left behind by vanished items be pruned (C4G-01). Returns true when the
  * unread set changed.
+ *
+ * `scope` is the caller's OWN id set (the ids this listing kind renders).
+ * Issues and PRs share the `${repo}#${number}` id space with disjoint
+ * listings, so an unscoped exhaustive prune deletes the sibling widget's ids
+ * every poll. Callers pass their own ids; the repo-wide fallback stays for
+ * callers with no listing of their own (review 24db32b8 #3).
  */
-export function ingestItems(projectId: string, repo: string, items: GithubItem[], exhaustive = false): boolean {
+export function ingestItems(
+  projectId: string,
+  repo: string,
+  items: GithubItem[],
+  exhaustive = false,
+  scope?: Iterable<string>,
+): boolean {
   const set = unreadByProject.get(projectId) ?? new Set<string>();
   let added = 0;
 
@@ -47,17 +62,14 @@ export function ingestItems(projectId: string, repo: string, items: GithubItem[]
   if (exhaustive) {
     const prefix = `${repo}#`;
     const live = new Set(items.map((item) => makeItemId(repo, item.number)));
-    for (const id of set) {
-      if (id.startsWith(prefix) && !live.has(id)) {
-        set.delete(id);
-        pruned++;
-      }
+    for (const id of scope ?? set) {
+      if (id.startsWith(prefix) && !live.has(id) && set.delete(id)) pruned++;
     }
   }
 
   if (added > 0 || pruned > 0) {
     unreadByProject.set(projectId, set);
-    notify();
+    notify(projectId);
     return true;
   }
   return false;
@@ -81,7 +93,7 @@ export function markRead(projectId: string, repo: string, item: GithubItem): voi
   appState.setGithubItemSeen(projectId, id, item.updated_at);
   const set = unreadByProject.get(projectId);
   if (set?.delete(id)) {
-    notify();
+    notify(projectId);
   }
 }
 
@@ -95,7 +107,7 @@ export function markAllReadInProject(projectId: string): void {
   for (const id of set) entries[id] = now;
   appState.setGithubItemsSeenBulk(projectId, entries);
   set.clear();
-  notify();
+  notify(projectId);
 }
 
 export function onChange(cb: ChangeCallback): () => void {
@@ -109,7 +121,7 @@ export function onChange(cb: ChangeCallback): () => void {
 export function init(): void {
   appState.on('project-removed', (data) => {
     const projectId = typeof data === 'string' ? data : undefined;
-    if (projectId && unreadByProject.delete(projectId)) notify();
+    if (projectId && unreadByProject.delete(projectId)) notify(projectId);
   });
 }
 

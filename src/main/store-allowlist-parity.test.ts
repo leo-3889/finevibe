@@ -1,6 +1,6 @@
 /**
- * Store↔ipc-handlers allowlist parity gate (row 32, code-cleanup audit
- * 2026-10-28).
+ * Store↔IPC allowlist parity gate (row 32, code-cleanup audit
+ * 2026-10-28; the IPC side lives in ipc/fs-domains.ts since row 26 slice 5).
  *
  * store.ts documents that its `cliConfigRoots()` "mirrors the read allowlist
  * in ipc-handlers `isAllowedReadPath` — the CLI config trees a 'project' must
@@ -41,9 +41,10 @@ function platformDirs(body: string): string[] {
 }
 
 const storeBody = functionBody('store.ts', 'function cliConfigRoots()');
-const ipcBody = functionBody('ipc-handlers.ts', 'function isAllowedReadPath');
+// Row 26 slice 5: isAllowedReadPath moved to ipc/fs-domains.ts with the fs:* handlers.
+const ipcBody = functionBody('ipc/fs-domains.ts', 'function isAllowedReadPath');
 
-describe('store.ts ↔ ipc-handlers.ts read-allowlist mirror (row 32)', () => {
+describe('store.ts ↔ ipc/fs-domains.ts read-allowlist mirror (row 32)', () => {
   it('scanner floor: both allowlists actually contain entries', () => {
     // A regex that silently matches nothing would turn every assertion green.
     expect(homeEntries(ipcBody).length).toBeGreaterThanOrEqual(4);
@@ -52,7 +53,7 @@ describe('store.ts ↔ ipc-handlers.ts read-allowlist mirror (row 32)', () => {
     expect(platformDirs(storeBody)).toHaveLength(3);
   });
 
-  it('store lists exactly the directory trees ipc-handlers allows', () => {
+  it('store lists exactly the directory trees the IPC read gate allows', () => {
     const ipc = new Set(homeEntries(ipcBody));
     const store = new Set(homeEntries(storeBody));
     // The documented delta: the two file entries never join store's list

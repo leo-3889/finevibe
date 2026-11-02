@@ -151,7 +151,8 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
           w.webContents.send('pty:exit', sessionId, exitCode, signal);
         }
       },
-      { host: record.host, port: record.port, defaultFolder: record.defaultFolder },
+      // hostId selects the per-host trust store the ssh argv points at (row 35).
+      { hostId: record.id, host: record.host, port: record.port, defaultFolder: record.defaultFolder },
     );
   });
 
@@ -203,17 +204,17 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
     return updateHost(id, { hostKeyFingerprint: fingerprint });
   });
 
-  ipcMain.handle('hosts:enroll', async (_event, id: string, opts?: { pin?: string }) => {
+  ipcMain.handle('hosts:enroll', async (_event, id: string) => {
     const record = getHost(id);
     if (!record) return { ok: false, steps: [{ step: 'record', ok: false, detail: 'unknown host' }] };
     const emit = (event: { id: string; status: string; detail?: string }) => {
       const w = getMainWindow();
       if (w && !w.isDestroyed()) w.webContents.send('hosts:status', event);
     };
-    // Audit 32: the wizard's approved pin rides the same grammar — enrollHost
-    // persists it as the record's pin when nothing is pinned yet.
-    const pin = typeof opts?.pin === 'string' && HOST_KEY_PIN.test(opts.pin) ? opts.pin : undefined;
-    return enrollHost(record, emit, pin ? { pin } : undefined);
+    // The pin is main-owned (hosts:approveHostKey is the only writer); a
+    // renderer-supplied fingerprint over this channel was a second, consent-free
+    // pin writer (row 118 review) and is gone.
+    return enrollHost(record, emit);
   });
 
   ipcMain.handle('hosts:unenroll', async (_event, id: string) => {

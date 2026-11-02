@@ -16,7 +16,7 @@ import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-sha
 import { openExternal } from '../open-external.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
 import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, createResizeCoalescer, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
 import { forwardResize } from '../sharing/share-manager.js';
 import { destroySearchBar } from './search-bar.js';
@@ -443,6 +443,18 @@ export function fitAllVisible(): void {
       fitTerminal(sessionId);
     }
   }
+}
+
+// Row 121: the coalesced twin of fitAllVisible, for the resize STORMS only —
+// the window `resize` listener (split-layout) and the shell-panel height drag
+// (project-terminal), which fire for as long as the pointer moves. fitAllVisible
+// itself stays immediate: it is the settled-geometry primitive (renderLayout
+// tail = tab switch / show pane, first attach, spawn, drag end), and a 300 ms
+// lag there is a visible blank pane.
+const fitAllVisibleCoalescer = createResizeCoalescer(fitAllVisible);
+
+export function scheduleFitAllVisible(): void {
+  fitAllVisibleCoalescer.schedule();
 }
 
 export function getSearchAddon(sessionId: string): SearchAddon | undefined {

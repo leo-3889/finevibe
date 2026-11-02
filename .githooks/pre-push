@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pre-push privacy/secret gate.
 #
-# ONE-TIME SETUP PER CLONE:  npm run hooks:install     # = git config core.hooksPath .githooks
+# Installed by `npm install` (the `prepare` script sets core.hooksPath=.githooks).
 #
 # Reads the standard pre-push ref lines on stdin (local_ref local_sha remote_ref
 # remote_sha), scans the blobs the push would publish against .secrets.patterns
@@ -34,11 +34,16 @@ fi
 hits=$(mktemp) || exit 0
 trap 'rm -f "$hits"' EXIT
 
-# .secrets.allowlist -> git pathspec exclusions, one per line.
-excl=''
-if [ -f "$allowlist" ]; then
-  excl=$(sed -e 's/[[:space:]]*$//' -e '/^#/d' -e '/^$/d' "$allowlist" | sed 's|^|:(exclude)|')
-fi
+# .secrets.allowlist -> git pathspec exclusions, one per line. Built PER REF
+# from the version the REMOTE already has (the base): a push must not be able
+# to widen its own exemptions by editing .secrets.allowlist in the same range.
+build_excl() {  # $1: source (file path, or `git show` spec when prefixed with @)
+  local src=$1
+  if [ -n "$src" ] && [ -f "$src" ] || { [ "${src#@}" != "$src" ] && git cat-file -e "${src#@}" 2>/dev/null; }; then
+    if [ "${src#@}" != "$src" ]; then git show "${src#@}"; else cat "$src"; fi |
+      sed -e 's/[[:space:]]*$//' -e '/^#/d' -e '/^$/d' | sed 's|^|:(exclude)|'
+  fi
+}
 
 # Paths with spaces: split the file / rev / pathspec lists on newlines only.
 IFS=$'\n'
@@ -57,27 +62,42 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   revs=$(git rev-list ${base:+$base..}$local_sha 2>/dev/null)
   [ -z "$revs" ] && continue
 
-  # Files the push touches; on a new ref the whole tip tree is the surface.
-  files=''
-  if [ -n "$base" ]; then
-    files=$(git -c core.quotePath=false diff --name-only "$base" "$local_sha" --)
-    [ -z "$files" ] && continue
+  if [ -n "$base" ] && git cat-file -e "$base:.secrets.allowlist" 2>/dev/null; then
+    # The exemptions in force are the ones the remote already carries: a push
+    # cannot widen its own exemptions by editing .secrets.allowlist in range.
+    excl=$(build_excl "@$base:.secrets.allowlist")
   else
-    # ponytail: a new ref scans the TIP TREE only, not every historical blob.
-    # This repo's pre-rename history already carries the fixtures it forbids
-    # (and is not rewritable), so a full-history gate would fire on every new
-    # branch. Upgrade path: a one-off `git log -p` audit, not the push path.
-    revs=$local_sha
+    # No allowlist on the remote yet (this push ships it) — the local file,
+    # with its scanner-signature self-exclusions, is the bootstrap surface.
+    excl=$(build_excl "$allowlist")
   fi
 
-  # Scan every published blob, not just the tip: a secret added mid-range and
-  # deleted before the tip is still published by this push.
+  if [ -z "$base" ]; then
+    # NEW remote ref: the whole TIP TREE is the surface - a new ref publishes
+    # all of history, so per-rev diffs would scan one commit and ship the rest.
+    # ponytail: tip tree only, not every historical blob: this repo's
+    # pre-rename history already carries the fixtures it forbids (and is not
+    # rewritable), so a full-history gate fires on every new branch. Upgrade
+    # path: a one-off `git log -p` audit, not the push path.
+    # shellcheck disable=SC2086
+    git -c core.quotePath=false grep -I -n -E -f "$patterns" "$local_sha" -- $excl 2>/dev/null |
+      grep -v 'pii-allow' | grep -vE "$allow_sha" | grep -vE "$allow_users" |
+      sed -e "s|^$local_sha:|[tip] |" >>"$hits"
+    continue
+  fi
+
+  # Range pushes scan what each rev ADDS (no net-diff pathspec: a file added
+  # mid-range and deleted before the tip IS published by this push and must
+  # stay visible). Scanning whole blobs at every rev is the other trap: the
+  # range publishes its DELETIONS (scrub commits), so whole-blob scans fire on
+  # content the range removes and block the branch that ships the gate.
   for rev in $revs; do
     short=$(git rev-parse --short "$rev")
     # shellcheck disable=SC2086
-    git -c core.quotePath=false grep -I -n -E -f "$patterns" "$rev" -- $excl $files 2>/dev/null |
+    git -c core.quotePath=false show --pretty=format: "$rev" -- $excl 2>/dev/null |
+      grep '^+' | grep -E -f "$patterns" |
       grep -v 'pii-allow' | grep -vE "$allow_sha" | grep -vE "$allow_users" |
-      sed -e "s|^$rev:|[$short] |" >>"$hits"
+      sed -e "s|^|[$short] |" >>"$hits"
   done
 done
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
 // Terminal copies go through the main process, not navigator.clipboard (#160).
@@ -95,8 +95,20 @@ class FakeEl {
   classList = { add: vi.fn(), remove: vi.fn(), contains: vi.fn(() => false) };
   children: FakeEl[] = [];
   offsetHeight = 200;
+  // Row 121: the resize-handle drag is driven through real listeners, so the
+  // fake has to keep them (it was a no-op recorder while no test dragged).
+  listeners = new Map<string, Array<(e: Record<string, unknown>) => void>>();
 
-  addEventListener(): void {}
+  addEventListener(type: string, cb: (e: Record<string, unknown>) => void): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(cb);
+    this.listeners.set(type, list);
+  }
+  dispatch(type: string, event: Record<string, unknown> = {}): void {
+    for (const cb of this.listeners.get(type) ?? []) cb(event);
+  }
+  setPointerCapture(): void {}
+  releasePointerCapture(): void {}
   appendChild(child: FakeEl): FakeEl { this.children.push(child); return child; }
   contains(): boolean { return false; }
   querySelector(): null { return null; }
@@ -395,6 +407,82 @@ describe('project-terminal fit resize (P3-10)', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+// Row 121: the panel-height drag resizes the shell PTY and every visible
+// session pane (the panel shares the column). C2R-18's one-rAF-per-burst still
+// meant one fit + one PTY resize PER FRAME; the coalescer lands the leading
+// edge, ~one resize per 300 ms through the drag, and the settled height on
+// pointerup.
+describe('project-terminal drag resize coalescing (row 121)', () => {
+  let stateHandlers: Record<string, (() => void)[]>;
+  let mockPtyResize: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    stateHandlers = {};
+    mockStateOn.mockImplementation((event: string, cb: () => void) => {
+      if (!stateHandlers[event]) stateHandlers[event] = [];
+      stateHandlers[event].push(cb);
+    });
+    mockPtyResize = vi.fn();
+
+    vi.stubGlobal('document', makeFakeDocument());
+    vi.stubGlobal('window', {
+      innerHeight: 800,
+      finevibe: {
+        pty: {
+          write: mockPtyWrite,
+          kill: vi.fn(),
+          resize: mockPtyResize,
+          createShell: vi.fn().mockResolvedValue(undefined),
+        },
+        clipboard: { write: mockFineVibeClipboardWrite },
+      },
+    });
+    vi.stubGlobal('navigator', { clipboard: { writeText: mockClipboardWrite } });
+    vi.stubGlobal('ResizeObserver', class { observe(): void {} });
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => cb());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('coalesces a pointermove storm and flushes the settled height on pointerup', async () => {
+    const { appState } = await import('../state.js');
+    const m = await import('./project-terminal.js');
+    const project = { id: 'proj1', path: '/project', terminalPanelOpen: true, terminalPanelHeight: 200, sessions: [] };
+    (appState as any).activeProject = project;
+    (appState as any).projects = [project];
+
+    m.initProjectTerminal();
+    stateHandlers['state-loaded']?.forEach((cb) => cb());
+
+    const sessionId = m.getActiveShellSessionId()!;
+    const instance = m.getShellTerminalInstance(sessionId)!;
+    const handle = (document as any).getElementById('project-terminal-resize-handle')!;
+    const sent = () => mockPtyResize.mock.calls.map((c) => `${c[1]}x${c[2]}`);
+    const base = sent().length; // the show-panel fit already went through
+    expect(base).toBeGreaterThan(0);
+
+    handle.dispatch('pointerdown', { clientY: 0, pointerId: 1, preventDefault: () => {} });
+    for (let i = 1; i <= 29; i++) {
+      // Every frame is a new grid, exactly as a real drag reflows the pane.
+      (instance.terminal as unknown as FakeTerminal).rows = 30 - i;
+      handle.dispatch('pointermove', { clientY: -i, pointerId: 1 });
+    }
+    // Leading edge through; the 28 frames behind it coalesced into one timer.
+    expect(sent().length).toBe(base + 1);
+
+    handle.dispatch('pointerup', { pointerId: 1 });
+    expect(sent()).toHaveLength(base + 2);
+    expect(sent()[sent().length - 1]).toBe('120x1'); // FINAL geometry, immediately
+    expect(vi.getTimerCount()).toBe(0);              // no trailing fit left pending
   });
 });
 

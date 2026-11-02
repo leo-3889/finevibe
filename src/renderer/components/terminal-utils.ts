@@ -28,6 +28,68 @@ function domRendererForced(): boolean {
   return g.__FINEVIBE_DOM_RENDERER__ === true || g.process?.env?.FINEVIBE_DOM_RENDERER === '1';
 }
 
+/**
+ * Row 121: cadence for the resize STORM paths (window resize, panel-height
+ * drag). A SIGWINCH is a race with the TUI's in-flight frame: the CLI computes
+ * its layout at the OLD column count, the winsize change lands mid-write, and
+ * the redraw paints into the new grid — the owner's pi-bolt screenshot
+ * (spaced-out chrome glyphs + a blank band above it). rAF coalescing
+ * (C2R-18) only thins that to one resize per animation frame, i.e. ~60
+ * SIGWINCH/s for as long as the pointer moves.
+ *
+ * Leading edge + trailing coalesce: the FIRST resize runs synchronously (a
+ * single window drag, a maximize, a panel show must look instant), the rest of
+ * the burst collapses into ONE trailing run at the settled geometry. A long
+ * drag therefore lands ~1 resize per 300 ms instead of per frame.
+ *
+ * Deliberately NOT for the settled-geometry fits (first attach, tab switch /
+ * show pane, drag END) — those call the fit directly; a 300 ms lag there is a
+ * visible blank pane.
+ */
+export const RESIZE_COALESCE_MS = 300;
+
+export interface ResizeCoalescer {
+  /** Storm entry: leading-edge run if armed, (re)arm the trailing timer. */
+  schedule(): void;
+  /** Settled geometry: run now, drop any pending trailing run, re-arm. */
+  flush(): void;
+}
+
+export function createResizeCoalescer(run: () => void, delayMs = RESIZE_COALESCE_MS): ResizeCoalescer {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let armed = true;
+  return {
+    schedule() {
+      if (armed) {
+        armed = false;
+        run();
+      }
+      // The trailing run is kept even after a leading-edge run: the leading fit
+      // reads geometry mid-gesture, and the trailing guarantee is what puts the
+      // FINAL size on the wire. The `lastSize` memo in fitTerminal()/
+      // fitActiveShell() makes the no-change case a local fit, not a resize.
+      // Throttle (not debounce): during a continuous burst the timer keeps
+      // its original deadline, so a long drag lands ~1 fit per window. A
+      // debounce would fire only after the pointer stops and stretch xterm
+      // across the whole gesture.
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        armed = true;
+        run();
+      }, delayMs);
+    },
+    flush() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      armed = true;
+      run();
+    },
+  };
+}
+
 // Wraps text in bracketed-paste escapes when the shell has the mode enabled,
 // so it's delivered as a paste rather than character-by-character input.
 export function wrapBracketedPaste(terminal: Terminal, text: string): string {

@@ -18,7 +18,7 @@ vi.mock('./state.js', () => {
         return () => listeners.get(event)?.delete(cb);
       },
       __reset: () => { lastSeen.clear(); listeners.clear(); },
-      __emit: (event: string) => { listeners.get(event)?.forEach((cb) => cb()); },
+      __emit: (event: string, data?: unknown) => { listeners.get(event)?.forEach((cb) => cb(data)); },
     },
   };
 });
@@ -113,6 +113,37 @@ describe('ingestItems', () => {
     expect(isUnread('p1', 'other/repo#9')).toBe(true);
     expect(cb).toHaveBeenCalledTimes(1);
   });
+
+  // Review 24db32b8 #3 (C4G-01 cross-prune): Issues and PRs share the
+  // `${repo}#${number}` id space with DISJOINT listings, so the repo-wide
+  // exhaustive prune made each widget's poll delete the sibling's unread ids —
+  // the tab dot blinked off/on every 60s and Mark-all-read missed the item.
+  // The fix is the caller's own `scope`.
+  it('does not prune a sibling listing kind\'s ids when the caller passes a scope', () => {
+    const prScope = new Set(['foo/bar#1']);
+    const issueScope = new Set(['foo/bar#2']);
+
+    ingestItems('p1', 'foo/bar', [fakeItem(1, '2024-01-01')], true, prScope);
+    ingestItems('p1', 'foo/bar', [fakeItem(2, '2024-01-01')], true, issueScope);
+    expect(isUnread('p1', 'foo/bar#1')).toBe(true);
+    expect(isUnread('p1', 'foo/bar#2')).toBe(true);
+
+    // The PRs widget polls #1 again, exhaustive: #2 belongs to Issues.
+    ingestItems('p1', 'foo/bar', [fakeItem(1, '2024-01-01')], true, prScope);
+    expect(isUnread('p1', 'foo/bar#1')).toBe(true);
+    expect(isUnread('p1', 'foo/bar#2')).toBe(true);
+
+    // …and the scoped prune still drops the caller's OWN vanished id.
+    ingestItems('p1', 'foo/bar', [], true, prScope);
+    expect(isUnread('p1', 'foo/bar#1')).toBe(false);
+    expect(isUnread('p1', 'foo/bar#2')).toBe(true);
+  });
+
+  it('keeps the repo-wide fallback for a caller with no scope of its own', () => {
+    ingestItems('p1', 'foo/bar', [fakeItem(1, '2024-01-01')]);
+    ingestItems('p1', 'foo/bar', [], true);
+    expect(isUnread('p1', 'foo/bar#1')).toBe(false);
+  });
 });
 
 describe('hasUnreadInProject', () => {
@@ -155,6 +186,33 @@ describe('onChange', () => {
     off();
   });
 
+  // Review 24db32b8 #2: subscribers repaint one project's rows/dots, so they
+  // need to know WHICH project moved. `undefined` = paint everything.
+  it('names the mutated project on every mutation path', () => {
+    const cb = vi.fn();
+    const off = onChange(cb);
+
+    ingestItems('p1', 'foo/bar', [fakeItem(1, '2024-01-01')]);
+    expect(cb).toHaveBeenLastCalledWith('p1');
+    markRead('p1', 'foo/bar', fakeItem(1, '2024-01-01'));
+    expect(cb).toHaveBeenLastCalledWith('p1');
+    ingestItems('p2', 'foo/bar', [fakeItem(5, '2024-01-01')]);
+    expect(cb).toHaveBeenLastCalledWith('p2');
+    markAllReadInProject('p2');
+    expect(cb).toHaveBeenLastCalledWith('p2');
+    off();
+  });
+
+  // Review 24db32b8 #5: the pass runs over a snapshot.
+  it('does not skip a later listener when an earlier one unsubscribes mid-pass', () => {
+    const second = vi.fn();
+    const off = onChange(() => off()); // a widget tearing itself down off the notify
+    onChange(second);
+
+    ingestItems('p1', 'foo/bar', [fakeItem(1, '2024-01-01')]);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
   it('returns an unsubscribe function', () => {
     const cb = vi.fn();
     const off = onChange(cb);
@@ -165,6 +223,17 @@ describe('onChange', () => {
 });
 
 describe('init', () => {
+  it('notifies with the removed project id', () => {
+    init();
+    ingestItems('to-remove', 'foo/bar', [fakeItem(1, '2024-01-01')]);
+    const cb = vi.fn();
+    onChange(cb);
+
+    (appState as unknown as { __emit(e: string, d?: unknown): void }).__emit('project-removed', 'to-remove');
+    expect(unreadCountInProject('to-remove')).toBe(0);
+    expect(cb).toHaveBeenCalledWith('to-remove');
+  });
+
   it('clears unread when a project is removed', () => {
     init();
     ingestItems('to-remove', 'foo/bar', [fakeItem(1, '2024-01-01')]);

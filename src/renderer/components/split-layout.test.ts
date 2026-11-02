@@ -36,6 +36,7 @@ vi.mock('./terminal-pane.js', () => ({
   showPane: vi.fn(),
   hideAllPanes: vi.fn(),
   fitAllVisible: vi.fn(),
+  scheduleFitAllVisible: vi.fn(),
   setFocused: vi.fn(),
   spawnTerminal: vi.fn(),
   setPendingPrompt: vi.fn(),
@@ -136,8 +137,11 @@ vi.mock('../session-unread.js', () => ({
 import './split-layout-test-dom.js';
 import { initSplitLayout } from './split-layout';
 import { appState, _resetForTesting } from '../state';
-import { hideAllPanes, destroyTerminal, createTerminalPane } from './terminal-pane.js';
+import { hideAllPanes, destroyTerminal, createTerminalPane, fitAllVisible, scheduleFitAllVisible } from './terminal-pane.js';
 import { createFileReaderPane } from './file-reader.js';
+
+const scheduleFitAllVisibleMock = scheduleFitAllVisible as Mock;
+const fitAllVisibleMock = fitAllVisible as Mock;
 
 const hideAllPanesMock = hideAllPanes as Mock;
 const destroyTerminalMock = destroyTerminal as Mock;
@@ -148,6 +152,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   _resetForTesting();
   initSplitLayout();
+});
+
+describe('split-layout window-resize fit (row 121)', () => {
+  it('routes every resize event through the coalesced fit and never fits per frame', () => {
+    // The owner's garble repro is a window drag: every frame of it used to run a
+    // fitAllVisible, i.e. one SIGWINCH per frame per visible pane, landing in the
+    // middle of the TUI's write. The listener must hand off to the coalescer and
+    // touch nothing synchronously.
+    scheduleFitAllVisibleMock.mockClear();
+    fitAllVisibleMock.mockClear();
+
+    for (let i = 0; i < 30; i++) window.dispatchEvent(new Event('resize'));
+
+    expect(scheduleFitAllVisibleMock).toHaveBeenCalledTimes(30);
+    expect(fitAllVisibleMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('split-layout render coalescing (P2-28)', () => {

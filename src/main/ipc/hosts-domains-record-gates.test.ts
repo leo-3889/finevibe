@@ -121,14 +121,15 @@ describe('hosts:approveHostKey pin grammar (audit 32)', () => {
     expect(call('hosts:approveHostKey', 'h1', VALID_PIN)).toEqual({ hostKeyFingerprint: VALID_PIN });
   });
 
-  it('hosts:enroll only forwards a well-formed pin (it becomes the record pin)', async () => {
+  // Row 118 review: the enroll channel is pin-blind - the pin is main-owned
+  // (approveHostKey is the only writer), so NOTHING a renderer passes on this
+  // channel reaches enrollHost, well-formed pins included.
+  it('hosts:enroll never forwards a renderer pin to enrollHost', async () => {
     registry.getHost.mockReturnValue({ id: 'h1' });
     await call('hosts:enroll', 'h1', { pin: '' });
     await call('hosts:enroll', 'h1', { pin: 'bogus' });
-    expect(enrollHost.mock.calls[0]?.[2]).toBeUndefined();
-    expect(enrollHost.mock.calls[1]?.[2]).toBeUndefined();
     await call('hosts:enroll', 'h1', { pin: VALID_PIN });
-    expect(enrollHost.mock.calls[2]?.[2]).toEqual({ pin: VALID_PIN });
+    for (const args of enrollHost.mock.calls) expect(args).toHaveLength(2);
   });
 });
 

@@ -29,6 +29,7 @@ import {
   setPendingSystemPrompt,
   destroyTerminal,
   getTerminalInstance,
+  scheduleFitAllVisible,
 } from './terminal-pane.js';
 import {
   createInspectorPane,
@@ -190,10 +191,15 @@ export function initSplitLayout(): void {
     if (project?.layout.mode === 'swarm') updateSwarmPaneStyles(project);
   });
 
-  // Refit on window resize
-  window.addEventListener('resize', () => {
-    requestAnimationFrame(fitAllVisible);
-  });
+  // Refit on window resize (row 121): COALESCED, not one fit per frame. A window
+  // drag (restore-from-maximize, Aero Snap, monitor/DPI change) fires `resize`
+  // at frame rate and the pane geometry changes every frame, so the old
+  // `requestAnimationFrame(fitAllVisible)` put ~60 SIGWINCH/s into every visible
+  // PTY — mid-write, which is what makes a TUI redraw its chrome into the grid
+  // it computed before the resize (spaced-out glyphs + a blank band). Leading
+  // edge keeps the first resize of a gesture immediate; one trailing fit lands
+  // the settled size.
+  window.addEventListener('resize', scheduleFitAllVisible);
 
   // Click delegation for swarm mode: clicking a dimmed pane makes it active
   container.addEventListener('mousedown', (e) => {

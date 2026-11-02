@@ -99,7 +99,7 @@ vi.mock('./settings-guard', () => ({
 }));
 
 import * as fs from 'fs';
-import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, resolveProviderBinary, LaunchSpecError } from './pty-manager';
+import { spawnPty, spawnShellPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, resolveProviderBinary, LaunchSpecError } from './pty-manager';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider, initProviders } from './providers/registry';
 
@@ -622,6 +622,86 @@ describe('resolveLaunchSpec (T2)', () => {
     } finally {
       delete process.env.OMP_PROFILE;
     }
+  });
+});
+
+// Audit row 35: both app-spawned `ssh -tt` lanes must read FineVibe's own
+// per-host trust store (seeded at enrollment from the pin-verified handshake
+// key), not the user's ~/.ssh/known_hosts, or a pinned+approved host still
+// accepts a MITM key in the app's own terminal. Seed content is pinned in
+// hosts/host-trust.test.ts; the lanes' argv is pinned here.
+describe('per-host SSH trust store argv (audit row 35)', () => {
+  const base = { sessionId: 's1', cliSessionId: null, isResume: false, extraArgs: '', providerId: 'omp' as const, envVars: '' };
+  const labRecord = {
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 2222, // pii-allow: synthetic LAN fixture
+    hostKeyFingerprint: `SHA256:${'A'.repeat(43)}=`,
+    prerequisites: { omp: { ok: true, path: '/home/dev/.local/bin/omp' } },
+  };
+  // host-trust.ts resolves the path from app.getPath('userData') = the electron
+  // stub's '/mock/app-path' (vitest alias).
+  const trustPath = path.join('/mock/app-path', 'hosts', 'lab', 'known_hosts');
+
+  it('launch lane: points ssh at the seeded store and refuses unknown keys', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    mockExistsSync.mockImplementation((p) => String(p) === trustPath);
+    const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
+    expect(spec.argv.slice(0, 8)).toEqual([
+      '-tt',
+      '-o',
+      `UserKnownHostsFile=${trustPath}`,
+      '-o',
+      // Without the hard refuse, ssh's y/n prompt appends a MITM key to FineVibe's
+      // own store — the hole this row exists to close.
+      'StrictHostKeyChecking=yes',
+      '-p',
+      '2222',
+      '--',
+    ]);
+    expect(spec.argv[8]).toBe('dev@192.168.1.50');
+  });
+
+  it('launch lane: an unseeded host emits NO -o flags (user-store passthrough)', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    mockExistsSync.mockReturnValue(false);
+    const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
+    expect(spec.argv).not.toContain('-o');
+    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']);
+  });
+
+  it('shell lane: points the remote shell at the seeded store', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    mockExistsSync.mockImplementation((p) => String(p) === trustPath);
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    spawnShellPty('sh-trust', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
+    expect(mockSpawn.mock.calls[0][0]).toBe('ssh');
+    expect(mockSpawn.mock.calls[0][1]).toEqual([
+      '-tt',
+      '-o',
+      `UserKnownHostsFile=${trustPath}`,
+      '-o',
+      'StrictHostKeyChecking=yes',
+      '-p',
+      '2222',
+      '--',
+      '192.168.1.50', // pii-allow: synthetic LAN fixture
+    ]);
+  });
+
+  it('shell lane: no seeded store, and no hostId, emit NO -o flags (passthrough)', () => {
+    mockSpawn.mockReturnValue(createMockPtyProcess());
+    mockGetHost.mockReturnValue(labRecord);
+    mockExistsSync.mockReturnValue(false);
+    spawnShellPty('sh-unseeded', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
+    expect(mockSpawn.mock.calls[0][1]).not.toContain('-o');
+
+    // The pre-row-35 wire shape (no id) keeps the user's known_hosts untouched.
+    spawnShellPty('sh-noid', '/project', vi.fn(), vi.fn(), { host: '192.168.1.50', port: 2222 });
+    expect(mockSpawn.mock.calls[1][1]).not.toContain('-o');
+
+    // A hostId whose record is gone seeds nothing either (no crash).
+    mockGetHost.mockReturnValue(null);
+    spawnShellPty('sh-ghost', '/project', vi.fn(), vi.fn(), { hostId: 'ghost', host: '192.168.1.50', port: 2222 });
+    expect(mockSpawn.mock.calls[2][1]).not.toContain('-o');
   });
 });
 

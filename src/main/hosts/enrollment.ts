@@ -10,7 +10,6 @@
 // output (the unenroll authorized_keys rewrite) reads it through execCapped
 // and refuses a truncated copy.
 
-import { app } from 'electron';
 import type { HostRecord, ProviderId } from '../../shared/types';
 import { getAllProviderMetas } from '../providers/registry';
 import { connect, exec, execCapped, MAX_EXEC_OUTPUT_BYTES } from './ssh-client';
@@ -25,6 +24,7 @@ import {
   readPublicKeyLine,
 } from './keys';
 import { setEnrollmentStatus, updateHost } from './host-registry';
+import { seedHostTrustStore } from './host-trust';
 import { isValidProfileId } from '../profiles';
 
 interface EnrollStep {
@@ -54,15 +54,21 @@ export async function testHost(
   try {
     // A pinned key must match; an unpinned host connects and reports its
     // fingerprint for the wizard's Approve step (nothing is pinned here).
+    // Row 118: the verifier rides every connect — pinned included — because it
+    // is ssh-client's parse of the OFFERED key, and the refused branch needs
+    // exactly that value (the throw happens after this callback fires).
     const { fingerprint } = await connect(record, {
-      verifyHostKey: record.hostKeyFingerprint
-        ? (fp) => fp === record.hostKeyFingerprint
-        : undefined,
+      verifyHostKey: (fp) => {
+        captured = fp;
+        return record.hostKeyFingerprint ? fp === record.hostKeyFingerprint : true;
+      },
     });
     captured = fingerprint;
     steps.push({ step: 'connect', ok: true, detail: `SSH-${record.authKind} auth ok` });
     if (record.hostKeyFingerprint && record.hostKeyFingerprint !== captured) {
-      return { ok: false, hostKeyChanged: true, steps, fingerprint: captured };
+      // Same contract as the refused branch below: the wizard needs the key it
+      // is asking about, not just the bad news.
+      return { ok: false, hostKeyChanged: true, steps, fingerprint: captured, newFingerprint: captured };
     }
     return {
       ok: true,
@@ -75,10 +81,20 @@ export async function testHost(
     const msg = err instanceof Error ? err.message : String(err);
     if (msg === 'host-key-changed') {
       steps.push({ step: 'host-key', ok: false, detail: 'pinned fingerprint mismatch — rebuilt machine?' });
-      return { ok: false, hostKeyChanged: true, steps };
+      // Row 118: report the key the host is offering NOW, as the approval
+      // candidate — `newFingerprint` is the field the wizard's approve dialog
+      // renders, so the rotation branch rides the same first-contact UI
+      // (Approve → hosts:approveHostKey → re-pin → enroll). Nothing is
+      // pinned here; a handshake that never reached the verifier has no key
+      // to show and stays fingerprint-less.
+      return {
+        ok: false,
+        hostKeyChanged: true,
+        steps,
+        ...(captured ? { fingerprint: captured, newFingerprint: captured } : {}),
+      };
     }
     steps.push({ step: 'connect', ok: false, detail: msg });
-    void captured;
     return { ok: false, hostKeyChanged: false, steps };
   }
 }
@@ -271,15 +287,17 @@ async function installHostHooks(
 }
 
 /**
- * Full enrollment (§4 steps 1-8): connect with the pinned key, env probe,
- * key deploy (managed keys), prereq probe, base dirs, persist. `opts.pin`
- * carries the fingerprint the user approved in the wizard when the host was
- * never pinned before.
+ * Full enrollment (S4 steps 1-8): connect with the pinned key, env probe,
+ * key deploy (managed keys), prereq probe, base dirs, persist. The pin is
+ * main-owned only: first contact pins via hosts:approveHostKey after the user
+ * confirms the wizard fingerprint, and a key rotation (row 118) re-pins the
+ * same way - enrollment then reads the FRESH stored pin from the record.
+ * Enrollment never accepts a fingerprint from the caller (the renderer must
+ * not be able to overwrite a good pin over the enroll channel).
  */
 export async function enrollHost(
   record: HostRecord,
   emit: StatusEmitter,
-  opts?: { pin?: string },
 ): Promise<{ ok: boolean; steps: EnrollStep[] }> {
   const steps: EnrollStep[] = [];
   const fail = (status: HostRecord['enrollmentStatus'], detail: string): { ok: boolean; steps: EnrollStep[] } => {
@@ -288,7 +306,7 @@ export async function enrollHost(
     return { ok: false, steps };
   };
 
-  const pin = record.hostKeyFingerprint ?? opts?.pin;
+  const pin = record.hostKeyFingerprint;
   if (!pin) return fail('failed', 'host key not pinned — run Test & Approve first');
 
   // The status machine's `probing` rung is persisted, not just emitted: a
@@ -297,10 +315,30 @@ export async function enrollHost(
   setEnrollmentStatus(record.id, 'probing');
   emit({ id: record.id, status: 'probing' });
   // Steps 1-3: TCP/banner/auth ride on connect; TOFU pin enforced here.
+  // `partial` starts here because the first step that can degrade is the
+  // trust-store seed (row 35), not the prereq probe.
+  let partial = false;
   try {
-    await connect(record, { verifyHostKey: (fp) => fp === pin });
+    const { serverKey } = await connect(record, { verifyHostKey: (fp) => fp === pin });
     steps.push({ step: 'connect', ok: true });
-    if (!record.hostKeyFingerprint) updateHost(record.id, { hostKeyFingerprint: pin });
+    // Row 35: seed FineVibe's own known_hosts from the key that just passed the
+    // pin gate, so the app's `ssh -tt` lanes (shell tab + remote launch) trust
+    // the approval instead of the user's known_hosts. Non-fatal — every other
+    // enrollment step stands — but it lands `partial`, because an unseeded store
+    // leaves those lanes on the user's file (the gap this row closes) and the
+    // shell tab is `enrolled`-gated.
+    try {
+      if (serverKey) {
+        seedHostTrustStore(record, serverKey);
+        steps.push({ step: 'host-trust', ok: true });
+      } else {
+        steps.push({ step: 'host-trust', ok: false, detail: 'handshake key not captured' });
+        partial = true;
+      }
+    } catch (err) {
+      steps.push({ step: 'host-trust', ok: false, detail: err instanceof Error ? err.message : String(err) });
+      partial = true;
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     steps.push({ step: 'connect', ok: false, detail: msg });
@@ -339,15 +377,15 @@ export async function enrollHost(
   }
 
   // Step 6: prereq probe (non-fatal → partial).
-  let partial = false;
   let probedPrereqs: HostRecord['prerequisites'];
   try {
     const prerequisites = await probePrerequisites(record);
     probedPrereqs = prerequisites;
     updateHost(record.id, { prerequisites });
     const missing = prereqTargets().filter((t) => !prerequisites[t.key]?.ok).map((t) => t.key);
-    partial = missing.length > 0;
-    steps.push({ step: 'prereqs', ok: !partial, detail: partial ? `missing: ${missing.join(', ')}` : 'all present' });
+    // `||` keeps an earlier non-fatal failure (row 35's trust seed) visible.
+    partial = partial || missing.length > 0;
+    steps.push({ step: 'prereqs', ok: missing.length === 0, detail: missing.length ? `missing: ${missing.join(', ')}` : 'all present' });
   } catch (err) {
     partial = true;
     steps.push({ step: 'prereqs', ok: false, detail: err instanceof Error ? err.message : String(err) });
@@ -387,11 +425,6 @@ export async function enrollHost(
   emit({ id: record.id, status });
   const passwordUsable = record.authKind === 'password' && getHostSecret(record.id) !== null;
   return { ok: true, steps: passwordUsable ? [...steps, { step: 'forget-password', ok: true, detail: 'available' }] : steps };
-}
-
-/** userData hosts dir helper (wizard calls it before create for managed keys). */
-function managedKeyDir(hostId: string): string {
-  return `${app.getPath('userData')}/hosts/${hostId}`;
 }
 
 /** Provider ids surface for the §6 tool list (kept here: registry shape). */

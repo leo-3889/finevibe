@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
-import { registerIpcHandlers, resetHookWatcher, sweepEnumerationCaches, removeIsoPartitionDirs } from './ipc-handlers';
+import { registerIpcHandlers, resetHookWatcher, removeIsoPartitionDirs } from './ipc-handlers';
+import { sweepEnumerationCaches } from './ipc/fs-domains';
 import { sweepImportTempDirs } from './chrome-import/copy';
 import { killAllPtys, getFullPathAsync } from './pty-manager';
 import { flushState, loadState } from './store';

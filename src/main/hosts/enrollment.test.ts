@@ -5,12 +5,18 @@ import type { HostRecord } from '../../shared/types';
 const execLog: string[] = [];
 let execScript: (command: string) => string;
 let execTruncated = false;
-let connectImpl: (record: HostRecord, verify?: (fp: string) => boolean) => Promise<{ fingerprint: string }>;
+let connectImpl: (record: HostRecord, verify?: (fp: string) => boolean) => Promise<{ fingerprint: string; serverKey?: Buffer }>;
+
+// Row 35: the trust-store writer's own semantics live in host-trust.test.ts;
+// the contract asserted here is the seeding call site — which key reaches it,
+// and which of its failures are allowed to fail enrollment.
+const mockSeedTrust = vi.hoisted(() => vi.fn(() => '/tmp/ud/hosts/x/known_hosts'));
+vi.mock('./host-trust', () => ({ seedHostTrustStore: mockSeedTrust }));
 
 vi.mock('./ssh-client', () => ({
   connect: vi.fn(async (record: HostRecord, opts?: { verifyHostKey?: (fp: string) => boolean }) => {
     const res = await connectImpl(record, opts?.verifyHostKey);
-    return { client: {}, fingerprint: res.fingerprint };
+    return { client: {}, fingerprint: res.fingerprint, serverKey: res.serverKey };
   }),
   exec: vi.fn(async (record: HostRecord, command: string) => {
     void record;
@@ -70,6 +76,16 @@ import { enrollHost, probePrerequisites, provisionRemoteProfileDir, refreshHostT
 import { HOST_HOOK_MARKER, hostHookEntries, mergeHookBlock } from './host-hooks';
 
 const PIN = 'SHA256:pinned123';
+// SSH wire public-key blob (`string(keytype) string(key)`), the Buffer
+// ssh-client's hostVerifier hashes into the pin (row 35).
+const WIRE_KEY = Buffer.concat([
+  Buffer.concat([Buffer.alloc(4), Buffer.from('ssh-ed25519', 'ascii')]),
+  Buffer.concat([Buffer.alloc(4), Buffer.from('keymaterial', 'utf8')]),
+]);
+const wireEvil = Buffer.concat([
+  Buffer.concat([Buffer.alloc(4), Buffer.from('ssh-ed25519', 'ascii')]),
+  Buffer.concat([Buffer.alloc(4), Buffer.from('attacker', 'utf8')]),
+]);
 const record: HostRecord = {
   id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
   name: 'remote1',
@@ -98,7 +114,8 @@ beforeEach(() => {
   statuses.length = 0;
   execScript = script({});
   execTruncated = false;
-  connectImpl = async () => ({ fingerprint: PIN });
+  mockSeedTrust.mockReset().mockReturnValue('/tmp/ud/hosts/x/known_hosts');
+  connectImpl = async () => ({ fingerprint: PIN, serverKey: WIRE_KEY });
   plane.readProviderFile.mockReset().mockResolvedValue(null);
   plane.writeProviderFile.mockReset().mockResolvedValue(undefined);
 });
@@ -118,6 +135,33 @@ describe('testHost', () => {
     const res = await testHost(record);
     expect(res.ok).toBe(false);
     expect(res.hostKeyChanged).toBe(true);
+  });
+
+  // Row 118: a refusal that shows no key asks the user to approve a pin they
+  // cannot see. The offered fingerprint rides the refusal, in the same field
+  // the first-contact Approve dialog renders.
+  it('refused testHost reports the OFFERED fingerprint as the approval candidate', async () => {
+    connectImpl = async (_r, verify) => {
+      if (verify && !verify('SHA256:rotated')) throw new Error('host-key-changed');
+      return { fingerprint: 'SHA256:rotated' };
+    };
+    const res = await testHost(record);
+    expect(res).toMatchObject({
+      ok: false,
+      hostKeyChanged: true,
+      fingerprint: 'SHA256:rotated',
+      newFingerprint: 'SHA256:rotated',
+    });
+  });
+
+  it('refused testHost with no handshake reports nothing to approve', async () => {
+    connectImpl = async () => {
+      throw new Error('host-key-changed');
+    };
+    const res = await testHost(record);
+    expect(res).toMatchObject({ ok: false, hostKeyChanged: true });
+    expect(res.fingerprint).toBeUndefined();
+    expect(res.newFingerprint).toBeUndefined();
   });
 
   it('reports auth failure as a failed connect step', async () => {
@@ -163,7 +207,7 @@ describe('enrollHost', () => {
     const events: string[] = [];
     const res = await enrollHost(record, (e) => events.push(e.status));
     expect(res.ok).toBe(true);
-    expect(res.steps.map((s) => s.step)).toEqual(['connect', 'env', 'key-deploy', 'prereqs', 'host-hooks', 'dirs']);
+    expect(res.steps.map((s) => s.step)).toEqual(['connect', 'host-trust', 'env', 'key-deploy', 'prereqs', 'host-hooks', 'dirs']);
     expect(res.steps.every((s) => s.ok)).toBe(true);
     expect(events).toEqual(['probing', 'auth-ok', 'enrolled']);
     // Deploy appended exactly one marker block for this id.
@@ -184,6 +228,50 @@ describe('enrollHost', () => {
     expect(execLog).toContain('mkdir -p ~/.claude');
     // Sidecar dir the hooks write into, created at the dirs step.
     expect(execLog).toContain('mkdir -p ~/.finevibe ~/.finevibe/run');
+  });
+
+  // Row 35: the app's `ssh -tt` lanes trust a known_hosts file, not the pin, so
+  // the key that passed the pin gate has to land in FineVibe's own store —
+  // otherwise a pinned+approved host still accepts a MITM key in the app's own
+  // terminal whenever the user's ~/.ssh/known_hosts has no entry for it.
+  it('seeds the app trust store from the key that passed the pin gate (row 35)', async () => {
+    execScript = script(fullScript);
+    const res = await enrollHost(record, () => {});
+    expect(mockSeedTrust).toHaveBeenCalledWith(record, WIRE_KEY);
+    expect(res.steps.find((s) => s.step === 'host-trust')).toMatchObject({ ok: true });
+  });
+
+  it('a refused handshake seeds nothing (row 35)', async () => {
+    connectImpl = async (_r, verify) => {
+      if (verify && !verify('SHA256:evil')) throw new Error('host-key-changed');
+      return { fingerprint: 'SHA256:evil', serverKey: wireEvil };
+    };
+    const res = await enrollHost(record, () => {});
+    expect(res.ok).toBe(false);
+    expect(mockSeedTrust).not.toHaveBeenCalled();
+  });
+
+  it('a handshake that carried no key reports it, and a seed failure is never fatal (row 35)', async () => {
+    execScript = script(fullScript);
+    connectImpl = async () => ({ fingerprint: PIN });
+    const noKey = await enrollHost(record, () => {});
+    expect(noKey.ok).toBe(true);
+    expect(noKey.steps.find((s) => s.step === 'host-trust')).toMatchObject({ ok: false, detail: 'handshake key not captured' });
+    expect(mockSeedTrust).not.toHaveBeenCalled();
+
+    connectImpl = async () => ({ fingerprint: PIN, serverKey: WIRE_KEY });
+    mockSeedTrust.mockImplementation(() => {
+      throw new Error('EACCES: permission denied');
+    });
+    const res = await enrollHost(record, () => {});
+    expect(res.ok).toBe(true);
+    expect(res.steps.find((s) => s.step === 'host-trust')).toMatchObject({ ok: false, detail: 'EACCES: permission denied' });
+    // `partial`, not `enrolled`: the shell tab is enrolled-gated, so a host whose
+    // trust store could not be seeded never opens an untrusted `ssh -tt` pane.
+    expect(updates.filter((u) => 'enrollmentStatus' in u).at(-1)).toMatchObject({
+      enrollmentStatus: 'partial',
+      enrollmentDetail: 'EACCES: permission denied',
+    });
   });
 
   it('host-hooks merge preserves a foreign settings file verbatim', async () => {
@@ -232,12 +320,38 @@ describe('enrollHost', () => {
     expect(plane.writeProviderFile.mock.calls.map(([, p]) => p)).toEqual(['~/.pi/agent/settings.json']);
   });
 
-  it('pins the approved fingerprint when the record had none', async () => {
+  // Row 118 review: enrollment NEVER writes the pin. First contact pins via
+  // hosts:approveHostKey (record already carries the user-confirmed fingerprint
+  // by enroll time); a rotation re-pins the same way. These tests pin the
+  // contract that the enroll channel cannot move the pin.
+  it('enroll against a record pinned by the approve flow uses that pin and writes nothing', async () => {
+    execScript = script(fullScript);
+    const res = await enrollHost(record, () => {});
+    expect(res.ok).toBe(true);
+    expect(updates.some((u) => 'hostKeyFingerprint' in u)).toBe(false);
+  });
+
+  it('enroll on a rotated record connects with the fresh stored pin', async () => {
+    execScript = script(fullScript);
+    connectImpl = async (_r, verify) => {
+      if (verify && !verify('SHA256:rotated')) throw new Error('host-key-changed');
+      return { fingerprint: 'SHA256:rotated' };
+    };
+    const rotated = { ...record, hostKeyFingerprint: 'SHA256:rotated' };
+    const res = await enrollHost(rotated, () => {});
+    expect(res.ok).toBe(true);
+    expect(updates.some((u) => 'hostKeyFingerprint' in u)).toBe(false);
+  });
+
+  it('enroll on an unpinned record never pins (approve flow owns pinning)', async () => {
     execScript = script(fullScript);
     const unpinned = { ...record, hostKeyFingerprint: undefined };
-    await enrollHost(unpinned, () => {}, { pin: PIN });
-    expect(updates[0]).toMatchObject({ hostKeyFingerprint: PIN });
-  });
+    let detail = '';
+    const res = await enrollHost(unpinned, (ev) => { detail = ev.status === 'failed' ? (ev as { detail?: string }).detail ?? '' : detail; });
+    expect(res.ok).toBe(false);
+    expect(detail).toMatch(/not pinned/);
+    expect(updates.some((u) => 'hostKeyFingerprint' in u)).toBe(false);
+});
 
   it('fails without a pin when the record has none', async () => {
     const unpinned = { ...record, hostKeyFingerprint: undefined };

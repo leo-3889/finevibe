@@ -12,11 +12,13 @@
 // tile is near-black, the Electron atom averages light. Both are checked directly
 // against the PE resource directory (no Windows API, no deps).
 // A second mode takes the UNPACKED APP DIR instead of an exe and audits the
-// native modules packed inside it (row 74): see verifyPackedNative below.
+// native modules packed inside it (row 74) plus the asar's app entry points:
+// see verifyPackedNative / verifyPackedAsarEntries below.
 // Usage: node scripts/verify-win-exe.mjs [path-to-exe|path-to-unpacked-dir]
 //        (default exe: out/win-unpacked/FineVibe.exe)
 import fs from 'fs';
 import path from 'path';
+import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -28,6 +30,13 @@ const RT_VERSION = 16;
 // Same thresholds as the CI guard step in release.yml (build-windows).
 const MAX_MEAN_RGB = 65; // opaque-pixel mean; FineVibe=56.6, Electron=73.4
 const EXPECTED_PRODUCT_NAME = 'FineVibe';
+// App entry points that must be listed in resources/app.asar (dir-phase mode).
+// Declared up here: the dir-mode dispatch runs at module top level.
+const ASAR_ENTRY_POINTS = [
+  '/dist/preload/preload/preload.js', // preload.ts -> window bridges (all IPC)
+  '/dist/main/main/main.js', // main entry (package.json "main")
+  '/dist/renderer/index.html', // renderer entry
+];
 
 const fail = (msg) => {
   console.error(`FAIL: ${msg}`);
@@ -43,9 +52,16 @@ const fail = (msg) => {
 // host anyway) - the checks read packed bytes only.
 if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
   verifyPackedNative(target);
-  console.log('OK: packed native modules carry the Electron ABI recorded by the rebuild, and the win32 node-pty prebuilds are present');
+  verifyPackedAsarEntries(target);
+  console.log('OK: packed native modules carry the Electron ABI recorded by the rebuild, the win32 node-pty prebuilds are present, and app.asar carries the app entry points');
   process.exit(0);
 }
+// The Setup.exe / portable-exe mode above reads PE resources only, so it does NOT
+// re-list the asar. That is deliberate: the nsis + zip legs run with
+// `--prepackaged out/win-unpacked`, i.e. they pack the exact tree the dir-phase
+// mode just audited, so a payload edit between the two gates would need a manual
+// re-pack. Extracting app-64.7z (150 MB, needs a 7z host binary) to re-prove a
+// check that already ran on the same bytes is not worth the dependency.
 
 if (!fs.existsSync(target)) fail(`${target} not found - run the electron-builder dir phase first`);
 const exe = target;
@@ -110,6 +126,38 @@ function verifyPackedNative(unpackedDir) {
     }
     console.log(`node-pty ${dir}: ${needed.length} required files present`);
   }
+}
+
+// --- App entry points inside app.asar ---
+// The historical defect: a build whose preload leg never ran (build:core is
+// `tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json`; a truncated run
+// ships main+renderer only) produces a bundle that installs, launches a window
+// and shows the UI — while every IPC call dies because BrowserWindow's preload
+// script is not in the archive. Nothing else in the chain notices: the native
+// ABI check, the icon/version stamp and latest.yml are all green. The asar
+// header is the ground truth for what the shipped app can load, so read it.
+function verifyPackedAsarEntries(unpackedDir) {
+  const asarPath = path.join(unpackedDir, 'resources', 'app.asar');
+  if (!fs.existsSync(asarPath)) fail(`${asarPath} missing - pass the unpacked app dir (out/win-unpacked) after the dir phase`);
+  let asar;
+  try {
+    asar = createRequire(import.meta.url)('@electron/asar');
+  } catch (err) {
+    fail(`cannot load @electron/asar (bundled with electron-builder): ${err.message} - run npm install`);
+  }
+  // listPackage emits platform separators; the required entries are asar paths.
+  const entries = new Set(asar.listPackage(asarPath).map((p) => p.split(path.sep).join('/')));
+  const preloadFiles = [...entries].filter((p) => p.startsWith('/dist/preload/')).length;
+  console.log(`resources/app.asar: ${entries.size} entries, ${preloadFiles} files under dist/preload/`);
+  for (const entry of ASAR_ENTRY_POINTS) {
+    if (!entries.has(entry)) {
+      fail(`resources/app.asar does not list ${entry} - the packaged app cannot load it: ${
+        entry.includes('preload')
+          ? 'a missing preload.js leaves the window rendering with every IPC channel dead (run `npm run build:core`, which is tsc main AND tsc preload; never substitute one leg for the other)'
+          : `run \`npm run build\` before packing (files: ${JSON.stringify(entry)})`}`);
+    }
+  }
+  console.log(`app.asar entry points present: ${ASAR_ENTRY_POINTS.join(', ')}`);
 }
 
 // --- PE layout -> .rsrc file offset + RVA delta ---

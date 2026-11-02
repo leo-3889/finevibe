@@ -158,6 +158,60 @@ file, `9d7d0987`). The checks are one-liners; run them, then quote the result.
   breaks node-gyp's Visual Studio detection when compiling node-pty (`release.yml:474-476`,
   `ci.yml:17-19`). Don't "modernize" the runner label.
 
+## Linux cross-build (no Windows host)
+
+Verified on this box at `56831678` (Ubuntu, Node 24, Electron 41.1.0, electron-builder
+26.8.1, wine-10.0): the whole win matrix builds here. wine64 covers the two steps that
+shout "Windows-only" — the NSIS two-pass (`makensis`) and the rcedit stamp — and
+`--config.npmRebuild=false` + a win32 prebuild swap covers the toolchain blocker.
+
+```bash
+git worktree add --detach /home/test/Ai/fv-win3 <sha>      # never build in the shared checkout
+cp -rl node_modules /home/test/Ai/fv-win3/                 # hardlinked copy; re-point .bin symlinks
+(cd node_modules/better-sqlite3 && npx prebuild-install@7 -r electron -t 41.1.0 \
+   --platform win32 --arch x64)                           # the file MUST be PE32 (`file` it)
+printf 'x64--145' > node_modules/better-sqlite3/build/Release/.forge-meta  # the ABI the guard reads
+npm run icons
+npx tsc -p tsconfig.main.json --noCheck                   # --noCheck ONLY for the known 787 split
+npx tsc -p tsconfig.preload.json                          # MANDATORY, never skipped
+npm run build:renderer && npm run copy-assets
+npx electron-builder --win dir --x64 --config.npmRebuild=false --config.win.signAndEditExecutable=false
+npm run win:verify:native                                 # ABI 145 + 7 pty files + asar entry points
+npm run win:stamp && npm run win:verify                   # rcedit + icon/version checks under wine
+npx electron-builder --win nsis zip --prepackaged out/win-unpacked --x64 \
+  --config.npmRebuild=false --config.win.signAndEditExecutable=false
+npm run win:verify:setup
+```
+
+- **`tsc -p tsconfig.preload.json` is not optional.** `build:core` is
+  `tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json`; substituting one leg for
+  the other is the class of shortcut that ships a working-looking installer with a dead
+  IPC layer. `--noCheck` on the *main* leg is legitimate only when the tip carries a
+  known concurrent-edit typecheck split (currently `pty-manager.ts:787` TS2353
+  `storageMode`), and it must be the only diagnostic that leg prints.
+- **Artifacts land in the project that owns the worktree — `./out` of the build tree**,
+  not the shared checkout. Copy `FineVibe-Setup-*.exe{,.blockmap}`,
+  `FineVibe-<ver>-win-x64.zip`, `latest.yml` into the repo `out/` and regenerate
+  `SHA256SUMS-win.txt`. `latest.yml` (nsis) coexists with `latest-linux.yml` (linux
+  targets) in the same `out/` — that pairing is expected, not a collision.
+- **The enforcement line is `npm run win:verify:native`.** It now lists `resources/app.asar`
+  with `@electron/asar` and fails closed unless `/dist/preload/preload/preload.js`,
+  `/dist/main/main/main.js` and `/dist/renderer/index.html` are all in the archive. The
+  Setup-exe mode deliberately does not re-unpack `app-64.7z`: the nsis/zip legs pack the
+  exact `--prepackaged` tree this gate audited.
+
+| Shipped symptom | Root cause | Gate that catches it |
+|---|---|---|
+| Installer runs, window renders, **every IPC call dies**, no error anywhere | the preload leg never ran → `dist/preload/` is absent from `app.asar` | asar entry-point check (new) |
+| `ERR_DLOPEN_FAILED` on first launch / Chrome import | `better_sqlite3.node` on the Node ABI | `.forge-meta` ↔ packed `NODE_MODULE_VERSION` |
+| No terminal spawns on Windows | `win32-*` node-pty prebuilds missing/empty | 7-file prebuild check |
+| Explorer shows the Electron atom / "Electron" | stamp skipped (`signAndEditExecutable=false`) | `npm run win:verify` + `:setup` |
+
+Byte-level whole-blob scanning (secret/author leakage in the packed payload) is a
+different audit class — see the packaging audit, not this section. Wine smoke is a
+bonus, never a sign-off: Electron-on-wine is flaky; the owner's clean Windows VM is the
+real first-launch test.
+
 ## Test-suite reality on a Windows dev box
 
 `npx vitest run` fails 6 tests in `src/main/chrome-import/{cookies,importer}.test.ts` with

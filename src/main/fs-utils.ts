@@ -8,6 +8,18 @@ import { boundedSet } from './bounded-map';
 const WIN_ENV_REF_RE = /%([^%]+)%/g;
 
 /**
+ * True when `target` is `root` itself or sits under it. Both sides must be
+ * canonical (`canonicalRoot` / `canonicalPath`) — mixed spellings are what let
+ * one path form bypass a gate the other form passed (P1-17). Moved here from
+ * ipc-handlers.ts (row 26 slice 5): the fs IPC gates and the git gates are the
+ * same predicate and must not be kept in two files.
+ */
+export function isWithin(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+/**
  * Expand a leading `~` to the home dir — in both spellings users type:
  * `~/…` everywhere, and `~\…` on Windows, where cmd/PowerShell accept the
  * backslash form and these paths never reach a shell that would expand it.
