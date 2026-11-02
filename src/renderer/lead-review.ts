@@ -30,8 +30,11 @@ export function setLeadReview(raw: unknown, projectId: string): boolean {
   // Live card first; after a restart the load normalization clears the card's
   // runtime sessionId, so a RESUMED session's card is matched by its CLI id
   // (persistence.ts) — without this the note would land boardless and the
-  // card would silently show nothing.
-  const task = getTaskBySessionId(note.sessionId, project.id) ?? getTaskByCliSessionId(note.sessionId);
+  // card would silently show nothing. The note carries the APP session id
+  // (main's contract), so resolve it to the CLI id before the lookup
+  // (review 0be424ab: comparing app ids against task.cliSessionId never hits).
+  const cliId = project.sessions.find(s => s.id === note.sessionId)?.cliSessionId;
+  const task = getTaskBySessionId(note.sessionId, project.id) ?? (cliId ? getTaskByCliSessionId(cliId) : undefined);
   if (task) {
     // Value dedupe (session-cost idiom): a re-delivered identical verdict
     // (retry / repeated on-complete) must not churn updatedAt + persist.

@@ -23,7 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import type { HostRecord } from '../../shared/types';
-import { getHostSecret } from './secrets';
+import { hasStoredHostSecret } from './secrets';
 
 /** File name inside `<userData>/hosts/<id>/` (the managed-key dir, keys.ts). */
 export const HOST_TRUST_FILE = 'known_hosts';
@@ -84,9 +84,18 @@ export function seedHostTrustStore(record: HostRecord, serverKey: Buffer): strin
  * tokenizes an `-o` value on unquoted whitespace, so a userData path with a
  * space (`C:\Users\Jane Doe\AppData\Roaming\finevibe`, the ordinary Windows
  * case) would be read as TWO files and the seeded one would never be found →
- * hard refuse on every app lane. Inside quotes OpenSSH treats `\` as an escape,
- * so a Windows path gets its separators doubled before quoting; unquoted values
- * pass through with backslashes literal.
+ * hard refuse on every app lane. Inside quotes OpenSSH treats `\` as an
+ * escape, so a Windows path must arrive at ssh.exe QUOTED with separators
+ * DOUBLED — and the chain test proves that is exactly what the two
+ * serialization layers preserve: node-pty's MSDN escaper wraps the spaced argv
+ * element in quotes and passes interior backslashes VERBATIM (only runs before
+ * a quote are special), CommandLineToArgvW collapses only the `\"` escapes,
+ * and OpenSSH's quoted-value parser then unescapes `\\` → `\` and lands the
+ * real path. Four backslashes (a doubling "for" CommandLineToArgvW) OVER-
+ * collapse to literal `\\` in the parsed path — file not found; one layer LESS
+ * (the pre-fix single separator, review 0be424ab's scenario) arrives as
+ * `C:UsersJane Doe…`. POSIX argv rides execvp untouched; paths carry no
+ * separators to double and quoting alone is all a space needs.
  */
 export function sshConfigPathValue(file: string): string {
   return /\s/.test(file) ? `"${file.replace(/\\/g, '\\\\')}"` : file;
@@ -108,7 +117,11 @@ export function hostTrustSshArgs(record: HostRecord): string[] {
   const file = hostTrustStorePath(app.getPath('userData'), record.id);
   if (!fs.existsSync(file)) return [];
   const args = ['-o', `UserKnownHostsFile=${sshConfigPathValue(file)}`, '-o', 'StrictHostKeyChecking=yes'];
-  if (record.authKind === 'key' && getHostSecret(`keypass:${record.id}`) === null) {
+  // Key-existence, not decrypt-success (review 0be424ab): getHostSecret
+  // returns null for an UNREADABLE keychain too (migrated keyring, row 100),
+  // and silencing the prompt then locks a passphrase-protected key out of
+  // the very pane the exempt branch exists for.
+  if (record.authKind === 'key' && !hasStoredHostSecret(`keypass:${record.id}`)) {
     args.push('-o', 'NumberOfPasswordPrompts=0');
   }
   return args;

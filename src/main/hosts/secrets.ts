@@ -157,6 +157,16 @@ export function getHostSecret(hostId: string): string | null {
   }
 }
 
+/**
+ * Entry EXISTENCE check — no decrypt, no availability gate (review
+ * 0be424ab): `getHostSecret(...) === null` conflates "no secret stored"
+ * with "keychain unreadable", which is not a safe input to
+ * password-prompt suppression.
+ */
+export function hasStoredHostSecret(hostId: string): boolean {
+  return readEntry(hostId) !== null;
+}
+
 /** Remove the secret for `hostId` (used by "forget password" and host delete). */
 export function deleteHostSecret(hostId: string): void {
   // Row 100: NO availability gate. Deleting never decrypts, and the old

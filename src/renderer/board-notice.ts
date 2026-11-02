@@ -7,6 +7,9 @@
  * without importing a component tree.
  */
 export function showBoardNotice(message: string): void {
+  // Simultaneous refusals share one slot (review 0be424ab): the toasts mount
+  // at the same fixed offset, so a burst would stack into a smear.
+  if (document.querySelector('.board-notice')) return;
   const el = document.createElement('div');
   el.className = 'board-notice';
   // The refusal has no other visible effect — announce it (a11y basics).

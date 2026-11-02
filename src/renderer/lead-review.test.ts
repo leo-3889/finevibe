@@ -230,8 +230,11 @@ describe('review fixes (e609bc6a)', () => {
     updateTask(task.id, { cliSessionId: 'cli-9' });
     // Load normalization: the runtime link is gone; the CLI id survives.
     task.sessionId = undefined;
-    expect(setLeadReview(note({ sessionId: 'cli-9' }), project.id)).toBe(true);
-    expect(task.leadReview?.sessionId).toBe('cli-9');
+    // The note carries the APP session id (main's contract, lead-review.ts
+    // send); the consumer resolves it to the card's surviving CLI id.
+    project.sessions.push({ id: 'sess-9', provider: 'omp', providerProfileId: 'omp', createdAt: 1, cliSessionId: 'cli-9' } as never);
+    expect(setLeadReview(note({ sessionId: 'sess-9' }), project.id)).toBe(true);
+    expect(task.leadReview?.sessionId).toBe('sess-9');
     expect(project.leadReviews).toBeUndefined();
   });
 

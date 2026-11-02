@@ -16,8 +16,8 @@ vi.mock('fs', () => ({
 }));
 // The auth hardening option rides on the stored key passphrase (a passphrase-protected
 // key must stay promptable in the pane); the secret itself is never read here.
-const mockGetHostSecret = vi.hoisted(() => vi.fn((_key: string): string | null => null));
-vi.mock('./secrets', () => ({ getHostSecret: mockGetHostSecret }));
+const mockHasStoredHostSecret = vi.hoisted(() => vi.fn((_key: string): boolean => false));
+vi.mock('./secrets', () => ({ getHostSecret: () => null, hasStoredHostSecret: mockHasStoredHostSecret }));
 
 import * as fs from 'fs';
 import { hostTrustSshArgs, knownHostsLine, knownHostsToken, seedHostTrustStore, sshConfigPathValue } from './host-trust';
@@ -49,7 +49,7 @@ const record: HostRecord = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockExistsSync.mockReturnValue(false);
-  mockGetHostSecret.mockReset().mockReturnValue(null);
+  mockHasStoredHostSecret.mockReset().mockReturnValue(false);
 });
 
 describe('knownHostsToken (row 35)', () => {
@@ -119,15 +119,89 @@ describe('hostTrustSshArgs (row 35)', () => {
   // is the documented flow, so the hardening option must not ride along there.
   it('key-auth with no stored passphrase also refuses password prompts', () => {
     mockExistsSync.mockReturnValue(true);
+    mockHasStoredHostSecret.mockReturnValue(false);
     expect(hostTrustSshArgs({ ...record, authKind: 'key' }).slice(4)).toEqual(['-o', 'NumberOfPasswordPrompts=0']);
   });
 
   it('a passphrase-protected key keeps the prompt (the keychain passphrase cannot reach system ssh)', () => {
     mockExistsSync.mockReturnValue(true);
-    mockGetHostSecret.mockImplementation((key: string) => (key === 'keypass:host-1' ? 'hunter2' : null));
+    mockHasStoredHostSecret.mockImplementation((key: string) => key === 'keypass:host-1');
     expect(hostTrustSshArgs({ ...record, authKind: 'key' })).not.toContain('NumberOfPasswordPrompts=0');
     expect(hostTrustSshArgs({ ...record, authKind: 'password' })).not.toContain('NumberOfPasswordPrompts=0');
-    expect(mockGetHostSecret).toHaveBeenCalledWith('keypass:host-1');
+    expect(mockHasStoredHostSecret).toHaveBeenCalledWith('keypass:host-1');
+  });
+
+  it('an unreadable keychain keeps the prompt too (existence, not decrypt, gates suppression)', () => {
+    // getHostSecret() === null for a migrated/down keychain must NOT be read as
+    // "no passphrase" — that branch hard-exits a passphrase-protected key out
+    // of the only pane that can unlock it (review 0be424ab).
+    mockExistsSync.mockReturnValue(true);
+    mockHasStoredHostSecret.mockReturnValue(true);
+    expect(hostTrustSshArgs({ ...record, authKind: 'key' })).not.toContain('NumberOfPasswordPrompts=0');
+  });
+
+  it('Windows chain: the quoted value survives node-pty quoting, CommandLineToArgvW, and OpenSSH unescaping', () => {
+    // The lanes are pty.spawn('ssh', argv): on Windows node-pty serializes argv
+    // through the MSDN escaper, ssh.exe's CommandLineToArgvW collapses it, then
+    // OpenSSH's -o parser unescapes the quoted value. One escaping layer short
+    // and the path arrives as `C:UsersJane Doe...` (review 0be424ab red). The
+    // three transforms are the documented algorithms; node-pty's own
+    // argsToCommandLine is version-lossy in this tree, so the escaper step is
+    // reproduced by spec (quotes around args with spaces, `\"` for inner
+    // quotes, backslash runs doubled before the closing quote).
+    const file = 'C:\\Users\\Jane Doe\\AppData\\Roaming\\finevibe\\hosts\\lab\\known_hosts';
+    const value = sshConfigPathValue(file);
+    const msdnEscape = (arg: string): string => {
+      if (!/[\s"]/.test(arg)) return arg;
+      let out = '"';
+      let bs = 0;
+      for (const c of arg) {
+        if (c === '\\') { bs++; continue; }
+        out += '\\'.repeat(bs);
+        bs = 0;
+        out += c === '"' ? '\\"' : c;
+      }
+      return out + '\\'.repeat(bs * 2) + '"';
+    };
+    const commandLineToArgvW = (line: string): string => {
+      let i = 0;
+      while (line[i] === ' ') i++;
+      let arg = '';
+      let inQuotes = false;
+      let bs = 0;
+      for (; i < line.length; i++) {
+        const c = line[i];
+        if (c === '\\') { bs++; continue; }
+        if (c === '"') {
+          arg += '\\'.repeat(Math.floor(bs / 2));
+          if (bs % 2) arg += '"';
+          else inQuotes = !inQuotes;
+          bs = 0;
+          continue;
+        }
+        arg += '\\'.repeat(bs);
+        bs = 0;
+        if (!inQuotes && c === ' ') break;
+        arg += c;
+      }
+      return arg + '\\'.repeat(bs);
+    };
+    const openSSHValue = (v: string): string => {
+      // ssh config: unquoted value ends at whitespace; quoted value eats
+      // backslash escapes until the closing quote.
+      if (v[0] !== '"') return v.split(' ')[0];
+      let out = '';
+      for (let i = 1; i < v.length; i++) {
+        if (v[i] === '\\' && i + 1 < v.length) { out += v[i + 1]; i++; continue; }
+        if (v[i] === '"') break;
+        out += v[i];
+      }
+      return out;
+    };
+    const token = `UserKnownHostsFile=${value}`;
+    const argvToken = commandLineToArgvW(msdnEscape(token));
+    expect(argvToken.startsWith('UserKnownHostsFile=')).toBe(true);
+    expect(openSSHValue(argvToken.slice('UserKnownHostsFile='.length))).toBe(file);
   });
 
   it('quotes a userData path with a space so ssh reads ONE known_hosts file', () => {
@@ -137,7 +211,10 @@ describe('hostTrustSshArgs (row 35)', () => {
     expect(sshConfigPathValue('/home/jane doe/.config/finevibe/hosts/lab/known_hosts')).toBe(
       '"/home/jane doe/.config/finevibe/hosts/lab/known_hosts"',
     );
-    // Inside quotes OpenSSH eats a single backslash, so Windows separators double.
+    // Inside quotes OpenSSH eats a single backslash, so Windows separators
+    // double — and node-pty/CommandLineToArgvW pass that form through verbatim
+    // (the chain test above pins the full round trip; four per separator
+    // OVER-collapses and one arrives as `C:UsersJane Doe…`).
     expect(sshConfigPathValue('C:\\Users\\Jane Doe\\AppData\\Roaming\\finevibe\\hosts\\lab\\known_hosts')).toBe(
       '"C:\\\\Users\\\\Jane Doe\\\\AppData\\\\Roaming\\\\finevibe\\\\hosts\\\\lab\\\\known_hosts"',
     );

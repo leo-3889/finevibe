@@ -52,7 +52,9 @@ vi.mock('./hosts/host-registry', () => ({ getHost: mockGetHost }));
 // passphrase. Stub the secret store; the option's own semantics are pinned in
 // hosts/host-trust.test.ts.
 const mockGetHostSecret = vi.hoisted(() => vi.fn((_key: string): string | null => null));
-vi.mock('./hosts/secrets', () => ({ getHostSecret: mockGetHostSecret }));
+// Existence delegates to the decrypt mock: stored-and-readable ⊃ stored here;
+// the dedicated unreadable-keychain case lives in host-trust.test.ts.
+vi.mock('./hosts/secrets', () => ({ getHostSecret: mockGetHostSecret, hasStoredHostSecret: (key: string) => mockGetHostSecret(key) !== null }));
 
 vi.mock('node-pty', () => ({
   default: { spawn: mockSpawn },
