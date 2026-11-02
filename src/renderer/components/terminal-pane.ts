@@ -59,6 +59,23 @@ interface TerminalInstance {
 }
 
 const instances = new Map<string, TerminalInstance>();
+
+// Row 121 trace gates (mirror of pty-manager RESIZE_TRACE; the renderer is a
+// sandboxed world with no process.env, so the global flag is the injection
+// point — same idiom as __FINEVIBE_CLIPBOARD_TIMING__, terminal-utils.ts).
+function resizeTraceOn(): boolean {
+  return (globalThis as { __FINEVIBE_RESIZE_TRACE__?: boolean }).__FINEVIBE_RESIZE_TRACE__ === true;
+}
+
+/** Pending xterm write-buffer depth (H2 probe). xterm INTERNAL: -1 when the
+ * private layout moves in a future version. */
+function writeQueueDepth(terminal: Terminal): number {
+  // SAFETY: probe of xterm's private write-buffer shape; every hop is
+  // optional-chained and the Array.isArray guard returns -1 on any drift,
+  // so a wrong-shape guess can never dereference garbage.
+  const core = (terminal as unknown as { _core?: { _writeBuffer?: { _writeBuffer?: unknown[] } } })._core?._writeBuffer?._writeBuffer;
+  return Array.isArray(core) ? core.length : -1;
+}
 let focusedSessionId: string | null = null;
 
 export function createTerminalPane(
@@ -434,6 +451,15 @@ export function fitTerminal(sessionId: string): void {
   try {
     instance.fitAddon.fit();
     const { cols, rows } = instance.terminal;
+    // Row 121 trace (see pty-manager.ts RESIZE_TRACE): a fit with queue>0 is
+    // a synchronous grid change landing AHEAD of queued writes (H2); cols:2/
+    // rows:1 is the minimized-window geometry (H5). The _core write-buffer
+    // probe is an xterm INTERNAL — future xterm versions report -1
+    // (ponytail: accepted, the grid fields are the payload).
+    if (resizeTraceOn()) {
+      const wrap = instance.element.querySelector('.xterm-wrap');
+      console.log(`[fv-resize] ${JSON.stringify({ ev: 'fit', sid: sessionId, cols, rows, lastSize: instance.lastSize, parentH: wrap ? wrap.clientHeight : -1, queue: writeQueueDepth(instance.terminal), t: Date.now() })}`);
+    }
     // renderLayout() ends in a fitAllVisible(), and a redundant resize makes the
     // CLI redraw underneath an in-progress selection.
     const size = `${cols}x${rows}`;
@@ -509,6 +535,13 @@ export function setFocused(sessionId: string): void {
 export function handlePtyData(sessionId: string, data: string): void {
   const instance = instances.get(sessionId);
   if (instance) {
+    // Row 121 trace: `cols/rows` here is the grid the chunk lands in — any
+    // value differing from the last accepted resize for this sid is the
+    // spawn-vs-pane geometry gap (H1); buf:'alternate' marks the
+    // never-reflows amplifier (H3).
+    if (resizeTraceOn()) {
+      console.log(`[fv-resize] ${JSON.stringify({ ev: 'data', sid: sessionId, bytes: data.length, cols: instance.terminal.cols, rows: instance.terminal.rows, buf: instance.terminal.buffer.active.type, queue: writeQueueDepth(instance.terminal), t: Date.now() })}`);
+    }
     instance.terminal.write(data);
   }
 }
