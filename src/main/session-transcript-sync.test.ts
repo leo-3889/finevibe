@@ -20,11 +20,15 @@ const mockSeam = vi.hoisted(() => ({
   listProviderDir: vi.fn(),
 }));
 vi.mock('./hosts/provider-fs', () => mockSeam);
+const mockRequestLeadReview = vi.hoisted(() => vi.fn());
 vi.mock('./hook-status', () => ({
   STATUS_DIR: '/tmp/finevibe',
   writeCliSessionName: mockWriteName,
   writeStatus: mockWriteStatus,
 }));
+// The on-complete lead review hook (team-lead-persona-plan I3): the lead module
+// spawns CLIs, so this suite drives it through a spy only.
+vi.mock('./lead-review', () => ({ requestLeadReview: mockRequestLeadReview }));
 vi.mock('fs', () => ({
   statSync: mockStatSync,
   watch: (_p: string, cb: () => void) => {
@@ -265,6 +269,47 @@ describe('status mirroring', () => {
     registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
     vi.advanceTimersByTime(2000);
     expect(mockWriteStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('on-complete lead review hook (I3)', () => {
+  it('requests a review when a LOCAL completion is mirrored, with the entry tuple', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'completed' }, path: '/t.jsonl' });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', '/cfg', { sessionDir: '/launch/ui-1' });
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'completed');
+    expect(mockRequestLeadReview).toHaveBeenCalledWith('ui-1', {
+      providerId: 'pi',
+      cliSessionId: 'cli-1',
+      cwd: '/proj',
+      configDir: '/cfg',
+      sessionDir: '/launch/ui-1',
+    });
+  });
+
+  it('requests nothing for a non-completed status', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'working' }, path: '/t.jsonl' });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    expect(mockRequestLeadReview).not.toHaveBeenCalled();
+  });
+
+  it('requests nothing when the .status write failed (no completion surfaced)', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'completed' }, path: '/t.jsonl' });
+    mockWriteStatus.mockImplementationOnce(() => {
+      throw new Error('STATUS_DIR unwritable');
+    });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj');
+    vi.advanceTimersByTime(2000);
+    expect(mockRequestLeadReview).not.toHaveBeenCalled();
+  });
+
+  it('requests nothing for a title-only (restored, dead-tab) entry', () => {
+    provider = makeProvider({ polledStatus: true, status: { value: 'completed' }, path: '/t.jsonl' });
+    registerTranscriptSync('ui-1', 'pi', 'cli-1', '/proj', undefined, { titleOnly: true });
+    vi.advanceTimersByTime(2000);
+    expect(mockWriteStatus).not.toHaveBeenCalled();
+    expect(mockRequestLeadReview).not.toHaveBeenCalled();
   });
 });
 
@@ -768,5 +813,14 @@ describe('remote transcript sync (per-host providers T2)', () => {
     mockSeam.listProviderDir.mockResolvedValue(['2026-01-01T00-00-00_cli-1.jsonl']);
     await vi.advanceTimersByTimeAsync(2000);
     expect(mockSeam.listProviderDir).toHaveBeenCalledWith('other', SESSION_DIR);
+  });
+
+  it('mirrors a remote completion WITHOUT requesting a lead review (I3 is local-only)', async () => {
+    remoteProvider();
+    seamWindows('{"type":"message","message":{"role":"assistant","stopReason":"stop"}}');
+    registerRemote();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mockWriteStatus).toHaveBeenCalledWith('ui-1', 'completed');
+    expect(mockRequestLeadReview).not.toHaveBeenCalled();
   });
 });

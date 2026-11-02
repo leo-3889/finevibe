@@ -56,6 +56,7 @@ const PREFERENCE_KEYS = {
   soundOnSessionWaiting: true, notificationsDesktop: true, debugMode: true,
   sessionHistoryEnabled: true, insightsEnabled: true, autoTitleEnabled: true,
   confirmCloseWorkingSession: true, zoomFactor: true, defaultProvider: true,
+  leadReviewsEnabled: true,
   locale: true, defaultProfiles: true, planModeDefaults: true,
   statusLineConsent: true, statusLineConsentCommand: true, statusLineConsentByDir: true,
   copyOnSelect: true, askAiFocus: true, defaultProjectsFolder: true,

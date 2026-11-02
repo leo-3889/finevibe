@@ -3,6 +3,7 @@ import type { ProviderId, CliSessionStatus } from '../shared/types';
 import { LOCAL_HOST_ID } from '../shared/types';
 import { getProvider } from './providers/registry';
 import { writeCliSessionName, writeStatus } from './hook-status';
+import { requestLeadReview } from './lead-review';
 import { statProviderFileSize, readProviderFileWindow, listProviderDir } from './hosts/provider-fs';
 import {
   TAIL_READ_BYTES,
@@ -424,6 +425,21 @@ function syncEntry(sessionId: string, e: TranscriptSyncEntry): void {
         try {
           writeStatus(sessionId, status);
           e.lastStatus = status;
+          // Lead review (team-lead-persona-plan I3): this is the single LOCAL
+          // choke point where a polled transcript status surfaces, so it is
+          // where an on-complete review is triggered. The remote twin
+          // (syncEntryRemote) deliberately never calls it — v1 reviews local
+          // sessions only — and the lead module owns every cost guard
+          // (one review per session, lead-enabled project, kill switch).
+          if (status === 'completed') {
+            requestLeadReview(sessionId, {
+              providerId: e.providerId,
+              cliSessionId: e.cliSessionId,
+              cwd: e.cwd,
+              configDir: e.configDir,
+              sessionDir: e.sessionDir,
+            });
+          }
         } catch {
           // A failed write is retried on the next tick (lastStatus not advanced).
           deferred = true;

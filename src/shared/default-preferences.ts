@@ -21,6 +21,10 @@ export const DEFAULT_PREFERENCES: Preferences = {
   insightsEnabled: true,
   autoTitleEnabled: true,
   confirmCloseWorkingSession: true,
+  // Lead review (I3): ON by default, so enabling a lead with `reviewMode:
+  // 'on-complete'` is the only switch a project needs. The project gate is
+  // `lead.enabled`, so this default costs nothing for a project with no lead.
+  leadReviewsEnabled: true,
   copyOnSelect: false,
   zoomFactor: 1.0,
   readinessExcludedProviders: [],

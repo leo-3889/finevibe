@@ -37,6 +37,7 @@ import { addEvents as addInspectorEvents } from './session-inspector-state.js';
 import type { InspectorEvent } from '../shared/types.js';
 import { getContext } from './session-context.js';
 import { initSessionInspector } from './components/session-inspector.js';
+import { initLeadReviewChannel } from './lead-review.js';
 import { initFilePrompt } from './components/file-prompt.js';
 import { initVibeyardImport } from './components/vibeyard-import.js';
 import { applyThemeToAllRemoteTerminals } from './components/remote-terminal-pane.js';
@@ -271,6 +272,10 @@ async function main(): Promise<void> {
       appState.updateSessionCliId(project.id, sessionId, cliSessionId);
     }
   });
+
+  // Lead-review verdicts produced main-side on session completion (I3):
+  // routing + validation live in lead-review.ts (setLeadReview).
+  initLeadReviewChannel();
 
   window.finevibe.pty.onExit((sessionId, exitCode, signal, exitReason, pid) => {
     logDebugEvent('ptyExit', sessionId, { exitCode, signal, exitReason, pid });

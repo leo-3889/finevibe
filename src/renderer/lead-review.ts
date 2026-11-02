@@ -55,6 +55,19 @@ export function setLeadReview(raw: unknown, projectId: string): boolean {
   return true;
 }
 
+/**
+ * Subscribe to the main-side verdict producer (I3): one `lead:review` push per
+ * reviewed session, routed through `setLeadReview` — the note is validated
+ * again inside it, so a malformed producer cannot land a note. Returns nothing;
+ * the subscription lives for the renderer's life, like every other
+ * `window.finevibe.*` listener wired in index.ts.
+ */
+export function initLeadReviewChannel(): void {
+  window.finevibe.lead.onReview((note, projectId) => {
+    setLeadReview(note, projectId);
+  });
+}
+
 /** The inspector's verdict for `sessionId` on a project whose sessions have no
  * board card. Cards carry their own `task.leadReview` and never appear here. */
 export function getInspectorLeadReview(

@@ -576,6 +576,14 @@ export interface Preferences {
   insightsEnabled: boolean;
   autoTitleEnabled: boolean;
   confirmCloseWorkingSession: boolean;
+  /**
+   * Kill switch for the on-complete lead review (team-lead-persona-plan M2/I3).
+   * Defaults ON — a project with `lead.enabled && reviewMode: 'on-complete'`
+   * gets its reviews; `false` stops main from spawning any review run at all
+   * (Preferences → General). Verdict SURFACES are unaffected: notes already on
+   * cards/state render, they just stop being produced.
+   */
+  leadReviewsEnabled?: boolean;
   zoomFactor?: number;
   defaultProvider?: ProviderId;
   /** UI language tag. See `Locale` for the supported set. */

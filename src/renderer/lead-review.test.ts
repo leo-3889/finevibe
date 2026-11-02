@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.stubGlobal('window', {
-  finevibe: { store: { load: vi.fn(), save: vi.fn() } },
+  finevibe: {
+    store: { load: vi.fn(), save: vi.fn() },
+    // The I3 verdict channel: initLeadReviewChannel subscribes through it.
+    lead: { onReview: vi.fn() },
+  },
 });
 
 let uuidCounter = 0;
@@ -18,6 +22,7 @@ import {
   capLeadReviewSummary,
   normalizeLeadReview,
   setLeadReview,
+  initLeadReviewChannel,
   getInspectorLeadReview,
 } from './lead-review';
 import {
@@ -251,5 +256,52 @@ describe('review fixes (e609bc6a)', () => {
     expect(project.leadReviews).toHaveLength(1);
     expect(project.leadReviews![0].sessionId).toBe('ok');
     expect(task.leadReview).toBeUndefined();
+  });
+});
+
+describe('lead:review channel (the I3 round-trip)', () => {
+  /** Capture the listener initLeadReviewChannel registers on the preload seam. */
+  function wireChannel(): (note: unknown, projectId: string) => void {
+    const listeners: Array<(note: unknown, projectId: string) => void> = [];
+    vi.mocked(window.finevibe.lead.onReview).mockImplementation((cb) => {
+      listeners.push(cb as (note: unknown, projectId: string) => void);
+      return () => {};
+    });
+    initLeadReviewChannel();
+    expect(listeners).toHaveLength(1);
+    return listeners[0]!;
+  }
+
+  it('lands a pushed verdict on the session board card', () => {
+    const project = makeProject();
+    makeTaskWithSession('sess-1');
+    const push = wireChannel();
+
+    push(note({ verdict: 'flagged', summary: 'Left a TODO in auth.' }), project.id);
+
+    expect(getTaskBySessionId('sess-1', project.id)!.leadReview).toEqual(
+      note({ verdict: 'flagged', summary: 'Left a TODO in auth.' }),
+    );
+  });
+
+  it('lands a pushed verdict on the inspector list when the session has no card', () => {
+    const project = makeProject();
+    const push = wireChannel();
+
+    push(note({ sessionId: 'boardless-1' }), project.id);
+
+    expect(getInspectorLeadReview(project, 'boardless-1')?.verdict).toBe('approved');
+  });
+
+  it('drops a push for an unknown project and a malformed note (the producer is untrusted)', () => {
+    const project = makeProject();
+    makeTaskWithSession('sess-1');
+    const push = wireChannel();
+
+    push(note(), 'no-such-project');
+    push({ verdict: 'approved' }, project.id);
+
+    expect(getTaskBySessionId('sess-1', project.id)!.leadReview).toBeUndefined();
+    expect(project.leadReviews).toBeUndefined();
   });
 });
