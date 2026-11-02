@@ -149,10 +149,11 @@ describe('loadState', () => {
     expect(loaded.profiles?.[0].hostId).toBe('local');
   });
 
-  // parent §11 sshHost retirement, step 1: legacy free-text hosts adopt the
-  // registry id at load; unregistered/ambiguous ones keep sshHost (the
-  // pty-manager legacy wrap honors them for the coexistence release).
-  it('migrates a legacy session sshHost to the matching registry hostId', () => {
+  // parent §11 sshHost retirement tail: legacy free-text hosts adopt the
+  // registry id at load and the retired key is stripped from every session —
+  // unregistered ones load safely, get no hostId, and the normalization pins
+  // them to local (the legacy pty-manager wrap is gone).
+  it('migrates a legacy session sshHost to the matching registry hostId and strips the key', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({
       version: 1,
@@ -165,9 +166,10 @@ describe('loadState', () => {
     const loaded = loadState();
     const [s1, s2] = loaded.projects[0].sessions;
     expect(s1.hostId).toBe('3f2504e0-4f89-41d3-9a0c-0305e82c3301');
-    expect(s1.sshHost).toBeUndefined();
     expect(s2.hostId).toBe('local');
-    expect(s2.sshHost).toBe('nowhere');
+    for (const s of loaded.projects[0].sessions) {
+      expect(Object.hasOwn(s, 'sshHost')).toBe(false);
+    }
   });
 
   it('returns default state on invalid JSON', () => {

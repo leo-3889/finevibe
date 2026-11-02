@@ -4,7 +4,19 @@ vi.mock('../session-cost.js', () => ({ restoreCost: vi.fn() }));
 vi.mock('../session-context.js', () => ({ restoreContext: vi.fn() }));
 
 import { serializeForSave, hydrateLoadedState, PREDEFINED_CACHE_PERSIST_MAX_AGE_MS, PREDEFINED_CACHE_PERSIST_MAX_SUGGESTIONS } from './persistence.js';
-import type { PersistedState, Preferences, SessionRecord } from '../../shared/types.js';
+import type { HostRecord, PersistedState, Preferences, SessionRecord } from '../../shared/types.js';
+
+const VALID_HOST: HostRecord = {
+  id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+  name: 'lab',
+  user: 'dev',
+  host: '192.0.2.242',
+  port: 22,
+  authKind: 'key',
+  privateKeyPath: '/home/finevibe/hosts/3f2504e0-4f89-41d3-9a0c-0305e82c3301/id_ed25519',
+  managedKey: true,
+  enrollmentStatus: 'enrolled',
+};
 
 function baseState(session: Partial<SessionRecord>): PersistedState {
   return {
@@ -170,6 +182,31 @@ describe('hydrateLoadedState', () => {
     hydrateLoadedState(state, {} as Preferences);
 
     expect(state.projects[0].sessions[0].hostId).toBe('remote1');
+  });
+
+  // parent §11 retire tail: the free-text sshHost is gone from SessionRecord,
+  // so an old state.json must hydrate with the key stripped (registry match
+  // adopts the id, anything else pins to local) and re-save without it.
+  it('adopts the registry id for a legacy sshHost and strips the retired key', () => {
+    const state = baseState({ sshHost: 'lab.example.com' } as Partial<SessionRecord>);
+    state.hosts = [{ ...VALID_HOST, host: 'lab.example.com' }];
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    const session = state.projects[0].sessions[0];
+    expect(session.hostId).toBe(VALID_HOST.id);
+    expect(Object.hasOwn(session, 'sshHost')).toBe(false);
+    expect(serializeForSave(state).projects[0].sessions[0]).not.toHaveProperty('sshHost');
+  });
+
+  it('strips an unregistered legacy sshHost and pins the session to local', () => {
+    const state = baseState({ sshHost: 'nowhere.example.com' } as Partial<SessionRecord>);
+
+    hydrateLoadedState(state, {} as Preferences);
+
+    const session = state.projects[0].sessions[0];
+    expect(session.hostId).toBe('local');
+    expect(Object.hasOwn(session, 'sshHost')).toBe(false);
   });
 });
 
