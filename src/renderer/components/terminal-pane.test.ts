@@ -1276,4 +1276,27 @@ describe('spawn lead charter injection', () => {
 
     expect((window as any).finevibe.pty.create).not.toHaveBeenCalled();
   });
+
+  it('no system-prompt lane: a restart carries no charter (the queued prompt was consumed at the first spawn)', async () => {
+    const { createTerminalPane, getTerminalInstance, setPendingPrompt, spawnTerminal } = await import('./terminal-pane.js');
+    const { composeLeadLaunch } = await import('../state/session-factory.js');
+    seedLeadSession(await import('../state.js'), 'lead-6', { name: 'Dana', charter: 'Own the release train.', enabled: true });
+    createTerminalPane('lead-6', '/project', null, false, '', 'copilot');
+    setPendingPrompt('lead-6', 'fix the bug');
+    await spawnTerminal('lead-6');
+    // First spawn: fenced charter in front of the queued prompt.
+    expect((window as any).finevibe.pty.create.mock.calls[0][6])
+      .toBe('[Project lead - Dana]\nOwn the release train.\n[/Project lead]\n\nfix the bug');
+    // The pane is now resume-marked and the queue is drained, so the next
+    // spawn has no lane to carry the charter: composing it yields nothing,
+    // and the argv is the pre-feature launch (M1 coverage limit).
+    const instance = getTerminalInstance('lead-6')!;
+    expect(instance.isResume).toBe(true);
+    expect(instance.pendingPrompt).toBeNull();
+    expect(composeLeadLaunch({
+      lead: { name: 'Dana', charter: 'Own the release train.', enabled: true },
+      systemPromptInjection: false,
+      initialPrompt: instance.pendingPrompt ?? undefined,
+    })).toEqual({ systemPrompt: undefined, initialPrompt: undefined });
+  });
 });
