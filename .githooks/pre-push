@@ -22,7 +22,9 @@ allowlist=$root/.secrets.allowlist
 # ponytail: the deny half lives in .secrets.patterns, the allow half here —
 # POSIX ERE has no negative lookahead, so one file cannot carry both. Widen
 # ALLOW_USERS rather than marking dozens of fixture lines with pii-allow.
-ALLOW_USERS='me|dev|test|testuser|user|foo|alex|sample|attacker|mock|u|mcp|fake|finevibe|runner|x|my|someone'
+# `jane` = the `jane doe` / `Jane Doe` placeholder user (row 35 spaced-path
+# ssh fixtures); synthetic, like every other name here.
+ALLOW_USERS='me|dev|test|testuser|user|foo|alex|jane|sample|attacker|mock|u|mcp|fake|finevibe|runner|x|my|someone'
 allow_users="(^|[^A-Za-z0-9])/(home|Users)/($ALLOW_USERS)(/|[^a-z0-9._-]|\$)"
 allow_sha='SHA256:(pinned123|evil|attacker)'
 # Synthetic test networks: TEST-NET-1/2/3 (RFC 5737) + the fixture ranges this
