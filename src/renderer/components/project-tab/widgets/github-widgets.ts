@@ -3,7 +3,7 @@ import { openExternal } from '../../../open-external.js';
 import { ingestItems, isUnread, makeItemId, markRead, markAllReadInProject, onChange as onUnreadChange } from '../../../github-unread.js';
 import { t } from '../../../i18n.js';
 import { GITHUB_MAX_PER_PAGE } from '../../../../shared/constants.js';
-import type { GithubItem, ProviderId } from '../../../../shared/types.js';
+import type { CliProviderMeta, GithubItem, ProviderId } from '../../../../shared/types.js';
 import type { WidgetFactory, WidgetHost, WidgetInstance } from './widget-host.js';
 import { DEFAULT_GITHUB_CONFIG, type GithubConfig } from './github-types.js';
 import { setPendingPrompt } from '../../terminal-pane.js';
@@ -34,7 +34,14 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
+// Row 28 decomposition: the widget's DOM shell. `onMarkAllRead` is a late-bound
+// closure — the click handler needs the widget's render(), which does not exist
+// yet at shell-construction time.
+function createGithubShell(kind: ListKind, onMarkAllRead: () => void): {
+  root: HTMLDivElement;
+  repoLabel: HTMLSpanElement;
+  body: HTMLDivElement;
+} {
   const root = document.createElement('div');
   root.className = `widget-github widget-github-${kind}`;
 
@@ -53,22 +60,153 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   // label promised less than it did.
   markAllBtn.textContent = t('projectTab.github.markAllRead');
   markAllBtn.title = t('projectTab.github.markAllReadTooltip');
-  markAllBtn.addEventListener('click', () => {
-    markAllReadInProject(host.projectId);
-    render();
-  });
+  markAllBtn.addEventListener('click', onMarkAllRead);
   toolbar.appendChild(markAllBtn);
 
   const body = document.createElement('div');
   body.className = 'widget-github-body';
   root.appendChild(body);
 
+  return { root, repoLabel, body };
+}
+
+function makeGithubMessage(className: string, text: string): HTMLDivElement {
+  const node = document.createElement('div');
+  node.className = className;
+  node.textContent = text;
+  return node;
+}
+
+// Row 28 decomposition: the repo cache (override, positive cache, C3RP-15
+// negative cache) is self-contained state — nothing else reads the intermediates.
+function createRepoResolver(projectId: string, getConfig: () => GithubConfig): {
+  current(): string | null;
+  ensure(): Promise<string | null>;
+  reset(): void;
+} {
   let resolvedRepo: string | null = null;
   let lastConfigRepo: string | undefined = undefined;
   // C3RP-15: negative cache. Without it, a project with no git remote re-spawns
   // github.detectRepo on every poll tick: `resolvedRepo` stays null, so the
   // positive cache above never hits. Cleared alongside the config-repo state.
   let detectAttempted = false;
+
+  return {
+    current: () => resolvedRepo,
+
+    async ensure(): Promise<string | null> {
+      const cfg = getConfig();
+      const trimmedOverride = cfg.repo?.trim();
+      if (trimmedOverride && trimmedOverride.includes('/')) {
+        if (resolvedRepo !== trimmedOverride) {
+          resolvedRepo = trimmedOverride;
+          lastConfigRepo = trimmedOverride;
+        }
+        return resolvedRepo;
+      }
+      // Cached auto-detect: only re-detect if the override was cleared since the last detection.
+      if (resolvedRepo && lastConfigRepo === undefined) return resolvedRepo;
+      if (detectAttempted && lastConfigRepo === undefined) return null;
+      const project = appState.projects.find(p => p.id === projectId);
+      if (!project) return null;
+      const detected = await window.finevibe.github.detectRepo(project.path);
+      if (detected) resolvedRepo = `${detected.owner}/${detected.repo}`;
+      detectAttempted = true;
+      lastConfigRepo = undefined;
+      return resolvedRepo;
+    },
+
+    reset(): void {
+      resolvedRepo = null;
+      detectAttempted = false;
+    },
+  };
+}
+
+// Row 28 decomposition: the widget's poll cadence — interval handle, the C4G-02
+// visibility throttle clock and the C4G-04 gh-failure backoff.
+// `getIntervalMs()` is read at construction AND on every start(), exactly as the
+// inlined version read `getConfig().refreshSeconds` at both points: the first
+// refresh runs before the first start(), so a first-tick gh failure must arm the
+// backoff off a cadence that is already initialised.
+function createPollCadence(getIntervalMs: () => number): {
+  markRefresh(): void;
+  recentlyRefreshed(): boolean;
+  armBackoff(errorText: string): void;
+  clearBackoff(): void;
+  start(onTick: () => void): void;
+  stop(): void;
+} {
+  let pollHandle: number | null = null;
+  // C4G-02: per-widget throttle for the visibilitychange refresh — every widget
+  // in every window used to spawn a `gh` run on every window-show.
+  let lastRefreshAt = 0;
+  // C4G-04: the widget's own poll cadence and the backoff window armed by a
+  // gh failure. `nextPollAt` gates the interval tick; success clears it.
+  let pollIntervalMs = getIntervalMs();
+  let backoffMs = 0;
+  let nextPollAt = 0;
+
+  function stop(): void {
+    if (pollHandle !== null) {
+      clearInterval(pollHandle);
+      pollHandle = null;
+    }
+  }
+
+  return {
+    markRefresh(): void {
+      lastRefreshAt = Date.now();
+    },
+
+    recentlyRefreshed(): boolean {
+      // C4G-02: at most one visibility refresh per widget per window.
+      return Date.now() - lastRefreshAt < VISIBILITY_REFRESH_MIN_MS;
+    },
+
+    // C4G-04: double the widget's cadence per consecutive gh failure, capped, so
+    // a rate-limited or logged-out widget stops re-spawning `gh` every tick.
+    armBackoff(errorText: string): void {
+      if (!GH_BACKOFF_RE.test(errorText)) return;
+      backoffMs = Math.min(backoffMs > 0 ? backoffMs * 2 : pollIntervalMs * 2, MAX_POLL_BACKOFF_MS);
+      nextPollAt = Date.now() + backoffMs;
+    },
+
+    clearBackoff(): void {
+      backoffMs = 0;
+      nextPollAt = 0;
+    },
+
+    start(onTick: () => void): void {
+      stop();
+      pollIntervalMs = getIntervalMs();
+      pollHandle = window.setInterval(() => {
+        if (document.hidden) return;
+        // C4G-04: inside an armed window the tick is a no-op, so the effective
+        // cadence is the doubled window rounded up to the tick grid.
+        if (Date.now() < nextPollAt) return;
+        onTick();
+      }, pollIntervalMs);
+    },
+
+    stop,
+  };
+}
+
+function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
+  const projectId = host.projectId;
+
+  function getConfig(): GithubConfig {
+    return { ...DEFAULT_GITHUB_CONFIG, ...host.getConfig<Partial<GithubConfig>>() };
+  }
+
+  const { root, repoLabel, body } = createGithubShell(kind, () => {
+    markAllReadInProject(projectId);
+    render();
+  });
+  const repo = createRepoResolver(projectId, getConfig);
+  const cadence = createPollCadence(() => Math.max(60_000, getConfig().refreshSeconds * 1000));
+
   let items: GithubItem[] = [];
   // Review 24db32b8 #3: the ids THIS listing kind renders. Issues and PRs share
   // the `${repo}#${number}` id space, so the exhaustive prune is scoped to the
@@ -76,182 +214,51 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   let ingestedIds = new Set<string>();
   let loading = false;
   let lastError: string | null = null;
-  let pollHandle: number | null = null;
   let destroyed = false;
   let refreshGeneration = 0;
-  // C4G-02: per-widget throttle for the visibilitychange refresh — every widget
-  // in every window used to spawn a `gh` run on every window-show.
-  let lastRefreshAt = 0;
-  // C4G-04: the widget's own poll cadence and the backoff window armed by a
-  // gh failure. `nextPollAt` gates the interval tick; success clears it.
-  let pollIntervalMs = Math.max(60_000, getConfig().refreshSeconds * 1000);
-  let backoffMs = 0;
-  let nextPollAt = 0;
-
-  const projectId = host.projectId;
-
-  function getConfig(): GithubConfig {
-    return { ...DEFAULT_GITHUB_CONFIG, ...host.getConfig<Partial<GithubConfig>>() };
-  }
-
-  async function ensureRepo(): Promise<string | null> {
-    const cfg = getConfig();
-    const trimmedOverride = cfg.repo?.trim();
-    if (trimmedOverride && trimmedOverride.includes('/')) {
-      if (resolvedRepo !== trimmedOverride) {
-        resolvedRepo = trimmedOverride;
-        lastConfigRepo = trimmedOverride;
-      }
-      return resolvedRepo;
-    }
-    // Cached auto-detect: only re-detect if the override was cleared since the last detection.
-    if (resolvedRepo && lastConfigRepo === undefined) return resolvedRepo;
-    if (detectAttempted && lastConfigRepo === undefined) return null;
-    const project = appState.projects.find(p => p.id === projectId);
-    if (!project) return null;
-    const detected = await window.finevibe.github.detectRepo(project.path);
-    if (detected) resolvedRepo = `${detected.owner}/${detected.repo}`;
-    detectAttempted = true;
-    lastConfigRepo = undefined;
-    return resolvedRepo;
-  }
-
-  function renderRow(item: GithubItem): HTMLElement {
-    const repo = resolvedRepo!;
-    const id = makeItemId(repo, item.number);
-    const unread = isUnread(projectId, id);
-
-    const row = document.createElement('div');
-    row.className = 'widget-github-row' + (unread ? ' unread' : '');
-
-    const info = document.createElement('div');
-    info.className = 'widget-github-row-info';
-
-    const title = document.createElement('div');
-    title.className = 'widget-github-row-title';
-
-    if (unread) {
-      const dot = document.createElement('span');
-      dot.className = 'widget-github-unread-dot';
-      title.appendChild(dot);
-    }
-
-    const num = document.createElement('span');
-    num.className = 'widget-github-row-num';
-    num.textContent = `#${item.number}`;
-    title.appendChild(num);
-
-    const link = document.createElement('a');
-    link.className = 'widget-github-row-link';
-    link.textContent = item.title;
-    link.href = item.html_url;
-    link.title = item.html_url;
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      markRead(projectId, repo, item);
-      void openExternal(item.html_url);
-      render();
-    });
-    title.appendChild(link);
-
-    if (kind === 'prs' && item.draft) {
-      const draft = document.createElement('span');
-      draft.className = 'widget-github-badge widget-github-badge-draft';
-      draft.textContent = 'draft';
-      title.appendChild(draft);
-    }
-    if (kind === 'prs' && item.merged_at) {
-      const merged = document.createElement('span');
-      merged.className = 'widget-github-badge widget-github-badge-merged';
-      merged.textContent = 'merged';
-      title.appendChild(merged);
-    } else if (item.state === 'closed') {
-      const closed = document.createElement('span');
-      closed.className = 'widget-github-badge widget-github-badge-closed';
-      closed.textContent = 'closed';
-      title.appendChild(closed);
-    }
-
-    info.appendChild(title);
-
-    const meta = document.createElement('div');
-    meta.className = 'widget-github-row-meta';
-    const author = item.user?.login ?? 'unknown';
-    // Todo #44 audit: was `innerHTML` with pre-escaped parts; the row is plain
-    // text, so textContent removes the XSS surface entirely.
-    meta.textContent = `${author} · ${timeAgo(item.updated_at)}`;
-    info.appendChild(meta);
-
-    row.appendChild(info);
-
-    if (kind === 'issues') {
-      row.appendChild(buildIssueActions(projectId, repo, item, render));
-    } else if (kind === 'prs') {
-      row.appendChild(buildPRActions(projectId, repo, item, render));
-    }
-
-    return row;
-  }
 
   function render(): void {
     if (destroyed) return;
     body.innerHTML = '';
-    repoLabel.textContent = resolvedRepo ?? 'No repo configured';
+    repoLabel.textContent = repo.current() ?? 'No repo configured';
 
     if (lastError) {
-      const err = document.createElement('div');
-      err.className = 'widget-github-error';
-      err.textContent = lastError;
-      body.appendChild(err);
+      body.appendChild(makeGithubMessage('widget-github-error', lastError));
       return;
     }
 
     if (loading && items.length === 0) {
-      const l = document.createElement('div');
-      l.className = 'widget-github-loading';
-      l.textContent = 'Loading…';
-      body.appendChild(l);
+      body.appendChild(makeGithubMessage('widget-github-loading', 'Loading…'));
       return;
     }
 
-    if (!resolvedRepo) {
-      const empty = document.createElement('div');
-      empty.className = 'widget-github-empty';
-      empty.textContent = 'No GitHub remote detected. Open settings to set a repo.';
-      body.appendChild(empty);
+    if (!repo.current()) {
+      body.appendChild(makeGithubMessage('widget-github-empty', 'No GitHub remote detected. Open settings to set a repo.'));
       return;
     }
 
     if (items.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'widget-github-empty';
-      empty.textContent = kind === 'prs' ? 'No pull requests.' : 'No issues.';
-      body.appendChild(empty);
+      const text = kind === 'prs' ? 'No pull requests.' : 'No issues.';
+      body.appendChild(makeGithubMessage('widget-github-empty', text));
       return;
     }
 
-    for (const item of items) body.appendChild(renderRow(item));
-  }
-
-  // C4G-04: double the widget's cadence per consecutive gh failure, capped, so
-  // a rate-limited or logged-out widget stops re-spawning `gh` every tick.
-  function armBackoff(errorText: string): void {
-    if (!GH_BACKOFF_RE.test(errorText)) return;
-    backoffMs = Math.min(backoffMs > 0 ? backoffMs * 2 : pollIntervalMs * 2, MAX_POLL_BACKOFF_MS);
-    nextPollAt = Date.now() + backoffMs;
+    for (const item of items) {
+      body.appendChild(buildGithubRow(kind, projectId, repo.current()!, item, render));
+    }
   }
 
   async function refresh(): Promise<void> {
     if (destroyed) return;
-    lastRefreshAt = Date.now();
+    cadence.markRefresh();
     const generation = ++refreshGeneration;
     loading = true;
     lastError = null;
     render();
 
-    const repo = await ensureRepo();
+    const listedRepo = await repo.ensure();
     if (destroyed || generation !== refreshGeneration) return;
-    if (!repo) {
+    if (!listedRepo) {
       loading = false;
       render();
       return;
@@ -268,13 +275,13 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     if (destroyed || generation !== refreshGeneration) return;
     const cfg = getConfig();
     const result = kind === 'prs'
-      ? await window.finevibe.github.listPRs(repo, cfg.state, cfg.max)
-      : await window.finevibe.github.listIssues(repo, cfg.state, cfg.max);
+      ? await window.finevibe.github.listPRs(listedRepo, cfg.state, cfg.max)
+      : await window.finevibe.github.listIssues(listedRepo, cfg.state, cfg.max);
     if (destroyed || generation !== refreshGeneration) return;
 
     if (!result.ok) {
       lastError = result.error ?? 'Failed to fetch from GitHub.';
-      armBackoff(lastError);
+      cadence.armBackoff(lastError);
       loading = false;
       render();
       return;
@@ -285,38 +292,16 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     // cap the CLI asked GitHub for — let the unread store drop stale ids.
     const effectiveMax = Math.min(Math.max(cfg.max, 1), GITHUB_MAX_PER_PAGE);
     const scope = ingestedIds;
-    ingestedIds = new Set(items.map((item) => makeItemId(repo, item.number)));
-    ingestItems(projectId, repo, items, items.length < effectiveMax, scope);
-    backoffMs = 0;
-    nextPollAt = 0;
+    ingestedIds = new Set(items.map((item) => makeItemId(listedRepo, item.number)));
+    ingestItems(projectId, listedRepo, items, items.length < effectiveMax, scope);
+    cadence.clearBackoff();
     loading = false;
     render();
   }
 
-  function startPolling(): void {
-    if (destroyed) return;
-    stopPolling();
-    pollIntervalMs = Math.max(60_000, getConfig().refreshSeconds * 1000);
-    pollHandle = window.setInterval(() => {
-      if (document.hidden) return;
-      // C4G-04: inside an armed window the tick is a no-op, so the effective
-      // cadence is the doubled window rounded up to the tick grid.
-      if (Date.now() < nextPollAt) return;
-      void refresh();
-    }, pollIntervalMs);
-  }
-
-  function stopPolling(): void {
-    if (pollHandle !== null) {
-      clearInterval(pollHandle);
-      pollHandle = null;
-    }
-  }
-
   const onVisibility = () => {
     if (document.hidden) return;
-    // C4G-02: at most one visibility refresh per widget per window.
-    if (Date.now() - lastRefreshAt < VISIBILITY_REFRESH_MIN_MS) return;
+    if (cadence.recentlyRefreshed()) return;
     void refresh();
   };
   document.addEventListener('visibilitychange', onVisibility);
@@ -340,18 +325,17 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   // changed, or removed after the first detect left the widget on the old repo
   // (or pinned to the C3RP-15 negative cache). `git:changed` is the debounced
   // per-project signal git-status.ts already subscribes to.
-  const unwatchGitChanged = window.finevibe.git?.onChanged?.(() => {
-    resolvedRepo = null;
-    detectAttempted = false;
-  });
+  const unwatchGitChanged = window.finevibe.git?.onChanged?.(() => repo.reset());
 
-  void refresh().then(() => startPolling());
+  void refresh().then(() => {
+    if (!destroyed) cadence.start(() => void refresh());
+  });
 
   return {
     element: root,
     destroy() {
       destroyed = true;
-      stopPolling();
+      cadence.stop();
       document.removeEventListener('visibilitychange', onVisibility);
       unsubUnread();
       unwatchGitChanged?.();
@@ -359,6 +343,143 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     refresh() {
       void refresh();
     },
+  };
+}
+
+function buildGithubRow(
+  kind: ListKind,
+  projectId: string,
+  repo: string,
+  item: GithubItem,
+  rerender: () => void,
+): HTMLElement {
+  const id = makeItemId(repo, item.number);
+  const unread = isUnread(projectId, id);
+
+  const row = document.createElement('div');
+  row.className = `widget-github-row${unread ? ' unread' : ''}`;
+
+  const info = document.createElement('div');
+  info.className = 'widget-github-row-info';
+
+  const title = document.createElement('div');
+  title.className = 'widget-github-row-title';
+
+  if (unread) {
+    const dot = document.createElement('span');
+    dot.className = 'widget-github-unread-dot';
+    title.appendChild(dot);
+  }
+
+  const num = document.createElement('span');
+  num.className = 'widget-github-row-num';
+  num.textContent = `#${item.number}`;
+  title.appendChild(num);
+
+  const link = document.createElement('a');
+  link.className = 'widget-github-row-link';
+  link.textContent = item.title;
+  link.href = item.html_url;
+  link.title = item.html_url;
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    markRead(projectId, repo, item);
+    void openExternal(item.html_url);
+    rerender();
+  });
+  title.appendChild(link);
+
+  if (kind === 'prs' && item.draft) {
+    const draft = document.createElement('span');
+    draft.className = 'widget-github-badge widget-github-badge-draft';
+    draft.textContent = 'draft';
+    title.appendChild(draft);
+  }
+  if (kind === 'prs' && item.merged_at) {
+    const merged = document.createElement('span');
+    merged.className = 'widget-github-badge widget-github-badge-merged';
+    merged.textContent = 'merged';
+    title.appendChild(merged);
+  } else if (item.state === 'closed') {
+    const closed = document.createElement('span');
+    closed.className = 'widget-github-badge widget-github-badge-closed';
+    closed.textContent = 'closed';
+    title.appendChild(closed);
+  }
+
+  info.appendChild(title);
+
+  const meta = document.createElement('div');
+  meta.className = 'widget-github-row-meta';
+  const author = item.user?.login ?? 'unknown';
+  // Todo #44 audit: was `innerHTML` with pre-escaped parts; the row is plain
+  // text, so textContent removes the XSS surface entirely.
+  meta.textContent = `${author} · ${timeAgo(item.updated_at)}`;
+  info.appendChild(meta);
+
+  row.appendChild(info);
+
+  if (kind === 'issues') {
+    row.appendChild(buildIssueActions(projectId, repo, item, rerender));
+  } else if (kind === 'prs') {
+    row.appendChild(buildPRActions(projectId, repo, item, rerender));
+  }
+
+  return row;
+}
+
+// Row 28 decomposition: the issue and PR action groups are the same shape —
+// a primary button plus a provider picker shown only when a second plan/review
+// provider exists. The two callers differ by labels, provider filter and action.
+function buildActionGroup(opts: {
+  label: string;
+  title: string;
+  menuTitle: string;
+  providers: CliProviderMeta[];
+  onAction: (run: () => void) => (e: MouseEvent) => void;
+  onMain: () => void;
+  onProvider: (providerId: ProviderId) => void;
+}): HTMLElement {
+  const group = document.createElement('div');
+  group.className = 'widget-github-fix-group';
+
+  const main = document.createElement('button');
+  main.className = 'btn-primary btn-xs widget-github-fix-main';
+  main.textContent = opts.label;
+  main.title = opts.title;
+  main.addEventListener('click', opts.onAction(opts.onMain));
+  group.appendChild(main);
+
+  if (opts.providers.length > 1) {
+    const chevron = document.createElement('button');
+    chevron.className = 'btn-primary btn-xs widget-github-fix-dropdown';
+    chevron.textContent = '▼';
+    chevron.title = opts.menuTitle;
+    chevron.setAttribute('aria-label', opts.menuTitle);
+    chevron.setAttribute('aria-haspopup', 'menu');
+    chevron.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const r = chevron.getBoundingClientRect();
+      showContextMenu(
+        r.right,
+        r.bottom + 4,
+        opts.providers.map(p => ({ label: p.displayName, action: () => opts.onProvider(p.id) })),
+      );
+    });
+    group.appendChild(chevron);
+  }
+
+  return group;
+}
+
+function makeMarkReadAction(projectId: string, repo: string, item: GithubItem, rerender: () => void) {
+  return (run: () => void) => (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    markRead(projectId, repo, item);
+    run();
+    rerender();
   };
 }
 
@@ -370,55 +491,24 @@ function buildIssueActions(
 ): HTMLElement {
   const actions = document.createElement('div');
   actions.className = 'widget-github-row-actions';
+  const onAction = makeMarkReadAction(projectId, repo, item, rerender);
+  const planProviders = getAvailableProviderMetas().filter(p => p.capabilities.planModeArg);
 
-  const onAction = (run: () => void) => (e: MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const fix = (providerId?: ProviderId) => {
     markRead(projectId, repo, item);
-    run();
+    startFixSession(projectId, item, providerId);
     rerender();
   };
 
-  const planProviders = getAvailableProviderMetas().filter(p => p.capabilities.planModeArg);
-
-  const fixGroup = document.createElement('div');
-  fixGroup.className = 'widget-github-fix-group';
-
-  const fixBtn = document.createElement('button');
-  fixBtn.className = 'btn-primary btn-xs widget-github-fix-main';
-  fixBtn.textContent = 'Fix';
-  fixBtn.title = `Plan a solution for #${item.number} in a new session`;
-  fixBtn.addEventListener('click', onAction(() => startFixSession(projectId, item)));
-  fixGroup.appendChild(fixBtn);
-
-  if (planProviders.length > 1) {
-    const chevron = document.createElement('button');
-    chevron.className = 'btn-primary btn-xs widget-github-fix-dropdown';
-    chevron.textContent = '▼';
-    chevron.title = 'Plan in another provider';
-    chevron.setAttribute('aria-label', 'Plan in another provider');
-    chevron.setAttribute('aria-haspopup', 'menu');
-    chevron.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const r = chevron.getBoundingClientRect();
-      showContextMenu(
-        r.right,
-        r.bottom + 4,
-        planProviders.map(p => ({
-          label: p.displayName,
-          action: () => {
-            markRead(projectId, repo, item);
-            startFixSession(projectId, item, p.id);
-            rerender();
-          },
-        })),
-      );
-    });
-    fixGroup.appendChild(chevron);
-  }
-
-  actions.appendChild(fixGroup);
+  actions.appendChild(buildActionGroup({
+    label: 'Fix',
+    title: `Plan a solution for #${item.number} in a new session`,
+    menuTitle: 'Plan in another provider',
+    providers: planProviders,
+    onAction,
+    onMain: () => startFixSession(projectId, item),
+    onProvider: (providerId) => fix(providerId),
+  }));
 
   const kanbanBtn = document.createElement('button');
   kanbanBtn.className = 'btn-primary btn-xs';
@@ -444,55 +534,24 @@ function buildPRActions(
 ): HTMLElement {
   const actions = document.createElement('div');
   actions.className = 'widget-github-row-actions';
+  const onAction = makeMarkReadAction(projectId, repo, item, rerender);
+  const reviewProviders = getAvailableProviderMetas().filter(p => p.id !== 'gemini');
 
-  const onAction = (run: () => void) => (e: MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const review = (providerId: ProviderId) => {
     markRead(projectId, repo, item);
-    run();
+    startReviewSession(projectId, item, providerId);
     rerender();
   };
 
-  const reviewProviders = getAvailableProviderMetas().filter(p => p.id !== 'gemini');
-
-  const reviewGroup = document.createElement('div');
-  reviewGroup.className = 'widget-github-fix-group';
-
-  const reviewBtn = document.createElement('button');
-  reviewBtn.className = 'btn-primary btn-xs widget-github-fix-main';
-  reviewBtn.textContent = 'Review';
-  reviewBtn.title = `Review PR #${item.number} in a new session`;
-  reviewBtn.addEventListener('click', onAction(() => startReviewSession(projectId, item)));
-  reviewGroup.appendChild(reviewBtn);
-
-  if (reviewProviders.length > 1) {
-    const chevron = document.createElement('button');
-    chevron.className = 'btn-primary btn-xs widget-github-fix-dropdown';
-    chevron.textContent = '▼';
-    chevron.title = 'Review in another provider';
-    chevron.setAttribute('aria-label', 'Review in another provider');
-    chevron.setAttribute('aria-haspopup', 'menu');
-    chevron.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const r = chevron.getBoundingClientRect();
-      showContextMenu(
-        r.right,
-        r.bottom + 4,
-        reviewProviders.map(p => ({
-          label: p.displayName,
-          action: () => {
-            markRead(projectId, repo, item);
-            startReviewSession(projectId, item, p.id);
-            rerender();
-          },
-        })),
-      );
-    });
-    reviewGroup.appendChild(chevron);
-  }
-
-  actions.appendChild(reviewGroup);
+  actions.appendChild(buildActionGroup({
+    label: 'Review',
+    title: `Review PR #${item.number} in a new session`,
+    menuTitle: 'Review in another provider',
+    providers: reviewProviders,
+    onAction,
+    onMain: () => startReviewSession(projectId, item),
+    onProvider: review,
+  }));
 
   const kanbanBtn = document.createElement('button');
   kanbanBtn.className = 'btn-primary btn-xs';
