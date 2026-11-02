@@ -8,26 +8,48 @@ vi.mock('./platform', () => ({
   get isLinux() { return mockPlatform.isLinux; },
 }));
 
-vi.mock('child_process', () => ({ execFileSync: vi.fn() }));
+vi.mock('child_process', () => {
+  const execFile = vi.fn();
+  // The row-17 async twin promisifies execFile; the custom symbol is what
+  // makes `await execFileP(...)` resolve the { stdout } shape.
+  Object.defineProperty(execFile, Symbol.for('nodejs.util.promisify.custom'), {
+    value: (command: string, args: readonly string[], options: unknown) =>
+      new Promise<{ stdout: string }>((resolve, reject) => {
+        execFile(command, args, options, (err: unknown, stdout?: string) => {
+          if (err) reject(err); else resolve({ stdout: stdout ?? '' });
+        });
+      }),
+  });
+  return { execFileSync: vi.fn(), execFile };
+});
 vi.mock('./store', () => ({ loadState: vi.fn() }));
-vi.mock('./providers/claude-version', () => ({ getClaudeVersion: vi.fn() }));
-vi.mock('./providers/resolve-binary', () => ({ resolveBinary: vi.fn(() => '/usr/bin/claude') }));
+vi.mock('./providers/claude-version', () => ({
+  getClaudeVersion: vi.fn(),
+  getClaudeVersionAsync: vi.fn(async () => null as string | null),
+}));
+vi.mock('./providers/resolve-binary', () => ({
+  resolveBinary: vi.fn(() => '/usr/bin/claude'),
+  resolveBinaryAsync: vi.fn(async () => '/usr/bin/claude'),
+}));
 
-import { execFileSync } from 'child_process';
+import { execFileSync, execFile } from 'child_process';
 import { loadState } from './store';
 import type { LoadedState } from './store';
-import { getClaudeVersion } from './providers/claude-version';
+import { getClaudeVersion, getClaudeVersionAsync } from './providers/claude-version';
 import {
   keychainServiceForConfigDir,
   getKeychainIsolationStatus,
+  getKeychainIsolationStatusAsync,
   LAST_UNNAMESPACED_VERSION,
   _resetForTesting,
 } from './claude-keychain';
-import { resolveBinary } from './providers/resolve-binary';
+import { resolveBinary, resolveBinaryAsync } from './providers/resolve-binary';
 
 const execFileSyncMock = vi.mocked(execFileSync);
+const execFileMock = vi.mocked(execFile);
 const loadStateMock = vi.mocked(loadState);
 const getClaudeVersionMock = vi.mocked(getClaudeVersion);
+const getClaudeVersionAsyncMock = vi.mocked(getClaudeVersionAsync);
 
 /** Make a config dir => its expected namespaced keychain service name. */
 function svc(configDir: string): string {
@@ -42,6 +64,18 @@ function keychainWith(present: Set<string>) {
     if (present.has(service)) return Buffer.from('');
     throw new Error('SecKeychainSearchCopyNext: item not found');
   });
+}
+
+/** Async twin of keychainWith (row 17): the same answer through execFile. */
+function keychainWithAsync(present: Set<string>) {
+  execFileMock.mockImplementation(((
+    _bin: any, args: any, _opts: any,
+    cb: (err: unknown, stdout?: string) => void,
+  ) => {
+    const service = (args as string[])[(args as string[]).indexOf('-s') + 1];
+    if (present.has(service)) cb(null, '');
+    else cb(new Error('SecKeychainSearchCopyNext: item not found'));
+  }) as never);
 }
 
 /** Drive execFileSync: every probe fails with `code` (missing binary, EACCES, timeout). */
@@ -226,5 +260,77 @@ describe('getKeychainIsolationStatus', () => {
     expect(getKeychainIsolationStatus()).toEqual({ status: 'supported', version: null });
     expect(execFileSyncMock).not.toHaveBeenCalled();
     expect(getClaudeVersionMock).not.toHaveBeenCalled();
+  });
+});
+
+// Row 17: spawnPty gates every Claude profile launch on this verdict, and an
+// `unknown` verdict is deliberately not memoized — the sync lane therefore re-
+// ran `which` + `claude --version` + one `security` spawn per profile, on the
+// main thread, on EVERY profile launch. These pin the async twin's parity with
+// the sync verdict rules and that it runs no sync subprocess at all.
+describe('getKeychainIsolationStatusAsync', () => {
+  beforeEach(() => {
+    getClaudeVersionAsyncMock.mockResolvedValue(null);
+    vi.mocked(resolveBinaryAsync).mockImplementation(async () => '/usr/bin/claude');
+  });
+
+  it('is always supported off macOS, with no subprocess at all', async () => {
+    mockPlatform.isMac = false;
+    await expect(getKeychainIsolationStatusAsync()).resolves.toEqual({ status: 'supported', version: null });
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(getClaudeVersionAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it('is supported when a known profile already has a namespaced keychain entry', async () => {
+    profilesWith([{ providerId: 'claude', configDir: '/work' }]);
+    keychainWithAsync(new Set([svc('/work')]));
+    getClaudeVersionAsyncMock.mockResolvedValue('2.1.10');
+    const res = await getKeychainIsolationStatusAsync();
+    expect(res.status).toBe('supported');
+    expect(res.version).toBe('2.1.10');
+  });
+
+  it('is unsupported on an old version with no namespaced entry, and memoized like the sync lane', async () => {
+    profilesWith([{ providerId: 'claude', configDir: '/work' }]);
+    keychainWithAsync(new Set()); // the profile has NO namespaced entry
+    getClaudeVersionAsyncMock.mockResolvedValue(LAST_UNNAMESPACED_VERSION);
+    await expect(getKeychainIsolationStatusAsync()).resolves.toMatchObject({ status: 'unsupported' });
+    const securityCalls = () => execFileMock.mock.calls.filter((c) => c[0] === '/usr/bin/security').length;
+    expect(securityCalls()).toBe(1);
+    // Definitive verdict: the second call costs no probe (spawn hot path).
+    expect(await getKeychainIsolationStatusAsync()).toMatchObject({ status: 'unsupported' });
+    expect(securityCalls()).toBe(1);
+    expect(getClaudeVersionAsyncMock).toHaveBeenCalledTimes(1);
+  });
+  it('is unknown on a newer build and stays uncached (never falsely blocked)', async () => {
+    profilesWith([{ providerId: 'claude', configDir: '/work' }]);
+    keychainWithAsync(new Set());
+    getClaudeVersionAsyncMock.mockResolvedValue('2.1.159');
+    expect((await getKeychainIsolationStatusAsync()).status).toBe('unknown');
+    expect((await getKeychainIsolationStatusAsync()).status).toBe('unknown');
+    // 'unknown' can upgrade, so it re-probes — the same rule the sync lane has.
+    expect(getClaudeVersionAsyncMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs the whole chain off the sync subprocess API', async () => {
+    profilesWith([{ providerId: 'claude', configDir: '/work' }]);
+    keychainWithAsync(new Set());
+    await getKeychainIsolationStatusAsync();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(execFileMock).toHaveBeenCalledWith(
+      '/usr/bin/security',
+      ['find-generic-password', '-s', svc('/work')],
+      expect.anything(),
+      expect.any(Function),
+    );
+    expect(resolveBinaryAsync).toHaveBeenCalled();
+    expect(vi.mocked(resolveBinary)).not.toHaveBeenCalled();
+  });
+
+  it('reports a version probe failure as undetectable, not as a blocked launch', async () => {
+    keychainWithAsync(new Set());
+    getClaudeVersionAsyncMock.mockRejectedValue(new Error('probe exploded'));
+    await expect(getKeychainIsolationStatusAsync()).resolves.toEqual({ status: 'unknown', version: null });
   });
 });

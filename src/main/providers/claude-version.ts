@@ -1,8 +1,14 @@
-import { execSync } from 'child_process';
-import { getFullPath } from '../pty-manager';
+import { execSync, execFile } from 'child_process';
+import { promisify } from 'util';
+import { getFullPath, getFullPathAsync } from '../pty-manager';
+
+const execFileP = promisify(execFile);
 
 /** The one successful probe per resolved binary path; failures are never stored. */
 let cached: { binaryPath: string; version: string } | null = null;
+
+/** In-flight async probe, shared so concurrent spawns don't fan out `--version`. */
+let pending: { binaryPath: string; promise: Promise<string | null> } | null = null;
 
 /**
  * Detect the installed Claude Code CLI version by running `<binary> --version`.
@@ -45,7 +51,46 @@ export function getClaudeVersion(binaryPath: string): string | null {
   return version;
 }
 
-/** @internal Test-only: drop the cached probe result. */
+/**
+ * Row 17: async twin of {@link getClaudeVersion} for the spawn lane. The sync
+ * probe is a 3 s `execSync` of the CLI (plus the sync PATH probe it needs),
+ * reached from `getKeychainIsolationStatus()` on every Claude profile spawn
+ * whose verdict is still `unknown` — a multi-hundred-ms main-thread block
+ * between the launch request and the PTY.
+ *
+ * Same cache and the same P2-53 rule (a failed probe is a miss, never stored);
+ * concurrent callers share one in-flight probe (the sync lane could not have
+ * two). `execFile` is shell-free: same binary, same single `--version` arg.
+ */
+export function getClaudeVersionAsync(binaryPath: string): Promise<string | null> {
+  if (cached && cached.binaryPath === binaryPath) return Promise.resolve(cached.version);
+  if (pending && pending.binaryPath === binaryPath) return pending.promise;
+  const probe = (async (): Promise<string | null> => {
+    let version: string | null = null;
+    try {
+      const { stdout } = await execFileP(binaryPath, ['--version'], {
+        env: { ...process.env, PATH: await getFullPathAsync() },
+        encoding: 'utf-8',
+        timeout: 3000,
+      });
+      const m = String(stdout).match(/(\d+\.\d+\.\d+)/);
+      if (m) version = m[1];
+    } catch {
+      version = null;
+    }
+    if (version) cached = { binaryPath, version };
+    return version;
+  })().finally(() => {
+    // Path-guarded: a probe for another binary that finished in between owns
+    // the slot and must keep its in-flight sharing.
+    if (pending?.binaryPath === binaryPath) pending = null;
+  });
+  pending = { binaryPath, promise: probe };
+  return probe;
+}
+
+/** @internal Test-only: drop the cached probe result (and any in-flight probe). */
 export function resetClaudeVersionCache(): void {
   cached = null;
+  pending = null;
 }

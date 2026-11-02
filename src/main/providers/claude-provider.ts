@@ -12,7 +12,7 @@ import { installStatusLineScript, cleanupAll as cleanupHookStatus } from '../hoo
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
 import { getClaudeConfig, isManagedMcpConfigDir } from '../claude-cli';
 import { guardedInstall, validateSettings, reinstallSettings } from '../settings-guard';
-import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
+import { resolveBinary, resolveBinaryAsync, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { MAX_INDEX_BYTES, MAX_INDEX_FILE_BYTES, IndexTextBudget, UUID_RE, collectProfileRoots, TranscriptDiscoveryScan, readdirForDiscovery } from './transcript-utils';
 import { writeAgentFile, deleteAgentFile } from './agent-files';
 
@@ -78,6 +78,12 @@ export class ClaudeProvider implements CliProvider {
     return resolveBinary('claude', binaryCache);
   }
 
+  // Row 17: spawn-lane twin — the cold path spawns `which` (and `npm prefix -g`
+  // on Windows); sync that blocked main in front of every first spawn.
+  resolveBinaryPathAsync(): Promise<string> {
+    return resolveBinaryAsync('claude', binaryCache);
+  }
+
   validatePrerequisites(): boolean {
     return validateBinaryExists('claude');
   }
@@ -87,11 +93,11 @@ export class ClaudeProvider implements CliProvider {
     return validateBinaryExistsAsync('claude');
   }
 
-  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string; pathEnv?: string }): Record<string, string> {
     const env = { ...baseEnv };
     delete env.CLAUDE_CODE; // avoid subprocess detection conflicts
     env.CLAUDE_IDE_SESSION_ID = sessionId;
-    env.PATH = getFullPath();
+    env.PATH = opts?.pathEnv ?? getFullPath();
     // Profile support: point Claude Code at an isolated config dir (separate
     // credentials/license, settings, hooks, transcripts). Absent = default ~/.claude.
     removeEnvKey(env, 'CLAUDE_CONFIG_DIR');

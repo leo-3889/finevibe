@@ -669,7 +669,7 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('pty:createShell', (_event, sessionId: string, cwd: string) => {
+  ipcMain.handle('pty:createShell', async (_event, sessionId: string, cwd: string) => {
     const win = getMainWindow();
     if (!win) return;
 
@@ -683,7 +683,10 @@ export function registerIpcHandlers(): void {
       return;
     }
     const dataSink = ptyDataSink(() => getMainWindow(), sessionId);
-    spawnShellPty(
+    // Awaited (row 17): spawnShellPty is async now (its PATH probe is off the
+    // main thread), and awaiting keeps a spawn failure landing on this channel
+    // as a rejection — exactly what the synchronous call did.
+    await spawnShellPty(
       sessionId,
       cwd,
       dataSink,

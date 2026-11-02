@@ -8,7 +8,7 @@ import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
 import type { CompatibleSessionWatcher } from '../pi-compatible-session-watcher';
-import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
+import { resolveBinary, resolveBinaryAsync, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { collectProfileRoots, TranscriptDiscoveryScan } from './transcript-utils';
 import { findTranscriptPathSync, findTranscriptPathInFlatDir, scanTranscriptSessionsRoot, scanFlatSessionDir, indexCompatibleTranscript, readTranscriptStatusSync, readSessionExitReasonSync, seedLaunchTranscript } from './pi-compatible-transcripts';
 import type { SessionExitReason } from './pi-compatible-transcripts';
@@ -139,6 +139,13 @@ export function createPiCompatibleProvider(config: PiCompatibleProviderConfig) {
       return resolveBinary(config.binaryName, binaryCache);
     }
 
+    // Row 17: spawn-lane twin — the cold path spawns `which` (and
+    // `npm prefix -g` on Windows); sync that blocked main in front of every
+    // first Pi/Pi-Bolt/OMP spawn of a launch.
+    resolveBinaryPathAsync(): Promise<string> {
+      return resolveBinaryAsync(config.binaryName, binaryCache);
+    }
+
     validatePrerequisites(): boolean {
       return validateBinaryExists(config.binaryName);
     }
@@ -148,9 +155,9 @@ export function createPiCompatibleProvider(config: PiCompatibleProviderConfig) {
       return validateBinaryExistsAsync(config.binaryName);
     }
 
-    buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string> {
+    buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string; pathEnv?: string }): Record<string, string> {
       const env = { ...baseEnv };
-      env.PATH = getFullPath();
+      env.PATH = opts?.pathEnv ?? getFullPath();
       // Host-side hook block (per-host providers plan §3): the merged on-host
       // hooks read the FineVibe session id from this var. Inert on a local
       // launch — none of these CLIs has a local hook system.

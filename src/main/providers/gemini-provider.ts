@@ -5,7 +5,7 @@ import type { CliProvider, TranscriptDiscovery } from './provider';
 import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '../../shared/types';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
-import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
+import { resolveBinary, resolveBinaryAsync, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { getGeminiConfig } from '../gemini-config';
 import { installGeminiHooks, validateGeminiHooks, cleanupGeminiHooks, SESSION_ID_VAR } from '../gemini-hooks';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
@@ -102,6 +102,12 @@ export class GeminiProvider implements CliProvider {
     return resolveBinary('gemini', binaryCache);
   }
 
+  // Row 17: spawn-lane twin — the cold path spawns `which` (and `npm prefix -g`
+  // on Windows); sync that blocked main in front of every first spawn.
+  resolveBinaryPathAsync(): Promise<string> {
+    return resolveBinaryAsync('gemini', binaryCache);
+  }
+
   validatePrerequisites(): boolean {
     return validateBinaryExists('gemini');
   }
@@ -111,10 +117,10 @@ export class GeminiProvider implements CliProvider {
     return validateBinaryExistsAsync('gemini');
   }
 
-  buildEnv(sessionId: string, baseEnv: Record<string, string>, _opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string; pathEnv?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env[SESSION_ID_VAR] = sessionId;
-    env.PATH = getFullPath();
+    env.PATH = opts?.pathEnv ?? getFullPath();
     return env;
   }
 
