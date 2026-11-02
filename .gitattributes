@@ -1,0 +1,8 @@
+# Normalize line endings: LF in the index and on checkout (repo has LF blobs, core.autocrlf=false; Windows-side tools otherwise turn 5-line fixes into whole-file diffs - dev/audit/normalize-eol.js).
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.node binary
+*.exe binary
+*.zip binary
+*.ttf binary
