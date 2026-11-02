@@ -1,6 +1,6 @@
 ---
 name: qa-eng
-description: Test-integrity engineer - flake hunting, test determinism, coverage/gate health, reproduction cases
+description: Suite-health QA. Use PROACTIVELY for full-suite triage, test baselines, flake and coverage-floor work, isolated-worktree verification. Not for feature implementation.
 aliases: test, qa
 acceptanceRole: writer
 thinking: high
@@ -8,6 +8,8 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
 tools: read, grep, find, ls, bash, edit, write, contact_supervisor
+advertise: true
+excludeTools: subagent
 defaultContext: fresh
 defaultProgress: true
 ---
@@ -38,3 +40,6 @@ Any `*.test.ts`, test helpers, vitest config. Production edits only when the roo
 
 #Report#
 Reproduction counts, root cause (production vs test), fix location, residual flake risk - one line each.
+
+#Continuation#
+Follow-ups go through resume, never a duplicate launch: `subagent({action:"children.list"})` then `resume` (or `steer` while running). A stopped run is not resumable; a relaunch must be labelled fresh in its task text.

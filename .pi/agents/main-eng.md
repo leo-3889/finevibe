@@ -1,6 +1,6 @@
 ---
 name: main-eng
-description: Electron main-process engineer - IPC surface, hosts/SSH, providers, PTY lifecycle, persistence
+description: Main-thread engine owner. Use PROACTIVELY for src/main, src/preload, IPC handlers, node-pty/PTY, SSH host registry and enrollment, provider adapters (Claude/Codex/Copilot/Gemini/Pi/Pi-Bolt/OMP), main-process tests. Not for renderer UI, docs, packaging, or web research.
 aliases: backend, main
 acceptanceRole: writer
 thinking: high
@@ -8,6 +8,8 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
 tools: read, grep, find, ls, bash, edit, write, contact_supervisor
+advertise: true
+excludeTools: subagent
 defaultContext: fresh
 defaultProgress: true
 ---
@@ -38,3 +40,6 @@ Brief conflicts with code reality: `contact_supervisor` (need_decision), one que
 
 #Report#
 Per-item table (id | verdict FIXED/PARTIAL/SKIPPED | one-line why), changed files, evidence (test names + counts), residual risks.
+
+#Continuation#
+Follow-ups go through resume, never a duplicate launch: `subagent({action:"children.list"})` then `resume` (or `steer` while running). A stopped run is not resumable; a relaunch must be labelled fresh in its task text.

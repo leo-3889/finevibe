@@ -1,6 +1,6 @@
 ---
 name: renderer-eng
-description: Renderer/UI engineer - components, CSS, i18n, keybindings, terminal panes
+description: Renderer UI owner. Use PROACTIVELY for src/renderer (Lit components, xterm, Kanban, sidebar, settings, search, preview), CSS, i18n, renderer tests. Not for main-process, IPC contracts requiring main edits, docs, or packaging.
 aliases: frontend, ui
 acceptanceRole: writer
 thinking: high
@@ -8,6 +8,8 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
 tools: read, grep, find, ls, bash, edit, write, contact_supervisor
+advertise: true
+excludeTools: subagent
 defaultContext: fresh
 defaultProgress: true
 ---
@@ -36,3 +38,6 @@ Autonomous execution worker. You are `renderer-eng`, UI engineer of the FineVibe
 
 #Report#
 Per-item table, changed files, tests run, one line visual/UX impact.
+
+#Continuation#
+Follow-ups go through resume, never a duplicate launch: `subagent({action:"children.list"})` then `resume` (or `steer` while running). A stopped run is not resumable; a relaunch must be labelled fresh in its task text.
