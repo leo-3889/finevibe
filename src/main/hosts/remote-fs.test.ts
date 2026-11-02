@@ -30,11 +30,15 @@ import { getHost } from './host-registry';
 import {
   cloneRemoteRepo,
   ensureRemoteDir,
+  expandRemotePath,
+  invalidateRemoteHome,
   isRemotePathInKnownProject,
   listRemoteDir,
   listRemoteDirs,
+  MAX_REMOTE_HOME_CACHE,
   normalizeRemotePath,
   readRemoteFile,
+  resolveRemoteHome,
   statRemotePath,
 } from './remote-fs';
 
@@ -55,7 +59,73 @@ beforeEach(() => {
   sftp.read.mockReset();
   sftp.readRange.mockReset();
   vi.mocked(exec).mockReset();
+  // Row 129: the home probe is a real lane every test now rides — script it to
+  // the host's absolute home, everything else answers empty by default.
+  vi.mocked(exec).mockImplementation(async (_r: unknown, cmd: string) =>
+    cmd.includes('$HOME') ? '/home/dev\n' : '');
+  invalidateRemoteHome('h1');
   store.projects = [{ path: '/home/dev/dev/app', hostId: 'h1' }];
+});
+
+describe('remote home resolution (row 129)', () => {
+  // The defect: sftp has no tilde expansion, so `~` reached the host as a
+  // literal directory name and every Browse answered `No such directory: ~`.
+  it('asks the exec lane for $HOME once per host and caches it (lazy resolve)', async () => {
+    sftp.entries.mockResolvedValue([]);
+    await listRemoteDirs('h1', '~');
+    await listRemoteDirs('h1', '~/projects');
+    expect(vi.mocked(exec).mock.calls.map((c) => c[1])).toEqual([`printf '%s' "$HOME"`]);
+  });
+
+  it('probes a fresh home after a failed probe (a failure is never cached)', async () => {
+    vi.mocked(exec).mockResolvedValueOnce('');
+    await expect(resolveRemoteHome(enrolled)).resolves.toBeNull();
+    await expect(resolveRemoteHome(enrolled)).resolves.toBe('/home/dev');
+  });
+
+  // The enrollment warm hook (enrollment.ts step 7) is the same call, so a
+  // freshly-enrolled host's first Browse answers with zero extra execs.
+  it('serves the first Browse from the enrollment warm-up', async () => {
+    await resolveRemoteHome(enrolled); // what enrollHost's dirs step does
+    vi.mocked(exec).mockClear();
+    sftp.entries.mockResolvedValue([dirEntry('projects', true)]);
+    await expect(listRemoteDirs('h1', '~')).resolves.toEqual({
+      ok: true, dirs: ['~/projects'], home: '/home/dev',
+    });
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('never probes for an absolute spelling (the tree rails stay cheap)', async () => {
+    sftp.entries.mockResolvedValue([]);
+    await listRemoteDirs('h1', '/srv/projects');
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('refuses a multi-line or relative $HOME instead of anchoring on it', async () => {
+    vi.mocked(exec).mockResolvedValueOnce('/home/dev\nextra');
+    await expect(resolveRemoteHome(enrolled)).resolves.toBeNull();
+    vi.mocked(exec).mockResolvedValueOnce('dev');
+    await expect(resolveRemoteHome(enrolled)).resolves.toBeNull();
+  });
+
+  it('drops the oldest host past MAX_REMOTE_HOME_CACHE (LRU, capped)', async () => {
+    for (let i = 0; i < MAX_REMOTE_HOME_CACHE + 1; i += 1) {
+      await resolveRemoteHome({ ...enrolled, id: `host-${i}` });
+    }
+    vi.mocked(exec).mockClear();
+    await resolveRemoteHome({ ...enrolled, id: 'host-0' }); // evicted: re-probed
+    await resolveRemoteHome({ ...enrolled, id: `host-${MAX_REMOTE_HOME_CACHE}` }); // still cached
+    expect(vi.mocked(exec)).toHaveBeenCalledTimes(1);
+  });
+
+  it('expands the canonical spellings client-side and passes absolutes through', () => {
+    expect(expandRemotePath('~', '/home/dev')).toBe('/home/dev');
+    expect(expandRemotePath('~/dev/app', '/home/dev')).toBe('/home/dev/dev/app');
+    expect(expandRemotePath('/srv/app', '/home/dev')).toBe('/srv/app');
+    expect(expandRemotePath('~', null)).toBeNull();
+    expect(expandRemotePath('~/x', null)).toBeNull();
+    expect(expandRemotePath('/x', null)).toBe('/x');
+  });
 });
 
 describe('normalizeRemotePath', () => {
@@ -99,7 +169,7 @@ describe('gate', () => {
 
     vi.mocked(getHost).mockReturnValue({ ...enrolled, enrollmentStatus: 'partial' });
     sftp.entries.mockResolvedValue([]);
-    await expect(listRemoteDirs('h1', '~')).resolves.toEqual({ ok: true, dirs: [] });
+    await expect(listRemoteDirs('h1', '~')).resolves.toEqual({ ok: true, dirs: [], home: '/home/dev' });
   });
 
   it('refuses an unsafe path before any lane runs', async () => {
@@ -113,16 +183,40 @@ describe('gate', () => {
 });
 
 describe('listRemoteDirs', () => {
+  // Row 129 regression pin: the seed the browser opens on. The sftp lane gets
+  // the ABSOLUTE home; the listing stays in the canonical `~` spelling and the
+  // payload answers `home` so the modal can label the root `~` and persist an
+  // absolute selection.
+  it('hands sftp the resolved absolute home, never the literal ~ (row 129)', async () => {
+    sftp.entries.mockResolvedValue([dirEntry('projects', true)]);
+    const res = await listRemoteDirs('h1', '~');
+    expect(sftp.entries).toHaveBeenCalledWith(enrolled, '/home/dev', { timeoutMs: 10000 });
+    expect(sftp.entries.mock.calls.every(([, dir]) => dir !== '~' && !dir.startsWith('~/'))).toBe(true);
+    expect(res).toEqual({ ok: true, dirs: ['~/projects'], home: '/home/dev' });
+  });
+
+  it('refuses a ~-anchored listing when $HOME is unresolvable', async () => {
+    vi.mocked(exec).mockResolvedValue('');
+    await expect(listRemoteDirs('h1', '~/projects')).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('home directory'),
+    });
+    expect(sftp.entries).not.toHaveBeenCalled();
+    // Absolute spellings never needed the home: they keep working.
+    sftp.entries.mockResolvedValue([dirEntry('app', true)]);
+    await expect(listRemoteDirs('h1', '/srv')).resolves.toMatchObject({ ok: true, dirs: ['/srv/app'] });
+  });
+
   it('lists dirs only, hides dot-names, sorts, prefix-filters, joins', async () => {
     sftp.entries.mockResolvedValue([
       dirEntry('zeta', true), dirEntry('Beta', true), dirEntry('.git', true),
       dirEntry('README.md', false),
     ]);
     const res = await listRemoteDirs('h1', '~/projects');
-    expect(res).toEqual({ ok: true, dirs: ['~/projects/Beta', '~/projects/zeta'] });
+    expect(res).toEqual({ ok: true, dirs: ['~/projects/Beta', '~/projects/zeta'], home: '/home/dev' });
     const prefixed = await listRemoteDirs('h1', '~/projects', 'z');
     expect(prefixed.dirs).toEqual(['~/projects/zeta']);
-    // The root keeps its single slash.
+    // The root keeps its single slash; an absolute seed needs no home, so the
+    // payload carries none (the browser only labels `~` for a home seed).
     sftp.entries.mockResolvedValue([dirEntry('home', true)]);
     await expect(listRemoteDirs('h1', '/')).resolves.toEqual({ ok: true, dirs: ['/home'] });
   });
@@ -143,7 +237,7 @@ describe('statRemotePath', () => {
     });
     sftp.stat.mockResolvedValue(null);
     await expect(statRemotePath('h1', '~/gone')).resolves.toEqual({ ok: false });
-    expect(sftp.stat).toHaveBeenCalledWith(enrolled, '~/dev', { timeoutMs: 10000 });
+    expect(sftp.stat).toHaveBeenCalledWith(enrolled, '/home/dev/dev', { timeoutMs: 10000 });
   });
 
   // Audit R93 pin: this function is the Add-project DIR BROWSER (`hosts:stat`).
@@ -161,28 +255,38 @@ describe('statRemotePath', () => {
 
 describe('ensureRemoteDir', () => {
   it('mkdir -p over the exec lane and answers the echoed canonical path', async () => {
-    vi.mocked(exec).mockResolvedValue('/home/dev/projects/demo');
+    vi.mocked(exec).mockImplementation(async (_r: unknown, cmd: string) =>
+      cmd.includes('$HOME') ? '/home/dev' : '/home/dev/projects/demo');
     const res = await ensureRemoteDir('h1', '~/projects/demo');
     expect(res).toEqual({ ok: true, path: '/home/dev/projects/demo' });
-    const cmd = vi.mocked(exec).mock.calls[0][1] as string;
-    expect(cmd).toBe(`mkdir -p "$HOME/projects/demo" && printf '%s' "$HOME/projects/demo"`);
+    const cmd = vi.mocked(exec).mock.calls[1][1] as string;
+    expect(cmd).toBe(`mkdir -p "/home/dev/projects/demo" && printf '%s' "/home/dev/projects/demo"`);
   });
 
+  // Row 129 non-regression: quoting `~` (or `~/`) is literal to the remote
+  // shell, so the old `'~/'` shim CREATED a directory named `~`. The path is
+  // expanded against the resolved home before it is ever quoted.
   it('expands a bare ~ to the home dir, never a literal "~" directory', async () => {
-    vi.mocked(exec).mockResolvedValue('/home/dev');
+    vi.mocked(exec).mockImplementation(async (_r: unknown, cmd: string) =>
+      cmd.includes('$HOME') ? '/home/dev' : '/home/dev');
     await expect(ensureRemoteDir('h1', '~')).resolves.toEqual({ ok: true, path: '/home/dev' });
-    const cmd = vi.mocked(exec).mock.calls[0][1] as string;
-    expect(cmd).toContain('"$HOME/"');
-    expect(cmd).not.toContain('"~"');
+    const cmd = vi.mocked(exec).mock.calls[1][1] as string;
+    expect(cmd).toBe(`mkdir -p "/home/dev" && printf '%s' "/home/dev"`);
+    expect(cmd).not.toContain('~');
+    expect(cmd).not.toContain('$HOME');
   });
 
   it('refuses a reply that is not an absolute path', async () => {
-    vi.mocked(exec).mockResolvedValue('relative/spelling');
+    vi.mocked(exec).mockImplementation(async (_r: unknown, cmd: string) =>
+      cmd.includes('$HOME') ? '/home/dev' : 'relative/spelling');
     await expect(ensureRemoteDir('h1', '~/x')).resolves.toMatchObject({ ok: false });
   });
 
   it('reports an exec failure as an error (mkdir on an existing file)', async () => {
-    vi.mocked(exec).mockRejectedValue(new Error('ssh exec exit 1: mkdir'));
+    vi.mocked(exec).mockImplementation(async (_r: unknown, cmd: string) => {
+      if (cmd.includes('$HOME')) return '/home/dev';
+      throw new Error('ssh exec exit 1: mkdir');
+    });
     await expect(ensureRemoteDir('h1', '~/x')).resolves.toMatchObject({ ok: false, error: 'ssh exec exit 1: mkdir' });
   });
 });
@@ -197,11 +301,15 @@ describe('cloneRemoteRepo', () => {
 
   it('clones on the host with quoted argv', async () => {
     sftp.stat.mockResolvedValue(null);
-    vi.mocked(exec).mockResolvedValue('');
+    vi.mocked(exec).mockImplementation(async (_r: unknown, cmd: string) =>
+      cmd.includes('$HOME') ? '/home/dev' : '');
     await expect(cloneRemoteRepo('h1', 'https://github.com/o/r', '~/projects/r'))
       .resolves.toEqual({ ok: true });
-    const cmd = vi.mocked(exec).mock.calls[0][1] as string;
-    expect(cmd).toBe(`git clone -- "https://github.com/o/r" "$HOME/projects/r"`);
+    // The home probe rides first (row 129), the clone is the second exec.
+    const cmd = vi.mocked(exec).mock.calls[1][1] as string;
+    // Row 129: the destination is expanded client-side, so the quoted argv
+    // carries the absolute path (a quoted `~/…` is literal to the shell).
+    expect(cmd).toBe(`git clone -- "https://github.com/o/r" "/home/dev/projects/r"`);
   });
 
   it('refuses a non-empty / non-directory destination (the local pre-check)', async () => {
@@ -213,7 +321,10 @@ describe('cloneRemoteRepo', () => {
     sftp.entries.mockResolvedValue([dirEntry('x', true)]);
     await expect(cloneRemoteRepo('h1', 'https://github.com/o/r', '~/r'))
       .resolves.toMatchObject({ ok: false, error: expect.stringContaining('not empty') });
-    expect(exec).not.toHaveBeenCalled();
+    // Row 129: the pre-check stats the ABSOLUTE destination, and the only exec
+    // that ran is the cached home probe — never the clone.
+    expect(sftp.stat).toHaveBeenCalledWith(enrolled, '/home/dev/r', { timeoutMs: 10000 });
+    expect(vi.mocked(exec).mock.calls.every(([, cmd]) => !cmd.startsWith('git clone'))).toBe(true);
   });
 
   it('refuses when git is missing on the host', async () => {
@@ -271,8 +382,7 @@ describe('isRemotePathInKnownProject (file-lane containment, §11)', () => {
 describe('listRemoteDir (fs:listDir rail)', () => {
   it('lists files and dirs with joined paths', async () => {
     sftp.entries.mockResolvedValue([dirEntry('src', true), dirEntry('README.md', false)]);
-    const res = await listRemoteDir('h1', '/home/dev/dev/app');
-    expect(res).toEqual({
+    const res = await listRemoteDir('h1', '/home/dev/dev/app');    expect(res).toEqual({
       ok: true,
       entries: [
         { name: 'src', path: '/home/dev/dev/app/src', isDirectory: true },
@@ -303,6 +413,16 @@ describe('listRemoteDir (fs:listDir rail)', () => {
     sftp.entries.mockResolvedValue(null);
     expect((await listRemoteDir('h1', '/home/dev/dev/app')).ok).toBe(false);
   });
+
+  // Row 129: a project stored in the canonical `~` spelling is a known project
+  // root AND reaches sftp as an absolute path.
+  it('expands a home-anchored project root for the sftp lane', async () => {
+    store.projects = [{ path: '~/dev/app', hostId: 'h1' }];
+    sftp.entries.mockResolvedValue([dirEntry('src', true)]);
+    const res = await listRemoteDir('h1', '~/dev/app');
+    expect(sftp.entries).toHaveBeenCalledWith(enrolled, '/home/dev/dev/app', { timeoutMs: 10000 });
+    expect(res).toEqual({ ok: true, entries: [{ name: 'src', path: '~/dev/app/src', isDirectory: true }] });
+  });
 });
 
 describe('readRemoteFile (fs:readFile rail)', () => {
@@ -312,6 +432,7 @@ describe('readRemoteFile (fs:readFile rail)', () => {
     sftp.read.mockResolvedValue('hello world\n');
     await expect(readRemoteFile('h1', '/home/dev/dev/app/x.txt'))
       .resolves.toEqual({ ok: true, content: 'hello world\n' });
+    expect(sftp.stat).toHaveBeenCalledWith(enrolled, '/home/dev/dev/app/x.txt', { timeoutMs: 10000 });
   });
 
   it('sniffs NUL as binary before the full read', async () => {

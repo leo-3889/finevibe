@@ -265,6 +265,10 @@ describe('host registry survives a renderer whole-state persist', () => {
     fs.writeFileSync(stateFile(), JSON.stringify({ version: 1, projects: [], activeProjectId: null, hosts: [] }));
     store.loadState();
     ssh.listDirEntries.mockReset().mockResolvedValue([{ name: 'dev', isDirectory: true }, { name: 'notes.md', isDirectory: false }]);
+    // Row 129: `~` is expanded client-side against the host's $HOME (sftp has
+    // no tilde expansion), so the browse lane probes it once per host.
+    ssh.exec.mockReset().mockImplementation(async (_r: unknown, cmd: string) =>
+      cmd.includes('$HOME') ? '/home/dev' : '');
   });
 
   it('a valid key-auth draft for an unreachable host lands in listHosts() and on disk, and the browse gate stops refusing it', async () => {
@@ -282,7 +286,7 @@ describe('host registry survives a renderer whole-state persist', () => {
     expect(asDraft.error).toContain('is not enrolled');
 
     registry.setEnrollmentStatus(record.id, 'enrolled');
-    expect(await remoteFs.listRemoteDirs(record.id, '~')).toEqual({ ok: true, dirs: ['~/dev'] });
+    expect(await remoteFs.listRemoteDirs(record.id, '~')).toEqual({ ok: true, dirs: ['~/dev'], home: '/home/dev' });
   });
 
   it('keeps the created host through the renderer whole-state save (store:save + the quit flush)', async () => {
@@ -313,7 +317,7 @@ describe('host registry survives a renderer whole-state persist', () => {
     // And it survives the restart with the browse lane intact (no `Unknown host`).
     store.invalidateStateCache();
     expect(registry.listHosts().map((h) => h.id)).toEqual([record.id]);
-    expect(await remoteFs.listRemoteDirs(record.id, '~')).toEqual({ ok: true, dirs: ['~/dev'] });
+    expect(await remoteFs.listRemoteDirs(record.id, '~')).toEqual({ ok: true, dirs: ['~/dev'], home: '/home/dev' });
   });
 
   it('lets a renderer payload drop a host main itself deleted', () => {

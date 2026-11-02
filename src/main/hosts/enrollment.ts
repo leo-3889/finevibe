@@ -24,6 +24,7 @@ import {
   readPublicKeyLine,
 } from './keys';
 import { setEnrollmentStatus, updateHost } from './host-registry';
+import { resolveRemoteHome } from './remote-fs';
 import { seedHostTrustStore } from './host-trust';
 import { isValidProfileId } from '../profiles';
 
@@ -404,9 +405,12 @@ export async function enrollHost(
   }
 
   // Step 7: base dirs (+ the hook status sidecar dir, §3: hooks write
-  // ~/.finevibe/run on the host).
+  // ~/.finevibe/run on the host). The same exec lane resolves the absolute
+  // $HOME once, so the Add-project browser is warm the moment enrollment
+  // lands (row 129: a `~`-anchored remote path is literal to sftp).
   try {
     await exec(record, 'mkdir -p ~/.finevibe ~/.finevibe/run', { timeoutMs: PREREQ_TIMEOUT_MS });
+    await resolveRemoteHome(record);
     steps.push({ step: 'dirs', ok: true });
   } catch (err) {
     partial = true;

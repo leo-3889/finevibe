@@ -90,6 +90,7 @@ const ALLOWLIST: Record<string, string> = {
   'textCache@session-deep-search.ts': 'capped:MAX_CACHE_ENTRIES + MAX_CACHE_CHARS (LRU evict oldest)',
   'gateRootCanonicalByPath@store.ts': 'capped:GATE_ROOT_CANONICAL_MAX (FIFO, PA-08 memo)',
   'connections@hosts/ssh-client.ts': 'capped:MAX_CACHED_CONNECTIONS (FIFO evict oldest ssh2 client; closeConnection drops per host)',
+  'remoteHomeCache@hosts/remote-fs.ts': 'capped:MAX_REMOTE_HOME_CACHE (LRU re-insert on hit; keys are host ids, row 129 home probe memo)',
   'cache@hosts/secrets.ts': 'capped:MAX_CACHED_SECRETS (LRU; audit row 46 — the ciphertext file is the source, every mutation is a read-modify-write of it)',
 
   // teardown: cleared on watcher/file stop, session exit, store invalidate,
