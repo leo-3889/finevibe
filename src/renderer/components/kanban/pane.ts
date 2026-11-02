@@ -1,59 +1,25 @@
-import { instances, type KanbanInstance } from './instance.js';
+import { instances } from './instance.js';
 import { renderBoard, hideBoardView, resetBoardViewIf } from '../board/board-view.js';
+import { createTabPaneShell } from '../tab-pane.js';
 
-export function createKanbanPane(sessionId: string, projectId: string): void {
-  if (instances.has(sessionId)) return;
-
-  const el = document.createElement('div');
-  el.className = 'kanban-pane hidden';
-  el.dataset['sessionId'] = sessionId;
-
-  const instance: KanbanInstance = {
-    sessionId,
-    projectId,
-    element: el,
-    destroy() {
-      el.remove();
-    },
-  };
-  instances.set(sessionId, instance);
-}
-
-export function attachKanbanToContainer(sessionId: string, container: HTMLElement): void {
-  const instance = instances.get(sessionId);
-  if (!instance) return;
-  if (instance.element.parentElement !== container) {
-    container.appendChild(instance.element);
-  }
-}
-
-export function showKanbanPane(sessionId: string, isSplit: boolean): void {
-  const instance = instances.get(sessionId);
-  if (!instance) return;
-  instance.element.classList.remove('hidden');
-  instance.element.classList.toggle('split', isSplit);
-  renderBoard(instance.element);
-}
-
-export function hideAllKanbanPanes(): void {
-  for (const instance of instances.values()) {
-    instance.element.classList.add('hidden');
-  }
-  hideBoardView();
-}
-
-export function destroyKanbanPane(sessionId: string): void {
-  const instance = instances.get(sessionId);
-  if (!instance) return;
-  instances.delete(sessionId);
-  instance.destroy();
+const pane = createTabPaneShell({
+  instances,
+  className: 'kanban-pane',
+  onShow: (instance) => renderBoard(instance.element),
+  onHideAll: hideBoardView,
   // C2R-16: the destroyed pane carried board-view's singleton; drop the
   // reference so its per-tick status/cost patches stop scanning a detached
   // tree. renderBoard() rebuilds on demand for any surviving pane.
-  // C3R-04: only when this pane owns the singleton — instance.destroy()
+  // C3R-04: only when this pane owns the singleton — the shell's destroy()
   // detached `element` with the board inside it, so `contains` still sees
   // the subtree; a background pane's destroy leaves the visible board intact.
-  resetBoardViewIf(instance.element);
-}
+  onDestroy: (instance) => resetBoardViewIf(instance.element),
+});
+
+export const createKanbanPane = pane.create;
+export const attachKanbanToContainer = pane.attach;
+export const showKanbanPane = pane.show;
+export const hideAllKanbanPanes = pane.hideAll;
+export const destroyKanbanPane = pane.destroy;
 
 export { getKanbanInstance } from './instance.js';
