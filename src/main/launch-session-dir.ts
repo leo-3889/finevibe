@@ -67,11 +67,15 @@ function fnv1aHex(s: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
-export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId: string): string {
-  const safe = UI_SESSION_ID_RE.test(uiSessionId)
+/** The ONE id sanitizer: both launch planes must map an id 1:1, so they share it. */
+function sanitizeUiSessionId(uiSessionId: string): string {
+  return UI_SESSION_ID_RE.test(uiSessionId)
     ? uiSessionId
     : `${uiSessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 119)}-${fnv1aHex(uiSessionId)}` || 'session';
-  return path.join(launchSessionBaseDir(providerId), safe);
+}
+
+export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId: string): string {
+  return path.join(launchSessionBaseDir(providerId), sanitizeUiSessionId(uiSessionId));
 }
 
 /**
@@ -84,14 +88,11 @@ export function launchSessionDir(providerId: LaunchSessionProvider, uiSessionId:
  *
  * Home-relative posix (`~/.finevibe/sessions/<provider>/<id>`): the file
  * seam maps it to `~/…` over sftp; the enrollment dirs step owns `mkdir -p`
- * of `~/.finevibe`. The id sanitizer mirrors launchSessionDir (same regex,
- * same FNV-1a collision guard) so a weird id maps 1:1 across planes.
+ * of `~/.finevibe`. The id goes through the same sanitizer as
+ * launchSessionDir, so a weird id maps 1:1 across planes.
  */
 export function remoteLaunchSessionDir(providerId: LaunchSessionProvider, uiSessionId: string): string {
-  const safe = UI_SESSION_ID_RE.test(uiSessionId)
-    ? uiSessionId
-    : `${uiSessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 119)}-${fnv1aHex(uiSessionId)}` || 'session';
-  return `~/.finevibe/sessions/${providerId}/${safe}`;
+  return `~/.finevibe/sessions/${providerId}/${sanitizeUiSessionId(uiSessionId)}`;
 }
 
 /**

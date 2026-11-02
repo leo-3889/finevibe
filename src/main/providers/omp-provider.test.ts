@@ -4,7 +4,7 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(),
   promises: { readFile: vi.fn() },
 }));
-vi.mock('os', () => ({ homedir: () => '/mock/home' }));
+vi.mock('os', () => ({ homedir: () => '/mock/home', tmpdir: () => '/mock/tmp' }));
 vi.mock('../pty-manager', () => ({ getFullPath: () => '/usr/local/bin:/usr/bin' }));
 vi.mock('./resolve-binary', () => ({ resolveBinary: vi.fn(), validateBinaryExists: vi.fn(), validateBinaryExistsAsync: vi.fn(async () => true) }));
 vi.mock('../omp-session-watcher', () => ({
@@ -199,6 +199,15 @@ describe('buildArgs', () => {
     provider.onSessionResumed!('ui-10', '/proj', {} as any, undefined, 'cli-10');
     expect(provider.buildArgs({ sessionId: 'ui-10', cliSessionId: 'cli-10', isResume: true, extraArgs: '' }))
       .toEqual(['--session-dir', sessionDirFor('ui-10'), '--resume', 'cli-10']);
+  });
+
+  // Row 109/27: the shared launch state now carries `knownCliId` for every
+  // Pi-compatible provider, so the `--session-id` push must stay gated on the
+  // provider's config, not on the state — omp exits on an unknown flag.
+  it('never pushes --session-id, even with a resume state carrying a cli id', () => {
+    provider.onSessionResumed!('ui-11', '/proj', {} as any, undefined, 'cli-11');
+    expect(provider.buildArgs({ sessionId: 'ui-11', cliSessionId: null, isResume: false, extraArgs: '' }))
+      .toEqual(['--session-dir', sessionDirFor('ui-11')]);
   });
 });
 
