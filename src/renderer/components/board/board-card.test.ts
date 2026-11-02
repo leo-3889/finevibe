@@ -460,3 +460,53 @@ describe('runTask assignee', () => {
     expect(addSpy).toHaveBeenCalled();
   });
 });
+
+// P2 I2: the lead-review verdict row (team-lead-persona-plan M2).
+describe('createCardElement lead review', () => {
+  const review = (over = {}) => ({
+    v: 1 as const,
+    sessionId: 'sess-1',
+    verdict: 'approved' as const,
+    summary: 'Tests green, ship it.',
+    createdAt: 1700000000000,
+    ...over,
+  });
+
+  it('renders the approved verdict as a compact labeled row', () => {
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-done' })!;
+    task.leadReview = review();
+
+    const card = createCardElement(task) as unknown as StubEl;
+    const row = card.children.find((c) => c.className === 'board-card-review approved');
+    expect(row).toBeTruthy();
+    expect(row!.children[0].textContent).toBe('\u2713');
+    expect(row!.children[1].textContent).toBe('Lead approved');
+    expect(row!.title).toContain('Tests green, ship it.');
+  });
+
+  it('renders the flagged verdict with its own glyph and class', () => {
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-done' })!;
+    task.leadReview = review({ verdict: 'flagged', summary: 'Missing migration.' });
+
+    const card = createCardElement(task) as unknown as StubEl;
+    const row = card.children.find((c) => c.className === 'board-card-review flagged');
+    expect(row!.children[0].textContent).toBe('!');
+    expect(row!.children[1].textContent).toBe('Lead flagged');
+    expect(row!.title).toContain('Missing migration.');
+  });
+
+  it('zero-delta: an unreviewed card emits no review row', () => {
+    const task = addTask({ title: 'T', prompt: 'p', columnId: 'col-active' })!;
+    task.sessionId = 'sess-1';
+    mockGetCost.mockReturnValue(fullCost);
+
+    const unreviewed = createCardElement(task) as unknown as StubEl;
+    expect(unreviewed.children.some((c) => c.className.startsWith('board-card-review'))).toBe(false);
+
+    task.leadReview = review();
+    const reviewed = createCardElement(task) as unknown as StubEl;
+    expect(reviewed.children.filter((c) => c.className.startsWith('board-card-review'))).toHaveLength(1);
+    // The row is appended: everything the unreviewed card had is still there.
+    expect(reviewed.children).toHaveLength(unreviewed.children.length + 1);
+  });
+});

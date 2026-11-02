@@ -1,4 +1,6 @@
-import type { BoardTask, CostInfo, ContextWindowInfo, ArchivedSession, ProviderId } from '../../../shared/types.js';
+import type {
+  BoardTask, CostInfo, ContextWindowInfo, ArchivedSession, ProviderId, LeadReviewNote,
+} from '../../../shared/types.js';
 import { appState } from '../../state.js';
 import { getColumnByBehavior, updateTask, moveTask, deleteTask, getTagColor } from '../../board-state.js';
 import { getStatus, STATUS_GLYPH, type SessionStatus } from '../../session-activity.js';
@@ -120,6 +122,10 @@ export function createCardElement(task: BoardTask): HTMLElement {
 
   const metricsRow = buildMetricsRow(task);
   if (metricsRow) el.appendChild(metricsRow);
+
+  // Lead-review verdict (team-lead-persona-plan M2/I2). Compact one-liner; the
+  // full summary rides the tooltip. Absent note = nothing rendered.
+  if (task.leadReview) el.appendChild(buildLeadReviewRow(task.leadReview));
 
   // Click card body -> edit modal
   el.addEventListener('click', (e) => {
@@ -250,6 +256,28 @@ function getArchivedCost(task: BoardTask): ArchivedSession['cost'] | null {
   return appState.activeProject?.sessionHistory?.find(
     (a) => a.cliSessionId === task.cliSessionId,
   )?.cost ?? null;
+}
+
+function buildLeadReviewRow(note: LeadReviewNote): HTMLElement {
+  const row = document.createElement('div');
+  row.className = `board-card-review ${note.verdict}`;
+  const glyph = document.createElement('span');
+  glyph.className = 'board-card-review-glyph';
+  glyph.textContent = note.verdict === 'approved' ? '\u2713' : '!';
+  row.appendChild(glyph);
+  const label = document.createElement('span');
+  label.className = 'board-card-review-label';
+  label.textContent = note.verdict === 'approved'
+    ? t('board.card.reviewApproved')
+    : t('board.card.reviewFlagged');
+  row.appendChild(label);
+  if (note.summary) {
+    row.title = t('board.card.reviewTooltip', {
+      when: new Date(note.createdAt).toLocaleString(),
+      summary: note.summary,
+    });
+  }
+  return row;
 }
 
 function buildMetricsRow(task: BoardTask): HTMLElement | null {

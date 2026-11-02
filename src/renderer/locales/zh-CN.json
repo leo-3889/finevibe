@@ -287,7 +287,10 @@
       "costTooltip": "缓存读取：{read} · 缓存写入：{create} · 耗时：{dur}s · API：{apiDur}s",
       "costTooltipArchived": "已归档 · 耗时：{dur}s",
       "tokenTooltip": "输入 {input} / 输出 {output}",
-      "contextTooltip": "上下文：{total} / {window} tokens"
+      "contextTooltip": "上下文：{total} / {window} tokens",
+      "reviewApproved": "负责人已通过",
+      "reviewFlagged": "负责人已标记",
+      "reviewTooltip": "负责人评审 · {when} · {summary}"
     },
     "deleteTaskTitle": "删除任务",
     "deleteTaskMessage": "确定删除「{label}」？此操作不可撤销。",

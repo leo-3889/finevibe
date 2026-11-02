@@ -287,7 +287,10 @@
       "costTooltip": "Cache read: {read} · Cache create: {create} · Duration: {dur}s · API: {apiDur}s",
       "costTooltipArchived": "Archived · Duration: {dur}s",
       "tokenTooltip": "{input} in / {output} out",
-      "contextTooltip": "Context: {total} / {window} tokens"
+      "contextTooltip": "Context: {total} / {window} tokens",
+      "reviewApproved": "Lead approved",
+      "reviewFlagged": "Lead flagged",
+      "reviewTooltip": "Lead review · {when} · {summary}"
     },
     "deleteTaskTitle": "Delete Task",
     "deleteTaskMessage": "Are you sure you want to delete \"{label}\"? This cannot be undone.",

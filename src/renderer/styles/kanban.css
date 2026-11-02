@@ -341,6 +341,30 @@
 .board-card-metrics .card-ctx.warning { color: #f4b400; }
 .board-card-metrics .card-ctx.critical { color: #ea4335; }
 
+/* Lead-review verdict row (team-lead-persona-plan M2/I2): one compact line, the
+   full summary lives in the tooltip. */
+.board-card-review {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: default;
+}
+.board-card-review.approved { color: var(--status-completed); }
+.board-card-review.flagged { color: var(--status-waiting); }
+.board-card-review-glyph {
+  width: 1.1em;
+  text-align: center;
+  flex-shrink: 0;
+}
+.board-card-review-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* Done column cards are slightly dimmed */
 .board-column[data-behavior="terminal"] .board-card {
   opacity: 0.6;
