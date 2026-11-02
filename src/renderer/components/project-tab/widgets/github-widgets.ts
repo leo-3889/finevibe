@@ -70,6 +70,10 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   // positive cache above never hits. Cleared alongside the config-repo state.
   let detectAttempted = false;
   let items: GithubItem[] = [];
+  // Review 24db32b8 #3: the ids THIS listing kind renders. Issues and PRs share
+  // the `${repo}#${number}` id space, so the exhaustive prune is scoped to the
+  // caller's own ids — otherwise each widget's poll deletes the sibling's.
+  let ingestedIds = new Set<string>();
   let loading = false;
   let lastError: string | null = null;
   let pollHandle: number | null = null;
@@ -280,7 +284,9 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     // The listing is the whole truth for this repo when it came back under the
     // cap the CLI asked GitHub for — let the unread store drop stale ids.
     const effectiveMax = Math.min(Math.max(cfg.max, 1), GITHUB_MAX_PER_PAGE);
-    ingestItems(projectId, repo, items, items.length < effectiveMax);
+    const scope = ingestedIds;
+    ingestedIds = new Set(items.map((item) => makeItemId(repo, item.number)));
+    ingestItems(projectId, repo, items, items.length < effectiveMax, scope);
     backoffMs = 0;
     nextPollAt = 0;
     loading = false;
@@ -323,7 +329,10 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   // the dots stayed lit. The store is the single source: every mutator
   // (ingest/prune, markRead, markAllRead, project-removed) notifies after the
   // set is settled.
-  const unsubUnread = onUnreadChange(() => {
+  // store notify carries the project: a sibling project's widget polling is
+  // not this widget's business (review 24db32b8 #2). `undefined` = paint.
+  const unsubUnread = onUnreadChange((pid) => {
+    if (pid && pid !== projectId) return;
     render();
   });
 

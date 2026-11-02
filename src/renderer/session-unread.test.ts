@@ -245,6 +245,24 @@ describe('session-unread', () => {
     expect(cb2).toHaveBeenCalled();
   });
 
+  // Review 24db32b8 #5: the pass iterates a snapshot, so a subscriber that
+  // unsubscribes during it (a panel tearing itself down off the notify) cannot
+  // splice the next listener out of the live array.
+  it('delivers to a later listener when an earlier one unsubscribes mid-pass', () => {
+    setupProjects();
+    mockAppState.activeProjectId = 'p2';
+    init();
+    const cb2 = vi.fn();
+    const off = onChange(() => off());
+    onChange(cb2);
+
+    simulateStatusChange('s1', 'working');
+    simulateStatusChange('s1', 'waiting');
+    flushRaf();
+
+    expect(cb2).toHaveBeenCalledTimes(1);
+  });
+
   it('clears unread when the active session of the active project changes to an unread one', async () => {
     setupProjects();
     mockAppState.activeProjectId = 'p2';

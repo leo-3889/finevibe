@@ -247,6 +247,24 @@ describe('tab-bar unread badge wiring (Todo #44)', () => {
     expect(tab('overview')?.classList.contains('unread')).toBe(false);
   });
 
+  it('ignores a GitHub notify for a background project (review 24db32b8 #2)', () => {
+    // Desync the strip from the model so a strip pass is observable:
+    // patchUnread() then returns false and the subscriber falls through to a
+    // full render(), which wipes the stray node.
+    const ghost = document.createElement('div');
+    ghost.className = 'tab-item';
+    ghost.dataset.sessionId = 'ghost';
+    tabListEl.appendChild(ghost);
+
+    // A background project's widget polled: nothing this strip renders moves.
+    ingestItems('p2', 'owner/repo', [githubItem(3)]);
+    expect(tabListEl.contains(ghost)).toBe(true);
+
+    ingestItems('p1', 'owner/repo', [githubItem(3)]);
+    expect(tabListEl.contains(ghost)).toBe(false);
+    expect(tab('overview')?.classList.contains('unread')).toBe(true);
+  });
+
   it('repaints the dots once for a burst that arrives with no frame', () => {
     // Two notifications, one repaint: the store coalesces, the strip patches.
     harness.fireStatus('s2', 'working');

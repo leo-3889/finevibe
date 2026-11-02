@@ -90,8 +90,14 @@ export function initTabBar(): void {
   onUnreadChange(() => { if (!patchUnread()) render(); });
   // C2R-08: github notifications only move the project-tab dots, which
   // patchUnread already recomputes (hasGithubUnread); the full strip rebuild
-  // per notify was pure waste.
-  onGithubUnreadChange(() => { if (!patchUnread()) render(); });
+  // per notify was pure waste. Review 24db32b8 #2: patchUnread reads the ACTIVE
+  // project only, so a background project's ingest repaints nothing — skip it
+  // (N mounted tabs × 2 widgets per ingest was 2N strip passes). Undefined pid
+  // = paint, so a store that cannot name the project is never filtered out.
+  onGithubUnreadChange((pid) => {
+    if (pid && pid !== appState.activeProjectId) return;
+    if (!patchUnread()) render();
+  });
 
   onGitStatusChange((projectId) => {
     if (projectId === appState.activeProjectId) renderGitStatus();

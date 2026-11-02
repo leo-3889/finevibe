@@ -5,7 +5,8 @@ vi.mock('../../../state.js', () => ({
   appState: { projects: [{ id: 'p1', path: '/repo' }], on: () => () => {} },
 }));
 vi.mock('../../../github-unread.js', () => ({
-  ingestItems: vi.fn(), isUnread: () => false, makeItemId: vi.fn(),
+  ingestItems: vi.fn(), isUnread: () => false,
+  makeItemId: vi.fn((repo: string, number: number) => `${repo}#${number}`),
   markRead: vi.fn(), markAllReadInProject: vi.fn(), onChange: () => () => {},
 }));
 
@@ -206,13 +207,17 @@ describe('GitHub widget exhaustive-listing ingest (C4G-01)', () => {
     stubGithub({ github: { isAvailable: async () => true, listPRs } });
     const widget = createGithubPRsWidget(makeHost(() => ({ repo: 'owner/repo', max: 10, refreshSeconds: 300 })));
     await vi.advanceTimersByTimeAsync(0);
-    expect(githubUnread.ingestItems).toHaveBeenCalledWith('p1', 'owner/repo', items, true);
+    // The scope is the widget's previous listing (empty on the first poll).
+    expect(githubUnread.ingestItems).toHaveBeenCalledWith('p1', 'owner/repo', items, true, new Set());
 
     const capped = Array.from({ length: 10 }, (_, i) => prItem(i + 1));
     listPRs.mockResolvedValue({ ok: true, items: capped });
     widget.refresh?.();
     await vi.advanceTimersByTimeAsync(0);
-    expect(githubUnread.ingestItems).toHaveBeenLastCalledWith('p1', 'owner/repo', capped, false);
+    // Review 24db32b8 #3: the scope is this widget's own ids, never the repo.
+    expect(githubUnread.ingestItems).toHaveBeenLastCalledWith(
+      'p1', 'owner/repo', capped, false, new Set(['owner/repo#1', 'owner/repo#2']),
+    );
     widget.destroy();
   });
 });

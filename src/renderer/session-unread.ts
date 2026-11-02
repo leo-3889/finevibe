@@ -27,7 +27,10 @@ function flushListeners(): void {
     clearTimeout(notifyTimer);
     notifyTimer = null;
   }
-  for (const cb of listeners) cb();
+  // Snapshot: a subscriber that unsubscribes during the pass (panel teardown
+  // off a mutation) must not splice a later listener out of the live array
+  // (review 24db32b8 #5).
+  for (const cb of [...listeners]) cb();
 }
 
 function notify(): void {

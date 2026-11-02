@@ -128,6 +128,44 @@ describe('GitHub widget unread render contract (Todo #44)', () => {
     widget.destroy();
   });
 
+  it('clears its own dot when its next exhaustive poll drops the item', async () => {
+    // The scoped prune (review 24db32b8 #3) must still fire for the widget's
+    // OWN vanished ids: the scope is its previous listing.
+    const listPRs = vi.fn(async () => ({ ok: true, items: [prItem(3)] }));
+    Object.assign(window, { finevibe: { github: { isAvailable: async () => true, listPRs } } });
+    const widget = createGithubPRsWidget(makeHost());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dots(widget)).toBe(1);
+
+    listPRs.mockResolvedValue({ ok: true, items: [] });
+    widget.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(unreadCountInProject('p1')).toBe(0);
+    expect(dots(widget)).toBe(0);
+    widget.destroy();
+  });
+
+  it('does not re-render on a notify for a sibling project (review 24db32b8 #2)', async () => {
+    const widget = await mount([prItem(3)]);
+    expect(dots(widget)).toBe(1);
+
+    // render() wipes the body, so a node planted in it is a render detector.
+    // (The widget root is never attached to the document, so isConnected is
+    // useless here — containment inside the root is the signal.)
+    const probe = document.createElement('span');
+    const bodyEl = widget.element.querySelector('.widget-github-body')!;
+    bodyEl.appendChild(probe);
+
+    // N mounted tabs × 2 widgets per ingest used to be 2N pointless rebuilds.
+    ingestItems('p2', 'owner/repo', [prItem(7)]);
+    expect(bodyEl.contains(probe)).toBe(true);
+
+    // The widget's own project still paints.
+    ingestItems('p1', 'owner/repo', [prItem(8)]);
+    expect(bodyEl.contains(probe)).toBe(false);
+    widget.destroy();
+  });
+
   it('re-renders when the project is removed, and stops listening after destroy', async () => {
     const widget = await mount([prItem(3)]);
     expect(dots(widget)).toBe(1);
