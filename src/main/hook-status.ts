@@ -1,4 +1,5 @@
 import { BoundedEventReader } from './bounded-event-reader';
+import { FSWatcher } from 'chokidar';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -42,9 +43,26 @@ const STATUSLINE_SCRIPT = path.join(SCRIPT_DIR, isWin ? 'statusline.cmd' : 'stat
 // provider can populate it from any source, the way codex-session-watcher.ts
 // already writes `.sessionid` without hooks.
 const KNOWN_EXTENSIONS = ['.status', '.sessionid', '.cost', '.name', '.toolfailure', '.events', '.subagents'];
-let watcher: fs.FSWatcher | null = null;
+let watcher: FSWatcher | null = null;
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 const lastMtimes = new Map<string, number>();
+
+/**
+ * Push lane (row 18). STATUS_DIR changes arrive on the chokidar watcher, are
+ * coalesced per filename over `PUSH_DEBOUNCE_MS`, then run through the SAME
+ * `handleFileChange` the old sweep drove.
+ *
+ * The window exists because ONE logical write is several raw fs events: the
+ * POSIX hooks echo to `<sid>.status.tmp` and `mv` it in (an event for the temp
+ * name and one for the final name), and an in-place `open(w)` + write + close
+ * reports modify *and* close. Before the window every write reached the
+ * renderer twice. Within one window a filename is processed once, on its final
+ * content; an append-only `.events` burst is read in a single pass (the reader
+ * is offset-based, so coalescing loses no records).
+ */
+const pendingPushes = new Set<string>();
+let pushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let pushWindowWin: BrowserWindow | null = null;
 const eventReaders = new Map<string, BoundedEventReader>();
 const eventContinuations = new Map<string, ReturnType<typeof setTimeout>>();
 const knownSessionIds = new Set<string>();
@@ -275,7 +293,8 @@ function extractSessionId(filename: string): string {
   if (filename.endsWith('.toolfailure')) {
     const base = filename.replace('.toolfailure', '');
     const lastDash = base.lastIndexOf('-');
-    return lastDash !== -1 ? base.slice(0, lastDash) : base;
+    if (lastDash === -1) return base;
+    return base.slice(0, lastDash);
   }
   for (const ext of KNOWN_EXTENSIONS) {
     if (filename.endsWith(ext)) return filename.slice(0, -ext.length);
@@ -299,8 +318,8 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
       const raw = fs.readFileSync(filePath, 'utf-8').trim();
       // Format: "HookEvent:status" (e.g. "PostToolUse:working") or legacy plain status
       const colonIdx = raw.indexOf(':');
-      const hookName = colonIdx !== -1 ? raw.slice(0, colonIdx) : '';
-      const content = colonIdx !== -1 ? raw.slice(colonIdx + 1) : raw;
+      const hookName = colonIdx === -1 ? '' : raw.slice(0, colonIdx);
+      const content = colonIdx === -1 ? raw : raw.slice(colonIdx + 1);
       if (content === 'working' || content === 'waiting' || content === 'completed' || content === 'input') {
         if (!win.isDestroyed()) {
           win.webContents.send('session:hookStatus', sessionId, content, hookName);
@@ -400,15 +419,35 @@ function handleFileChange(win: BrowserWindow, filename: string): void {
 
 let pollInFlight = false;
 
-// Poll cadence (PA-09): the shipped `fs.watch` already delivers every change
-// the poll exists to catch, so while that watcher is alive the interval is
-// only a watchdog for dropped events; it drops back to the fast 2 s fallback
-// the moment the watcher dies. The sweep itself is skipped outright while no
-// session is registered, and the per-file stats run in bounded batches.
-const POLL_MS = 2_000;
-const WATCHDOG_POLL_MS = 15_000;
+/**
+ * Lane cadences (row 18: the STATUS_DIR lane is push-first).
+ *
+ * `PUSH_DEBOUNCE_MS` — coalescing window of the push lane (see pendingPushes).
+ * Normal-case delivery latency is fs-notification latency (ms) + this window.
+ *
+ * `SAFETY_NET_POLL_MS` — the SLOW sweep that catches what a push lane
+ * structurally cannot see: dropped inotify handles (EMFILE exhaustion, and the
+ * up-to-5 s gap while a dead watcher is rebuilt), a STATUS_DIR on a network
+ * mount where native notifications stop reporting, and a write whose mtime
+ * lands in the same tick as the previous write on a coarse-mtime filesystem
+ * (1 s tmpfs, HFS+) — the case `statAndDeliver`'s `!==` gate documents.
+ * 30 s is the DOCUMENTED worst-case staleness on those paths, never the normal
+ * path. It costs 15x less than the 2 s sweep it replaces and sits far inside
+ * the only latency number the status contract pins: the renderer's 10 min
+ * `STOP_FALLBACK_MS` completion backstop (HOOKS.md), keyed on renderer silence
+ * rather than on file freshness.
+ *
+ * `WATCHER_DOWN_POLL_MS` — PA-09 fallback: with NO watcher there is no push
+ * lane, so the sweep goes back to the fast 2 s cadence until the restart lands.
+ *
+ * The sweep is skipped outright while no session is registered, and the
+ * per-file stats run in bounded batches.
+ */
+export const PUSH_DEBOUNCE_MS = 150;
+export const SAFETY_NET_POLL_MS = 30_000;
+export const WATCHER_DOWN_POLL_MS = 2_000;
 const STAT_CONCURRENCY = 16;
-let pollMs = POLL_MS;
+let pollMs = SAFETY_NET_POLL_MS;
 
 async function pollForChanges(win: BrowserWindow): Promise<void> {
   if (win.isDestroyed()) return;
@@ -511,8 +550,8 @@ async function sweepRemoteStatuses(win: BrowserWindow): Promise<void> {
 /** Same content gate as the local `.status` branch of handleFileChange. */
 function deliverRemoteStatus(win: BrowserWindow, sessionId: string, raw: string): void {
   const colonIdx = raw.indexOf(':');
-  const hookName = colonIdx !== -1 ? raw.slice(0, colonIdx) : '';
-  const content = colonIdx !== -1 ? raw.slice(colonIdx + 1) : raw;
+  const hookName = colonIdx === -1 ? '' : raw.slice(0, colonIdx);
+  const content = colonIdx === -1 ? raw : raw.slice(colonIdx + 1);
   if (content === 'working' || content === 'waiting' || content === 'completed' || content === 'input') {
     if (!win.isDestroyed()) {
       win.webContents.send('session:hookStatus', sessionId, content, hookName);
@@ -524,7 +563,7 @@ function deliverRemoteStatus(win: BrowserWindow, sessionId: string, raw: string)
 
 function startPolling(win: BrowserWindow): void {
   stopPolling();
-  pollMs = watcher ? WATCHDOG_POLL_MS : POLL_MS;
+  pollMs = watcher ? SAFETY_NET_POLL_MS : WATCHER_DOWN_POLL_MS;
   pollInterval = setInterval(() => { void pollForChanges(win); }, pollMs);
 }
 
@@ -534,7 +573,7 @@ function startPolling(win: BrowserWindow): void {
  * survive a cadence switch, or every file would be re-delivered at once.
  */
 function applyPollCadence(win: BrowserWindow): void {
-  const want = watcher ? WATCHDOG_POLL_MS : POLL_MS;
+  const want = watcher ? SAFETY_NET_POLL_MS : WATCHER_DOWN_POLL_MS;
   if (!pollInterval || want === pollMs) return;
   pollMs = want;
   clearInterval(pollInterval);
@@ -552,37 +591,89 @@ function stopPolling(): void {
 /** Remote sidecar bookkeeping lives entirely in unregisterSession (the status
  * file itself is the host's own state; unenroll cleans the sidecar dir). */
 
+/**
+ * Push-lane entry point: one watch event for one STATUS_DIR filename.
+ *
+ * Trailing coalescing (the `file-watcher.ts` idiom): the event's filename is
+ * queued and `PUSH_DEBOUNCE_MS` after the LAST event in a burst, each queued
+ * filename runs through `handleFileChange` once, on its final content. The
+ * flush is per filename, not per renderer frame, so a burst across 30 files
+ * costs 30 deliveries — the coalescing is what kills the tmp+mv double event,
+ * not a way to skip files.
+ */
+function queuePush(win: BrowserWindow, changedPath: string): void {
+  const filename = path.basename(changedPath);
+  // Cheap gate before the queue: `.status.tmp` (the POSIX atomic-write temp
+  // name) and any other stray file matches no KNOWN_EXTENSIONS, so it must not
+  // cost a timer at all. `.subagents` DOES match and is queued on purpose —
+  // handleFileChange suppresses it before reading, which is the contract the
+  // status-mapping suite pins.
+  if (!isKnownExtension(filename)) return;
+  pushWindowWin = win;
+  pendingPushes.add(filename);
+  if (pushDebounceTimer) clearTimeout(pushDebounceTimer);
+  pushDebounceTimer = setTimeout(flushPush, PUSH_DEBOUNCE_MS);
+}
+
+function flushPush(): void {
+  pushDebounceTimer = null;
+  const win = pushWindowWin;
+  const names = [...pendingPushes];
+  pendingPushes.clear();
+  if (!win || win.isDestroyed()) return;
+  for (const filename of names) handleFileChange(win, filename);
+}
+
+/** Teardown: a flush armed inside the debounce window must not fire after quit
+ * and re-deliver into a destroyed window (or recreate STATUS_DIR). */
+function clearPushLane(): void {
+  if (pushDebounceTimer) clearTimeout(pushDebounceTimer);
+  pushDebounceTimer = null;
+  pendingPushes.clear();
+  pushWindowWin = null;
+}
+
+function closeWatcher(): void {
+  if (!watcher) return;
+  const w = watcher;
+  watcher = null;
+  void w.close().catch(() => { /* already closed */ });
+}
+
 function restartWatcher(win: BrowserWindow): void {
-  if (watcher) {
-    watcher.close();
-    watcher = null;
-  }
+  closeWatcher();
+  clearPushLane();
 
   fs.mkdirSync(STATUS_DIR, { recursive: true, mode: 0o700 });
 
-  const w = fs.watch(STATUS_DIR, (_eventType, filename) => {
-    if (!filename) {
-      resyncAllSessions(win);
-      return;
-    }
-    handleFileChange(win, filename);
+  // Directory-granular watch, the `file-watcher.ts` idiom: watching the DIR
+  // (depth 0, non-recursive) rather than file inodes survives the atomic
+  // tmp+mv the POSIX status hooks use — an inode watch dies on the rename.
+  const w = new FSWatcher({
+    ignoreInitial: true, // existing files are replayed by resyncAllSessions
+    depth: 0,            // STATUS_DIR is flat: one file per session per channel
+    atomic: true,        // collapse write-temp + rename into a single change
+    ignorePermissionErrors: true,
+    persistent: true,
   });
-  watcher = w;
-  // Every other watcher in main attaches 'error'; without it an emitted
+  w.on('all', (_eventType, changedPath) => queuePush(win, changedPath));
+  // Every watcher in main attaches 'error'; without it an emitted
   // FSWatcher error (EMFILE, unmounted volume) is an uncaught exception
   // that takes down the process — and with it every live PTY.
   w.on('error', () => {
-    try { w.close(); } catch { /* already closed */ }
+    void w.close().catch(() => { /* already closed */ });
     // Only drop the slot when this watcher is still the incumbent.
     if (watcher === w) watcher = null;
-    // The 2 s poll keeps the pipeline alive; restart the watch for next time.
-    // PA-09: with no watcher to lean on, the poll goes back to its fast 2 s
-    // cadence until the restart below lands.
+    // The safety-net sweep keeps the pipeline alive; restart the watch for
+    // next time. PA-09: with no push lane to lean on, the sweep goes back to
+    // its fast 2 s cadence until the restart below lands.
     applyPollCadence(win);
     setTimeout(() => {
       if (!watcher && !win.isDestroyed()) restartWatcher(win);
     }, 5000);
   });
+  watcher = w;
+  w.add(STATUS_DIR);
 
   startPolling(win);
 }
@@ -657,13 +748,11 @@ export function cleanupAll(): void {
   eventContinuations.clear();
   eventReaders.clear();
   stopPolling();
+  clearPushLane();
   knownSessionIds.clear();
   remoteStatuses.clear();
   remoteHostCooldown.clear();
-  if (watcher) {
-    watcher.close();
-    watcher = null;
-  }
+  closeWatcher();
   cleanupDir(STATUS_DIR, isKnownExtension);
   // SCRIPT_DIR is intentionally kept — scripts are idempotent and reinstalled
   // on launch. Deleting them races with CLI processes that outlive the app.

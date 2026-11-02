@@ -104,6 +104,7 @@ const ALLOWLIST: Record<string, string> = {
   'rootCanonicalCache@fs-utils.ts': 'capped:ROOT_CANONICAL_CACHE_MAX (LRU; roots also dropped by invalidateCanonicalPathCache)',
   'gitChangedListeners@git-watcher.ts': 'teardown: unsubscribe closure deletes the listener',
   'lastMtimes@hook-status.ts': 'teardown: unregisterSession + stop clear; sweep drops vanished files',
+  'pendingPushes@hook-status.ts': 'transient: drained by the PUSH_DEBOUNCE_MS flush; cleared by clearPushLane (watch restart + quit)',
   'eventReaders@hook-status.ts': 'teardown: cleared on stopHookStatus',
   'eventContinuations@hook-status.ts': 'teardown: cleared on stopHookStatus',
   'knownSessionIds@hook-status.ts': 'teardown: unregisterSession deletes; stop clears',

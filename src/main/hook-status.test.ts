@@ -46,6 +46,8 @@ import * as fs from 'fs';
 import { readProviderFileWindow } from './hosts/provider-fs';
 import {
   buildStatusLinePython,
+  PUSH_DEBOUNCE_MS,
+  SAFETY_NET_POLL_MS,
   installStatusLineScript,
   startWatching,
   resyncAllSessions,
@@ -56,27 +58,55 @@ import {
   registerRemoteStatus,
 } from './hook-status';
 
-let watchCallback: ((eventType: string, filename: string | null) => void) | null = null;
-const mockClose = vi.fn();
+/**
+ * chokidar stand-in — the push lane's watcher (row 18). The vi.mock factory is
+ * hoisted above module bindings, so the fake is built inside vi.hoisted.
+ */
+const chokidarFake = vi.hoisted(() => {
+  const state = {
+    addCalls: [] as string[],
+    closeCalls: 0,
+    all: null as null | ((event: string, changedPath: string) => void),
+    error: null as null | ((err: unknown) => void),
+  };
+  class FakeFSWatcher {
+    on(event: string, handler: (...args: never[]) => void): this {
+      if (event === 'all') state.all = handler as (event: string, p: string) => void;
+      if (event === 'error') state.error = handler as (err: unknown) => void;
+      return this;
+    }
+    add(dir: string): this { state.addCalls.push(dir); return this; }
+    close(): Promise<void> { state.closeCalls++; return Promise.resolve(); }
+  }
+  return { state, FakeFSWatcher };
+});
+vi.mock('chokidar', () => ({ FSWatcher: chokidarFake.FakeFSWatcher }));
 
-// The 'error' handler the module registers on the fs.watch object; a test
+const chokidarState = chokidarFake.state;
+
+/**
+ * Fire one push-lane event the way chokidar does (full path) and run the
+ * coalescing window to its end. Every delivery the mapping suite asserts on
+ * arrives through the push lane: no safety-net tick is advanced.
+ */
+function emitChange(filename: string): void {
+  chokidarState.all?.('change', path.join(STATUS_DIR, filename));
+  vi.advanceTimersByTime(PUSH_DEBOUNCE_MS);
+}
+
+// The 'error' handler the module registers on the chokidar watcher; a test
 // fires it to simulate the watcher dying (the PA-09 cadence switch).
-let watchErrorHandler: ((err: unknown) => void) | null = null;
 function killWatcher(): void {
-  const handler = watchErrorHandler;
-  watchErrorHandler = null;
+  const handler = chokidarState.error;
+  chokidarState.error = null;
   handler?.(new Error('EMFILE: too many open files'));
 }
 
-/** fs.watch stand-in: captures the change callback and the 'error' handler. */
-function watchImpl(_path: unknown, cb: (t: string, f: string | null) => void): fs.FSWatcher {
-  watchCallback = cb;
-  return {
-    close: mockClose,
-    on: (event: string, handler: (err: unknown) => void) => {
-      if (event === 'error') watchErrorHandler = handler;
-    },
-  } as unknown as fs.FSWatcher;
+function resetChokidarState(): void {
+  chokidarState.addCalls = [];
+  chokidarState.closeCalls = 0;
+  chokidarState.all = null;
+  chokidarState.error = null;
 }
 
 const mockSend = vi.fn();
@@ -96,11 +126,7 @@ beforeEach(() => {
   vi.mocked(fs.promises.stat).mockRejectedValue(new Error('ENOENT') as any);
   vi.mocked(fs.unlinkSync).mockImplementation(vi.fn() as any);
   vi.mocked(fs.rmdirSync).mockImplementation(vi.fn() as any);
-  vi.mocked(fs.watch).mockImplementation(watchImpl as any);
-
-  watchCallback = null;
-  watchErrorHandler = null;
-  mockClose.mockClear();
+  resetChokidarState();
   mockSend.mockClear();
 
   // Reset module-level watcher state
@@ -108,10 +134,7 @@ beforeEach(() => {
 
   // Clear call counts after cleanup
   vi.clearAllMocks();
-  watchCallback = null;
-  watchErrorHandler = null;
-
-  vi.mocked(fs.watch).mockImplementation(watchImpl as any);
+  resetChokidarState();
 });
 
 afterEach(() => {
@@ -314,12 +337,12 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
   });
 
   describe('startWatching', () => {
-    it('creates dir and calls fs.watch', () => {
+    it('creates the dir and admits it to the push watcher', () => {
       const win = createMockWin();
       startWatching(win);
 
       expect(fs.mkdirSync).toHaveBeenCalledWith(STATUS_DIR, { recursive: true, mode: 0o700 });
-      expect(fs.watch).toHaveBeenCalledWith(STATUS_DIR, expect.any(Function));
+      expect(chokidarState.addCalls).toContain(STATUS_DIR);
     });
   });
 
@@ -329,7 +352,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       startWatching(win);
 
       vi.mocked(fs.readFileSync).mockReturnValue('working');
-      watchCallback!('change', 'unknown-session.status');
+      emitChange('unknown-session.status');
 
       expect(mockSend).not.toHaveBeenCalled();
     });
@@ -340,7 +363,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       registerSession('abc123');
 
       vi.mocked(fs.readFileSync).mockReturnValue('working');
-      watchCallback!('change', 'abc123.status');
+      emitChange('abc123.status');
 
       expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'abc123', 'working', '');
     });
@@ -351,7 +374,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       registerSession('abc123');
 
       vi.mocked(fs.readFileSync).mockReturnValue('PostToolUse:working');
-      watchCallback!('change', 'abc123.status');
+      emitChange('abc123.status');
 
       expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'abc123', 'working', 'PostToolUse');
     });
@@ -362,7 +385,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       registerSession('abc123');
 
       vi.mocked(fs.readFileSync).mockReturnValue('invalid-status');
-      watchCallback!('change', 'abc123.status');
+      emitChange('abc123.status');
 
       expect(mockSend).not.toHaveBeenCalled();
     });
@@ -372,7 +395,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       startWatching(win);
       registerSession('abc123');
 
-      watchCallback!('change', 'abc123.subagents');
+      emitChange('abc123.subagents');
 
       expect(mockSend).not.toHaveBeenCalled();
       // Must not even read the counter file — it is purely a hook-side artifact.
@@ -385,7 +408,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       registerSession('abc123');
 
       vi.mocked(fs.readFileSync).mockReturnValue('claude-session-xyz');
-      watchCallback!('change', 'abc123.sessionid');
+      emitChange('abc123.sessionid');
 
       expect(mockSend).toHaveBeenCalledWith('session:cliSessionId', 'abc123', 'claude-session-xyz');
     });
@@ -397,7 +420,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       const costData = { cost: { total: 1.5 }, context_window: { used: 100 } };
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
-      watchCallback!('change', 'abc123.cost');
+      emitChange('abc123.cost');
 
       expect(mockSend).toHaveBeenCalledWith('session:costData', 'abc123', costData);
     });
@@ -410,7 +433,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       vi.mocked(fs.readFileSync).mockReturnValue(
         JSON.stringify({ name: 'Fix the flaky test', session_id: 'cli-1' }),
       );
-      watchCallback!('change', 'abc123.name');
+      emitChange('abc123.name');
 
       expect(mockSend).toHaveBeenCalledWith('session:sessionName', 'abc123', 'Fix the flaky test', 'cli-1');
     });
@@ -421,7 +444,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       registerSession('abc123');
 
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ name: 'Untagged' }));
-      watchCallback!('change', 'abc123.name');
+      emitChange('abc123.name');
 
       expect(mockSend).toHaveBeenCalledWith('session:sessionName', 'abc123', 'Untagged', '');
     });
@@ -433,7 +456,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       // A partially-flushed write looks exactly like this
       vi.mocked(fs.readFileSync).mockReturnValue('{"name": "Fix the fla');
-      expect(() => watchCallback!('change', 'abc123.name')).not.toThrow();
+      expect(() => emitChange('abc123.name')).not.toThrow();
 
       expect(mockSend).not.toHaveBeenCalledWith('session:sessionName', expect.anything(), expect.anything());
     });
@@ -445,7 +468,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       for (const payload of ['{}', '{"name":""}', '{"name":123}']) {
         vi.mocked(fs.readFileSync).mockReturnValue(payload);
-        watchCallback!('change', 'abc123.name');
+        emitChange('abc123.name');
       }
 
       expect(mockSend).not.toHaveBeenCalledWith('session:sessionName', expect.anything(), expect.anything());
@@ -456,7 +479,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       startWatching(win);
 
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ name: 'Nope' }));
-      watchCallback!('change', 'stranger.name');
+      emitChange('stranger.name');
 
       expect(mockSend).not.toHaveBeenCalled();
     });
@@ -468,7 +491,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       const failureData = { tool_name: 'Bash', tool_input: { command: 'gh pr list' }, error: 'exit 127' };
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(failureData));
-      watchCallback!('change', 'abc123-xyzabc.toolfailure');
+      emitChange('abc123-xyzabc.toolfailure');
 
       expect(mockSend).toHaveBeenCalledWith('session:toolFailure', 'abc123', failureData);
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'abc123-xyzabc.toolfailure'));
@@ -481,7 +504,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       const failureData = { tool_name: 'Bash', tool_input: { command: 'jq .' }, error: 'exit 127' };
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(failureData));
-      watchCallback!('change', 'my-session-id-abcdef.toolfailure');
+      emitChange('my-session-id-abcdef.toolfailure');
 
       expect(mockSend).toHaveBeenCalledWith('session:toolFailure', 'my-session-id', failureData);
     });
@@ -492,7 +515,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       registerSession('abc123');
 
       vi.mocked(fs.readFileSync).mockReturnValue('invalid json');
-      watchCallback!('change', 'abc123-xyzabc.toolfailure');
+      emitChange('abc123-xyzabc.toolfailure');
 
       expect(mockSend).not.toHaveBeenCalled();
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'abc123-xyzabc.toolfailure'));
@@ -507,7 +530,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
         throw new Error('ENOENT');
       });
 
-      expect(() => watchCallback!('change', 'abc123.status')).not.toThrow();
+      expect(() => emitChange('abc123.status')).not.toThrow();
       expect(mockSend).not.toHaveBeenCalled();
     });
 
@@ -524,25 +547,11 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       registerSession('abc123');
       destroyableWin.isDestroyed.mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue('working');
-      watchCallback!('change', 'abc123.status');
+      emitChange('abc123.status');
 
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('resyncs all sessions on null filename', () => {
-      const win = createMockWin();
-      startWatching(win);
-      registerSession('abc123');
-
-      vi.mocked(fs.readdirSync).mockReturnValue(['abc123.cost'] as any);
-      const costData = { cost: { total: 1.0 }, context_window: {} };
-      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
-
-      watchCallback!('change', null);
-
-      expect(fs.readdirSync).toHaveBeenCalledWith(STATUS_DIR);
-      expect(mockSend).toHaveBeenCalledWith('session:costData', 'abc123', costData);
-    });
   });
 
   describe('resyncAllSessions', () => {
@@ -596,7 +605,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       restartAndResync(win);
 
-      expect(fs.watch).toHaveBeenCalledWith(STATUS_DIR, expect.any(Function));
+      expect(chokidarState.addCalls).toContain(STATUS_DIR);
       expect(fs.readdirSync).toHaveBeenCalledWith(STATUS_DIR);
     });
   });
@@ -656,10 +665,10 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       // First poll processes the file, but readFileSync is not mocked to
       // valid JSON yet, so the read fails and nothing reaches the window.
-      // The fs.watch is alive, so the poll runs at the 15 s watchdog cadence
-      // (PA-09) — the interval is a backstop for dropped events, not the
-      // delivery mechanism.
-      await vi.advanceTimersByTimeAsync(15_000);
+      // The push watcher is alive, so the sweep runs at the 30 s safety-net
+      // cadence (row 18) — a backstop for missed events, not the delivery
+      // mechanism.
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
       expect(mockSend).not.toHaveBeenCalled();
 
       // Now file has changed mtime
@@ -667,7 +676,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       const costData = { cost: { total: 0.5 }, context_window: {} };
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
 
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
       expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
     });
 
@@ -680,10 +689,10 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       startWatching(win);
 
       // Seed mtimes
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
 
       // Same mtime — no change
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
       expect(mockSend).not.toHaveBeenCalled();
     });
 
@@ -697,7 +706,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       // status/cost/sessionid update was lost until the next change.
       vi.mocked(fs.promises.readdir).mockResolvedValue([] as any);
       startWatching(win);
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
       expect(mockSend).not.toHaveBeenCalled();
 
       vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
@@ -705,7 +714,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       const costData = { cost: { total: 0.25 }, context_window: {} };
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
 
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
       expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
     });
 
@@ -727,7 +736,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1000 } as any);
 
       startWatching(win);
-      await vi.advanceTimersByTimeAsync(90_000); // six watchdog ticks
+      await vi.advanceTimersByTimeAsync(90_000); // three safety-net ticks
 
       // handleFileChange drops every file whose id is unknown, so the sweep
       // was pure waste: an idle app now issues zero status-dir reads.
@@ -736,7 +745,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('polls on the watchdog cadence while the watch lives, at 2s once it dies (PA-09)', async () => {
+    it('sweeps on the safety-net cadence while the watch lives, at 2s once it dies (PA-09)', async () => {
       const win = createMockWin();
       registerSession('s1');
       vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
@@ -746,11 +755,11 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       startWatching(win);
       await vi.advanceTimersByTimeAsync(2_000);
-      // fs.watch is alive and delivers these changes itself; the 2s sweep is
-      // now the 15s watchdog, so this tick must not fire.
+      // the push watcher delivers these changes itself; the sweep is
+      // now the 30 s safety net, so this tick must not fire.
       expect(mockSend).not.toHaveBeenCalled();
 
-      await vi.advanceTimersByTimeAsync(13_000); // t=15s: the watchdog tick
+      await vi.advanceTimersByTimeAsync(28_000); // t=30s: the safety-net tick
       expect(mockSend).toHaveBeenCalledTimes(1);
 
       // The watch dies (EMFILE): the fast 2s fallback comes back.
@@ -770,19 +779,19 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(costData));
 
       startWatching(win);
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
       expect(mockSend).toHaveBeenCalledTimes(1);
       mockSend.mockClear();
 
       // The file is unlinked (release / /clear retraction) and later recreated
       // with the SAME mtime — routine on a coarse-mtime filesystem.
       vi.mocked(fs.promises.readdir).mockResolvedValue([] as any);
-      await vi.advanceTimersByTimeAsync(15_000); // the sweep drops the stale key
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS); // the sweep drops the stale key
       expect(fs.promises.stat).toHaveBeenCalledTimes(1); // nothing statted for a gone file
 
       vi.mocked(fs.promises.readdir).mockResolvedValue(['s1.cost'] as any);
       vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 1000 } as any);
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
       // Pre-fix the stale key suppressed this delivery: prev === mtime.
       expect(mockSend).toHaveBeenCalledWith('session:costData', 's1', costData);
     });
@@ -803,7 +812,7 @@ sys.stdout.write(json.dumps({'afterRepeat':after_repeat,'total':len(writes),'fin
 
       cleanupAll();
 
-      expect(mockClose).toHaveBeenCalled();
+      expect(chokidarState.closeCalls).toBeGreaterThan(0);
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'a.status'));
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'b.sessionid'));
       expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(STATUS_DIR, 'c.cost'));
@@ -865,8 +874,8 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     startWatching(win);
     registerRemoteStatus('sess-1', 'lab');
     vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
-    // Watcher is alive (watchImpl), so the poll runs at the watchdog cadence.
-    await vi.advanceTimersByTimeAsync(15_000);
+    // The push watcher is alive, so the sweep runs at the safety-net cadence.
+    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
     // Windowed tail read (audit T2 #7): a fat sidecar is never slurped whole.
     expect(readProviderFileWindow).toHaveBeenCalledWith(
       'lab', '.finevibe/run/sess-1.status', 4096, { fromEnd: true },
@@ -874,11 +883,11 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-1', 'completed', 'Stop');
     // Unchanged content on the next tick delivers nothing.
     mockSend.mockClear();
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
     expect(mockSend).not.toHaveBeenCalled();
     // A change delivers once, with the hook name split out.
     vi.mocked(readProviderFileWindow).mockResolvedValue('UserPromptSubmit:working');
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
     expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-1', 'working', 'UserPromptSubmit');
   });
 
@@ -888,7 +897,7 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     registerRemoteStatus('sess-2', 'lab');
     vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:teleported');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
     expect(mockSend).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('teleported'));
   });
@@ -899,17 +908,17 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     registerRemoteStatus('sess-3', 'lab');
     registerRemoteStatus('sess-3b', 'lab');
     vi.mocked(readProviderFileWindow).mockRejectedValue(new Error('connection closed'));
-    await vi.advanceTimersByTimeAsync(15_000); // tick@15s: first failure cools the host, second entry skipped
+    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS); // tick@30s: first failure cools the host, second entry skipped
     expect(readProviderFileWindow).toHaveBeenCalledTimes(1);
     vi.mocked(readProviderFileWindow).mockClear();
-    // Audit T2 #2: ticks inside the cooldown window (30 s from the failure,
-    // i.e. until t=45 s) probe the host ZERO times (per session, per tick
-    // each used to re-pay a ~11 s connect).
-    await vi.advanceTimersByTimeAsync(15_000); // tick@30s: in-window
+    // Audit T2 #2: a tick inside the cooldown window (30 s from the failure
+    // at t=30 s, i.e. until t=60 s) probes the host ZERO times (per session,
+    // per tick each used to re-pay a ~11 s connect).
+    await vi.advanceTimersByTimeAsync(15_000); // tick@45s: inside the cooldown armed at t=30s
     expect(readProviderFileWindow).not.toHaveBeenCalled();
     // Past the cooldown the host is probed again and delivers.
     vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
-    await vi.advanceTimersByTimeAsync(15_000); // tick@45s: window expired → probe
+    await vi.advanceTimersByTimeAsync(15_000); // tick@60s: window expired → probe
     expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'sess-3', 'completed', 'Stop');
   });
 
@@ -925,10 +934,10 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     vi.mocked(fs.promises.readdir).mockResolvedValue(['local-1.status'] as any);
     vi.mocked(fs.promises.stat).mockResolvedValue({ mtimeMs: 5 } as any);
     vi.mocked(fs.readFileSync).mockReturnValue('PostToolUse:working' as any);
-    startWatching(win); // watcher alive → watchdog cadence (15 s)
+    startWatching(win); // watcher alive → safety-net cadence (30 s)
     registerSession('local-1');
     registerRemoteStatus('sess-hang', 'slowhost');
-    await vi.advanceTimersByTimeAsync(15_000); // tick fires; remote read hangs
+    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS); // tick fires; remote read hangs
     // The local sweep is NOT awaited behind the remote read: it delivered.
     expect(mockSend).toHaveBeenCalledWith('session:hookStatus', 'local-1', 'working', 'PostToolUse');
     releaseRead();
@@ -941,7 +950,7 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     registerRemoteStatus('sess-4', 'lab');
     cleanupSessionStatus('sess-4');
     vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
     expect(readProviderFileWindow).not.toHaveBeenCalled();
   });
 
@@ -954,7 +963,7 @@ describe('remote status sidecar poll (per-host providers T2)', () => {
     const win = createMockWin();
     startWatching(win);
     vi.mocked(readProviderFileWindow).mockResolvedValue('Stop:completed');
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(SAFETY_NET_POLL_MS);
     expect(readProviderFileWindow).not.toHaveBeenCalled();
   });
 });
