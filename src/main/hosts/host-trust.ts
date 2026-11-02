@@ -2,7 +2,9 @@
 //
 // The interactive lanes — `spawnShellPty`'s remote shell and `resolveLaunchSpec`'s
 // remote provider wrap — run the SYSTEM `ssh -tt`, so they trust a known_hosts
-// file, NOT `HostRecord.hostKeyFingerprint`. With no FineVibe-owned file a host
+// file, NOT `HostRecord.hostKeyFingerprint` (and `-o UserKnownHostsFile=`
+// REPLACES the default list, so a FineVibe lane never consults the user's
+// `~/.ssh/known_hosts` once a host is seeded). With no FineVibe-owned file a host
 // that is pinned AND approved in-app still accepts a MITM key in the app's own
 // terminal whenever the user's `~/.ssh/known_hosts` has no entry for it.
 //
@@ -21,6 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import type { HostRecord } from '../../shared/types';
+import { getHostSecret } from './secrets';
 
 /** File name inside `<userData>/hosts/<id>/` (the managed-key dir, keys.ts). */
 export const HOST_TRUST_FILE = 'known_hosts';
@@ -66,18 +69,47 @@ export function seedHostTrustStore(record: HostRecord, serverKey: Buffer): strin
   const line = knownHostsLine(record, serverKey);
   const file = hostTrustStorePath(app.getPath('userData'), record.id);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  // `mode` applies on create, which is the only case here (the path is
-  // id-derived and FineVibe-owned); a pre-existing file keeps its own mode.
   fs.writeFileSync(file, `${line}\n`, { mode: 0o600 });
+  // `writeFileSync`'s `mode` applies only on CREATE, so a re-seed over a file
+  // that lost its 0600 (a sync tool, a stray `chmod`, an fsck) would leave a
+  // group-writable trust store — the one file whose contents decide which MITM
+  // key the app terminal accepts. Force it on every write. (Windows: chmod is
+  // near a no-op there; the ACL story is the documented sibling gap.)
+  fs.chmodSync(file, 0o600);
   return file;
 }
 
 /**
- * The ssh argv a seeded store contributes: point at it and refuse hard. Empty
- * when the host was never seeded, so the caller falls back to the user's store.
+ * The `-o UserKnownHostsFile=` value, quoted only when it needs it. OpenSSH
+ * tokenizes an `-o` value on unquoted whitespace, so a userData path with a
+ * space (`C:\Users\Jane Doe\AppData\Roaming\finevibe`, the ordinary Windows
+ * case) would be read as TWO files and the seeded one would never be found →
+ * hard refuse on every app lane. Inside quotes OpenSSH treats `\` as an escape,
+ * so a Windows path gets its separators doubled before quoting; unquoted values
+ * pass through with backslashes literal.
+ */
+export function sshConfigPathValue(file: string): string {
+  return /\s/.test(file) ? `"${file.replace(/\\/g, '\\\\')}"` : file;
+}
+
+/**
+ * The `-o` options a seeded registry host contributes to the app's `ssh` argv:
+ * point at FineVibe's store, refuse unknown keys, and (key-auth hosts with no
+ * stored passphrase) refuse password prompts entirely so a failed key auth exits
+ * with `Permission denied (publickey)` instead of parking the pane on three
+ * prompts. Password-auth hosts are left alone — typing the password IS the flow.
+ * A key-auth record whose key HAS a stored passphrase is left alone too: the
+ * passphrase lives in the OS keychain for the ssh2 lanes and cannot be handed to
+ * the system `ssh`, so the pane prompt is the only way such a key unlocks.
+ * Empty when the host was never seeded, so the caller falls back to the user's
+ * store (pre-row-35 behavior).
  */
 export function hostTrustSshArgs(record: HostRecord): string[] {
   const file = hostTrustStorePath(app.getPath('userData'), record.id);
   if (!fs.existsSync(file)) return [];
-  return ['-o', `UserKnownHostsFile=${file}`, '-o', 'StrictHostKeyChecking=yes'];
+  const args = ['-o', `UserKnownHostsFile=${sshConfigPathValue(file)}`, '-o', 'StrictHostKeyChecking=yes'];
+  if (record.authKind === 'key' && getHostSecret(`keypass:${record.id}`) === null) {
+    args.push('-o', 'NumberOfPasswordPrompts=0');
+  }
+  return args;
 }
