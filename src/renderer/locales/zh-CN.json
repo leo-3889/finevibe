@@ -20,6 +20,7 @@
     "autoNameSessions": "根据 CLI 的会话标题自动命名会话（Claude、OMP、Pi、Pi-Bolt）",
     "confirmClosingActiveSession": "关闭活动会话前进行确认",
     "copyOnSelect": "选中即复制",
+    "tuiMouseMode": "TUI 鼠标模式（左键传给应用；Shift+拖动进行选择）",
     "leadReviews": "主管评审：会话完成后，项目主管对该会话进行一次隐藏评审（仅适用于启用主管且开启评审模式的项目）",
     "askAiFocus": "Ask AI 在何处打开新会话",
     "askAiFocusSwitch": "新标签页（并切换焦点）",

@@ -651,6 +651,9 @@ export interface Preferences {
   readinessExcludedProviders?: ProviderId[];
   sidebarViews?: SidebarViews;
   boardCardMetrics?: boolean;
+  /** Row 69 (owner decision): true = plain-left forwards to mouse-tracking
+   * TUIs; local selection is Shift+drag (macOS: Option+drag too). */
+  tuiMouseMode?: boolean;
   chromeImport?: ChromeImportSummary;
 }
 

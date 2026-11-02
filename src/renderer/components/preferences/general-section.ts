@@ -42,6 +42,8 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
   let autoTitleCheckbox: HTMLInputElement | null = null;
   let confirmCloseCheckbox: HTMLInputElement | null = null;
   let copyOnSelectCheckbox: HTMLInputElement | null = null;
+  // Row 69: TUI mouse mode — the selection/forwarding convention toggle.
+  let tuiMouseModeCheckbox: HTMLInputElement | null = null;
   let leadReviewsCheckbox: HTMLInputElement | null = null;
   let projectsFolderValue: string | null = null;
   let askAiFocusSelect: CustomSelectInstance | null = null;
@@ -182,6 +184,9 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       const copyOnSelect = toggleRow('pref-copy-on-select', t('general.copyOnSelect'), appState.preferences.copyOnSelect ?? false);
       copyOnSelectCheckbox = copyOnSelect.checkbox;
       container.appendChild(copyOnSelect.row);
+      const tuiMouseMode = toggleRow('pref-tui-mouse-mode', t('general.tuiMouseMode'), appState.preferences.tuiMouseMode ?? false);
+      tuiMouseModeCheckbox = tuiMouseMode.checkbox;
+      container.appendChild(tuiMouseMode.row);
 
       // Lead review kill switch (team-lead-persona-plan I3): the project's own
       // `lead.enabled` + review mode decides WHERE reviews run; this decides
@@ -270,6 +275,7 @@ export function createGeneralSection(ctx: PreferencesContext): SectionController
       if (autoTitleCheckbox) patch.autoTitleEnabled = autoTitleCheckbox.checked;
       if (confirmCloseCheckbox) patch.confirmCloseWorkingSession = confirmCloseCheckbox.checked;
       if (copyOnSelectCheckbox) patch.copyOnSelect = copyOnSelectCheckbox.checked;
+      if (tuiMouseModeCheckbox) patch.tuiMouseMode = tuiMouseModeCheckbox.checked;
       if (leadReviewsCheckbox) patch.leadReviewsEnabled = leadReviewsCheckbox.checked;
       if (providerSelect) patch.defaultProvider = providerSelect.getValue() as ProviderId;
       if (askAiFocusSelect) patch.askAiFocus = askAiFocusSelect.getValue() as 'switch' | 'stay';
