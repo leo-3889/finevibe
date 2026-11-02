@@ -46,8 +46,16 @@ function notify(): void {
  * pending coalesced transition pass.
  */
 function notifyNow(): void {
-  if (!notifyScheduled) return;
-  flushListeners();
+  // UNCONDITIONAL delivery: a read can land when no pass is scheduled at all
+  // (a lone background transition long ago), and this is that delete's only
+  // delivery - gating on notifyScheduled left the sidebar accent lit until the
+  // next unrelated transition (review 24db32b8). Absorbs any pending pass.
+  notifyScheduled = false;
+  if (notifyTimer !== null) {
+    clearTimeout(notifyTimer);
+    notifyTimer = null;
+  }
+  for (const cb of listeners) cb();
 }
 
 /**

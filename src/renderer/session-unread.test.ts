@@ -524,6 +524,30 @@ describe('unread-change delivery contract (Todo #44)', () => {
     expect(cb).toHaveBeenCalledTimes(1); // the absorbed pass does not re-notify
   });
 
+  // Review 24db32b8: a read with NO pass pending is that delete's only
+  // delivery - the sidebar renders synchronously on project-changed, so a
+  // dropped notifyNow leaves the accent lit until an unrelated transition.
+  it('a read with nothing pending still delivers (lone transition, late click)', async () => {
+    setupProjects();
+    mockAppState.activeProjectId = 'p2';
+    init();
+    const cb = vi.fn();
+    onChange(cb);
+
+    simulateStatusChange('s1', 'working');
+    simulateStatusChange('s1', 'waiting'); // the lone transition
+    flushRaf();                            // its pass runs to completion
+    expect(cb).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(100);           // timer net disarmed too
+    expect(cb).toHaveBeenCalledTimes(1);
+
+    mockAppState.activeProjectId = 'p1';   // user clicks the project later
+    fireAppStateEvent('project-changed');
+    await Promise.resolve();               // microtask: the read - sole delivery
+    expect(cb).toHaveBeenCalledTimes(2);
+    expect(isUnread('s1')).toBe(false);
+  });
+
   it('a subscriber that arrives mid-burst is told about the state it missed', () => {
     setupProjects();
     mockAppState.activeProjectId = 'p2';
