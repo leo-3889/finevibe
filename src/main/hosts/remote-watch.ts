@@ -16,12 +16,12 @@
 // `stopAllFileWatchers` (window closed + quit cleanup).
 
 import type { BrowserWindow } from 'electron';
-import type { FsChange } from '../../shared/types';
+import type { FsChange } from '../../shared/types.js';
 import { sftpListDirEntries } from './ssh-client';
 import { getHost } from './host-registry';
 import { normalizeRemotePath } from './remote-fs';
 import { evictOldest } from '../bounded-map';
-import { LOCAL_HOST_ID } from '../../shared/types';
+import { LOCAL_HOST_ID } from '../../shared/types.js';
 
 /** Poll period per watched remote directory, and the timeout of the one sftp
  * readdir each poll issues (a poll that outlives its own interval would

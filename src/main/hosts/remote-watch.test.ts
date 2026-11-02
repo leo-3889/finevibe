@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
-import type { FsChange } from '../../shared/types';
+import type { FsChange } from '../../shared/types.js';
 
 const sftp = vi.hoisted(() => ({
   entries: vi.fn<(record: unknown, dir: string, opts?: unknown) => Promise<Array<{ name: string; isDirectory: boolean; mtimeMs: number }> | null>>(),
