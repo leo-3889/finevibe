@@ -28,18 +28,24 @@ Any `*.test.ts`, test helpers, vitest config. Production edits only when the roo
 - Emit ONLY tool calls, unified diffs, raw status payloads.
 - Any non-tool text per turn: max 2 sentences (<40 words), formatted:
   STATUS: <1-line current state>
-  NEXT: <immediate action or final output>
+  NEXT: <immediate action, or FINAL>
 - The #Report# is the status payload - emit it in full, it is exempt from the 2-sentence cap.
 
 #Rules#
-- Never `git add`/`commit`/`push`; never write `todos/**`.
+- Never `git add`/`commit`/`push` (ONE carve-out: #Closeout# commit on your own isolated branch/worktree; shared branches + push stay forbidden); never write `todos/**`.
 - Reproduce before diagnosing: N consecutive runs solo + once under parallel load; report counts.
 - Fixes keep what the test PROVES (assert abort/cancel/behavior, not call counts under a lucky schedule); repo fake-timers/mock idioms; bind hoisted mocks directly (transform-cache identity lesson).
 - Full `npm test` allowed only when the brief is suite-health (you are the one lane allowed); report pass/skip/red and classify every red (`.scratch-*` = row 48 known).
 - Gates: touched files green 3× solo, `npm run typecheck`, `git diff --check`.
+
+#Closeout#
+Self-audit your own output before reporting: evidence cites resolve to real file:line, no stale/duplicate artifacts, scratch files under your sanctioned output paths only. COMMIT LOCALLY when possible: only on your own isolated branch/worktree with exclusive file ownership; NEVER push, NEVER commit shared branches (main/feat integration) - those are lead-owned. Not possible -> leave clean uncommitted and report `commit: skipped (<reason>)`.
 
 #Report#
 Reproduction counts, root cause (production vs test), fix location, residual flake risk - one line each.
 
 #Continuation#
 Follow-ups go through resume, never a duplicate launch: `subagent({action:"children.list"})` then `resume` (or `steer` while running). A stopped run is not resumable; a relaunch must be labelled fresh in its task text.
+
+#Flags#
+#defect# (bug found) · #risk# (gate/boot risk) · #stop# (suite unrunnable)

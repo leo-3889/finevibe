@@ -88,8 +88,8 @@ A full static audit of main + renderer verified every bound above against source
 | `ProjectRecord.githubLastSeen` | `src/shared/types.ts` | fixed (PA-31): one entry per viewed PR/issue, forever | `pruneGithubLastSeen` keeps the newest 200 entries (`src/shared/github-last-seen.ts`) at every write site |
 | Per-launch session dirs | `src/main/launch-session-dir.ts` (`<userData>/pi-sessions`, `<userData>/omp-sessions`) | fixed: one directory per Pi/OMP start/resume, never removed — unbounded on disk, and `listLaunchSessionDirs()` cost one `stat` + one sidecar `readFile` per directory on EVERY global session search (~2,000 synchronous syscalls per search at 1,000 tabs) | 30-day retention window (`LAUNCH_SESSION_RETENTION_MS`), swept once per provider base per process, deferred off the spawn path to a `setImmediate` and capped at 200 directories per pass; the same age filter now gates the search listing |
 | Per-launch session dirs — A4 sweeps/quota (2026-10-23) | `src/main/launch-session-dir.ts` (`startSessionRetentionSweeps`, `enforceLaunchSessionQuota`) | the row above's arming was launch-only: an install that never launches Pi/OMP grew the two bases forever, and a heavy user's bases had no disk bound inside the 30-day window | startup sweep on a `setImmediate` + unref'd 24 h re-arm (daily tick also runs `sweepEnumerationCaches()`), plus a 2 GiB per-base quota (`SESSIONS_QUOTA_BYTES`): over quota, expired dirs evict oldest-first (sidecar `createdAt` → newest transcript mtime → dir mtime) under the same all-timestamps-past-window predicate; young dirs survive; `PRUNE_SCAN_LIMIT` bound and P2-57 ordering reused |
-| `enumerateCache` / `topFilesCache` | `src/main/ipc-handlers.ts` | fixed (B1): one entry per cwd enumerated/scanned in the session (Quick Open listings and token scans), freed only by the 30 s TTL / `git:changed` on the cwds someone revisited | LRU cap 64 cwds each (`ENUMERATE_CACHE_MAX`, `TOP_FILES_CACHE_MAX`), read-hit touch + oldest eviction; `sweepEnumerationCaches()` drops TTL-expired entries between invalidations |
-| `outsideHomeConsent` | `src/main/ipc-handlers.ts` | fixed (B1): one consent answer per home-outside dir canonicalized in the session (every Add-Project keystroke prefix on a home-outside root) | FIFO cap 200 (`OUTSIDE_HOME_CONSENT_MAX`), oldest answer evicted first (mirrors `MAX_CONSENT_DIR_RECORDS`); an eviction costs a re-prompt, the safe direction |
+| `enumerateCache` / `topFilesCache` | `src/main/ipc/fs-domains.ts` | fixed (B1): one entry per cwd enumerated/scanned in the session (Quick Open listings and token scans), freed only by the 30 s TTL / `git:changed` on the cwds someone revisited | LRU cap 64 cwds each (`ENUMERATE_CACHE_MAX`, `TOP_FILES_CACHE_MAX`), read-hit touch + oldest eviction; `sweepEnumerationCaches()` drops TTL-expired entries between invalidations |
+| `outsideHomeConsent` | `src/main/ipc/fs-domains.ts` | fixed (B1): one consent answer per home-outside dir canonicalized in the session (every Add-Project keystroke prefix on a home-outside root) | FIFO cap 200 (`OUTSIDE_HOME_CONSENT_MAX`), oldest answer evicted first (mirrors `MAX_CONSENT_DIR_RECORDS`); an eviction costs a re-prompt, the safe direction |
 | `rootCanonicalCache` | `src/main/fs-utils.ts` | fixed (B1): gate-root canonical forms live for the process, dropped only when the project/profile root set changes | LRU cap 1,024 (`ROOT_CANONICAL_CACHE_MAX`), read-hit touch + oldest eviction |
 | `gateRootCanonicalByPath` | `src/main/store.ts` | fixed (B1/B2): per-path gate memo cleared only by the test-only `invalidateStateCache`, so production grew it per project path and could keep a stale realpath after project add/remove | FIFO cap 200 (`GATE_ROOT_CANONICAL_MAX`); `store:save`/`store:save-sync` now call `invalidateStateCache()` whenever `invalidateCanonicalPathIfRootsChanged` reports a root-set change |
 | `foldsCaseByDir` | `src/main/settings-guard.ts` | fixed (B1): one case-fold probe result per dir probed in the session | FIFO cap 200 (`FOLDS_CASE_BY_DIR_MAX`), oldest evicted first; the eviction cost is one re-probe, never a policy change |
@@ -160,8 +160,8 @@ below drove the real modules — bundled with esbuild, `electron` stubbed — ex
 startup row, which ran the real Electron app in the dev tree (not packaged); no gate ran
 concurrently, so no vitest contention. **The W2 harnesses themselves no longer exist**
 (the agent workspace holding them was dissolved on 2026-10-21). Their periodic
-successors — `dev/perf/s3-idle-growth.js`, `po06-watcher-cost.js`, `f2-codex-spike.js`,
-`f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md`; all four plus that
+successors — `dev/perf/s3-idle-growth.js`, `dev/perf/po06-watcher-cost.js`,
+`dev/perf/f2-codex-spike.js`, `dev/perf/f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md`; all four plus that
 README are tracked — `.gitignore` narrows the sandbox to `dev/*` and un-ignores `dev/perf/`
 and `dev/audit/`, so a fresh clone resolves the weekly `perf.yml` harness steps),
 driven by [`.github/workflows/perf.yml`](../.github/workflows/perf.yml) weekly + on
@@ -313,12 +313,12 @@ split tree (minified):
 
 | Emitted file | Size | When it is fetched |
 | --- | --- | --- |
-| `index.js` (entry) | **190.6 KiB** | boot — entry budget 350 KiB |
-| `chunk-OQFGLNNR.js` | 695.5 KiB | boot (static import graph) |
-| `chunk-LUN2P7DE.js` | 323.5 KiB | boot (static import graph) |
+| `dist/…index.js` (entry) | **190.6 KiB** | boot — entry budget 350 KiB |
+| `dist/…chunk-OQFGLNNR.js` | 695.5 KiB | boot (static import graph) |
+| `dist/…chunk-LUN2P7DE.js` | 323.5 KiB | boot (static import graph) |
 | `marked.esm-*.js` | 40.4 KiB | first markdown render |
 | `purify.es-*.js` | 22.3 KiB | first markdown render |
-| `share-manager-*.js`, `split-layout-*.js`, `chunk-FW4363Y4.js` | 1.3 KiB | on demand |
+| `share-manager-*.js`, `split-layout-*.js`, `dist/…chunk-FW4363Y4.js` | 1.3 KiB | on demand |
 | **total JS shipped** | **1273.5 KiB** | total budget 1400 KiB |
 
 Before the split the app shipped one 1280.3 KiB minified IIFE entry, so splitting
@@ -341,7 +341,7 @@ gitignored — absent on a fresh clone): `gridstack` (82.3 KiB) sits behind
 conversion before it can lazy-load, and xterm (540 KiB across three packages) is
 needed at first paint by definition.
 
-Sourcemaps are built for every production render (`index.js.map`, ~6 MB) and are
+Sourcemaps are built for every production render (`dist/…index.js.map`, ~6 MB) and are
 **not shipped**: `build.files` excludes `**/*.map` — the dependency tree's maps
 included — so a packaged app pays nothing while a pasted renderer stack trace
 stays symbolizable off-device.

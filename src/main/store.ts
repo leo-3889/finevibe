@@ -446,7 +446,7 @@ let lastState: PersistedState | null = null;
 // memoized canonical at zero syscall cost — a cache hit can never launder a
 // CLI config tree, a filesystem root, or the home root into the gate set.
 
-// Mirrors the read allowlist in ipc-handlers `isAllowedReadPath` — the CLI
+// Mirrors the read allowlist in ipc/fs-domains.ts `isAllowedReadPath` — the CLI
 // config trees a "project" must never launder into the git-exec/destructive
 // root set. `.claude.json`/`.mcp.json` are files, refused by the directory
 // check; only the directory trees need listing here.

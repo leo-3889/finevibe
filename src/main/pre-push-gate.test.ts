@@ -6,6 +6,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PRIVACY_PATTERNS, formatHits, scanPush, scanText } from './pre-push-gate';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const HOOK = path.join(ROOT, '.githooks', 'pre-push');
@@ -31,6 +32,13 @@ function makeRepo(): string {
   git(repo, 'add', '-A');
   git(repo, 'commit', '-qm', 'base');
   return repo;
+}
+
+function commit(repo: string, file: string, content: string): string {
+  fs.writeFileSync(path.join(repo, file), content);
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-qm', file);
+  return git(repo, 'rev-parse', 'HEAD').trim();
 }
 
 function push(repo: string, localSha: string, remoteSha: string): number {
@@ -113,5 +121,96 @@ describe.skipIf(process.platform === 'win32')('pre-push gate (fixture repos)', (
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'clean');
     expect(push(repo, git(repo, 'rev-parse', 'HEAD').trim(), base)).toBe(0);
+  });
+});
+
+// The permanent privacy gate (src/main/pre-push-gate.ts): hard blockers on the
+// operator's identity + credential shapes, no exemptions, value never echoed.
+
+// Same 'st'+'rix' concatenation the gate uses: a test that spells the literals
+// it blocks flags itself in every pushed range that touches it.
+const HOST = 'leo-' + '9950X';
+const LAN_IP = '192.16' + '8.2.242';
+const HOME = '/hom' + 'e/leo';
+const NOREPLY = 'leo-3889@users' + '.noreply.github.com';
+const TOKEN = 'ghp_' + 'a'.repeat(30);
+
+function gate(repo: string, localSha: string, remoteSha: string) {
+  return scanPush(repo, `refs/heads/main ${localSha} refs/heads/main ${remoteSha}\n`);
+}
+
+describe('pre-push privacy gate (identity + credentials)', () => {
+  it('range: identity literal in an added line blocks, and the value is not echoed', () => {
+    const repo = makeRepo();
+    repos.push(repo);
+    const base = git(repo, 'rev-parse', 'HEAD').trim();
+    const tip = commit(repo, 'cfg.txt', `host = ${HOST}\n`);
+    const hits = gate(repo, tip, base);
+    expect(hits.map((h) => h.pattern)).toContain('GIT_IDENTITY_HOST');
+    const report = formatHits(hits);
+    expect(report).toContain('cfg.txt:1');
+    expect(report).toContain('GIT_IDENTITY_HOST');
+    expect(report).not.toContain(HOST);
+  });
+
+  it('range: lan ip, home path and noreply identity all block', () => {
+    const repo = makeRepo();
+    repos.push(repo);
+    const base = git(repo, 'rev-parse', 'HEAD').trim();
+    const tip = commit(repo, 'notes.md', `# ${NOREPLY}\nbox ${LAN_IP} under ${HOME}\n`);
+    const report = formatHits(gate(repo, tip, base));
+    expect(PRIVACY_PATTERNS.map((p) => p.name)).toEqual([
+      'GIT_IDENTITY_HOST',
+      'GIT_LAN_IP',
+      'GIT_HOME_PATH',
+      'GIT_IDENTITY_NOREPLY',
+      'GIT_SECRET_TOKEN',
+      'GIT_PRIVATE_KEY',
+      'GIT_SECRET_TOKEN_GOOGLE',
+      'GIT_SECRET_TOKEN_NPM',
+      'GIT_SECRET_TOKEN_SLACK',
+    ]);
+    expect(report).toContain('GIT_LAN_IP');
+    expect(report).toContain('GIT_HOME_PATH');
+    expect(report).toContain('GIT_IDENTITY_NOREPLY');
+    expect(report).not.toContain(LAN_IP);
+    expect(report).not.toContain(NOREPLY);
+  });
+
+  it('range: clean content passes', () => {
+    const repo = makeRepo();
+    repos.push(repo);
+    const base = git(repo, 'rev-parse', 'HEAD').trim();
+    const tip = commit(repo, 'ok.txt', 'host = localhost\nkey = public\n');
+    expect(gate(repo, tip, base)).toEqual([]);
+  });
+
+  it('range: a ghp_ token blocks with GIT_SECRET_TOKEN, value not echoed', () => {
+    const repo = makeRepo();
+    repos.push(repo);
+    const base = git(repo, 'rev-parse', 'HEAD').trim();
+    const tip = commit(repo, 'ci.sh', `export GH=${TOKEN}\n`);
+    const hits = gate(repo, tip, base);
+    expect(hits.map((h) => h.pattern)).toContain('GIT_SECRET_TOKEN');
+    expect(formatHits(hits)).not.toContain(TOKEN);
+  });
+
+  it('gate source scanned by its own patterns finds nothing (self-clean)', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'pre-push-gate.ts'), 'utf8');
+    expect(scanText(source)).toEqual([]);
+    // the spec is in the same pushed range, so it has to be clean too
+    expect(scanText(fs.readFileSync(path.join(__dirname, 'pre-push-gate.test.ts'), 'utf8'))).toEqual([]);
+  });
+
+  it('new ref: tip-TREE scan catches the literal in a file the tip commit never touched', () => {
+    const repo = makeRepo();
+    repos.push(repo);
+    commit(repo, 'leak.txt', `host=${HOST}\n`);
+    const tip = commit(repo, 't.txt', 'x=1\n'); // leak.txt is unchanged here
+    const hits = gate(repo, tip, ZERO);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ file: 'leak.txt', line: 1, pattern: 'GIT_IDENTITY_HOST' });
+    expect(hits[0].rev).toBe(tip.slice(0, 7));
+    expect(formatHits(hits)).not.toContain(HOST);
   });
 });

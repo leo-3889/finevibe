@@ -9,9 +9,11 @@ import {
   readTranscriptTitleWithSessionInfoSync,
   transcriptStatusFromTail,
   readTranscriptStatusSync,
+  seedLaunchTranscript,
   sessionExitReasonFromTail,
   readSessionExitReasonSync,
   findTranscriptPathSync,
+  readSessionHeaderSync,
   TAIL_READ_BYTES,
   HEADER_READ_BYTES,
 } from './pi-compatible-transcripts';
@@ -481,6 +483,41 @@ describe('readSessionExitReasonSync', () => {
       // complete line to parse); the bounded fallback read must still
       // surface the reason.
       expect(readSessionExitReasonSync(file)).toEqual({ reason: 'unhandled_rejection', kind: 'fatal' });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('seedLaunchTranscript', () => {
+  it('writes a header the CLI lookup and the watcher accept, exactly once', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-seed-'));
+    try {
+      seedLaunchTranscript(dir, 'a2ca84bd-a54d-45ff-a407-cf4f62c2c9c2', dir);
+      const names = fs.readdirSync(dir);
+      expect(names).toHaveLength(1);
+      // Watcher filename contract: <ISO ts with :. as ->_<id>.jsonl
+      expect(names[0]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_a2ca84bd-a54d-45ff-a407-cf4f62c2c9c2\.jsonl$/);
+      const seeded = path.join(dir, names[0]);
+      // CLI lookup contract: header line with matching id and cwd.
+      const header = readSessionHeaderSync(seeded);
+      expect(header).toMatchObject({
+        id: 'a2ca84bd-a54d-45ff-a407-cf4f62c2c9c2',
+        cwd: path.resolve(dir),
+      });
+      // wx: a seed never clobbers an existing transcript file.
+      // Pin the clock to the first seed's timestamp (parsed from the
+      // filename) so the second seed computes the same filename.
+      const seededAt = Date.parse(
+        names[0].slice(0, names[0].indexOf('_')).replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/, 'T$1:$2:$3.$4Z'));
+      vi.useFakeTimers();
+      vi.setSystemTime(seededAt);
+      try {
+        expect(() => seedLaunchTranscript(dir, 'a2ca84bd-a54d-45ff-a407-cf4f62c2c9c2', dir)).toThrow();
+        expect(fs.readdirSync(dir)).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

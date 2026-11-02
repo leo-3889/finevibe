@@ -222,6 +222,10 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
       scopeSelect?.destroy();
       scopeSelect = undefined;
 
+      // Host scope is the top-level control: it decides WHICH machine the
+      // provider scan below runs against, so it renders above the results.
+      renderScopeRow(container);
+
       const section = document.createElement('div');
       section.className = 'setup-section';
 
@@ -230,8 +234,6 @@ export function createSetupSection(ctx: PreferencesContext): SectionController {
       loading.textContent = t('setup.checking');
       section.appendChild(loading);
       container.appendChild(section);
-
-      renderScopeRow(container);
 
       const hostId = appState.activeHostId;
       if (hostId !== LOCAL_HOST_ID) {

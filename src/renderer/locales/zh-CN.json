@@ -76,7 +76,16 @@
     },
     "projectSettings": {
       "title": "项目设置",
-      "defaultProfileLabel": "默认配置文件"
+      "defaultProfileLabel": "默认配置文件",
+      "leadEnabledLabel": "团队负责人",
+      "leadPersonaLabel": "负责人人格",
+      "leadPersonaNone": "无人格",
+      "leadNameLabel": "负责人名称",
+      "leadNamePlaceholder": "技术负责人",
+      "leadNameDefault": "团队负责人",
+      "leadCharterLabel": "职责章程",
+      "leadCharterPlaceholder": "该负责人在本项目中负责的内容（最多 4 KiB）",
+      "leadCharterTooLong": "章程为 {size} 字节，上限为 {max} 字节。"
     },
     "removeConfirm": {
       "withDataMessage": "确定移除项目「{name}」？这将从 FineVibe 中删除 {parts}。不会影响磁盘上的文件。",
@@ -133,6 +142,8 @@
       "team": "{name} - 团队"
     },
     "shareIndicatorTooltip": "分享中",
+    "leadBadge": "负责",
+    "leadBadgeTooltip": "团队负责人：{name}",
     "closeTooltip": "关闭会话",
     "scrollLeftTooltip": "向左滚动标签页",
     "scrollRightTooltip": "向右滚动标签页",

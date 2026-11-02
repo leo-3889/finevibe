@@ -38,7 +38,7 @@ echo "== whitespace =="
 # artifact, not a repo defect).
 git diff --name-only -z | xargs -0 --no-run-if-empty git diff --check -- || fail=1
 
-echo "== doc pointers (advisory; E3/E4 own the anchor rows) =="
-node dev/audit/pointer-check.js docs || echo "POINTER WARN (not gating)"
+echo "== doc pointers (hard gate, mirrors ci.yml) =="
+node dev/audit/pointer-check.js docs || fail=1
 
 exit "$fail"

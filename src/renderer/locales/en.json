@@ -76,7 +76,16 @@
     },
     "projectSettings": {
       "title": "Project Settings",
-      "defaultProfileLabel": "Default profile"
+      "defaultProfileLabel": "Default profile",
+      "leadEnabledLabel": "Team lead",
+      "leadPersonaLabel": "Lead persona",
+      "leadPersonaNone": "No persona",
+      "leadNameLabel": "Lead name",
+      "leadNamePlaceholder": "Tech Lead",
+      "leadNameDefault": "Team Lead",
+      "leadCharterLabel": "Charter",
+      "leadCharterPlaceholder": "What this lead is accountable for in this project (max 4 KiB)",
+      "leadCharterTooLong": "Charter is {size} bytes; the cap is {max} bytes."
     },
     "removeConfirm": {
       "withDataMessage": "Remove project \"{name}\"? This will delete {parts} from FineVibe. No files on disk will be affected.",
@@ -133,6 +142,8 @@
       "team": "{name} - Team"
     },
     "shareIndicatorTooltip": "Sharing",
+    "leadBadge": "LEAD",
+    "leadBadgeTooltip": "Team lead: {name}",
     "closeTooltip": "Close session",
     "scrollLeftTooltip": "Scroll tabs left",
     "scrollRightTooltip": "Scroll tabs right",

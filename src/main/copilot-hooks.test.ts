@@ -18,9 +18,27 @@ vi.mock('./hook-commands', () => ({
   installEventScript: vi.fn(),
 }));
 
+// The -X utf8 test needs copilot-hooks' Windows branch on any host. `isWin`
+// is a module-load const in platform.ts, so the mock re-exports it as a getter
+// over a mutable stub (fs-utils.test.ts idiom) and `buildHookEntry`
+// (copilot-hooks.ts:164) reads the live binding per call.
+//
+// The previous shape flipped that branch by mutating the module registry:
+// vi.resetModules() + vi.doMock('./platform') + Promise.all([import('fs'),
+// import('./copilot-hooks')]). That races vitest's manual-mock factory cache:
+// `vi.resetModules()` deliberately skips `mock:` nodes, so a re-imported graph
+// re-resolves the fs/hook-commands factories through
+// NativeModuleMocker.getFactoryModule, and a mocked module re-requested while
+// its factory promise is still pending resolves to the circular placeholder
+// (`{ __factoryPromise }`, checkCircularManualMock) instead of the exports the
+// suite-level `mockWriteFileSync`/`mockInstallEventScript` bindings captured.
+// Which side wins depends on transform/evaluate interleaving, so the file is
+// green solo and red under parallel load. Nothing in this file touches the
+// registry now.
+const platformStub = vi.hoisted(() => ({ isWin: false, pythonBin: '/usr/bin/python3' }));
 vi.mock('./platform', () => ({
-  isWin: false,
-  pythonBin: '/usr/bin/python3',
+  get isWin() { return platformStub.isWin; },
+  get pythonBin() { return platformStub.pythonBin; },
 }));
 
 import * as fs from 'fs';
@@ -60,6 +78,8 @@ function findWrite(target: string): [any, any] | undefined {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  platformStub.isWin = false;
+  platformStub.pythonBin = '/usr/bin/python3';
   _resetForTesting();
 });
 
@@ -149,35 +169,25 @@ describe('installCopilotHooks', () => {
     }
   });
 
-  it('passes -X utf8 on Windows on both shell fields (UTF-8 stdin fix)', async () => {
+  it('passes -X utf8 on Windows on both shell fields (UTF-8 stdin fix)', () => {
     // Python <3.15 decodes sys.stdin with the ANSI code page on Windows: a
     // non-ASCII payload raises UnicodeDecodeError and the dispatcher dies,
-    // silently killing status/events/session-id capture. Fresh module graph:
-    // isWin is a module-load constant, so the win path needs a re-import —
-    // and with it the fs-mock instances the fresh graph writes through.
-    vi.resetModules();
-    vi.doMock('./platform', () => ({ isWin: true, pythonBin: 'py -3' }));
-    try {
-      const [fsMod, m] = await Promise.all([import('fs'), import('./copilot-hooks')]);
-      m._resetForTesting();
-      const writeFileSync = vi.mocked(fsMod.writeFileSync);
-      const readFileSync = vi.mocked(fsMod.readFileSync);
-      readFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
-      m.installCopilotHooks(PROJECT);
-      const call = writeFileSync.mock.calls.find(c => n(String(c[0])) === n(HOOK_FILE));
-      expect(call, 'hook file not written by the fresh graph').toBeDefined();
-      const { hooks } = JSON.parse(String(call![1]));
-      for (const entries of Object.values(hooks) as any[][]) {
-        for (const h of entries) {
-          expect(h.bash.startsWith('py -3 -X utf8 "')).toBe(true);
-          expect(h.powershell.startsWith('py -3 -X utf8 "')).toBe(true);
-        }
+    // silently killing status/events/session-id capture. Both shell fields must
+    // carry the -X utf8 switch when isWin is set (see the platformStub note at
+    // the top of the file for why this is a stub flip, not a re-import).
+    platformStub.isWin = true;
+    platformStub.pythonBin = 'py -3';
+    mockFiles({});
+    installCopilotHooks(PROJECT);
+
+    const call = findWrite(HOOK_FILE);
+    expect(call, 'hook file not written').toBeDefined();
+    const { hooks } = JSON.parse(String(call![1]));
+    for (const entries of Object.values(hooks) as any[][]) {
+      for (const h of entries) {
+        expect(h.bash.startsWith('py -3 -X utf8 "')).toBe(true);
+        expect(h.powershell.startsWith('py -3 -X utf8 "')).toBe(true);
       }
-    } finally {
-      vi.doUnmock('./platform');
-      vi.resetModules();
-      // Re-bind the suite-level helpers onto the rebuilt default graph.
-      await import('fs');
     }
   });
 

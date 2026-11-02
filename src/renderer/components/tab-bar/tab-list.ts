@@ -101,14 +101,22 @@ function tabDisplayName(project: ProjectRecord, session: SessionRecord): string 
   }
 }
 
-function tabNamePrefix(session: SessionRecord): string {
+function tabNamePrefix(session: SessionRecord, project?: ProjectRecord): string {
   switch (session.type) {
     case 'diff-viewer': return '<span class="tab-diff-badge">DIFF</span> ';
     case 'mcp-inspector': return '<span class="tab-mcp-badge">MCP</span> ';
     case 'file-reader': return '<span class="tab-file-badge">FILE</span> ';
     case 'remote-terminal': return '<span class="tab-remote-badge">P2P</span> ';
     case 'browser-tab': return '<span class="tab-browser-badge">WEB</span> ';
-    case 'project-tab': return `<span class="tab-project-badge">${ICON_OVERVIEW}</span> `;
+    // Lead badge (team-lead-persona-plan M1 UI): the overview tab only, and only
+    // while the lead is enabled — a project without `lead` renders the exact
+    // prefix it rendered before the feature existed.
+    case 'project-tab': {
+      const lead = project?.lead?.enabled
+        ? `<span class="tab-lead-badge" title="${esc(t('tab.leadBadgeTooltip', { name: project.lead.name }))}">${esc(t('tab.leadBadge'))}</span> `
+        : '';
+      return `${lead}<span class="tab-project-badge">${ICON_OVERVIEW}</span> `;
+    }
     case 'kanban': return `<span class="tab-kanban-badge">${ICON_KANBAN}</span> `;
     case 'team': return `<span class="tab-team-badge">${ICON_TEAM}</span> `;
     default: {
@@ -647,7 +655,7 @@ export function render(): void {
     tab.draggable = true;
     const status = getStatus(session.id);
     tab.title = tabTitle(project, session, status);
-    const namePrefix = tabNamePrefix(session);
+    const namePrefix = tabNamePrefix(session, project);
     const shareIndicator = sharing ? `<span class="tab-share-indicator" title="${esc(t('tab.shareIndicatorTooltip'))}"></span>` : '';
     const statusDot = isSpecial ? '' : `<span class="tab-status ${status}" aria-hidden="true">${STATUS_GLYPH[status]}</span>`;
     // pi-lens-ignore: xss-innerhtml, slop, no-inner-html
@@ -861,7 +869,7 @@ function patchTabMetadata(project: ProjectRecord, session: SessionRecord, tab: H
   if (forceName || tab.dataset.tabName !== displayName) {
     tab.dataset.tabName = displayName;
     // pi-lens-ignore: xss-innerhtml, slop, no-inner-html — prefix is static markup, name is escaped
-    if (nameSpan) nameSpan.innerHTML = `${tabNamePrefix(session)}${esc(displayName)}`;
+    if (nameSpan) nameSpan.innerHTML = `${tabNamePrefix(session, project)}${esc(displayName)}`;
   }
 }
 

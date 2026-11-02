@@ -50,6 +50,7 @@ describe('GitHub widget refresh ordering', () => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 function makeHost(getConfig: () => Record<string, unknown>): WidgetHost {
@@ -195,6 +196,56 @@ describe('GitHub widget mark-all label (C4G-03)', () => {
     expect(btn?.textContent).toBe('Mark all GitHub items in this project read');
     expect(btn?.title).toContain('pull requests and issues');
     widget.destroy();
+  });
+});
+
+// Row 28 decomposition (fb3e7c10): createPollCadence owns the interval handle, so
+// destroy() is the only thing that tears it down. `refresh()` bails on its own
+// `destroyed` flag before any IPC, so counting listPRs calls alone cannot see a
+// leaked interval — assert the armed handle is the one cleared, then that the
+// cadence is dead after teardown.
+describe('GitHub widget poll-cadence teardown (Row 28)', () => {
+  it('clears the armed poll interval on destroy', async () => {
+    vi.useFakeTimers();
+    const listPRs = vi.fn(async () => ({ ok: true, items: [] }));
+    stubGithub({ github: { isAvailable: async () => true, listPRs } });
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval');
+
+    const widget = createGithubPRsWidget(makeHost(() => ({ repo: 'owner/repo', refreshSeconds: 60 })));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listPRs).toHaveBeenCalledTimes(1);
+
+    // One cadence tick fires while mounted, so the handle under test is live.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(listPRs).toHaveBeenCalledTimes(2);
+
+    const pollHandle = setIntervalSpy.mock.results[0]?.value as unknown as number;
+    expect(pollHandle).toBeDefined();
+
+    widget.destroy();
+    expect(clearIntervalSpy).toHaveBeenCalledWith(pollHandle);
+
+    // The tick grid keeps running for everything else: 3 windows, no fetch.
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(listPRs).toHaveBeenCalledTimes(2);
+  });
+
+  it('never arms the poll when destroy lands during the first refresh', async () => {
+    vi.useFakeTimers();
+    const first = deferred<{ ok: boolean; items?: [] }>();
+    const listPRs = vi.fn(() => first.promise);
+    stubGithub({ github: { isAvailable: async () => true, listPRs } });
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+
+    const widget = createGithubPRsWidget(makeHost(() => ({ repo: 'owner/repo', refreshSeconds: 60 })));
+    widget.destroy();
+    first.resolve({ ok: true, items: [] });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(listPRs).not.toHaveBeenCalled();
   });
 });
 

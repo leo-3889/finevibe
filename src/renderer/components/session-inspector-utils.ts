@@ -36,7 +36,13 @@ export function renderUnsupportedGuard(
   const caps = getProviderCapabilities(providerId);
   if (caps?.[capability] === false) {
     const name = getProviderDisplayName(providerId);
-    container.innerHTML = `<div class="inspector-empty">${label} is not supported for ${name} sessions</div>`;
+    // Built with DOM nodes (row 25/31 review): an empty-state message is plain
+    // text, so textContent removes the HTML sink - and the escaping question -
+    // completely.
+    const empty = document.createElement('div');
+    empty.className = 'inspector-empty';
+    empty.textContent = `${label} is not supported for ${name} sessions`;
+    container.replaceChildren(empty);
     return true;
   }
   return false;

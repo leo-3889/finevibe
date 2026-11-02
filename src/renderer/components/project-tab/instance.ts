@@ -1,12 +1,11 @@
-export interface ProjectTabInstance {
-  sessionId: string;
-  projectId: string;
-  element: HTMLElement;
-  destroy(): void;
-}
+import { createTabRegistry, type TabInstance } from '../tab-instance-registry';
 
-export const instances = new Map<string, ProjectTabInstance>();
+export type ProjectTabInstance = TabInstance;
+
+const registry = createTabRegistry<ProjectTabInstance>();
+
+export const instances = registry.instances;
 
 export function getProjectTabInstance(sessionId: string): ProjectTabInstance | undefined {
-  return instances.get(sessionId);
+  return registry.getInstance(sessionId);
 }

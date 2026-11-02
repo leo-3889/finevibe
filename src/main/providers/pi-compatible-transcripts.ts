@@ -411,6 +411,26 @@ export async function readSessionHeaderAsync(filePath: string): Promise<Compatib
 }
 
 /**
+ * Seed an empty transcript (header line only) for a fresh Pi/Pi-Bolt
+ * launch that pins `--session-id <id>`: the CLI looks the id up in its
+ * `--session-dir` before creating, and warns
+ * "No project session found with id ...; creating a new session" when the
+ * file is absent. Writing the header first makes the lookup hit — the CLI
+ * opens the file and appends to it, silently. Call AFTER the watcher
+ * registers the dir (its registration snapshots existing files as
+ * never-adoptable; a post-registration file is adopted as the launch's
+ * transcript).
+ */
+export function seedLaunchTranscript(sessionDir: string, cliSessionId: string, cwd: string): void {
+  const timestamp = new Date().toISOString();
+  const file = path.join(sessionDir, `${timestamp.replace(/[:.]/g, '-')}_${cliSessionId}.jsonl`);
+  // version 3: Pi's CURRENT_SESSION_VERSION — the exact line the CLI would
+  // write on create (pi-bolt-provider contract tests pin the format).
+  const header = { type: 'session', version: 3, id: cliSessionId, timestamp, cwd: path.resolve(cwd) };
+  fs.writeFileSync(file, `${JSON.stringify(header)}\n`, { flag: 'wx' });
+}
+
+/**
  * The CLI's own session title from a transcript head: the `type:"title"`
  * entry (OMP) wins, falling back to the header's `title` field (OMP mirrors
  * it there). Null when the session has no title (e.g. every Pi transcript).

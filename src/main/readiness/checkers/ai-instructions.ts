@@ -1,5 +1,5 @@
 import type { ReadinessCheckProducer, TaggedCheck, AnalysisContext } from '../types';
-import { runAllInstructionChecks, type InstructionFileOpts } from './instruction-file-checks';
+import { checkNotBloated, runAllInstructionChecks, type InstructionFileOpts } from './instruction-file-checks';
 import type { ProviderId } from '../../../shared/types';
 
 export function makeInstructionProducer(providerId: ProviderId, opts: InstructionFileOpts): ReadinessCheckProducer {
@@ -10,6 +10,15 @@ export function makeInstructionProducer(providerId: ProviderId, opts: Instructio
         category: 'instructions',
         check,
       }));
+    },
+  };
+}
+
+export function makeContextProducer(providerId: ProviderId, opts: InstructionFileOpts): ReadinessCheckProducer {
+  return {
+    providerId,
+    produce(projectPath: string): TaggedCheck[] {
+      return [{ category: 'context', check: checkNotBloated(projectPath, opts) }];
     },
   };
 }

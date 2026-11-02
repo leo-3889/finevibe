@@ -27,6 +27,18 @@ jobs:
           node-version: 24
           cache: npm
 
+      # Row 127 (closed 2026-11-04): pointer-check.js resolves every
+      # `path.ts:12` pointer in docs/ against the checked-out tree:
+      # unresolvable, past-EOF, ambiguous (AMBIGUOUS never gates). Node
+      # builtins only (fs/path); the index skips node_modules/dist/build/
+      # coverage/dev: no npm ci, no build needed. Runs in ~0.04s.
+      # HARD gate: all findings cleared (packaging.md cites -> verified
+      # installed-file anchors 2cb4bda7; performance.md spike-script + dist
+      # chunk pointers, FEATURES test pointer, security-boundaries past-EOF
+      # cite all fixed in the sweep). Any red here is a NEW doc rot.
+      - name: Doc pointer check
+        run: node dev/audit/pointer-check.js docs
+
       - name: Install dependencies
         run: npm ci
 
