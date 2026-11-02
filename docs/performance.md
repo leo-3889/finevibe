@@ -160,8 +160,8 @@ below drove the real modules — bundled with esbuild, `electron` stubbed — ex
 startup row, which ran the real Electron app in the dev tree (not packaged); no gate ran
 concurrently, so no vitest contention. **The W2 harnesses themselves no longer exist**
 (the agent workspace holding them was dissolved on 2026-10-21). Their periodic
-successors — `dev/perf/s3-idle-growth.js`, `po06-watcher-cost.js`, `f2-codex-spike.js`,
-`f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md`; all four plus that
+successors — `dev/perf/s3-idle-growth.js`, `dev/perf/…po06-watcher-cost.js`,
+`dev/perf/…f2-codex-spike.js`, `dev/perf/…f3-pi-tick.js` (see *Periodic perf harnesses* in `dev/perf/README.md`; all four plus that
 README are tracked — `.gitignore` narrows the sandbox to `dev/*` and un-ignores `dev/perf/`
 and `dev/audit/`, so a fresh clone resolves the weekly `perf.yml` harness steps),
 driven by [`.github/workflows/perf.yml`](../.github/workflows/perf.yml) weekly + on
@@ -313,12 +313,12 @@ split tree (minified):
 
 | Emitted file | Size | When it is fetched |
 | --- | --- | --- |
-| `index.js` (entry) | **190.6 KiB** | boot — entry budget 350 KiB |
-| `chunk-OQFGLNNR.js` | 695.5 KiB | boot (static import graph) |
-| `chunk-LUN2P7DE.js` | 323.5 KiB | boot (static import graph) |
+| `dist/…index.js` (entry) | **190.6 KiB** | boot — entry budget 350 KiB |
+| `dist/…chunk-OQFGLNNR.js` | 695.5 KiB | boot (static import graph) |
+| `dist/…chunk-LUN2P7DE.js` | 323.5 KiB | boot (static import graph) |
 | `marked.esm-*.js` | 40.4 KiB | first markdown render |
 | `purify.es-*.js` | 22.3 KiB | first markdown render |
-| `share-manager-*.js`, `split-layout-*.js`, `chunk-FW4363Y4.js` | 1.3 KiB | on demand |
+| `share-manager-*.js`, `split-layout-*.js`, `dist/…chunk-FW4363Y4.js` | 1.3 KiB | on demand |
 | **total JS shipped** | **1273.5 KiB** | total budget 1400 KiB |
 
 Before the split the app shipped one 1280.3 KiB minified IIFE entry, so splitting
@@ -341,7 +341,7 @@ gitignored — absent on a fresh clone): `gridstack` (82.3 KiB) sits behind
 conversion before it can lazy-load, and xterm (540 KiB across three packages) is
 needed at first paint by definition.
 
-Sourcemaps are built for every production render (`index.js.map`, ~6 MB) and are
+Sourcemaps are built for every production render (`dist/…index.js.map`, ~6 MB) and are
 **not shipped**: `build.files` excludes `**/*.map` — the dependency tree's maps
 included — so a packaged app pays nothing while a pasted renderer stack trace
 stays symbolizable off-device.
