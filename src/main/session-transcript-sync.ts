@@ -220,6 +220,16 @@ export function getSyncedTranscriptPath(sessionId: string): string | null {
   return entries.get(sessionId)?.transcriptPath ?? null;
 }
 
+/**
+ * True when the session's sync entry is bound to a remote host: its
+ * transcript lives on that host, so no local-fs read (exit-reason, status
+ * tail) may consume a path for it — the mirrored copies exist only after a
+ * remote read landed, and a fresh remote launch has none.
+ */
+export function isRemoteSyncedSession(sessionId: string): boolean {
+  return entries.get(sessionId)?.hostId !== undefined;
+}
+
 function ensurePolling(): void {
   if (!pollInterval) {
     pollInterval = setInterval(tick, 2000);

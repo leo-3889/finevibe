@@ -230,6 +230,25 @@ describe('enrollHost', () => {
     expect(execLog).toContain('mkdir -p ~/.finevibe ~/.finevibe/run');
   });
 
+  // Row 129: the Add-project browser seeds at the host's ABSOLUTE home (sftp
+  // has no tilde expansion), so enrollment warms that value on the same exec
+  // lane. A junk/empty answer must stay non-fatal — the browser resolves
+  // lazily on the first `~`-anchored call and refuses with a real message.
+  it('warms the remote-home cache at the dirs step (row 129)', async () => {
+    execScript = script({ ...fullScript, [`printf '%s' "$HOME"`]: '/home/dev\n' });
+    const res = await enrollHost(record, () => {});
+    expect(res.ok).toBe(true);
+    expect(execLog).toContain(`printf '%s' "$HOME"`);
+    expect(res.steps.find((s) => s.step === 'dirs')).toMatchObject({ ok: true });
+  });
+
+  it('an unresolvable $HOME never fails enrollment', async () => {
+    execScript = script(fullScript); // the $HOME probe answers '' (unset)
+    const res = await enrollHost(record, () => {});
+    expect(res.ok).toBe(true);
+    expect(res.steps.every((s) => s.ok)).toBe(true);
+  });
+
   // Row 35: the app's `ssh -tt` lanes trust a known_hosts file, not the pin, so
   // the key that passed the pin gate has to land in FineVibe's own store —
   // otherwise a pinned+approved host still accepts a MITM key in the app's own

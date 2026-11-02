@@ -172,15 +172,17 @@ export function showModal(
   opener = document.activeElement as HTMLElement | null;
   overlay.classList.remove('hidden');
 
-  // Select-only dialogs must take focus away from the terminal as well.
-  const firstInput = bodyEl.querySelector('input[type="text"]') as HTMLInputElement | null;
-  if (firstInput) {
+  // Focus the first row control in DOM order: a text input keeps the
+  // historical focus+select behavior only when it IS the first control, so a
+  // later text row (e.g. the lead-name field) cannot hijack focus from the
+  // first row (a select trigger renders as a button).
+  const firstControl = bodyEl.querySelector<HTMLElement>('input[type="text"], button, textarea, select') ?? btnConfirm;
+  if (firstControl instanceof HTMLInputElement && firstControl.type === 'text') {
     requestAnimationFrame(() => {
-      firstInput.focus();
-      firstInput.select();
+      firstControl.focus();
+      firstControl.select();
     });
   } else {
-    const firstControl = bodyEl.querySelector<HTMLElement>('button, textarea, input:not([type="hidden"])') ?? btnConfirm;
     firstControl.focus();
   }
 

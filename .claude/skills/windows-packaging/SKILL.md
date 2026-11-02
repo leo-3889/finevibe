@@ -14,7 +14,10 @@ version/tag/push half of a release; this skill owns the build.
 ```bash
 npm ci
 npm run dist:win:local
-# = build && icons
+# = pre-clean out/win-unpacked + the FineVibe-*.exe / FineVibe-*-win-x64.zip
+#   outputs (DEFECT 49: a mid-chain failure used to poison the NEXT run —
+#   blocker 3's ENOENT)
+#   → build && icons
 #   → electron-builder --win dir --x64 --publish never \
 #       --config.npmRebuild=false --config.win.signAndEditExecutable=false
 #   → node scripts/verify-win-exe.mjs out/win-unpacked   (npm run win:verify:native)
@@ -27,6 +30,12 @@ npm run dist:win:local
 #   → npm run win:verify:setup, then out/win-unpacked is deleted
 # -> out/FineVibe-Setup-<version>.exe (+ .exe.blockmap + latest.yml) and the win zip
 ```
+
+**No step of this chain launches the app, and none can on a Linux box:** the
+exe smoke (start `out/FineVibe-Setup-<v>.exe`, then the installed app, and
+confirm a window plus a working terminal) is a **Windows-host step** run by
+hand after every local build. Every gate above is static — asar content,
+native ABI, exe resources — none of them executes the built app.
 
 The native check is fail-closed on purpose: `--config.npmRebuild=false` (blocker 1) skips
 the rebuild and `postinstall` swallows `install-app-deps` failures (blocker 3), so a
@@ -54,7 +63,7 @@ replaces exactly the icon/version resources they skip.
 |---|---|---|---|---|
 | 1 | `node-gyp: Could not find any Visual Studio installation` on `moduleName=node-pty` | pack-time `@electron/rebuild` compiles node-pty from source; no VS C++ toolchain (`vswhere` absent). `better-sqlite3` **succeeds** — it downloads a per-ABI prebuild | install VS 2022 Build Tools (C++ workload), or build on the CI `windows-2022` runner which has it | `--config.npmRebuild=false`. Safe: node-pty ships N-API prebuilds (`prebuilds/win32-x64/{pty,conpty,conpty_console_list}.node`, `conpty/conpty.dll`, `winpty.dll`, `winpty-agent.exe`) and electron-builder auto-unpacks `*.node` |
 | 2 | `ERROR: Cannot create symbolic link : A required privilege is not held by the client` extracting `winCodeSign-2.6.0.7z` (the `darwin/10.12/lib/*.dylib` symlinks) | electron-builder runs rcedit (exe metadata + asar-integrity resource) from that archive; the account lacks `SeCreateSymbolicLinkPrivilege` (Developer Mode off, not elevated) | enable Windows Developer Mode, run from an elevated shell, or build on CI | `--config.win.signAndEditExecutable=false` in **both** electron-builder phases, then stamp the exe: `npm run win:stamp` (`scripts/edit-win-exe.mjs`) drives the `rcedit` npm package, whose binary ships directly in `node_modules/rcedit/bin` — no winCodeSign extraction. Sets icon, 4-part file/product version, product name, file description, company name, original filename. **Cost: nothing is signed.** The app exe, the installed shortcuts and the Setup.exe stub all carry the FineVibe identity — the stub is stamped by makensis itself (`app-builder-lib/out/targets/nsis/NsisTarget.js:196` sets `MUI_ICON`/`MUI_UNICON` from `build/icon.ico`), and `npm run win:verify:setup` audits it; the symlink blocker never touches the installer. On 26.8.1 electron-builder still updates the asar-integrity resource of `FineVibe.exe` in the dir phase. Developer Mode/elevation remains the full fix — never ship a release built this way |
-| 3 | `ENOENT ... rename 'out\win-unpacked\electron.exe' -> 'FineVibe.exe'` | a stale `out/win-unpacked` from an aborted run | delete the stale output and rebuild | `dist:win:local` cleans it itself (Gotcha 2); manual dir-phase flows delete `out/win-unpacked` first |
+| 3 | `ENOENT ... rename 'out\win-unpacked\electron.exe' -> 'FineVibe.exe'` | a stale `out/win-unpacked` from an aborted run | delete the stale output and rebuild | `dist:win:local` pre-cleans it at the **head** of the chain (DEFECT 49: a mid-chain failure used to poison the NEXT run) and again at the tail; manual dir-phase flows delete `out/win-unpacked` first |
 
 **Pre-seeding the winCodeSign cache does not work.** The extraction directory name is a
 per-run random number (`Cache\winCodeSign\297414723`, then `078468359`, …), so copying an
@@ -75,9 +84,11 @@ the disk the downloads leave behind.
    clearing `out/` no longer forces a rebuild — the *"Application entry file
    dist\main\main\main.js … was not found in this archive"* trap is gone.
 2. **A stale `out/win-unpacked` breaks the dir phase** (`electron.exe → FineVibe.exe`
-   rename ENOENT because the target exists). `npm run dist:win:local` now deletes
-   `out/win-unpacked` itself after the nsis+zip legs; only hand-run dir phases need
-   the manual `rm -rf out/win-unpacked` after an aborted attempt.
+   rename ENOENT because the target exists). Since DEFECT 49 `npm run dist:win:local`
+   deletes `out/win-unpacked` (and the `FineVibe-*.exe` / `FineVibe-*-win-x64.zip`
+   outputs) at the **head** of the chain, so an aborted run cannot make the next one
+   fail on that misleading ENOENT; it still cleans up after the nsis+zip legs. Only
+   hand-run dir phases need the manual `rm -rf out/win-unpacked`.
 3. **`postinstall` swallows native-prep failures**: it wraps
    `electron-builder install-app-deps` in `try{…}catch{}`. Run
    `npx electron-builder install-app-deps` explicitly when native prep matters and read

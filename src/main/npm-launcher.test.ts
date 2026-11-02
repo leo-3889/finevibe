@@ -158,25 +158,33 @@ describe('Linux npm launcher', () => {
       console: { log: vi.fn(), error: vi.fn() },
     };
     await vm.runInNewContext(source, context);
+    // DEFECT 53: extract-and-run is the default on EVERY linux host, so the
+    // env rides the spawn even on a box where /dev/fuse exists (fakeFs
+    // existsSync is unconditional `true` above).
     expect(spawn).toHaveBeenCalledWith(
       path.join('/home/test', '.finevibe', 'app', 'FineVibe.AppImage'),
       ['--example'],
-      { detached: true, stdio: 'ignore' },
+      { detached: true, stdio: 'ignore', env: { APPIMAGE_EXTRACT_AND_RUN: '1' } },
     );
     expect(fakeProcess.exit).not.toHaveBeenCalled();
   });
 
-  // Ubuntu 24.04 ships without libfuse2: a bare AppImage spawn dies with
-  // 'dlopen libfuse.so.2'. Without /dev/fuse the launcher must set
-  // APPIMAGE_EXTRACT_AND_RUN=1 so the runtime extracts to temp (works
-  // everywhere, costs a temp copy) instead of mounting via FUSE.
-  it('launches with APPIMAGE_EXTRACT_AND_RUN when /dev/fuse is missing', async () => {
-    const source = fs.readFileSync(path.join(process.cwd(), 'bin', 'finevibe.js'), 'utf8');
-    const version = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version as string;
-    const spawn = vi.fn(() => ({ unref: vi.fn() }));
+  // DEFECT 53: /dev/fuse is NOT a mount-capability probe. fuse3 creates it on
+  // Ubuntu 24.04+, where the AppImage runtime (it dlopens the removed
+  // libfuse2) fails to MOUNT — a bare spawn there produced a dead mount and no
+  // window. So the launcher always sets APPIMAGE_EXTRACT_AND_RUN=1, and the
+  // only route back to the FUSE mount path is the explicit
+  // FINEVIBE_APPIMAGE_MOUNT=1 opt-in, which still requires /dev/fuse.
+  async function linuxSpawnOptions(opts: { env?: Record<string, string>; fusePresent?: boolean } = {}) {
+    const version = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+    ).version as string;
+    const spawn = vi.fn(
+      (_command: string, _args: string[], _options: Record<string, unknown>) => ({ unref: vi.fn() }),
+    );
     const fakeFs = {
       readFileSync: vi.fn(() => JSON.stringify({ version })),
-      existsSync: vi.fn((p: string) => p !== '/dev/fuse'),
+      existsSync: vi.fn((p: string) => (opts.fusePresent === false ? p !== '/dev/fuse' : true)),
     };
     const context = {
       require: (name: string) => {
@@ -189,16 +197,33 @@ describe('Linux npm launcher', () => {
       },
       process: {
         platform: 'linux', arch: 'x64', argv: ['node', 'finevibe', '--example'],
-        env: {}, exit: vi.fn(), stdout: { write: vi.fn() },
+        env: opts.env ?? {}, exit: vi.fn(), stdout: { write: vi.fn() },
       },
       console: { log: vi.fn(), error: vi.fn() },
     };
-    await vm.runInNewContext(source, context);
-    expect(spawn).toHaveBeenCalledWith(
-      path.join('/home/test', '.finevibe', 'app', 'FineVibe.AppImage'),
-      ['--example'],
-      { detached: true, stdio: 'ignore', env: { APPIMAGE_EXTRACT_AND_RUN: '1' } },
-    );
+    await vm.runInNewContext(launcherSource, context);
+    return spawn.mock.calls[0][2];
+  }
+
+  it('extracts and runs even when /dev/fuse exists (fuse3 + no libfuse2)', async () => {
+    expect(await linuxSpawnOptions({ fusePresent: true })).toEqual({
+      detached: true,
+      stdio: 'ignore',
+      env: { APPIMAGE_EXTRACT_AND_RUN: '1' },
+    });
+  });
+
+  it('takes the FUSE mount path only on the FINEVIBE_APPIMAGE_MOUNT opt-in', async () => {
+    expect(await linuxSpawnOptions({ env: { FINEVIBE_APPIMAGE_MOUNT: '1' }, fusePresent: true })).toEqual({
+      detached: true,
+      stdio: 'ignore',
+    });
+    // The opt-in does not override a host that genuinely has no /dev/fuse.
+    expect(await linuxSpawnOptions({ env: { FINEVIBE_APPIMAGE_MOUNT: '1' }, fusePresent: false })).toEqual({
+      detached: true,
+      stdio: 'ignore',
+      env: { FINEVIBE_APPIMAGE_MOUNT: '1', APPIMAGE_EXTRACT_AND_RUN: '1' },
+    });
   });
 });
 
@@ -513,14 +538,19 @@ describe('launcher linux asset name', () => {
     expect(requested).toContain(apiUrl);
     expect(requested.filter((url) => url.includes('-linux-x64') || url.includes('-linux-amd64'))).toEqual([]);
 
-    // The downloaded asset becomes the AppImage the launcher runs.
+    // The downloaded asset becomes the AppImage the launcher runs, always
+    // through the self-extraction path (DEFECT 53).
     expect(fakeFs.renameSync).toHaveBeenCalledWith(path.join(appDir, `${appImageAsset}.tmp`), appPath);
     expect(fakeFs.chmodSync).toHaveBeenCalledWith(appPath, 0o755);
     expect(fakeFs.writeFileSync).toHaveBeenCalledWith(
       path.join(appDir, 'version.json'),
       JSON.stringify({ version: launcherVersion }),
     );
-    expect(spawn).toHaveBeenCalledWith(appPath, [], { detached: true, stdio: 'ignore' });
+    expect(spawn).toHaveBeenCalledWith(appPath, [], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...forkEnv, APPIMAGE_EXTRACT_AND_RUN: '1' },
+    });
     expect(consoleError).not.toHaveBeenCalled();
     expect(exports.RELEASE_API_URL).toBe(apiUrl);
   }, 15000);
@@ -731,7 +761,7 @@ describe('launcher linux desktop entry', () => {
 
   it('rewrites Exec to the absolute AppImage path and forces Icon=finevibe', () => {
     const text = builtEntry();
-    expect(text).toContain(`Exec=${appPath} --no-sandbox %U`);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} --no-sandbox %U`);
     expect(text).not.toContain('AppRun');
     expect(text).toContain('Icon=finevibe');
     expect(text).not.toContain('Icon=old-icon');
@@ -748,7 +778,7 @@ describe('launcher linux desktop entry', () => {
       '[Desktop Entry]\nExec=/opt/FineVibe/AppRun --no-sandbox --ozone-platform-hint=auto %U\n',
       appPath,
     );
-    expect(text).toContain(`Exec=${appPath} --no-sandbox --ozone-platform-hint=auto %U`);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} --no-sandbox --ozone-platform-hint=auto %U`);
     expect(text).not.toContain('/opt/FineVibe/AppRun');
   });
 
@@ -757,7 +787,6 @@ describe('launcher linux desktop entry', () => {
     const text = exports.buildDesktopEntry(
       '[Desktop Entry]\nExec=AppRun --appimage-extract-and-run --no-sandbox %U\n',
       appPath,
-      false,
     );
     expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} --no-sandbox %U`);
     expect(text).not.toContain('--appimage-extract-and-run');
@@ -772,16 +801,23 @@ describe('launcher linux desktop entry', () => {
     expect(text).toContain('Comment=Tenant IDE for AI CLI tools');
   });
 
-  // No FUSE (Ubuntu 24.04 without libfuse2): the installed entry must
-  // launch through the runtime's self-extraction path, mirroring the
-  // launcher's own spawn fallback. The param defaults to true (plain Exec,
-  // covered by the tests above).
-  it('prefixes Exec with env APPIMAGE_EXTRACT_AND_RUN=1 when FUSE is unavailable', () => {
+  // DEFECT 53: the env prefix is UNCONDITIONAL (default), mirroring the
+  // launcher's own spawn — /dev/fuse says nothing about libfuse2, so desktop
+  // launches must not mount either. The mount path is the opt-in, and the
+  // launcher passes it only for FINEVIBE_APPIMAGE_MOUNT=1.
+  it('prefixes Exec with env APPIMAGE_EXTRACT_AND_RUN=1 by default', () => {
     const { exports } = loadLauncher();
-    const text = exports.buildDesktopEntry('[Desktop Entry]\nExec=AppRun %U\n', appPath, false);
+    const text = exports.buildDesktopEntry('[Desktop Entry]\nExec=AppRun %U\n', appPath);
     expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
     expect(text).not.toContain(`\nExec=${appPath} %U\n`);
     expect(text).toContain('Icon=finevibe');
+  });
+
+  it('leaves Exec bare when the FUSE mount path is opted into', () => {
+    const { exports } = loadLauncher();
+    const text = exports.buildDesktopEntry('[Desktop Entry]\nExec=AppRun %U\n', appPath, true);
+    expect(text).toContain(`Exec=${appPath} %U`);
+    expect(text).not.toContain('APPIMAGE_EXTRACT_AND_RUN');
   });
 
   it('generates a valid base entry from empty embedded content', () => {
@@ -793,7 +829,7 @@ describe('launcher linux desktop entry', () => {
     expect(text).toContain('Categories=Development;');
     expect(text).toContain('Terminal=false');
     expect(text).toContain('Comment=Tenant IDE for AI CLI tools');
-    expect(text).toContain(`Exec=${appPath} %U`);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
     expect(text).toContain('Icon=finevibe');
     expect(text).toContain('StartupWMClass=FineVibe');
   });
@@ -828,10 +864,19 @@ describe('launcher linux desktop install', () => {
         fs.readFileSync(path.join(dataDir, 'icons', 'hicolor', '256x256', 'apps', 'X.png'), 'utf8'),
       ).toBe('png-bytes');
       const desktop = fs.readFileSync(path.join(dataDir, 'applications', 'finevibe.desktop'), 'utf8');
-      expect(desktop).toContain(`Exec=${appPath} %U`);
+      // DEFECT 53: installed entries take the extract-and-run path by default.
+      expect(desktop).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
       expect(desktop).toContain('Icon=finevibe');
       expect(desktop).toContain('StartupWMClass=FineVibe');
       expect(desktop).toContain('MimeType=x-scheme-handler/finevibe;');
+
+      // …and keep honoring the explicit mount opt-in.
+      exports.installDesktopIntegration({
+        appPath, extractRoot: path.join(root, 'squashfs-root'), dataDir, useFuseMount: true,
+      });
+      expect(
+        fs.readFileSync(path.join(dataDir, 'applications', 'finevibe.desktop'), 'utf8'),
+      ).toContain(`Exec=${appPath} %U`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -846,7 +891,7 @@ describe('launcher linux desktop install', () => {
       const desktop = fs.readFileSync(path.join(dataDir, 'applications', 'finevibe.desktop'), 'utf8');
       expect(desktop).toContain('[Desktop Entry]');
       expect(desktop).toContain('Name=FineVibe');
-      expect(desktop).toContain(`Exec=${appPath} %U`);
+      expect(desktop).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

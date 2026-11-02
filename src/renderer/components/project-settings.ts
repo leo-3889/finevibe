@@ -85,23 +85,25 @@ export function promptProjectSettings(project: ProjectRecord): void {
       defaultValue: project.lead?.charter ?? '',
     },
   ], (values) => {
+    // The byte cap is checked BEFORE any write: a refusal must not persist the
+    // other fields edited in the same dialog pass (partial-save defect).
+    const charter = values['lead-charter'] ?? '';
+    if (byteLength(charter) > LEAD_CHARTER_MAX_BYTES) {
+      setModalError('lead-charter', t('sidebar.projectSettings.leadCharterTooLong', {
+        size: byteLength(charter),
+        max: LEAD_CHARTER_MAX_BYTES,
+      }));
+      return;
+    }
     appState.setProjectCodingDefaults(project.id, (values['provider'] || undefined) as ProviderId | undefined, values['profile'] || undefined);
 
     const enabled = values['lead-enabled'] === 'true';
-    const charter = values['lead-charter'] ?? '';
     const name = (values['lead-name'] ?? '').trim();
     const personaId = values['lead-persona'] || undefined;
     if (!enabled && !project.lead && !name && !charter.trim()) {
       // Nothing lead-related was touched on a project that never had a lead:
       // write no key at all (the absent feature stays byte-identical).
       closeModal();
-      return;
-    }
-    if (byteLength(charter) > LEAD_CHARTER_MAX_BYTES) {
-      setModalError('lead-charter', t('sidebar.projectSettings.leadCharterTooLong', {
-        size: byteLength(charter),
-        max: LEAD_CHARTER_MAX_BYTES,
-      }));
       return;
     }
     const lead: ProjectLead = {

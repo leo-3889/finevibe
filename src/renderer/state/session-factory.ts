@@ -1,5 +1,6 @@
-import type { ProjectRecord, ProviderId, SessionRecord } from '../../shared/types.js';
+import { LEAD_CHARTER_MAX_BYTES, type ProjectLead, type ProjectRecord, type ProviderId, type SessionRecord } from '../../shared/types.js';
 import type { ShareMode } from '../../shared/sharing-types.js';
+import { t } from '../i18n.js';
 
 interface BaseOpts {
   id?: string;
@@ -114,6 +115,72 @@ export function buildMcpInspectorSession(opts: BaseOpts & { name: string }): Ses
     cliSessionId: null,
     createdAt,
   };
+}
+
+/** UTF-8 size of the charter text: the cap is a byte budget because it rides argv. */
+function charterBytes(charter: string): number {
+  return new TextEncoder().encode(charter).length;
+}
+
+/**
+ * Compose the project lead charter into ONE launch's spawn parameters
+ * (team-lead-persona-plan M1, P2 I1b). Called from the renderer's single spawn
+ * choke point (terminal-pane `spawnTerminal`), so main needs no lead knowledge:
+ * the charter rides the parameters the spawn lane already transports
+ * (`systemPrompt` / `initialPrompt`, quoted by `systemPromptArg` on Windows,
+ * POSIX-quoted by the SSH wrap for remote launches — argv discipline unchanged).
+ *
+ * - Providers with a system-prompt lane (`capabilities.systemPromptInjection`:
+ *   Claude, Codex, Pi, Pi-Bolt, OMP) carry the charter on `systemPrompt`:
+ *   verbatim when nothing else flows, fenced AFTER an existing prompt (a team
+ *   member's persona, a queued plan prompt) when one does. The charter never
+ *   replaces a prompt.
+ * - Providers without one (`systemPromptInjection: false`: Copilot, Gemini) get
+ *   the charter fenced onto the FRONT of `initialPrompt`. A launch with no
+ *   queued prompt has no lane to carry the charter, so its argv stays
+ *   byte-identical — pushing the charter alone would make the CLI act on it as
+ *   a user request. Per-provider rows: docs/provider-contracts.md.
+ *
+ * Absent lead, disabled lead, or a blank charter returns both parameters
+ * untouched (byte-identical argv, pinned by tests).
+ *
+ * Cap, never truncate: a charter over `LEAD_CHARTER_MAX_BYTES` is only
+ * reachable from a hand-edited state.json (the settings dialog refuses the
+ * write), and throws naming the cap — the caller surfaces it as the spawn
+ * failure, so the launch is refused rather than shipping a clipped charter.
+ */
+export function composeLeadLaunch(opts: {
+  lead?: ProjectLead;
+  /** The provider's `capabilities.systemPromptInjection`. */
+  systemPromptInjection: boolean;
+  systemPrompt?: string;
+  initialPrompt?: string;
+}): { systemPrompt?: string; initialPrompt?: string } {
+  const { lead, systemPrompt, initialPrompt } = opts;
+  // `charter` is typed required, but state.json is user-editable: a record
+  // missing it must stay the absent feature, not throw at spawn.
+  if (!lead?.enabled || !(lead.charter ?? '').trim()) return { systemPrompt, initialPrompt };
+  const fenced = `[Project lead - ${lead.name}]\n${lead.charter}\n[/Project lead]`;
+  if (opts.systemPromptInjection) {
+    assertLeadCharterCap(lead);
+    return {
+      systemPrompt: systemPrompt ? `${systemPrompt.trimEnd()}\n\n${fenced}` : lead.charter,
+      initialPrompt,
+    };
+  }
+  // No system-prompt lane and no queued prompt: nothing is injected (the
+  // charter alone as a positional prompt would read as a user request), so
+  // an over-cap charter must NOT refuse this launch - it carries nothing.
+  if (!initialPrompt) return { systemPrompt, initialPrompt };
+  assertLeadCharterCap(lead);
+  return { systemPrompt, initialPrompt: `${fenced}\n\n${initialPrompt}` };
+}
+
+function assertLeadCharterCap(lead: ProjectLead): void {
+  const bytes = charterBytes(lead.charter);
+  if (bytes > LEAD_CHARTER_MAX_BYTES) {
+    throw new Error(t('sidebar.projectSettings.leadCharterTooLong', { size: bytes, max: LEAD_CHARTER_MAX_BYTES }));
+  }
 }
 
 /**

@@ -45,11 +45,17 @@ const LIST_TIMEOUT_MS = 10_000;
 const READ_TIMEOUT_MS = 30_000;
 const STAT_TIMEOUT_MS = 10_000;
 const MKDIR_TIMEOUT_MS = 15_000;
+const HOME_TIMEOUT_MS = 10_000;
+
+/** Cap for the resolved-home cache (module-map-governance): one entry per host
+ * that ran a `~`-anchored lane; keys are host ids so the registry is the
+ * natural bound and this is the ceiling (LRU, the `fs-utils` idiom). */
+export const MAX_REMOTE_HOME_CACHE = 32;
 /** Mirrors the local GIT_CLONE_TIMEOUT_MS (ipc-handlers.ts): a clone on a
  * host is the same slow network operation. */
 const CLONE_TIMEOUT_MS = 10 * 60_000;
 
-interface RemoteDirsResult { ok: boolean; dirs?: string[]; error?: string }
+interface RemoteDirsResult { ok: boolean; dirs?: string[]; home?: string; error?: string }
 interface RemoteStatResult { ok: boolean; isDirectory?: boolean; size?: number; mtimeMs?: number; error?: string }
 interface RemoteEnsureResult { ok: boolean; path?: string; error?: string }
 interface RemoteCloneResult { ok: boolean; error?: string }
@@ -71,7 +77,8 @@ export function normalizeRemotePath(raw: unknown): string | null {
   const trimmed = raw.trim().replaceAll('\\', '/');
   if (trimmed === '' || trimmed.includes('\0')) return null;
   const homeAnchored = trimmed === '~' || trimmed.startsWith('~/');
-  const body = homeAnchored ? (trimmed === '~' ? '/' : trimmed.slice(1)) : trimmed;
+  let body = trimmed;
+  if (homeAnchored) body = trimmed === '~' ? '/' : trimmed.slice(1);
   if (!body.startsWith('/')) return null;
   // RAW segments: path.posix.normalize would silently re-anchor `~/../etc`
   // to `/etc`, so the gate runs before it.
@@ -81,6 +88,73 @@ export function normalizeRemotePath(raw: unknown): string | null {
     return norm === '' ? '~' : `~${norm}`;
   }
   return norm === '' ? '/' : norm;
+}
+
+/**
+ * DEFECT 129: the host's absolute home, resolved ONCE per host over the exec
+ * lane (`printf '%s' "$HOME"` — the enrollment idiom: the login shell expands
+ * `$HOME`, the quoting keeps a home with a space inert). sftp has NO tilde
+ * expansion — a quoted `~` is a literal directory named `~` — so every
+ * `~`-anchored lane needs this value before it quotes or hands a path to the
+ * sftp seam. Warm at enrollment success (the `dirs` step in enrollment.ts) and
+ * lazily on the first `~`-anchored call; a failed probe is NOT cached, so the
+ * next call retries. An unresolvable `$HOME` (empty/multi-line/relative) is
+ * null: the `~`-anchored lanes refuse with a real message, absolute paths
+ * keep working.
+ */
+export async function resolveRemoteHome(record: HostRecord): Promise<string | null> {
+  const hit = remoteHomeCache.get(record.id);
+  if (hit !== undefined) {
+    // Insertion order doubles as recency: re-inserting on a hit makes the size
+    // cap evict the least recently used host (the fs-utils LRU idiom).
+    remoteHomeCache.delete(record.id);
+    remoteHomeCache.set(record.id, hit);
+    return hit;
+  }
+  try {
+    const raw = (await exec(record, `printf '%s' "$HOME"`, { timeoutMs: HOME_TIMEOUT_MS })).trim();
+    const home = raw.replace(/\/+$/, '');
+    if (!home.startsWith('/') || home.includes('\n')) return null;
+    remoteHomeCache.set(record.id, home);
+    while (remoteHomeCache.size > MAX_REMOTE_HOME_CACHE) {
+      remoteHomeCache.delete(remoteHomeCache.keys().next().value as string);
+    }
+    return home;
+  } catch {
+    return null;
+  }
+}
+
+/** Drop a host's cached home (host removed / re-enrolled into a new account). */
+export function invalidateRemoteHome(hostId: string): void {
+  remoteHomeCache.delete(hostId);
+}
+
+/** The resolved home, cached per host id (bounded by MAX_REMOTE_HOME_CACHE). */
+const remoteHomeCache = new Map<string, string>();
+
+/**
+ * Expand a canonical `~`/`~/x` spelling into the host's absolute path. Pure:
+ * `home` is {@link resolveRemoteHome}'s answer. Returns null when the spelling
+ * needs the home and there is none (the caller refuses — quoting `~` literally
+ * is exactly the `No such directory: ~` defect this closes).
+ */
+export function expandRemotePath(p: string, home: string | null): string | null {
+  if (p !== '~' && !p.startsWith('~/')) return p;
+  if (home === null) return null;
+  return p === '~' ? home : `${home}/${p.slice(2)}`;
+}
+
+/**
+ * The host home when `p` needs it (a `~`-anchored spelling), without probing
+ * for an absolute path — the tree rails speak absolutes all day.
+ */
+async function homeIfAnchored(record: HostRecord, p: string): Promise<string | null> {
+  return p === '~' || p.startsWith('~/') ? resolveRemoteHome(record) : null;
+}
+
+function homeUnresolvedError(record: HostRecord): string {
+  return `Could not resolve the home directory on ${record.name} (is $HOME set?)`;
 }
 
 /** The gate every remote verb shares: the record exists and is enrolled
@@ -116,8 +190,14 @@ export async function listRemoteDirs(
   if ('error' in gate) return { ok: false, error: gate.error };
   const dir = normalizeRemotePath(dirPath);
   if (dir === null) return { ok: false, error: `Unsafe remote path: ${JSON.stringify(dirPath)}` };
+  // `home` rides the payload so the browser can seed/label at the ABSOLUTE
+  // home and hand back an absolute selection (DEFECT 129); the listing itself
+  // stays in the canonical `~` spelling the whole remote surface speaks.
+  const home = await homeIfAnchored(gate.record, dir);
+  const target = expandRemotePath(dir, home);
+  if (target === null) return { ok: false, error: homeUnresolvedError(gate.record) };
   try {
-    const entries = await sftpListDirEntries(gate.record, dir, { timeoutMs: LIST_TIMEOUT_MS });
+    const entries = await sftpListDirEntries(gate.record, target, { timeoutMs: LIST_TIMEOUT_MS });
     if (entries === null) return { ok: false, error: `No such directory: ${dir}` };
     const lowerPrefix = prefix?.toLowerCase();
     const dirs = entries
@@ -127,7 +207,7 @@ export async function listRemoteDirs(
       .sort((a, b) => a.localeCompare(b))
       .slice(0, MAX_REMOTE_LIST_DIRS)
       .map((name) => remoteJoin(dir, name));
-    return { ok: true, dirs };
+    return { ok: true, dirs, ...(home ? { home } : {}) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -148,8 +228,10 @@ export async function statRemotePath(hostId: unknown, target: unknown): Promise<
   if ('error' in gate) return { ok: false, error: gate.error };
   const p = normalizeRemotePath(target);
   if (p === null) return { ok: false, error: `Unsafe remote path: ${JSON.stringify(target)}` };
+  const resolved = expandRemotePath(p, await homeIfAnchored(gate.record, p));
+  if (resolved === null) return { ok: false, error: homeUnresolvedError(gate.record) };
   try {
-    const stat = await sftpStat(gate.record, p, { timeoutMs: STAT_TIMEOUT_MS });
+    const stat = await sftpStat(gate.record, resolved, { timeoutMs: STAT_TIMEOUT_MS });
     if (stat === null) return { ok: false };
     return { ok: true, isDirectory: stat.isDirectory, size: stat.size, mtimeMs: stat.mtimeMs };
   } catch (err) {
@@ -212,8 +294,10 @@ export async function listRemoteDir(
   if (!isRemotePathInKnownProject(gate.record.id, dir)) {
     return { ok: false, error: `Not a known project path: ${dir}` };
   }
+  const target = expandRemotePath(dir, await homeIfAnchored(gate.record, dir));
+  if (target === null) return { ok: false, error: homeUnresolvedError(gate.record) };
   try {
-    const entries = await sftpListDirEntries(gate.record, dir, { timeoutMs: LIST_TIMEOUT_MS });
+    const entries = await sftpListDirEntries(gate.record, target, { timeoutMs: LIST_TIMEOUT_MS });
     if (entries === null) return { ok: false, error: `No such directory: ${dir}` };
     const out = entries
       .slice(0, MAX_REMOTE_LIST_ENTRIES)
@@ -269,14 +353,16 @@ export async function readRemoteFile(
   const p = normalizeRemotePath(target);
   if (p === null) return { ok: false, reason: 'error' };
   if (!isRemotePathInKnownProject(gate.record.id, p)) return { ok: false, reason: 'error' };
+  const resolved = expandRemotePath(p, await homeIfAnchored(gate.record, p));
+  if (resolved === null) return { ok: false, reason: 'error' };
   try {
-    const stat = await sftpStat(gate.record, p, { timeoutMs: STAT_TIMEOUT_MS });
+    const stat = await sftpStat(gate.record, resolved, { timeoutMs: STAT_TIMEOUT_MS });
     if (stat === null || stat.isDirectory) return { ok: false, reason: 'error' };
     if (stat.size > MAX_REMOTE_READ_BYTES) return { ok: false, reason: 'error' };
-    const head = await sftpReadRange(gate.record, p, 0, 8192, { timeoutMs: READ_TIMEOUT_MS });
+    const head = await sftpReadRange(gate.record, resolved, 0, 8192, { timeoutMs: READ_TIMEOUT_MS });
     if (head === null) return { ok: false, reason: 'error' };
     if (isBinaryBuffer(head)) return { ok: false, reason: 'binary' };
-    const content = await sftpRead(gate.record, p, { timeoutMs: READ_TIMEOUT_MS });
+    const content = await sftpRead(gate.record, resolved, { timeoutMs: READ_TIMEOUT_MS });
     if (content === null) return { ok: false, reason: 'error' };
     return { ok: true, content };
   } catch {
@@ -285,18 +371,20 @@ export async function readRemoteFile(
 }
 
 /**
- * `mkdir -p` on the host, answering with main's canonical posix spelling —
- * the `printf` echo resolves `~` to the host's absolute home, exactly the
- * `provisionRemoteProfileDir` idiom, so the renderer persists what main
- * itself answers for. A bare `~` becomes `~/` for the quoting helper:
- * quoting `~` literally would CREATE a directory named `~`.
+ * `mkdir -p` on the host, answering with the absolute path the `printf` echo
+ * returns, so the renderer persists what main itself answers for. The path is
+ * expanded against the resolved home BEFORE quoting (DEFECT 129): a quoted
+ * `~`/`~/x` is literal to the remote shell, so the old `'~/'` shim created a
+ * directory literally named `~`.
  */
 export async function ensureRemoteDir(hostId: unknown, dirPath: unknown): Promise<RemoteEnsureResult> {
   const gate = gateHost(hostId);
   if ('error' in gate) return { ok: false, error: gate.error };
   const dir = normalizeRemotePath(dirPath);
   if (dir === null) return { ok: false, error: `Unsafe remote path: ${JSON.stringify(dirPath)}` };
-  const arg = remotePathArg(dir === '~' ? '~/' : dir);
+  const expanded = expandRemotePath(dir, await homeIfAnchored(gate.record, dir));
+  if (expanded === null) return { ok: false, error: homeUnresolvedError(gate.record) };
+  const arg = remotePathArg(expanded);
   try {
     const out = await exec(gate.record, `mkdir -p ${arg} && printf '%s' ${arg}`, { timeoutMs: MKDIR_TIMEOUT_MS });
     const resolved = out.trim().replace(/\/+$/, '');
@@ -331,8 +419,10 @@ export async function cloneRemoteRepo(
   if (gate.record.prerequisites?.git?.ok === false) {
     return { ok: false, error: 'git is not installed on the host' };
   }
+  const cloneDest = expandRemotePath(dest, await homeIfAnchored(gate.record, dest));
+  if (cloneDest === null) return { ok: false, error: homeUnresolvedError(gate.record) };
   try {
-    const stat = await sftpStat(gate.record, dest, { timeoutMs: STAT_TIMEOUT_MS });
+    const stat = await sftpStat(gate.record, cloneDest, { timeoutMs: STAT_TIMEOUT_MS });
     if (stat !== null && !stat.isDirectory) {
       return { ok: false, error: `Destination exists and is not a directory: ${dest}` };
     }
@@ -344,7 +434,7 @@ export async function cloneRemoteRepo(
     }
     await exec(
       gate.record,
-      `git clone -- ${remotePathArg(target.url)} ${remotePathArg(dest)}`,
+      `git clone -- ${remotePathArg(target.url)} ${remotePathArg(cloneDest)}`,
       { timeoutMs: CLONE_TIMEOUT_MS },
     );
     return { ok: true };

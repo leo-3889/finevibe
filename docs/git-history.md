@@ -47,10 +47,10 @@ Cut a temp branch, rebase it onto upstream, gate it, then fast-forward `main`:
 
 1. Cut a temp branch off `main`.
 2. `git fetch origin && git rebase origin/main` on the temp branch.
-3. Run the full gate at the rebased tip — vitest, tsc ×4, `npm run build`,
+3. Run the full gate at the rebased tip — vitest, tsc (both typecheck projects), `npm run build`,
    `git diff --check` (the same legs as `dev/audit/gate.sh`).
 4. Fast-forward `main` onto the rebased tip. No merge commit, no force.
-5. Push.
+5. Push `rebuild` to `fork`.
 
 Any run of this recipe that needs a force-push, a merge commit, or a rewrite to finish
 means the constraint is already broken: fix the history question first, never the recipe.

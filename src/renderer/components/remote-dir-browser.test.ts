@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
-import { crumbSteps, remoteParentPath, showRemoteDirBrowser } from './remote-dir-browser.js';
+import {
+  crumbSteps,
+  remoteParentPath,
+  showRemoteDirBrowser,
+  toDisplayPath,
+  toRemotePath,
+} from './remote-dir-browser.js';
 
 // The browser is the T5 (UR-6) remote Browse pane. The fs stub carries a
 // spy on browseDirectory: a remote browse must NEVER construct the local
@@ -66,8 +72,7 @@ beforeEach(() => {
   };
 });
 
-describe('remoteParentPath / crumbSteps (pure navigation table)', () => {
-  it('walks the canonical spellings up to their roots', () => {
+describe('remoteParentPath / crumbSteps (pure navigation table)', () => {  it('walks the canonical spellings up to their roots', () => {
     expect(remoteParentPath('~/projects/demo')).toBe('~/projects');
     expect(remoteParentPath('~/projects')).toBe('~');
     expect(remoteParentPath('~')).toBeNull();
@@ -91,7 +96,66 @@ describe('remoteParentPath / crumbSteps (pure navigation table)', () => {
   });
 });
 
+describe('home ↔ display mapping (row 129)', () => {
+  it('requests absolute and displays the ~ root once the home is known', () => {
+    expect(toRemotePath('~', '/home/dev')).toBe('/home/dev');
+    expect(toRemotePath('~/projects', '/home/dev')).toBe('/home/dev/projects');
+    expect(toRemotePath('/srv/app', '/home/dev')).toBe('/srv/app');
+    // With no home yet the canonical spelling rides along; main resolves it.
+    expect(toRemotePath('~', null)).toBe('~');
+    expect(toDisplayPath('/home/dev', '/home/dev')).toBe('~');
+    expect(toDisplayPath('/home/dev/projects', '/home/dev')).toBe('~/projects');
+    expect(toDisplayPath('/srv/app', '/home/dev')).toBe('/srv/app');
+    expect(toDisplayPath('/home/dev/projects', null)).toBe('/home/dev/projects');
+  });
+});
+
 describe('remote dir browser', () => {
+  // DEFECT 129: the browse pane used to hand `~` to the sftp lane, which has
+  // no tilde expansion, so every remote Browse answered `No such directory: ~`
+  // and no remote project could be added. The seed is the ABSOLUTE home; `~`
+  // survives as the breadcrumb's root label only.
+  it('seeds at the resolved absolute home and answers an absolute selection', async () => {
+    listDirs.mockResolvedValue({ ok: true, home: '/home/dev', dirs: ['/home/dev/projects', '/home/dev/notes'] });
+    const onSelect = vi.fn();
+    const overlay = await open(undefined, { onSelect });
+    // The first request is the canonical seed (main resolves `~` server-side).
+    expect(listDirs).toHaveBeenLastCalledWith('h1', '~');
+    expect(crumbs(overlay)).toEqual(['~']);
+    // Absolute children are labeled off the home, like the canonical ones.
+    expect(dirRow(overlay, 'projects')).toBeTruthy();
+    selectBtn(overlay).click();
+    expect(onSelect).toHaveBeenCalledWith('/home/dev');
+  });
+
+  it('navigates and selects with absolute paths once the home is known', async () => {
+    listDirs.mockImplementation(async (_id: string, dir: string) => ({
+      ok: true,
+      home: '/home/dev',
+      dirs: dir === '~' || dir === '/home/dev'
+        ? ['/home/dev/projects']
+        : dir === '/home/dev/projects' ? ['/home/dev/projects/demo'] : [],
+    }));
+    const onSelect = vi.fn();
+    const overlay = await open('~', { onSelect });
+    dirRow(overlay, 'projects').click();
+    await flush();
+    expect(listDirs).toHaveBeenLastCalledWith('h1', '/home/dev/projects');
+    expect(crumbs(overlay)).toEqual(['~', 'projects']);
+    selectBtn(overlay).click();
+    expect(onSelect).toHaveBeenCalledWith('/home/dev/projects');
+  });
+
+  it('collapses an absolute start path onto the ~ root once the home arrives', async () => {
+    listDirs.mockResolvedValue({ ok: true, home: '/home/dev', dirs: ['/home/dev/projects/demo'] });
+    const overlay = await open('/home/dev/projects');
+    expect(listDirs).toHaveBeenLastCalledWith('h1', '/home/dev/projects');
+    expect(crumbs(overlay)).toEqual(['~', 'projects']);
+    // Children of an absolute seed are labeled off the display path, not the
+    // whole absolute trail.
+    expect(dirRow(overlay, 'demo')).toBeTruthy();
+  });
+
   it('lists the start directory over hosts:listDirs and never touches the local dialog', async () => {
     const overlay = await open('~');
     expect(overlay.style.display).toBe('');

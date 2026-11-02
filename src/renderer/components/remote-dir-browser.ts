@@ -48,6 +48,28 @@ export function crumbSteps(p: string): Array<{ label: string; path: string }> {
   return steps;
 }
 
+/**
+ * The ABSOLUTE request spelling of a canonical display path (DEFECT 129):
+ * `~`/`~/x` become `<home>`/`<home>/x` once the browser knows the host's home
+ * (`hosts:listDirs` answers it); with no home it forwards the canonical
+ * spelling and main resolves it. `~` stays a DISPLAY label — the answer the
+ * Add-project field persists is always absolute.
+ */
+export function toRemotePath(display: string, home: string | null): string {
+  if (home === null) return display;
+  if (display === '~') return home;
+  if (display.startsWith('~/')) return `${home}/${display.slice(2)}`;
+  return display;
+}
+
+/** The display spelling of a remote path: a path inside the host home is
+ * anchored back on `~`, so the breadcrumb root label stays `~` (DEFECT 129). */
+export function toDisplayPath(p: string, home: string | null): string {
+  if (home === null) return p;
+  if (p === home) return '~';
+  return p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
+}
+
 // One browser at a time (the overlay node is cached by id): a re-open
 // dismisses the previous caller, whose selection can no longer land.
 let active: { close: () => void } | null = null;
@@ -69,6 +91,8 @@ export function showRemoteDirBrowser(opts: RemoteDirBrowserOptions): void {
 
   const start = opts.startPath?.trim() || '~';
   let current = start;
+  // The host's absolute home, answered by the first `hosts:listDirs` reply.
+  let home: string | null = null;
   // Generation guard: a slow readdir reply must never paint over the
   // directory the browse state already moved to.
   let seq = 0;
@@ -103,7 +127,7 @@ export function showRemoteDirBrowser(opts: RemoteDirBrowserOptions): void {
 
   cancelBtn.addEventListener('click', () => close(false));
   selectBtn.addEventListener('click', () => {
-    const path = current;
+    const path = toRemotePath(current, home);
     close(true);
     opts.onSelect(path);
   });
@@ -116,19 +140,22 @@ export function showRemoteDirBrowser(opts: RemoteDirBrowserOptions): void {
   };
 
   const renderCrumb = (): void => {
+    // The trail is DISPLAY space: inside the host home the root crumb stays `~`
+    // (row 129), while `current` itself stays the path the lanes speak.
+    const view = toDisplayPath(current, home);
     crumb.replaceChildren();
     const up = document.createElement('button');
     up.type = 'button';
     up.className = 'remote-browser-crumb-item remote-browser-up';
     up.textContent = '↑';
     up.title = t('sidebar.remoteBrowser.up');
-    up.disabled = remoteParentPath(current) === null;
+    up.disabled = remoteParentPath(view) === null;
     up.addEventListener('click', () => {
-      const parent = remoteParentPath(current);
+      const parent = remoteParentPath(view);
       if (parent !== null) void goTo(parent);
     });
     crumb.appendChild(up);
-    for (const step of crumbSteps(current)) {
+    for (const step of crumbSteps(view)) {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'remote-browser-crumb-item';
@@ -144,9 +171,15 @@ export function showRemoteDirBrowser(opts: RemoteDirBrowserOptions): void {
     errorEl.classList.add('hidden');
     list.replaceChildren(row(t('sidebar.remoteBrowser.loading'), 'remote-browser-empty'));
     type Dirs = Awaited<ReturnType<typeof window.finevibe.hosts.listDirs>>;
-    const res: Dirs = await window.finevibe.hosts.listDirs(opts.hostId, current)
+    const res: Dirs = await window.finevibe.hosts.listDirs(opts.hostId, toRemotePath(current, home))
       .catch((): Dirs => ({ ok: false }));
     if (mySeq !== seq || answered) return;
+    if (res.home) {
+      home = res.home;
+      // The home only arrives with the first reply: repaint the trail so the
+      // root label flips to `~` (and an absolute seed collapses onto it).
+      renderCrumb();
+    }
     selectBtn.disabled = false;
     if (!res.ok) {
       errorEl.textContent = res.error ?? t('sidebar.remoteBrowser.error');
@@ -158,14 +191,16 @@ export function showRemoteDirBrowser(opts: RemoteDirBrowserOptions): void {
       list.appendChild(row(t('sidebar.remoteBrowser.empty'), 'remote-browser-empty'));
       return;
     }
-    // Child names off the canonical parent spelling: `~` → `~/x`, `/` → `/x`.
-    const base = current === '~' ? '~/' : current === '/' ? '/' : `${current}/`;
+    // Child names off the DISPLAY parent spelling: `~` → `~/x`, `/` → `/x`.
+    const view = toDisplayPath(current, home);
+    const base = view === '~' ? '~/' : view === '/' ? '/' : `${view}/`;
     for (const dir of dirs) {
+      const display = toDisplayPath(dir, home);
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'remote-browser-item';
-      item.textContent = dir.startsWith(base) ? dir.slice(base.length) : dir;
-      item.addEventListener('click', () => { void goTo(dir); });
+      item.textContent = display.startsWith(base) ? display.slice(base.length) : display;
+      item.addEventListener('click', () => { void goTo(display); });
       list.appendChild(item);
     }
   };
