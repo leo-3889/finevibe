@@ -12,11 +12,11 @@ import { removeSession as removeContextSession, getContext, getContextSeverity, 
 import type { ProviderId } from '../types.js';
 import { getProviderCapabilities } from '../provider-availability.js';
 import { appState } from '../state.js';
-import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
+import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { openExternal } from '../open-external.js';
 import { FilePathLinkProvider, GithubLinkProvider } from './terminal-link-provider.js';
 import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, loadWebglWithFallback, wrapBracketedPaste } from './terminal-utils.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
 import { forwardResize } from '../sharing/share-manager.js';
 import { destroySearchBar } from './search-bar.js';
@@ -103,6 +103,7 @@ export function createTerminalPane(
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
     scrollback: TERMINAL_SCROLLBACK,
+    macOptionIsMeta: TERMINAL_MAC_OPTION_IS_META,
     cursorBlink: true,
     allowProposedApi: true,
     linkHandler: {
@@ -146,7 +147,7 @@ export function createTerminalPane(
       e.preventDefault();
       return false;
     }
-  });
+  }, writeToPty);
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: TerminalInstance = {
@@ -208,10 +209,12 @@ export function createTerminalPane(
     window.finevibe.pty.write(sessionId, data);
   });
 
-  // Focus tracking
+  // Focus tracking. Capture phase: under a mouse-grabbing TUI the gated
+  // selection path stopPropagation()s at xterm's element, so a bubble
+  // listener on this pane would never fire.
   element.addEventListener('mousedown', () => {
     setFocused(sessionId);
-  });
+  }, true);
   // Use onKey (real keystrokes only), NOT onData: onData also fires for
   // terminal-generated responses to query escape sequences (e.g. cursor-position
   // reports under CLAUDE_CODE_NO_FLICKER=1), which would otherwise steal focus
@@ -223,10 +226,28 @@ export function createTerminalPane(
   });
 
   attachFileDropHandler(terminal, element, writeToPty, () => instance.ptyReady && !instance.exited);
+  // NOTE: the mouse-forwarding gate is NOT attached here - _selectionService
+  // is constructed inside terminal.open(), and attaching earlier is a silent
+  // no-op (row 60 regressed exactly this way in production for months). It
+  // lives in attachToContainer(), right after open().
 
+  // pi-bolt et al. enable SGR mouse reporting (1006): xterm forwards the
+  // right-mousedown as an escape report via triggerDataEvent(report, true),
+  // which fires onUserInput and clears the selection before contextmenu fires
+  // — Copy opened greyed out. Snapshot the selection in the capture phase
+  // (this wrap is an ancestor of xterm's element, so this runs first).
+  let selectionAtRightMousedown = '';
+  xtermWrap.addEventListener('mousedown', (e) => {
+    // ctrl+click synthesizes a button-0 contextmenu; any other press clears the
+    // snapshot so an abandoned right-click can't enable a stale Copy later.
+    if (e.button === 2 || (e.button === 0 && e.ctrlKey)) selectionAtRightMousedown = terminal.getSelection();
+    else selectionAtRightMousedown = '';
+  }, true);
   xtermWrap.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    showTerminalContextMenu(e.clientX, e.clientY, terminal, writeToPty);
+    const snapshot = selectionAtRightMousedown;
+    selectionAtRightMousedown = '';
+    showTerminalContextMenu(e.clientX, e.clientY, terminal, writeToPty, snapshot);
   });
 
   return instance;
@@ -367,6 +388,9 @@ export function attachToContainer(sessionId: string, container: HTMLElement): vo
     attachCopyOnSelect(instance.terminal);
     collapseArmedTextareaOnContextMenu(instance.terminal);
     loadWebglWithFallback(instance.terminal);
+    // After open(), or it no-ops (see the note in createTerminal): plain-left
+    // drag must stay a LOCAL selection even under SGR-mouse TUIs (rows 60/69).
+    attachMouseForwardingGate(instance.terminal);
   } else if (instance.element.parentElement !== container) {
     container.appendChild(instance.element);
   }

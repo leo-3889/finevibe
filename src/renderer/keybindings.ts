@@ -44,6 +44,10 @@ export function initKeybindings(): void {
   window.finevibe.menu.onToggleDebug(toggleDebugPanel);
   window.finevibe.menu.onToggleInspector(toggleInspector);
   window.finevibe.menu.onCloseSession(handleCloseSession);
+  // Row 77: the macOS app menu's Preferences… item (Cmd+,) — the same modal the
+  // sidebar gear opens. The accelerator is registered on the native menu, so
+  // this listener is the only thing that can act on the click.
+  window.finevibe.menu.onOpenPreferences(() => showPreferencesModal());
 
   // Register shortcut handlers — the single authority for keyboard shortcuts.
   shortcutManager.registerHandler('new-session', acts(quickNewSession));
@@ -129,6 +133,11 @@ export function initKeybindings(): void {
     instance.webview.reloadIgnoringCache();
     return true;
   });
+  // Row 99: the chord View → Reload Main Window displays (the same shared
+  // constant, `RELOAD_MAIN_WINDOW_ACCELERATOR`). The menu item's own click
+  // calls `webContents.reload()` on the main side; from here the identical
+  // action is the page reloading itself.
+  shortcutManager.registerHandler('reload-main-window', acts(() => window.location.reload()));
 
   document.addEventListener('keydown', (e) => {
     // A terminal's custom key handler runs the dispatcher at the xterm gate

@@ -49,7 +49,7 @@ vi.mock('../project-terminal.js', () => ({ openRemoteShellTab: (id: string, name
 
 function host(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
-    id: 'h1', name: 'box', user: 'dev', host: '10.0.0.5', port: 22,
+    id: 'h1', name: 'box', user: 'dev', host: '10.0.0.5', port: 22, // pii-allow: synthetic LAN fixture
     authKind: 'key', managedKey: false, privateKeyPath: '/k', enrollmentStatus: 'draft',
     defaultFolder: '~/.finevibe', createdAt: 0, updatedAt: 0, ...overrides,
   };
@@ -120,7 +120,7 @@ describe('hosts-section', () => {
     const { container, section } = await mount();
     expect(container.querySelectorAll('.hosts-card').length).toBe(2);
     expect(container.querySelector('.hosts-dot')!.className).toContain('failed');
-    expect(texts(container, '.hosts-card-target')).toContain('dev@10.0.0.5:22');
+    expect(texts(container, '.hosts-card-target')).toContain('dev@10.0.0.5:22'); // pii-allow: synthetic LAN fixture
     expect(section).toBeDefined();
   });
 
@@ -139,6 +139,23 @@ describe('hosts-section', () => {
     expect(api.enroll).toHaveBeenCalledWith('h1');
   });
 
+  it('wizard: the secret field is masked and prefilled on neither add nor edit (bug #7)', async () => {
+    const fieldsFor = async (act: string | null) => {
+      api.list.mockResolvedValue(act ? [host({ authKind: 'password', enrollmentStatus: 'enrolled' })] : []);
+      const { container } = await mount();
+      const btn = act === null
+        ? (container.querySelector('.hosts-add-btn') as HTMLButtonElement)
+        : (container.querySelector(`button[data-act="${act}"]`) as HTMLButtonElement);
+      btn.click();
+      return modal.showModal.mock.calls[0][1] as Array<{ id: string; secret?: boolean; defaultValue?: string }>;
+    };
+    for (const act of [null, 'edit']) {
+      const secret = (await fieldsFor(act)).find((f) => f.id === 'secret')!;
+      expect(secret.secret).toBe(true);
+      expect(secret.defaultValue).toBeUndefined();
+    }
+  });
+
   it('wizard: key auth with no path generates a key, seeds id, stores secret, runs test', async () => {
     api.generateKey.mockResolvedValue({ id: 'gen1', privateKeyPath: '/cfg/hosts/gen1/id_ed25519', publicKey: 'ssh-ed25519 x' });
     api.create.mockImplementation(async (draft: HostRecord) => ({ ...host(), ...draft }));
@@ -147,7 +164,7 @@ describe('hosts-section', () => {
     (container.querySelector('.hosts-add-btn') as HTMLButtonElement).click();
     expect(modal.showModal).toHaveBeenCalledTimes(1);
     const onConfirm = modal.showModal.mock.calls[0][2] as (v: Record<string, string>) => Promise<void>;
-    await onConfirm({ name: 'box', user: 'dev', host: '10.0.0.5', port: '22', authKind: 'key', keyPath: '', secret: 'pp' });
+    await onConfirm({ name: 'box', user: 'dev', host: '10.0.0.5', port: '22', authKind: 'key', keyPath: '', secret: 'pp' }); // pii-allow: synthetic LAN fixture
     expect(api.generateKey).toHaveBeenCalled();
     expect(api.create.mock.calls[0][0]).toMatchObject({ id: 'gen1', managedKey: true, enrollmentStatus: 'draft' });
     expect(api.setSecret).toHaveBeenCalledWith('gen1', 'keypass', 'pp');
@@ -161,6 +178,27 @@ describe('hosts-section', () => {
     await onConfirm({ name: 'a', user: 'u', host: 'h', port: '99999', authKind: 'key', keyPath: '/k', secret: '' });
     expect(modal.setModalError).toHaveBeenCalledWith('port', expect.any(String));
     expect(api.create).not.toHaveBeenCalled();
+  });
+
+  it('wizard: a rejected create surfaces the reason and adds no card (no phantom tab)', async () => {
+    // Phantom host: `hosts:create` is the ONLY writer of a host record, so a
+    // rejected draft must leave nothing behind for the sidebar to show. An
+    // optimistic card / a post-failure reload puts a host tab on screen for a
+    // record main never persisted, and every verb on that tab then answers
+    // `Unknown host <id>` (the user screenshot: Browse remote1 → No subfolders).
+    api.generateKey.mockResolvedValue({ id: 'gen1', privateKeyPath: '/cfg/hosts/gen1/id_ed25519', publicKey: 'ssh-ed25519 x' });
+    api.create.mockRejectedValue(new Error('invalid host draft: failed validateHostRecordShape'));
+    const { container } = await mount();
+    (container.querySelector('.hosts-add-btn') as HTMLButtonElement).click();
+    const onConfirm = modal.showModal.mock.calls[0][2] as (v: Record<string, string>) => Promise<void>;
+    await onConfirm({ name: 'remote1', user: 'dev', host: 'workbox.local', port: '22', authKind: 'key', keyPath: '', secret: '' });
+    expect(modal.setModalError).toHaveBeenCalledWith('host', 'invalid host draft: failed validateHostRecordShape');
+    expect(modal.closeModal).not.toHaveBeenCalled();
+    // `hosts:list` ran exactly once (the mount); a failed create re-reads
+    // nothing, so the host-tab row — fed by the same `hosts:list` cache — gains
+    // no tab, and the card list stays empty.
+    expect(api.list).toHaveBeenCalledTimes(1);
+    expect(container.querySelectorAll('.hosts-card').length).toBe(0);
   });
 
   it('wizard: provider sync checkboxes persist as settingsSync.providers', async () => {

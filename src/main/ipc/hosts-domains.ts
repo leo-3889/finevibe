@@ -16,16 +16,16 @@
  */
 import { app, BrowserWindow, ipcMain } from 'electron';
 import * as fs from 'fs';
-import { getHost, listHosts, createHost, updateHost, deleteHost } from '../hosts/host-registry';
+import { HostValidationError, getHost, listHosts, createHost, updateHost, deleteHost } from '../hosts/host-registry';
 import { enrollHost, testHost, unenrollHost } from '../hosts/enrollment';
 import { syncSettingsToHost } from '../hosts/settings-sync';
 import { cloneRemoteRepo, ensureRemoteDir, listRemoteDirs, statRemotePath } from '../hosts/remote-fs';
-import { generateManagedKeypair } from '../hosts/keys';
+import { generateManagedKeypair, isManagedKeyPath, isRendererKeyPathAllowed } from '../hosts/keys';
 import { deleteHostSecret, setHostSecret, secretsAvailable } from '../hosts/secrets';
 import { spawnShellPty } from '../pty-manager';
 import { getMainWindow } from '../main-window';
 import { SPAWN_REJECTED_EXIT_REASON } from '../../shared/constants';
-import type { ProviderId } from '../../shared/types';
+import type { HostRecord, ProviderId } from '../../shared/types';
 
 export interface HostsDomainsDeps {
   /** Coalescing pty sink factory from ipc-handlers (shared with the pty:* handlers). */
@@ -35,17 +35,91 @@ export interface HostsDomainsDeps {
   ) => ((data: string) => void) & { flush(): void };
 }
 
+/**
+ * Audit row 31: the fields the renderer may write through `hosts:update` — the
+ * add/edit form's own set, nothing else. Every other HostRecord field is
+ * main-owned, and the stripped ones are consent gates: `enrollmentStatus:
+ * 'enrolled'` would skip the whole enrollment state machine (hosts:openShell
+ * and remote-fs' gateHost key on it), `hostKeyFingerprint` is the TOFU pin
+ * (hosts:approveHostKey is its only writer) and `prerequisites[].path`
+ * interpolates into remote commands.
+ */
+const HOST_EDITABLE_FIELDS = ['name', 'user', 'host', 'port', 'authKind', 'color', 'privateKeyPath', 'defaultFolder', 'settingsSync'] as const;
+
+/**
+ * Audit row 32: a pin is exactly {@link fingerprintOf} output — `SHA256:` plus
+ * the base64 of a 32-byte SHA-256 (43 chars + one '='). The empty string is
+ * the dangerous value: ssh-client reads a falsy `hostKeyFingerprint` as
+ * "nothing pinned yet", so approving with '' silently DISABLES pinning for
+ * every later connect. Any other malformed string can never match a real
+ * handshake and bricks the host until it is edited by hand.
+ */
+const HOST_KEY_PIN = /^SHA256:[A-Za-z0-9+/]{43}=$/;
+
+/** Audit 34: the shared refusal for a key path outside the two legal roots. */
+function refuseKeyPath(channel: string): never {
+  console.warn(`${channel} refused: privateKeyPath outside the managed key dir and ~/.ssh`);
+  throw new HostValidationError('privateKeyPath must live under ~/.ssh or the FineVibe managed key dir');
+}
+
+/**
+ * Audit 34 + 31: validate a renderer-supplied `privateKeyPath` and DERIVE
+ * `managedKey` from it. Main owns that flag — it drives the enrollment
+ * key-deploy step (which ships the public half to the host) and the delete-time
+ * unlink — so a renderer value must never make FineVibe unlink a foreign
+ * `~/.ssh/id_ed25519`. `currentPath` is the stored one: the edit form re-sends
+ * it, and only a CHANGED path can steer a new local read, so an unchanged value
+ * passes through and a host whose key predates this gate stays editable.
+ * Returns the fields to merge, or null when the patch carried no key path
+ * (a non-string value also returns null: the shape gate already rejects it).
+ */
+function gateKeyPatch(
+  channel: 'hosts:create' | 'hosts:update',
+  userData: string,
+  keyPath: unknown,
+  currentPath?: string,
+): Record<string, unknown> | null {
+  if (typeof keyPath !== 'string') return null;
+  if (currentPath !== undefined && keyPath === currentPath) return { privateKeyPath: keyPath };
+  if (!isRendererKeyPathAllowed(userData, keyPath)) refuseKeyPath(channel);
+  return { privateKeyPath: keyPath, managedKey: isManagedKeyPath(userData, keyPath) };
+}
+
+/** A create draft as it crosses IPC: an unvalidated object bag (createHost owns
+ * the grammar, validateHostRecordShape the rejection). */
+type HostDraft = Record<string, unknown>;
+
+/** {@link gateKeyPatch} for the create draft (the wizard's Browse button). null
+ * when the payload is not an object bag — `createHost` rejects those itself. */
+function gateDraftKeyPath(draft: unknown): HostDraft | null {
+  if (typeof draft !== 'object' || draft === null || Array.isArray(draft)) return null;
+  const raw = draft as HostDraft;
+  const patch = gateKeyPatch('hosts:create', app.getPath('userData'), raw.privateKeyPath);
+  return patch ? { ...raw, ...patch } : raw;
+}
+
 export function registerHostsDomains(deps: HostsDomainsDeps): void {
   // ---- Multi-host Phase 1: hosts registry --------------------------------
   // Secrets never cross these channels (secrets.ts is write-only over IPC);
   // every mutation re-validates through the shared validateHostRecordShape.
   ipcMain.handle('hosts:list', () => listHosts());
 
-  ipcMain.handle('hosts:create', (_event, draft: unknown) => createHost(draft));
+  // Audit 34: the wizard's Browse button lands here, so the draft's key path
+  // gets the same containment as the update path (non-object drafts pass
+  // through untouched — createHost's own shape gate rejects them).
+  ipcMain.handle('hosts:create', (_event, draft: unknown) => createHost(gateDraftKeyPath(draft) ?? draft));
 
-  ipcMain.handle('hosts:update', (_event, id: string, patch: Record<string, unknown>) =>
-    updateHost(id, patch),
-  );
+  ipcMain.handle('hosts:update', (_event, id: string, patch: Record<string, unknown>) => {
+    const editable: Record<string, unknown> = {};
+    if (typeof patch === 'object' && patch !== null && !Array.isArray(patch)) {
+      for (const field of HOST_EDITABLE_FIELDS) {
+        if (field in patch) editable[field] = patch[field];
+      }
+    }
+    const keyPatch = gateKeyPatch('hosts:update', app.getPath('userData'), editable.privateKeyPath, getHost(id)?.privateKeyPath);
+    if (keyPatch) Object.assign(editable, keyPatch);
+    return updateHost(id, editable as Partial<Omit<HostRecord, 'id'>>);
+  });
 
   ipcMain.handle('hosts:delete', (_event, id: string) => {
     deleteHost(id);
@@ -94,8 +168,12 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
   });
 
   // Store a wizard-entered secret: password under <id>, key passphrase
-  // under keypass:<id>. Write-only over IPC (never returned).
+  // under keypass:<id>. Write-only over IPC (never returned). Row 46: the id
+  // must name a registry host — a stale/deleted id (double submit, a card
+  // deleted while the modal was open) used to park an orphan ciphertext entry
+  // in host-secrets.json for a host that no longer exists.
   ipcMain.handle('hosts:setSecret', (_event, id: string, kind: 'password' | 'keypass', secret: string) => {
+    if (!getHost(id)) throw new Error(`unknown host ${JSON.stringify(id)}`);
     setHostSecret(kind === 'keypass' ? `keypass:${id}` : id, secret);
   });
 
@@ -106,12 +184,22 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
   ipcMain.handle('hosts:test', async (_event, id: string) => {
     const record = getHost(id);
     if (!record) return { ok: false, hostKeyChanged: false, steps: [{ step: 'record', ok: false, detail: 'unknown host' }] };
-    return testHost(record);
+    const result = await testHost(record);
+    // Row 46: `auth-ok` had no producer. A passed auth test on a record that
+    // was never enrolled is the honest rung (docs/hosts.md lifecycle) — a
+    // wizard closed after Test & Approve used to leave the host sitting on
+    // `draft`. An enrolled/partial record is never demoted by a re-test.
+    if (result.ok && record.enrollmentStatus === 'draft') updateHost(id, { enrollmentStatus: 'auth-ok' });
+    return result;
   });
 
   // TOFU accept after the wizard showed the fingerprint (§4 step 2).
-  ipcMain.handle('hosts:approveHostKey', (_event, id: string, fingerprint: string) => {
+  ipcMain.handle('hosts:approveHostKey', (_event, id: string, fingerprint: unknown) => {
     if (!getHost(id)) return null;
+    if (typeof fingerprint !== 'string' || !HOST_KEY_PIN.test(fingerprint)) {
+      console.warn(`hosts:approveHostKey refused: ${id} pin is not a SHA256:<base64> fingerprint`);
+      return null;
+    }
     return updateHost(id, { hostKeyFingerprint: fingerprint });
   });
 
@@ -122,7 +210,10 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
       const w = getMainWindow();
       if (w && !w.isDestroyed()) w.webContents.send('hosts:status', event);
     };
-    return enrollHost(record, emit, opts);
+    // Audit 32: the wizard's approved pin rides the same grammar — enrollHost
+    // persists it as the record's pin when nothing is pinned yet.
+    const pin = typeof opts?.pin === 'string' && HOST_KEY_PIN.test(opts.pin) ? opts.pin : undefined;
+    return enrollHost(record, emit, pin ? { pin } : undefined);
   });
 
   ipcMain.handle('hosts:unenroll', async (_event, id: string) => {
@@ -157,6 +248,12 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
     listRemoteDirs(id, dirPath, typeof prefix === 'string' ? prefix : undefined),
   );
 
+  // Row 93: the DIR-BROWSER stat. Deliberately NOT project-contained — the
+  // Add-project modal names folders that are not projects yet, and the enrolled
+  // HostRecord is that flow's consent (council R-1). The contained twin is the
+  // TREE rail `fs:stat` (ipc-handlers.ts), which runs
+  // remote-fs' isRemotePathInKnownProject first; keeping the two lanes apart is
+  // what the contract paragraph in docs/security-boundaries.md documents.
   ipcMain.handle('hosts:stat', (_event, id: unknown, target: unknown) =>
     statRemotePath(id, target),
   );

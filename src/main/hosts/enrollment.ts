@@ -5,12 +5,15 @@
 // what succeeded (key deployed, dirs created) and reports what did not.
 //
 // The remote commands are built here from validated registry fields only —
-// the renderer never contributes argv. exec() output is bounded by ssh-client.
+// the renderer never contributes argv. exec() output is capped at
+// ssh-client's MAX_EXEC_OUTPUT_BYTES; the one place that re-persists remote
+// output (the unenroll authorized_keys rewrite) reads it through execCapped
+// and refuses a truncated copy.
 
 import { app } from 'electron';
 import type { HostRecord, ProviderId } from '../../shared/types';
 import { getAllProviderMetas } from '../providers/registry';
-import { connect, exec } from './ssh-client';
+import { connect, exec, execCapped, MAX_EXEC_OUTPUT_BYTES } from './ssh-client';
 import { readProviderFile, writeProviderFile } from './provider-fs';
 import { HOST_SETTINGS_PATH, hostHookEntries, mergeHookBlock, stripHookBlock } from './host-hooks';
 import { getHostSecret } from './secrets';
@@ -170,7 +173,16 @@ async function deployKey(record: HostRecord): Promise<EnrollStep> {
 export async function unenrollHost(record: HostRecord): Promise<{ ok: boolean; detail?: string }> {
   let detail: string | undefined;
   try {
-    const existing = await exec(record, 'cat ~/.ssh/authorized_keys 2>/dev/null || true', { timeoutMs: PREREQ_TIMEOUT_MS });
+    const { out: existing, truncated } = await execCapped(
+      record,
+      'cat ~/.ssh/authorized_keys 2>/dev/null || true',
+      { timeoutMs: PREREQ_TIMEOUT_MS },
+    );
+    // Row 33/45 intersection: rewriting from a clipped copy would delete every
+    // key past the cap, so refuse and leave the file untouched.
+    if (truncated) {
+      return { ok: false, detail: `authorized_keys is over ${MAX_EXEC_OUTPUT_BYTES} bytes — refusing to rewrite a truncated copy` };
+    }
     const removed = authorizedKeysWithoutBlock(existing, record.id);
     if (removed === null) detail = 'no marker block present';
     else {
@@ -279,6 +291,10 @@ export async function enrollHost(
   const pin = record.hostKeyFingerprint ?? opts?.pin;
   if (!pin) return fail('failed', 'host key not pinned — run Test & Approve first');
 
+  // The status machine's `probing` rung is persisted, not just emitted: a
+  // wizard closed mid-flight leaves the honest intermediate on the record
+  // (row 46; docs/hosts.md lifecycle `draft → probing → auth-ok → …`).
+  setEnrollmentStatus(record.id, 'probing');
   emit({ id: record.id, status: 'probing' });
   // Steps 1-3: TCP/banner/auth ride on connect; TOFU pin enforced here.
   try {
@@ -290,6 +306,12 @@ export async function enrollHost(
     steps.push({ step: 'connect', ok: false, detail: msg });
     return fail(msg === 'host-key-changed' ? 'failed' : 'failed', msg);
   }
+  // Row 46: auth is proven by the connect above, so this is the transition
+  // that gives `auth-ok` a producer (the rung had none). Later steps may
+  // still land `partial`/`failed`; a crash or a closed wizard leaves the
+  // accurate rung on the record.
+  setEnrollmentStatus(record.id, 'auth-ok');
+  emit({ id: record.id, status: 'auth-ok' });
 
   // Step 4: env probe — POSIX targets only (R2).
   try {

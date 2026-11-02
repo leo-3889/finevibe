@@ -35,26 +35,88 @@ export const utf8LocaleEnv: Record<string, string> =
  * universal path — Homebrew, pyenv, conda, distro-python and user-local
  * installs put the interpreter elsewhere, and hooks then die silently in
  * exactly the installs the Windows re-point was built for. At module load we
- * probe the candidate spellings and pin the first that answers, mirroring
+ * resolve the candidate spellings and pin the first that exists, mirroring
  * the Windows `pythonBin` binding shape. Exported as `let`: the bundler
  * keeps the live binding, so every hook command template reads the resolved
  * interpreter. */
 export let pythonBin = isWin ? 'python' : '/usr/bin/python3';
 
-// Probed once at module load (POSIX only; Windows defers to
-// checkPythonAvailable()). `python3` first: PATH-resolved installs (brew,
-// pyenv, asdf) are the common case on macOS/Linux; the absolute path is the
-// distro default; bare `python` covers the few remaining POSIX setups.
+/**
+ * POSIX interpreter spellings, probed in this order: PATH-resolved installs
+ * (brew, pyenv, asdf) first, then the distro default, then the few remaining
+ * bare-`python` setups. Shared with `checkPythonAvailable()` (prerequisites.ts)
+ * so its boot warning walks the same list in the same order.
+ */
+export const POSIX_PYTHON_CANDIDATES = ['python3', '/usr/bin/python3', 'python'];
+
+/**
+ * Row 78 follow-up: the Apple Command Line Tools SHIM. On a mac with no CLT,
+ * `/usr/bin/python3` still exists and still resolves through `command -v`, so
+ * the zero-exec probe reports it as found while every real use of it pops the
+ * "Install Command Line Developer Tools" dialog (and every hook fails). Shared
+ * with prerequisites.ts so both probes refuse the same path for the same
+ * reason.
+ */
+export const APPLE_CLT_SHIM_PATH = '/usr/bin/python3';
+
+/**
+ * True when a toolchain is selected (`xcode-select -p` prints its root).
+ * Zero-exec like the locator: `sh` runs the check, never python. UNVERIFIED-
+ * RUNTIME: no CLT-less mac in CI, so the exit code this relies on (non-zero
+ * with no CLT) is Apple's documented behavior, not something these tests
+ * executed.
+ */
+function commandLineToolsInstalled(): boolean {
+  try {
+    execSync('xcode-select -p >/dev/null 2>&1', { timeout: 3000, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Resolved once at module load (POSIX only; Windows defers to
+// checkPythonAvailable()). Row 78: the probe asks the shell where the
+// interpreter is (`command -v`, a builtin) instead of running
+// `<candidate> --version`. On a mac without the Command Line Tools,
+// /usr/bin/python3 is Apple's installer shim and EXECUTING it pops the
+// "Install Command Line Developer Tools" dialog — which this module-load probe
+// was doing on every boot. `command -v` prints the PATH-resolved path (or the
+// argument itself when it is an executable path) and never starts an
+// interpreter, so `pythonBin` ends up holding an absolute path.
 if (!isWin) {
-  for (const candidate of ['python3', '/usr/bin/python3', 'python']) {
+  for (const candidate of POSIX_PYTHON_CANDIDATES) {
     try {
-      execSync(`${candidate} --version`, { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
-      pythonBin = candidate;
+      const resolved = execSync(`command -v ${candidate}`, { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' }).trim();
+      if (!resolved) continue;
+      // Resolution is not availability: keep probing past the CLT shim, so a
+      // brew/pyenv python further down PATH still wins and the boot warning
+      // (prerequisites.ts) keeps its teeth.
+      if (isMac && resolved === APPLE_CLT_SHIM_PATH && !commandLineToolsInstalled()) continue;
+      pythonBin = resolved;
       break;
-    } catch { /* this interpreter is missing; try the next candidate */ }
+    } catch { /* not on PATH and not an executable path; try the next candidate */ }
   }
 }
 
 export function setPythonBin(bin: string): void {
   pythonBin = bin;
+}
+
+/**
+ * GPU escape hatch (audit row 85). On Mesa/gfx1201 boards the Electron GPU
+ * process (ANGLE → Vulkan → RADV) faults on `ring gfx_0.0.0`, and every kernel
+ * soft-recovery stalls the whole desktop ~10 s because GNOME shares that ring
+ * (f0d9e19e forensics). `FINEVIBE_DISABLE_GPU=1` drops GL for the whole app;
+ * Linux-only because that fault path is Mesa-specific — the Windows/macOS
+ * runs are unverified against the flag, so they ignore it. `platform` is a
+ * parameter so the boot wiring in main.ts stays a one-liner and the decision
+ * stays unit-testable; it defaults to the process platform (main.ts must not
+ * inline a platform comparison — that is this module's job).
+ */
+export function shouldDisableHardwareAcceleration(
+  env: Record<string, string | undefined>,
+  platform: string = process.platform,
+): boolean {
+  return platform === 'linux' && env.FINEVIBE_DISABLE_GPU === '1';
 }

@@ -14,7 +14,11 @@ const { mockMatchesAnyShortcut, mockMatchEvent, mockPlatform, mockPreferences, m
     lastInstance: null as null | { dispose: ReturnType<typeof vi.fn>; fireContextLoss: () => void },
   },
 }));
-vi.mock('../shortcuts.js', () => ({
+// Partial: the manager is stubbed (its handlers are app wiring), while
+// `canonicalAlnumKey` — the physical-key rule the mac chords now resolve
+// through — must stay the real one, or this file would test a copy of it.
+vi.mock('../shortcuts.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../shortcuts.js')>()),
   shortcutManager: {
     matchesAnyShortcut: (...args: unknown[]) => mockMatchesAnyShortcut(...args),
     matchEvent: (...args: unknown[]) => mockMatchEvent(...args),
@@ -50,7 +54,8 @@ vi.mock('@xterm/addon-webgl', () => ({
   },
 }));
 
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, copySelection, copyText, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath, _resetClipboardCopyStateForTesting } from './terminal-utils.js';
+import { Terminal } from '@xterm/xterm';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, copySelection, copyText, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath, _resetClipboardCopyStateForTesting } from './terminal-utils.js';
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
 // P3: clipboard writes are fire-and-forget `ipcRenderer.send` — void, no
@@ -285,6 +290,238 @@ describe('attachClipboardCopyHandler (macOS)', () => {
     const result = terminal.simulateKey({ ctrlKey: true, key: 'v', type: 'keydown' });
 
     expect(result).toBe(true);
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  // Row 92/70: menu.ts hands Cmd+C/X/Z/A back to the renderer, so this handler
+  // owns them. The mac runtime route (menu → renderer) is UNVERIFIED-RUNTIME;
+  // these pin the handler's verdict for the keydown xterm will deliver.
+  it('Cmd+C with a selection copies through main and suppresses the native copy', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('mac-copy');
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keydown', preventDefault });
+
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('mac-copy', 'explicit');
+    expect(mockClipboardWrite).not.toHaveBeenCalled();
+    // No SIGINT alongside the copy, and the default edit command is stopped so
+    // Chromium cannot re-copy the (unarmed) helper textarea over this write.
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(preventDefault).toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('Cmd+C with a selection copies on keydown only, but stays suppressed on keyup', () => {
+    const terminal = new FakeTerminal();
+    attachClipboardCopyHandler(terminal as any);
+
+    terminal.setSelection('mac-keyup');
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keyup', preventDefault: vi.fn() });
+
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('Cmd+C with no selection sends SIGINT to the PTY', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('');
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keydown', preventDefault });
+
+    // xterm's mac mapping writes nothing for a meta-only 'c', so the byte is
+    // written here rather than left to xterm.
+    expect(writeToPty).toHaveBeenCalledWith('\x03');
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+    expect(preventDefault).toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('Cmd+C with no selection writes the byte on keydown only', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keyup', preventDefault: vi.fn() });
+
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('Cmd+A/X/Z forward their Ctrl bytes, matching win/linux Ctrl+A/X/Z', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+    const preventDefault = vi.fn();
+
+    expect(terminal.simulateKey({ metaKey: true, key: 'a', type: 'keydown', preventDefault })).toBe(false);
+    expect(terminal.simulateKey({ metaKey: true, key: 'x', type: 'keydown', preventDefault })).toBe(false);
+    expect(terminal.simulateKey({ metaKey: true, key: 'z', type: 'keydown', preventDefault })).toBe(false);
+
+    expect(writeToPty.mock.calls).toEqual([['\x01'], ['\x18'], ['\x1a']]);
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+    // Cmd+A select-all / Cmd+X cut must not reach the helper textarea either.
+    expect(preventDefault).toHaveBeenCalledTimes(3);
+  });
+
+  it('Cmd+A forwards the byte even with a selection (it is readline, not select-all)', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('selectable');
+    terminal.simulateKey({ metaKey: true, key: 'a', type: 'keydown', preventDefault: vi.fn() });
+
+    expect(writeToPty).toHaveBeenCalledWith('\x01');
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+  });
+
+  // Cmd+V must survive untouched: xterm leaves the meta-only keydown
+  // uncancelled so Chromium fires the native paste event
+  // (attachImagePasteHandler + xterm's own paste pipeline).
+  it('leaves Cmd+V to the native paste event', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ metaKey: true, key: 'v', type: 'keydown', preventDefault });
+
+    expect(result).toBe(true);
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(mockReadForPaste).not.toHaveBeenCalled();
+  });
+
+  it('Cmd+Shift+C still copies', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('shift-cmd-copy');
+    const result = terminal.simulateKey({ metaKey: true, shiftKey: true, key: 'C', type: 'keydown' });
+
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('shift-cmd-copy', 'explicit');
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+
+  it('does not forward Ctrl-only or modified chords (xterm already sends those bytes)', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('sel');
+    // Ctrl+A is xterm's own \x01 mapping; Ctrl+C is SIGINT; Ctrl+Shift+C is the
+    // existing copy path — none may be double-written here.
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'a', type: 'keydown' })).toBe(true);
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keydown' })).toBe(true);
+    expect(terminal.simulateKey({ metaKey: true, ctrlKey: true, key: 'a', type: 'keydown' })).toBe(true);
+    expect(terminal.simulateKey({ metaKey: true, altKey: true, key: 'a', type: 'keydown' })).toBe(true);
+
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  // Row 92 follow-up: the chord table used to read `e.key`, and a Cyrillic
+  // layout reports the layout's character for the physical key ('И' on the
+  // physical C), so every mac Edit chord missed on a non-Latin keyboard.
+  // `e.code` is layout-independent (the rule `shortcuts.ts` already used).
+  it('resolves mac chords from the physical key on a non-Latin layout', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    // No selection: Cmd+И is the SIGINT byte, exactly like Cmd+C.
+    expect(terminal.simulateKey({ metaKey: true, key: 'И', code: 'KeyC', type: 'keydown', preventDefault: vi.fn() })).toBe(false);
+    expect(writeToPty).toHaveBeenLastCalledWith('\x03');
+
+    // Cmd+Х (physical X) still reaches readline's C-x prefix.
+    expect(terminal.simulateKey({ metaKey: true, key: 'Х', code: 'KeyX', type: 'keydown', preventDefault: vi.fn() })).toBe(false);
+    expect(writeToPty).toHaveBeenLastCalledWith('\x18');
+    expect(writeToPty).toHaveBeenCalledTimes(2);
+  });
+
+  it('copies a selection with a non-Latin-layout Cmd+C', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('cyrillic-copy');
+    const preventDefault = vi.fn();
+    const result = terminal.simulateKey({ metaKey: true, key: 'И', code: 'KeyC', type: 'keydown', preventDefault });
+
+    expect(result).toBe(false);
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('cyrillic-copy', 'explicit');
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves unhandled mac keys alone', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    expect(terminal.simulateKey({ metaKey: true, key: 't', type: 'keydown' })).toBe(true);
+    expect(terminal.simulateKey({ key: 'a', type: 'keydown' })).toBe(true);
+    expect(writeToPty).not.toHaveBeenCalled();
+  });
+
+  it('forwards nothing when the caller passes no PTY writer', () => {
+    // Two-arg callers keep xterm's pre-existing behavior instead of having the
+    // key swallowed by a byte write that cannot land.
+    const terminal = new FakeTerminal();
+    attachClipboardCopyHandler(terminal as any);
+
+    terminal.setSelection('');
+    const result = terminal.simulateKey({ metaKey: true, key: 'c', type: 'keydown' });
+
+    expect(result).toBe(true);
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('attachClipboardCopyHandler (non-mac Edit chords unchanged)', () => {
+  beforeEach(() => {
+    stubPlatform('Linux');
+    mockPlatform.isMac = false;
+    mockPlatform.isWin = false;
+    mockPlatform.isLinux = true;
+  });
+
+  it('does not treat meta chords as mac Edit chords on Linux', () => {
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('linux-sel');
+    for (const key of ['c', 'a', 'x', 'z']) {
+      expect(terminal.simulateKey({ metaKey: true, key, type: 'keydown' })).toBe(true);
+    }
+
+    expect(writeToPty).not.toHaveBeenCalled();
+    expect(mockFineVibeClipboardWrite).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Windows Ctrl+C selection contract', () => {
+    stubPlatform('Win32');
+    mockPlatform.isWin = true;
+    mockPlatform.isLinux = false;
+
+    const terminal = new FakeTerminal();
+    const writeToPty = vi.fn();
+    attachClipboardCopyHandler(terminal as any, undefined, writeToPty);
+
+    terminal.setSelection('win-sel');
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keydown' })).toBe(false);
+    expect(mockFineVibeClipboardWrite).toHaveBeenCalledWith('win-sel', 'explicit');
+
+    terminal.setSelection('');
+    expect(terminal.simulateKey({ ctrlKey: true, key: 'c', type: 'keyup' })).toBe(true);
     expect(writeToPty).not.toHaveBeenCalled();
   });
 });
@@ -559,6 +796,19 @@ describe('loadWebglWithFallback', () => {
     webglState.lastInstance!.fireContextLoss();
 
     expect(webglState.lastInstance!.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the addon entirely under the DOM-renderer escape hatch', () => {
+    // The probe for GPU glyph garbling: no addon means xterm keeps the DOM
+    // renderer, so a clean render proves the GPU path was at fault.
+    (globalThis as { __FINEVIBE_DOM_RENDERER__?: boolean }).__FINEVIBE_DOM_RENDERER__ = true;
+    try {
+      const terminal = { loadAddon: vi.fn() };
+      loadWebglWithFallback(terminal as any);
+      expect(terminal.loadAddon).not.toHaveBeenCalled();
+    } finally {
+      delete (globalThis as { __FINEVIBE_DOM_RENDERER__?: boolean }).__FINEVIBE_DOM_RENDERER__;
+    }
   });
 
   it('falls back silently when WebGL is unavailable', () => {
@@ -1064,5 +1314,159 @@ describe('quoteShellPath', () => {
     mockPlatform.isWin = true;
     expect(quoteShellPath('C:\\a"b.txt')).toBeNull();
     expect(quoteShellPath('x"y & calc.exe')).toBeNull();
+  });
+});
+describe('attachMouseForwardingGate', () => {
+  function makeFakeTerminal() {
+    const forwarded: unknown[] = [];
+    // The public Terminal.hasSelection() the button-2 clause reads; mutable so a
+    // test pins both answers without mounting a buffer.
+    const selection = { has: false };
+    const terminal = {
+      hasSelection: () => selection.has,
+      _core: {
+        coreMouseService: {
+          triggerMouseEvent(event: { button: number; action: number; alt: boolean }) {
+            forwarded.push(event);
+            return true;
+          },
+        },
+        _selectionService: {
+          // The real one is mac/options dependent; a shiftKey check is enough
+          // to prove the wrapper delegates rather than always forcing. The
+          // this-guard pins the .call() this-preservation contract: calling
+          // the original detached throws and fails the suite.
+          __originalMarker: true,
+          shouldForceSelection(this: { __originalMarker?: boolean }, e: MouseEvent) {
+            if (!('__originalMarker' in this)) throw new Error('wrapper lost this');
+            return e.shiftKey;
+          },
+        },
+      },
+    };
+    return { terminal: terminal as any, forwarded, selection };
+  }
+
+  it('swallows plain left DOWN/UP/MOVE without reaching the original', () => {
+    const { terminal, forwarded } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const trigger = terminal._core.coreMouseService.triggerMouseEvent;
+    // xterm action codes: DOWN 1, UP 0, MOVE 32.
+    for (const action of [1, 0, 32]) {
+      expect(trigger({ button: 0, action, alt: false })).toBe(false);
+    }
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it('forwards wheel, right, middle, alt-left and hover to the original', () => {
+    const { terminal, forwarded } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const trigger = terminal._core.coreMouseService.triggerMouseEvent;
+    expect(trigger({ button: 4, action: 1, alt: false })).toBe(true); // wheel
+    expect(trigger({ button: 2, action: 1, alt: false })).toBe(true); // right
+    expect(trigger({ button: 1, action: 1, alt: false })).toBe(true); // middle
+    expect(trigger({ button: 0, action: 1, alt: true })).toBe(true);  // alt+left
+    expect(trigger({ button: 3, action: 32, alt: false })).toBe(true); // hover
+    expect(forwarded).toHaveLength(5);
+  });
+
+  it('forces the native selection only for a plain left press', () => {
+    const { terminal } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const force = terminal._core._selectionService.shouldForceSelection;
+    expect(force(new MouseEvent('mousedown', { button: 0 }))).toBe(true);
+    // Alt+left stays the app escape hatch: the original (shift-only) answer stands.
+    expect(force(new MouseEvent('mousedown', { button: 0, altKey: true }))).toBe(false);
+    expect(force(new MouseEvent('mousedown', { button: 0, altKey: true, shiftKey: true }))).toBe(true);
+    expect(force(new MouseEvent('mousedown', { button: 2 }))).toBe(false);
+  });
+
+  it('claims the right-click copy while a selection is live', () => {
+    const { terminal, selection } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const force = terminal._core._selectionService.shouldForceSelection;
+    // A finished drag must survive the right-click that copies it: the press is
+    // claimed, so xterm never forwards it and the selection stays readable.
+    selection.has = true;
+    expect(force(new MouseEvent('mousedown', { button: 2 }))).toBe(true);
+  });
+
+  it('forwards the right-click to the TUI when nothing is selected', () => {
+    const { terminal } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const force = terminal._core._selectionService.shouldForceSelection;
+    // No selection: the original (shift-only) answer stands, so vim/pi right-click
+    // behavior is exactly as before this clause.
+    expect(force(new MouseEvent('mousedown', { button: 2 }))).toBe(false);
+    expect(force(new MouseEvent('mousedown', { button: 2, shiftKey: true }))).toBe(true);
+  });
+
+  it('is idempotent: a second attach adds no second swallow layer', () => {
+    const { terminal, forwarded } = makeFakeTerminal();
+    attachMouseForwardingGate(terminal);
+    const trigger = terminal._core.coreMouseService.triggerMouseEvent;
+    const force = terminal._core._selectionService.shouldForceSelection;
+    attachMouseForwardingGate(terminal);
+    expect(terminal._core.coreMouseService.triggerMouseEvent).toBe(trigger);
+    expect(terminal._core._selectionService.shouldForceSelection).toBe(force);
+    expect(trigger({ button: 0, action: 1, alt: false })).toBe(false);
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it('is a no-op on a terminal without _core (jsdom fakes)', () => {
+    expect(() => attachMouseForwardingGate({} as any)).not.toThrow();
+  });
+
+  // Rows 60/69 upgrade belt: every fake above hand-builds the seam names, so an
+  // @xterm/xterm 6 -> 7 rename of _selectionService/coreMouseService keeps them
+  // green while the real helper silently no-ops on its missing-seam guard. A real
+  // mounted Terminal pins both the seam names and the behavior delta on the object
+  // production actually patches.
+  it('patches the real xterm seams after open()', () => {
+    // The file-level beforeEach stubs `window` to the bridge-only shape the fakes
+    // read; a real Terminal needs the jsdom window (it takes `document` off it).
+    const view = document.defaultView as any;
+    vi.stubGlobal('window', view);
+    // jsdom ships no matchMedia; xterm's CoreBrowserService reads it off the
+    // parent window for the DPR.
+    view.matchMedia = () => ({
+      matches: false, addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {},
+    });
+    const terminal = new Terminal();
+    try {
+      // _selectionService is constructed inside open() — attaching earlier is the
+      // documented no-op, which is why every call site attaches after open().
+      expect((terminal as any)._core?._selectionService).toBeUndefined();
+      attachMouseForwardingGate(terminal);
+
+      terminal.open(document.createElement('div'));
+      const core = (terminal as any)._core;
+      const mouse = core.coreMouseService;
+      // With no protocol active the original forwards nothing, so there would be
+      // no delta to pin: ANY is what a mouse-grabbing TUI (fzf --mouse, lazygit,
+      // btop, vim mouse=) puts the service into.
+      mouse.activeProtocol = 'ANY';
+
+      // Original contract: mac → altKey && macOptionClickForcesSelection, else →
+      // shiftKey. Both falsy for a plain press, so the drag goes to the TUI.
+      const plainLeft = new MouseEvent('mousedown', { button: 0 });
+      expect(core._selectionService.shouldForceSelection(plainLeft)).toBe(false);
+      expect(mouse.triggerMouseEvent({ button: 0, action: 1, alt: false, col: 0, row: 0 })).toBe(true);
+
+      attachMouseForwardingGate(terminal);
+
+      expect(core._selectionService.shouldForceSelection(plainLeft)).toBe(true);
+      expect(mouse.triggerMouseEvent({ button: 0, action: 1, alt: false, col: 0, row: 0 })).toBe(false);
+      // Wheel stays forwarded; Alt+left stays the app escape hatch (the wrapper
+      // delegates, and the original says no for a shift-less press on either OS).
+      expect(mouse.triggerMouseEvent({ button: 4, action: 1, alt: false, col: 0, row: 0 })).toBe(true);
+      expect(core._selectionService.shouldForceSelection(new MouseEvent('mousedown', { button: 0, altKey: true }))).toBe(false);
+      expect(mouse.__finevibeMouseGate).toBe(true);
+    } finally {
+      terminal.dispose();
+      delete view.matchMedia;
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -111,7 +111,7 @@ function countActiveSessions(): number {
   return count;
 }
 
-export function confirmAppClose(onConfirm: () => void): void {
+export function confirmAppClose(onConfirm: () => void, onCancel: () => void): void {
   if (!appState.preferences.confirmCloseWorkingSession) {
     onConfirm();
     return;
@@ -130,6 +130,7 @@ export function confirmAppClose(onConfirm: () => void): void {
     {
       confirmLabel: t('sessionClose.quitConfirm'),
       onConfirm,
+      onCancel,
     },
   );
 }

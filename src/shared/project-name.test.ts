@@ -7,7 +7,7 @@ describe('deriveProjectName', () => {
   });
 
   it('extracts the basename from Windows paths', () => {
-    expect(deriveProjectName('C:\\Users\\lauferism\\git\\finevibe')).toBe('finevibe');
+    expect(deriveProjectName('C:\\Users\\me\\git\\finevibe')).toBe('finevibe');
   });
 
   it('strips trailing separators', () => {

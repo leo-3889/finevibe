@@ -103,6 +103,28 @@ describe('modal focus restoration', () => {
   });
 });
 
+describe('modal secret field (bug #7)', () => {
+  it('renders a secret field masked, autofill-free and never prefilled', () => {
+    showModal(
+      'Host',
+      [
+        { label: 'Name', id: 'n' },
+        { label: 'Secret', id: 'sec', type: 'text', secret: true, defaultValue: 'hunter2' },
+      ],
+      () => {},
+    );
+    const secret = document.getElementById('modal-sec') as HTMLInputElement;
+    expect(secret.type).toBe('password');
+    expect(secret.autocomplete).toBe('new-password');
+    expect(secret.spellcheck).toBe(false);
+    // Write-only: a stored secret must never reach the form, so defaultValue is ignored.
+    expect(secret.value).toBe('');
+    // The text field alongside is unchanged and keeps the focus steal.
+    expect((document.getElementById('modal-n') as HTMLInputElement).type).toBe('text');
+    expect(document.activeElement).toBe(document.getElementById('modal-n'));
+  });
+});
+
 describe('modal ESC with an open dropdown (P2-82)', () => {
   it('the first ESC closes the dropdown, the second ESC cancels the dialog', () => {
     showModal(

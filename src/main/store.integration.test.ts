@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -7,6 +7,21 @@ const testHome = vi.hoisted(() => ({ path: '' }));
 vi.mock('os', async (importOriginal) => ({
   ...await importOriginal<typeof import('os')>(),
   homedir: () => testHome.path,
+}));
+
+// The phantom-host regression below walks a created record all the way to the
+// remote dir-browser gate, so ssh-client must never touch a socket. Only the
+// three verbs `listRemoteDirs` uses are scripted; every other export of the
+// module stays unavailable to this file by construction.
+const ssh = vi.hoisted(() => ({ listDirEntries: vi.fn(), stat: vi.fn(), exec: vi.fn(), close: vi.fn() }));
+vi.mock('./hosts/ssh-client', () => ({
+  sftpListDirEntries: (...args: unknown[]) => ssh.listDirEntries(...args),
+  sftpStat: (...args: unknown[]) => ssh.stat(...args),
+  exec: (...args: unknown[]) => ssh.exec(...args),
+  closeConnection: (...args: unknown[]) => ssh.close(...args),
+  sftpRead: vi.fn(),
+  sftpReadRange: vi.fn(),
+  connect: vi.fn(),
 }));
 
 let store: typeof import('./store');
@@ -196,5 +211,121 @@ describe('main-owned gate root set (P1-12)', () => {
     store.invalidateStateCache();
     expect(store.loadState().projects.map(p => p.path)).toEqual([realDir]);
     warn.mockRestore();
+  });
+});
+
+// Phantom host (user screenshot, remote1 / workbox.local): the sidebar showed a
+// host tab whose every verb answered `Unknown host 27b17b23-…`, while
+// state.json held `"hosts": []`. The chain: Settings → Hosts calls
+// `hosts:create` (main persists), the renderer's own `state.hosts` stays the
+// boot-time `store:load` snapshot, the next renderer persist ships `hosts: []`,
+// `graftMainOwnedHosts`' empty-list early return grades that as "nothing to
+// graft", and `saveState` writes the shortened list through BOTH the cache
+// (`listHosts`/`getHost`/`gateHost` go blind) and disk. The sidebar tab survives
+// because `host-registry.ts` caches `hosts:list` separately and reloads only on
+// `hosts:status`. This is the end-to-end shape of that bug: a key-auth host on
+// an unreachable LAN name (the create must not care about reachability), a
+// whole-state persist with a stale host list, and the browse gate afterwards.
+describe('host registry survives a renderer whole-state persist', () => {
+  let registry: typeof import('./hosts/host-registry');
+  let remoteFs: typeof import('./hosts/remote-fs');
+
+  const keyPath = () => path.join(testHome.path, '.ssh', 'id_ed25519');
+  const draft = (name = 'remote1') => ({
+    name,
+    user: 'dev',
+    host: 'workbox.local',
+    port: 22,
+    authKind: 'key',
+    privateKeyPath: keyPath(),
+    enrollmentStatus: 'draft',
+  });
+
+  function stateFile(): string {
+    return path.join(testHome.path, '.finevibe', 'state.json');
+  }
+
+  function diskHostIds(): string[] {
+    // `createHost` saves through the debounced writer; flush so this reads the
+    // commit under test instead of the previous file.
+    store.flushState();
+    return (JSON.parse(fs.readFileSync(stateFile(), 'utf-8')).hosts as Array<{ id: string }>).map((h) => h.id);
+  }
+
+  beforeAll(async () => {
+    registry = await import('./hosts/host-registry');
+    remoteFs = await import('./hosts/remote-fs');
+  });
+
+  beforeEach(() => {
+    // Clean slate per case. Written to disk + reloaded rather than saved: the
+    // graft (rightly) refuses to let a whole-state payload drop hosts main has,
+    // so a save-based reset would resurrect the previous case's records.
+    store.invalidateStateCache();
+    fs.writeFileSync(stateFile(), JSON.stringify({ version: 1, projects: [], activeProjectId: null, hosts: [] }));
+    store.loadState();
+    ssh.listDirEntries.mockReset().mockResolvedValue([{ name: 'dev', isDirectory: true }, { name: 'notes.md', isDirectory: false }]);
+  });
+
+  it('a valid key-auth draft for an unreachable host lands in listHosts() and on disk, and the browse gate stops refusing it', async () => {
+    const record = registry.createHost(draft());
+
+    // (a) visible to main's readers AND durable: the phantom's signature was a
+    // record the renderer could see and main could not find.
+    expect(registry.listHosts().map((h) => h.id)).toEqual([record.id]);
+    expect(registry.getHost(record.id)?.name).toBe('remote1');
+    expect(diskHostIds()).toEqual([record.id]);
+
+    // (b) the browse gate on a draft host: refused for not being ENROLLED, i.e.
+    // the record resolved. `Unknown host <id>` is the phantom's answer.
+    const asDraft = await remoteFs.listRemoteDirs(record.id, '~');
+    expect(asDraft.error).toContain('is not enrolled');
+
+    registry.setEnrollmentStatus(record.id, 'enrolled');
+    expect(await remoteFs.listRemoteDirs(record.id, '~')).toEqual({ ok: true, dirs: ['~/dev'] });
+  });
+
+  it('keeps the created host through the renderer whole-state save (store:save + the quit flush)', async () => {
+    const record = registry.createHost(draft());
+    registry.setEnrollmentStatus(record.id, 'enrolled');
+
+    // The renderer's persist, byte-for-byte: the whole state with ITS host
+    // list — the boot snapshot, which never saw this host. Both writer
+    // branches: the debounced `store:save` and the `beforeunload`
+    // `store:save-sync`.
+    vi.useFakeTimers();
+    try {
+      vi.advanceTimersByTime(1_000); // clear the throttle window the beforeEach sync save opened
+      store.saveState({ ...store.loadState(), hosts: [] });
+      vi.advanceTimersByTime(1_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(diskHostIds()).toEqual([record.id]);
+
+    store.saveStateSync({ ...store.loadState(), hosts: [] });
+    expect(diskHostIds()).toEqual([record.id]);
+
+    // The cache is what `hosts:list`/`gateHost` read mid-session: the wipe had
+    // to die there too, not only in the file.
+    expect(registry.listHosts().map((h) => h.id)).toEqual([record.id]);
+
+    // And it survives the restart with the browse lane intact (no `Unknown host`).
+    store.invalidateStateCache();
+    expect(registry.listHosts().map((h) => h.id)).toEqual([record.id]);
+    expect(await remoteFs.listRemoteDirs(record.id, '~')).toEqual({ ok: true, dirs: ['~/dev'] });
+  });
+
+  it('lets a renderer payload drop a host main itself deleted', () => {
+    const doomed = registry.createHost(draft('nyx'));
+
+    registry.deleteHost(doomed.id);
+    store.saveStateSync({ ...store.loadState(), hosts: [] });
+
+    // `hosts:delete` is main-side, so main's cache is empty here: an empty
+    // payload list is the truth, and the deleted record must not come back.
+    expect(diskHostIds()).toEqual([]);
+    store.invalidateStateCache();
+    expect(registry.getHost(doomed.id)).toBeNull();
   });
 });

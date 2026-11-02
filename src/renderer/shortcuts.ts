@@ -1,5 +1,6 @@
 import { appState } from './state.js';
 import { isMac } from './platform.js';
+import { RELOAD_MAIN_WINDOW_ACCELERATOR } from '../shared/constants.js';
 import { hasKey, t } from './i18n.js';
 
 export interface ShortcutDef {
@@ -42,6 +43,11 @@ const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'tab-forward', label: 'Forward (Tab History)', category: 'Sessions', defaultKeys: 'CmdOrCtrl+]' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'Panels', defaultKeys: 'CmdOrCtrl+B' },
   { id: 'toggle-split', label: 'Toggle Split Mode', category: 'Panels', defaultKeys: 'CmdOrCtrl+\\' },
+  // Deliberate exception to the CmdOrCtrl convention: macOS owns Cmd+`
+  // (AppKit's cycle-windows-in-app chord), so a CmdOrCtrl spelling would take
+  // an OS chord on mac — the bare Ctrl is the VS Code terminal-chord spelling
+  // for the same reason. CmdOrCtrl+J (`project-terminal-alt`) covers mac users
+  // who want the modifier-style chord.
   { id: 'project-terminal', label: 'Project Terminal', category: 'Panels', defaultKeys: 'Ctrl+`' },
   { id: 'project-terminal-alt', label: 'Project Terminal (Alt)', category: 'Panels', defaultKeys: 'CmdOrCtrl+J' },
   { id: 'debug-panel', label: 'Debug Panel', category: 'Panels', defaultKeys: 'CmdOrCtrl+Shift+D' },
@@ -56,6 +62,11 @@ const SHORTCUT_DEFAULTS: ShortcutDefault[] = [
   { id: 'zoom-in', label: 'Zoom In', category: 'View', defaultKeys: 'CmdOrCtrl+=' },
   { id: 'zoom-out', label: 'Zoom Out', category: 'View', defaultKeys: 'CmdOrCtrl+-' },
   { id: 'zoom-reset', label: 'Reset Zoom', category: 'View', defaultKeys: 'CmdOrCtrl+0' },
+  // The chord View → Reload Main Window prints (shared constant, audit row 99).
+  // The menu item is debug-mode-only; the binding is live in every build, and
+  // the menu's `registerAccelerator: false` means the renderer is the only
+  // thing that ever sees this key.
+  { id: 'reload-main-window', label: 'Reload Main Window', category: 'View', defaultKeys: RELOAD_MAIN_WINDOW_ACCELERATOR },
   { id: 'browser-reload', label: 'Reload Page', category: 'Browser', defaultKeys: 'CmdOrCtrl+R' },
   { id: 'browser-hard-reload', label: 'Hard Reload (Bypass Cache)', category: 'Browser', defaultKeys: 'CmdOrCtrl+Shift+R' },
 ];
@@ -130,8 +141,11 @@ function parseAccelerator(accelerator: string): { ctrl: boolean; meta: boolean; 
  * layout-independent: KeyA→'a', Digit1→'1' on every layout. Falls back
  * to `e.key` when the code is not a plain letter/digit position (e.g.
  * Numpad1, where e.key already carries the digit).
+ *
+ * Exported (row 92 follow-up): the terminal's mac Edit chords matched
+ * `e.key` and missed the same layouts (`terminal-utils.ts`).
  */
-function canonicalAlnumKey(e: KeyboardEvent): string {
+export function canonicalAlnumKey(e: KeyboardEvent): string {
   const letter = /^Key([A-Z])$/.exec(e.code ?? '');
   if (letter) return letter[1].toLowerCase();
   const digit = /^Digit([0-9])$/.exec(e.code ?? '');
@@ -250,6 +264,33 @@ function isModalOpen(): boolean {
   }
   return false;
 }
+/**
+ * Chords the macOS application menu registers for itself — an override
+ * recorded onto one of these is dead, because the native menu accelerator is
+ * consumed before the renderer's keydown listener sees the event.
+ *
+ * Mirrors `src/main/menu.ts` (mac path): `Close Window` is one of the two items
+ * built with a real accelerator, the rest are the role defaults left on their
+ * keys — `menu.test.ts` pins that every other entry is `registerAccelerator:
+ * false` or `accelerator: ''`, so anything missing there is unclaimed and a
+ * legitimate override target. Keys use the `eventToAccelerator` spelling
+ * (the only writer of `preferences.keybindings`).
+ */
+const MAC_MENU_OWNED_CHORDS = new Map<string, string>([
+  ['CmdOrCtrl+Shift+W', 'Close Window'],
+  ['CmdOrCtrl+Q', 'Quit'],
+  ['CmdOrCtrl+H', 'Hide'],
+  ['CmdOrCtrl+M', 'Minimize'],
+  ['CmdOrCtrl+Shift+Z', 'Redo'],
+  ['CmdOrCtrl+Shift+V', 'Paste and Match Style'],
+  ['CmdOrCtrl+Backspace', 'Delete'],
+  // Row 77: the app-menu Preferences… item registers its own key (the other
+  // non-role accelerator in src/main/menu.ts, mac-only — `Close Window`
+  // CmdOrCtrl+Shift+W is the one above) — `menu.test.ts` still pins that
+  // nothing else claims a key.
+  ['CmdOrCtrl+,', 'Preferences'],
+]);
+
 export class ShortcutManager {
   private shortcuts: ShortcutDef[] = [];
 
@@ -292,6 +333,19 @@ export class ShortcutManager {
 
   /** Set a custom keybinding override */
   setOverride(id: string, keys: string): void {
+    // Row 117: the macOS application menu registers its own chords (see
+    // `MAC_MENU_OWNED_CHORDS`), and a native menu accelerator wins before the
+    // renderer's keydown handler ever runs — a user who records one of these
+    // gets a binding that silently never fires. Warn, don't block: the chord
+    // may be exactly what they want on a platform where the menu does not
+    // claim it (win/linux register no menu accelerators at all).
+    const menuOwner = isMac ? MAC_MENU_OWNED_CHORDS.get(keys) : undefined;
+    if (menuOwner) {
+      console.warn(
+        `Keybinding ${keys} for ${id} is claimed by the macOS application menu (${menuOwner}): ` +
+        'the menu action fires and this shortcut never does. Pick another key to keep the shortcut.',
+      );
+    }
     const current = { ...(appState.preferences.keybindings ?? {}) };
     current[id] = keys;
     appState.setPreference('keybindings', current);

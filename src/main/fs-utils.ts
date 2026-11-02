@@ -51,7 +51,7 @@ const WIN_ABSOLUTE_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
  * expand the user spellings ({@link expandUserPath}), then `path.resolve`,
  * which normalizes separators and the drive spelling. The renderer composes
  * paths with `/` (its own join helper), so Windows receives the mixed
- * `E:\AI/sample-project` verbatim; resolving here is what keeps that spelling
+ * `E:\AI/Acme` verbatim; resolving here is what keeps that spelling
  * from being persisted as a project path and makes every gate comparison
  * see ONE spelling of one directory. A relative path resolves against
  * main's cwd — the documented behavior of every channel that uses it.

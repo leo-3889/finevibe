@@ -41,7 +41,7 @@ import {
 vi.mock('./host-registry', () => ({ getHost: vi.fn() }));
 
 const enrolled: HostRecord = {
-  id: 'h1', name: 'demo-host', user: 'dev', host: '203.0.113.9', port: 22,
+  id: 'h1', name: 'remote1', user: 'dev', host: '192.0.2.242', port: 22,
   authKind: 'key', managedKey: true, enrollmentStatus: 'enrolled',
   prerequisites: { git: { ok: true, path: '/usr/bin/git' } },
 };
@@ -145,6 +145,18 @@ describe('statRemotePath', () => {
     await expect(statRemotePath('h1', '~/gone')).resolves.toEqual({ ok: false });
     expect(sftp.stat).toHaveBeenCalledWith(enrolled, '~/dev', { timeoutMs: 10000 });
   });
+
+  // Audit R93 pin: this function is the Add-project DIR BROWSER (`hosts:stat`).
+  // It stays outside the project roots on purpose — the browser has to name
+  // folders that are not projects yet, and the enrolled HostRecord is that
+  // flow's consent. The TREE rails (fs:exists / fs:stat / fs:isDirectory) call
+  // isRemotePathInKnownProject themselves; pinning the difference here is what
+  // stops a future "fix" from gating the browser too.
+  it('is NOT project-contained: the dir-browser lane answers outside every project', async () => {
+    sftp.stat.mockResolvedValue({ size: 1, mtimeMs: 0, isDirectory: false });
+    await expect(statRemotePath('h1', '/etc/hosts')).resolves.toMatchObject({ ok: true });
+    expect(sftp.stat).toHaveBeenCalledOnce();
+  });
 });
 
 describe('ensureRemoteDir', () => {
@@ -230,6 +242,29 @@ describe('isRemotePathInKnownProject (file-lane containment, §11)', () => {
     // helper must not lean on that): never a root for a remote lane.
     store.projects = [{ path: '/home/dev/dev/app' }];
     expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app')).toBe(false);
+  });
+
+  // Audit R94: provider:getConfig used a raw startsWith, and joinPosix +
+  // normalizeProviderPath collapse `..` lexically AFTER the compare, so
+  // `/proj/evil/../../secret` passed the gate and the fixed config filenames
+  // (.mcp.json, tokens in) were read out of `/secret` on the host. The same
+  // rule normalizeRemotePath applies: `..` dies on the RAW segments.
+  it('rejects `..` traversal before the compare (arbitrary host-dir config read)', () => {
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app/../../secret')).toBe(false);
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app/x/../..')).toBe(false);
+    // Strict by design (no `..` at all, the normalizeRemotePath rule): a
+    // spelling that WOULD collapse back inside is still refused, so the gate
+    // never depends on a later lexical collapse.
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app/src/../src/a.ts')).toBe(false);
+    // A root spelled with a duplicated separator or trailing slash compares in
+    // its normalized form; the contained child still answers.
+    store.projects = [{ path: '/home/dev//dev/app/', hostId: 'h1' }];
+    expect(isRemotePathInKnownProject('h1', '/home/dev/dev/app/src/a.ts')).toBe(true);
+  });
+
+  it('refuses a non-string and a relative spelling instead of matching one', () => {
+    expect(isRemotePathInKnownProject('h1', undefined as never)).toBe(false);
+    expect(isRemotePathInKnownProject('h1', 'dev/app' as never)).toBe(false);
   });
 });
 

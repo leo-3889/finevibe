@@ -49,7 +49,7 @@ const ipc = vi.hoisted(() => ({
 
 function host(overrides: Partial<HostRecord> = {}): HostRecord {
   return {
-    id: 'h1', name: 'zen', user: 'dev', host: '10.0.0.5', port: 22,
+    id: 'h1', name: 'zen', user: 'dev', host: '10.0.0.5', port: 22, // pii-allow: synthetic LAN fixture
     authKind: 'key', managedKey: false, enrollmentStatus: 'enrolled', color: '#4c9aff',
     ...overrides,
   } as HostRecord;

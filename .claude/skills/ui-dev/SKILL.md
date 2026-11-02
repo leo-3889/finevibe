@@ -58,7 +58,7 @@ showModal('My Title', [
 
 - **File**: `src/renderer/components/modal.ts` (shared `#modal-overlay`, one instance)
 - Exports: `showModal()`, `showConfirmDialog()`, `showPropertiesDialog()`, `closeModal()`, `setModalError()`, `registerModalCleanup()`
-- Field types (`FieldDef`, `modal.ts:4-20`): `text`, `textarea` (honors `rows`), `checkbox`, `select`. Common fields: `placeholder`, `defaultValue`, `maxLength`, `options` (`{value,label,disabled?}`), `buttonLabel` + `onButtonClick(input)` (inline button, e.g. "Browse"), `onChange(checked)` for checkboxes, `onSelectChange(value)` and `onSelectCreated(select)` for selects (the latter lets you re-scope options through `CustomSelectInstance.setOptions`).
+- Field types (`FieldDef`, `modal.ts:4-19`): `text`, `textarea` (honors `rows`), `checkbox`, `select`. Common fields: `placeholder`, `defaultValue`, `maxLength`, `options` (`{value,label,disabled?}`), `buttonLabel` + `onButtonClick(input)` (inline button, e.g. "Browse"), `onChange(checked)` for checkboxes, `onSelectChange(value)` and `onSelectCreated(select)` for selects (the latter lets you re-scope options through `CustomSelectInstance.setOptions`). `secret: true` on a `text` field masks it (`type=password`, `autocomplete=new-password`, spellcheck off) and ignores `defaultValue` — secrets are write-only from modals, never prefilled.
 - `showConfirmDialog(title, message, { confirmLabel?, cancelLabel?, onConfirm })` — **use this for any yes/no**, never hand-build a two-button overlay.
 - `showPropertiesDialog(...)` — key/value property sheet.
 - `registerModalCleanup(fn)` — run teardown (destroy a custom select, clear a timer) when the modal closes; use it for anything injected outside the standard `FieldDef` flow.
@@ -134,34 +134,11 @@ For split buttons (main + chevron), add `.btn-primary`/`.btn-secondary` plus the
 
 ## CSS Theming
 
-**Never hardcode colors.** Always use CSS variables from `src/renderer/styles/base.css`:
+**Never hardcode colors — and never copy a hex out of this file.** The palette lives in `src/renderer/styles/base.css`, in three blocks: `:root` (defaults), `[data-theme="dark"]`, and `[data-theme="light"]`. Read that file for the current values; anything quoted here goes stale the first time the palette moves (this block long ago kept advertising the pre-"Studio" coral `#e94560` and pure-black surfaces after the iris accent and cool-slate surfaces had shipped).
 
-```css
-/* Backgrounds */
-var(--bg-primary)    /* #000000 — main background */
-var(--bg-secondary)  /* #0a0a0a — secondary background */
-var(--bg-tertiary)   /* #1a1a1a — tertiary / elevated surfaces */
-var(--bg-hover)      /* #222222 — hover state */
+The variable families: surfaces `--bg-primary/secondary/tertiary/hover`, text `--text-primary/secondary/muted`, accent `--accent` / `--accent-dim` / `--accent-soft` / `--accent-fg` (fg = text on an accent fill), borders `--border` / `--border-subtle` / `--border-strong`, radii `--radius-sm/md/lg`, fonts `--font-ui` / `--font-mono`, tab-group palette `--tab-group-1..6`.
 
-/* Text */
-var(--text-primary)  /* #e0e0e0 */
-var(--text-secondary) /* #a0a0b0 */
-var(--text-muted)    /* #606070 */
-
-/* Accents & borders */
-var(--accent)        /* #e94560 — primary accent (red) */
-var(--accent-dim)    /* #c73e55 */
-var(--border)        /* #333333 */
-var(--bookmark)      /* #e8a317 */
-```
-
-**Semantic status colors** (these are not CSS variables — use the hex values directly):
-- Working/Active: `var(--accent)` with pulse animation
-- Waiting: `#f4b400` (yellow)
-- Completed/Success: `#34a853` (green)
-- Input: `#e67e22` (orange)
-- Info: `#4285f4` (blue)
-- Idle: `var(--text-muted)`
+Semantic states are variables as well — `--status-working` (= `--accent`, the pulse state), `--status-waiting`, `--status-input`, `--status-completed`, `--bookmark`, `--color-warning`, `--color-critical`; idle/neutral text is `--text-muted`. A state with no variable is a request to add one to **all three** blocks, not a licence to hardcode.
 
 ## Styling Conventions
 

@@ -15,7 +15,7 @@ import { stopAllFileWatchers } from './file-watcher';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
 import { configureProbeCacheDir } from './providers/resolve-binary';
-import { isMac, isWin } from './platform';
+import { isMac, isWin, shouldDisableHardwareAcceleration } from './platform';
 import { APP_INDEX_URL, installAppScheme, isAppDocumentUrl, registerAppScheme } from './app-scheme';
 import { isCloseConfirmed, setCloseConfirmed } from './close-state';
 import { pinWebviewGuest } from './webview-guest-pin';
@@ -27,7 +27,7 @@ import { installConsoleThrottle } from './log-throttle';
 import { installLogFile } from './log-file';
 import { startDiskHealthPreflight } from './disk-health';
 import { finishBoot, finishBootPhase, markBoot, reportRendererBoot, startPerfSampler, stopPerfSampler } from './boot-timing';
-import { getMainWindow } from './main-window';
+import { getMainWindow, restoredWindowBounds, saveWindowBounds, showAndFocusWindow } from './main-window';
 
 // 2026-10-23 ENOSPC incident: the state writer logged a full stack on every
 // renderer save against a full disk — 160 409 journal lines in 30 min,
@@ -46,6 +46,20 @@ let stopDiskHealthPreflight: (() => void) | null = null;
 // whenReady, before-quit and window-all-closed registrations, and the
 // requestSingleInstanceLock gate at the END of this module calls it for
 // the winner alone. The loser quits without constructing anything.
+
+// Audit row 90: the window-close / app-quit split. macOS users must be able to
+// close the window and keep the app running (dock-resident). Every close used to
+// end in app.quit() — the renderer's `app:closeConfirmed` reply quit
+// unconditionally, even when the confirm auto-skipped (no active sessions, or
+// the pref off) — which made the `window-all-closed` !isMac guard and the dock
+// 'activate' re-create dead code on macOS. The lane that STARTS a confirmation
+// stamps this flag, and the reply acts on it: `before-quit` (menu Quit, Cmd+Q,
+// app.quit) and any non-macOS window close stamp true (quit, exactly as today);
+// a macOS window close (traffic light, File > Close Window, role:close) stamps
+// false, so the confirmed reply closes the window and leaves the app alive. The
+// renderer contract (`app:confirmClose` / `app:closeConfirmed` /
+// `app:closeCancelled`) is unchanged — main already knows why it asked.
+let quitRequested = false;
 
 // C4S-07: close-confirmation watchdog. before-quit preventDefaults until the
 // renderer answers 'app:confirmClose'; a hung renderer would keep the quit
@@ -100,6 +114,14 @@ const HOST_PERMISSIONS: Record<string, true> = {
 };
 const isHostPermission = (permission: string): boolean => Object.hasOwn(HOST_PERMISSIONS, permission);
 
+// GPU escape hatch (audit row 85): gfx1201/Mesa-RADV desktop stalls — the ANGLE→
+// Vulkan GPU process faults `ring gfx_0.0.0` and each kernel soft-recovery freezes
+// the desktop (f0d9e19e forensics). `FINEVIBE_DISABLE_GPU=1` drops GL; the call
+// must precede `ready`, so it sits beside the other pre-ready Electron calls.
+if (shouldDisableHardwareAcceleration(process.env)) {
+  app.disableHardwareAcceleration();
+}
+
 // Privileged `app://` registration must precede the `ready` event (Electron
 // requirement), so it runs at module scope, not in whenReady. The handler that
 // serves dist/renderer is installed in whenReady below.
@@ -107,8 +129,11 @@ registerAppScheme();
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    // Audit row 79: the last position/size, when the persisted bounds are
+    // reachable on the current screens. Without them (first launch, a bad
+    // shape in state.json, or a monitor that has been disconnected) the window
+    // keeps this default size and Electron centers it.
+    ...(restoredWindowBounds() ?? { width: 1400, height: 900 }),
     minWidth: 800,
     minHeight: 500,
     title: 'FineVibe',
@@ -197,10 +222,20 @@ function createWindow(): void {
   mainWindow.on('close', (event) => {
     if (!isCloseConfirmed()) {
       event.preventDefault();
+      // Audit row 90: closing the window IS a quit everywhere except macOS,
+      // where it is a close and the app stays alive for a dock-click reopen.
+      quitRequested = !isMac;
       requestConfirmClose();
       return;
     }
     flushState();
+    // Audit row 79: close-time bounds write (main-window.ts saveWindowBounds).
+    // Deliberately only here and not on resize/move: no listener runs during the
+    // session, so a crash loses at most the last drag. The value survives the
+    // renderer's beforeunload flush because the store grafts `windowBounds` as
+    // a main-owned key, which is also why this call needs no ordering against
+    // flushState().
+    if (mainWindow && !mainWindow.isDestroyed()) saveWindowBounds(mainWindow);
   });
 
   mainWindow.on('closed', () => {
@@ -317,8 +352,7 @@ function startMainProcess(): void {
       ? mainWindow
       : getMainWindow();
     if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
+      showAndFocusWindow(win);
     }
   });
 
@@ -438,6 +472,11 @@ function startMainProcess(): void {
       } else {
         const win = getMainWindow();
         if (win) {
+          // Audit row 91: the dock click that lands on an existing minimized or
+          // hidden window has to bring it back, not just resync it — without the
+          // restore/focus the status updates painted behind a window that never
+          // reappeared.
+          showAndFocusWindow(win);
           restartAndResync(win);
         }
       }
@@ -555,13 +594,44 @@ function startMainProcess(): void {
     );
   });
 
-  // C4S-07: a confirmed reply from the renderer disarms the watchdog.
-  ipcMain.on('app:closeConfirmed', clearCloseConfirmWatchdog);
+  // C4S-07 + audit row 90: the renderer's confirmed reply, registered here
+  // because the quit/window-close decision belongs beside the lanes that set
+  // `quitRequested` (this file). It replaces the duplicate `app:closeConfirmed`
+  // registration that used to sit in ipc-handlers.ts and quit unconditionally.
+  // P2-108 applies inline (main.ts registers no safeOn): a throw from an
+  // `ipcMain.on` body is fatal to main, so the window close is guarded and its
+  // failure is only logged.
+  ipcMain.on('app:closeConfirmed', () => {
+    clearCloseConfirmWatchdog();
+    setCloseConfirmed(true);
+    if (quitRequested) {
+      app.quit();
+      return;
+    }
+    // macOS window close: the sessions were confirmed away, the app stays
+    // alive. `close()` re-enters the 'close' handler above with the flag set,
+    // so state is flushed and the window destroyed normally.
+    const win = getMainWindow();
+    try {
+      win?.close();
+    } catch (err) {
+      console.warn('app:closeConfirmed could not close the window:', err);
+    }
+    // A close is not a quit: drop the confirmation so the NEXT Cmd+Q re-asks
+    // instead of exiting on a stale "yes" from a window the user already closed.
+    setCloseConfirmed(false);
+  });
+  // Audit row 89: an explicit Cancel disarms it too. The watchdog only ever
+  // punished a HUNG renderer, but it could not tell silence from Cancel, so a
+  // cancelled quit still force-killed every PTY 15 s later. Clearing (never
+  // confirming) leaves isCloseConfirmed false, so the next close/quit re-arms.
+  ipcMain.on('app:closeCancelled', clearCloseConfirmWatchdog);
 
   app.on('before-quit', (event) => {
     clearCloseConfirmWatchdog();
     if (!isCloseConfirmed()) {
       event.preventDefault();
+      quitRequested = true;
       requestConfirmClose();
       return;
     }

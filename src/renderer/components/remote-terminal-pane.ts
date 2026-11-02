@@ -6,10 +6,10 @@ import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import type { ShareMode } from '../../shared/sharing-types.js';
 import { appState } from '../state.js';
-import { attachCopyOnSelect, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachMouseForwardingGate, loadWebglWithFallback } from './terminal-utils.js';
 import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { showTerminalContextMenu } from './terminal-context-menu.js';
-import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
+import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-shared.js';
 
 interface RemoteTerminalInstance {
   terminal: Terminal;
@@ -61,13 +61,27 @@ export function createRemoteTerminalPane(
   // Copy / Select all / Paste on right-click, same as local panes. Read-only
   // panes get a write function that drops everything: the menu's Paste must
   // not reach a peer's PTY through a viewer.
+  // Snapshot the selection at right-mousedown (capture phase, before xterm
+  // runs): with SGR mouse reporting (pi-bolt) xterm forwards the right-click
+  // as a report, which fires onUserInput and clears the selection before the
+  // contextmenu event — without the snapshot Copy opens greyed out.
+  let selectionAtRightMousedown = '';
+  element.addEventListener('mousedown', (e: MouseEvent) => {
+    // ctrl+click synthesizes a button-0 contextmenu; any other press clears the
+    // snapshot so an abandoned right-click can't enable a stale Copy later.
+    if (e.button === 2 || (e.button === 0 && e.ctrlKey)) selectionAtRightMousedown = terminal.getSelection();
+    else selectionAtRightMousedown = '';
+  }, true);
   element.addEventListener('contextmenu', (e: MouseEvent) => {
     e.preventDefault();
+    const snapshot = selectionAtRightMousedown;
+    selectionAtRightMousedown = '';
     showTerminalContextMenu(
       e.clientX,
       e.clientY,
       terminal,
       mode === 'readwrite' ? onInput : () => {},
+      snapshot,
     );
   });
   const terminal = new Terminal({
@@ -75,6 +89,7 @@ export function createRemoteTerminalPane(
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
     scrollback: TERMINAL_SCROLLBACK,
+    macOptionIsMeta: TERMINAL_MAC_OPTION_IS_META,
     cursorBlink: mode === 'readwrite',
     allowProposedApi: true,
     disableStdin: mode === 'readonly',
@@ -99,7 +114,14 @@ export function createRemoteTerminalPane(
     // starts encoded (a re-attached xterm cannot re-arm ConPTY, and the mode
     // never comes back off). macOS/Linux hosts never emit mode 9001: inert.
     const handleWin32Key = attachWin32TerminalKeys(terminal, onInput, { latchKey: `remote:${sessionId}` });
-    terminal.attachCustomKeyEventHandler((e) => handleWin32Key(e) ?? true);
+    // Rows 92/70 follow-up: this pane had ONLY the win32 encoder, so on a mac
+    // the Edit-menu chords came back dead (the menu hands Cmd+C/X/Z/A to the
+    // renderer and xterm writes no byte for a meta-only chord) and Ctrl+Shift+C
+    // copied nothing from a guest pane. Same wiring as the local panes
+    // (terminal-pane.ts / project-terminal.ts): the encoder rides along as the
+    // `extend` handler, because xterm keeps ONE custom key handler — the last
+    // attach wins, so both chords must live behind this single call.
+    attachClipboardCopyHandler(terminal, handleWin32Key, onInput);
   }
 
   const instance: RemoteTerminalInstance = {
@@ -128,6 +150,7 @@ export function attachRemoteToContainer(sessionId: string, container: HTMLElemen
     container.appendChild(instance.element);
     instance.terminal.open(xtermWrap as HTMLElement);
     attachCopyOnSelect(instance.terminal);
+    attachMouseForwardingGate(instance.terminal);
 
     loadWebglWithFallback(instance.terminal);
   } else if (instance.element.parentElement !== container) {

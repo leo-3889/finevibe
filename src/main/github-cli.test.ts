@@ -122,11 +122,11 @@ describe('listPullRequests', () => {
     simulateExecFile(null, '/usr/local/bin/gh\n');
     simulateExecFile(null, '[]');
 
-    const result = await listPullRequests('leo-3889/leo-3889.github.io', { state: 'open', max: 5 });
+    const result = await listPullRequests('octo/example.github.io', { state: 'open', max: 5 });
 
     expect(result.ok).toBe(true);
     const [, args] = mockExecFile.mock.calls[1] as unknown as [string, string[]];
-    expect(args[1]).toMatch(/^repos\/leo-3889\/leo-3889\.github\.io\/pulls\?/);
+    expect(args[1]).toMatch(/^repos\/octo\/example\.github\.io\/pulls\?/);
     expect(args[1]).not.toContain('%2e');
   });
 
@@ -168,6 +168,26 @@ describe('listPullRequests', () => {
     const result = await listPullRequests('foo/bar', { state: 'open', max: 5 });
     expect(result.ok).toBe(false);
     expect(result.error).toContain('404');
+  });
+
+  // Row 103: `max` crosses the IPC boundary verbatim (ipc/app-domains.ts), so a
+  // non-finite value used to reach gh as per_page=NaN and slice the result to
+  // empty — an empty panel that still reported ok:true.
+  it('falls back to the default page size when max is not a number', async () => {
+    simulateExecFile(null, '/usr/local/bin/gh\n');
+    const items = [
+      { number: 1, title: 'PR one', state: 'open', user: null, html_url: '', created_at: '', updated_at: '', closed_at: null },
+      { number: 2, title: 'PR two', state: 'open', user: null, html_url: '', created_at: '', updated_at: '', closed_at: null },
+    ];
+    simulateExecFile(null, JSON.stringify(items));
+
+    const result = await listPullRequests('foo/bar', { state: 'open', max: Number.NaN });
+
+    expect(result.ok).toBe(true);
+    expect(result.items).toHaveLength(2);
+    const [, args] = mockExecFile.mock.calls[1] as unknown as [string, string[]];
+    expect(args[1]).toContain('per_page=30');
+    expect(args[1]).not.toContain('NaN');
   });
 });
 
@@ -214,6 +234,23 @@ describe('listIssues', () => {
     simulateExecFile(null, JSON.stringify({ items }));
     const result = await listIssues('foo/bar', { state: 'open', max: 3 });
     expect(result.items).toHaveLength(3);
+  });
+
+  it('clamps a non-finite max to the default page size instead of emptying the list', async () => {
+    // Row 103 on the search endpoint: `max` arrives from the renderer through
+    // IPC, and a NaN used to go out as per_page=NaN with an empty slice.
+    simulateExecFile(null, '/usr/local/bin/gh\n');
+    simulateExecFile(null, JSON.stringify({ items: [
+      { number: 1, title: 'first', state: 'open', user: null, html_url: '', created_at: '', updated_at: '', closed_at: null },
+    ] }));
+
+    const result = await listIssues('foo/bar', { state: 'open', max: Number.NaN });
+
+    expect(result.ok).toBe(true);
+    expect(result.items).toHaveLength(1);
+    const [, args] = mockExecFile.mock.calls[1] as unknown as [string, string[]];
+    expect(args[1]).toContain('per_page=30');
+    expect(args[1]).not.toContain('NaN');
   });
 
   it('rejects invalid repo without calling gh', async () => {

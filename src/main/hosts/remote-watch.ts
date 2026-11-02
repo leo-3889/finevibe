@@ -87,7 +87,18 @@ async function pollOnce(watch: RemoteWatch, emitChanges = true): Promise<void> {
   }
 }
 
-/** Begin polling `dirPath` on `hostId`. Idempotent per (host, dir). */
+/**
+ * Begin polling `dirPath` on `hostId`. Idempotent per (host, dir).
+ *
+ * Audit R93 checked this lane for the tree rails' project containment and it
+ * does not belong: the poll has NO stat call (one sftp readdir per tick), and a
+ * directory listing is the ENUMERATE tier — the remote twin of the local
+ * `fs:watchDir` gate (`isAllowedEnumeratePath`, projects + config trees + home),
+ * whose consent on a registry host is the enrolled HostRecord (council R-1), the
+ * same rule `hosts:listDirs` runs. The READ tier (`fs:listDir`/`fs:readFile`) and
+ * the file-stat rails (`fs:exists`/`fs:stat`/`fs:isDirectory`) are the ones
+ * narrowed to known projects.
+ */
 export function watchRemoteDir(hostId: string, dirPath: string): void {
   if (hostId === LOCAL_HOST_ID) return; // the local watcher owns local paths
   const dir = normalizeRemotePath(dirPath);

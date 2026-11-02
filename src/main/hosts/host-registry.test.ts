@@ -12,11 +12,14 @@ vi.mock('./secrets', () => ({ deleteHostSecret: vi.fn() }));
 vi.mock('./ssh-client', () => ({ closeConnection: vi.fn() }));
 
 import { HostValidationError, createHost, deleteHost, getHost, listHosts, setEnrollmentStatus, updateHost } from './host-registry';
+import { closeConnection } from './ssh-client';
+
+const clearCloseConnection = () => (vi.mocked(closeConnection)).mockClear();
 
 const DRAFT = {
-  name: 'demo-host',
+  name: 'remote1',
   user: 'dev',
-  host: '203.0.113.9',
+  host: '192.0.2.242',
   port: 22,
   authKind: 'password',
   managedKey: false,
@@ -26,21 +29,22 @@ const DRAFT = {
 beforeEach(() => {
   state.hosts = [];
   saveState.mockClear();
+  clearCloseConnection();
 });
 
 describe('createHost', () => {
   it('generates an id, validates, persists', () => {
     const rec = createHost(DRAFT);
     expect(rec.id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(rec.name).toBe('demo-host');
+    expect(rec.name).toBe('remote1');
     expect(state.hosts).toHaveLength(1);
     expect(saveState).toHaveBeenCalledTimes(1);
   });
 
   it('defaults the port to 22 and trims the name', () => {
-    const rec = createHost({ ...DRAFT, port: undefined, name: '  demo-host ' });
+    const rec = createHost({ ...DRAFT, port: undefined, name: '  remote1 ' });
     expect(rec.port).toBe(22);
-    expect(rec.name).toBe('demo-host');
+    expect(rec.name).toBe('remote1');
   });
 
   // per-host providers T1: identity color assigned at creation, round-robin
@@ -53,6 +57,14 @@ describe('createHost', () => {
     expect(b.color).not.toBe(a.color);
     const c = createHost({ ...DRAFT, name: 'kept', color: '#123456' });
     expect(c.color).toBe('#123456');
+  });
+
+  // The add-host wizard's password-auth draft omits managedKey entirely —
+  // createHost must default it, not fail the shape gate.
+  it('defaults a missing managedKey to false', () => {
+    const { managedKey: _omitted, ...passwordDraft } = DRAFT;
+    const rec = createHost(passwordDraft);
+    expect(rec.managedKey).toBe(false);
   });
 
   it('rejects invalid drafts', () => {
@@ -73,8 +85,8 @@ describe('updateHost / setEnrollmentStatus', () => {
     const rec = createHost(DRAFT);
     // The smuggled `id` models a hostile/caller-side patch: the type forbids it,
     // the registry must still keep the record's own id.
-    const updated = updateHost(rec.id, { name: 'demo-host-2', id: 'evil' } as unknown as Parameters<typeof updateHost>[1]);
-    expect(updated.name).toBe('demo-host-2');
+    const updated = updateHost(rec.id, { name: 'remote1-2', id: 'evil' } as unknown as Parameters<typeof updateHost>[1]);
+    expect(updated.name).toBe('remote1-2');
     expect(updated.id).toBe(rec.id);
   });
 
@@ -89,6 +101,32 @@ describe('updateHost / setEnrollmentStatus', () => {
     expect(() => updateHost('missing', { name: 'x' })).toThrow(/unknown host/);
     const rec = createHost(DRAFT);
     expect(() => updateHost(rec.id, { port: 0 })).toThrow(HostValidationError);
+  });
+});
+
+// Audit row 44: hosts:update never evicted the live ssh connection, so a
+// host/port/user/key swap kept every lane talking to the previous machine.
+describe('updateHost connection eviction', () => {
+  it('closes the cached connection when an identity field changes', () => {
+    const rec = createHost(DRAFT);
+    for (const patch of [{ host: '10.0.0.9' }, { port: 2222 }, { user: 'ops' }, { authKind: 'key', privateKeyPath: '/home/dev/.ssh/id_ed25519' }]) {
+      clearCloseConnection();
+      updateHost(rec.id, patch as Parameters<typeof updateHost>[1]);
+      expect(closeConnection).toHaveBeenCalledWith(rec.id);
+    }
+  });
+
+  it('does not evict when an identity field is re-sent unchanged', () => {
+    const rec = createHost(DRAFT);
+    updateHost(rec.id, { host: rec.host, port: rec.port, user: rec.user });
+    expect(closeConnection).not.toHaveBeenCalled();
+  });
+
+  it('keeps the connection warm for the main-owned status/probe writes', () => {
+    const rec = createHost(DRAFT);
+    updateHost(rec.id, { name: 'renamed', defaultFolder: '~/work', prerequisites: { claude: { ok: true } } });
+    setEnrollmentStatus(rec.id, 'enrolled');
+    expect(closeConnection).not.toHaveBeenCalled();
   });
 });
 

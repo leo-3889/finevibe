@@ -3,7 +3,7 @@ import { joinChildPath } from './path-join.js';
 
 // The renderer joins strings for paths it only ever sees as text: the Add-
 // project modal's `<default projects folder>/<name>` sync and its clone
-// target. A hardcoded '/' produced `E:\AI/sample-project` on Windows and main
+// target. A hardcoded '/' produced `E:\AI/Acme` on Windows and main
 // persisted the mixed spelling verbatim, so the separator style is the whole
 // contract — plus the drive-root trap where `E:` + `AI` = `E:AI` means
 // cwd-relative, not `E:\AI`.
@@ -18,8 +18,8 @@ describe('joinChildPath Windows spellings', () => {
   });
 
   it('joins with a backslash under a drive folder', () => {
-    expect(joinChildPath('E:\\AI', 'sample-project')).toBe('E:\\AI\\sample-project');
-    expect(joinChildPath('E:\\AI\\', 'sample-project')).toBe('E:\\AI\\sample-project');
+    expect(joinChildPath('E:\\AI', 'Acme')).toBe('E:\\AI\\Acme');
+    expect(joinChildPath('E:\\AI\\', 'Acme')).toBe('E:\\AI\\Acme');
   });
 
   it('keeps the drive style when the parent mixes separators', () => {
@@ -32,8 +32,8 @@ describe('joinChildPath Windows spellings', () => {
   });
 
   it('does not double the separator when the child brings its own', () => {
-    expect(joinChildPath('E:\\AI', '\\sample-project')).toBe('E:\\AI\\sample-project');
-    expect(joinChildPath('E:\\AI', '/sample-project')).toBe('E:\\AI\\sample-project');
+    expect(joinChildPath('E:\\AI', '\\Acme')).toBe('E:\\AI\\Acme');
+    expect(joinChildPath('E:\\AI', '/Acme')).toBe('E:\\AI\\Acme');
   });
 });
 

@@ -7,31 +7,11 @@
 // user lines are never touched.
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { generateKeyPairSync } from 'crypto';
 import { utils as sshUtils } from 'ssh2';
-import type { HostRecord } from '../../shared/types';
-
-/** `ssh-keygen`-style public key line: `<type> <base64> [comment]`. */
-interface PublicKeyLine {
-  type: string;
-  base64: string;
-  comment: string;
-}
-
-function publicKeyLine(publicKeyPem: string, comment: string): PublicKeyLine | null {
-  // OpenSSH public keys are the wire format; PEM "BEGIN PUBLIC KEY" is
-  // ssh2's export for ed25519/spki. Convert via ssh2 for openssh format.
-  const line = sshUtils.parseKey(publicKeyPem, 'ssh');
-  if (!line) return null;
-  const single = Array.isArray(line) ? line[0] : line;
-  if (!single) return null;
-  return {
-    type: single.type ?? 'ssh-ed25519',
-    base64: single.body ?? '',
-    comment,
-  };
-}
+import { canonicalPath } from '../fs-utils';
 
 /** Render one managed key's marker block for authorized_keys. */
 export function markerBlock(hostId: string, pubKeyLine: string): string {
@@ -53,30 +33,45 @@ export function authorizedKeysWithBlock(authorizedKeys: string, hostId: string, 
 }
 
 /**
- * Remove exactly the marker block for `hostId` (begin line through end line).
- * Returns content unchanged (null) when no block exists.
+ * Remove exactly the marker block for `hostId`. Returns content unchanged
+ * (null) when no block exists.
+ *
+ * Two row-33 rules the first cut violated:
+ * - An UNTERMINATED block (a deploy truncated mid-write leaves the `end`
+ *   marker unwritten) consumes only the begin line plus the one key line
+ *   `markerBlock` writes. The old loop stayed "in block" to EOF and deleted
+ *   every key the user appended afterwards.
+ * - The remainder is re-emitted faithfully: split on `\n` only (so a CRLF
+ *   file's untouched lines keep their `\r`), and no trailing-whitespace
+ *   normalization. The only addition is a final newline when the kept
+ *   content lacks one — the deploy lane appends with `>>`, and a tail without
+ *   a newline would fuse the next key onto this file's last line.
  */
 export function authorizedKeysWithoutBlock(authorizedKeys: string, hostId: string): string | null {
   const begin = `# finevibe:${hostId} begin`;
   const end = `# finevibe:${hostId} end`;
-  const lines = authorizedKeys.split(/\r?\n/);
-  const out: string[] = [];
+  const lines = authorizedKeys.split('\n');
+  const drop = lines.map(() => false);
   let removed = false;
-  let inBlock = false;
-  for (const line of lines) {
-    if (line.trim() === begin) {
-      inBlock = true;
-      removed = true;
-      continue;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim() !== begin) continue;
+    removed = true;
+    drop[i] = true;
+    // begin / key line / end, or begin / key line / EOF when the deploy was
+    // cut short. A line that is itself the end marker means the block was
+    // empty — never consume a foreign key as the block's key line.
+    if (i + 1 < lines.length && lines[i + 1].trim() !== end) {
+      drop[i + 1] = true;
+      i += 1;
     }
-    if (inBlock) {
-      if (line.trim() === end) inBlock = false;
-      continue;
+    if (i + 1 < lines.length && lines[i + 1].trim() === end) {
+      drop[i + 1] = true;
+      i += 1;
     }
-    out.push(line);
   }
   if (!removed) return null;
-  return out.join('\n').replace(/\s+$/, '') + '\n';
+  const kept = lines.filter((_, i) => !drop[i]).join('\n');
+  return kept.length > 0 && !kept.endsWith('\n') ? `${kept}\n` : kept;
 }
 
 /**
@@ -97,9 +92,54 @@ export function authorizedKeysDeployCommands(
     `printf '%s\\n' '${quoted}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
 }
 
+/** FineVibe's own key tree — the only place a key pair counts as MANAGED. */
+function managedKeyRoot(userDataDir: string): string {
+  return path.join(userDataDir, 'hosts');
+}
+
+/**
+ * Containment on canonical forms (the P2-59 gate idiom: `canonicalPath`
+ * resolves links + `..`, tolerating a missing tail). Equal-but-differently-
+ * spelled paths match, a link cannot escape the root, and the root itself
+ * never counts as inside (it is a directory, the target must be a file in it).
+ */
+function isInsideDir(root: string, target: string): boolean {
+  const relative = path.relative(canonicalPath(root), canonicalPath(target));
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/**
+ * Audit row 34 (key exfil): `privateKeyPath` arrives from the renderer, but
+ * MAIN reads the file — `ssh-client.connectConfigFor` on every connect, and
+ * `readPublicKeyLine` in the enrollment key-deploy step, which sends the
+ * public half to the renderer-CHOSEN host. Two roots are legal:
+ * `<userData>/hosts/` (the pair `hosts:generateKey` wrote) and `~/.ssh/` (the
+ * Add-host Browse button's target). Anything else is an unbounded
+ * renderer-steered local file read and is refused at the IPC boundary.
+ *
+ * Chosen over "ignore `privateKeyPath` for non-managed keys": a browsed key
+ * path is a supported feature whose value round-trips through `hosts:update`,
+ * so dropping it would make an existing host's key uneditable — and would
+ * leave the same read reachable through `hosts:create`.
+ */
+export function isRendererKeyPathAllowed(userDataDir: string, privateKeyPath: string): boolean {
+  return isInsideDir(managedKeyRoot(userDataDir), privateKeyPath)
+    || isInsideDir(path.join(os.homedir(), '.ssh'), privateKeyPath);
+}
+
+/**
+ * Audit row 31: `managedKey` is main's, not the renderer's — a pair is managed
+ * exactly when it sits in FineVibe's own key tree. The flag drives the key
+ * deploy step and the delete-time unlink of `<dir>/id_ed25519`, so trusting a
+ * renderer value could have FineVibe delete a foreign `~/.ssh/id_ed25519`.
+ */
+export function isManagedKeyPath(userDataDir: string, privateKeyPath: string): boolean {
+  return isInsideDir(managedKeyRoot(userDataDir), privateKeyPath);
+}
+
 /** Generate an ed25519 keypair under `<userData>/hosts/<id>/`, 0600. Returns paths. */
 export function generateManagedKeypair(userDataDir: string, hostId: string): { privateKeyPath: string; publicKeyPath: string } {
-  const dir = path.join(userDataDir, 'hosts', hostId);
+  const dir = path.join(managedKeyRoot(userDataDir), hostId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const { privateKey, publicKey } = generateKeyPairSync('ed25519', {
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
@@ -133,9 +173,4 @@ export function readPublicKeyLine(privateKeyPath: string): string {
       return '';
     }
   }
-}
-
-/** True when the record's key is finevibe-owned (delete on unenroll). */
-function isManagedKey(record: HostRecord): boolean {
-  return record.managedKey;
 }

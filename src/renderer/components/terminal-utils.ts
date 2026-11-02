@@ -1,7 +1,7 @@
 import type { Terminal } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { shortcutManager } from '../shortcuts.js';
-import { isWin } from '../platform.js';
+import { shortcutManager, canonicalAlnumKey } from '../shortcuts.js';
+import { isMac, isWin } from '../platform.js';
 import { appState } from '../state.js';
 import type { ClipboardSource } from '../../shared/types.js';
 import { FILE_PATH_DRAG_TYPE, NATIVE_FILES_DRAG_TYPE } from '../drag-types.js';
@@ -19,17 +19,33 @@ function clipboardTimingOn(): boolean {
   return g.__FINEVIBE_CLIPBOARD_TIMING__ === true || g.process?.env?.FINEVIBE_CLIPBOARD_TIMING === '1';
 }
 
+// Renderer gate for the WebGL escape hatch (same injection idiom as
+// clipboardTimingOn: the renderer is a sandboxed Browser World with no
+// process.env). GPU/compositor glyph garbling is diagnosed by re-rendering the
+// pane with the DOM renderer: set the flag in devtools and spawn a new pane.
+function domRendererForced(): boolean {
+  const g = globalThis as { __FINEVIBE_DOM_RENDERER__?: boolean; process?: { env?: Record<string, string | undefined> } };
+  return g.__FINEVIBE_DOM_RENDERER__ === true || g.process?.env?.FINEVIBE_DOM_RENDERER === '1';
+}
+
 // Wraps text in bracketed-paste escapes when the shell has the mode enabled,
 // so it's delivered as a paste rather than character-by-character input.
 export function wrapBracketedPaste(terminal: Terminal, text: string): string {
-  // SAFETY: xterm keeps the live mode flags on `modes` at runtime; only the
-  // public Terminal type omits the field.
-  const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-  return modes?.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
+  // `modes` is public API in @xterm/xterm 6.0.0 (xterm.d.ts:863, same read as
+  // terminal-wheel-scroll.ts): the live SM/DECSET flags, no cast needed.
+  return terminal.modes.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
 }
 
 // The byte a terminal receives for Ctrl+V (⌘V delivered as Ctrl+V): DC1.
 const CTRL_V = '\x16';
+
+// The Ctrl-equivalent byte each mac Edit chord becomes in the PTY — the same
+// bytes a win/linux terminal sends for the same physical key: Ctrl+A
+// beginning-of-line, Ctrl+C SIGINT, Ctrl+X the emacs C-x prefix (readline's
+// kill-line is C-x C-k; 0x18 alone only arms the prefix), Ctrl+Z suspend.
+// Looked up through `canonicalAlnumKey`, NOT `e.key`: a Cyrillic layout reports
+// the key as 'с'/'а'/'х' and the chord would miss (row 92 follow-up).
+const MAC_CHORD_BYTES: Record<string, string> = { a: '\x01', c: '\x03', x: '\x18', z: '\x1a' };
 
 /**
  * Quote a filesystem path for the shell owning the PTY. Unquoted paths with
@@ -402,11 +418,72 @@ export function collapseArmedTextareaOnContextMenu(terminal: Terminal): void {
   });
 }
 
+type XtermCore = {
+  _selectionService?: {
+    shouldForceSelection?: (e: MouseEvent) => boolean;
+  } & Record<string, unknown>;
+  coreMouseService?: {
+    triggerMouseEvent?: (e: { button: number; action: number; alt: boolean }) => boolean;
+    __finevibeMouseGate?: boolean;
+  } & Record<string, unknown>;
+};
+
+/**
+ * Plain left-drag selects locally even under a TUI that grabs the mouse
+ * (pi-bolt writes SGR 1000/1002/1003/1006; xterm forwards plain drags to the
+ * app, so no selection ever existed and Copy opened greyed). VS Code's
+ * mouseForwarding model: `shouldForceSelection` claims every plain left press
+ * so xterm's mousedown gate skips forwarding and runs its own click/double/
+ * triple select, and the matching left-button reports are swallowed at
+ * `triggerMouseEvent` so a stray up/move from the document-level listeners
+ * (bound after a forwarded right/middle down) can't leak to the app.
+ * Alt+left, middle (1), hover (3) and wheel (4) stay forwarded. Right (2) stays
+ * forwarded while nothing is selected; once a selection is live it is claimed so
+ * the copy right-click lands locally instead of reaching the TUI (the button-2
+ * clause below). The button-2 clause uses the public `terminal.hasSelection()`.
+ * ponytail: touches xterm internals (_core._selectionService.shouldForceSelection, _core.coreMouseService.triggerMouseEvent), verified against @xterm/xterm 6.0.0, re-verify on upgrades.
+ */
+export function attachMouseForwardingGate(terminal: Terminal): void {
+  // jsdom fakes and half-constructed terminals have no _core.
+  // SAFETY: `_core` is xterm's runtime internal (public Terminal type omits it);
+  // the shape below is the subset attachMouseForwardingGate actually touches.
+  const core = (terminal as unknown as { _core?: XtermCore })._core;
+  const selectionService = core?._selectionService;
+  const mouseService = core?.coreMouseService;
+  if (!selectionService?.shouldForceSelection || !mouseService?.triggerMouseEvent) return;
+  if (mouseService.__finevibeMouseGate) return;
+
+  const originalForceSelection = selectionService.shouldForceSelection;
+  selectionService.shouldForceSelection = (e: MouseEvent) => {
+    if (e.button === 0 && !e.altKey) return true;
+    // A finished selection must survive the right-click that copies it, so the
+    // press is claimed (not forwarded) whenever one is live — xterm's own
+    // `SelectionService.handleMouseDown` returns early for button 2 with a
+    // selection, so the drag stays intact for the context-menu/keyboard copy.
+    // With no selection the original answer stands: right-click keeps forwarding
+    // to the TUI (vim/pi right-click behavior unchanged).
+    if (e.button === 2 && terminal.hasSelection()) return true;
+    return originalForceSelection.call(selectionService, e);
+  };
+
+  const originalTrigger = mouseService.triggerMouseEvent;
+  // xterm action codes: UP 0, DOWN 1, MOVE 32 (wheel reuses 0/1 with button 4).
+  mouseService.triggerMouseEvent = (event) =>
+    event.button === 0 && !event.alt && (event.action === 0 || event.action === 1 || event.action === 32)
+      ? false
+      : originalTrigger.call(mouseService, event);
+
+  mouseService.__finevibeMouseGate = true;
+}
+
 /**
  * Attaches shared key event handling to a terminal:
  * - Cmd/Ctrl+F: bubbles up to document (prevents xterm from consuming it)
  * - Ctrl+Shift+C: copies selected text to clipboard
  * - Windows Ctrl+C: copies if selection exists, otherwise passes through as SIGINT
+ * - macOS Cmd+C/X/Z/A: the same contract, routed here because the Edit menu no
+ *   longer claims those keys (main/menu.ts) and xterm writes nothing for a
+ *   meta-only a/c/x/z. Needs `writeToPty` to deliver the bytes.
  * - Windows Ctrl+V: returns false WITHOUT preventDefault (P1) so Chromium's
  *   native paste event fires — xterm must not write the literal DC1, the
  *   paste event (attachImagePasteHandler + xterm's own paste) serves it.
@@ -420,7 +497,8 @@ export function collapseArmedTextareaOnContextMenu(terminal: Terminal): void {
  */
 export function attachClipboardCopyHandler(
   terminal: Terminal,
-  extend?: ExtraKeyHandler
+  extend?: ExtraKeyHandler,
+  writeToPty?: (data: string) => void
 ): void {
   terminal.attachCustomKeyEventHandler((e) => {
     // Cmd/Ctrl+F: bubble to document for search
@@ -449,6 +527,42 @@ export function attachClipboardCopyHandler(
     // pasteIntoTerminal's fallback (CF_HDROP-only copies, the context menu).
     if (isWin && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key === 'v') return false;
 
+    // macOS (rows 92/70): the Edit menu hands Cmd+C/X/Z/A back to the
+    // renderer, and xterm's mac mapping writes nothing for a meta-only a/c/x/z
+    // (Keyboard.ts maps only Cmd+A to a buffer select-all), so the chords are
+    // routed here. No "is a text field focused" test belongs here: xterm binds
+    // this handler to its own helper textarea, so the terminal owns focus by
+    // the time it runs.
+    const macChord = isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+    // Physical key, so a Cyrillic/Greek/Arabic layout's Cmd+С/Х/А/З resolve as
+    // the Latin letters the chord table is keyed by (row 92 follow-up: this read
+    // `e.key`, so the chords missed on every non-Latin layout).
+    const macChordKey = canonicalAlnumKey(e);
+    // Cmd+C with a selection copies through main (#160) instead of Chromium's
+    // native copy of the armed textarea, which adds the rich flavors that
+    // corrupt non-Latin text — same reason Ctrl+Shift+C goes through main.
+    if (macChord && macChordKey === 'c' && terminal.hasSelection()) {
+      if (e.type === 'keydown') copySelection(terminal);
+      // Stop Chromium's own edit command too: on the armed-copy path it would
+      // overwrite what main just received, and the Cmd+X default would cut
+      // xterm's helper textarea out from under the IME composition helper.
+      e.preventDefault();
+      return false;
+    }
+    // Without a selection Cmd+C is SIGINT; Cmd+A/X/Z become their Ctrl bytes,
+    // matching what win/linux send for Ctrl+A/X/Z. Cmd+V stays untouched:
+    // xterm leaves the meta-only keydown uncancelled, so Chromium fires the
+    // native paste event attachImagePasteHandler and xterm's own paste
+    // pipeline already serve.
+    if (macChord && writeToPty) {
+      const byte = MAC_CHORD_BYTES[macChordKey];
+      if (byte !== undefined) {
+        if (e.type === 'keydown') writeToPty(byte);
+        e.preventDefault();
+        return false;
+      }
+    }
+
     // App accelerators: run the dispatcher here (keydown only) so its
     // verdict decides xterm. A handler that acted consumed the key — the PTY
     // must not also get the bytes. A handler that declined (context guard)
@@ -465,6 +579,7 @@ export function attachClipboardCopyHandler(
 // Disposing the addon on context loss lets xterm.js fall back to the DOM renderer
 // instead of keeping a dead GPU texture atlas (black-box glyphs).
 export function loadWebglWithFallback(terminal: Terminal): void {
+  if (domRendererForced()) return;
   try {
     const addon = new WebglAddon();
     terminal.loadAddon(addon);

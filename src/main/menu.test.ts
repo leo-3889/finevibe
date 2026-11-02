@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { RELOAD_MAIN_WINDOW_ACCELERATOR } from '../shared/constants';
 
 // Menu-accelerator guard. The win/linux GTK menu bar claims role-based
 // accelerators (Ctrl+C/V/X/Z/A, Ctrl+Q) before the renderer/xterm.js sees
@@ -15,6 +16,8 @@ const { state, electron } = vi.hoisted(() => {
   const state = {
     templates: [] as MenuTemplate[],
     quit: vi.fn(),
+    send: vi.fn(),
+    focusedWindow: undefined as { webContents: { send: (...args: unknown[]) => void } } | undefined,
   };
   const electron = {
     app: { name: 'FineVibe', quit: state.quit },
@@ -25,7 +28,7 @@ const { state, electron } = vi.hoisted(() => {
       },
       setApplicationMenu: vi.fn(),
     },
-    BrowserWindow: { getFocusedWindow: () => undefined },
+    BrowserWindow: { getFocusedWindow: () => state.focusedWindow },
   };
   return { state, electron };
 });
@@ -79,6 +82,8 @@ function claimedAccelerators(items: Array<Record<string, unknown>>): string[] {
 
 beforeEach(() => {
   state.quit.mockClear();
+  state.send.mockClear();
+  state.focusedWindow = undefined;
 });
 
 describe.each([
@@ -115,6 +120,27 @@ describe.each([
     const template = await buildTemplate(platform);
     expect(claimedAccelerators(flatten(template))).toEqual([]);
   });
+
+  // Row 77 negative half: Preferences… is a macOS convention (and the one
+  // non-role accelerator in the template), so win/linux keep the sidebar gear
+  // as their only entry and their zero-claimed-accelerator invariant.
+  it('offers no Preferences item off macOS', async () => {
+    const template = await buildTemplate(platform);
+    expect(flatten(template).some((i) => i.label === 'Preferences…')).toBe(false);
+  });
+
+  // Row 99: every displayed accelerator must be a chord something actually
+  // binds. Reload Main Window prints the shared constant that the renderer
+  // registers for real (shortcuts.ts `reload-main-window`), so the label and
+  // the behavior agree: display-only here (the native bar must claim no key —
+  // F5 belongs to the terminal), live in the renderer.
+  it('prints the reload chord the renderer really binds, on every platform', async () => {
+    const template = await buildTemplate(platform);
+    const reload = flatten(template).find((i) => i.label === 'Reload Main Window');
+    expect(reload).toBeDefined();
+    expect(reload!.accelerator).toBe(RELOAD_MAIN_WINDOW_ACCELERATOR);
+    expect(reload!.registerAccelerator).toBe(false);
+  });
 });
 
 describe('mac menu', () => {
@@ -144,5 +170,100 @@ describe('mac menu', () => {
     expect(close).toBeDefined();
     // Cmd+W belongs to File → Close Session; the role must claim no key.
     expect(close!.accelerator).toBe('');
+  });
+
+  // Row 92 (+ its row-70 Cmd+C sibling): the mac Edit roles must keep their
+  // labels and click actions but claim no key, or macOS intercepts Cmd+Z/X/C/V/A
+  // before xterm's customKeyEventHandler and the role acts on the hidden helper
+  // textarea. Same accelerator:'' idiom the toggleDevTools/role:close rows use.
+  it('keeps the Edit role labels while freeing the terminal chords', async () => {
+    const template = await buildTemplate({ isMac: true });
+    const edit = submenuOf(template, 'Edit');
+    for (const role of ['undo', 'cut', 'copy', 'paste', 'selectAll']) {
+      const item = edit.find((i) => i.role === role);
+      expect(item, `role ${role} stays in the menu`).toBeDefined();
+      expect(item!.accelerator).toBe('');
+      expect(item!.registerAccelerator).toBeUndefined();
+    }
+    expect(claimedAccelerators(edit)).toEqual([]);
+  });
+
+  it('leaves the non-terminal Edit roles on their defaults', async () => {
+    // Negative check: only the five PTY chords were touched. Redo (Cmd+Shift+Z),
+    // pasteAndMatchStyle (Cmd+Shift+V) and Delete are not bytes a shell or
+    // readline expects, so they keep the role's own accelerator.
+    const template = await buildTemplate({ isMac: true });
+    const edit = submenuOf(template, 'Edit');
+    for (const role of ['redo', 'pasteAndMatchStyle', 'delete']) {
+      expect(edit.find((i) => i.role === role)!.accelerator).toBeUndefined();
+    }
+  });
+
+  // Row 99 (mac is where the display lied): the item used to print ⇧⌘R, the
+  // chord the renderer binds to the browser-tab HARD reload — so the menu
+  // showed one action and the key did another. It now prints the same shared
+  // constant win/linux show and the renderer binds.
+  it('prints the reload chord the renderer really binds', async () => {
+    const template = await buildTemplate({ isMac: true });
+    const reload = flatten(template).find((i) => i.label === 'Reload Main Window');
+    expect(reload).toBeDefined();
+    expect(reload!.accelerator).toBe(RELOAD_MAIN_WINDOW_ACCELERATOR);
+    expect(reload!.accelerator).not.toBe('Command+Shift+R');
+    expect(reload!.registerAccelerator).toBe(false);
+    // Display-only: it must not join the claimed set (Preferences and Close
+    // Window are the two real ones), or macOS would eat the event before the
+    // renderer.
+    expect(claimedAccelerators(flatten(template))).toEqual([
+      'Preferences…: CmdOrCtrl+,',
+      'Close Window: CmdOrCtrl+Shift+W',
+    ]);
+  });
+
+  // Row 77: Cmd+, was dead — no menu anywhere carried a Preferences item, so
+  // the sidebar gear was the only entry to the settings modal. Row 99's lesson
+  // is that a displayed chord must be a chord something binds; here the
+  // mac menu binds it itself. `registerAccelerator` is left at its default
+  // because Cmd+, is not a byte a shell or readline expects (unlike the
+  // Cmd+Z/X/C/V/A chords row 92/70 had to free), and a native accelerator
+  // still fires while an <input> owns the keyboard — the renderer's shortcut
+  // dispatcher suppresses app chords there, so this is the one item that must
+  // claim its key to behave like a macOS Preferences item.
+  it('registers Preferences… on Cmd+, between About and Services', async () => {
+    const template = await buildTemplate({ isMac: true });
+    const appMenu = submenuOf(template, 'FineVibe');
+    const prefs = appMenu.find((i) => i.label === 'Preferences…');
+    expect(prefs).toBeDefined();
+    expect(prefs!.accelerator).toBe('CmdOrCtrl+,');
+    expect(prefs!.registerAccelerator).toBeUndefined();
+    const roles = appMenu.map((i) => i.role);
+    expect(roles.indexOf('about')).toBeLessThan(appMenu.indexOf(prefs!));
+    expect(appMenu.indexOf(prefs!)).toBeLessThan(roles.indexOf('services'));
+  });
+
+  // The click half of the chord: menu → `menu:open-preferences` → preload
+  // onOpenPreferences → keybindings showPreferencesModal(), i.e. the same
+  // modal the gear opens.
+  it('forwards a Preferences… click to the focused window', async () => {
+    const template = await buildTemplate({ isMac: true });
+    const prefs = flatten(template).find((i) => i.label === 'Preferences…');
+    state.focusedWindow = { webContents: { send: state.send } };
+
+    (prefs!.click as () => void)();
+
+    expect(state.send).toHaveBeenCalledTimes(1);
+    expect(state.send).toHaveBeenCalledWith('menu:open-preferences');
+  });
+
+  it('claims exactly two accelerators: Preferences Cmd+, and Close Window Cmd+Shift+W', async () => {
+    // command, not a PTY byte, and row 117 tracks its confirm-gating concern
+    // separately. Every other entry is registerAccelerator:false, an empty
+    // accelerator, or a role left on its default (hide/quit ⇒ Cmd+H/Cmd+Q:
+    // invisible to this template-level check, and no shell or readline binding
+    // — only the Cmd+Z/X/C/V/A chords above ever reached xterm as bytes).
+    const template = await buildTemplate({ isMac: true });
+    expect(claimedAccelerators(flatten(template))).toEqual([
+      'Preferences…: CmdOrCtrl+,',
+      'Close Window: CmdOrCtrl+Shift+W',
+    ]);
   });
 });

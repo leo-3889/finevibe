@@ -3,11 +3,11 @@ import { getTerminalTheme } from '../terminal-theme.js';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { appState } from '../state.js';
-import { TERMINAL_SCROLLBACK } from './terminal-shared.js';
+import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-shared.js';
 import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
 import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
 import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { isWin } from '../platform.js';
@@ -78,6 +78,7 @@ function createShell(projectId: string): ShellTerminalInstance {
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
     scrollback: TERMINAL_SCROLLBACK,
+    macOptionIsMeta: TERMINAL_MAC_OPTION_IS_META,
     cursorBlink: true,
     allowProposedApi: true,
   });
@@ -99,7 +100,7 @@ function createShell(projectId: string): ShellTerminalInstance {
   // Shell panes scroll the log of a fullscreen TUI the same way session terminals
   // do (ConPTY never forwards its mouse modes to xterm).
   attachAltScreenWheelScroll(terminal, writeToPty);
-  attachClipboardCopyHandler(terminal, handleWin32Key);
+  attachClipboardCopyHandler(terminal, handleWin32Key, writeToPty);
   attachImagePasteHandler(terminal, element, writeToPty);
 
   const instance: ShellTerminalInstance = {
@@ -198,6 +199,9 @@ function activateShellInstance(instance: ShellTerminalInstance): void {
     containerEl.appendChild(instance.element);
     instance.terminal.open(instance.element);
     attachCopyOnSelect(instance.terminal);
+    // Row 60: same mouse contract as the session and remote panes — a plain
+    // left-drag selects locally even when a TUI in the shell grabs the mouse.
+    attachMouseForwardingGate(instance.terminal);
     collapseArmedTextareaOnContextMenu(instance.terminal);
     loadWebglWithFallback(instance.terminal);
   }

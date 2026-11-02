@@ -6,6 +6,9 @@ function makeMockTerminal(hasSelection = false, selection = '') {
   return {
     hasSelection: vi.fn(() => hasSelection),
     getSelection: vi.fn(() => selection),
+    // Public @xterm/xterm API (xterm.d.ts:863) that pasteIntoTerminal reads for
+    // the bracketed-paste wrap; a real Terminal always carries it.
+    modes: { bracketedPasteMode: false },
     selectAll: vi.fn(),
     focus: vi.fn(),
   } as any;
@@ -123,6 +126,29 @@ describe('terminal-context-menu', () => {
 
     expect(mockWrite).toHaveBeenCalledWith('hello world', 'explicit');
     expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  // pi-bolt (SGR mouse reporting) makes xterm forward the right-mousedown as
+  // an escape report, which fires onUserInput and clears the selection before
+  // contextmenu — the pane passes the mousedown snapshot so Copy is not greyed.
+  it('Copy click uses the mousedown snapshot when xterm already cleared the selection', () => {
+    const mockWrite = vi.fn();
+    (window as any).finevibe = { clipboard: { write: mockWrite } };
+
+    const terminal = makeMockTerminal(false, '');
+    showTerminalContextMenu(100, 100, terminal, writeToPty, 'snapshot text');
+
+    const copy = document.querySelectorAll('.tab-context-menu-item')[0] as HTMLElement;
+    expect(copy.classList.contains('disabled')).toBe(false);
+    copy.click();
+    expect(mockWrite).toHaveBeenCalledWith('snapshot text', 'explicit');
+  });
+
+  it('Copy stays disabled when neither the selection nor the snapshot has text', () => {
+    const terminal = makeMockTerminal(false, '');
+    showTerminalContextMenu(100, 100, terminal, writeToPty, '');
+    const copy = document.querySelectorAll('.tab-context-menu-item')[0] as HTMLElement;
+    expect(copy.classList.contains('disabled')).toBe(true);
   });
 
   // The click is not a keystroke, so no paste event exists: the read goes to main,

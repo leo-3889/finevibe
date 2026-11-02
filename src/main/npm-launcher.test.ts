@@ -46,11 +46,19 @@ interface LoadOptions {
   // Replace the fake fs wholesale — desktop-integration tests exercise
   // real readdirSync/copyFileSync against a temp-dir fixture.
   fs?: Record<string, unknown>;
+  platform?: string;
+  arch?: string;
+  argv?: string[];
+  // Home dir the launcher builds APP_DIR from; override to carry path
+  // characters the extractor must not re-parse ($, quotes, [ ]).
+  homedir?: string;
 }
 
 function loadLauncher(options: LoadOptions = {}) {
   const httpsGet = options.httpsGet ?? vi.fn();
-  const spawn = vi.fn(() => ({ unref: vi.fn() }));
+  const spawn = vi.fn((_command: string, ..._callArgs: unknown[]) => ({ unref: vi.fn() }));
+  const execFileSync = vi.fn();
+  const homedir = options.homedir ?? '/home/test';
   const fakeFs = {
     readFileSync: vi.fn(() => {
       if (options.installedVersion === null) throw new Error('missing');
@@ -74,24 +82,26 @@ function loadLauncher(options: LoadOptions = {}) {
       if (name === 'http') throw new Error('launcher must never require http');
       if (name === 'fs') return options.fs ?? fakeFs;
       if (name === 'crypto') return crypto;
-      if (name === 'os') return { homedir: () => '/home/test' };
+      if (name === 'os') return { homedir: () => homedir };
       if (name === 'path') return path;
-      if (name === 'child_process') return { spawn, execSync: vi.fn() };
+      if (name === 'child_process') return { spawn, execSync: vi.fn(), execFileSync };
       if (name === '../package.json') return { version: launcherVersion };
       return {};
     },
     process: {
-      platform: 'linux', arch: 'x64', argv: ['node', 'finevibe'],
+      platform: options.platform ?? 'linux', arch: options.arch ?? 'x64',
+      argv: options.argv ?? ['node', 'finevibe'],
       env: options.env ?? {}, exit: vi.fn(), stdout: { write: vi.fn() },
     },
     console: { log: consoleLog, error: consoleError },
     module: { exports: {} },
-    // URL is a Node global, not a vm-context intrinsic; the real CLI always has it.
+    // URL and Buffer are Node globals, not vm-context intrinsics; the real CLI always has both.
     URL,
+    Buffer,
   };
   vm.runInNewContext(launcherSource, context);
   const exports = (context.module as { exports: Record<string, any> }).exports;
-  return { exports, httpsGet, fakeFs, consoleLog, consoleError, spawn };
+  return { exports, httpsGet, fakeFs, consoleLog, consoleError, spawn, execFileSync, homedir };
 }
 
 function servingRelease(assets: Array<{ name: string; digest?: string }>) {
@@ -454,23 +464,25 @@ describe('launcher download', () => {
 });
 
 describe('launcher linux asset name', () => {
-  // electron-builder publishes the linux artifact as `-linux-amd64`; a launcher
-  // asking for `-linux-x64` gets a 404 and every fresh install fails.
-  const amd64Asset = `FineVibe-${launcherVersion}-linux-amd64.AppImage`;
+  // electron-builder expands ${arch} per target extension (builder-util
+  // getArtifactArchName): the AppImage is published as `-linux-x86_64`, the
+  // deb as `-linux-amd64`. A launcher asking for either other spelling gets a
+  // 404 and every fresh install fails.
+  const appImageAsset = `FineVibe-${launcherVersion}-linux-x86_64.AppImage`;
   const appDir = path.join('/home/test', '.finevibe', 'app');
   const appPath = path.join(appDir, 'FineVibe.AppImage');
   const content = Buffer.from('finevibe-appimage-payload');
   const contentHex = crypto.createHash('sha256').update(content).digest('hex');
 
-  function servingAmd64Only() {
-    const downloadUrl = `https://github.com/leo-3889/vibeyard/releases/download/v${launcherVersion}/${amd64Asset}`;
+  function servingX8664Only() {
+    const downloadUrl = `https://github.com/leo-3889/vibeyard/releases/download/v${launcherVersion}/${appImageAsset}`;
     const apiUrl = `https://api.github.com/repos/leo-3889/vibeyard/releases/tags/v${launcherVersion}`;
     const httpsGet = vi.fn((url: string, _opts: unknown, cb: (res: FakeResponse) => void) => {
       const known = url === downloadUrl || url === apiUrl;
       const res = fakeResponse(known ? {} : { statusCode: 404 });
       cb(res);
       queueMicrotask(() => {
-        if (url === apiUrl) res.end(JSON.stringify({ assets: [{ name: amd64Asset, digest: `sha256:${contentHex}` }] }));
+        if (url === apiUrl) res.end(JSON.stringify({ assets: [{ name: appImageAsset, digest: `sha256:${contentHex}` }] }));
         else if (url === downloadUrl) res.end(content);
         else res.end('Not Found');
       });
@@ -479,13 +491,13 @@ describe('launcher linux asset name', () => {
     return { httpsGet, downloadUrl, apiUrl };
   }
 
-  it('asks the release API for the linux-amd64 asset name on linux/x64', () => {
+  it('asks the release API for the linux-x86_64 asset name on linux/x64', () => {
     const { exports } = loadLauncher();
-    expect(exports.getAssetName()).toBe(amd64Asset);
+    expect(exports.getAssetName()).toBe(appImageAsset);
   });
 
-  it('downloads and installs the linux-amd64 AppImage on a fresh linux install', async () => {
-    const { httpsGet, downloadUrl, apiUrl } = servingAmd64Only();
+  it('downloads and installs the linux-x86_64 AppImage on a fresh linux install', async () => {
+    const { httpsGet, downloadUrl, apiUrl } = servingX8664Only();
     const { exports, fakeFs, consoleError, spawn } = loadLauncher({ env: forkEnv, httpsGet, installedVersion: null });
     fakeFs.createReadStream.mockImplementation(readingFile(content));
 
@@ -499,10 +511,10 @@ describe('launcher linux asset name', () => {
     const requested = httpsGet.mock.calls.map((call) => String(call[0]));
     expect(requested).toContain(downloadUrl);
     expect(requested).toContain(apiUrl);
-    expect(requested.filter((url) => url.includes('-linux-x64'))).toEqual([]);
+    expect(requested.filter((url) => url.includes('-linux-x64') || url.includes('-linux-amd64'))).toEqual([]);
 
     // The downloaded asset becomes the AppImage the launcher runs.
-    expect(fakeFs.renameSync).toHaveBeenCalledWith(path.join(appDir, `${amd64Asset}.tmp`), appPath);
+    expect(fakeFs.renameSync).toHaveBeenCalledWith(path.join(appDir, `${appImageAsset}.tmp`), appPath);
     expect(fakeFs.chmodSync).toHaveBeenCalledWith(appPath, 0o755);
     expect(fakeFs.writeFileSync).toHaveBeenCalledWith(
       path.join(appDir, 'version.json'),
@@ -512,6 +524,185 @@ describe('launcher linux asset name', () => {
     expect(consoleError).not.toHaveBeenCalled();
     expect(exports.RELEASE_API_URL).toBe(apiUrl);
   }, 15000);
+});
+
+// Row 67: release.yml builds Windows with `--win … --x64` only, so no
+// `-win-arm64.zip` asset exists. This file had no win32 case at all — the
+// same blind spot that let the linux name bug (row 51) ship green.
+describe('launcher windows asset name', () => {
+  it('requests the win-x64 zip on win32/x64', () => {
+    const { exports } = loadLauncher({ platform: 'win32', arch: 'x64' });
+    expect(exports.getAssetName()).toBe(`FineVibe-${launcherVersion}-win-x64.zip`);
+    // Derived INDEPENDENTLY from the builder template (as the linux gate above
+    // does): launcher and workflow must not be able to drift together to a
+    // wrong-but-matching spelling, which is how the linux name bug shipped.
+    const winTemplate = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+    ).build.win.artifactName as string;
+    expect(winTemplate.replace('${version}', launcherVersion).replace('${ext}', 'zip').replace('${arch}', 'x64'))
+      .toBe(exports.getAssetName());
+  });
+
+  it('refuses win32/arm64 early instead of requesting an unpublished asset', async () => {
+    const { exports, httpsGet, spawn, consoleError } = loadLauncher({
+      env: forkEnv, platform: 'win32', arch: 'arm64',
+    });
+    expect(() => exports.getAssetName()).toThrow(/arm64/);
+    // The guard must also fire in the real main() flow: an actionable message
+    // naming the x64-only build, not a downloaded 404 and not a launch.
+    await until(
+      () => consoleError.mock.calls.length > 0,
+      () => 'arm64 win launcher neither reported an error nor launched',
+    );
+    const message = consoleError.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(message).toMatch(/arm64/i);
+    expect(message).toMatch(/x64/);
+    expect(httpsGet).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
+// Rows 68 + 106: PowerShell re-tokenizes and re-parses whatever it is handed
+// on -Command, so `$`, quotes and `[ ]` in a profile path were expanded or
+// split even with no shell in between. The fix moves the paths to environment
+// variables and the script to -EncodedCommand, and bounds the spawn.
+describe('launcher windows extraction', () => {
+  it('passes paths by env and the script by -EncodedCommand, with a timeout', () => {
+    const nastyHome = "C:\\Users\\O'Brien\\$HOME\\[OneDrive]";
+    const { exports, execFileSync } = loadLauncher({
+      platform: 'win32', arch: 'x64', homedir: nastyHome,
+    });
+    const appDir = path.join(nastyHome, '.finevibe', 'app');
+    const zipPath = path.join(appDir, `FineVibe-${launcherVersion}-win-x64.zip.tmp`);
+    exports.extract(zipPath);
+
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+    const [command, args, options] = execFileSync.mock.calls[0] as unknown as
+      [string, string[], Record<string, unknown>];
+    expect(command).toBe('powershell');
+    expect(args).toContain('-EncodedCommand');
+    expect(args).not.toContain('-Command');
+    // -EncodedCommand is base64 of the UTF-16LE script body, which PowerShell
+    // decodes verbatim — nothing tokenizes it on the way in.
+    const script = Buffer.from(String(args[args.indexOf('-EncodedCommand') + 1]), 'base64').toString('utf16le');
+    expect(script).toBe('Expand-Archive -Force -Path $env:FV_ZIP -DestinationPath $env:FV_DIR');
+    // No path text reaches the re-parsed command stream at all…
+    expect(args.join(' ')).not.toContain(nastyHome);
+    expect(script).not.toContain(nastyHome);
+    expect(script).not.toContain('$HOME');
+    // …the paths arrive through the environment instead.
+    expect(options.env).toMatchObject({ FV_ZIP: zipPath, FV_DIR: appDir });
+    expect(Number(options.timeout)).toBeGreaterThan(0);
+  });
+});
+
+// Row 81: `open <app> --args` activates the already-running instance (or
+// another copy registered under the same bundle id) and drops both the
+// arguments and the caller's environment (row 64) — `finevibe <file>`
+// silently no-oped the second time. The direct bundle exec matches the
+// win/linux branches; the app's single-instance lock handles the restart.
+describe('launcher mac launch', () => {
+  it('execs Contents/MacOS/FineVibe with the caller arguments instead of open --args', async () => {
+    const fileArg = path.join('/tmp', 'My Project', 'note $1.txt');
+    const { spawn, consoleError } = loadLauncher({
+      platform: 'darwin', arch: 'arm64', argv: ['node', 'finevibe', fileArg, '--flag'],
+    });
+    await until(
+      () => spawn.mock.calls.length > 0,
+      () => consoleError.mock.calls.map((call) => String(call[0])).join('\n') || 'mac launcher never spawned',
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      path.join('/home/test', '.finevibe', 'app', 'FineVibe.app', 'Contents', 'MacOS', 'FineVibe'),
+      [fileArg, '--flag'],
+      { detached: true, stdio: 'ignore' },
+    );
+    expect(spawn.mock.calls.map((call) => String(call[0]))).not.toContain('open');
+    expect(spawn.mock.calls[0][1]).not.toContain('--args');
+  });
+});
+
+describe('launcher linux deb dependencies', () => {
+  // FpmTarget (node_modules/app-builder-lib/out/targets/FpmTarget.js:160-182)
+  // REPLACES its defaults with whatever the config sets: `deb.depends:
+  // ["libsecret-tools"]` shipped a deb with no libnss3/libgtk-3-0, and any
+  // explicit `recommends` drops the builder default libappindicator3-1. So
+  // libsecret-tools (optional Chrome-import keyring lookup) belongs in
+  // recommends, and depends must stay unset to keep the Electron runtime deps.
+  it('leaves deb.depends to the builder defaults and recommends libsecret-tools', () => {
+    const build = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).build;
+    expect(build.deb.depends).toBeUndefined();
+    expect(build.deb.recommends).toEqual(['libsecret-tools']);
+  });
+});
+
+// Rows 71, 82, 65: build-block settings no runtime test can observe — they
+// only exist in the config electron-builder consumes, so they are pinned here
+// in the same gate-test style as the deb dependency check above.
+describe('packaged build configuration', () => {
+  const build = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).build;
+
+  it('forces macOS code signing instead of the silent ad-hoc fallback (row 71)', () => {
+    // app-builder-lib macPackager.js:215 — `fallBackToAdhoc =
+    // (arch === arm64 || arch === universal) && !forceCodeSigning`. Without
+    // this flag a missing identity signs every arm64 build with a NEW ad-hoc
+    // signature, so consecutive releases carry different signers and macOS
+    // treats an update as a different application.
+    expect(build.mac.forceCodeSigning).toBe(true);
+    // An explicit `identity: null` would now be a hard build error rather
+    // than an unsigned artifact that still passes CI.
+    expect(build.mac.identity).toBeUndefined();
+    // …and the no-secrets `artifacts_only` leg of release.yml builds with
+    // exactly that `identity=null`, which app-builder-lib refuses together
+    // with forceCodeSigning (macPackager.js:217). If the override disappears,
+    // every gate build dies in the mac job.
+    const workflow = fs.readFileSync(
+      path.join(process.cwd(), '.github', 'workflows', 'release.yml'),
+      'utf8',
+    );
+    expect(workflow).toContain('-c.mac.forceCodeSigning=false');
+    expect(workflow).not.toContain('-c.mac.forceCodeSigning=true');
+  });
+
+  it('excludes every sourcemap, not only the ones under dist/ (row 82)', () => {
+    // `!dist/**/*.map` left the dependency tree's maps in the asar (569 .map
+    // files measured in a packaged build).
+    expect(build.files).toContain('!**/*.map');
+    expect(build.files).not.toContain('!dist/**/*.map');
+  });
+
+  it('leaves the mac artifact names at the builder defaults (row 72)', () => {
+    // linux/win set `artifactName`; mac deliberately does not, and the
+    // asymmetry is a download contract, not an oversight.
+    // ArchiveTarget.js:23-30 — the mac default pattern is
+    // `${productName}-${version}[-${arch}]-${os}.${ext}` (the arch part drops
+    // for the default arch x64), which is exactly what the npm launcher asks
+    // GitHub for: `FineVibe-<v>-mac.zip` / `FineVibe-<v>-arm64-mac.zip`
+    // (bin/finevibe.js getAssetName). A `build.mac.artifactName` REPLACES that
+    // pattern (platformPackager.js artifactPatternConfig) and renames the zip
+    // AND the dmg, so every mac launcher install would 404 on the asset —
+    // while `release.yml`'s `out/*.dmg` / `out/*.zip` upload globs stay green
+    // and no build step notices. Adding the pattern therefore means editing
+    // bin/finevibe.js in the same change.
+    expect(build.mac.artifactName).toBeUndefined();
+    expect(launcherSource).toContain('FineVibe-${version}-mac.zip');
+    expect(launcherSource).toContain('FineVibe-${version}-arm64-mac.zip');
+    // The platform tag the other two spellings carry — the reason the mac
+    // defaults look inconsistent next to them.
+    expect(build.linux.artifactName).toContain('-linux-');
+    expect(build.win.artifactName).toContain('-win-');
+  });
+
+  it('keeps the AppImage as the only linux feed entry (row 65)', () => {
+    // Both linux targets write the SAME channel file (updateInfoBuilder
+    // getUpdateInfoFileName → latest-linux.yml), so the deb leg overwrote the
+    // AppImage entry and AppImageUpdater's findFile(…, "AppImage") returned
+    // undefined — AppImage self-update could never install. PublishManager
+    // getPublishConfigs returns null for a target whose `publish` is null,
+    // which also skips writing that target's update info entirely.
+    expect(build.deb.publish).toBeNull();
+    expect(build.linux.publish).toBeUndefined();
+    expect(build.linux.target).toContain('AppImage');
+  });
 });
 
 describe('launcher linux desktop entry', () => {
@@ -528,7 +719,7 @@ describe('launcher linux desktop entry', () => {
         '[Desktop Entry]',
         'Name=FineVibe',
         'Type=Application',
-        'Exec=AppRun --appimage-extract-and-run %U',
+        'Exec=AppRun --no-sandbox %U',
         'Icon=old-icon',
         'Categories=Development;IDE;',
         'MimeType=x-scheme-handler/finevibe;',
@@ -540,10 +731,36 @@ describe('launcher linux desktop entry', () => {
 
   it('rewrites Exec to the absolute AppImage path and forces Icon=finevibe', () => {
     const text = builtEntry();
-    expect(text).toContain(`Exec=${appPath} %U`);
+    expect(text).toContain(`Exec=${appPath} --no-sandbox %U`);
     expect(text).not.toContain('AppRun');
     expect(text).toContain('Icon=finevibe');
     expect(text).not.toContain('Icon=old-icon');
+  });
+
+  // Row 54: only the Exec PROGRAM is replaced. electron-builder ships the
+  // AppImage entry as `Exec=AppRun --no-sandbox %U` (the bundled
+  // chrome-sandbox is 0755 non-setuid), and the old wholesale replacement
+  // dropped --no-sandbox: on distros restricting unprivileged user
+  // namespaces the sandbox helper aborts before any window appears.
+  it('carries every embedded Exec argument onto the installed path', () => {
+    const { exports } = loadLauncher();
+    const text = exports.buildDesktopEntry(
+      '[Desktop Entry]\nExec=/opt/FineVibe/AppRun --no-sandbox --ozone-platform-hint=auto %U\n',
+      appPath,
+    );
+    expect(text).toContain(`Exec=${appPath} --no-sandbox --ozone-platform-hint=auto %U`);
+    expect(text).not.toContain('/opt/FineVibe/AppRun');
+  });
+
+  it('drops --appimage-extract-and-run when the env prefix already says it', () => {
+    const { exports } = loadLauncher();
+    const text = exports.buildDesktopEntry(
+      '[Desktop Entry]\nExec=AppRun --appimage-extract-and-run --no-sandbox %U\n',
+      appPath,
+      false,
+    );
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} --no-sandbox %U`);
+    expect(text).not.toContain('--appimage-extract-and-run');
   });
 
   it('adds StartupWMClass=FineVibe and preserves unrelated keys', () => {
@@ -669,5 +886,96 @@ describe('published launcher manifest', () => {
   it('publishes with provenance and the OIDC token permission', () => {
     expect(npmJob).toMatch(/npm publish --provenance/);
     expect(npmJob).toMatch(/id-token: write/);
+  });
+});
+
+describe('release workflow packaging gates', () => {
+  // Audit rows 61 / 62 / 52 are release-leg step ORDERS that only a GitHub
+  // runner can execute, so they are pinned here against the same YAML the
+  // runner reads: the ABI flip must sit between install and packaging (61),
+  // the Apple credential gate must precede the build and the stapler check
+  // must not be gated on the credential it polices (62), and the linux gate
+  // must pin the AppImage name the launcher downloads (52, paired with
+  // getAssetName above). Each assertion fails on the pre-fix file.
+  const releaseWorkflow = fs.readFileSync(
+    path.join(process.cwd(), '.github', 'workflows', 'release.yml'),
+    'utf8',
+  );
+
+  function jobSlice(job: string): string {
+    const header = releaseWorkflow.indexOf(`\n  ${job}:\n`);
+    expect(header, `release.yml has no "${job}" job`).toBeGreaterThan(-1);
+    const body = releaseWorkflow.slice(header + `\n  ${job}:\n`.length);
+    // Job bodies indent at 4+ spaces; the first 2-space key is the next job.
+    const next = body.search(/^ {2}\S/m);
+    return next === -1 ? body : body.slice(0, next);
+  }
+
+  function stepIndex(jobBody: string, needle: string): number {
+    const index = jobBody.indexOf(needle);
+    expect(index, `release.yml job has no "${needle}"`).toBeGreaterThan(-1);
+    return index;
+  }
+
+  it('runs the windows suite on the Node ABI and retargets Electron before packaging', () => {
+    // `npm ci` postinstall builds better-sqlite3 for the Electron ABI, so
+    // without the rebuild step vitest silently skips the chrome-import suites;
+    // without the restore step @electron/rebuild skips the module back (its
+    // build/Release/.forge-meta still names the Electron ABI) and the app
+    // packages a Node-ABI binding every user fails to require.
+    const win = jobSlice('build-windows');
+    const rebuild = stepIndex(win, 'run: npm rebuild better-sqlite3');
+    const tests = stepIndex(win, 'run: npm test');
+    const restore = stepIndex(win, 'npx electron-builder install-app-deps');
+    const pack = stepIndex(win, 'npx electron-builder --win');
+    expect(rebuild).toBeLessThan(tests);
+    expect(tests).toBeLessThan(restore);
+    expect(restore).toBeLessThan(pack);
+    expect(win).toMatch(/rmSync\([^)]*\.forge-meta/);
+  });
+
+  it('fails a mac release before the build when notarization credentials are missing', () => {
+    const mac = jobSlice('build');
+    const gate = stepIndex(mac, 'name: Verify notarization credentials');
+    expect(mac.slice(0, gate)).toContain('actions/checkout@v4');
+    expect(gate).toBeLessThan(stepIndex(mac, 'run: npm ci'));
+    expect(gate).toBeLessThan(stepIndex(mac, 'npx electron-builder --publish never'));
+    const gateStep = mac.slice(gate, stepIndex(mac, 'run: npm ci'));
+    // The artifacts_only input is the manual exception; both Apple auth shapes
+    // app-builder-lib accepts must be honoured, and the job env must hand every
+    // one of them to both this gate and electron-builder.
+    expect(gateStep).toMatch(/^ {8}if: inputs\.artifacts_only != true$/m);
+    expect(gateStep).toContain('APPLE_API_ISSUER');
+    const jobEnv = mac.slice(0, stepIndex(mac, 'steps:'));
+    for (const name of ['APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER', 'APPLE_KEYCHAIN', 'APPLE_KEYCHAIN_PROFILE']) {
+      expect(jobEnv, `mac job env must export ${name}`).toContain(`${name}: \${{ secrets.`);
+    }
+  });
+
+  it('staples and spctl-checks every release build, not only when APPLE_ID is set', () => {
+    const mac = jobSlice('build');
+    const start = stepIndex(mac, 'name: Verify notarization and Gatekeeper acceptance');
+    const gateStep = mac.slice(start, mac.indexOf('run: |', start));
+    const ifLine = gateStep.split('\n').find((line) => line.trim().startsWith('if:')) ?? '';
+    expect(ifLine.trim()).toBe('if: inputs.artifacts_only != true');
+  });
+
+  it('asserts the exact AppImage filename the launcher downloads', () => {
+    // electron-builder expands ${arch} per target extension: the AppImage is
+    // x86_64, the deb amd64. Whichever side renames, every fresh linux install
+    // 404s — so the linux verify gate must pin the launcher's own spelling.
+    // The expected name is derived INDEPENDENTLY from build.linux.artifactName
+    // (builder-util getArtifactArchName: Arch.x64 + AppImage → x86_64), so the
+    // launcher and the workflow cannot drift together to a wrong-but-matching
+    // spelling — the exact way the amd64 bug originally shipped green.
+    const build = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).build;
+    const expected = build.linux.artifactName
+      .replace('${version}', '1.2.3')
+      .replace('${ext}', 'AppImage')
+      .replace('${arch}', 'x86_64');
+    const requested = launcherSource.match(/FineVibe-\$\{version\}-linux-([a-z0-9_]+)\.AppImage/);
+    expect(requested, 'launcher does not request a linux AppImage by name').not.toBeNull();
+    expect(`FineVibe-1.2.3-linux-${requested![1]}.AppImage`, 'launcher name must equal the builder-derived name').toBe(expected);
+    expect(jobSlice('build-linux')).toContain(`-linux-${requested![1]}.AppImage`);
   });
 });

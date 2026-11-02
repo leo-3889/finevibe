@@ -660,6 +660,15 @@ export interface StatusLineConflictData {
   foreignCommand: string;
 }
 
+/** Main-window geometry (audit row 79): the shape Electron's
+ * `BrowserWindow.getBounds()` reports and accepts. */
+export interface WindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface PersistedState {
   version: 1;
   projects: ProjectRecord[];
@@ -672,6 +681,11 @@ export interface PersistedState {
   preferences?: Preferences;
   sidebarWidth?: number;
   sidebarCollapsed?: boolean;
+  /** Last window position/size, written by MAIN on the confirmed window close
+   * (`main-window.ts saveWindowBounds`) and read back at window creation
+   * (`restoredWindowBounds`). Main-owned like the consent keys: the renderer
+   * round-trips it verbatim and never writes it. */
+  windowBounds?: WindowBounds;
   lastSeenVersion?: string;
   appLaunchCount?: number;
   starPromptDismissed?: boolean;

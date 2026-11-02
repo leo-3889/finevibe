@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Pre-push privacy/secret gate.
+#
+# ONE-TIME SETUP PER CLONE:  npm run hooks:install     # = git config core.hooksPath .githooks
+#
+# Reads the standard pre-push ref lines on stdin (local_ref local_sha remote_ref
+# remote_sha), scans the blobs the push would publish against .secrets.patterns
+# and exits non-zero, listing `[rev] file:line: content`, on any un-exempt hit.
+#
+# Exemptions, in order:
+#   1. `pii-allow` anywhere on the offending line  — synthetic fixture
+#   2. `SHA256:(pinned123|evil|attacker)`          — synthetic host-key pins
+#   3. `/(home|Users)/<fixture-user>/`             — synthetic home paths (ALLOW_USERS)
+#   4. path prefixes in .secrets.allowlist         — attribution metadata + scanner signatures
+set -u
+
+zero=0000000000000000000000000000000000000000
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+patterns=$root/.secrets.patterns
+allowlist=$root/.secrets.allowlist
+
+# ponytail: the deny half lives in .secrets.patterns, the allow half here —
+# POSIX ERE has no negative lookahead, so one file cannot carry both. Widen
+# ALLOW_USERS rather than marking dozens of fixture lines with pii-allow.
+ALLOW_USERS='me|dev|test|testuser|user|foo|alex|sample|attacker|mock|u|mcp|fake|finevibe|runner|x|my|someone'
+allow_users="(^|[^A-Za-z0-9])/(home|Users)/($ALLOW_USERS)(/|[^a-z0-9._-]|\$)"
+allow_sha='SHA256:(pinned123|evil|attacker)'
+
+if [ ! -f "$patterns" ]; then
+  echo "pre-push: $patterns not found — nothing scanned." >&2
+  exit 0
+fi
+
+hits=$(mktemp) || exit 0
+trap 'rm -f "$hits"' EXIT
+
+# .secrets.allowlist -> git pathspec exclusions, one per line.
+excl=''
+if [ -f "$allowlist" ]; then
+  excl=$(sed -e 's/[[:space:]]*$//' -e '/^#/d' -e '/^$/d' "$allowlist" | sed 's|^|:(exclude)|')
+fi
+
+# Paths with spaces: split the file / rev / pathspec lists on newlines only.
+IFS=$'\n'
+
+# The ref lines are space-separated; IFS is newline-only below, so pin it here.
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  case $local_sha in
+    '' | *[!0-9a-f]*) continue ;;   # unparsable line
+    "$zero") continue ;;            # a branch delete publishes nothing
+  esac
+  case $remote_sha in
+    '' | "$zero" | *[!0-9a-f]*) base='' ;;   # new remote ref: everything is new
+    *) base=$remote_sha ;;
+  esac
+
+  revs=$(git rev-list ${base:+$base..}$local_sha 2>/dev/null)
+  [ -z "$revs" ] && continue
+
+  # Files the push touches; on a new ref the whole tip tree is the surface.
+  files=''
+  if [ -n "$base" ]; then
+    files=$(git -c core.quotePath=false diff --name-only "$base" "$local_sha" --)
+    [ -z "$files" ] && continue
+  else
+    # ponytail: a new ref scans the TIP TREE only, not every historical blob.
+    # This repo's pre-rename history already carries the fixtures it forbids
+    # (and is not rewritable), so a full-history gate would fire on every new
+    # branch. Upgrade path: a one-off `git log -p` audit, not the push path.
+    revs=$local_sha
+  fi
+
+  # Scan every published blob, not just the tip: a secret added mid-range and
+  # deleted before the tip is still published by this push.
+  for rev in $revs; do
+    short=$(git rev-parse --short "$rev")
+    # shellcheck disable=SC2086
+    git -c core.quotePath=false grep -I -n -E -f "$patterns" "$rev" -- $excl $files 2>/dev/null |
+      grep -v 'pii-allow' | grep -vE "$allow_sha" | grep -vE "$allow_users" |
+      sed -e "s|^$rev:|[$short] |" >>"$hits"
+  done
+done
+
+if [ -s "$hits" ]; then
+  sort -u "$hits"
+  printf '\npre-push: the lines above match .secrets.patterns.\n' >&2
+  printf 'Fix them, mark a synthetic fixture with `pii-allow` on the line, or exempt an\nattribution path in .secrets.allowlist. Push aborted.\n' >&2
+  exit 1
+fi
+
+exit 0

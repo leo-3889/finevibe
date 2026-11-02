@@ -31,10 +31,23 @@ jobs:
         run: npm ci
 
       - name: Build
+        # Row 80 pulled forward to every push: `npm run icons` regenerates the
+        # tracked build/ masters from assets/icon-source.png, so diffing them
+        # right after fails the push that left the committed bytes stale.
+        # release.yml has the same check, but it only fires at release time.
         run: npm run build && npm run icons
+          && git diff --exit-code -- build/
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Rebuild better-sqlite3 for the Node ABI
+        # Row 61: `npm ci` postinstall runs `electron-builder install-app-deps`
+        # and puts better-sqlite3 on the Electron ABI, which plain-Node vitest
+        # cannot load — the chrome-import cookies/importer suites would
+        # self-skip on every leg. No packaging here, so no Electron-ABI
+        # restore step is needed afterwards.
+        run: npm rebuild better-sqlite3
 
       - name: Run tests
         run: npm test

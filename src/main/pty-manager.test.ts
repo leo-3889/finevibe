@@ -1,17 +1,47 @@
 import { vi } from 'vitest';
+import { promisify } from 'util';
 import * as path from 'path';
 import type * as PlatformModule from './platform';
 import { isLinux, isMac, isWin } from './platform';
 
-const { mockSpawn, mockWrite, mockResize, mockKill, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
+const { mockSpawn, mockWrite, mockResize, mockKill, mockExecSync, mockExecFile, mockNvmDefaultNodeBinDir, mockKeychainIsolation } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockWrite: vi.fn(),
   mockResize: vi.fn(),
   mockKill: vi.fn(),
+  // Loosely typed on purpose: suites program it with both `()` and `(cmd)`
+  // implementations, the way the real execSync overloads allow.
+  mockExecSync: vi.fn((..._args: any[]): string => { throw new Error('not found'); }),
   mockExecFile: vi.fn(),
   mockKeychainIsolation: vi.fn(() => ({ status: 'supported' as 'supported' | 'unsupported' | 'unknown', version: null as string | null })),
   mockNvmDefaultNodeBinDir: vi.fn(() => null as string | null),
 }));
+
+// pty-manager promisifies execFile and destructures `{ stdout }`. Real execFile
+// carries a util.promisify.custom implementation that resolves that shape; a
+// bare vi.fn() resolves with the raw callback arguments instead, so the mock
+// needs the same wrapper. It is attached in a SYNCHRONOUS hoisted block (before
+// this file's own imports run, so before pty-manager promisifies execFile) and
+// keyed with the registered symbol directly — awaiting an import here would
+// land the assignment after the module was already wired.
+vi.hoisted(() => {
+  const execFile = mockExecFile as unknown as (
+    cmd: string,
+    args: readonly string[],
+    options: unknown,
+    cb: (err: unknown, stdout?: string, stderr?: string) => void,
+  ) => void;
+  (mockExecFile as unknown as Record<symbol, unknown>)[Symbol.for('nodejs.util.promisify.custom')] = (
+    command: string,
+    args: readonly string[],
+    options: unknown,
+  ): Promise<{ stdout: string }> => new Promise((resolve, reject) => {
+    execFile(command, args, options, (err, stdout) => {
+      if (err) reject(err); else resolve({ stdout: stdout ?? '' });
+    });
+  });
+  return {};
+});
 
 // Per-host providers T1: remote launches resolve the binary from the host
 // registry record — stub the registry, never the SSH stack.
@@ -23,8 +53,11 @@ vi.mock('node-pty', () => ({
   spawn: mockSpawn,
 }));
 
+// `execSync` is a hoisted fn, not a fresh vi.fn() per factory call: suites that
+// re-import pty-manager through vi.resetModules() (the win/darwin PATH suites)
+// must program the SAME function object the module closed over.
 vi.mock('child_process', () => ({
-  execSync: vi.fn(() => { throw new Error('not found'); }),
+  execSync: mockExecSync,
   execFile: mockExecFile,
 }));
 
@@ -66,7 +99,6 @@ vi.mock('./settings-guard', () => ({
 }));
 
 import * as fs from 'fs';
-import * as child_process from 'child_process';
 import { spawnPty, writePty, resizePty, killPty, getPtyCwd, getRegistryPath, getFullPath, resetPathCache, resolveWindowsShell, withUtf8Locale, resolveLaunchSpec, resolveProviderBinary, LaunchSpecError } from './pty-manager';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider, initProviders } from './providers/registry';
@@ -428,7 +460,7 @@ describe('resolveLaunchSpec (T2)', () => {
   // --- per-host providers T1: registry-host launches (plan §9 golden) ------
 
   const labRecord = {
-    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 2222,
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 2222, // pii-allow: synthetic LAN fixture
     prerequisites: { omp: { ok: true, path: '/home/dev/.local/bin/omp' } },
   };
 
@@ -453,7 +485,7 @@ describe('resolveLaunchSpec (T2)', () => {
     mockGetHost.mockReturnValue(labRecord);
     const spec = resolveLaunchSpec({ ...base, hostId: 'lab', configDir: '/home/dev/.finevibe/profiles/p1' });
     expect(spec.executable).toBe('ssh');
-    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']);
+    expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']); // pii-allow: synthetic LAN fixture
     const cmd = spec.argv[5] as string;
     // The remote binary is the prereq's ABSOLUTE path (used verbatim, not a
     // basename); the profile's config dir AND the session id ride in the
@@ -467,6 +499,39 @@ describe('resolveLaunchSpec (T2)', () => {
     );
     // The legacy local env is NOT how the remote sees the profile.
     expect(spec.env.PI_CODING_AGENT_DIR).toBe('/home/dev/.finevibe/profiles/p1');
+  });
+
+  // Audit row 97: a resume carries the provider's resolved transcript PATH, and
+  // swapping only --session-dir left that controller path in the command. The
+  // host has no such file, and Pi/OMP read a missing `--session|--resume <path>`
+  // as "start this file" — a blank transcript under the pinned id, silently.
+  it('re-anchors a path-shaped resume target under the host session dir (audit row 97)', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    const buildArgs = vi.spyOn(getProvider('omp'), 'buildArgs').mockReturnValue([
+      '--session-dir', '/home/dev/.config/finevibe/omp-sessions/s1',
+      '--resume', '/home/dev/.config/finevibe/omp-sessions/s1/2026-01-01T10-00-00_cli-1.jsonl',
+    ]);
+    try {
+      const spec = resolveLaunchSpec({ ...base, cliSessionId: 'cli-1', isResume: true, hostId: 'lab' });
+      const cmd = spec.argv[5] as string;
+      // Same spelling the transcript mirror resolves on the host, and
+      // $HOME-expanded like the session dir — single quotes would hand the CLI
+      // a literal `~` directory.
+      expect(cmd).toContain(`'--resume' "$HOME/.finevibe/sessions/omp/s1/2026-01-01T10-00-00_cli-1.jsonl"`);
+      expect(cmd).not.toContain('/home/dev/.config/finevibe');
+    } finally {
+      buildArgs.mockRestore();
+    }
+  });
+
+  it('leaves a bare-id resume token untouched (audit row 97 negative)', () => {
+    mockGetHost.mockReturnValue(labRecord);
+    // No local transcript resolved — the usual remote resume, since the launch
+    // dir lives on the host — so the provider passes the bare id, which both
+    // CLIs look up inside the swapped --session-dir. Rewriting it would break
+    // that lookup.
+    const spec = resolveLaunchSpec({ ...base, cliSessionId: 'cli-1', isResume: true, hostId: 'lab' });
+    expect(spec.argv[5]).toContain(`'--resume' 'cli-1'`);
   });
 
   it('drops a hostile session-id env value from the remote command (audit T2 #3)', () => {
@@ -945,65 +1010,228 @@ describe('getPtyCwd', () => {
 });
 
 
-const mockExecSync = vi.mocked(child_process.execSync);
+// pty-manager promisifies execFile for the async PATH probes and destructures
+// `{ stdout }` — the shape the real execFile's util.promisify.custom
+// implementation resolves (the hoisted block at the top of this file installs
+// the same wrapper on the mock, before any module promisifies it).
 
-describe('getRegistryPath', () => {
-  beforeEach(() => {
-    resetPathCache();
+// Row 73: the registry PATH read is Windows-only, and isWin/pathSep are baked at
+// module load, so the Windows build of pty-manager needs a fresh module registry
+// with the platform seam pinned (the same idiom the darwin suite below uses).
+// Static-import gating left the whole suite skipped on Linux/mac CI — exactly
+// how the OEM-code-page bug shipped.
+async function importWinPtyManager() {
+  vi.resetModules();
+  vi.doMock('./platform', async (importOriginal) => ({
+    ...(await importOriginal<typeof PlatformModule>()),
+    isWin: true,
+    isMac: false,
+    isLinux: false,
+    pathSep: ';',
+    whichCmd: 'where',
+    utf8LocaleEnv: {},
+  }));
+  const pm = await import('./pty-manager');
+  // Import-time probes (provider registry, keychain status) also reach execSync,
+  // and the getPtyCwd suite leaves queued `mockImplementationOnce` answers on
+  // these hoisted mocks — `clearAllMocks`/`mockClear` keep that queue, so a
+  // stale `lsof` answer would otherwise reply to the registry spawn (and only
+  // under full-file ordering). Reset the state, then restore the factory default
+  // the statically-imported suites rely on. The hoisted mock objects themselves
+  // are untouched, so the child_process factory and the promisify wrapper still
+  // point at them.
+  mockExecSync.mockReset();
+  mockExecSync.mockImplementation(() => {
+    throw new Error('not found');
+  });
+  mockExecFile.mockReset();
+  return { pm, execSync: mockExecSync, execFile: mockExecFile };
+}
+
+describe('getRegistryPath (row 73 registry decode)', () => {
+  afterEach(() => {
+    vi.doUnmock('./platform');
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    mockExecSync.mockImplementation(() => {
+      throw new Error('not found');
+    });
   });
 
-  if (isWin) {
-    it('parses REG_SZ registry output', () => {
-      mockExecSync
-        .mockReturnValueOnce(
-          '\r\nHKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\r\n    Path    REG_SZ    C:\\Windows\\system32;C:\\Windows\r\n\r\n',
-        )
-        .mockReturnValueOnce(
-          '\r\nHKCU\\Environment\r\n    Path    REG_SZ    C:\\Users\\test\\AppData\\Roaming\\npm\r\n\r\n',
-        );
+  // The payload shape PowerShell returns for [HKLM system PATH, HKCU user PATH].
+  // Windows PowerShell 5.1 escapes non-ASCII to \uXXXX (pure ASCII stdout);
+  // PowerShell 7 on a UTF-8 console emits the raw characters. Both are UTF-8
+  // bytes by contract now — under `reg query` the same directories arrived in
+  // the console OEM code page (cp866 / cp932 / cp936) and decoded as mojibake.
+  it('reads both hives in one PowerShell call that pins UTF-8 output', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('["C:\\\\Windows","C:\\\\Users\\\\test\\\\AppData\\\\Roaming\\\\npm"]');
 
-      const result = getRegistryPath();
-      expect(result).toContain('C:\\Windows\\system32;C:\\Windows');
-      expect(result).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
+    expect(pm.getRegistryPath()).toBe('C:\\Windows;C:\\Users\\test\\AppData\\Roaming\\npm');
+
+    expect(execSync).toHaveBeenCalledTimes(1);
+    const [cmd, opts] = execSync.mock.calls[0] as unknown as [string, { encoding: string; timeout: number }];
+    expect(cmd).toContain('[Console]::OutputEncoding=[Text.Encoding]::UTF8');
+    expect(cmd).toContain('Session Manager\\Environment');
+    expect(cmd).toContain("'HKCU:\\Environment'");
+    expect(cmd).toContain('ConvertTo-Json');
+    expect(cmd).not.toContain('reg query');
+    expect(opts.encoding).toBe('utf-8');
+  });
+
+  it('decodes the \\uXXXX payload Windows PowerShell 5.1 emits (Cyrillic profile dir)', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('["C:\\\\Program Files\\\\\\u041e\\u0431\\u0449\\u0438\\u0435",""]');
+
+    expect(pm.getRegistryPath()).toBe('C:\\Program Files\\Общие');
+  });
+
+  it('decodes raw UTF-8 Cyrillic/CJK output (PowerShell 7 on a UTF-8 console)', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('["C:\\\\Program Files\\\\Общие","C:\\\\Users\\\\用户\\\\bin"]');
+
+    expect(pm.getRegistryPath()).toBe('C:\\Program Files\\Общие;C:\\Users\\用户\\bin');
+  });
+
+  it('tolerates the BOM redirected PowerShell output can carry', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('\uFEFF["C:\\\\Windows","C:\\\\Users\\\\test\\\\AppData\\\\Roaming\\\\npm"]');
+
+    expect(pm.getRegistryPath()).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
+  });
+
+  it('expands %VAR% references the registry left raw', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    process.env.SystemRoot = 'C:\\Windows';
+    execSync.mockReturnValue('["%SystemRoot%\\\\system32;%SystemRoot%",""]');
+
+    const result = pm.getRegistryPath();
+
+    expect(result).toBe('C:\\Windows\\system32;C:\\Windows');
+    expect(result).not.toContain('%SystemRoot%');
+  });
+
+  it('drops a null or empty hive — a missing HKCU Environment\\Path is normal', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('[null,"C:\\\\Users\\\\test\\\\AppData\\\\Roaming\\\\npm"]');
+
+    expect(pm.getRegistryPath()).toBe('C:\\Users\\test\\AppData\\Roaming\\npm');
+  });
+
+  it('returns an empty string when PowerShell is unavailable', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockImplementation(() => { throw new Error('access denied'); });
+
+    expect(pm.getRegistryPath()).toBe('');
+  });
+
+  it('returns an empty string for a payload that is not JSON', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockReturnValue('Get-ItemProperty : Cannot find path ...');
+
+    expect(pm.getRegistryPath()).toBe('');
+  });
+
+  // Row 73 follow-up: ConstrainedLanguage / WDAC boxes START PowerShell and let
+  // it refuse the property read, so the JSON path used to fail OPEN — the
+  // registry contributed zero and a provider living on a registry-only
+  // directory read as uninstalled. reg.exe is not subject to the language mode.
+  it('falls back to the reg query read when PowerShell is refused (ConstrainedLanguage)', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    process.env.SystemRoot = 'C:\\Windows';
+    execSync.mockImplementation((cmd: unknown) => {
+      const command = String(cmd);
+      if (command.startsWith('powershell.exe')) {
+        throw new Error('Cannot set property. Property setting is supported only on core types in this language mode.');
+      }
+      if (command.includes('HKLM')) return '\r\n    Path    REG_EXPAND_SZ    C:\\Windows\\system32;%SystemRoot%\\twain_32\r\n\r\n';
+      if (command.includes('HKCU')) return '\r\n    Path    REG_SZ    C:\\Users\\test\\AppData\\Roaming\\npm\r\n';
+      throw new Error('not found');
     });
 
-    it('expands %VAR% references in REG_EXPAND_SZ values', () => {
-      process.env.SystemRoot = 'C:\\Windows';
-      process.env.USERPROFILE = 'C:\\Users\\test';
+    expect(pm.getRegistryPath())
+      .toBe('C:\\Windows\\system32;C:\\Windows\\twain_32;C:\\Users\\test\\AppData\\Roaming\\npm');
 
-      mockExecSync
-        .mockReturnValueOnce(
-          '    Path    REG_EXPAND_SZ    %SystemRoot%\\system32;%SystemRoot%\r\n',
-        )
-        .mockReturnValueOnce(
-          '    Path    REG_EXPAND_SZ    %USERPROFILE%\\AppData\\Roaming\\npm\r\n',
-        );
+    // Both hives, per hive one call, ASCII intact, %VAR% still expanded.
+    const commands = execSync.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands.filter((cmd) => cmd.startsWith('reg query'))).toHaveLength(2);
+    expect(commands[0]).toContain('powershell.exe');
+    expect(commands[1]).toContain('"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"');
+    expect(commands[2]).toContain('"HKCU\\Environment"');
+  });
 
-      const result = getRegistryPath();
-      expect(result).toContain('C:\\Windows\\system32');
-      expect(result).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
-      expect(result).not.toContain('%SystemRoot%');
-      expect(result).not.toContain('%USERPROFILE%');
+  // The other face of the same box: PowerShell RUNS and answers `[null,null]`
+  // because the language mode refused the property read, not because the hives
+  // are empty. Falling back on the empty payload is what closes that face.
+  it('falls back to the reg query read when PowerShell answers with empty hives', async () => {
+    const { pm, execSync } = await importWinPtyManager();
+    execSync.mockImplementation((cmd: unknown) => {
+      const command = String(cmd);
+      if (command.startsWith('powershell.exe')) return '[null,null]';
+      if (command.includes('HKLM')) return '    Path    REG_SZ    C:\\Windows\\system32\r\n';
+      throw new Error('not found');
     });
 
-    it('returns empty string when registry queries fail', () => {
-      mockExecSync.mockImplementation(() => { throw new Error('access denied'); });
+    expect(pm.getRegistryPath()).toBe('C:\\Windows\\system32');
+  });
 
-      const result = getRegistryPath();
-      expect(result).toBe('');
+  // The consumer half of the row: a provider installed under a non-ASCII
+  // directory is only found if the decoded path reaches the PATH getFullPath
+  // hands the binary probes — sync and async twins must agree.
+  it('feeds the decoded non-ASCII directory to getFullPath, sync and async', async () => {
+    const payload = '["C:\\\\Program Files\\\\Общие\\\\bin",null]';
+    vi.stubEnv('PATH', 'C:\\Windows\\System32');
+
+    const sync = await importWinPtyManager();
+    sync.execSync.mockReturnValue(payload);
+    const syncPath = sync.pm.getFullPath();
+
+    expect(syncPath).toContain('C:\\Program Files\\Общие\\bin');
+    expect(syncPath.startsWith('C:\\Windows\\System32')).toBe(true);
+
+    const async_ = await importWinPtyManager();
+    // The mock's util.promisify.custom wrapper (installed in the hoisted block
+    // above) is what makes `const { stdout } = await execFileP(…)` read the
+    // payload here exactly as it does in production.
+    expect((mockExecFile as unknown as Record<symbol, unknown>)[promisify.custom]).toBeTypeOf('function');
+    async_.execFile.mockImplementation((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      cb(null, payload);
+      return undefined as never;
+    });
+    const asyncPath = await async_.pm.getFullPathAsync();
+
+    expect(asyncPath).toContain('C:\\Program Files\\Общие\\bin');
+    // The async twin must spawn the locator, never the shell probe.
+    expect(async_.execFile.mock.calls[0][0]).toBe('powershell.exe');
+    expect(async_.execSync).not.toHaveBeenCalled();
+  });
+
+  // Row 73 follow-up, async twin: PowerShell throws (ConstrainedLanguage /
+  // WDAC / no PowerShell at all) and the pre-wave `reg query` read still knows
+  // where the provider CLIs live.
+  it('falls back to the reg query read in getFullPathAsync when PowerShell throws', async () => {
+    vi.stubEnv('PATH', 'C:\\Windows\\System32');
+    const async_ = await importWinPtyManager();
+    async_.execFile.mockImplementation((cmd: string, args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      if (cmd === 'powershell.exe') {
+        cb(new Error('Property setting is supported only on core types in this language mode.'));
+        return;
+      }
+      const hive = String((args as string[])[1]);
+      cb(null, hive.includes('HKLM')
+        ? '    Path    REG_EXPAND_SZ    C:\\Windows\\system32\r\n'
+        : '    Path    REG_SZ    C:\\Users\\test\\AppData\\Roaming\\npm\r\n');
     });
 
-    it('handles partial failure (system path fails, user path succeeds)', () => {
-      mockExecSync
-        .mockImplementationOnce(() => { throw new Error('access denied'); })
-        .mockReturnValueOnce(
-          '    Path    REG_SZ    C:\\Users\\test\\AppData\\Roaming\\npm\r\n',
-        );
+    const asyncPath = await async_.pm.getFullPathAsync();
 
-      const result = getRegistryPath();
-      expect(result).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
-    });
-  } else {
+    expect(asyncPath).toContain('C:\\Windows\\System32');
+    expect(asyncPath).toContain('C:\\Windows\\system32');
+    expect(asyncPath).toContain('C:\\Users\\test\\AppData\\Roaming\\npm');
+    expect(async_.execFile.mock.calls.map(([cmd]) => cmd)).toEqual(['powershell.exe', 'reg', 'reg']);
+  });
+
+  if (!isWin) {
     it('returns empty string on non-Windows', () => {
       expect(getRegistryPath()).toBe('');
     });
@@ -1526,6 +1754,68 @@ describe('resolveWindowsShell', () => {
       });
     });
   }
+});
+
+// Audit R114: the cmd.exe quote rejection is a launch-spec rejection, not an
+// internal error. The wrapping used to be resolved AFTER the session was
+// registered and its hooks installed, so the throw escaped spawnPty as a
+// rejection of a channel the renderer never awaits: a blank pane, and the only
+// readable reason was the generic `Failed to prepare the launch: Error: …` — the
+// per-provider hint (a native-.exe binary, or a Pi-compatible provider loading a
+// prompt FILE) was lost with the exception class.
+describe('Windows quoted-prompt launch rejection (audit R114)', () => {
+  // Platform constants are baked at module load, so the win32 build needs a
+  // fresh module registry with './platform' pinned — the same seam as the
+  // darwin and posix suites above (test-case exception to the static-import
+  // rule). Unconditional on purpose: this Windows-only class must also run on
+  // the POSIX dev host, where it would otherwise never be exercised.
+  async function importWinPtyManager() {
+    const registerSession = vi.fn();
+    vi.resetModules();
+    vi.doMock('./platform', async (importOriginal) => ({
+      ...(await importOriginal<typeof PlatformModule>()),
+      isWin: true,
+      isMac: false,
+      isLinux: false,
+      pathSep: '\\',
+      whichCmd: 'where',
+      utf8LocaleEnv: {},
+    }));
+    // registerSession is the first side effect spawnPty runs once the spec is
+    // resolved; the spy proves the rejection lands BEFORE it.
+    vi.doMock('./hook-status', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('./hook-status')>()),
+      registerSession,
+    }));
+    const registry = await import('./providers/registry');
+    registry.initProviders();
+    const pm = await import('./pty-manager');
+    return { pm, registerSession };
+  }
+
+  afterEach(() => {
+    vi.doUnmock('./platform');
+    vi.doUnmock('./hook-status');
+    vi.resetModules();
+  });
+
+  it('rejects a quote-bearing prompt with the actionable spec message before any side effect', async () => {
+    const { pm, registerSession } = await importWinPtyManager();
+    const onData = vi.fn();
+    const onExit = vi.fn();
+
+    await pm.spawnPty('win-quote', '/project', null, false, '', 'claude', undefined, 'focus on "auth.ts"', '', onData, onExit);
+
+    const pane = String(onData.mock.calls[0]?.[0] ?? '');
+    expect(pane).toContain('double quote');
+    expect(pane).toContain('prompt file');
+    expect(pane).not.toContain('Failed to prepare the launch');
+    // The spawn-rejected sentinel keeps the pane open with the message readable
+    // instead of archiving a crash for a session that never spawned.
+    expect(onExit).toHaveBeenCalledWith(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(registerSession).not.toHaveBeenCalled();
+  });
 });
 
 describe('withUtf8Locale (issues #157, #160)', () => {

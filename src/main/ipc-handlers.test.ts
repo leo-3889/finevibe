@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ClipboardPastePayload, SettingsValidationResult } from '../shared/types';
 import * as path from 'path';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
+import { launchSessionDir } from './launch-session-dir';
 
 /**
  * Focused on the `pty:create` lifecycle: which provider hook fires for a
@@ -207,14 +208,36 @@ const sshExec = vi.hoisted(() => vi.fn());
 vi.mock('./hosts/ssh-client', () => ({
   exec: (...args: unknown[]) => sshExec(...args),
   sftpRead: vi.fn(),
+  // remote-fs (loaded REAL below for its pure path helpers) imports the whole
+  // sftp surface; Vitest throws on a named import the factory does not define.
+  sftpListDirEntries: vi.fn(),
+  sftpReadRange: vi.fn(),
+  sftpStat: vi.fn(),
 }));
 vi.mock('./hosts/enrollment', autoStub);
 vi.mock('./hosts/remote-provider-config', autoStub);
 vi.mock('./hosts/settings-sync', autoStub);
-vi.mock('./hosts/remote-fs', autoStub);
+// The sftp/exec lanes are stubs (no ssh2 in this suite), but remote-fs' PURE
+// path/containment helper stays real: the tree-rail gate (audit R93), the
+// provider:getConfig containment (R94) and the pty:create host gate (R96) all
+// ARE that compare, and a bare vi.fn() answers `undefined` — i.e. every gate
+// refuses, which would silently make each gate test prove nothing.
+vi.mock('./hosts/remote-fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./hosts/remote-fs')>();
+  return {
+    ...actual,
+    listRemoteDir: vi.fn(),
+    listRemoteDirs: vi.fn(),
+    readRemoteFile: vi.fn(),
+    statRemotePath: vi.fn(),
+    walkRemoteFiles: vi.fn(),
+    ensureRemoteDir: vi.fn(),
+    cloneRemoteRepo: vi.fn(),
+  };
+});
 
 import {
-  registerIpcHandlers, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
+  registerIpcHandlers, uidScopedTempDir, _resetEnumerateCacheForTesting, _resetHomeOutsideConsentForTesting,
   sweepEnumerationCaches, ENUMERATE_CACHE_MAX, TOP_FILES_CACHE_MAX, OUTSIDE_HOME_CONSENT_MAX,
 } from './ipc-handlers';
 import { isManagedMcpConfigDir, removeMcpServer } from './claude-cli';
@@ -644,6 +667,30 @@ describe.skipIf(process.platform === 'win32')('remote-scope belt (git/fs)', () =
     knownPaths.push(path.resolve('/local/proj'));
     expect(() => handlers.get('git:getStatus')!({}, path.resolve('/local/proj'))).not.toThrow();
   });
+
+  // Audit R96: pty:create was the one launch sink without this belt — a
+  // no-hostId launch into a mirrored remote path spawned the LOCAL CLI there.
+  it('pty:create refuses a local launch into a mirrored remote project path', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    remoteRoots.push({ path: '/srv/app', hostId: 'host-1' });
+    knownPaths.push('/srv/app'); // the mirror lie: the local gate passes
+    await handlers.get('pty:create')!({}, 'belt-1', '/srv/app', null, false, '', 'pi');
+    expect(mockSpawnPty).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pty:create blocked'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('is a project on remote host'));
+    warn.mockRestore();
+  });
+
+  // Audit R101: fs:topFilesByTokens is fs:listFiles' polling twin and ran the
+  // local gate without the belt — the widget ranked the WRONG machine.
+  it('fs:topFilesByTokens refuses a remote-rooted cwd with a greppable warn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    remoteRoots.push({ path: '/srv/top', hostId: 'host-1' });
+    knownPaths.push('/srv/top');
+    await expect(handlers.get('fs:topFilesByTokens')!({}, '/srv/top', 10)).resolves.toEqual({ ok: false });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:topFilesByTokens blocked'));
+    warn.mockRestore();
+  });
 });
 
 // Phase 3.5 (git-on.ts): a remote project with a live host record ROUTES to
@@ -838,6 +885,46 @@ describe('store:save-sync (S1-03)', () => {
     const event = { returnValue: undefined as unknown };
     expect(() => handlers.get('store:save-sync')!(event, { projects: [], preferences: {} })).not.toThrow();
     expect(event.returnValue).toBe(false);
+  });
+});
+
+// Rows 31/34 bypass (`9801edb6` review): the renderer's whole-state payload
+// carries `hosts`, and this boundary filter is a PREFERENCES allowlist — it
+// neither fixes nor drops a forged host record. That is deliberate: the filter
+// must not start dropping hosts (the wizard's own records ride the same array),
+// and the enforcement lives one call deeper, in `graftMainOwnedHosts` (pinned in
+// store.test.ts). These two cases pin the wiring contract both halves depend on:
+// every renderer flush channel hands the UNFILTERED hosts array to the store —
+// so there is no path around the graft, and no channel that quietly loses hosts.
+describe('store:save / store:save-sync pass renderer hosts to the store graft (rows 31/34)', () => {
+  const forgedHost = {
+    id: 'h1', name: 'remote1', user: 'dev', host: '192.0.2.242', port: 22,
+    authKind: 'key', privateKeyPath: '~/.ssh/id_ed25519', managedKey: true,
+    enrollmentStatus: 'enrolled',
+  };
+
+  it('store:save forwards the forged record to saveState untouched', async () => {
+    const store = await import('./store');
+    const payload = { projects: [], preferences: {}, hosts: [forgedHost] } as never;
+
+    handlers.get('store:save')!({}, payload);
+
+    const passed = vi.mocked(store.saveState).mock.calls[0][0] as unknown as { hosts: Array<typeof forgedHost> };
+    expect(passed.hosts[0]).toBe(forgedHost);
+  });
+
+  // The `beforeunload` flush is the other whole-state write; a fix on the async
+  // channel alone would leave the quit path carrying the forged record to disk.
+  it('store:save-sync forwards it to saveStateSync untouched', async () => {
+    const store = await import('./store');
+    const payload = { projects: [], preferences: {}, hosts: [forgedHost] } as never;
+    const event = { returnValue: undefined as unknown };
+
+    handlers.get('store:save-sync')!(event, payload);
+
+    const passed = vi.mocked(store.saveStateSync).mock.calls[0][0] as unknown as { hosts: Array<typeof forgedHost> };
+    expect(passed.hosts[0]).toBe(forgedHost);
+    expect(event.returnValue).toBe(true);
   });
 });
 
@@ -1844,6 +1931,23 @@ describe('clipboard:readForPaste file lists', () => {
     expect((await readPaste()).files).toEqual(['/tmp/a & b.txt', '/tmp/café.md']);
   });
 
+  it('reads a single-file mac copy from public.file-url, the flavor modern senders publish', async () => {
+    // Logic proof (no mac pasteboard in CI): a sender carrying ONLY
+    // `public.file-url` used to match no branch, so the paste fell through to
+    // the file NAME the sender echoed as clipboard text. The branch decodes the
+    // file URL (percent-escapes included) and does not touch the plist reader.
+    platformState.os = 'darwin';
+    formatsWith('public.file-url', 'text/plain');
+    const target = '/tmp/report 1.md';
+    vi.mocked(clipboard.read).mockReturnValue(`${pathToFileURL(target).href}\0`);
+
+    const payload = await readPaste();
+    expect(payload.files).toEqual([target]);
+    expect(clipboard.read).toHaveBeenCalledWith('public.file-url');
+    // The plist is the fallback, not a second probe on a file-url clipboard.
+    expect(clipboard.readBuffer).not.toHaveBeenCalled();
+  });
+
   it('reads file-manager copies on Linux from text/uri-list, skipping web links', async () => {
     platformState.os = 'linux';
     formatsWith('text/uri-list', 'text/plain');
@@ -2230,6 +2334,21 @@ describe('ipcMain.on bodies are non-fatal', () => {
       expect(event.returnValue).toEqual({ theme: null, zoomFactor: null });
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  // Audit row 43: `log:write` was the one `on` body registered without the
+  // safeOn wrapper — a dying console/log-file sink would have taken main down
+  // while it was only forwarding a renderer log line.
+  it('swallows a throw from the renderer log sink', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => { throw new Error('log sink died'); });
+    try {
+      expect(() => handlers.get('log:write')!({}, 'log', 'hello')).not.toThrow();
+      expect(warn).toHaveBeenCalledWith('log:write failed:', expect.any(Error));
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
     }
   });
 });
@@ -3051,7 +3170,7 @@ describe('home-outside consent cache cap (B1)', () => {
 // answering with ITS resolved + canonical spelling. As a pre-project WRITE it
 // takes fs:cloneRepo's gate shape, and a denied consent is an ERROR: the old
 // fs:isDirectory `false` conflated "you pressed Cancel" with "the folder is
-// not there", which is how an existing `E:\AI\sample-project` came to be reported
+// not there", which is how an existing `E:\AI\Acme` came to be reported
 // as non-existent on a non-home drive.
 describe('fs:ensureDirectory', () => {
   // The gate admits the home tree, and these fixtures live in `os.tmpdir()`: under
@@ -3103,13 +3222,13 @@ describe('fs:ensureDirectory', () => {
   it('answers the renderer\'s `/`-joined spelling with the resolved path', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
     try {
-      // `${root}/sample-project` is what the modal sends on Windows
+      // `${root}/Acme` is what the modal sends on Windows
       // (`E:\AI` + '/' + name); the answer is the platform spelling.
-      await expect(handlers.get('fs:ensureDirectory')!({}, `${root}/sample-project`)).resolves.toEqual({
+      await expect(handlers.get('fs:ensureDirectory')!({}, `${root}/Acme`)).resolves.toEqual({
         ok: true,
-        path: path.join(fs.realpathSync(root), 'sample-project'),
+        path: path.join(fs.realpathSync(root), 'Acme'),
       });
-      expect(fs.statSync(path.join(root, 'sample-project')).isDirectory()).toBe(true);
+      expect(fs.statSync(path.join(root, 'Acme')).isDirectory()).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -3134,13 +3253,13 @@ describe('fs:ensureDirectory', () => {
 
   it('creates a missing directory inside an allowed root recursively and answers its path', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'finevibe-ensure-'));
-    const target = path.join(root, 'sample-project', 'nested');
+    const target = path.join(root, 'Acme', 'nested');
     // No mockImplementation: the spy calls through, so the directory is real.
     const mkdir = vi.spyOn(fs.promises, 'mkdir');
     try {
       await expect(handlers.get('fs:ensureDirectory')!({}, target)).resolves.toEqual({
         ok: true,
-        path: path.join(fs.realpathSync(root), 'sample-project', 'nested'),
+        path: path.join(fs.realpathSync(root), 'Acme', 'nested'),
       });
       expect(mkdir).toHaveBeenCalledWith(target, { recursive: true });
       expect(fs.statSync(target).isDirectory()).toBe(true);
@@ -3303,11 +3422,34 @@ describe('P2-110: the five channels the coverage map overclaimed', () => {
 
     const written = await handlers.get('browser:saveScreenshot')!({}, '../evil', 'data:image/png;base64,iVBORw0KGgo=') as string;
     try {
-      expect(path.dirname(written)).toBe(path.join(os.tmpdir(), 'finevibe-screenshots'));
+      expect(path.dirname(written)).toBe(uidScopedTempDir('finevibe-screenshots'));
       expect(path.basename(written)).toMatch(/^draw-___evil-\d+\.png$/);
       expect(fs.existsSync(written)).toBe(true);
     } finally {
       fs.rmSync(written, { force: true });
+    }
+  });
+
+  // Audit R95: the screenshot dir was the bare `os.tmpdir()/finevibe-screenshots`.
+  // os.tmpdir() is world-writable and shared, so one local
+  // `mkdir /tmp/finevibe-screenshots` claimed the 0700 name and every other
+  // user's screenshot write then failed EACCES — and a directory a foreign user
+  // owns is the write-squat target for what gets written into it. The paste
+  // dir's uid-suffix rule (uidScopedTempDir) now covers both.
+  it('browser:saveScreenshot writes into the uid-suffixed dir on POSIX (audit R95)', async () => {
+    platformState.os = 'linux';
+    try {
+      const uid = process.getuid!();
+      const written = await handlers.get('browser:saveScreenshot')!({}, 's1', 'data:image/png;base64,iVBORw0KGgo=') as string;
+      try {
+        expect(path.basename(path.dirname(written))).toBe(`finevibe-screenshots-${uid}`);
+        // 0700 on a world-writable parent: a screenshot is browser content.
+        expect(fs.statSync(path.dirname(written)).mode & 0o077).toBe(0);
+      } finally {
+        fs.rmSync(written, { force: true });
+      }
+    } finally {
+      platformState.os = 'win32';
     }
   });
 
@@ -3336,7 +3478,7 @@ describe('P2-110: the five channels the coverage map overclaimed', () => {
 describe('per-host provider channels (per-host providers T1)', () => {
   const freshProbeAt = new Date().toISOString();
   const lab = {
-    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 22,
+    id: 'lab', name: 'Lab', user: 'dev', host: '192.168.1.50', port: 22, // pii-allow: synthetic LAN fixture
     prerequisites: { pi: { ok: true, path: '/home/dev/.local/bin/pi' } },
     lastProbeAt: freshProbeAt,
   };
@@ -3458,8 +3600,63 @@ describe('per-host provider channels (per-host providers T1)', () => {
     await expect(handlers.get('profiles:provision')!({}, 'p1', '/custom', 'pi', 'lab')).rejects.toThrow(/local-only/);
   });
 
+  // Audit R94: the remote containment was a raw startsWith. joinPosix +
+  // normalizeProviderPath collapse `..` lexically AFTER the compare, so a path
+  // that merely STARTS WITH a project root escaped it — the fixed config
+  // filenames (.mcp.json, tokens in) were read out of an arbitrary host dir.
+  it('provider:getConfig refuses a ..-traversal remote projectPath that prefix-matches a root', async () => {
+    vi.mocked(getHost).mockReturnValue(lab as never);
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
+    vi.mocked(getRemoteProviderConfig).mockClear();
+    await expect(handlers.get('provider:getConfig')!({}, 'pi', '/proj/evil/../../secret', undefined, 'lab'))
+      .rejects.toThrow(/not within a known project of host/);
+    expect(getRemoteProviderConfig).not.toHaveBeenCalled();
+  });
+
+  // Audit R96: the launch gate ran isWithinKnownProject(path.resolve(cwd)) for
+  // EVERY launch. Its roots are realpaths of existing LOCAL directories, so a
+  // remote cwd — absent on the controller, and re-anchored to a phantom
+  // `C:\srv\app` by path.resolve on a Windows controller — refused every
+  // remote provider launch. Logic proof (no Windows runtime here): the host
+  // launch passes with an EMPTY local root set.
+  it('pty:create gates a hostId launch on the HOST roots, not the local disk (win controller)', async () => {
+    platformState.os = 'win32';
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/srv/app', hostId: 'lab' }], preferences: {},
+    } as never);
+    // knownPaths stays EMPTY on purpose: deriveGateRoots keeps only existing
+    // local dirs, so a host project is never in the local gate's root set.
+    await handlers.get('pty:create')!(
+      {}, 'win-1', '/srv/app', null, false, '', 'pi', undefined, undefined, '',
+      undefined, 'lab',
+    );
+    expect(mockSpawnPty).toHaveBeenCalled();
+    expect(mockSpawnPty.mock.calls[0][1]).toBe('/srv/app');
+  });
+
+  it('pty:create still refuses a hostId launch outside that host\'s projects', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/srv/app', hostId: 'lab' }], preferences: {},
+    } as never);
+    await handlers.get('pty:create')!(
+      {}, 'win-2', '/srv/other', null, false, '', 'pi', undefined, undefined, '',
+      undefined, 'lab',
+    );
+    expect(mockSpawnPty).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('is not a known project of host'));
+    warn.mockRestore();
+  });
+
   it('pty:create threads the trailing hostId down to spawnPty', async () => {
     knownPaths.push('/proj');
+    // Audit R96: a host launch is gated against the host's RECORDED projects,
+    // not the controller's disk.
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
     await handlers.get('pty:create')!(
       {}, 'host-1', '/proj', null, false, '', 'pi', undefined, undefined, '',
       undefined, 'lab',
@@ -3470,6 +3667,9 @@ describe('per-host provider channels (per-host providers T1)', () => {
 
   it('pty:create registers a REMOTE transcript sync with the HOST session dir (audit T2 #5)', async () => {
     knownPaths.push('/proj');
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/proj', hostId: 'lab' }], preferences: {},
+    } as never);
     await handlers.get('pty:create')!(
       {}, 'host-2', '/proj', 'cli-9', true, '', 'pi', undefined, undefined, '',
       undefined, 'lab',
@@ -3488,12 +3688,26 @@ describe('per-host provider channels (per-host providers T1)', () => {
     );
     const localOpts = mockRegisterSync.mock.calls[0][5] as { sessionDir?: string; hostId?: string };
     expect(localOpts.hostId).toBeUndefined();
-    expect(localOpts.sessionDir).not.toContain('~/.finevibe/sessions');
+    // Audit R110: the local registration must name the SAME dir the provider
+    // hands its sessions watcher (launchSessionDir), not merely "not the host
+    // spelling". session-transcript-sync's isSameSync compares sessionDir
+    // verbatim: any delta (a missing value, a different derivation) makes the
+    // watcher's seed re-registration look like a new conversation, and the
+    // already-resolved incumbent is torn down for the seed.
+    expect(localOpts.sessionDir).toBe(launchSessionDir('pi', 'host-3'));
   });
 });
 
 describe('remote fs rails (per-host providers, parent plan §11)', () => {
   const REMOTE = '/home/dev/dev/app';
+
+  // The stat rails are TREE rails (audit R93): they contain on the project
+  // roots recorded for the host, so every lane here names a path under one.
+  beforeEach(() => {
+    vi.mocked(loadState).mockReset().mockReturnValue({
+      projects: [{ id: 'p', path: '/home/dev/dev', hostId: 'h1' }], preferences: {},
+    } as never);
+  });
 
   it('routes a registry hostId to the sftp lanes and keeps their shapes', async () => {
     vi.mocked(listRemoteDir).mockResolvedValueOnce({
@@ -3515,6 +3729,28 @@ describe('remote fs rails (per-host providers, parent plan §11)', () => {
     vi.mocked(statRemotePath).mockResolvedValue({ ok: false });
     await expect(handlers.get('fs:exists')!({}, REMOTE, 'h1')).resolves.toBe(false);
     await expect(handlers.get('fs:stat')!({}, REMOTE, 'h1')).resolves.toEqual({ ok: false });
+  });
+
+  // Audit R93: the three stat rails fed the renderer path straight to
+  // statRemotePath, which carries only the DIR-BROWSER gate (host + path
+  // safety, no project containment) — the always-on tree could probe any path
+  // on the host while the contract claimed containment, and fs:listDir /
+  // fs:readFile already refused the same path.
+  it('the stat rails refuse a remote path outside the host\'s projects, before any sftp touch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(statRemotePath).mockClear().mockResolvedValue({ ok: true, isDirectory: true, size: 0, mtimeMs: 5 });
+    const OUTSIDE = '/home/dev/other/app';
+    await expect(handlers.get('fs:exists')!({}, OUTSIDE, 'h1')).resolves.toBe(false);
+    await expect(handlers.get('fs:stat')!({}, OUTSIDE, 'h1')).resolves.toEqual({ ok: false });
+    await expect(handlers.get('fs:isDirectory')!({}, OUTSIDE, 'h1')).resolves.toBe(false);
+    expect(statRemotePath).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:exists remote blocked'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:stat remote blocked'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs:isDirectory remote blocked'));
+    // A path under the host's project still reaches the lane.
+    await expect(handlers.get('fs:exists')!({}, REMOTE, 'h1')).resolves.toBe(true);
+    expect(statRemotePath).toHaveBeenCalledWith('h1', REMOTE);
+    warn.mockRestore();
   });
 
   it('rail failures answer the local failure shapes, never a rejection', async () => {

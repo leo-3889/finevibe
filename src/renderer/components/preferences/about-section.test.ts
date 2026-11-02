@@ -7,7 +7,9 @@ vi.mock('../../state.js', () => ({ appState: appStateMock }));
 type AvailableHandler = (info: { version: string }) => void;
 type ErrorHandler = () => void;
 
-const checkNow = vi.fn<[], Promise<void>>();
+// The real channel resolves to auto-updater's UpdateCheckResult (or undefined
+// from an older main); renderer/types.ts still declares Promise<void>.
+const checkNow = vi.fn<[], Promise<unknown>>();
 const availableHandlers: AvailableHandler[] = [];
 const errorHandlers: ErrorHandler[] = [];
 
@@ -91,5 +93,23 @@ describe('update-check listener lifecycle (P3-1)', () => {
     expect(status.textContent).toBe(t('about.updateFailed'));
     expect(errorHandlers).toHaveLength(0);
     expect(availableHandlers).toHaveLength(0);
+  });
+
+  // Rows 57/64/65: main gates auto-update per install (deb, portable, foreign
+  // feed) and reports the reason on the channel. The pane must show it, not a
+  // fabricated "Update available"/"Update failed" for a check that never ran.
+  it('a gated install shows the reported reason and registers no listeners', async () => {
+    checkNow.mockResolvedValue({ disabled: 'deb install: the linux feed ships the AppImage only' });
+    const { btn, status, t } = await mount();
+    btn.click();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(status.textContent).toContain('deb install');
+    expect(status.textContent).not.toBe(t('about.upToDate'));
+    expect(status.textContent).not.toBe(t('about.updateFailed'));
+    expect(availableHandlers).toHaveLength(0);
+    expect(errorHandlers).toHaveLength(0);
+    // Re-enabled: the gate is per install, the button is not a one-shot.
+    expect(btn.disabled).toBe(false);
   });
 });

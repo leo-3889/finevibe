@@ -21,8 +21,10 @@ const APP_PATH = appPathForPlatform();
 // P1-7 (audit plan §1(iv), FORK identity): releases come ONLY from the fork
 // repo named by FINEVIBE_RELEASE_REPO. There is no built-in default — an
 // unset/malformed value means no feed, and a download then fails closed
-// rather than silently pulling upstream bytes into a fork install (the same
-// precedence the packaged auto-updater applies).
+// rather than silently pulling upstream bytes into a fork install. The
+// packaged auto-updater differs: it defaults to the feed electron-builder
+// bakes into resources/app-update.yml and treats this variable as an
+// override, while the launcher ships no such file, so here it is mandatory.
 function parseReleaseRepo(value) {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : null;
@@ -35,17 +37,30 @@ const RELEASE_API_URL = REPO
 
 function getAssetName() {
   if (isWin) {
-    return `FineVibe-${version}-win-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`;
+    // Row 67: release.yml builds Windows with `--win … --x64` only, so no
+    // `FineVibe-<v>-win-arm64.zip` asset exists. Requesting it gave every
+    // Windows-on-ARM install a misleading "Release v<version> not found" 404.
+    // Refuse early with the real reason; drop this guard when an arm64 leg
+    // ships (audit row 86 tracks the Windows artifact matrix).
+    if (process.arch === 'arm64') {
+      throw new Error(
+        `No Windows arm64 release asset is published: FineVibe ships win-x64 only (which runs under Windows on ARM emulation). ` +
+        `Install the x64 build from ${RELEASES_URL ?? 'the GitHub releases (FINEVIBE_RELEASE_REPO)'}, or build from source.`,
+      );
+    }
+    return `FineVibe-${version}-win-x64.zip`;
   }
   if (isMac) {
     return process.arch === 'arm64'
       ? `FineVibe-${version}-arm64-mac.zip`
       : `FineVibe-${version}-mac.zip`;
   }
-  // electron-builder expands ${arch} to `amd64` in linux artifact names
-  // (builder-util toLinuxArchString); requesting `x64` 404s every install.
-  // main() restricts linux to x64, so amd64 is the only published name.
-  return `FineVibe-${version}-linux-amd64.AppImage`;
+  // electron-builder expands ${arch} per target extension
+  // (builder-util getArtifactArchName): x64 AppImages are published as
+  // `x86_64`, debs as `amd64`. Requesting `amd64`/`x64` here 404s every
+  // fresh linux install. main() restricts linux to x64, so x86_64 is the
+  // only published AppImage name.
+  return `FineVibe-${version}-linux-x86_64.AppImage`;
 }
 
 function getInstalledVersion() {
@@ -245,6 +260,10 @@ async function download(assetName) {
   }
 }
 
+// Ceiling for one extraction (Expand-Archive of a ~200 MB Electron zip on a
+// slow disk). Same idiom as the --appimage-extract timeout below.
+const EXTRACT_TIMEOUT_MS = 600_000;
+
 function extract(zipPath) {
   console.log('Extracting...');
 
@@ -254,9 +273,24 @@ function extract(zipPath) {
     fs.renameSync(zipPath, APP_PATH);
     fs.chmodSync(APP_PATH, 0o755);
   } else if (isWin) {
-    // Argument-array invocation: no shell string, so paths with quotes or
-    // `$` (e.g. usernames) cannot be re-interpreted.
-    execFileSync('powershell', ['-NoProfile', '-Command', 'Expand-Archive', '-Force', '-Path', zipPath, '-DestinationPath', APP_DIR], { stdio: 'ignore' });
+    // Rows 68 + 106: PowerShell re-tokenizes and re-parses whatever it gets
+    // on `-Command`, so passing the paths as argv tokens still let `$HOME`,
+    // quotes and `[ ]` in a profile path (usernames, OneDrive dirs) expand or
+    // split. Two changes close it: the paths travel as environment variables
+    // (`$env:FV_ZIP` / `$env:FV_DIR` are expanded by PowerShell's variable
+    // provider, never reparsed as syntax), and the script itself travels as
+    // `-EncodedCommand` (UTF-16LE → base64), which PowerShell decodes
+    // verbatim — no argv/cmd tokenization step sees it at all. So no path
+    // text is ever parsed as PowerShell syntax. `timeout` bounds a hung
+    // Expand-Archive (locked file, huge zip) the way --appimage-extract is.
+    const script = 'Expand-Archive -Force -Path $env:FV_ZIP -DestinationPath $env:FV_DIR';
+    // -EncodedCommand takes base64 of the UTF-16LE script body.
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    execFileSync('powershell', ['-NoProfile', '-EncodedCommand', encoded], {
+      stdio: 'ignore',
+      timeout: EXTRACT_TIMEOUT_MS,
+      env: { ...process.env, FV_ZIP: zipPath, FV_DIR: APP_DIR },
+    });
   } else {
     execFileSync('unzip', ['-oq', zipPath, '-d', APP_DIR], { stdio: 'ignore' });
   }
@@ -294,10 +328,15 @@ function fuseAvailable() {
 // Wayland/GTK docks match windows via StartupWMClass and show a generic
 // icon. Extract the AppImage's own entry/icons into $XDG_DATA_HOME.
 // Pure: rewrite the embedded .desktop text for the installed AppImage.
-// The Exec value is replaced wholesale (AppRun-relative paths die once the
-// squashfs is gone), Icon is forced to the installed hicolor theme name,
-// and StartupWMClass is pinned so docks match the running window. All
-// other keys (Name, Comment, Categories, MimeType, …) are preserved.
+// The Exec PROGRAM is replaced (AppRun-relative paths die once the squashfs
+// is gone) but its ARGUMENTS are carried over: electron-builder ships the
+// AppImage entry as `Exec=AppRun --no-sandbox %U` (the bundled chrome-sandbox
+// is 0755 non-setuid), and replacing the line wholesale dropped --no-sandbox
+// — on distros that restrict unprivileged user namespaces (Ubuntu's
+// apparmor_restrict_unprivileged_userns) the sandbox helper then aborts
+// before any window appears. Icon is forced to the installed hicolor theme
+// name, StartupWMClass is pinned so docks match the running window. All other
+// keys (Name, Comment, Categories, MimeType, …) are preserved.
 function buildDesktopEntry(embeddedContent, appPath, fuseAvailable = true) {
   const lines = embeddedContent
     ? String(embeddedContent).split(/\r?\n/)
@@ -309,10 +348,26 @@ function buildDesktopEntry(embeddedContent, appPath, fuseAvailable = true) {
         'Terminal=false',
         'Comment=Tenant IDE for AI CLI tools',
       ];
+  // Everything after the program token except the desktop field codes (%U,
+  // %F, …). `env`/`VAR=value` prefixes stay with the program, they are not
+  // arguments; --appimage-extract-and-run is dropped when the env prefix is
+  // added below, which is the same instruction.
+  const embeddedExec = (lines.find((line) => line.startsWith('Exec=')) ?? '').slice('Exec='.length);
+  const carriedArgs = embeddedExec
+    .split(/\s+/)
+    .filter((token) => token)
+    .filter((token) => !token.startsWith('%') && token !== 'env')
+    .filter((token) => !/AppRun$/.test(token))
+    .filter((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token))
+    .filter((token) => fuseAvailable || token !== '--appimage-extract-and-run');
+  const execWords = [
+    ...(fuseAvailable ? [] : ['env', 'APPIMAGE_EXTRACT_AND_RUN=1']),
+    appPath,
+    ...carriedArgs,
+    '%U',
+  ];
   const forced = {
-    Exec: fuseAvailable
-      ? `Exec=${appPath} %U`
-      : `Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`,
+    Exec: `Exec=${execWords.join(' ')}`,
     Icon: 'Icon=finevibe',
     StartupWMClass: 'StartupWMClass=FineVibe',
   };
@@ -420,7 +475,13 @@ function launch(args) {
       stdio: 'ignore',
     });
   } else if (isMac) {
-    child = spawn('open', [APP_PATH, '--args', ...args], {
+    // Row 81: `open <app> --args …` activates the already-running instance
+    // (or another registered copy of the same bundle id) and drops the args,
+    // so `finevibe <file>` silently no-ops the second time — and `open`
+    // drops the caller's environment entirely (row 64). Spawning the bundle
+    // binary directly keeps argv and env, matching the win/linux branches;
+    // the app's single-instance lock handles a second launch by focusing.
+    child = spawn(path.join(APP_PATH, 'Contents', 'MacOS', 'FineVibe'), args, {
       detached: true,
       stdio: 'ignore',
     });
@@ -501,6 +562,7 @@ if (typeof module !== 'undefined' && module.exports) {
     sha256File,
     verifyAssetDigest,
     download,
+    extract,
     buildDesktopEntry,
     installDesktopIntegration,
   };

@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { stopGitWatcher } from './git-watcher';
 import { stopConfigWatcher } from './config-watcher';
+import { flushState } from './store';
+import { restartAndResync } from './hook-status';
 import type { MockedFunction } from 'vitest';
 
 // Smoke test for the single-instance gate in main.ts. main.ts has no
@@ -17,11 +19,19 @@ interface MockWindow {
   isMinimized: () => boolean;
   restore: () => void;
   handlers: Record<string, (arg?: unknown) => void>;
+  webContents: { send: (...args: unknown[]) => void };
   focus: () => void;
+  isVisible: () => boolean;
+  show: () => void;
+  close: () => void;
 }
 
-const { appHandlers, app, windows, fakeProvider } = vi.hoisted(() => {
+const { appHandlers, app, windows, fakeProvider, ipcHandlers, ipcMainOn, closeState, platform } = vi.hoisted(() => {
   const appHandlers: Record<string, (...args: unknown[]) => void> = {};
+  // Audit row 89: main.ts registers its ipcMain handlers with literal channel
+  // names; recording them by channel lets a case invoke the close lanes
+  // directly (the real ipc-handlers registration is mocked out here).
+  const ipcHandlers: Record<string, (...args: unknown[]) => void> = {};
   const app = {
     requestSingleInstanceLock: vi.fn(() => true),
     on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
@@ -41,7 +51,28 @@ const { appHandlers, app, windows, fakeProvider } = vi.hoisted(() => {
     installHooks: vi.fn(async () => {}),
     installStatusScripts: vi.fn(),
   };
-  return { appHandlers, app, windows, fakeProvider };
+  // main.ts imports isCloseConfirmed/setCloseConfirmed and the watchdog reads
+  // the flag inside its timer, so the mock is hoisted: a case flips the flag
+  // and beforeEach restores the boot default (confirmed).
+  const closeState = {
+    isCloseConfirmed: vi.fn(() => true),
+    setCloseConfirmed: vi.fn(),
+  };
+  // Audit row 90: main.ts splits window-close from app-quit on macOS, so the
+  // suite must be able to run the same boot against darwin and a POSIX host.
+  const platform = { isMac: false };
+  return {
+    appHandlers,
+    app,
+    windows,
+    fakeProvider,
+    ipcHandlers,
+    closeState,
+    platform,
+    ipcMainOn: vi.fn((channel: string, handler: (...args: unknown[]) => void) => {
+      ipcHandlers[channel] = handler;
+    }),
+  };
 });
 
 // P2-47: the winner's whenReady chain sweeps stale finevibe-chrome-import-*
@@ -55,6 +86,11 @@ vi.mock('electron', () => {
     isMinimized = vi.fn(() => true);
     restore = vi.fn();
     focus = vi.fn();
+    isVisible = vi.fn(() => true);
+    show = vi.fn();
+    // close() re-enters the recorded 'close' handler the way Electron does, so a
+    // case sees the guard run a second time (confirmed → flushState).
+    close = vi.fn(() => { this.handlers['close']?.({ preventDefault: vi.fn() }); });
     webContents = {
       send: vi.fn(),
       setWindowOpenHandler: vi.fn(),
@@ -93,7 +129,7 @@ vi.mock('electron', () => {
     shell: { openExternal: vi.fn() },
     // main.ts registers the browser:clearIsolatedStorage jar clear on
     // ipcMain and resolves the isolated partition through session.
-    ipcMain: { on: vi.fn() },
+    ipcMain: { on: ipcMainOn },
     session: {
       fromPartition: vi.fn(() => ({ clearStorageData: vi.fn(async () => {}) })),
     },
@@ -126,12 +162,17 @@ vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 // PA-01: main.ts wires the cross-launch probe cache to userData at boot;
 // the real module touches fs/child_process — stub it.
 vi.mock('./providers/resolve-binary', () => ({ configureProbeCacheDir: vi.fn() }));
-vi.mock('./platform', () => ({ isMac: false, isWin: false }));
-vi.mock('./chrome-import/copy', () => ({ sweepImportTempDirs: sweepImportSpy }));
-vi.mock('./close-state', () => ({
-  isCloseConfirmed: vi.fn(() => true),
-  setCloseConfirmed: vi.fn(),
+// main.ts imports the row-85 GPU-hatch decision at boot, so the factory must
+// carry it; these cases never exercise the hatch. isMac is a live getter (the
+// same technique main-app-user-model-id.test.ts uses for isWin) so one file can
+// boot the close/quit lanes against macOS and a POSIX host.
+vi.mock('./platform', () => ({
+  get isMac() { return platform.isMac; },
+  isWin: false,
+  shouldDisableHardwareAcceleration: () => false,
 }));
+vi.mock('./chrome-import/copy', () => ({ sweepImportTempDirs: sweepImportSpy }));
+vi.mock('./close-state', () => closeState);
 
 // Dynamic import is the point of this suite: main.ts runs the
 // single-instance gate at module scope, so each case must re-execute the
@@ -157,6 +198,10 @@ beforeEach(() => {
   vi.mocked(app.quit).mockClear();
   vi.mocked(app.on).mockClear();
   vi.mocked(sweepImportSpy).mockClear();
+  for (const key of Object.keys(ipcHandlers)) delete ipcHandlers[key];
+  closeState.isCloseConfirmed.mockReturnValue(true);
+  closeState.setCloseConfirmed.mockClear();
+  platform.isMac = false;
   fakeProvider.validatePrerequisites = () => true;
 });
 
@@ -248,5 +293,173 @@ describe('single-instance gate', () => {
     await importPrimaryInstance();
 
     expect(probeOrder).toEqual(['probe-after-window']);
+  });
+});
+
+// Audit row 89: the C4S-07 close-confirmation watchdog (main.ts,
+// CLOSE_CONFIRM_WATCHDOG_MS = 15 s) exists to end a quit that a HUNG renderer
+// never answered. It used to be the only timer, so an explicit Cancel in the
+// quit confirm — which answers nothing on IPC — was indistinguishable from a
+// hang, and the app force-quit (killAllPtys) 15 s after the user dismissed the
+// dialog. The renderer now answers Cancel with 'app:closeCancelled'.
+describe('close-confirmation watchdog', () => {
+  // main.ts CLOSE_CONFIRM_WATCHDOG_MS; not exported, kept in sync by hand.
+  const WATCHDOG_MS = 15_000;
+  const quitEvent = { preventDefault: vi.fn() };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Unconfirmed close: before-quit preventDefaults and arms the watchdog,
+  // exactly the state a hung renderer would leave behind.
+  function armWatchdog(): number {
+    closeState.isCloseConfirmed.mockReturnValue(false);
+    appHandlers['before-quit']!(quitEvent);
+    return app.quit.mock.calls.length;
+  }
+
+  it('quits after the watchdog window when the renderer stays silent', async () => {
+    await importPrimaryInstance();
+    vi.useFakeTimers();
+
+    const quitBase = armWatchdog();
+    vi.advanceTimersByTime(WATCHDOG_MS);
+
+    expect(quitEvent.preventDefault).toHaveBeenCalled();
+    expect(app.quit.mock.calls.length - quitBase).toBe(1);
+  });
+
+  it('disarms the watchdog on app:closeCancelled, and re-arms on the next quit', async () => {
+    await importPrimaryInstance();
+    vi.useFakeTimers();
+
+    const quitBase = armWatchdog();
+    ipcHandlers['app:closeCancelled']!();
+    vi.advanceTimersByTime(WATCHDOG_MS);
+    expect(app.quit.mock.calls.length - quitBase).toBe(0);
+    // Cancelling must not confirm: the flag stays false so the window close
+    // still asks next time (and the next arm above is a real arm).
+    expect(closeState.setCloseConfirmed).not.toHaveBeenCalled();
+
+    const rearmBase = armWatchdog();
+    vi.advanceTimersByTime(WATCHDOG_MS);
+    expect(app.quit.mock.calls.length - rearmBase).toBe(1);
+  });
+});
+
+// Audit row 90: closing the window and quitting the app are two different
+// intents. Both go through the SAME renderer confirmation (app:confirmClose →
+// app:closeConfirmed / app:closeCancelled, contract unchanged), but only the
+// quit lanes may reach app.quit(): a macOS traffic-light close has to leave the
+// app dock-resident so the `window-all-closed` guard and the dock 'activate'
+// re-create stay reachable.
+describe('window close vs app quit (audit row 90)', () => {
+  // The renderer has answered "yes, tear the sessions down": main.ts sets the
+  // flag on the mocked close-state, so the case flips the read side itself.
+  function confirm(): void {
+    closeState.isCloseConfirmed.mockReturnValue(true);
+  }
+
+  it('macOS: closes the window without quitting, and keeps the app alive', async () => {
+    platform.isMac = true;
+    closeState.isCloseConfirmed.mockReturnValue(false);
+    await importPrimaryInstance();
+
+    const win = windows[0];
+    const closeEvent = { preventDefault: vi.fn() };
+    win.handlers['close']!(closeEvent);
+
+    // The close is deferred on the confirmation instead of quitting.
+    expect(closeEvent.preventDefault).toHaveBeenCalled();
+    expect(win.webContents.send).toHaveBeenCalledWith('app:confirmClose');
+    expect(app.quit).not.toHaveBeenCalled();
+
+    // The confirmed reply: window away, app alive.
+    confirm();
+    ipcHandlers['app:closeConfirmed']!();
+    expect(win.close).toHaveBeenCalledTimes(1);
+    expect(app.quit).not.toHaveBeenCalled();
+    // The re-entrant close (flag now set) took the normal teardown path.
+    expect(flushState).toHaveBeenCalled();
+    // And the confirmation was for THIS close only — the next Cmd+Q must ask
+    // again instead of exiting on a stale yes.
+    expect(closeState.setCloseConfirmed).toHaveBeenLastCalledWith(false);
+  });
+
+  it('macOS: a confirmed reply from a quit lane still quits', async () => {
+    platform.isMac = true;
+    closeState.isCloseConfirmed.mockReturnValue(false);
+    await importPrimaryInstance();
+
+    // Menu Quit / Cmd+Q reach main as app.quit() → before-quit, which defers
+    // on the same confirmation but stamps quit intent.
+    const quitEvent = { preventDefault: vi.fn() };
+    appHandlers['before-quit']!(quitEvent);
+    expect(quitEvent.preventDefault).toHaveBeenCalled();
+    expect(app.quit).not.toHaveBeenCalled();
+
+    confirm();
+    ipcHandlers['app:closeConfirmed']!();
+    expect(app.quit).toHaveBeenCalledTimes(1);
+    expect(closeState.setCloseConfirmed).toHaveBeenLastCalledWith(true);
+    expect(windows[0].close).not.toHaveBeenCalled();
+  });
+
+  it('non-macOS: a window close still takes the quit path', async () => {
+    // platform.isMac stays false — the win/linux contract is unchanged.
+    closeState.isCloseConfirmed.mockReturnValue(false);
+    await importPrimaryInstance();
+
+    windows[0].handlers['close']!({ preventDefault: vi.fn() });
+    expect(app.quit).not.toHaveBeenCalled(); // still gated on the confirmation
+
+    confirm();
+    ipcHandlers['app:closeConfirmed']!();
+    expect(app.quit).toHaveBeenCalledTimes(1);
+    expect(windows[0].close).not.toHaveBeenCalled();
+  });
+
+  it('quits on window-all-closed everywhere but macOS', async () => {
+    await importPrimaryInstance();
+
+    appHandlers['window-all-closed']!();
+    expect(app.quit).toHaveBeenCalledTimes(1);
+
+    vi.mocked(app.quit).mockClear();
+    platform.isMac = true;
+    appHandlers['window-all-closed']!();
+    expect(app.quit).not.toHaveBeenCalled();
+  });
+});
+
+// Audit row 91: a dock click on a minimized/hidden window used to only resync
+// session status — the window itself stayed minimized (or hidden), so the user
+// saw nothing. The activate lane now runs the same restore/focus body the
+// app:focus IPC lane uses, then resyncs.
+describe('dock activate restores the existing window (audit row 91)', () => {
+  it('restores and focuses a minimized window, then resyncs it', async () => {
+    await importPrimaryInstance();
+
+    const win = windows[0];
+    appHandlers['activate']!();
+
+    expect(win.isMinimized).toHaveBeenCalled();
+    expect(win.restore).toHaveBeenCalled();
+    expect(win.focus).toHaveBeenCalled();
+    expect(vi.mocked(restartAndResync)).toHaveBeenCalledWith(win);
+    // A visible window is not re-shown.
+    expect(win.show).not.toHaveBeenCalled();
+  });
+
+  it('shows a hidden window instead of focusing it behind the hide', async () => {
+    await importPrimaryInstance();
+
+    const win = windows[0];
+    vi.mocked(win.isVisible as MockedFunction<() => boolean>).mockReturnValue(false);
+    appHandlers['activate']!();
+
+    expect(win.show).toHaveBeenCalled();
+    expect(win.focus).toHaveBeenCalled();
   });
 });

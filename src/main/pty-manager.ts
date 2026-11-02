@@ -84,41 +84,119 @@ function interactiveShell(): string {
   return fs.existsSync('/bin/bash') ? '/bin/bash' : fallback;
 }
 
+/**
+ * Registry PATH read (audit row 73). `reg query` writes its stdout in the
+ * console OEM code page (cp866 / cp932 / cp936 on Cyrillic / CJK installs)
+ * while Node decoded it as UTF-8, so every non-ASCII PATH entry arrived
+ * mangled and a provider installed under such a directory looked uninstalled.
+ * PowerShell owns the decode instead: `[Console]::OutputEncoding` is set to
+ * UTF-8 before the values are read and `ConvertTo-Json` emits both hives as
+ * one JSON array (Windows PowerShell 5.1 additionally escapes non-ASCII to
+ * \uXXXX, so the payload is usually pure ASCII and code-page independent).
+ * Both hives come from a single spawn — a missing value comes back as null
+ * and contributes nothing, which is what the old per-hive `reg query`
+ * non-zero exit meant. Get-ItemProperty resolves REG_EXPAND_SZ through the
+ * registry API (expanded values), so the %VAR% pass in parseRegistryPath is
+ * only the fallback for names .NET could not expand.
+ */
+const REG_PATH_SCRIPT = [
+  '[Console]::OutputEncoding=[Text.Encoding]::UTF8',
+  "$s=(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name Path -ErrorAction SilentlyContinue).Path",
+  "$u=(Get-ItemProperty 'HKCU:\\Environment' -Name Path -ErrorAction SilentlyContinue).Path",
+  'ConvertTo-Json -Compress -InputObject @($s,$u)',
+].join('; ');
+
+// PowerShell start-up (CLR + type loader) costs far more than reg.exe, so the
+// old 3 s reg budget would kill it on a cold machine. Same ceiling as the
+// POSIX login-shell probe below.
+const REG_PATH_TIMEOUT_MS = 8000;
+
+const REG_PATH_ARGV = ['-NoProfile', '-NonInteractive', '-Command', REG_PATH_SCRIPT];
+// execSync runs through cmd.exe, so the same call needs the quoted form. The
+// script carries no `"`, `%` or redirection character, so one pair of quotes
+// is enough for cmd.
+const REG_PATH_COMMAND = `powershell.exe -NoProfile -NonInteractive -Command "${REG_PATH_SCRIPT}"`;
+
+/** [system, user] PATH values from the JSON payload, %VAR% expanded. */
+function parseRegistryPath(payload: string): string[] {
+  let decoded: unknown;
+  try {
+    // Redirected PowerShell output can carry a UTF-8 BOM.
+    decoded = JSON.parse(payload.replace(/^\uFEFF/, '').trim());
+  } catch (err) {
+    console.debug('Could not parse the registry PATH payload:', err);
+    return [];
+  }
+  return (Array.isArray(decoded) ? decoded : [decoded])
+    .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+    .map(expandRegistryVars);
+}
+
+/**
+ * Row 73 follow-up: the pre-wave `reg query` read, restored as the catch
+ * fallback. PowerShell fails OPEN on ConstrainedLanguage / WDAC boxes: the
+ * language mode refuses the property read, `ConvertTo-Json` emits `[null,null]`
+ * (or the whole command errors), and the registry contributes ZERO PATH — a
+ * provider installed under a registry-only directory reads as uninstalled.
+ * reg.exe is not subject to the language mode, so it still answers there.
+ *
+ * Decode is exactly what it was pre-wave (`utf-8` over the console's OEM code
+ * page): ASCII paths — the overwhelming majority, and everything the fail-open
+ * bug could hide on those locked-down boxes — survive intact; a non-ASCII
+ * directory can still arrive mangled, which is the row-73 trade this fallback
+ * re-accepts rather than losing the entry entirely.
+ *
+ * One call per hive per twin, `reg query` exiting non-zero for a missing value
+ * (that hive contributes nothing — the pre-wave meaning of the catch).
+ */
+const REG_SYSTEM_HIVE = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment';
+const REG_USER_HIVE = 'HKCU\\Environment';
+
+/** %VAR% names the registry left raw (Get-ItemProperty expands most of them). */
+function expandRegistryVars(value: string): string {
+  return value.replace(/%([^%]+)%/g, (_m: string, varName: string) => process.env[varName] || `%${varName}%`);
+}
+
+/** The PATH value out of one `reg query HK…\Path` answer. */
+function parseRegQueryValue(output: string): string {
+  const match = output.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
+  return match ? expandRegistryVars(match[1].trim()) : '';
+}
+
+/** Both hives over reg.exe, joined — see the note above for when this runs. */
+function registryPathViaRegQuery(): string {
+  const values: string[] = [];
+  for (const hive of [REG_SYSTEM_HIVE, REG_USER_HIVE]) {
+    try {
+      const value = parseRegQueryValue(execSync(`reg query "${hive}" /v Path`, {
+        // Same per-spawn ceiling as the PowerShell read (row 73 raised it for
+        // a cold machine; reg.exe answers far under it).
+        encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
+      }));
+      if (value) values.push(value);
+    } catch (err) {
+      console.debug(`Could not read PATH from ${hive}:`, err);
+    }
+  }
+  return values.join(pathSep);
+}
+
 export function getRegistryPath(): string {
   if (!isWin) return '';
-
-  const parse = (output: string): string => {
-    const match = output.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
-    if (!match) return '';
-    let value = match[1].trim();
-    value = value.replace(/%([^%]+)%/g, (_m, varName) => process.env[varName] || `%${varName}%`);
-    return value;
-  };
-
-  let systemPath = '';
+  let values: string[] = [];
   try {
-    systemPath = parse(execSync(
-      'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v Path',
-      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
-    ));
+    values = parseRegistryPath(execSync(REG_PATH_COMMAND, {
+      encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
+    }));
   } catch (err) {
-    // `reg query` exits non-zero when the value is absent; that hive simply
-    // contributes nothing to PATH.
-    console.debug('Could not read system PATH from registry:', err);
+    // No PowerShell at all (blocked by AppLocker): the reg query fallback below
+    // is the one left standing.
+    console.debug('Could not read PATH from the registry:', err);
   }
-
-  let userPath = '';
-  try {
-    userPath = parse(execSync(
-      'reg query "HKCU\\Environment" /v Path',
-      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
-    ));
-  } catch (err) {
-    // Same as above: a missing HKCU Environment\Path is normal, not an error.
-    console.debug('Could not read user PATH from registry:', err);
-  }
-
-  return [systemPath, userPath].filter(Boolean).join(pathSep);
+  // Empty payload is the same failure with a different face — constrained
+  // language mode STARTS PowerShell and lets it print nothing useful.
+  if (values.length > 0) return values.join(pathSep);
+  return registryPathViaRegQuery();
 }
 
 /** Reset cached PATH (used after install-then-retry flows and in tests). */
@@ -196,8 +274,8 @@ export function getFullPath(): string {
 /**
  * S2-02: async twin of getFullPath. The sync one blocks the main thread
  * for the login-shell spawn (POSIX: `execSync($SHELL -ilc …)`, 0.2-1.5 s
- * typical on nvm/p10k setups) or two registry `reg query` execSyncs
- * (Windows) — the PA-01 boot probe fan-out calls it on every launch
+ * typical on nvm/p10k setups) or the PowerShell registry read (Windows)
+ * — the PA-01 boot probe fan-out calls it on every launch
  * (the disk-cache freshness gate needs the PATH snapshot), so the whole
  * boot chain paid that spawn synchronously after createWindow. Same cache,
  * same composition, same fallback; concurrent callers share one promise.
@@ -211,32 +289,32 @@ export function getFullPathAsync(): Promise<string> {
     const currentPath = process.env.PATH || '';
     const home = os.homedir();
     if (isWin) {
-      const parse = (output: string): string => {
-        const match = output.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
-        if (!match) return '';
-        const value = match[1].trim();
-        return value.replace(/%([^%]+)%/g, (_m, varName) => process.env[varName] || `%${varName}%`);
-      };
-      const regQuery = async (hive: string): Promise<string> => {
-        try {
-          const { stdout } = await execFileP('reg', ['query', hive, '/v', 'Path'], {
-            encoding: 'utf-8', timeout: 3000, windowsHide: true,
-          });
-          return parse(stdout);
-        } catch {
-          // `reg query` exits non-zero when the value is absent; the hive
-          // contributes nothing to PATH (mirrors getRegistryPath).
-          return '';
-        }
-      };
-      const [systemPath, userPath] = await Promise.all([
-        regQuery('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
-        regQuery('HKCU\\Environment'),
-      ]);
+      let registryValues: string[] = [];
+      try {
+        const { stdout } = await execFileP('powershell.exe', REG_PATH_ARGV, {
+          encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
+        });
+        registryValues = parseRegistryPath(stdout);
+      } catch {
+        // PowerShell missing/refused: the reg query fallback below is the one
+        // left standing (mirrors getRegistryPath, including the empty-payload
+        // case constrained-language mode produces).
+      }
+      if (registryValues.length === 0) {
+        registryValues = (await Promise.all([REG_SYSTEM_HIVE, REG_USER_HIVE].map(async (hive) => {
+          try {
+            const { stdout } = await execFileP('reg', ['query', hive, '/v', 'Path'], {
+              encoding: 'utf-8', timeout: REG_PATH_TIMEOUT_MS, windowsHide: true,
+            });
+            return parseRegQueryValue(stdout);
+          } catch {
+            return '';
+          }
+        }))).filter(Boolean);
+      }
       const pathSet = new Set([
         ...currentPath.split(pathSep),
-        ...systemPath.split(pathSep),
-        ...userPath.split(pathSep),
+        ...registryValues.flatMap((value) => value.split(pathSep)),
         path.join(home, 'AppData', 'Roaming', 'npm'),
         path.join(home, '.local', 'bin'),
       ]);
@@ -313,9 +391,12 @@ export function withUtf8Locale<T extends Record<string, string | undefined>>(env
  * opens a quoted region over the payload, while the `\"`-escaped form executes
  * it. Escaping is therefore worse than doing nothing.
  *
- * So an argument containing `"` is rejected rather than mangled. The caller
- * surfaces this as a spawn failure, which is the correct outcome; silently
- * producing an injectable command line is not.
+ * So an argument containing `"` is rejected rather than mangled. The rejection
+ * is a `LaunchSpecError` (audit R114): the pane contract is the actionable
+ * message plus the spawn-rejected exit, so it must survive as this class all
+ * the way to `spawnPty`'s spec-rejection branch — a plain Error reaches the
+ * catch-all there and the user loses the per-provider hint below. Silently
+ * producing an injectable command line is not an option either.
  *
  * Residual, accepted: `%VAR%` still expands inside double quotes. That leaks an
  * environment value into the argument; it is not code execution, so a percent
@@ -326,7 +407,7 @@ const CMDEXE_METACHARS = /[&|<>^]/;
 function quoteArgForCmdExe(arg: string): string {
   if (arg.includes('"')) {
     const shown = arg.length > 80 ? `${arg.slice(0, 77)}...` : arg;
-    throw new Error(
+    throw new LaunchSpecError(
       'Cannot pass an argument containing a double quote through cmd.exe: cmd ' +
         'has no escape for a literal quote, so it cannot be quoted safely. ' +
         'A provider whose binary is a native .exe (no cmd.exe wrapper) accepts ' +
@@ -438,7 +519,9 @@ export function resolveWindowsShell(
   }
   // .cmd/.bat shims carry their real target; an extensionless npm launcher
   // resolves via PATHEXT to the <name>.cmd beside it — parse the same file.
-  const shimPath = ext === '.cmd' || ext === '.bat' ? shell : ext === '' ? `${shell}.cmd` : '';
+  let shimPath = '';
+  if (ext === '.cmd' || ext === '.bat') shimPath = shell;
+  else if (ext === '') shimPath = `${shell}.cmd`;
   if (shimPath) {
     const target = resolveCmdShimTarget(shimPath);
     if (target) return { shell: target.executable, args: [...target.prefixArgs, ...args] };
@@ -521,14 +604,16 @@ export function resolveProviderBinary(providerId: ProviderId, hostId?: string): 
  * absolute path does not exist on the remote — the remote login shell's PATH
  * resolves the remote's own install.
  */
-function remoteCommand(bin: string, argv: string[], rawToken?: string): string {
-  // `rawToken` (the home-relative session dir) is emitted "…"-quoted so the
-  // remote login shell expands its leading `~` — single quotes (posixQuote)
-  // would hand the CLI a literal `~` directory. The token is the sanitized
-  // remoteLaunchSessionDir spelling ([A-Za-z0-9_./-] after `~/`), so double
-  // quoting carries no expansion risk.
+function remoteCommand(bin: string, argv: string[], homeTokens: Set<string>): string {
+  // `homeTokens` (the home-relative session dir, and on a resume the
+  // transcript re-anchored under it) are emitted "…"-quoted so the remote
+  // login shell expands their leading `~` — single quotes (posixQuote) would
+  // hand the CLI a literal `~` directory. Each token is the sanitized
+  // remoteLaunchSessionDir spelling ([A-Za-z0-9_./-] after `~/`) plus a
+  // sanitized transcript basename, so double quoting carries no expansion
+  // risk.
   return [bin, ...argv]
-    .map((t) => (rawToken !== undefined && t === rawToken ? `"${t.replace(/^~/, '$HOME')}"` : posixQuote(t)))
+    .map((t) => (homeTokens.has(t) ? `"${t.replace(/^~/, '$HOME')}"` : posixQuote(t)))
     .join(' ');
 }
 
@@ -537,13 +622,52 @@ function usesSessionDirArgv(providerId: ProviderId): providerId is 'pi' | 'pi-bo
   return providerId === 'pi' || providerId === 'pi-bolt' || providerId === 'omp';
 }
 
-/** Swap a locally-derived `--session-dir` value for the host-side spelling. */
+/**
+ * Resume flags whose value the Pi-compatible CLIs accept as a transcript path
+ * OR an id looked up in `--session-dir` (`pi --session <path|id>`,
+ * `omp --resume <path|id>`).
+ */
+const REMOTE_RESUME_FLAGS = ['--session', '--resume'];
+
+/**
+ * Swap a locally-derived `--session-dir` value for the host-side spelling,
+ * and re-anchor a path-shaped resume token under it (audit row 97).
+ *
+ * The provider resolves its resume target to the CONTROLLER's transcript file
+ * (pi/omp `resumeTarget`); on the host that path does not exist, and both
+ * CLIs read a missing `--session|--resume <path>` as "start this file" — a
+ * blank transcript under the pinned id, silently. The transcript itself IS on
+ * the host, under the same basename in the host session dir (the mirror
+ * resolves it there), so a basename swap is enough. A bare id needs nothing:
+ * the CLIs look it up in `--session-dir`, which this function already swapped.
+ */
 function remoteSessionDirArgv(argv: string[], hostDir: string): string[] {
-  const i = argv.indexOf('--session-dir');
-  if (i < 0 || i + 1 >= argv.length) return argv; // provider didn't add it — nothing to swap
   const out = [...argv];
-  out[i + 1] = hostDir;
-  return out;
+  let changed = false;
+  const i = out.indexOf('--session-dir');
+  if (i >= 0 && i + 1 < argv.length) {
+    out[i + 1] = hostDir;
+    changed = true;
+  }
+  for (const flag of REMOTE_RESUME_FLAGS) {
+    const j = out.indexOf(flag);
+    if (j < 0 || j + 1 >= argv.length) continue;
+    const value = out[j + 1];
+    // Split on BOTH separators: the controller path is Windows-style on the
+    // primary deployment (Windows controller → Linux host), where
+    // path.basename on a POSIX build would return the whole string.
+    const base = value.split(/[/\\]/).pop() ?? '';
+    // `base !== value` is the path-shape test: a bare id has no separator.
+    // ponytail: a basename outside [A-Za-z0-9._-] keeps the old (broken) local
+    // spelling rather than escaping — our own transcript names
+    // (`<stamp>_<cliSessionId>.jsonl`) never hit that branch, and the ceiling
+    // is one blank resume, not an injectable command line.
+    if (base && base !== value && /^[A-Za-z0-9._-]+$/.test(base)) {
+      out[j + 1] = `${hostDir}/${base}`;
+      changed = true;
+    }
+  }
+  return changed ? out : argv;
 }
 
 /**
@@ -684,16 +808,18 @@ export function resolveLaunchSpec(params: {
     // (the CLI's local flow pre-creates the dir; the host's must exist too).
     let argv = base.argv;
     let mkdir = '';
-    let rawToken: string | undefined;
+    let homeTokens = new Set<string>();
     if (usesSessionDirArgv(providerId)) {
       const hostDir = remoteLaunchSessionDir(providerId, sessionId);
       argv = remoteSessionDirArgv(base.argv, hostDir);
       if (argv !== base.argv) {
-        rawToken = hostDir;
+        // Every host-derived token (the dir, and a resume path re-anchored
+        // under it) carries the leading `~` that the login shell must expand.
+        homeTokens = new Set(argv.filter((t) => t === hostDir || t.startsWith(`${hostDir}/`)));
         mkdir = `mkdir -p "${hostDir.replace(/^~/, '$HOME')}" && `;
       }
     }
-    const cmd = `${mkdir}${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, argv, rawToken)}`;
+    const cmd = `${mkdir}${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, argv, homeTokens)}`;
     return { ...base, executable: 'ssh', argv: ['-tt', '-p', String(record.port), '--', `${record.user}@${record.host}`, cmd] };
   }
   return base;
@@ -736,8 +862,20 @@ export async function spawnPty(
     // with this message readable instead of archiving a crash for a session
     // that never spawned.
     let spec: LaunchSpec;
+    let spawnCommand: { shell: string; args: string[] };
     try {
       spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId });
+      // Audit R114: the Windows shell wrap is part of the SPEC, not part of the
+      // spawn. quoteArgForCmdExe rejects an argument carrying a literal `"` (cmd
+      // has no escape for one) and throws a LaunchSpecError; resolving it HERE
+      // puts that rejection in the branch below — the pane message plus the
+      // spawn-rejected exit — before this session is registered or any hook is
+      // installed. Resolved after those side effects it escaped as a rejection
+      // of a channel the renderer never awaits: a blank pane, and the only
+      // readable reason was the generic `Failed to prepare the launch: Error: …`
+      // (the per-provider hint about a native-.exe binary or a Pi-compatible
+      // prompt file was lost).
+      spawnCommand = resolveWindowsShell(spec.executable, spec.argv);
     } catch (err) {
       // Nothing will spawn for this session; drop any kill that arrived for
       // it so a later re-spawn of the same id is not killed by a stale flag.
@@ -817,8 +955,7 @@ export async function spawnPty(
       }
     }
 
-    const { shell, args: spawnArgs } = resolveWindowsShell(spec.executable, spec.argv);
-
+    const { shell, args: spawnArgs } = spawnCommand;
     let ptyProcess: pty.IPty;
     try {
       ptyProcess = pty.spawn(shell, spawnArgs, {

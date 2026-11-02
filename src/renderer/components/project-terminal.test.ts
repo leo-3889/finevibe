@@ -60,6 +60,13 @@ vi.mock('@xterm/addon-webgl', () => ({
 }));
 vi.mock('@xterm/addon-search', () => ({ SearchAddon: class {} }));
 
+// Row 60: spy (not stub) the mouse gate so a test can assert the shell pane
+// applies it on open; every other helper stays the real implementation.
+vi.mock('./terminal-utils.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./terminal-utils.js')>();
+  return { ...actual, attachMouseForwardingGate: vi.fn(actual.attachMouseForwardingGate) };
+});
+
 const mockStateOn = vi.fn();
 
 vi.mock('../state.js', () => ({
@@ -75,7 +82,10 @@ vi.mock('../state.js', () => ({
 
 vi.mock('./terminal-pane.js', () => ({ fitAllVisible: vi.fn() }));
 vi.mock('./search-bar.js', () => ({ destroySearchBar: vi.fn(), hideSearchBar: vi.fn() }));
-vi.mock('../shortcuts.js', () => ({
+// Partial: only the manager is stubbed. `canonicalAlnumKey` (the physical-key
+// rule the terminal mac chords resolve through) must stay the real one.
+vi.mock('../shortcuts.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../shortcuts.js')>()),
   shortcutManager: { getKeys: vi.fn(() => []), matchEvent: vi.fn(() => false), matchesAnyShortcut: vi.fn(() => false) },
   displayKeys: vi.fn(() => ''),
 }));
@@ -210,6 +220,17 @@ describe('project-terminal Ctrl+Shift+C clipboard copy', () => {
     expect(mockPtyWrite).not.toHaveBeenCalled();
     expect(result).toBe(true);
   });
+
+  // Row 60: the shell panel must carry the same mouse-forwarding gate the
+  // session and remote panes attach, or the same TUI selects differently per
+  // pane. The fake terminal has no _core, so the real helper no-ops — only
+  // the call is under test.
+  it('applies the mouse-forwarding gate when the shell pane opens', async () => {
+    const instance = await setupTerminal();
+    const { attachMouseForwardingGate } = await import('./terminal-utils.js');
+
+    expect(attachMouseForwardingGate).toHaveBeenCalledWith(instance!.terminal);
+  });
 });
 
 describe('applyThemeToAllShells()', () => {
@@ -275,6 +296,27 @@ describe('applyThemeToAllShells()', () => {
     const instance = getShellTerminalInstance(sessionId)!;
 
     expect((instance.terminal as unknown as FakeTerminal).options.theme).toBe(lightTerminalTheme);
+  });
+
+  // Audit row 115: Option has to reach the shell as Meta (ESC-prefix), not a
+  // composed Unicode char. macOptionClickForcesSelection stays unset (false):
+  // row 69 owns the Option+click decision, this pins keyboard Meta only.
+  it('constructs shell panes with macOptionIsMeta enabled', async () => {
+    const { appState } = await import('../state.js');
+    const { initProjectTerminal, getShellTerminalInstance, getActiveShellSessionId } = await import('./project-terminal.js');
+
+    const project = { id: 'proj1', path: '/project', terminalPanelOpen: true, terminalPanelHeight: 200, sessions: [] };
+    (appState as any).activeProject = project;
+    (appState as any).projects = [project];
+
+    initProjectTerminal();
+    stateHandlers['state-loaded']?.forEach(cb => cb());
+
+    const instance = getShellTerminalInstance(getActiveShellSessionId()!)!;
+    const options = (instance.terminal as unknown as FakeTerminal).options;
+
+    expect(options.macOptionIsMeta).toBe(true);
+    expect(options.macOptionClickForcesSelection).toBeUndefined();
   });
 });
 

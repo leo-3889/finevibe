@@ -142,6 +142,7 @@ export interface FinevibeApi {
     onQuitting(callback: () => void): () => void;
     onConfirmClose(callback: () => void): () => void;
     closeConfirmed(): void;
+    closeCancelled(): void;
   };
   browser: {
     saveScreenshot(sessionId: string, dataUrl: string): Promise<string>;
@@ -216,6 +217,7 @@ export interface FinevibeApi {
     onToggleDebug(callback: () => void): () => void;
     onToggleInspector(callback: () => void): () => void;
     onCloseSession(callback: () => void): () => void;
+    onOpenPreferences(callback: () => void): () => void;
     rebuild(debugMode: boolean): Promise<void>;
   };
   zoom: {

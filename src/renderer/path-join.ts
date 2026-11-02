@@ -1,6 +1,6 @@
 // Joining a child segment onto a path the renderer only knows as a string.
 // The renderer has no Node `path`, and the hardcoded `/` this replaces
-// produced `E:\AI/sample-project` on Windows: main resolves it verbatim, so the
+// produced `E:\AI/Acme` on Windows: main resolves it verbatim, so the
 // mixed spelling was persisted into the project record. Pure JS, no Node
 // APIs — same rule as `shared/platform.ts`.
 

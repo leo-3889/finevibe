@@ -150,6 +150,7 @@ export interface FineVibeApi {
     onQuitting(callback: () => void): () => void;
     onConfirmClose(callback: () => void): () => void;
     closeConfirmed(): void;
+    closeCancelled(): void;
   };
 
   /** One row of the A3 legacy-retirement audit log (main/userdata-migration.ts). */
@@ -228,6 +229,7 @@ export interface FineVibeApi {
     onToggleDebug(callback: () => void): () => void;
     onToggleInspector(callback: () => void): () => void;
     onCloseSession(callback: () => void): () => void;
+    onOpenPreferences(callback: () => void): () => void;
     rebuild(debugMode: boolean): Promise<void>;
   };
 }
@@ -406,6 +408,7 @@ const api: FineVibeApi = {
     onQuitting: (cb: () => void) => onChannel('app:quitting', cb),
     onConfirmClose: (cb: () => void) => onChannel('app:confirmClose', cb),
     closeConfirmed: () => { ipcRenderer.send('app:closeConfirmed'); },
+    closeCancelled: () => { ipcRenderer.send('app:closeCancelled'); },
   },
   storage: {
     scan: () => ipcRenderer.invoke('storage:scan'),
@@ -475,6 +478,7 @@ const api: FineVibeApi = {
     onToggleDebug: (cb) => onChannel('menu:toggle-debug', cb),
     onToggleInspector: (cb) => onChannel('menu:toggle-inspector', cb),
     onCloseSession: (cb) => onChannel('menu:close-session', cb),
+    onOpenPreferences: (cb) => onChannel('menu:open-preferences', cb),
     rebuild: (debugMode) => ipcRenderer.invoke('menu:rebuild', debugMode),
   },
 };

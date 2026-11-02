@@ -18,6 +18,15 @@ import { getHostSecret } from './secrets';
 /** Cap for the per-host connection cache (module-map-governance allowlist). */
 export const MAX_CACHED_CONNECTIONS = 32;
 
+/**
+ * Ceiling on one exec()'s stdout (audit row 45 — the lane was unbounded, so
+ * a command echoing a huge file could balloon main's heap). Past the cap the
+ * rest of the stream is drained and dropped; {@link execCapped} reports the
+ * truncation so a read-modify-write caller (unenroll's authorized_keys
+ * rewrite) can refuse instead of persisting a clipped copy.
+ */
+export const MAX_EXEC_OUTPUT_BYTES = 1024 * 1024;
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
 /** Sftp ops ride interactive lanes (config reads, sidecar polls): keep them
@@ -48,6 +57,10 @@ export function setClientFactoryForTests(factory: ClientFactory | null): void {
 interface CachedConnection {
   client: Client;
   ready: Promise<void>;
+  /** Pin this client's handshake was verified against (`hostKeyFingerprint`).
+   * Reuse is gated on it so a pin approved/rotated after connect cannot ride
+   * an older, unverified connection. */
+  verifiedPin?: string;
 }
 
 const connections = new Map<string, CachedConnection>();
@@ -90,16 +103,22 @@ export function connectConfigFor(record: HostRecord): ConnectConfig {
 /**
  * Connect (or reuse a cached connection) to `record`. Resolves once `ready`
  * fires; rejects on error/timeout. The server fingerprint is captured via
- * the `hostVerifier` seam (TOFU); `verifyHostKey` (enrollment, §4 step 2)
- * rejects the connection when the captured fingerprint does not match the
- * pinned one — the rejection is then the `host-key-changed` error.
+ * the `hostVerifier` seam; the pin on the record (`hostKeyFingerprint`,
+ * `SHA256:<base64>`) is enforced BY DEFAULT (audit row 30): every routine
+ * exec/sftp/git-over-ssh connect refuses a mismatch, not just enrollment.
+ * A mismatch rejects with the same `host-key-changed` error the enrollment
+ * lane produces (its consumers compare that exact message). `verifyHostKey`
+ * overrides the default — enrollment's TOFU capture (§4 step 2) passes one to
+ * accept a key the record has not pinned yet — it never disables the pin.
  */
 export function connect(
   record: HostRecord,
   opts?: { timeoutMs?: number; forceNew?: boolean; verifyHostKey?: (fingerprint: string) => boolean },
 ): Promise<{ client: Client; fingerprint: string }> {
+  const pinned = record.hostKeyFingerprint || undefined;
+  const verifyHostKey = opts?.verifyHostKey ?? (pinned ? (fp: string) => fp === pinned : undefined);
   const existing = connections.get(record.id);
-  if (existing && !opts?.forceNew) {
+  if (existing && !opts?.forceNew && existing.verifiedPin === pinned) {
     return existing.ready.then(() => ({ client: existing.client, fingerprint: existingFingerprint(existing) ?? '' }));
   }
   const config = connectConfigFor(record);
@@ -110,7 +129,7 @@ export function connect(
   config.hostVerifier = (key: Buffer) => {
     fingerprint = fingerprintOf(key);
     if (connRef) setFingerprint(connRef, fingerprint);
-    if (opts?.verifyHostKey && !opts.verifyHostKey(fingerprint)) {
+    if (verifyHostKey && !verifyHostKey(fingerprint)) {
       refused = true;
       return false; // ssh2 refuses the connection
     }
@@ -132,17 +151,18 @@ export function connect(
       reject(refused ? new Error('host-key-changed') : new Error('connection closed before ready'));
     });
   });
-  const conn: CachedConnection = { client, ready };
+  // An explicit verifier may accept a key that DIFFERS from the record's pin
+  // (rotation flows), so such a connection is not labeled as pin-verified —
+  // the next routine connect re-handshakes and enforces the pin strictly.
+  const conn: CachedConnection = { client, ready, verifiedPin: opts?.verifyHostKey ? undefined : pinned };
   connRef = conn;
   setFingerprint(conn, fingerprint);
-  // forceNew replaces an existing entry: drop its FIFO slot (audit T1 #1) and
-  // close the old client so eviction accounting stays exact.
-  if (opts?.forceNew) {
-    const old = connections.get(record.id);
-    if (old) {
-      old.client.end();
-      connections.delete(record.id);
-    }
+  // Past the reuse gate, an existing entry is stale by definition (forceNew,
+  // or the pin changed since it was verified): drop its FIFO slot (audit T1
+  // #1) and close the old client so eviction accounting stays exact.
+  if (existing) {
+    existing.client.end();
+    connections.delete(record.id);
     const dup = insertionOrder.indexOf(record.id);
     if (dup >= 0) insertionOrder.splice(dup, 1);
   }
@@ -155,7 +175,8 @@ export function connect(
     // line per failed connect in <logs>/finevibe.log (owner gate: "check
     // FineVibe logs for issues"). Consumers may ALSO log their own context
     // (fs rails do); this is the lane-level net.
-    console.warn(`[hosts] ssh connect failed ${record.user}@${record.host}:${record.port}: ${err instanceof Error ? err.message : String(err)}`);
+    const hint = err instanceof Error && err.message === 'host-key-changed' ? ' — pinned host key changed; run Test & Approve in Settings \u2192 Hosts' : '';
+    console.warn(`[hosts] ssh connect failed ${record.user}@${record.host}:${record.port}: ${err instanceof Error ? err.message : String(err)}${hint}`);
     if (connections.get(record.id) === conn) {
       connections.delete(record.id);
       const idx = insertionOrder.indexOf(record.id);
@@ -180,12 +201,20 @@ export function fingerprintOf(serverKey: Buffer): string {
   return `SHA256:${createHash('sha256').update(serverKey).digest('base64')}`;
 }
 
-/** Run `command` on `record`'s host; resolves with stdout. Closes the channel. */
-export function exec(record: HostRecord, command: string, opts?: { timeoutMs?: number }): Promise<string> {
+/**
+ * Run `command` on `record`'s host and resolve stdout plus the truncation
+ * flag. The channel always drains to close (the exit code decides resolve vs
+ * reject); only the stored bytes are capped.
+ */
+export function execCapped(
+  record: HostRecord,
+  command: string,
+  opts?: { timeoutMs?: number },
+): Promise<{ out: string; truncated: boolean }> {
   const timeout = opts?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
   return connect(record).then(
     ({ client }) =>
-      new Promise<string>((resolve, reject) => {
+      new Promise<{ out: string; truncated: boolean }>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`ssh exec timeout: ${command}`)), timeout);
         client.exec(command, (err, stream) => {
           if (err) {
@@ -193,13 +222,21 @@ export function exec(record: HostRecord, command: string, opts?: { timeoutMs?: n
             reject(err);
             return;
           }
-          let out = '';
+          const chunks: Buffer[] = [];
+          let bytes = 0;
+          let truncated = false;
           stream.on('data', (chunk: Buffer) => {
-            out += chunk.toString('utf8');
+            if (bytes >= MAX_EXEC_OUTPUT_BYTES) {
+              truncated = true;
+              return;
+            }
+            chunks.push(chunk);
+            bytes += chunk.length;
+            if (bytes > MAX_EXEC_OUTPUT_BYTES) truncated = true;
           });
           stream.on('close', (code: number | null) => {
             clearTimeout(timer);
-            if (code === 0) resolve(out);
+            if (code === 0) resolve({ out: Buffer.concat(chunks).subarray(0, MAX_EXEC_OUTPUT_BYTES).toString('utf8'), truncated });
             else reject(new Error(`ssh exec exit ${code}: ${command.slice(0, 80)}`));
           });
           stream.on('error', (e: Error) => {
@@ -209,6 +246,13 @@ export function exec(record: HostRecord, command: string, opts?: { timeoutMs?: n
         });
       }),
   );
+}
+
+/** Run `command` and resolve stdout, capped at {@link MAX_EXEC_OUTPUT_BYTES}.
+ * Callers whose output is re-persisted (read-modify-write) must use
+ * {@link execCapped} and honor `truncated`. */
+export function exec(record: HostRecord, command: string, opts?: { timeoutMs?: number }): Promise<string> {
+  return execCapped(record, command, opts).then((r) => r.out);
 }
 
 // --- sftp lane (per-host providers plan §3: the file plane) ---

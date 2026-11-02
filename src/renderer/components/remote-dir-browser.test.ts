@@ -37,7 +37,7 @@ async function open(startPath: string | undefined, opts?: { onSelect?: Mock; onD
   const onSelect = opts?.onSelect ?? vi.fn();
   showRemoteDirBrowser({
     hostId: 'h1',
-    title: 'Browse demo-host',
+    title: 'Browse remote1',
     startPath,
     onSelect,
     onDismiss: opts?.onDismiss,

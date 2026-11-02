@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // The icon master is assets/icon-source.png (1024x1024, tracked), rendered by
 // scripts/generate-icon.mjs. Regenerate the master first if the design changed.
-//   build/icon.png  - electron-builder top-level/linux icon + in-app window icon
-//   build/icon.icns - macOS (mac.icon)
-//   build/icon.ico  - Windows (win.icon)
+//   build/icon.png        - electron-builder top-level icon + in-app window icon
+//   build/icons/NxN.png   - linux hicolor set (linux.icon is this directory)
+//   build/icon.icns       - macOS (mac.icon)
+//   build/icon.ico        - Windows (win.icon)
 //   build/installerHeader.bmp   - NSIS assisted-wizard header strip, 150x57
 //   build/installerSidebar.bmp  - NSIS welcome/finish page bitmap, 164x314
 // The NSIS assisted installer (nsis.oneClick:false) ignores installerHeaderIcon.ico
@@ -13,7 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { renderTile, BG_TOP, BG_BOT, clamp01 } from './icon-art.mjs';
+import { renderTile, encodePng, BG_TOP, BG_BOT, clamp01 } from './icon-art.mjs';
 import png2icons from 'png2icons';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const src = path.join(root, 'assets', 'icon-source.png');
@@ -28,6 +29,23 @@ if (size[0] !== size[1] || size[0] < 1024) {
 
 fs.mkdirSync(build, { recursive: true });
 fs.writeFileSync(path.join(build, 'icon.png'), png);
+
+// Linux hicolor set. Ubuntu's hicolor index.theme declares only 256x256/apps and
+// 512x512/apps, so a lone 1024x1024 build/icon.png installs into a directory no
+// themed lookup searches: Gtk.IconTheme lookup('finevibe') misses at every size and
+// the .desktop Icon=finevibe renders the generic icon. electron-builder's FpmTarget
+// maps every icon of a directory-valued linux.icon to
+// /usr/share/icons/hicolor/<size>x<size>/apps/<name>.png, so ship one PNG per size.
+// Rendered from the same SDF art as the master (1px device-space AA per size) instead
+// of shelling out to ImageMagick: deterministic, byte-stable across hosts, and needs
+// no binary that is absent from a plain dev box.
+const HICOLOR_SIZES = [16, 24, 32, 48, 64, 128, 256, 512, 1024];
+const iconsDir = path.join(build, 'icons');
+fs.rmSync(iconsDir, { recursive: true, force: true });
+fs.mkdirSync(iconsDir);
+for (const n of HICOLOR_SIZES) {
+  fs.writeFileSync(path.join(iconsDir, `${n}x${n}.png`), encodePng(renderTile(n), n, n));
+}
 
 const icns = png2icons.createICNS(png, png2icons.BICUBIC, 0);
 if (!icns) {
@@ -109,4 +127,7 @@ const sidebar = gradient(SW, SH);
 over(sidebar, SW, SH, renderTile(STS), STS, (SW - STS) >> 1, 48);
 fs.writeFileSync(path.join(build, 'installerSidebar.bmp'), bmp24(SW, SH, sidebar));
 
-console.log('Icons built: build/icon.png, build/icon.icns, build/icon.ico, build/installerHeader.bmp, build/installerSidebar.bmp');
+console.log(
+  `Icons built: build/icon.png, build/icons/{${HICOLOR_SIZES.join(',')}}.png, ` +
+    'build/icon.icns, build/icon.ico, build/installerHeader.bmp, build/installerSidebar.bmp'
+);

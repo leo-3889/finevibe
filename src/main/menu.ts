@@ -1,4 +1,5 @@
 import { app, Menu, BrowserWindow } from 'electron';
+import { RELOAD_MAIN_WINDOW_ACCELERATOR } from '../shared/constants';
 import { isMac, isWin, isLinux } from './platform';
 
 export function createAppMenu(debugMode = false): void {
@@ -8,6 +9,21 @@ export function createAppMenu(debugMode = false): void {
       label: app.name,
       submenu: [
         { role: 'about' as const },
+        { type: 'separator' as const },
+        // Row 77: Cmd+, was dead — no menu carried a Preferences item, so the
+        // sidebar gear was the only entry to the settings modal. Unlike the
+        // display-only / `accelerator: ''` items elsewhere in this template,
+        // this one registers its key: Cmd+, is not a byte a shell or readline
+        // expects (the row 92/70 exclusion list is Cmd+Z/X/C/V/A), and a native
+        // menu accelerator still fires while an <input> owns the keyboard,
+        // where the renderer's shortcut dispatcher suppresses app chords.
+        // Mac-only placement, so the win/linux "the menu claims no
+        // accelerator" invariant below stays intact.
+        {
+          label: 'Preferences…',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => sendToRenderer('menu:open-preferences'),
+        },
         { type: 'separator' as const },
         { role: 'services' as const },
         { type: 'separator' as const },
@@ -76,15 +92,31 @@ export function createAppMenu(debugMode = false): void {
         { label: 'Delete', click: () => focusedContents()?.delete() },
         { label: 'Select All', click: () => focusedContents()?.selectAll() },
       ] : [
-        { role: 'undo' as const },
+        // macOS row 92/70: a role item registers its default accelerator
+        // (registerAccelerator defaults to true), so macOS claims Cmd+Z/X/C/V/A
+        // at the menu bar BEFORE the renderer — xterm's customKeyEventHandler
+        // never sees them and the role acts on xterm's hidden helper textarea
+        // (Select All is a visual no-op, undo/cut land in the textarea). An
+        // empty accelerator keeps the label and the click action while
+        // claiming no key; these five are the chords a focused PTY needs, and
+        // terminal-utils.ts routes them from there. Redo/pasteAndMatchStyle/
+        // Delete stay claimed: none is a byte a PTY expects.
+        //
+        // Ordinary inputs keep working: unregistering a MENU accelerator does
+        // not disable Chromium's own editing commands. Cmd+C/V/X/Z/A in an
+        // <input>/<textarea> are handled by the browser's editable-element
+        // behavior, which is exactly how the unclaimed Cmd+V paste path (the
+        // paste event attachImagePasteHandler listens for) already reaches the
+        // renderer here.
+        { role: 'undo' as const, accelerator: '' },
         { role: 'redo' as const },
         { type: 'separator' as const },
-        { role: 'cut' as const },
-        { role: 'copy' as const },
-        { role: 'paste' as const },
+        { role: 'cut' as const, accelerator: '' },
+        { role: 'copy' as const, accelerator: '' },
+        { role: 'paste' as const, accelerator: '' },
         { role: 'pasteAndMatchStyle' as const },
         { role: 'delete' as const },
-        { role: 'selectAll' as const },
+        { role: 'selectAll' as const, accelerator: '' },
       ],
     },
     {
@@ -123,7 +155,13 @@ export function createAppMenu(debugMode = false): void {
             label: 'Reload Main Window',
             // C4S-03: Ctrl+Alt+R is AltGr+R on many non-US layouts, so the
             // AltGr half of a dead-key/compose press would fire a reload.
-            accelerator: isMac ? 'Command+Shift+R' : 'Ctrl+Shift+F5',
+            // Row 99: the chord is display-only HERE but real in the renderer —
+            // the same shared constant is the `reload-main-window` shortcut's
+            // default keys, so the printed keys fire the same action on all
+            // three platforms (the old Command+Shift+R display collided with
+            // the browser-tab hard reload, and Ctrl+Shift+F5 was bound by
+            // nothing on win/linux).
+            accelerator: RELOAD_MAIN_WINDOW_ACCELERATOR,
             registerAccelerator: false,
             click: () => BrowserWindow.getFocusedWindow()?.reload(),
           },

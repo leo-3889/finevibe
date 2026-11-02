@@ -110,8 +110,14 @@ vi.mock('./prerequisites', () => ({ checkPythonAvailable: vi.fn(() => null) }));
 // PA-01: main.ts wires the probe cache to userData at boot; stub the module.
 vi.mock('./providers/resolve-binary', () => ({ configureProbeCacheDir: vi.fn() }));
 // Live getter: main.ts reads `isWin` at boot, so the case can flip the flag
-// between imports without a second mock registration.
-vi.mock('./platform', () => ({ isMac: false, get isWin() { return platform.isWin; } }));
+// between imports without a second mock registration. The row-85 GPU-hatch
+// decision is imported by main.ts too, so it must be carried; the hatch is off
+// here (and `app.disableHardwareAcceleration` is unmocked on purpose).
+vi.mock('./platform', () => ({
+  isMac: false,
+  get isWin() { return platform.isWin; },
+  shouldDisableHardwareAcceleration: () => false,
+}));
 vi.mock('./chrome-import/copy', () => ({ sweepImportTempDirs: vi.fn() }));
 vi.mock('./close-state', () => ({
   isCloseConfirmed: vi.fn(() => true),

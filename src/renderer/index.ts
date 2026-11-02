@@ -112,7 +112,12 @@ window.finevibe.app.onQuitting(() => {
 });
 
 window.finevibe.app.onConfirmClose(() => {
-  confirmAppClose(() => window.finevibe.app.closeConfirmed());
+  // Both replies matter: closeConfirmed quits, closeCancelled disarms the main
+  // watchdog (audit row 89) so a cancelled quit cannot force-kill the PTYs.
+  confirmAppClose(
+    () => window.finevibe.app.closeConfirmed(),
+    () => window.finevibe.app.closeCancelled(),
+  );
 });
 
 /**

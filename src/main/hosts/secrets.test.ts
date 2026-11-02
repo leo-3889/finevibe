@@ -20,6 +20,8 @@ vi.mock('electron', () => ({
 }));
 
 import {
+  MAX_CACHED_SECRETS,
+  SECRET_PROBE_RETRY_MS,
   deleteHostSecret,
   getHostSecret,
   secretsAvailable,
@@ -48,6 +50,32 @@ describe('secretsAvailable', () => {
     available = false;
     setSecretsAvailableForTests(null);
     expect(secretsAvailable()).toBe(false);
+  });
+
+  // Row 100: a keyring that comes up after boot (D-Bus / secret service started
+  // late) used to stay invisible for the whole process, because the first
+  // `false` was cached forever.
+  it('re-probes a failed check once the retry window passes', () => {
+    vi.useFakeTimers();
+    try {
+      available = false;
+      setSecretsAvailableForTests(null);
+      expect(secretsAvailable()).toBe(false);
+      available = true;
+      // Inside the window the cached negative still serves (no per-call probe).
+      vi.advanceTimersByTime(SECRET_PROBE_RETRY_MS - 1);
+      expect(secretsAvailable()).toBe(false);
+      vi.advanceTimersByTime(1);
+      expect(secretsAvailable()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps caching a successful check (a working keyring is not re-probed)', () => {
+    expect(secretsAvailable()).toBe(true);
+    available = false;
+    expect(secretsAvailable()).toBe(true);
   });
 });
 
@@ -82,5 +110,34 @@ describe('set/get/delete host secret', () => {
     setHostSecret('host-1', 'pw');
     setSecretsFileForTests(file); // reset the cache, keep the file
     expect(getHostSecret('host-1')).toBe('pw');
+  });
+
+  // Row 46: the cache is capped (LRU) so it cannot grow with every host ever
+  // enrolled. That is only safe because every mutation is a read-modify-write
+  // of the FILE — a naive "write the whole cache back" would silently drop the
+  // evicted hosts' ciphertext on the next set.
+  it('keeps every secret intact past the cache cap', () => {
+    const ids = Array.from({ length: MAX_CACHED_SECRETS + 4 }, (_, i) => `host-${i}`);
+    for (const id of ids) setHostSecret(id, `pw-${id}`);
+    for (const id of ids) expect(getHostSecret(id)).toBe(`pw-${id}`);
+    setHostSecret('one-more', 'pw-one-more');
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, string>;
+    expect(Object.keys(stored).sort()).toEqual([...ids, 'one-more'].sort());
+  });
+
+  // Row 100: deleting never decrypts, so the availability gate only orphaned
+  // the ciphertext of a host whose secret could not be dropped.
+  it('deletes the file entry while storage is unavailable', () => {
+    setHostSecret('host-1', 'pw');
+    available = false;
+    setSecretsAvailableForTests(false);
+    deleteHostSecret('host-1');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({});
+  });
+
+  it('delete of an unknown id leaves the file untouched', () => {
+    setHostSecret('host-1', 'pw');
+    deleteHostSecret('ghost');
+    expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, string>)).toEqual(['host-1']);
   });
 });

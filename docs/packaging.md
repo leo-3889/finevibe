@@ -15,7 +15,8 @@ derives the packaged assets. Every packaging entrypoint runs it before
 
 | Asset | Consumers |
 |---|---|
-| `build/icon.png` | `build.icon` + linux icon; shipped in the asar and used as the window icon (`src/main/main.ts`) |
+| `build/icon.png` | shipped in the asar (the exact `build/icon.png` entry in `build.files`) and used as the window icon (`src/main/main.ts`; packaged location pinned by `src/main/main.test.ts`). There is no top-level `build.icon` key |
+| `build/icons/<N>x<N>.png` | linux icon — the 9-size hicolor set (16–1024) that `build.linux.icon` points at as a *directory* (`scripts/build-icons.mjs`, `82cedc74`): the deb's `/usr/share/icons/hicolor/<size>/apps/finevibe.png`, the `.desktop` `Icon=`, and the icons the npm launcher installs into `$XDG_DATA_HOME/icons/hicolor` from the AppImage extract |
 | `build/icon.icns` | macOS (`build.mac.icon`) |
 | `build/icon.ico` | Windows (`build.win.icon`, 16–256px sizes; also `win:stamp`'s rcedit icon and the NSIS `MUI_ICON`) |
 | `build/installerHeader.bmp` | NSIS assisted-wizard header strip, 150×57 (`MUI_HEADERIMAGE_BITMAP`) |
@@ -30,7 +31,7 @@ master and `build/` assets.
 Beyond the packaged installers, the same asset tree feeds:
 
 - **Renderer favicon** — `scripts/copy-assets.js:47` copies
-  `build/icon.png` into the renderer dist; `src/renderer/index.html:8`
+  `build/icon.png` into the renderer dist; `src/renderer/index.html:27`
   links it as `rel="icon"`.
 - **Windows app exe stamp** — `scripts/edit-win-exe.mjs` writes
   `build/icon.ico` + version resources into
@@ -41,10 +42,17 @@ Beyond the packaged installers, the same asset tree feeds:
   it accepts both the PE32+ app exe (4-part numeric `FileVersion` +
   `OriginalFilename=FineVibe.exe`) and the 32-bit PE32 NSIS Setup stub
   (its `FileVersion` must carry the app version core from
-  `package.json`).
+  `package.json`). `npm run win:verify:native` runs the same script against
+  the `out/win-unpacked` directory and audits the packed native modules
+  instead (row 74): the packed `better_sqlite3.node` register symbol must
+  carry the `NODE_MODULE_VERSION` that `@electron/rebuild` recorded in
+  `node_modules/better-sqlite3/build/Release/.forge-meta`, and node-pty's
+  `win32-*` prebuilds must be intact. Without it the local chain ships a
+  Node-ABI binding green — `--config.npmRebuild=false` skips the rebuild and
+  `postinstall` swallows `install-app-deps` failures.
 - **CI guard** — `release.yml`'s `build-windows` job runs the
   "Verify Windows exe icon + version resources" step
-  (`.github/workflows/release.yml:357`): it renders the built exe's
+  (`.github/workflows/release.yml:549`): it renders the built exe's
   embedded 32px icon and fails if it matches the default Electron icon,
   then asserts `ProductName` and the `FileVersion` shape.
 - **macOS bundle icon** — `release.yml`'s `build` job compares
@@ -101,10 +109,56 @@ its native runner and publishes to GitHub Releases:
 | `build-linux` | ubuntu-latest | `AppImage`, `deb` | x64 |
 | `build-windows` | windows-2022 | NSIS Setup `.exe`, portable `.exe`, `zip` | x64 |
 
-Artifact names come from `build.linux/win/mac.artifactName`, e.g.
+Artifact names come from `build.linux/win.artifactName`, e.g.
 `FineVibe-<version>-linux-amd64.deb`, plus `latest.yml` for the
-electron-updater/npm launcher. Versions with a `-dev` suffix normalize to dpkg
+electron-updater/npm launcher. The `${arch}` macro is EXTENSION-aware
+(`builder-util getArtifactArchName`): x64 renders `amd64` for deb/snap but
+`x86_64` for AppImage/rpm — never assume one spelling for all linux targets.
+`build.mac.minimumSystemVersion` (row 76) is electron-builder's
+`LSMinimumSystemVersion`: it ships the Electron runtime's macOS floor (Electron
+41 = macOS 12 Monterey; Electron 38 dropped Big Sur, 44 drops Monterey) so an
+older macOS refuses to launch the app instead of dying inside dyld on missing
+symbols. It is pinned in `src/main/platform.test.ts` against the declared
+Electron major, so an Electron bump has to revisit it.
+Versions with a `-dev` suffix normalize to dpkg
 `~dev` (`0.3.9-dev` → `0.3.9~dev`) inside the deb control metadata.
+
+Mac is the one platform with NO `artifactName` (row 72), and the missing line is
+a contract rather than an oversight: the mac artifacts keep electron-builder's
+default names — zips `FineVibe-<version>-mac.zip` / `FineVibe-<version>-arm64-mac.zip`
+(`app-builder-lib/out/targets/ArchiveTarget.js:23-30`,
+`${productName}-${version}[-${arch}]-${os}.${ext}`,
+the arch part dropping for the default arch x64) and dmgs
+`FineVibe-<version>.dmg` / `FineVibe-<version>-arm64.dmg`
+(`dmg-builder/out/dmg.js:25-27`) —
+because `bin/finevibe.js getAssetName` downloads the mac zip under exactly those
+two spellings.
+Setting `build.mac.artifactName` replaces the pattern for BOTH mac targets, so
+the zip renames and every mac `npx finevibe` install 404s on the asset — while
+`release.yml`'s mac upload/verify globs (`out/*.dmg`, `out/*.zip`) still match,
+so the build stays green and only the user notices. `npm-launcher.test.ts`
+pins the pair (`mac.artifactName` undefined + the launcher's expected names);
+the reverse troubleshooting direction — a mac install failing with
+`Release v<version> not found` — is checked by comparing the assets on the
+release against those two spellings before anything else. A comment cannot live
+next to `build.mac` itself: electron-builder validates `build` with
+`additionalProperties: false` (`app-builder-lib/scheme.json`), so any extra key
+— even `"//"` — fails the build.
+
+Every `node_modules` cite in this section (`ArchiveTarget.js`,
+`dmg-builder/out/dmg.js`, `macPackager.js`, `macCodeSign.js`) is against
+**electron-builder 26.8.1** — a bump invalidates the line numbers, re-derive them.
+
+`build.mac.forceCodeSigning: true` keeps a mac build honest: app-builder-lib's
+`fallBackToAdhoc` (`macPackager.js:215`) otherwise signs arm64 builds with a
+fresh ad-hoc identity whenever the real identity is missing, so each release
+carries a different signer and macOS treats the update as a different app.
+With the flag the same build fails loudly instead
+(`reportError` → throw, `macCodeSign.js:75`). Because app-builder-lib rejects
+`identity: null` combined with the flag (`macPackager.js:217`), the
+`artifacts_only` gate leg of `release.yml` overrides both
+(`-c.mac.identity=null -c.mac.notarize=false -c.mac.forceCodeSigning=false`);
+release runs keep the flag and the loud failure.
 
 ## Build output directories
 
@@ -112,7 +166,10 @@ electron-updater/npm launcher. Versions with a `-dev` suffix normalize to dpkg
 `dist/preload`, `dist/renderer`). Every electron-builder artifact —
 Setup.exe, zips, portable exe, `win-unpacked/`, `latest.yml`, blockmaps,
 debs, AppImages, dmgs — lands in `out/`, set by
-`build.directories.output`. The split means wiping builder artifacts never
+`build.directories.output`. `npm run build:renderer` starts by deleting
+`dist/renderer` (`scripts/build-renderer.mjs:37`, `676a5070`), so a rebuild can
+never leave an orphan chunk from an earlier bundle behind in the tree that gets
+packed. The split means wiping builder artifacts never
 destroys the compiled tree (and vice versa); CI upload globs and local
 verification commands read `out/*`. `npm run pack` / `npm run dist` /
 `npm run dist:win:local` all write there; the local Windows flow also
@@ -126,9 +183,9 @@ deletes `out/win-unpacked` automatically after the nsis+zip legs.
 artifact tree (see [Build output
 directories](#build-output-directories)). `npm run dist:win:local` produces
 the standalone `out/FineVibe-Setup-<version>.exe` installer as one gated
-chain: dir build → `win:stamp` → `win:verify` → nsis+zip repack from
-`out/win-unpacked` → `win:verify:setup`, so a stamp/verify failure aborts
-before anything ships. `npm run clean` removes `dist/` and `out/`; an
+chain: dir build → `win:verify:native` → `win:stamp` → `win:verify` →
+nsis+zip repack from `out/win-unpacked` → `win:verify:setup`, so a native-ABI,
+stamp or identity failure aborts before anything ships. `npm run clean` removes `dist/` and `out/`; an
 unbuilt tree then fails fast — the `prestart`/`predev` gate
 (`scripts/require-built.js`) lists the missing artifacts before Electron
 starts, and the boot guard in `src/main/main.ts`
@@ -152,21 +209,58 @@ Electron welcome window appear.
 
 ## Update policy
 
-Both update paths — the packaged auto-updater (`src/main/auto-updater.ts`)
-and the npm launcher (`bin/finevibe.js`) — take their release feed from
-`FINEVIBE_RELEASE_REPO` (P1-7 fork policy, audit plan §1(iv)): it must name
-the fork repository that publishes these releases (`owner/repo`, served as
-GitHub Releases with `latest.yml`). Unset or malformed is a *deliberate*
-no-auto-update configuration: both components fail closed with a warning
-and never fall back to the upstream feed.
+The two update paths get their release feed differently, because only one of
+them ships with the repository's own metadata:
+
+- **Packaged auto-updater (`src/main/auto-updater.ts`)** uses the feed
+  electron-builder bakes into `resources/app-update.yml` (written from
+  `build.publish` by `PublishManager.onAfterPack`). That file *is* the
+  packaged default — `AppUpdater.loadUpdateConfig` reads it when no feed URL
+  is set — so a packaged build self-updates with zero user environment. The
+  old behaviour (requiring `FINEVIBE_RELEASE_REPO`) left every packaged build
+  without an updater, which matters because a Finder/Dock launch carries no
+  shell environment at all; `bin/finevibe.js` now execs the app bundle
+  directly, so a launch from a terminal still carries the override. Set,
+  `FINEVIBE_RELEASE_REPO` OVERRIDES the baked feed; a value that is not
+  `owner/repo` disables auto-update instead of being silently ignored.
+- **npm launcher (`bin/finevibe.js`)** has no baked feed: `FINEVIBE_RELEASE_REPO`
+  is required; unset/malformed refuses the download (P1-7 fork policy).
+
+Fork identity stays fail-closed either way: `initAutoUpdater` compares the
+baked feed against its fork constant (`FORK_RELEASE_REPO`, pinned to
+`build.publish` by `src/main/auto-updater.test.ts`) and disables itself with a
+warning when they differ, so foreign `resources/` bytes never feed a fork
+install.
+
+Those gates also cover the manual path. The About section always renders its
+"Check for updates" button, so `checkForUpdates()` reads the state
+`initAutoUpdater` decided at startup: when the updater is off (deb install,
+portable `.exe`, foreign or unreadable baked feed, malformed override) it
+returns `{ disabled: <reason> }` without touching `autoUpdater`, the
+`update:checkNow` channel carries that value, and the pane shows the reason
+instead of a false "Update available"/"Update failed".
 
 Per target:
 
 - **NSIS Setup (Windows) and dmg/zip (macOS):** electron-updater checks the
-  configured repo's `latest.yml` / `latest-mac.yml` and installs on quit.
-- **deb (Linux):** no updater channel — electron-updater has no deb target.
-  A deb install updates through apt/your package repo (or a manual
-  `apt install ./FineVibe-<new>.deb`).
+  feed's `latest.yml` / `latest-mac.yml` and installs on quit.
+- **AppImage (Linux):** the one self-updating linux artifact. The linux
+  channel file holds a single installer (`Provider.getChannelFilePrefix` →
+  `latest-linux.yml`), and it describes the AppImage — the same asset the npm
+  launcher installs. `build.deb.publish: null` is what keeps it that way:
+  without it the deb leg writes the same filename last and the AppImage entry
+  disappears, which makes `AppImageUpdater`'s `findFile(…, "AppImage")`
+  return undefined and every 4 h check end in `update:error`.
+- **deb (Linux):** excluded from the feed and from auto-update.
+  `build.deb.publish: null` stops the deb leg writing `latest-linux.yml`, and
+  `initAutoUpdater` skips initialization when `resources/package-type` is
+  `deb` (the marker `FpmTarget` writes, and the file electron-updater uses to
+  pick `DebUpdater`) — a deb install has no feed entry to install, so
+  `DebUpdater` would only error. Update a deb through apt/your package repo
+  (or a manual `sudo apt install ./FineVibe-<new>-linux-amd64.deb`).
+  Note `publish: null` also means `--publish always` would skip uploading the
+  `.deb` itself; the release workflow builds `--publish never` and uploads
+  every artifact from `out/` in one job, which is unaffected.
 - **portable `.exe` (Windows):** excluded from auto-update.
   electron-updater does not support the portable target — an "update" would
   download the NSIS setup and clobber the portable layout — so
@@ -231,8 +325,14 @@ launching the downloaded AppImage there dies before any window appears with
 `APPIMAGE_EXTRACT_AND_RUN=1` (the runtime then extracts to a temp dir on
 every start — works everywhere, costs a temp copy per launch), and writes
 the same `env APPIMAGE_EXTRACT_AND_RUN=1 …` prefix into the installed
-`.desktop` `Exec` so desktop launches take the same path. The `.deb` is a
-plain installed tree and is unaffected.
+`.desktop` `Exec` so desktop launches take the same path. Only the Exec
+*program* is replaced there: the embedded entry's arguments carry over, which
+is how `--no-sandbox` (electron-builder ships `Exec=AppRun --no-sandbox %U`,
+the bundled `chrome-sandbox` being 0755 non-setuid) survives the rewrite —
+dropping it aborts the launch on distros that restrict unprivileged user
+namespaces. `--appimage-extract-and-run` is the one argument dropped, because
+the `env` prefix is the same instruction. The `.deb` is a plain installed tree
+and is unaffected.
 
 ### Wayland posture (XWayland)
 
@@ -248,6 +348,22 @@ blurry terminal text under fractional scaling, and banner-click focus is
 best-effort. Revisit as a deliberate, tested migration when the Ubuntu CI
 matrix can run a native Wayland session; until then do not add the hint to
 launcher, `.desktop` `Exec`, or spawn arguments.
+
+### GPU escape hatch (Mesa/gfx12 desktop stalls)
+
+On Mesa/gfx1201 boards the Electron GPU process (ANGLE → Vulkan → Mesa RADV) can
+fault `[gfxhub] page fault` and stall `ring gfx_0.0.0`; GNOME shares that ring, so
+kernel soft-recovery freezes the whole desktop for ~10 s. `FINEVIBE_DISABLE_GPU=1`
+drops GL app-wide (`shouldDisableHardwareAcceleration` in `src/main/platform.ts`,
+applied before `ready`) — on the deb that means the desktop entry:
+`Exec=env FINEVIBE_DISABLE_GPU=1 /opt/FineVibe/finevibe %U` (a hand-edited
+`.desktop` is rewritten on the next install/upgrade, so reapply it). Narrower
+levers: `DRI_PRIME=pci-<bdf>` pins GL off the display card (keeps acceleration),
+`FINEVIBE_DOM_RENDERER=1` drops only the per-pane WebGL terminal renderer. All of
+them are workarounds: the real fix is kernel-side (gfx12 PTE/recovery patches, mainline
+7.1/7.3, not SRU into Ubuntu's 7.0.0-42 as of 2026-10-31 — booting 7.0.0-42 does
+already drop the 6.14 `svm_range_restore_work` retry loop). Windows/macOS ignore the
+flag; the fault path is Mesa-specific and those platforms are UNVERIFIED-RUNTIME.
 
 ### Ad-hoc packages without a release
 

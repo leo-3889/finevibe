@@ -1,6 +1,17 @@
 /** GitHub REST/Search API ceiling for `per_page`. Shared by main-process callers and the widget settings UI. */
 export const GITHUB_MAX_PER_PAGE = 100;
 
+/**
+ * The Reload Main Window chord, shared by the two planes that must agree on it
+ * (audit row 99): `menu.ts` prints it on the menu item (display-only —
+ * `registerAccelerator: false`, so the native bar claims no key) and
+ * `shortcuts.ts` binds it for real as the `reload-main-window` shortcut.
+ * `CmdOrCtrl` renders ⌘ on macOS / Ctrl elsewhere on BOTH sides, and
+ * Cmd+Shift+R is deliberately NOT used: that chord already belongs to the
+ * browser-tab hard reload (`browser-hard-reload`).
+ */
+export const RELOAD_MAIN_WINDOW_ACCELERATOR = 'CmdOrCtrl+Shift+F5';
+
 /** Glob patterns for files to exclude from large-file scanning (readiness checks). */
 export const DEFAULT_SCAN_IGNORE = [
   'package-lock.json',

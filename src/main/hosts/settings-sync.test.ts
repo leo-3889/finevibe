@@ -45,9 +45,9 @@ import { remotePathArg, syncSettingsToHost } from './settings-sync';
 
 const record: HostRecord = {
   id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
-  name: 'demo-host',
+  name: 'remote1',
   user: 'dev',
-  host: '203.0.113.9',
+  host: '192.0.2.242',
   port: 22,
   authKind: 'key',
   managedKey: true,
