@@ -151,7 +151,8 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
           w.webContents.send('pty:exit', sessionId, exitCode, signal);
         }
       },
-      { host: record.host, port: record.port, defaultFolder: record.defaultFolder },
+      // hostId selects the per-host trust store the ssh argv points at (row 35).
+      { hostId: record.id, host: record.host, port: record.port, defaultFolder: record.defaultFolder },
     );
   });
 

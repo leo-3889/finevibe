@@ -12,6 +12,7 @@ import { isRegistryHostTarget } from '../shared/ssh-host';
 import { SPAWN_REJECTED_EXIT_REASON } from '../shared/constants';
 import { getProvider } from './providers/registry';
 import { getHost } from './hosts/host-registry';
+import { hostTrustSshArgs } from './hosts/host-trust';
 import { remoteLaunchSessionDir } from './launch-session-dir';
 import { registerSession, registerRemoteStatus, unregisterSession } from './hook-status';
 import { guardedProfileInstall } from './settings-guard';
@@ -820,7 +821,14 @@ export function resolveLaunchSpec(params: {
       }
     }
     const cmd = `${mkdir}${prefix ? `${prefix} ` : ''}${remoteCommand(base.executable, argv, homeTokens)}`;
-    return { ...base, executable: 'ssh', argv: ['-tt', '-p', String(record.port), '--', `${record.user}@${record.host}`, cmd] };
+    // Row 35: the app's ssh reads FineVibe's own per-host trust store (seeded at
+    // enrollment from the approved pin's key) instead of the user's known_hosts.
+    // No seeded file → no options → the user's store, as before.
+    return {
+      ...base,
+      executable: 'ssh',
+      argv: ['-tt', ...hostTrustSshArgs(record), '-p', String(record.port), '--', `${record.user}@${record.host}`, cmd],
+    };
   }
   return base;
 }
@@ -1093,8 +1101,10 @@ export function spawnShellPty(
   onExit: (exitCode: number, signal?: number) => void,
   /** Set = open the shell on a remote host via `ssh -tt -p <port> -- <host>`
    * (multi-host Phase 1, council R-2): the local cwd is irrelevant (the
-   * remote cwd is `remote.defaultFolder`, falling back to the remote home). */
-  remote?: { host: string; port: number; defaultFolder?: string },
+   * remote cwd is `remote.defaultFolder`, falling back to the remote home).
+   * `hostId` is the registry id behind `host` — it selects the per-host trust
+   * store (audit row 35); without it the lane uses the user's known_hosts. */
+  remote?: { hostId?: string; host: string; port: number; defaultFolder?: string },
 ): void {
   if (ptys.has(sessionId)) {
     replacedPtys.add(ptys.get(sessionId)!.process);
@@ -1116,9 +1126,14 @@ export function spawnShellPty(
   // registry grammar already gates it), matching the resolveLaunchSpec wrap.
   const useRemote = remote !== undefined;
   const executable = useRemote ? 'ssh' : shell;
+  // Row 35: same trust store as the launch lane. The record is the enrolled one
+  // the caller (hosts:openShell) just gate-checked; an unknown id seeds nothing.
+  const remoteRecord = useRemote && remote.hostId ? getHost(remote.hostId) : undefined;
+  const trustArgs = remoteRecord ? hostTrustSshArgs(remoteRecord) : [];
   const argv = useRemote
     ? [
         '-tt',
+        ...trustArgs,
         '-p',
         String(remote.port),
         '--',

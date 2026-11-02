@@ -114,12 +114,16 @@ export function connectConfigFor(record: HostRecord): ConnectConfig {
 export function connect(
   record: HostRecord,
   opts?: { timeoutMs?: number; forceNew?: boolean; verifyHostKey?: (fingerprint: string) => boolean },
-): Promise<{ client: Client; fingerprint: string }> {
+): Promise<{ client: Client; fingerprint: string; serverKey?: Buffer }> {
   const pinned = record.hostKeyFingerprint || undefined;
   const verifyHostKey = opts?.verifyHostKey ?? (pinned ? (fp: string) => fp === pinned : undefined);
   const existing = connections.get(record.id);
   if (existing && !opts?.forceNew && existing.verifiedPin === pinned) {
-    return existing.ready.then(() => ({ client: existing.client, fingerprint: existingFingerprint(existing) ?? '' }));
+    return existing.ready.then(() => ({
+      client: existing.client,
+      fingerprint: existingFingerprint(existing) ?? '',
+      serverKey: existingKey(existing),
+    }));
   }
   const config = connectConfigFor(record);
   config.readyTimeout = opts?.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
@@ -128,7 +132,13 @@ export function connect(
   let connRef: CachedConnection | null = null;
   config.hostVerifier = (key: Buffer) => {
     fingerprint = fingerprintOf(key);
-    if (connRef) setFingerprint(connRef, fingerprint);
+    if (connRef) {
+      setFingerprint(connRef, fingerprint);
+      // Row 35: keep the wire key the pin was computed over — the interactive
+      // `ssh -tt` lanes seed their known_hosts from it (a SHA256 pin cannot be
+      // turned back into a key).
+      serverKeys.set(connRef.client, key);
+    }
     if (verifyHostKey && !verifyHostKey(fingerprint)) {
       refused = true;
       return false; // ssh2 refuses the connection
@@ -183,7 +193,7 @@ export function connect(
       if (idx >= 0) insertionOrder.splice(idx, 1);
     }
   });
-  return ready.then(() => ({ client, fingerprint: existingFingerprint(conn) ?? fingerprint }));
+  return ready.then(() => ({ client, fingerprint: existingFingerprint(conn) ?? fingerprint, serverKey: existingKey(conn) }));
 }
 
 // ssh2 emits `handshake` before `ready`; store the fingerprint on the
@@ -194,6 +204,13 @@ function setFingerprint(conn: CachedConnection, fp: string): void {
 }
 function existingFingerprint(conn: CachedConnection): string | undefined {
   return fingerprints.get(conn.client);
+}
+
+// Row 35: the handshake public-key blob, keyed like `fingerprints` (the verifier
+// runs before the connection object is in hand, so it rides the client).
+const serverKeys = new WeakMap<Client, Buffer>();
+function existingKey(conn: CachedConnection): Buffer | undefined {
+  return serverKeys.get(conn.client);
 }
 
 /** SHA256 fingerprint in OpenSSH form: `SHA256:<base64>`. */

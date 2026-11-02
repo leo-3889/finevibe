@@ -24,6 +24,7 @@ import {
   readPublicKeyLine,
 } from './keys';
 import { setEnrollmentStatus, updateHost } from './host-registry';
+import { seedHostTrustStore } from './host-trust';
 import { isValidProfileId } from '../profiles';
 
 interface EnrollStep {
@@ -314,9 +315,30 @@ export async function enrollHost(
   setEnrollmentStatus(record.id, 'probing');
   emit({ id: record.id, status: 'probing' });
   // Steps 1-3: TCP/banner/auth ride on connect; TOFU pin enforced here.
+  // `partial` starts here because the first step that can degrade is the
+  // trust-store seed (row 35), not the prereq probe.
+  let partial = false;
   try {
-    await connect(record, { verifyHostKey: (fp) => fp === pin });
+    const { serverKey } = await connect(record, { verifyHostKey: (fp) => fp === pin });
     steps.push({ step: 'connect', ok: true });
+    // Row 35: seed FineVibe's own known_hosts from the key that just passed the
+    // pin gate, so the app's `ssh -tt` lanes (shell tab + remote launch) trust
+    // the approval instead of the user's known_hosts. Non-fatal — every other
+    // enrollment step stands — but it lands `partial`, because an unseeded store
+    // leaves those lanes on the user's file (the gap this row closes) and the
+    // shell tab is `enrolled`-gated.
+    try {
+      if (serverKey) {
+        seedHostTrustStore(record, serverKey);
+        steps.push({ step: 'host-trust', ok: true });
+      } else {
+        steps.push({ step: 'host-trust', ok: false, detail: 'handshake key not captured' });
+        partial = true;
+      }
+    } catch (err) {
+      steps.push({ step: 'host-trust', ok: false, detail: err instanceof Error ? err.message : String(err) });
+      partial = true;
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     steps.push({ step: 'connect', ok: false, detail: msg });
@@ -355,15 +377,15 @@ export async function enrollHost(
   }
 
   // Step 6: prereq probe (non-fatal → partial).
-  let partial = false;
   let probedPrereqs: HostRecord['prerequisites'];
   try {
     const prerequisites = await probePrerequisites(record);
     probedPrereqs = prerequisites;
     updateHost(record.id, { prerequisites });
     const missing = prereqTargets().filter((t) => !prerequisites[t.key]?.ok).map((t) => t.key);
-    partial = missing.length > 0;
-    steps.push({ step: 'prereqs', ok: !partial, detail: partial ? `missing: ${missing.join(', ')}` : 'all present' });
+    // `||` keeps an earlier non-fatal failure (row 35's trust seed) visible.
+    partial = partial || missing.length > 0;
+    steps.push({ step: 'prereqs', ok: missing.length === 0, detail: missing.length ? `missing: ${missing.join(', ')}` : 'all present' });
   } catch (err) {
     partial = true;
     steps.push({ step: 'prereqs', ok: false, detail: err instanceof Error ? err.message : String(err) });
