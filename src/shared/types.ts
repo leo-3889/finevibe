@@ -368,6 +368,13 @@ export interface BoardTask {
   tags?: string[];
   createdAt: number;
   updatedAt: number;
+  /** Latest lead-review verdict for this card's session (team-lead-persona-plan M2/I2);
+   * absent = never reviewed. Kept on the card, not looked up by `sessionId`, because the
+   * load path clears `sessionId` (state/persistence.ts) — the consequence: a verdict
+   * routed after a restart must fall back to the card's `cliSessionId`
+   * (lead-review.ts setLeadReview), and re-running a card CLEARS this note
+   * (board-card.ts link sites) — a fresh run carries no inherited verdict. */
+  leadReview?: LeadReviewNote;
 }
 
 export interface TagDefinition {
@@ -414,6 +421,33 @@ export interface ProjectLead {
   reviewMode?: 'off' | 'on-complete';
 }
 
+/** Display cap for a lead-review summary (I2). Truncated at write time, so the
+ * persisted note is always renderable — the card surface has no paging. */
+export const LEAD_REVIEW_SUMMARY_MAX_CHARS = 400;
+
+/** Verdicts kept on a boardless project (the inspector surface). The write path
+ * keeps the newest N, matching the board growth-cap idiom (board-state.ts). */
+export const LEAD_REVIEW_HISTORY_MAX = 50;
+
+export type LeadReviewVerdict = 'approved' | 'flagged';
+
+/**
+ * Structured lead-review verdict (team-lead-persona-plan M2/I2). Versioned: a
+ * future verdict-shape change bumps `v` and the reader branches, so an old note
+ * in an old state file stays decodable. Producers land in I3 (main, on-complete
+ * review); I2 is the shape + the renderer surface.
+ */
+export interface LeadReviewNote {
+  v: 1;
+  /** The reviewed session, not the reviewing lead. */
+  sessionId: string;
+  verdict: LeadReviewVerdict;
+  /** Lead's summary text, capped at LEAD_REVIEW_SUMMARY_MAX_CHARS. */
+  summary: string;
+  /** When the verdict was produced (epoch ms). */
+  createdAt: number;
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;
@@ -448,6 +482,9 @@ export interface ProjectRecord {
   tabGroups?: TabGroupRecord[];
   /** Team-lead persona (team-lead-persona-plan M1); absent = feature off. */
   lead?: ProjectLead;
+  /** Lead verdicts for sessions with no board card (team-lead-persona-plan M2/I2) —
+   * the session-inspector surface. Absent = nothing reviewed outside a card. */
+  leadReviews?: LeadReviewNote[];
 }
 
 /**

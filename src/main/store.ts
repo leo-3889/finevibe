@@ -226,7 +226,9 @@ export function loadState(): LoadedState {
     // hydrateLoadedState), never at call sites.
     // Legacy sshHost adoption runs FIRST (parent §11, one release carrying
     // both): a session tagged with a registry hostname adopts the host id;
-    // unregistered/ambiguous targets keep sshHost for the legacy wrap.
+    // unregistered/ambiguous targets keep the (inert) sshHost tag — the
+    // legacy wrap is retired, the hostId normalization below pins them to
+    // LOCAL_HOST_ID.
     migrateLegacySessionSshHosts(projects, hosts);
     for (const project of projects) {
       if (!project.hostId) project.hostId = LOCAL_HOST_ID;

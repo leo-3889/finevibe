@@ -29,6 +29,13 @@ interface PtyInstance {
 }
 
 const ptys = new Map<string, PtyInstance>();
+
+// Row 121 discriminating trace (archive: todos/archives/ROW-121-resize-
+// forensics-2026-11-05.md): FINEVIBE_RESIZE_TRACE=1 logs spawn geometry,
+// every resizePty (incl. the dropped leg), and the renderer's fits/data with
+// write-queue depth. Read at module load — set in the environment, not at
+// runtime. No behavior change when off.
+const RESIZE_TRACE = process.env.FINEVIBE_RESIZE_TRACE === '1';
 // Replacement suppresses only the old process's exit. A session-id marker can
 // be consumed by a fast-exiting replacement before the old kill completes.
 const replacedPtys = new WeakSet<pty.IPty>();
@@ -600,10 +607,12 @@ export function resolveProviderBinary(providerId: ProviderId, hostId?: string): 
 
 /**
  * The provider launch command as one string for the remote login shell:
- * the binary's basename (Windows `.CMD`/`.EXE` shims carry the same stem as
- * the POSIX command) plus every argument, each POSIX-quoted. The local
- * absolute path does not exist on the remote — the remote login shell's PATH
- * resolves the remote's own install.
+ * the prereq's recorded path — an ABSOLUTE path on the host, from
+ * `HostRecord.prerequisites` (probed there; never a local path, never
+ * reduced to a basename; row 113) — plus every argument, each POSIX-quoted.
+ * A provider with no ok prereq is refused upstream (`resolveProviderBinary`).
+ * The Windows `.CMD`/`.EXE` stem rule belongs to the LOCAL lane
+ * (`resolveWindowsShell`), not this one.
  */
 function remoteCommand(bin: string, argv: string[], homeTokens: Set<string>): string {
   // `homeTokens` (the home-relative session dir, and on a resume the
@@ -992,6 +1001,11 @@ export async function spawnPty(
     });
 
     ptys.set(sessionId, { process: ptyProcess, sessionId });
+    // Row 121 trace: the spawn geometry the CLI paints its opening frames
+    // into; compare against the pane's first accepted fit (renderer leg).
+    if (RESIZE_TRACE) {
+      console.log(`[fv-resize] ${JSON.stringify({ ev: 'spawn', sid: sessionId, cols: 120, rows: 30, registered: true, t: Date.now() })}`);
+    }
 
     // A killPty that arrived during the awaits above addressed this spawn —
     // honour it now instead of leaving an orphaned CLI with no renderer
@@ -1051,6 +1065,12 @@ export function writePty(sessionId: string, data: string): void {
 }
 
 export function resizePty(sessionId: string, cols: number, rows: number): void {
+  // Row 121 trace (env-gated, no behavior change): `registered:false` is the
+  // dropped-resize leg — the renderer fits a pane whose PTY main never
+  // answered. See todos/archives/ROW-121-resize-forensics-2026-11-05.md.
+  if (RESIZE_TRACE) {
+    console.log(`[fv-resize] ${JSON.stringify({ ev: 'resizePty', sid: sessionId, cols, rows, registered: ptys.has(sessionId), t: Date.now() })}`);
+  }
   const instance = ptys.get(sessionId);
   if (!instance) return;
   try {

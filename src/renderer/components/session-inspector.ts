@@ -8,6 +8,8 @@ import { inspectorState } from './session-inspector-state-ui.js';
 import { renderTimeline, appendTimelineEvents, disposeTimelineRenderState } from './session-inspector-timeline.js';
 import { renderCosts, renderTools, renderContext } from './session-inspector-views.js';
 import { canInspectSession, resetUIState } from './session-inspector-utils.js';
+import { getInspectorLeadReview } from '../lead-review.js';
+import { t } from '../i18n.js';
 
 // CI-16: the full-rebuild floor's retry timer, module-scoped so
 // closeInspector() can reach it. A retry armed while the panel was open used
@@ -225,6 +227,12 @@ function createPanel(): HTMLElement {
   title.textContent = 'Inspector';
   header.appendChild(title);
 
+  // Lead-review marker (team-lead-persona-plan M2/I2): the verdict surface for a
+  // project whose sessions have no board card. Rendered in renderActiveTab.
+  const leadMarker = document.createElement('div');
+  leadMarker.className = 'inspector-lead-marker';
+  header.appendChild(leadMarker);
+
   const closeBtn = document.createElement('button');
   closeBtn.className = 'inspector-close';
   closeBtn.textContent = '\u00d7';
@@ -299,6 +307,8 @@ function renderActiveTab(): void {
   const toggle = inspectorState.inspectorPanel.querySelector('.inspector-autoscroll-toggle') as HTMLElement;
   if (toggle) toggle.style.display = inspectorState.activeTab === 'timeline' ? '' : 'none';
 
+  renderLeadMarker();
+
   content.innerHTML = '';
 
   switch (inspectorState.activeTab) {
@@ -307,6 +317,22 @@ function renderActiveTab(): void {
     case 'tools': renderTools(content); break;
     case 'context': renderContext(content); break;
   }
+}
+
+function renderLeadMarker(): void {
+  const panel = inspectorState.inspectorPanel;
+  if (!panel) return;
+  const marker = panel.querySelector('.inspector-lead-marker') as HTMLElement | null;
+  if (!marker) return;
+  const sessionId = inspectorState.inspectedSessionId;
+  const note = sessionId ? getInspectorLeadReview(appState.activeProject, sessionId) : undefined;
+  marker.className = `inspector-lead-marker${note ? ` ${note.verdict}` : ''}`;
+  marker.textContent = note
+    ? t(note.verdict === 'approved' ? 'board.card.reviewApproved' : 'board.card.reviewFlagged')
+    : '';
+  marker.title = note
+    ? t('board.card.reviewTooltip', { when: new Date(note.createdAt).toLocaleString(), summary: note.summary })
+    : '';
 }
 
 // C2R-01: the same failure mode S3-01 fixed on the terminal panel. The old

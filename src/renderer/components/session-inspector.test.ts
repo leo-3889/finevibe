@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // A batch close (Close All) emits one deferred event per session plus one
 // payload-less trailing kick; following every event re-rendered the whole
 // inspector once per closing tab.
+type MarkerNote = { v: 1; sessionId: string; verdict: 'approved' | 'flagged'; summary: string; createdAt: number };
+
 const harness = vi.hoisted(() => {
   const listeners = new Map<string, Array<(data?: unknown) => void>>();
   return {
@@ -18,12 +20,13 @@ const harness = vi.hoisted(() => {
         { id: 's1', name: 'S1', providerId: 'claude', type: 'terminal' },
         { id: 's2', name: 'S2', providerId: 'claude', type: 'terminal' },
       ],
-    } as {
+    } as unknown as {
       id: string;
       name: string;
       path: string;
       activeSessionId: string;
       sessions: Array<{ id: string; name: string; providerId: string; type: string }>;
+      leadReviews?: MarkerNote[];
     },
     on: (event: string, cb: (data?: unknown) => void) => {
       const list = listeners.get(event) ?? [];
@@ -73,6 +76,7 @@ beforeEach(() => {
   closeInspector();
   harness.listeners.clear();
   harness.project.activeSessionId = 's1';
+  delete harness.project.leadReviews;
   document.body.innerHTML = '<div id="terminal-container"></div>';
   initSessionInspector();
   openInspector('s1');
@@ -134,5 +138,38 @@ describe('session-inspector resize (C3R-03)', () => {
     handle.dispatchEvent(pointerEvent('pointerdown', 3)); // fresh drag arms
     expect(Element.prototype.setPointerCapture).toHaveBeenCalledTimes(2);
     handle.dispatchEvent(pointerEvent('pointerup', 3));
+  });
+});
+
+// P2 I2: the lead-review marker (team-lead-persona-plan M2) — the verdict surface
+// for a project whose sessions have no board card.
+describe('session-inspector lead marker (I2)', () => {
+  const marker = () => document.querySelector('.inspector-lead-marker') as HTMLElement;
+
+  it('stays empty for a session nobody reviewed', () => {
+    openInspector('s2');
+    expect(marker().textContent).toBe('');
+    expect(marker().className).toBe('inspector-lead-marker');
+    closeInspector();
+  });
+
+  it('marks the reviewed session, per session', () => {
+    harness.project.leadReviews = [{
+      v: 1,
+      sessionId: 's2',
+      verdict: 'flagged',
+      summary: 'Migration missing.',
+      createdAt: 1700000000000,
+    }];
+
+    openInspector('s2');
+    expect(marker().textContent).toBe('Lead flagged');
+    expect(marker().className).toBe('inspector-lead-marker flagged');
+    expect(marker().title).toContain('Migration missing.');
+    closeInspector();
+
+    openInspector('s1');
+    expect(marker().textContent).toBe('');
+    closeInspector();
   });
 });

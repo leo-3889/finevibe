@@ -62,6 +62,24 @@
   letter-spacing: 0.5px;
 }
 
+.inspector-lead-marker {
+  /* Lead-review verdict (team-lead-persona-plan M2/I2) for projects with no board card. */
+  flex: 1;
+  margin: 0 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-align: right;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+.inspector-lead-marker:empty {
+  display: none;
+}
+.inspector-lead-marker.approved { color: var(--status-completed); }
+.inspector-lead-marker.flagged { color: var(--status-waiting); }
+
 .inspector-close {
   background: none;
   border: none;

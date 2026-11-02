@@ -5,6 +5,8 @@ import { restoreCost } from '../session-cost.js';
 import { restoreContext } from '../session-context.js';
 import { buildKanbanSession } from './session-factory.js';
 import { normalizeTabGroups } from './tab-group-state.js';
+import { normalizeLeadReview } from '../../shared/lead-review.js';
+import type { LeadReviewNote } from '../../shared/types.js';
 
 // PA-31 (docs/performance.md growth table "age-prune"): githubLastSeen gains
 // one entry per viewed PR/issue, forever. Drop entries older than 90 days at load.
@@ -36,8 +38,9 @@ export function hydrateLoadedState(state: PersistedState, defaultPreferences: Pr
   state.hosts = hosts;
   // Legacy sshHost adoption runs before the hostId defaults (parent §11),
   // mirroring store.ts on main: a session tagged with a registry hostname
-  // adopts the host id; unregistered/ambiguous targets keep sshHost for the
-  // legacy wrap, exactly one release carrying both spellings.
+  // adopts the host id; unregistered/ambiguous targets keep the (inert)
+  // sshHost tag — the legacy wrap is retired, the hostId normalization
+  // below pins them to LOCAL_HOST_ID.
   migrateLegacySessionSshHosts(state.projects, hosts);
   // Per-host providers plan §2: pre-existing profiles and sessions carry no
   // hostId — normalize 'local' once at load, mirroring store.ts on main.
@@ -133,6 +136,21 @@ export function ensureProjectDefaults(state: PersistedState): void {
   for (const project of state.projects) {
     if (!project.board) project.board = createDefaultBoard();
     for (const task of project.board.tasks) task.sessionId = undefined;
+
+    // Lead-review notes are state.json content — validate at load exactly
+    // where hosts are (review I2-1): a hand-edited/restored note the shape
+    // gate rejects is dropped, never rendered (the cap and the verdict
+    // domain are write-time guarantees the read path cannot assume).
+    if (project.leadReviews) {
+      project.leadReviews = project.leadReviews
+        .map(normalizeLeadReview)
+        .filter((n): n is LeadReviewNote => n !== null);
+    }
+    for (const task of project.board.tasks) {
+      if (task.leadReview !== undefined) {
+        task.leadReview = normalizeLeadReview(task.leadReview) ?? undefined;
+      }
+    }
 
     // Hydrate sanitising for tab groups: dead ids, cross-group duplicates and
     // broken contiguity from a hand-edited state.json never reach the strip.
