@@ -31,6 +31,12 @@ export interface TranscriptDiscovery {
 export interface CliProvider {
   readonly meta: CliProviderMeta;
   resolveBinaryPath(): string;
+  /**
+   * Row 17: async twin of `resolveBinaryPath` for the PTY spawn lane — the
+   * cold resolution spawns `which`/`npm prefix -g`, which must not block main
+   * in front of the spawn. Optional: callers fall back to `resolveBinaryPath()`.
+   */
+  resolveBinaryPathAsync?(): Promise<string>;
   validatePrerequisites(): boolean;
   /**
    * PA-01: async availability probe for the boot fan-out — the probes are
@@ -39,7 +45,13 @@ export interface CliProvider {
    * Optional: callers must fall back to `validatePrerequisites()`.
    */
   validatePrerequisitesAsync?(): Promise<boolean>;
-  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string }): Record<string, string>;
+  /**
+   * `pathEnv` (row 17) is the caller's PRE-RESOLVED login-shell PATH, awaited
+   * off the spawn lane by `spawnPty`. Providers use it when present and only
+   * probe (`getFullPath()`) when it is absent — the resolver stays pure and
+   * the spawn path runs no synchronous PATH probe.
+   */
+  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string; pathEnv?: string }): Record<string, string>;
   /**
    * `remote` = the command runs on an SSH host, so any LOCAL file a prompt is
    * redirected to (Pi-compatible `--append-system-prompt` on Windows) is

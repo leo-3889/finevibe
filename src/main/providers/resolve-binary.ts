@@ -104,6 +104,62 @@ export function resolveBinary(binaryName: string, cache: BinaryCache): string {
   return cache.path;
 }
 
+/** Async twin of fs-utils `fileExists` (statSync().isFile()). */
+async function fileExistsAsync(filePath: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Row 17: async twin of {@link resolveBinary} for the PTY spawn lane.
+ *
+ * The sync one spawns `which`/`where` (`execSync`, 3 s cap) and, on Windows,
+ * `npm prefix -g` (`execSync`, 5 s cap) and stat-walks the common bin dirs.
+ * The per-provider `BinaryCache` is cold on the FIRST launch of each provider
+ * per app run — the PA-01 boot fan-out warms the AVAILABILITY cache
+ * (`probeCache` + disk tier), not this memo — so every provider's first spawn
+ * paid that probe synchronously, between the user pressing Enter and the PTY
+ * spawning.
+ *
+ * Same cache, same walk order (PATH `which` → common dirs → nvm → npm prefix),
+ * same bare-name fallback; only the I/O is off the main thread. The nvm walk
+ * stays sync (pure fs stats, sub-ms — the same exemption
+ * `probeBinaryPathAsync` documents).
+ */
+export async function resolveBinaryAsync(binaryName: string, cache: BinaryCache): Promise<string> {
+  const fullPath = await getFullPathAsync();
+  if (cache.path && cache.pathEnv === fullPath && (await fileExistsAsync(cache.path))) {
+    return cache.path;
+  }
+  cache.path = await resolveBinaryUncachedAsync(binaryName, fullPath);
+  cache.pathEnv = fullPath;
+  return cache.path;
+}
+
+async function resolveBinaryUncachedAsync(binaryName: string, fullPath: string): Promise<string> {
+  const resolved = await whichBinaryAsync(binaryName, fullPath);
+  if (resolved) return resolved;
+
+  for (const dir of COMMON_BIN_DIRS) {
+    const found = await findBinaryInDirAsync(dir, binaryName);
+    if (found) return found;
+  }
+
+  const nvmFound = findBinaryInNvm(binaryName);
+  if (nvmFound) return nvmFound;
+
+  const prefix = await getNpmGlobalPrefixAsync(fullPath);
+  if (prefix) {
+    const found = await findBinaryInDirAsync(prefix, binaryName);
+    if (found) return found;
+  }
+
+  return binaryName;
+}
+
 function resolveBinaryUncached(binaryName: string, fullPath: string): string {
   // P2-26: the user's PATH wins. Searching the common dirs (and nvm) first
   // let a stale shim in scoop/volta/npm-global permanently shadow the

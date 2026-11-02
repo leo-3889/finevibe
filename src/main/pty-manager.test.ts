@@ -82,6 +82,13 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(() => { throw new Error('ENOENT'); }),
   readdirSync: vi.fn(() => { throw new Error('ENOENT'); }),
   readlinkSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  // Row 17: the spawn lane reads through fs.promises (binary-probe stat, the
+  // Windows shim body). Default: every path missing, like the sync mocks.
+  promises: {
+    stat: vi.fn(() => Promise.reject(new Error('ENOENT'))),
+    readFile: vi.fn(() => Promise.reject(new Error('ENOENT'))),
+    writeFile: vi.fn(() => Promise.resolve()),
+  },
 }));
 
 vi.mock('./providers/nvm', () => ({
@@ -91,6 +98,9 @@ vi.mock('./providers/nvm', () => ({
 
 vi.mock('./claude-keychain', () => ({
   getKeychainIsolationStatus: mockKeychainIsolation,
+  // Row 17: the spawn lane gates profile launches on the async twin; it
+  // delegates to the same knob so a case programs one verdict for both lanes.
+  getKeychainIsolationStatusAsync: vi.fn(async () => mockKeychainIsolation()),
 }));
 
 // P1-14: the per-spawn profile install goes through settings-guard's consent
@@ -138,6 +148,13 @@ beforeEach(() => {
   // case expects the bare binary. Also drop the module-level PATH/binary
   // caches so every case resolves from scratch.
   mockStatSync.mockReset();
+  // Row 17: the spawn lane probes through promisified execFile (`which`, the
+  // login-shell PATH read). Default answer: the probe failed, so every
+  // resolution takes the same fallback path the sync `execSync` mock produced
+  // ('not found'). Cases that need an answer program `mockExecFile` themselves.
+  mockExecFile.mockImplementation((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+    if (typeof cb === 'function') cb(new Error('not found'));
+  });
   resetPathCache();
   mockExistsSync.mockReturnValue(false);
   mockKeychainIsolation.mockReturnValue({ status: 'supported', version: null });
@@ -145,11 +162,70 @@ beforeEach(() => {
 });
 
 describe('spawnPty', () => {
-  it('spawns a PTY process with correct args', () => {
+  // Row 17 (audit census): the whole pty:create → spawn chain is async. Every
+  // `execSync` on that chain blocks the main process for its whole duration —
+  // the login-shell PATH probe (0.2-1.5 s on nvm boxes), `which` (3 s cap),
+  // `npm prefix -g` (5 s cap), `claude --version` (3 s cap) — which is the
+  // owner-reported dev-launch lag. This pins the chain shape: a spawn with a
+  // cold PATH/binary cache answers with probes on execFile, never execSync.
+  it('runs no execSync between the launch request and the spawn', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('no-exec-sync', '/project', null, false, '', 'claude', 'hello', undefined, '', vi.fn(), vi.fn());
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockExecSync).not.toHaveBeenCalled();
+  });
+
+  // Row 17: the PATH snapshot the child env carries is the same login-shell
+  // PATH the sync lane computed (shared cache, same composition) — it is now
+  // awaited BEFORE the spec is built, so the 0.2-1.5 s probe never blocks main.
+  it('hands the awaited PATH snapshot to the provider env builder', async () => {
+    resetPathCache();
+    vi.stubEnv('PATH', '/usr/bin');
+    mockExecFile.mockImplementation(((
+      _cmd: string, _args: unknown, _opts: unknown,
+      cb: (err: unknown, stdout?: string) => void,
+    ) => cb(null, '__VY_PATH_BEGIN__/login/bin:/usr/bin__VY_PATH_END__\n')) as never);
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    await spawnPty('path-lane', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+
+    expect(mockSpawn.mock.calls[0][2]).toMatchObject({ env: expect.objectContaining({ PATH: '/login/bin:/usr/bin' }) });
+    vi.unstubAllEnvs();
+  });
+
+  // Row 17 + P2-26: the binary memo is keyed on the login-shell PATH. Keyed on
+  // the raw process PATH, an nvm/PF user's launch resolved against a PATH the
+  // CLI is not actually started with.
+  it('keys the binary memo on the resolved login PATH, not process.env.PATH', async () => {
+    resetPathCache();
+    vi.stubEnv('PATH', '/raw/path');
+    mockExecFile.mockImplementation(((
+      cmd: string, args: readonly string[], _opts: unknown,
+      cb: (err: unknown, stdout?: string) => void,
+    ) => {
+      if (cmd === 'which' && args[0] === 'claude') cb(null, '/login/bin/claude\n');
+      else if (args?.[0] === '-ilc') cb(null, '__VY_PATH_BEGIN__/login/bin__VY_PATH_END__\n');
+      else cb(new Error('not found'));
+    }) as never);
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    await spawnPty('binary-lane', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+
+    const probeEnv = (mockExecFile.mock.calls.find((c) => c[0] === 'which')?.[2] as { env?: Record<string, string> } | undefined)?.env;
+    expect(probeEnv?.PATH).toContain('/login/bin');
+    expect(probeEnv?.PATH).not.toBe('/raw/path');
+    vi.unstubAllEnvs();
+  });
+  it('spawns a PTY process with correct args', async () => {
+    const proc = createMockPtyProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     if (isWin) {
       expect(mockSpawn).toHaveBeenCalledWith(
@@ -176,11 +252,11 @@ describe('spawnPty', () => {
     }
   });
 
-  it('adds -r flag when resuming with cliSessionId', () => {
+  it('adds -r flag when resuming with cliSessionId', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', 'claude-123', true, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', 'claude-123', true, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     if (isWin) {
       expect(mockSpawn).toHaveBeenCalledWith(
@@ -197,11 +273,11 @@ describe('spawnPty', () => {
     }
   });
 
-  it('adds --session-id flag when not resuming', () => {
+  it('adds --session-id flag when not resuming', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', 'claude-123', false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', 'claude-123', false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     if (isWin) {
       expect(mockSpawn).toHaveBeenCalledWith(
@@ -218,11 +294,11 @@ describe('spawnPty', () => {
     }
   });
 
-  it('splits extraArgs into individual args', () => {
+  it('splits extraArgs into individual args', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', null, false, '--verbose --debug', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '--verbose --debug', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
 
     if (isWin) {
@@ -240,24 +316,24 @@ describe('spawnPty', () => {
     }
   });
 
-  it('forwards PTY data to callback', () => {
+  it('forwards PTY data to callback', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
     const onData = vi.fn();
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', onData, vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', onData, vi.fn());
     proc._emitData('hello');
 
     expect(onData).toHaveBeenCalledWith('hello');
   });
 
-  it('forwards exit event to callback', () => {
+  it('forwards exit event to callback', async () => {
     const proc = createMockPtyProcess();
     (proc as unknown as { pid: number }).pid = 2028;
     mockSpawn.mockReturnValue(proc);
     const onExit = vi.fn();
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), onExit);
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), onExit);
     proc._emitExit(0, 0);
 
     expect(onExit).toHaveBeenCalledWith(0, 0, 2028);
@@ -273,13 +349,20 @@ describe('spawnPty', () => {
       if (String(p) === expectedPath) return fileStat;
       throw new Error('ENOENT');
     });
+    // Row 17: the spawn lane stats through fs.promises, so the async resolver
+    // needs the same answer the sync mock gives.
+    const promises = vi.mocked(fs.promises);
+    promises.stat.mockImplementation(async (p) => {
+      if (String(p) === expectedPath) return fileStat;
+      throw new Error('ENOENT');
+    });
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
     const { initProviders: freshInit } = await import('./providers/registry');
     const { spawnPty: freshSpawnPty } = await import('./pty-manager');
     freshInit();
-    freshSpawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await freshSpawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     if (isWin) {
       // On Windows, .cmd files are wrapped with cmd.exe /c
@@ -297,22 +380,22 @@ describe('spawnPty', () => {
     }
   });
 
-  it('sets required env vars', () => {
+  it('sets required env vars', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     const env = mockSpawn.mock.calls[0][2].env;
     expect(env.CLAUDE_IDE_SESSION_ID).toBe('s1');
     expect(env.CLAUDE_CODE).toBeUndefined();
   });
 
-  it('merges user-provided env vars into the spawn environment', () => {
+  it('merges user-provided env vars into the spawn environment', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, 'FOO=bar\nBAZ=qux', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, 'FOO=bar\nBAZ=qux', vi.fn(), vi.fn());
 
     const env = mockSpawn.mock.calls[0][2].env;
     expect(env.FOO).toBe('bar');
@@ -321,21 +404,21 @@ describe('spawnPty', () => {
     expect(env.CLAUDE_IDE_SESSION_ID).toBe('s1');
   });
 
-  it('lets user env vars override provider-set vars (user wins)', () => {
+  it('lets user env vars override provider-set vars (user wins)', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, 'PATH=/custom/bin', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, 'PATH=/custom/bin', vi.fn(), vi.fn());
 
     const env = mockSpawn.mock.calls[0][2].env;
     expect(env.PATH).toBe('/custom/bin');
   });
 
-  it('augments PATH with extra directories', () => {
+  it('augments PATH with extra directories', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     const envPath = mockSpawn.mock.calls[0][2].env.PATH;
     if (isWin) {
@@ -347,10 +430,10 @@ describe('spawnPty', () => {
     }
   });
 
-  it('rejects unsupported extra args before spawning (actionable message, spawn-rejected, no PTY)', () => {
+  it('rejects unsupported extra args before spawning (actionable message, spawn-rejected, no PTY)', async () => {
     const onData = vi.fn();
     const onExit = vi.fn();
-    spawnPty('s1', '/project', null, false, '--no-session', 'omp', undefined, undefined, '', onData, onExit);
+    await spawnPty('s1', '/project', null, false, '--no-session', 'omp', undefined, undefined, '', onData, onExit);
 
     expect(mockSpawn).not.toHaveBeenCalled();
     expect(onData).toHaveBeenCalledTimes(1);
@@ -360,13 +443,13 @@ describe('spawnPty', () => {
     expect(onExit).toHaveBeenCalledWith(1, undefined, undefined, SPAWN_REJECTED_EXIT_REASON);
   });
 
-  it('reports a genuine exit code 1 as a plain process exit (no spawn-rejected sentinel)', () => {
+  it('reports a genuine exit code 1 as a plain process exit (no spawn-rejected sentinel)', async () => {
     const proc = createMockPtyProcess();
     (proc as unknown as { pid: number }).pid = 2028;
     mockSpawn.mockReturnValue(proc);
     const onExit = vi.fn();
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), onExit);
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), onExit);
     proc._emitExit(1, 0);
 
     // Exactly three positional args: a 4th would tell the renderer to keep the
@@ -374,12 +457,12 @@ describe('spawnPty', () => {
     expect(onExit).toHaveBeenCalledWith(1, 0, 2028);
   });
 
-  it('reports a Claude profile blocked by keychain isolation as spawn-rejected (no PTY)', () => {
+  it('reports a Claude profile blocked by keychain isolation as spawn-rejected (no PTY)', async () => {
     mockKeychainIsolation.mockReturnValue({ status: 'unsupported', version: '2.1.19' });
     const onData = vi.fn();
     const onExit = vi.fn();
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', onData, onExit, '/profiles/work');
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', onData, onExit, '/profiles/work');
 
     expect(mockSpawn).not.toHaveBeenCalled();
     expect(onData).toHaveBeenCalledTimes(1);
@@ -418,19 +501,19 @@ describe('spawnPty', () => {
     expect(mockGuardedProfileInstall).not.toHaveBeenCalled();
   });
 
-  it('runs no profile install when the keychain guardrail blocks the spawn', () => {
+  it('runs no profile install when the keychain guardrail blocks the spawn', async () => {
     mockKeychainIsolation.mockReturnValue({ status: 'unsupported', version: '2.1.19' });
 
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn(), '/profiles/work');
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn(), '/profiles/work');
 
     expect(mockGuardedProfileInstall).not.toHaveBeenCalled();
   });
 
-  it('spawns with tokenized (quoted) extra args', () => {
+  it('spawns with tokenized (quoted) extra args', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
 
-    spawnPty('s1', '/project', null, false, '--append-system-prompt "Use concise replies"', 'omp', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '--append-system-prompt "Use concise replies"', 'omp', undefined, undefined, '', vi.fn(), vi.fn());
 
     if (isWin) {
       expect(mockSpawn).toHaveBeenCalledWith(
@@ -451,7 +534,7 @@ describe('spawnPty', () => {
 describe('resolveLaunchSpec (T2)', () => {
   const base = { sessionId: 's1', cliSessionId: null, isResume: false, extraArgs: '', providerId: 'omp' as const, envVars: '' };
 
-  it('resolves executable, argv, env, profile identity and default storage mode', () => {
+  it('resolves executable, argv, env, profile identity and default storage mode', async () => {
     const spec = resolveLaunchSpec({ ...base, extraArgs: '--model opus', configDir: '/profiles/work' });
     expect(spec.executable).toBe('omp');
     expect(spec.argv).toEqual(['--session-dir', expect.stringContaining('omp-sessions'), '--model', 'opus']);
@@ -472,7 +555,7 @@ describe('resolveLaunchSpec (T2)', () => {
     prerequisites: { omp: { ok: true, path: '/home/dev/.local/bin/omp' } },
   };
 
-  it('resolves the binary from the host prereq probe, never from local resolution', () => {
+  it('resolves the binary from the host prereq probe, never from local resolution', async () => {
     mockGetHost.mockReturnValue(labRecord);
     expect(resolveProviderBinary('omp', 'lab')).toBe('/home/dev/.local/bin/omp');
     // 'local'/absent keep the existing local resolution (the mocked probe
@@ -481,7 +564,7 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(resolveProviderBinary('omp', 'local')).toBe('omp');
   });
 
-  it('throws an actionable LaunchSpecError when the host lacks the tool', () => {
+  it('throws an actionable LaunchSpecError when the host lacks the tool', async () => {
     mockGetHost.mockReturnValue({ ...labRecord, prerequisites: {} });
     expect(() => resolveProviderBinary('omp', 'lab')).toThrow(LaunchSpecError);
     expect(() => resolveProviderBinary('omp', 'lab')).toThrow(/no omp binary/);
@@ -489,7 +572,7 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(() => resolveProviderBinary('omp', 'ghost')).toThrow(/Unknown host/);
   });
 
-  it('golden: ssh-wraps a registry launch with -p, user@host, the remote bin path and the config-dir env prefix', () => {
+  it('golden: ssh-wraps a registry launch with -p, user@host, the remote bin path and the config-dir env prefix', async () => {
     mockGetHost.mockReturnValue(labRecord);
     const spec = resolveLaunchSpec({ ...base, hostId: 'lab', configDir: '/home/dev/.finevibe/profiles/p1' });
     expect(spec.executable).toBe('ssh');
@@ -513,7 +596,7 @@ describe('resolveLaunchSpec (T2)', () => {
   // swapping only --session-dir left that controller path in the command. The
   // host has no such file, and Pi/OMP read a missing `--session|--resume <path>`
   // as "start this file" — a blank transcript under the pinned id, silently.
-  it('re-anchors a path-shaped resume target under the host session dir (audit row 97)', () => {
+  it('re-anchors a path-shaped resume target under the host session dir (audit row 97)', async () => {
     mockGetHost.mockReturnValue(labRecord);
     const buildArgs = vi.spyOn(getProvider('omp'), 'buildArgs').mockReturnValue([
       '--session-dir', '/home/dev/.config/finevibe/omp-sessions/s1',
@@ -532,7 +615,7 @@ describe('resolveLaunchSpec (T2)', () => {
     }
   });
 
-  it('leaves a bare-id resume token untouched (audit row 97 negative)', () => {
+  it('leaves a bare-id resume token untouched (audit row 97 negative)', async () => {
     mockGetHost.mockReturnValue(labRecord);
     // No local transcript resolved — the usual remote resume, since the launch
     // dir lives on the host — so the provider passes the bare id, which both
@@ -542,7 +625,7 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.argv[5]).toContain(`'--resume' 'cli-1'`);
   });
 
-  it('drops a hostile session-id env value from the remote command (audit T2 #3)', () => {
+  it('drops a hostile session-id env value from the remote command (audit T2 #3)', async () => {
     mockGetHost.mockReturnValue(labRecord);
     // The id is renderer-supplied and becomes a host-side file path in the
     // merged hooks' mv target — a traversal-shaped value never forwards.
@@ -557,7 +640,7 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(ok.argv[5]).toContain("FINEVIBE_SESSION_ID='good_id-1'");
   });
 
-  it('claude (no --session-dir) gets no mkdir guard and no swapped arg (audit T2 #5)', () => {
+  it('claude (no --session-dir) gets no mkdir guard and no swapped arg (audit T2 #5)', async () => {
     mockGetHost.mockReturnValue({
       ...labRecord,
       prerequisites: { claude: { ok: true, path: '/home/dev/.local/bin/claude' } },
@@ -567,38 +650,38 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.argv[5]).not.toContain('.finevibe/sessions');
   });
 
-  it('golden: bracketed IPv6 registry host reaches ssh argv intact (audit T1 #2)', () => {
+  it('golden: bracketed IPv6 registry host reaches ssh argv intact (audit T1 #2)', async () => {
     mockGetHost.mockReturnValue({ ...labRecord, host: '[fd00::5]' });
     const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
     expect(spec.executable).toBe('ssh');
     expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@[fd00::5]']);
   });
 
-  it('resolves the default agent dir (no configDir) with storage mode default', () => {
+  it('resolves the default agent dir (no configDir) with storage mode default', async () => {
     const spec = resolveLaunchSpec(base);
     expect(spec.configDir).toBeUndefined();
     expect(spec.env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(spec.storageMode).toBe('default');
   });
 
-  it('rejects profile, storage and session-identity flags in extra args', () => {
+  it('rejects profile, storage and session-identity flags in extra args', async () => {
     for (const extra of ['--profile work', '--profile=work', '--session-dir /x', '--session-dir=/x', '--no-session', '--session abc', '--resume abc', '-r', '-c', '--continue']) {
       expect(() => resolveLaunchSpec({ ...base, extraArgs: extra })).toThrow(LaunchSpecError);
     }
   });
 
-  it('rejects a custom session storage env var with an actionable message', () => {
+  it('rejects a custom session storage env var with an actionable message', async () => {
     expect(() => resolveLaunchSpec({ ...base, envVars: 'PI_CODING_AGENT_SESSION_DIR=/other' }))
       .toThrow(/PI_CODING_AGENT_SESSION_DIR/);
   });
 
-  it('keeps the pinned profile when user env tries to override it', () => {
+  it('keeps the pinned profile when user env tries to override it', async () => {
     const spec = resolveLaunchSpec({ ...base, envVars: 'PI_CODING_AGENT_DIR=/other\nOMP_PROFILE=intruder', configDir: '/profiles/work' });
     expect(spec.env.PI_CODING_AGENT_DIR).toBe('/profiles/work');
     expect(spec.env.OMP_PROFILE).toBeUndefined();
   });
 
-  it('reports each dropped provider-owned var with what it controls and where to set it', () => {
+  it('reports each dropped provider-owned var with what it controls and where to set it', async () => {
     // The drop is silent in a packaged app (no main console), so the one
     // signal must name the key AND be actionable.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -614,7 +697,7 @@ describe('resolveLaunchSpec (T2)', () => {
     }
   });
 
-  it('leaves an inert lowercase provider-owned var alone on POSIX', () => {
+  it('leaves an inert lowercase provider-owned var alone on POSIX', async () => {
     // S1-08: the POSIX child env is case-sensitive, so `pi_profile` reaches
     // nothing; folding it into the drop list warned on every session start
     // about a variable with no effect.
@@ -622,7 +705,7 @@ describe('resolveLaunchSpec (T2)', () => {
     expect(spec.env.pi_profile).toBe(isWin ? undefined : 'lowercase');
   });
 
-  it('strips an inherited native profile selector from the child environment', () => {
+  it('strips an inherited native profile selector from the child environment', async () => {
     process.env.OMP_PROFILE = 'inherited';
     try {
       const spec = resolveLaunchSpec(base);
@@ -649,7 +732,7 @@ describe('per-host SSH trust store argv (audit row 35)', () => {
   // stub's '/mock/app-path' (vitest alias).
   const trustPath = path.join('/mock/app-path', 'hosts', 'lab', 'known_hosts');
 
-  it('launch lane: points ssh at the seeded store and refuses unknown keys', () => {
+  it('launch lane: points ssh at the seeded store and refuses unknown keys', async () => {
     mockGetHost.mockReturnValue(labRecord);
     mockExistsSync.mockImplementation((p) => String(p) === trustPath);
     const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
@@ -668,7 +751,7 @@ describe('per-host SSH trust store argv (audit row 35)', () => {
     expect(spec.argv[8]).toBe('dev@192.168.1.50');
   });
 
-  it('launch lane: an unseeded host emits NO -o flags (user-store passthrough)', () => {
+  it('launch lane: an unseeded host emits NO -o flags (user-store passthrough)', async () => {
     mockGetHost.mockReturnValue(labRecord);
     mockExistsSync.mockReturnValue(false);
     const spec = resolveLaunchSpec({ ...base, hostId: 'lab' });
@@ -676,11 +759,11 @@ describe('per-host SSH trust store argv (audit row 35)', () => {
     expect(spec.argv.slice(0, 5)).toEqual(['-tt', '-p', '2222', '--', 'dev@192.168.1.50']);
   });
 
-  it('shell lane: points the remote shell at the seeded store', () => {
+  it('shell lane: points the remote shell at the seeded store', async () => {
     mockGetHost.mockReturnValue(labRecord);
     mockExistsSync.mockImplementation((p) => String(p) === trustPath);
     mockSpawn.mockReturnValue(createMockPtyProcess());
-    spawnShellPty('sh-trust', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
+    await spawnShellPty('sh-trust', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
     expect(mockSpawn.mock.calls[0][0]).toBe('ssh');
     expect(mockSpawn.mock.calls[0][1]).toEqual([
       '-tt',
@@ -702,11 +785,11 @@ describe('per-host SSH trust store argv (audit row 35)', () => {
 
   // Row 35 follow-up: a key-auth host's pane must not sit on ssh's password
   // prompts after a failed key auth; password-auth hosts keep the prompt.
-  it('key-auth lanes also carry NumberOfPasswordPrompts=0 (both spawn sites)', () => {
+  it('key-auth lanes also carry NumberOfPasswordPrompts=0 (both spawn sites)', async () => {
     mockExistsSync.mockImplementation((p) => String(p) === trustPath);
     mockGetHost.mockReturnValue({ ...labRecord, authKind: 'key' });
     mockSpawn.mockReturnValue(createMockPtyProcess());
-    spawnShellPty('sh-key', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
+    await spawnShellPty('sh-key', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
     expect(mockSpawn.mock.calls[0][1]).toEqual([
       '-tt',
       '-o',
@@ -739,49 +822,49 @@ describe('per-host SSH trust store argv (audit row 35)', () => {
     // Passphrase-protected key: the pane prompt is the only unlock path, so the
     // flag is dropped (the keychain passphrase never reaches the system ssh).
     mockGetHostSecret.mockImplementation((key: string) => (key === 'keypass:lab' ? 'hunter2' : null));
-    spawnShellPty('sh-keypass', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
+    await spawnShellPty('sh-keypass', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
     expect(mockSpawn.mock.calls[1][1]).not.toContain('NumberOfPasswordPrompts=0');
   });
 
-  it('shell lane: no seeded store, and no hostId, emit NO -o flags (passthrough)', () => {
+  it('shell lane: no seeded store, and no hostId, emit NO -o flags (passthrough)', async () => {
     mockSpawn.mockReturnValue(createMockPtyProcess());
     mockGetHost.mockReturnValue(labRecord);
     mockExistsSync.mockReturnValue(false);
-    spawnShellPty('sh-unseeded', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
+    await spawnShellPty('sh-unseeded', '/project', vi.fn(), vi.fn(), { hostId: 'lab', host: '192.168.1.50', port: 2222 });
     expect(mockSpawn.mock.calls[0][1]).not.toContain('-o');
 
     // The pre-row-35 wire shape (no id) keeps the user's known_hosts untouched.
-    spawnShellPty('sh-noid', '/project', vi.fn(), vi.fn(), { host: '192.168.1.50', port: 2222 });
+    await spawnShellPty('sh-noid', '/project', vi.fn(), vi.fn(), { host: '192.168.1.50', port: 2222 });
     expect(mockSpawn.mock.calls[1][1]).not.toContain('-o');
 
     // A hostId whose record is gone seeds nothing either (no crash).
     mockGetHost.mockReturnValue(null);
-    spawnShellPty('sh-ghost', '/project', vi.fn(), vi.fn(), { hostId: 'ghost', host: '192.168.1.50', port: 2222 });
+    await spawnShellPty('sh-ghost', '/project', vi.fn(), vi.fn(), { hostId: 'ghost', host: '192.168.1.50', port: 2222 });
     expect(mockSpawn.mock.calls[2][1]).not.toContain('-o');
   });
 });
 
 describe('writePty', () => {
-  it('writes to existing PTY', () => {
+  it('writes to existing PTY', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     writePty('s1', 'input');
     expect(mockWrite).toHaveBeenCalledWith('input');
   });
 
-  it('does nothing for unknown session', () => {
+  it('does nothing for unknown session', async () => {
     writePty('unknown', 'input');
     expect(mockWrite).not.toHaveBeenCalled();
   });
 });
 
 describe('resizePty', () => {
-  it('resizes existing PTY', () => {
+  it('resizes existing PTY', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     resizePty('s1', 200, 50);
     expect(mockResize).toHaveBeenCalledWith(200, 50);
@@ -790,10 +873,10 @@ describe('resizePty', () => {
   // Regression test for #70: node-pty on Windows throws synchronously from
   // WindowsPtyAgent.resize when the underlying child has exited. Before the
   // fix, this crashed the main process and killed every open session.
-  it('swallows errors from node-pty on already-exited PTY (issue #70)', () => {
+  it('swallows errors from node-pty on already-exited PTY (issue #70)', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     mockResize.mockImplementationOnce(() => {
       throw new Error('Cannot resize a pty that has already exited');
@@ -815,10 +898,10 @@ describe('resizePty', () => {
   // The map is pruned ONLY when the error signals process exit. A transient
   // or unknown error must leave the handle intact so retries can succeed,
   // otherwise the session would silently become unresponsive.
-  it('keeps the handle on transient (non-exit) errors (issue #70 review)', () => {
+  it('keeps the handle on transient (non-exit) errors (issue #70 review)', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     mockResize.mockImplementationOnce(() => {
       throw new Error('EBUSY: some transient failure');
@@ -837,10 +920,10 @@ describe('resizePty', () => {
 });
 
 describe('writePty error handling (issue #70)', () => {
-  it('swallows errors when writing to an already-exited PTY', () => {
+  it('swallows errors when writing to an already-exited PTY', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     mockWrite.mockImplementationOnce(() => {
       throw new Error('Cannot write to a pty that has already exited');
@@ -858,10 +941,10 @@ describe('writePty error handling (issue #70)', () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
-  it('keeps the handle on transient (non-exit) errors (issue #70 review)', () => {
+  it('keeps the handle on transient (non-exit) errors (issue #70 review)', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     mockWrite.mockImplementationOnce(() => {
       throw new Error('EAGAIN: resource temporarily unavailable');
@@ -880,11 +963,11 @@ describe('writePty error handling (issue #70)', () => {
   // Security-review follow-up: sessionId arrives from the renderer over IPC
   // and must be sanitised in log output so that crafted values (newlines,
   // ANSI escape sequences) cannot confuse log consumers.
-  it('sanitises sessionId with control characters in log output', () => {
+  it('sanitises sessionId with control characters in log output', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
     const hostileId = "evil\n[pty-manager] fake log line\x1b[31m";
-    spawnPty(hostileId, '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty(hostileId, '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     mockWrite.mockImplementationOnce(() => {
       throw new Error('Cannot write to a pty that has already exited');
@@ -905,10 +988,10 @@ describe('writePty error handling (issue #70)', () => {
 });
 
 describe('killPty error handling (issue #70)', () => {
-  it('swallows errors when killing an already-exited PTY and still drops the handle', () => {
+  it('swallows errors when killing an already-exited PTY and still drops the handle', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     mockKill.mockImplementationOnce(() => {
       throw new Error('Cannot kill a pty that has already exited');
@@ -928,10 +1011,10 @@ describe('killPty error handling (issue #70)', () => {
 });
 
 describe('killPty', () => {
-  it('kills and removes PTY', () => {
+  it('kills and removes PTY', async () => {
     const proc = createMockPtyProcess();
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     killPty('s1');
     expect(mockKill).toHaveBeenCalled();
@@ -1073,7 +1156,7 @@ describe('getPtyCwd', () => {
     const proc = createMockPtyProcess();
     (proc as unknown as { pid: number }).pid = 1000;
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s1', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     if (isWin) {
       // On Windows, getPtyCwd always returns null (not supported)
@@ -1126,7 +1209,7 @@ describe('getPtyCwd', () => {
     const proc = createMockPtyProcess();
     (proc as unknown as { pid: number }).pid = 1000;
     mockSpawn.mockReturnValue(proc);
-    spawnPty('s2', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
+    await spawnPty('s2', '/project', null, false, '', 'claude', undefined, undefined, '', vi.fn(), vi.fn());
 
     // pgrep returns no children
     mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, callback: (err: Error | null, stdout: string) => void) => {
@@ -1368,7 +1451,7 @@ describe('getRegistryPath (row 73 registry decode)', () => {
   });
 
   if (!isWin) {
-    it('returns empty string on non-Windows', () => {
+    it('returns empty string on non-Windows', async () => {
       expect(getRegistryPath()).toBe('');
     });
   }
@@ -1496,7 +1579,7 @@ describe('getFullPath (macOS)', () => {
     mockExecSync.mockImplementation(() => { throw new Error('not found'); });
   });
 
-  it('parses PATH from output with plugin garbage around the marker block', () => {
+  it('parses PATH from output with plugin garbage around the marker block', async () => {
     mockExecSync.mockImplementation(() =>
       'p10k instant prompt noise\n' +
       '\x1b[?2004h__VY_PATH_BEGIN__/opt/homebrew/bin:/usr/local/bin__VY_PATH_END__\n' +
@@ -1506,7 +1589,7 @@ describe('getFullPath (macOS)', () => {
     expect(result).toBe('/opt/homebrew/bin:/usr/local/bin');
   });
 
-  it('invokes the shell with -ilc (regression guard: do not drop -i)', () => {
+  it('invokes the shell with -ilc (regression guard: do not drop -i)', async () => {
     mockExecSync.mockImplementation((cmd: string) => {
       expect(cmd).toContain('-ilc');
       return '__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n';
@@ -1515,7 +1598,7 @@ describe('getFullPath (macOS)', () => {
     expect(mockExecSync).toHaveBeenCalled();
   });
 
-  it('caches both successful and fallback results; resetPathCache allows retry', () => {
+  it('caches both successful and fallback results; resetPathCache allows retry', async () => {
     mockExecSync.mockImplementation(() => { throw new Error('timeout'); });
     getFullPath();
     getFullPath();
@@ -1528,7 +1611,7 @@ describe('getFullPath (macOS)', () => {
     expect(mockExecSync).toHaveBeenCalledTimes(2);
   });
 
-  it('appends nvm default node bin to the fallback PATH when discoverable', () => {
+  it('appends nvm default node bin to the fallback PATH when discoverable', async () => {
     mockNvmDefaultNodeBinDir.mockReturnValue('/mock/home/.nvm/versions/node/v24.11.1/bin');
     mockExecSync.mockImplementation(() => { throw new Error('no shell'); });
     const result = getFullPath();
@@ -1588,6 +1671,8 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
 
   it('probes /bin/sh on Linux when $SHELL is unset', async () => {
     const { pm, execSync } = await importPosixPtyManager('linux');
+    // Row 17: this suite programs the SYNC PATH probe.
+    resetPathCache();
     execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
     expect(pm.getFullPath()).toBe('/usr/bin');
     // Not calls[0]: on a Linux host the imported module graph runs its own
@@ -1600,6 +1685,7 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
 
   it('keeps the /bin/zsh probe on macOS when $SHELL is unset', async () => {
     const { pm, execSync } = await importPosixPtyManager('darwin');
+    resetPathCache();
     execSync.mockReturnValue('__VY_PATH_BEGIN__/usr/bin__VY_PATH_END__\n');
     expect(pm.getFullPath()).toBe('/usr/bin');
     const probe = execSync.mock.calls.map((call) => String(call[0])).find((call) => / -ilc /.test(call));
@@ -1610,7 +1696,7 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
     const { pm, existsSync } = await importPosixPtyManager('linux');
     existsSync.mockImplementation((p) => String(p) === '/bin/bash');
     mockSpawn.mockReturnValue(createMockPtyProcess());
-    pm.spawnShellPty('sh-bash', '/project', vi.fn(), vi.fn());
+    await pm.spawnShellPty('sh-bash', '/project', vi.fn(), vi.fn());
     expect(mockSpawn.mock.calls[0][0]).toBe('/bin/bash');
   });
 
@@ -1618,14 +1704,14 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
     const { pm, existsSync } = await importPosixPtyManager('linux');
     existsSync.mockReturnValue(false);
     mockSpawn.mockReturnValue(createMockPtyProcess());
-    pm.spawnShellPty('sh-plain', '/project', vi.fn(), vi.fn());
+    await pm.spawnShellPty('sh-plain', '/project', vi.fn(), vi.fn());
     expect(mockSpawn.mock.calls[0][0]).toBe('/bin/sh');
   });
 
   it('keeps /bin/zsh for the shell tab on macOS when $SHELL is unset', async () => {
     const { pm } = await importPosixPtyManager('darwin');
     mockSpawn.mockReturnValue(createMockPtyProcess());
-    pm.spawnShellPty('sh-mac', '/project', vi.fn(), vi.fn());
+    await pm.spawnShellPty('sh-mac', '/project', vi.fn(), vi.fn());
     expect(mockSpawn.mock.calls[0][0]).toBe('/bin/zsh');
   });
 
@@ -1633,11 +1719,16 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
     const { pm, execFile, readlinkSync } = await importPosixPtyManager('linux');
     // mockClear (clearAllMocks) does not drop queued mockImplementationOnce
     // entries; suites that early-return on this host can leave stale ones.
+    // The reset also drops the beforeEach default (a failing probe), which the
+    // async spawnShellPty below needs before it reaches pgrep (row 17).
     execFile.mockReset();
+    execFile.mockImplementation((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      if (typeof cb === 'function') cb(new Error('not found'));
+    });
     const proc = createMockPtyProcess();
     (proc as unknown as { pid: number }).pid = 1000;
     mockSpawn.mockReturnValue(proc);
-    pm.spawnShellPty('cwd-linux', '/project', vi.fn(), vi.fn());
+    await pm.spawnShellPty('cwd-linux', '/project', vi.fn(), vi.fn());
 
     // pgrep: pid 1000 has child 2000, which has no children of its own.
     execFile
@@ -1659,11 +1750,14 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
   it('returns null for getPtyCwd on Linux when the /proc readlink fails', async () => {
     const { pm, execFile, readlinkSync } = await importPosixPtyManager('linux');
     execFile.mockReset();
+    execFile.mockImplementation((_cmd: string, _args: unknown, _opts: unknown, cb: (err: unknown, stdout?: string) => void) => {
+      if (typeof cb === 'function') cb(new Error('not found'));
+    });
 
     const proc = createMockPtyProcess();
     (proc as unknown as { pid: number }).pid = 1000;
     mockSpawn.mockReturnValue(proc);
-    pm.spawnShellPty('cwd-fail', '/project', vi.fn(), vi.fn());
+    await pm.spawnShellPty('cwd-fail', '/project', vi.fn(), vi.fn());
 
     execFile.mockImplementationOnce(((_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
       cb(new Error('no children'), '');
@@ -1680,7 +1774,7 @@ describe('POSIX shell defaults and Linux cwd probing (mocked platform)', () => {
 
 describe('resolveWindowsShell', () => {
   if (isWin) {
-    it('wraps .cmd files with cmd.exe /c', () => {
+    it('wraps .cmd files with cmd.exe /c', async () => {
       const result = resolveWindowsShell('C:\\Users\\test\\npm\\claude.cmd', ['--help']);
       expect(result).toEqual({
         shell: 'cmd.exe',
@@ -1688,7 +1782,7 @@ describe('resolveWindowsShell', () => {
       });
     });
 
-    it('wraps .bat files with cmd.exe /c', () => {
+    it('wraps .bat files with cmd.exe /c', async () => {
       const result = resolveWindowsShell('C:\\tools\\run.bat', ['-v']);
       expect(result).toEqual({
         shell: 'cmd.exe',
@@ -1696,7 +1790,7 @@ describe('resolveWindowsShell', () => {
       });
     });
 
-    it('wraps .ps1 files with powershell.exe', () => {
+    it('wraps .ps1 files with powershell.exe', async () => {
       const result = resolveWindowsShell('C:\\scripts\\tool.ps1', ['arg1']);
       expect(result).toEqual({
         shell: 'powershell.exe',
@@ -1704,7 +1798,7 @@ describe('resolveWindowsShell', () => {
       });
     });
 
-    it('passes .exe files through unchanged', () => {
+    it('passes .exe files through unchanged', async () => {
       const result = resolveWindowsShell('C:\\tools\\claude.exe', ['--help']);
       expect(result).toEqual({
         shell: 'C:\\tools\\claude.exe',
@@ -1712,7 +1806,7 @@ describe('resolveWindowsShell', () => {
       });
     });
 
-    it('wraps bare binary names with cmd.exe /c', () => {
+    it('wraps bare binary names with cmd.exe /c', async () => {
       const result = resolveWindowsShell('claude', ['--help']);
       expect(result).toEqual({
         shell: 'cmd.exe',
@@ -1720,7 +1814,7 @@ describe('resolveWindowsShell', () => {
       });
     });
 
-    it('wraps absolute extensionless paths with cmd.exe /c', () => {
+    it('wraps absolute extensionless paths with cmd.exe /c', async () => {
       const result = resolveWindowsShell('C:\\tools\\claude', ['--help']);
       expect(result).toEqual({
         shell: 'cmd.exe',
@@ -1762,12 +1856,12 @@ describe('resolveWindowsShell', () => {
     return out;
   };
 
-  it('pre-quotes a whitespace-free arg carrying cmd metacharacters', () => {
+  it('pre-quotes a whitespace-free arg carrying cmd metacharacters', async () => {
     const r = resolveWindowsShell('C:\\tools\\claude.cmd', ['--append-system-prompt=a&calc.exe']);
     expect(r.args[2]).toBe('"--append-system-prompt=a&calc.exe"');
   });
 
-  it('leaves no cmd metacharacter outside quotes in the final command line', () => {
+  it('leaves no cmd metacharacter outside quotes in the final command line', async () => {
     for (const payload of ['a&calc.exe', 'a&&b', 'a|calc.exe', 'a||b', 'a>b.txt', 'a^&b']) {
       const r = resolveWindowsShell('C:\\tools\\claude.cmd', [payload]);
       const bare = unquotedContent(nodePtyCommandLine(r.shell, r.args));
@@ -1777,17 +1871,17 @@ describe('resolveWindowsShell', () => {
 
   // cmd.exe has no representation for a literal double quote, so the argument is
   // refused rather than escaped into an injectable command line.
-  it('rejects an argument containing a double quote', () => {
+  it('rejects an argument containing a double quote', async () => {
     expect(() => resolveWindowsShell('C:\\tools\\claude.cmd', ['x"y&calc.exe'])).toThrow(/double quote/);
   });
 
-  it('quotes the binary path itself when it carries a metacharacter', () => {
+  it('quotes the binary path itself when it carries a metacharacter', async () => {
     const r = resolveWindowsShell('C:\\tools\\a&b.cmd', ['--help']);
     const line = nodePtyCommandLine(r.shell, r.args);
     expect(unquotedContent(line)).not.toContain('&');
   });
 
-  it('does not over-quote metachar-free args', () => {
+  it('does not over-quote metachar-free args', async () => {
     const r = resolveWindowsShell('C:\\tools\\claude.cmd', ['--help', 'plain.txt']);
     expect(r.args).toEqual(['/c', 'C:\\tools\\claude.cmd', '--help', 'plain.txt']);
   });
@@ -1828,6 +1922,12 @@ describe('resolveWindowsShell', () => {
         if (body === undefined) throw new Error('ENOENT');
         return body as never;
       });
+      // Row 17: the spawn lane reads the same body through fs.promises.
+      vi.mocked(fs.promises.readFile).mockImplementation(async (p) => {
+        const body = shims[String(p)];
+        if (body === undefined) throw new Error('ENOENT');
+        return body as never;
+      });
     };
 
     afterEach(() => {
@@ -1835,9 +1935,30 @@ describe('resolveWindowsShell', () => {
       mockReadFileSync.mockImplementation(() => {
         throw new Error('ENOENT');
       });
+      vi.mocked(fs.promises.readFile).mockImplementation(() => Promise.reject(new Error('ENOENT')));
     });
 
-    it('spawns node + script directly; multi-line/quote prompts survive raw', () => {
+    // Row 17: the spawn lane (spawnPty → resolveWindowsShellAsync) parses the
+    // same shim to the same target, with the body read off fs.promises so no
+    // sync file read lands between the launch request and the spawn.
+    it('the async spawn lane parses the same shim and reads it through fs.promises', async () => {
+      withFiles({ [npmShim]: npmShimBody }, [codexJs]);
+      const prompt = 'Regarding the following diff snippet from `a.ts`:\n\n```diff\n- x\n```\n\nfix "this"';
+      const { resolveWindowsShellAsync } = await import('./pty-manager');
+      const r = await resolveWindowsShellAsync(npmShim, ['--help', prompt]);
+      expect(r).toEqual({ shell: 'node', args: [codexJs, '--help', prompt] });
+      expect(fs.promises.readFile).toHaveBeenCalledWith(npmShim, 'utf8');
+      expect(mockReadFileSync).not.toHaveBeenCalled();
+    });
+
+    it('the async lane falls back to cmd.exe exactly where the sync lane does', async () => {
+      const bat = 'C:\\tools\\weird.bat';
+      withFiles({ [bat]: '@echo off\r\necho hi\r\n' }, []);
+      const { resolveWindowsShellAsync } = await import('./pty-manager');
+      expect((await resolveWindowsShellAsync(bat, ['--help'])).shell).toBe('cmd.exe');
+    });
+
+    it('spawns node + script directly; multi-line/quote prompts survive raw', async () => {
       withFiles({ [npmShim]: npmShimBody }, [codexJs]); // no node.exe beside the shim
       const prompt = 'Regarding the following diff snippet from `a.ts`:\n\n```diff\n- x\n```\n\nfix "this"';
       const r = resolveWindowsShell(npmShim, ['--help', prompt]);
@@ -1845,35 +1966,35 @@ describe('resolveWindowsShell', () => {
       expect(r.args).toEqual([codexJs, '--help', prompt]);
     });
 
-    it('prefers the node.exe beside the shim', () => {
+    it('prefers the node.exe beside the shim', async () => {
       const localNode = path.join(NPM_DIR, 'node.exe');
       withFiles({ [npmShim]: npmShimBody }, [codexJs, localNode]);
       const r = resolveWindowsShell(npmShim, ['x']);
       expect(r.shell).toBe(localNode);
     });
 
-    it('spawns a quoted exe shim directly', () => {
+    it('spawns a quoted exe shim directly', async () => {
       const bat = 'C:\\tools\\tool.bat';
       withFiles({ [bat]: '@echo off\r\n"C:\\tools\\mytool.exe" %*\r\n' }, ['C:\\tools\\mytool.exe']);
       const r = resolveWindowsShell(bat, ['a b']);
       expect(r).toEqual({ shell: 'C:\\tools\\mytool.exe', args: ['a b'] });
     });
 
-    it('resolves the extensionless npm launcher through its .cmd sibling', () => {
+    it('resolves the extensionless npm launcher through its .cmd sibling', async () => {
       const bare = `${NPM_DIR}\\codex`;
       withFiles({ [`${bare}.cmd`]: npmShimBody }, [codexJs]);
       const r = resolveWindowsShell(bare, ['go']);
       expect(r).toEqual({ shell: 'node', args: [codexJs, 'go'] });
     });
 
-    it('falls back to cmd.exe for a shim without a %* launch line', () => {
+    it('falls back to cmd.exe for a shim without a %* launch line', async () => {
       const bat = 'C:\\tools\\weird.bat';
       withFiles({ [bat]: '@echo off\r\necho hi\r\n' }, []);
       const r = resolveWindowsShell(bat, ['--help']);
       expect(r.shell).toBe('cmd.exe');
     });
 
-    it('falls back on an unknown variable, and never on a missing script', () => {
+    it('falls back on an unknown variable, and never on a missing script', async () => {
       const bat = 'C:\\tools\\vars.bat';
       withFiles({ [bat]: '"%FOO%\\tool.exe" %*\r\n' }, []);
       expect(resolveWindowsShell(bat, ['--help']).shell).toBe('cmd.exe');
@@ -1882,7 +2003,7 @@ describe('resolveWindowsShell', () => {
     });
   });
   } else {
-    it('passes through unchanged on non-Windows', () => {
+    it('passes through unchanged on non-Windows', async () => {
       const result = resolveWindowsShell('/usr/local/bin/claude', ['--help']);
       expect(result).toEqual({
         shell: '/usr/local/bin/claude',
@@ -1959,7 +2080,7 @@ describe('withUtf8Locale (issues #157, #160)', () => {
   // to a single expectation.
   const added = isWin ? {} : isMac ? { LC_CTYPE: 'UTF-8' } : { LANG: 'C.UTF-8' };
 
-  it('fills in a UTF-8 locale when the environment carries none', () => {
+  it('fills in a UTF-8 locale when the environment carries none', async () => {
     expect(withUtf8Locale({ PATH: '/usr/bin' })).toEqual({ PATH: '/usr/bin', ...added });
   });
 
@@ -1974,13 +2095,13 @@ describe('withUtf8Locale (issues #157, #160)', () => {
   });
 
   // POSIX precedence: LC_ALL wins, so the session really is in the C locale.
-  it('overrides a charset-naming LANG when LC_ALL is bare C', () => {
+  it('overrides a charset-naming LANG when LC_ALL is bare C', async () => {
     const env = { LC_ALL: 'C', LANG: 'ru_RU.UTF-8' };
 
     expect(withUtf8Locale(env)).toEqual({ ...env, ...added });
   });
 
-  it('does not mutate the env it is given', () => {
+  it('does not mutate the env it is given', async () => {
     const env = { PATH: '/usr/bin' };
 
     withUtf8Locale(env);

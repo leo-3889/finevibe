@@ -16,7 +16,7 @@ import { hostTrustSshArgs } from './hosts/host-trust';
 import { remoteLaunchSessionDir } from './launch-session-dir';
 import { registerSession, registerRemoteStatus, unregisterSession } from './hook-status';
 import { guardedProfileInstall } from './settings-guard';
-import { getKeychainIsolationStatus } from './claude-keychain';
+import { getKeychainIsolationStatusAsync } from './claude-keychain';
 import { isLinux, isMac, isWin, pathSep, utf8LocaleEnv } from './platform';
 import { canonicalPath } from './fs-utils';
 import { nvmDefaultNodeBinDir } from './providers/nvm';
@@ -454,14 +454,11 @@ interface ShimTarget {
  * unreadable shim, unknown variable, non-exe target, missing script, or
  * unexpected token count returns null and the caller falls back to the
  * cmd.exe wrapper (the previous behavior).
+ *
+ * `body` is the shim file's contents; the sync loader reads it, the spawn lane
+ * hands in a pre-read body (see {@link resolveCmdShimTargetAsync}).
  */
-function resolveCmdShimTarget(shimPath: string): ShimTarget | null {
-  let body: string;
-  try {
-    body = fs.readFileSync(shimPath, 'utf8');
-  } catch {
-    return null;
-  }
+function parseCmdShim(shimPath: string, body: string): ShimTarget | null {
   // Shims are tiny one-liners; anything larger is not a shim (or is binary).
   if (body.length > 64 * 1024) return null;
   const launchLine = body.split(/\r?\n/).filter((l) => l.includes('%*')).pop();
@@ -505,6 +502,86 @@ function resolveCmdShimTarget(shimPath: string): ShimTarget | null {
   return { executable, prefixArgs };
 }
 
+/** Sync shim loader: read + parse (the non-spawn callers). */
+function resolveCmdShimTarget(shimPath: string): ShimTarget | null {
+  let body: string;
+  try {
+    body = fs.readFileSync(shimPath, 'utf8');
+  } catch {
+    return null;
+  }
+  return parseCmdShim(shimPath, body);
+}
+
+/**
+ * Row 17: spawn-lane shim read — the file body comes off `fs.promises`, so the
+ * per-spawn shim read leaves the main thread.
+ *
+ * ponytail: the three `fs.existsSync` checks inside {@link parseCmdShim} stay
+ * sync (node.exe beside the shim, the target, the script): three stats on a
+ * Windows spawn, sub-ms, and the parser is shared with the sync callers
+ * (`resolveWindowsShell`, the shim-parity tests). Ceiling: if a shim ever lives
+ * on a slow mount, thread a stat-injecting loader through the parser and give
+ * the async lane `fs.promises.stat`.
+ */
+async function resolveCmdShimTargetAsync(shimPath: string): Promise<ShimTarget | null> {
+  let body: string;
+  try {
+    body = await fs.promises.readFile(shimPath, 'utf8');
+  } catch {
+    return null;
+  }
+  return parseCmdShim(shimPath, body);
+}
+
+/** The npm-style shim file a launch target resolves to, '' when it is not one. */
+function shimPathFor(shell: string): string {
+  const ext = path.extname(shell).toLowerCase();
+  // .cmd/.bat shims carry their real target; an extensionless npm launcher
+  // resolves via PATHEXT to the <name>.cmd beside it — parse the same file.
+  if (ext === '.cmd' || ext === '.bat') return shell;
+  return ext === '' ? `${shell}.cmd` : '';
+}
+
+/**
+ * The non-shim answer of {@link resolveWindowsShell}: .ps1 needs PowerShell,
+ * everything else (unparseable shims, bare names, extensionless paths) is
+ * wrapped with cmd.exe so CreateProcess doesn't choke on non-PE binaries.
+ * Every token must be quoted for cmd.exe — see quoteArgForCmdExe.
+ */
+function wrapForShell(shell: string, args: string[]): { shell: string; args: string[] } {
+  if (path.extname(shell).toLowerCase() === '.ps1') {
+    return {
+      shell: 'powershell.exe',
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', shell, ...args],
+    };
+  }
+  return {
+    shell: 'cmd.exe',
+    args: ['/c', quoteArgForCmdExe(shell), ...args.map(quoteArgForCmdExe)],
+  };
+}
+
+/**
+ * Row 17: the spawn-lane twin of {@link resolveWindowsShell} — identical
+ * branch order and identical output, with the shim body read off
+ * `fs.promises.readFile` so the Windows spawn path runs no sync file read.
+ * A `quoteArgForCmdExe` rejection surfaces as a rejection of this promise,
+ * which `spawnPty` catches in the same branch that caught the sync throw.
+ */
+export async function resolveWindowsShellAsync(
+  shell: string,
+  args: string[]
+): Promise<{ shell: string; args: string[] }> {
+  if (!isWin) return { shell, args };
+  // .exe files can be spawned directly by CreateProcess
+  if (path.extname(shell).toLowerCase() === '.exe') return { shell, args };
+  const shimPath = shimPathFor(shell);
+  const target = shimPath ? await resolveCmdShimTargetAsync(shimPath) : null;
+  if (target) return { shell: target.executable, args: [...target.prefixArgs, ...args] };
+  return wrapForShell(shell, args);
+}
+
 /**
  * On Windows, .cmd/.bat and .ps1 files cannot be spawned directly by node-pty
  * (CreateProcess returns error 193). Prefer spawning the shim's real target
@@ -515,32 +592,12 @@ export function resolveWindowsShell(
   args: string[]
 ): { shell: string; args: string[] } {
   if (!isWin) return { shell, args };
-  const ext = path.extname(shell).toLowerCase();
   // .exe files can be spawned directly by CreateProcess
-  if (ext === '.exe') return { shell, args };
-  // .ps1 scripts need PowerShell
-  if (ext === '.ps1') {
-    return {
-      shell: 'powershell.exe',
-      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', shell, ...args],
-    };
-  }
-  // .cmd/.bat shims carry their real target; an extensionless npm launcher
-  // resolves via PATHEXT to the <name>.cmd beside it — parse the same file.
-  let shimPath = '';
-  if (ext === '.cmd' || ext === '.bat') shimPath = shell;
-  else if (ext === '') shimPath = `${shell}.cmd`;
-  if (shimPath) {
-    const target = resolveCmdShimTarget(shimPath);
-    if (target) return { shell: target.executable, args: [...target.prefixArgs, ...args] };
-  }
-  // Everything else (unparseable shims, bare names, extensionless paths):
-  // wrap with cmd.exe so CreateProcess doesn't choke on non-PE binaries.
-  // Every token must be quoted for cmd.exe — see quoteArgForCmdExe.
-  return {
-    shell: 'cmd.exe',
-    args: ['/c', quoteArgForCmdExe(shell), ...args.map(quoteArgForCmdExe)],
-  };
+  if (path.extname(shell).toLowerCase() === '.exe') return { shell, args };
+  const shimPath = shimPathFor(shell);
+  const target = shimPath ? resolveCmdShimTarget(shimPath) : null;
+  if (target) return { shell: target.executable, args: [...target.prefixArgs, ...args] };
+  return wrapForShell(shell, args);
 }
 
 /**
@@ -603,6 +660,23 @@ export function resolveProviderBinary(providerId: ProviderId, hostId?: string): 
     );
   }
   return prereq.path;
+}
+
+/**
+ * Row 17: the spawn-lane twin of {@link resolveProviderBinary} — same rule, no
+ * synchronous probe. `spawnPty` awaits this and hands the answer to
+ * `resolveLaunchSpec` as `binaryPath`; the local branch runs
+ * `provider.resolveBinaryPathAsync` (async `which`/`npm prefix`, same cache),
+ * falling back to the sync resolver for providers that do not implement it
+ * (tests, future registrations). A registry host answers from the in-memory
+ * enrollment record, so the sync function's `LaunchSpecError` applies verbatim.
+ */
+export async function resolveProviderBinaryAsync(providerId: ProviderId, hostId?: string): Promise<string> {
+  // A registry host resolves from the in-memory enrollment record — no local
+  // probe runs, so the sync rule (and its LaunchSpecError) applies verbatim.
+  if (hostId !== undefined && hostId !== LOCAL_HOST_ID) return resolveProviderBinary(providerId, hostId);
+  const provider = getProvider(providerId);
+  return provider.resolveBinaryPathAsync ? provider.resolveBinaryPathAsync() : provider.resolveBinaryPath();
 }
 
 /**
@@ -738,8 +812,24 @@ export function resolveLaunchSpec(params: {
    * 2026-10-28 (parent §11) — the registry is the only remote spelling.
    */
   hostId?: string;
+  /**
+   * Row 17: the caller's PRE-RESOLVED login-shell PATH — `spawnPty` awaits
+   * `getFullPathAsync()` and passes it in, so the spawn lane runs no
+   * synchronous login-shell/registry probe. Absent → the providers probe
+   * synchronously, the correct answer for the sync callers (lead-review, tests).
+   */
+  pathEnv?: string;
+  /**
+   * Row 17: the caller's PRE-RESOLVED provider binary — `spawnPty` awaits
+   * `resolveProviderBinaryAsync()` (the cold path spawns `which`/`npm prefix`).
+   * Absent → resolved here, the correct answer for the sync callers.
+   */
+  binaryPath?: string;
 }): LaunchSpec {
-  const { sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId } = params;
+  const {
+    sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt,
+    systemPrompt, envVars, configDir, hostId, pathEnv, binaryPath,
+  } = params;
   const isRemoteHost = hostId !== undefined && hostId !== LOCAL_HOST_ID;
   const provider = getProvider(providerId);
   const issues: string[] = [];
@@ -752,7 +842,7 @@ export function resolveLaunchSpec(params: {
     );
   }
 
-  const env = provider.buildEnv(sessionId, withUtf8Locale({ ...process.env }) as Record<string, string>, { configDir });
+  const env = provider.buildEnv(sessionId, withUtf8Locale({ ...process.env }) as Record<string, string>, { configDir, pathEnv });
   // User-provided env vars are merged last so they can override provider-set
   // vars like PATH ("user vars win") — EXCEPT the vars a provider owns for
   // profile isolation, which would silently repoint the session at another
@@ -782,7 +872,7 @@ export function resolveLaunchSpec(params: {
   }
 
   const base: LaunchSpec = {
-    executable: resolveProviderBinary(providerId, hostId),
+    executable: binaryPath ?? resolveProviderBinary(providerId, hostId),
     // `remote` reaches the providers that can hand a quote-bearing prompt to
     // the CLI as a FILE (see systemPromptArg): on an SSH host a local path is
     // unreadable, so the value must stay a literal argument there.
@@ -881,7 +971,19 @@ export async function spawnPty(
     let spec: LaunchSpec;
     let spawnCommand: { shell: string; args: string[] };
     try {
-      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId });
+      // Row 17: the two spawn-lane probes run BEFORE the spec is composed, off
+      // the main thread. The PATH probe is `execSync($SHELL -ilc …)` (0.2-1.5 s
+      // on nvm/p10k boxes) or the Windows registry read; the binary probe
+      // spawns `which` (3 s cap) and, on Windows, `npm prefix -g` (5 s cap) on
+      // every provider's FIRST launch of an app run (the boot fan-out warms the
+      // availability cache, not the per-provider binary memo). Both shared
+      // their cache with the sync lane, so this changes the thread, not the
+      // answer; concurrent launches share the in-flight PATH promise.
+      const [pathEnv, binaryPath] = await Promise.all([
+        getFullPathAsync(),
+        resolveProviderBinaryAsync(providerId, hostId),
+      ]);
+      spec = resolveLaunchSpec({ sessionId, cliSessionId, isResume, extraArgs, providerId, initialPrompt, systemPrompt, envVars, configDir, hostId, pathEnv, binaryPath });
       // Audit R114: the Windows shell wrap is part of the SPEC, not part of the
       // spawn. quoteArgForCmdExe rejects an argument carrying a literal `"` (cmd
       // has no escape for one) and throws a LaunchSpecError; resolving it HERE
@@ -892,7 +994,7 @@ export async function spawnPty(
       // readable reason was the generic `Failed to prepare the launch: Error: …`
       // (the per-provider hint about a native-.exe binary or a Pi-compatible
       // prompt file was lost).
-      spawnCommand = resolveWindowsShell(spec.executable, spec.argv);
+      spawnCommand = await resolveWindowsShellAsync(spec.executable, spec.argv);
     } catch (err) {
       // Nothing will spawn for this session; drop any kill that arrived for
       // it so a later re-spawn of the same id is not killed by a stale flag.
@@ -953,7 +1055,7 @@ export async function spawnPty(
     // rejection leaving a blank pane — and a plain exit code would read as a
     // crash, so the reason goes out as the spawn-rejected sentinel and the
     // renderer leaves the pane up.
-    if (providerId === 'claude' && configDir && getKeychainIsolationStatus().status === 'unsupported') {
+    if (providerId === 'claude' && configDir && (await getKeychainIsolationStatusAsync()).status === 'unsupported') {
       pendingKills.delete(sessionId);
       onData(
         '\r\n\x1b[31mClaude profile login isolation is unavailable on this version of Claude Code:\r\n' +
@@ -1114,7 +1216,7 @@ export function killPty(sessionId: string): boolean {
   return killed;
 }
 
-export function spawnShellPty(
+export async function spawnShellPty(
   sessionId: string,
   cwd: string,
   onData: (data: string) => void,
@@ -1125,7 +1227,7 @@ export function spawnShellPty(
    * `hostId` is the registry id behind `host` — it selects the per-host trust
    * store (audit row 35); without it the lane uses the user's known_hosts. */
   remote?: { hostId?: string; host: string; port: number; defaultFolder?: string },
-): void {
+): Promise<void> {
   if (ptys.has(sessionId)) {
     replacedPtys.add(ptys.get(sessionId)!.process);
     killPty(sessionId);
@@ -1140,7 +1242,7 @@ export function spawnShellPty(
   const shell = isWin
     ? (process.env.COMSPEC || 'cmd.exe')
     : interactiveShell();
-  const shellEnv = withUtf8Locale({ ...process.env, PATH: getFullPath() });
+  const shellEnv = withUtf8Locale({ ...process.env, PATH: await getFullPathAsync() });
   // Remote branch: the PTY runs system ssh; the remote login shell answers
   // there. `--` stops ssh from parsing the host token as an option (the
   // registry grammar already gates it), matching the resolveLaunchSpec wrap.

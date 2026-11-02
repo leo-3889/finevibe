@@ -4,11 +4,25 @@ import * as path from 'path';
 const mockExecSync = vi.fn();
 const mockExecFile = vi.fn();
 
-vi.mock('child_process', () => ({
-  execSync: (...args: unknown[]) => mockExecSync(...args),
-  // PA-01 async probes go through promisify(execFile).
-  execFile: (...args: unknown[]) => mockExecFile(...args),
-}));
+vi.mock('child_process', () => {
+  const execFile = (...args: unknown[]) => mockExecFile(...args);
+  // promisify(execFile) resolves `{ stdout, stderr }` via the custom symbol;
+  // a bare wrapper resolves with the raw stdout value, so a successful async
+  // probe (row 17's `where`) would destructure `undefined` off a string.
+  Object.defineProperty(execFile, Symbol.for('nodejs.util.promisify.custom'), {
+    value: (command: string, args: readonly string[], options: unknown) =>
+      new Promise<{ stdout: string }>((resolve, reject) => {
+        execFile(command, args, options, (err: unknown, stdout?: string) => {
+          if (err) reject(err); else resolve({ stdout: stdout ?? '' });
+        });
+      }),
+  });
+  return {
+    execSync: (...args: unknown[]) => mockExecSync(...args),
+    // PA-01 async probes and the row-17 spawn-lane probes go through promisify(execFile).
+    execFile,
+  };
+});
 
 vi.mock('os', () => ({
   homedir: () => 'C:\\Users\\test',
@@ -39,7 +53,7 @@ vi.mock('../pty-manager', () => ({
 }));
 
 import * as fs from 'fs';
-import { resolveBinary, validateBinaryExists, invalidateBinaryCache, validateBinaryExistsAsync, configureProbeCacheDir, _resetNpmPrefixMemoForTesting } from './resolve-binary';
+import { resolveBinary, resolveBinaryAsync, validateBinaryExists, invalidateBinaryCache, validateBinaryExistsAsync, configureProbeCacheDir, _resetNpmPrefixMemoForTesting } from './resolve-binary';
 
 const mockStatSync = vi.mocked(fs.statSync);
 const mockStatAsync = vi.mocked(fs.promises.stat);
@@ -438,6 +452,70 @@ describe('validateBinaryExistsAsync — PA-01 cross-launch disk cache', () => {
 
     await expect(validateBinaryExistsAsync('claude')).resolves.toBe(true);
     expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockExecSync).not.toHaveBeenCalled();
+  });
+});
+
+// Row 17: the PTY spawn lane resolves its binary through resolveBinaryAsync —
+// the cold path spawns `where` (3 s cap) and `npm prefix -g` (5 s cap), which
+// blocked main in front of every provider's first launch of an app run. These
+// pin the parity with the sync resolver and that no sync probe runs.
+describe('resolveBinaryAsync (Windows)', () => {
+  const cache = { path: null as string | null, pathEnv: undefined as string | undefined };
+
+  /** Answer `where <name>` with a path; every other spawn fails. */
+  const answerWhere = (resolved: string) => {
+    mockExecFile.mockImplementation(((
+      cmd: string, args: readonly string[], _opts: unknown,
+      cb: (err: unknown, stdout?: string) => void,
+    ) => {
+      if (cmd === 'where') cb(null, `${resolved}\r\n`);
+      else throw new Error('not found');
+    }) as never);
+  };
+
+  it('resolves the PATH hit without any execSync', async () => {
+    answerWhere('C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd');
+
+    await expect(resolveBinaryAsync('claude', cache)).resolves.toBe('C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd');
+    expect(mockExecSync).not.toHaveBeenCalled();
+    expect(mockStatSync).not.toHaveBeenCalled();
+    // The memo is written exactly like the sync lane's.
+    expect(cache).toEqual({ path: 'C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd', pathEnv: MOCKED_PATH });
+  });
+
+  it('trusts the memo while PATH matches and the file still exists (async stat)', async () => {
+    cache.path = 'C:\\Users\\test\\scoop\\shims\\claude.cmd';
+    cache.pathEnv = MOCKED_PATH;
+    mockStatAsync.mockResolvedValue(fileStat);
+
+    await expect(resolveBinaryAsync('claude', cache)).resolves.toBe(cache.path);
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockStatSync).not.toHaveBeenCalled();
+  });
+
+  it('re-probes when the memoized file is gone, off the main thread', async () => {
+    cache.path = 'C:\\Users\\test\\scoop\\shims\\claude.cmd';
+    cache.pathEnv = MOCKED_PATH;
+    mockStatAsync.mockRejectedValue(new Error('ENOENT'));
+    answerWhere('C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd');
+
+    await expect(resolveBinaryAsync('claude', cache)).resolves.toBe('C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd');
+    expect(mockStatSync).not.toHaveBeenCalled();
+  });
+
+  it('walks the common dirs through fs.promises when PATH misses', async () => {
+    const scoopPath = path.join('C:\\Users\\test', 'scoop', 'shims', 'claude.cmd');
+    mockStatAsync.mockImplementation((p) => (
+      String(p) === scoopPath ? Promise.resolve(fileStat) : Promise.reject(new Error('ENOENT'))
+    ));
+
+    await expect(resolveBinaryAsync('claude', cache)).resolves.toBe(scoopPath);
+    expect(mockExecSync).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the bare binary name, like the sync resolver', async () => {
+    await expect(resolveBinaryAsync('claude', cache)).resolves.toBe('claude');
     expect(mockExecSync).not.toHaveBeenCalled();
   });
 });

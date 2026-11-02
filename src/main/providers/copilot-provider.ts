@@ -8,7 +8,7 @@ import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '
 import { tokenizeArgs } from '../../shared/launch-args';
 import { removeEnvKey } from '../../shared/env-vars';
 import { getFullPath } from '../pty-manager';
-import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
+import { resolveBinary, resolveBinaryAsync, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { getCopilotConfig, AGENT_EXT } from '../copilot-config';
 import { installCopilotHooks, validateCopilotHooks, cleanupCopilotHooks, SESSION_ID_VAR } from '../copilot-hooks';
 import { startConfigWatcher as startConfigWatch, stopConfigWatcher as stopConfigWatch } from '../config-watcher';
@@ -55,6 +55,12 @@ export class CopilotProvider implements CliProvider {
     return resolveBinary('copilot', binaryCache);
   }
 
+  // Row 17: spawn-lane twin — the cold path spawns `which` (and `npm prefix -g`
+  // on Windows); sync that blocked main in front of every first spawn.
+  resolveBinaryPathAsync(): Promise<string> {
+    return resolveBinaryAsync('copilot', binaryCache);
+  }
+
   validatePrerequisites(): boolean {
     return validateBinaryExists('copilot');
   }
@@ -64,10 +70,10 @@ export class CopilotProvider implements CliProvider {
     return validateBinaryExistsAsync('copilot');
   }
 
-  buildEnv(sessionId: string, baseEnv: Record<string, string>, _opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string; pathEnv?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env[SESSION_ID_VAR] = sessionId;
-    env.PATH = getFullPath();
+    env.PATH = opts?.pathEnv ?? getFullPath();
     // P2-85: an ambient COPILOT_HOME in the app's own launch environment
     // reached the child via baseEnv and relocated the CLI's data tree away
     // from every consumer (transcript sync, search) — the inherited-value

@@ -346,6 +346,31 @@ Sourcemaps are built for every production render (`dist/…index.js.map`, ~6 MB)
 included — so a packaged app pays nothing while a pasted renderer stack trace
 stays symbolizable off-device.
 
+## Spawn-lane probes (audit row 17, 2026-11-05)
+
+The owner-reported dev-launch lag was `*Sync` calls on the `pty:create` → spawn
+lane, where every probe blocks the main process for its whole duration. Census
+and disposition (re-measure with
+`rg -n '[a-zA-Z0-9_]\.[a-zA-Z]*Sync\(' src/main/pty-manager.ts src/main/providers/resolve-binary.ts src/main/claude-keychain.ts src/main/providers/claude-version.ts`):
+
+| Probe (cold-cache cost) | Lane | Disposition |
+| --- | --- | --- |
+| login-shell PATH probe `execSync($SHELL -ilc …)` / Windows registry read, 0.2–8 s | every provider `buildEnv`, shell-tab spawn | **async** — `spawnPty`/`spawnShellPty` await `getFullPathAsync()`; `resolveLaunchSpec` takes the snapshot as `pathEnv` and the providers only probe when it is absent |
+| `which`/`where` (3 s) + `npm prefix -g` (5 s, Windows) + common-dir stat walk | first launch of each provider per app run (the boot fan-out warms the availability cache, not the per-provider binary memo) | **async** — `resolveBinaryAsync` via `provider.resolveBinaryPathAsync`, awaited by `resolveProviderBinaryAsync` and passed to `resolveLaunchSpec` as `binaryPath` |
+| `claude --version` (`execSync`, 3 s) + one `security find-generic-password` per Claude profile | every Claude profile spawn while the isolation verdict is `unknown` (that verdict is deliberately never memoized) | **async** — `getClaudeVersionAsync` / `getKeychainIsolationStatusAsync`, same caches and same verdict rules |
+| npm shim body `readFileSync` + 3 `existsSync` | one per Windows spawn | **async read** — `resolveWindowsShellAsync` reads the body off `fs.promises`; the three stats stay sync (`ponytail:` note at `resolveCmdShimTargetAsync`) |
+| `interactiveShell` `existsSync('/bin/bash')`, `guardedProfileInstall` memo stats, `systemPromptArg` stat, launch-dir pre-create/seed writes, `getPtyCwd` `/proc` readlink | one-per-spawn, sub-ms | kept sync — the migration targets are per-tick paths and >ms probes, not one-shot stats |
+| `hook-status.ts` 21 sites on the 2 s `STATUS_DIR` poll, transcript watchers | per-tick, small files | kept — row 18 (hook push lane) deletes the poll outright; migrating it first would be churn |
+
+Pinned by `pty-manager.test.ts §spawnPty` (no `execSync` between the launch
+request and `pty.spawn`; the child PATH and the `which` probe env both carry the
+*resolved* login PATH, not `process.env.PATH`),
+`resolve-binary.test.ts §resolveBinaryAsync`,
+`claude-version.test.ts §getClaudeVersionAsync`,
+`claude-keychain.test.ts §getKeychainIsolationStatusAsync`,
+`resolve-binary.windows-shim.test.ts` (async shim lane, platform-pinned so it
+runs on any host).
+
 ## Measurement protocol for the live run
 
 The static audit defines what the numbers must confirm. Launch with `--js-flags="--expose-gc"`; sample `process.memoryUsage()` (main, via `--inspect`) and `Get-Process FineVibe` working set (PowerShell, 60 s cadence, per-process rows) plus heap snapshots. Scenarios: **S1** 10 idle tabs → expect ≈ +0.2–0.4 MB/tab renderer, flat main; **S2** a ~100 MB output burst → renderer plateaus at scrollback capacity, main heap must not scale with the burst; **S3** 1 h idle with 10 live PTYs → growth < 5 MB/h (a linear rise implicates the 2 s pollers' per-file maps, `lastMtimes` first); **S4** open 50 sessions and close all → retained `Terminal`/`TranscriptSyncEntry`/reader counts return to baseline; **S5** state seeded with 5,000 history rows → time one persist, < 250 ms; **S6** export a session with a ≥50 MB `.events` sidecar → the main heap transient equals the buffered sidecar bytes (and collapses to chunk size once streaming lands). Record CSVs and snapshots under `bench/memory/<date>/`. Pass criteria: S3 < 5 MB/h, S4 within 10% of baseline, per-tab renderer cost within 2× the 240 KB estimate, S5 < 250 ms.

@@ -9,7 +9,7 @@ import type { CliProviderMeta, ProviderConfig, SettingsValidationResult } from '
 import { removeEnvKey } from '../../shared/env-vars';
 import { tokenizeArgs } from '../../shared/launch-args';
 import { getFullPath } from '../pty-manager';
-import { resolveBinary, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
+import { resolveBinary, resolveBinaryAsync, validateBinaryExists, validateBinaryExistsAsync } from './resolve-binary';
 import { getCodexConfig } from '../codex-config';
 import { installCodexHooks, validateCodexHooks, cleanupCodexHooks, SESSION_ID_VAR } from '../codex-hooks';
 import { startCodexSessionWatcher, stopCodexSessionWatcher, registerPendingCodexSession, unregisterCodexSession } from '../codex-session-watcher';
@@ -92,6 +92,12 @@ export class CodexProvider implements CliProvider {
     return resolveBinary('codex', binaryCache);
   }
 
+  // Row 17: spawn-lane twin — the cold path spawns `which` (and `npm prefix -g`
+  // on Windows); sync that blocked main in front of every first spawn.
+  resolveBinaryPathAsync(): Promise<string> {
+    return resolveBinaryAsync('codex', binaryCache);
+  }
+
   validatePrerequisites(): boolean {
     return validateBinaryExists('codex');
   }
@@ -101,10 +107,10 @@ export class CodexProvider implements CliProvider {
     return validateBinaryExistsAsync('codex');
   }
 
-  buildEnv(sessionId: string, baseEnv: Record<string, string>, _opts?: { configDir?: string }): Record<string, string> {
+  buildEnv(sessionId: string, baseEnv: Record<string, string>, opts?: { configDir?: string; pathEnv?: string }): Record<string, string> {
     const env = { ...baseEnv };
     env[SESSION_ID_VAR] = sessionId;
-    env.PATH = getFullPath();
+    env.PATH = opts?.pathEnv ?? getFullPath();
     // Hooks are installed at, and the rollout watcher scans, the hardcoded
     // ~/.codex: an inherited CODEX_HOME moves the child's config.toml and
     // rollouts out of reach, silently losing .sessionid, statusLine, titles,

@@ -143,7 +143,7 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
   // The remote gate is the enrolled HostRecord itself — the P1-15
   // local-project check does not apply to remote cwds (council R-1); the
   // remote cwd is the record's defaultFolder (fallback: remote home).
-  ipcMain.handle('hosts:openShell', (_event, id: string, sessionId: string) => {
+  ipcMain.handle('hosts:openShell', async (_event, id: string, sessionId: string) => {
     const win = getMainWindow();
     if (!win) return;
     const record = getHost(id);
@@ -154,7 +154,9 @@ export function registerHostsDomains(deps: HostsDomainsDeps): void {
       return;
     }
     const dataSink = deps.createPtyDataSink(() => getMainWindow(), sessionId);
-    spawnShellPty(
+    // Awaited (row 17): spawnShellPty probes its PATH off the main thread now;
+    // awaiting keeps a spawn failure on this channel, as the sync call had it.
+    await spawnShellPty(
       sessionId,
       process.cwd(),
       dataSink,

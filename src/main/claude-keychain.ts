@@ -23,12 +23,15 @@
  * never falsely blocked.
  */
 import { createHash } from 'crypto';
-import { execFileSync } from 'child_process';
+import { execFileSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import { isMac } from './platform';
 import { loadState } from './store';
-import { getClaudeVersion } from './providers/claude-version';
-import { resolveBinary } from './providers/resolve-binary';
+import { getClaudeVersion, getClaudeVersionAsync } from './providers/claude-version';
+import { resolveBinary, resolveBinaryAsync } from './providers/resolve-binary';
 import { semverGte } from './claude-hook-versions';
+
+const execFileP = promisify(execFile);
 
 /** Keychain service prefix Claude Code uses for OAuth credentials on macOS. */
 const BASE_SERVICE = 'Claude Code-credentials';
@@ -77,21 +80,46 @@ function keychainEntryExists(service: string): boolean {
   }
 }
 
+/** Async twin of {@link keychainEntryExists} (row 17 spawn lane). */
+async function keychainEntryExistsAsync(service: string): Promise<boolean> {
+  try {
+    await execFileP('/usr/bin/security', ['find-generic-password', '-s', service], { timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The known Claude profiles, or [] when the store is unreadable. */
+function profileConfigDirs(): string[] {
+  let profiles: { providerId: string; configDir: string }[] = [];
+  try {
+    profiles = loadState().profiles ?? [];
+  } catch {
+    return [];
+  }
+  return profiles
+    .filter((p) => p.providerId === 'claude' && p.configDir)
+    .map((p) => p.configDir);
+}
+
 /**
  * Empirically confirm the installed build namespaces credentials: probe the
  * keychain for the namespaced entry of every known Claude profile. A single hit
  * proves the build supports per-config-dir isolation.
  */
 function anyProfileKeychainNamespaced(): boolean {
-  let profiles: { providerId: string; configDir: string }[] = [];
-  try {
-    profiles = loadState().profiles ?? [];
-  } catch {
-    return false;
+  for (const configDir of profileConfigDirs()) {
+    if (keychainEntryExists(keychainServiceForConfigDir(configDir))) return true;
   }
-  for (const p of profiles) {
-    if (p.providerId !== 'claude' || !p.configDir) continue;
-    if (keychainEntryExists(keychainServiceForConfigDir(p.configDir))) return true;
+  return false;
+}
+
+/** Async twin of {@link anyProfileKeychainNamespaced} (row 17 spawn lane):
+ *  one `security` spawn per Claude profile, in the same short-circuit order. */
+async function anyProfileKeychainNamespacedAsync(): Promise<boolean> {
+  for (const configDir of profileConfigDirs()) {
+    if (await keychainEntryExistsAsync(keychainServiceForConfigDir(configDir))) return true;
   }
   return false;
 }
@@ -141,6 +169,39 @@ export function getKeychainIsolationStatus(): KeychainStatusResult {
   if (cachedVerdict && cachedVerdict.status !== 'unknown') return cachedVerdict;
   cachedVerdict = computeStatus();
   return cachedVerdict;
+}
+
+/**
+ * Row 17: async twin of {@link getKeychainIsolationStatus} for the PTY spawn
+ * lane, where it gates every Claude profile session. The sync verdict runs
+ * `resolveBinary` (`which`, 3 s cap), `claude --version` (`execSync`, 3 s) and
+ * one `security find-generic-password` per Claude profile — and an `unknown`
+ * verdict is deliberately NOT memoized (it can upgrade to `supported`), so a
+ * macOS box in that state paid the whole probe chain synchronously on EVERY
+ * profile launch. Same memo, same verdict rules; only the I/O moved.
+ */
+export async function getKeychainIsolationStatusAsync(): Promise<KeychainStatusResult> {
+  if (cachedVerdict && cachedVerdict.status !== 'unknown') return cachedVerdict;
+  if (!isMac) {
+    cachedVerdict = { status: 'supported', version: null };
+    return cachedVerdict;
+  }
+  let version: string | null = null;
+  try {
+    version = await getClaudeVersionAsync(await resolveBinaryAsync('claude', binaryCache));
+  } catch {
+    version = null;
+  }
+  if (await anyProfileKeychainNamespacedAsync()) {
+    cachedVerdict = { status: 'supported', version };
+    return cachedVerdict;
+  }
+  if (version && semverGte(LAST_UNNAMESPACED_VERSION, version)) {
+    cachedVerdict = { status: 'unsupported', version };
+    return cachedVerdict;
+  }
+  // 'unknown' stays uncached, exactly as the sync lane leaves it.
+  return { status: 'unknown', version };
 }
 
 /** @internal Test-only: clear the memoized verdict and binary-path cache. */

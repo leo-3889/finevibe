@@ -58,6 +58,7 @@ vi.mock('./nvm', () => ({
 }));
 vi.mock('../claude-keychain', () => ({
   getKeychainIsolationStatus: () => ({ status: 'supported', version: null }),
+  getKeychainIsolationStatusAsync: async () => ({ status: 'supported', version: null }),
 }));
 vi.mock('../settings-guard', () => ({
   guardedProfileInstall: vi.fn(),
@@ -85,8 +86,9 @@ vi.mock('../pty-manager', async (importOriginal) => {
   };
 });
 
+import * as fs from 'fs';
 import { resolveBinary } from './resolve-binary';
-import { resolveWindowsShell } from '../pty-manager';
+import { resolveWindowsShell, resolveWindowsShellAsync } from '../pty-manager';
 
 // The extensionless npm launcher `where` lists first, with the .cmd beside it.
 const SHIM = 'C:\\Users\\test\\AppData\\Roaming\\npm\\pi-bolt';
@@ -124,5 +126,29 @@ describe('extensionless npm shim → cmd.exe spawn chain (Windows)', () => {
     expect(spec.args[0]).toBe('/c');
     expect(spec.args[1]).toBe(SHIM);
     expect(spec.args.slice(2)).toEqual(['--session-dir', 'C:\\mock\\app\\pi-bolt-sessions\\s1']);
+  });
+
+  // Row 17: the SPAWN lane runs the same chain through resolveWindowsShellAsync
+  // (platform pinned to Windows above), reading the shim body off fs.promises so
+  // no sync read sits between the launch request and pty.spawn.
+  it('the async spawn lane reads the shim through fs.promises and answers identically', async () => {
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (String(cmd).includes('where "pi-bolt"')) return WHERE_OUTPUT;
+      throw new Error('not found');
+    });
+    const shim = resolveBinary('pi-bolt', { path: null as string | null });
+    // The .cmd sibling is the file the parser reads; it has no %* launch line,
+    // so the answer is the cmd.exe wrap — the same answer the sync lane gives.
+    const shimBody = '@echo off\r\nCALL "%~dp0\\node_modules\\x\\cli.js" %*\r\n';
+    vi.mocked(fs.promises.readFile).mockImplementation(async (target) => {
+      if (String(target) === `${shim}.cmd`) return shimBody as never;
+      throw new Error('ENOENT');
+    });
+
+    const spec = await resolveWindowsShellAsync(shim, ['--session-dir', 'C:\\mock\\app\\pi-bolt-sessions\\s1']);
+    expect(spec.shell).toBe('cmd.exe');
+    expect(spec.args[1]).toBe(shim);
+    expect(fs.promises.readFile).toHaveBeenCalledWith(`${shim}.cmd`, 'utf8');
+    expect(vi.mocked(fs.readFileSync)).not.toHaveBeenCalled();
   });
 });
