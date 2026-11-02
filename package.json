@@ -80,7 +80,9 @@
       "dist/preload/**/*",
       "dist/renderer/**/*",
       "!**/*.map",
-      "build/icon.png"
+      "build/icon.png",
+      "!**/*.test.js",
+      "!**/node_modules/zod/src/**"
     ],
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**"

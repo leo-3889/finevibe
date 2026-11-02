@@ -1327,7 +1327,7 @@ export function registerIpcHandlers(): void {
       // confirmHomeOutsideListingOnce) and Cancel keeps the old deny shape.
       // The old silent false ignored the Windows reality that projects on
       // non-home drives (E:\...) are the norm: adding an existing dir like
-      // E:\Ai\Brilliance reported "Directory does not exist".
+      // E:\AI\Acme reported "Directory does not exist".
       // Cascade: the parent's consent (or the native picker's selection of
       // it) named this child via enumeration — answer from it, no dialog.
       if (!isAllowedEnumeratePath(expanded)
