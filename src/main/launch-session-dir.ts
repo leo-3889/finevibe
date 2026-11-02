@@ -111,11 +111,19 @@ export function remoteLaunchSessionDir(providerId: LaunchSessionProvider, uiSess
  * Inline values additionally carry the audit-108 path-spelling guard.
  */
 export function systemPromptArg(prompt: string, sessionDir: string, isRemote = false): string {
-  if (!isWin || isRemote || !prompt.includes('"')) return guardPathSpelling(prompt);
-  const file = path.join(sessionDir, 'system-prompt.md');
-  fs.mkdirSync(sessionDir, { recursive: true });
-  fs.writeFileSync(file, prompt, 'utf8');
-  return file;
+  // Row 129 review: on Windows the guard's leading newline is the byte the
+  // `cmd.exe /c` fallback truncates at (cmd ends its command at the first
+  // newline — provider-contracts.md), so a path-spelling prompt routes into
+  // the session-dir file branch there exactly like a quoted prompt: the value
+  // handed to the CLI is a file this launch just wrote, contents appended
+  // verbatim, never re-resolved.
+  if (isWin && !isRemote && (prompt.includes('"') || isPathSpellingFile(prompt))) {
+    const file = path.join(sessionDir, 'system-prompt.md');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(file, prompt, 'utf8');
+    return file;
+  }
+  return guardPathSpelling(prompt);
 }
 
 /**
@@ -142,18 +150,25 @@ export function systemPromptArg(prompt: string, sessionDir: string, isRemote = f
  * RELATIVE-path charter is matched against the app's cwd, not the launch cwd
  * the CLI resolves it from; absolute spellings — the ones that reach outside
  * the project — are covered, and a missed relative match restores exactly the
- * pre-fix behavior.
+ * pre-fix behavior. The stat is LOCAL, so on a remote (SSH-host) launch a
+ * charter spelling a path that exists only ON THE HOST is unmatched and the
+ * remote CLI performs the substitution — remote charters must not spell host
+ * file paths (same ceiling class as relative paths, named in the contract).
  */
-function guardPathSpelling(prompt: string): string {
+function isPathSpellingFile(prompt: string): boolean {
   const trimmed = prompt.trim();
-  if (trimmed.includes('\n')) return prompt;
+  if (trimmed.includes('\n')) return false;
   try {
-    if (fs.statSync(trimmed).isFile()) return `\n${prompt}`;
+    return fs.statSync(trimmed).isFile();
   } catch {
     // Not a readable path (ENOENT/ENOTDIR/ENAMETOOLONG…): the CLIs read it as
     // text themselves, so the prompt is already safe verbatim.
+    return false;
   }
-  return prompt;
+}
+
+function guardPathSpelling(prompt: string): string {
+  return isPathSpellingFile(prompt) ? `\n${prompt}` : prompt;
 }
 
 /**

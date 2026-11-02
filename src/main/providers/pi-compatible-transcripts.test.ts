@@ -14,7 +14,6 @@ import {
   readSessionExitReasonSync,
   findTranscriptPathSync,
   readSessionHeaderSync,
-  SEED_SESSION_VERSION,
   TAIL_READ_BYTES,
   HEADER_READ_BYTES,
 } from './pi-compatible-transcripts';
@@ -508,8 +507,9 @@ describe('seedLaunchTranscript', () => {
       });
       // Audit 109v (accepted limit): the version is the pinned CLI constant, not
       // a probed value — bump SEED_SESSION_VERSION with the CLI's
-      // CURRENT_SESSION_VERSION. Pinned so the literal cannot drift silently.
-      expect(JSON.parse(fs.readFileSync(seeded, 'utf8').split('\n')[0]).version).toBe(SEED_SESSION_VERSION);
+      // CURRENT_SESSION_VERSION. Asserted as the LITERAL the docs name, so a
+      // silent constant bump (and the doc drift it causes) fails here.
+      expect(JSON.parse(fs.readFileSync(seeded, 'utf8').split('\n')[0]).version).toBe(3);
       // wx: a seed never clobbers an existing transcript file.
       // Pin the clock to the first seed's timestamp (parsed from the
       // filename) so the second seed computes the same filename.

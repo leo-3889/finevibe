@@ -761,7 +761,7 @@ describe('launcher linux desktop entry', () => {
 
   it('rewrites Exec to the absolute AppImage path and forces Icon=finevibe', () => {
     const text = builtEntry();
-    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} --no-sandbox %U`);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 '${appPath}' --no-sandbox %U`);
     expect(text).not.toContain('AppRun');
     expect(text).toContain('Icon=finevibe');
     expect(text).not.toContain('Icon=old-icon');
@@ -778,7 +778,7 @@ describe('launcher linux desktop entry', () => {
       '[Desktop Entry]\nExec=/opt/FineVibe/AppRun --no-sandbox --ozone-platform-hint=auto %U\n',
       appPath,
     );
-    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} --no-sandbox --ozone-platform-hint=auto %U`);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 '${appPath}' --no-sandbox --ozone-platform-hint=auto %U`);
     expect(text).not.toContain('/opt/FineVibe/AppRun');
   });
 
@@ -788,7 +788,7 @@ describe('launcher linux desktop entry', () => {
       '[Desktop Entry]\nExec=AppRun --appimage-extract-and-run --no-sandbox %U\n',
       appPath,
     );
-    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} --no-sandbox %U`);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 '${appPath}' --no-sandbox %U`);
     expect(text).not.toContain('--appimage-extract-and-run');
   });
 
@@ -808,15 +808,15 @@ describe('launcher linux desktop entry', () => {
   it('prefixes Exec with env APPIMAGE_EXTRACT_AND_RUN=1 by default', () => {
     const { exports } = loadLauncher();
     const text = exports.buildDesktopEntry('[Desktop Entry]\nExec=AppRun %U\n', appPath);
-    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
-    expect(text).not.toContain(`\nExec=${appPath} %U\n`);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 '${appPath}' %U`);
+    expect(text).not.toContain(`\nExec='${appPath}' %U\n`);
     expect(text).toContain('Icon=finevibe');
   });
 
   it('leaves Exec bare when the FUSE mount path is opted into', () => {
     const { exports } = loadLauncher();
     const text = exports.buildDesktopEntry('[Desktop Entry]\nExec=AppRun %U\n', appPath, true);
-    expect(text).toContain(`Exec=${appPath} %U`);
+    expect(text).toContain(`Exec='${appPath}' %U`);
     expect(text).not.toContain('APPIMAGE_EXTRACT_AND_RUN');
   });
 
@@ -829,7 +829,7 @@ describe('launcher linux desktop entry', () => {
     expect(text).toContain('Categories=Development;');
     expect(text).toContain('Terminal=false');
     expect(text).toContain('Comment=Tenant IDE for AI CLI tools');
-    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
+    expect(text).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 '${appPath}' %U`);
     expect(text).toContain('Icon=finevibe');
     expect(text).toContain('StartupWMClass=FineVibe');
   });
@@ -865,7 +865,7 @@ describe('launcher linux desktop install', () => {
       ).toBe('png-bytes');
       const desktop = fs.readFileSync(path.join(dataDir, 'applications', 'finevibe.desktop'), 'utf8');
       // DEFECT 53: installed entries take the extract-and-run path by default.
-      expect(desktop).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
+      expect(desktop).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 '${appPath}' %U`);
       expect(desktop).toContain('Icon=finevibe');
       expect(desktop).toContain('StartupWMClass=FineVibe');
       expect(desktop).toContain('MimeType=x-scheme-handler/finevibe;');
@@ -876,7 +876,7 @@ describe('launcher linux desktop install', () => {
       });
       expect(
         fs.readFileSync(path.join(dataDir, 'applications', 'finevibe.desktop'), 'utf8'),
-      ).toContain(`Exec=${appPath} %U`);
+      ).toContain(`Exec='${appPath}' %U`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -891,7 +891,7 @@ describe('launcher linux desktop install', () => {
       const desktop = fs.readFileSync(path.join(dataDir, 'applications', 'finevibe.desktop'), 'utf8');
       expect(desktop).toContain('[Desktop Entry]');
       expect(desktop).toContain('Name=FineVibe');
-      expect(desktop).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${appPath} %U`);
+      expect(desktop).toContain(`Exec=env APPIMAGE_EXTRACT_AND_RUN=1 '${appPath}' %U`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

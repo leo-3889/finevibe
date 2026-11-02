@@ -365,7 +365,11 @@ function buildDesktopEntry(embeddedContent, appPath, useFuseMount = false) {
     .filter((token) => useFuseMount || token !== '--appimage-extract-and-run');
   const execWords = [
     ...(useFuseMount ? [] : ['env', 'APPIMAGE_EXTRACT_AND_RUN=1']),
-    appPath,
+    // The desktop-entry tokenizer splits the program token on spaces, so a
+    // home with a space used to yield an unfindable program. Single quotes
+    // are the spec's quoting; a path containing a literal ' is not portable
+    // to .desktop at all (ponytail: accepted, no escape exists in the spec).
+    `'${appPath}'`,
     ...carriedArgs,
     '%U',
   ];
@@ -450,7 +454,11 @@ function linuxDesktopIntegration() {
         appPath: APP_PATH,
         extractRoot: path.join(tmp, 'squashfs-root'),
         dataDir,
-        useFuseMount: appimageMountRequested(),
+        // Row 129 review: the .desktop is PERMANENT — a one-off
+        // FINEVIBE_APPIMAGE_MOUNT=1 must not write a mount-mode Exec that
+        // dead-mounts every later desktop launch (defect 53). The opt-in is
+        // honored independently at the launcher's own spawn below.
+        useFuseMount: false,
       });
       for (const [cmd, arg] of [
         ['update-desktop-database', path.join(dataDir, 'applications')],

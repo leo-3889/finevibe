@@ -40,6 +40,7 @@ vi.mock('../hosts/secrets', () => ({
 }));
 vi.mock('../hosts/settings-sync', () => ({ syncSettingsToHost: vi.fn() }));
 vi.mock('../hosts/remote-fs', () => ({
+  invalidateRemoteHome: vi.fn(),
   cloneRemoteRepo: vi.fn(),
   ensureRemoteDir: vi.fn(),
   listRemoteDirs: vi.fn(),

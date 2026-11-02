@@ -72,7 +72,8 @@ beforeEach(() => {
   };
 });
 
-describe('remoteParentPath / crumbSteps (pure navigation table)', () => {  it('walks the canonical spellings up to their roots', () => {
+describe('remoteParentPath / crumbSteps (pure navigation table)', () => {
+  it('walks the canonical spellings up to their roots', () => {
     expect(remoteParentPath('~/projects/demo')).toBe('~/projects');
     expect(remoteParentPath('~/projects')).toBe('~');
     expect(remoteParentPath('~')).toBeNull();
