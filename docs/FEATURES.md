@@ -4,7 +4,8 @@ Every feature of the app with its observable behavior, owning module(s), and the
 Generated from a full audit of `src/` and `bin/` on 2026-10-18; update it when adding features, per the [contributor guide](../CLAUDE.md).
 
 - `UNTESTED` = no test file directly exercises the module; indirect coverage is noted where it exists.
-- Limits are code constants, not Preferences. Cross-cutting caps are collected in Appendix A.
+- Limits are code constants, not Preferences. [Appendix A](#appendix-a--cross-cutting-numeric-limits) is the **canonical index** of the limits the docs repeat: a value is maintained there once, and the contract docs cite that appendix instead of restating it.
+- Internal audit ids (`row 61`, `P2-14`, `S3-02`, …) are provenance, not public references — see [Glossary: audit ids](#glossary-audit-ids).
 - Contract docs stay authoritative for invariants: [provider contracts](provider-contracts.md), [session lifecycle](session-lifecycle.md), [security boundaries](security-boundaries.md), [performance](performance.md), [UI conventions](ui-conventions.md), [hook compatibility](../HOOKS.md).
 
 # Part I — Renderer (user-facing features)
@@ -430,33 +431,64 @@ Open items (kept, not features): `agentmemory-connection` (UR-3, dropped by owne
 
 # Appendix A — Cross-cutting numeric limits
 
-- Session name ≤ 60, project name ≤ 80 (`state.ts:84-85`).
-- Tab group dwell 450 ms, max 12 members, 6-color palette (`state/tab-group-state.ts`); group name ≤ 60 (`MAX_SESSION_NAME_LENGTH`).
-- Session history cap 500, history panel shows 50 (`state/session-archive.ts:4`, `components/session-history.ts:8`).
-- Inspector events cap 2000 / 64 Ki chars event / 2 Mi chars session, JS string lengths (`session-inspector-state.ts:6-8`).
-- Nav history ring 50 (`state/nav-history.ts:1`).
-- Insight snapshots 50, readiness history 30, dismissed ids 200 (`state/insights-state.ts:3-4,7`).
-- Sidebar width 150–500 px (`components/sidebar.ts:43-44`).
-- Zoom steps 0.75–2.0 fixed set (`zoom.ts:5`).
-- File preview 2000 lines / 128 Ki chars, JS string length (`file-preview.ts:1-2`).
-- Git panel max 100 files (`components/git-panel.ts:8`).
-- Debug events max 500 (`components/debug-panel.ts:13`).
-- GitHub member cache TTL 1 h, every contents/download fetch `AbortSignal.timeout(15 000)` (`components/team/github-fetcher.ts:11,15`).
-- Discussions poll 1 h, one feed fetch in flight at a time (`discussions-badge.ts:9,18`).
-- GitHub widgets: poll `max(60 s, refreshSeconds)`, gh-failure backoff ×2 cap 30 min, visibility refresh ≥30 s apart (`widgets/github-widgets.ts:17,22`).
-- PBKDF2 100 000 iters; 16-B salt/12-B IV (`sharing/share-crypto.ts:11-13`).
-- DnD drag threshold 5 px (`components/board/board-dnd.ts:8`).
-- Board caps 50 columns / 2000 tasks / 100 tags per board; add paths refuse beyond (`board-state.ts:8-10`).
-- Folder watches 2000 per main process, least-recently-watched evicted (`src/main/file-watcher.ts:14`).
-- Disk-health preflight: 200 MiB low-water, 60 s interval, transition-only push (`src/main/disk-health.ts`).
-- App log file: 5 MiB active + one 5 MiB `.1` backup, sink disabled on any write error (`src/main/log-file.ts`); exact-repeat console throttle (`src/main/log-throttle.ts`).
-- Remote file watches: 5 s poll, 200 watches FIFO-evicted (`src/main/hosts/remote-watch.ts`).
-- Star prompt threshold 10 sessions (`components/star-prompt-dialog.ts:6`).
-- Big-initial-context threshold 15 % (`insights/big-initial-context.ts:4`).
-- Default context window 200 000 tokens (`session-context.ts:10`).
-- Locales: en + zh-CN, 28 namespaces each, key-for-key parity (no keys unique to either locale; zh-CN falls back to English on any future gap) — the parity gate is `src/renderer/i18n.test.ts` (`locale parity (locales/*.json)`), which is the claim; no key count is maintained here.
-- Board default columns 4 (Backlog/Ready/Running/Done), tag colors fixed 8 (`state/persistence.ts:11`, `board-state.ts:221`).
-- One terminal instance per session id; one shell terminal per project; one preferences modal; one alert banner; one context menu at a time.
+**This appendix is the canonical index of the numeric limits the docs repeat.** The
+number lives here once; the doc that needs it points at this appendix instead of
+restating it, because a constant stated in three files is a constant that drifts. When a
+limit changes: fix the code, fix its row here, and leave the other docs' pointers alone.
+
+Cite it as `[FEATURES.md Appendix A](FEATURES.md#appendix-a--cross-cutting-numeric-limits)`
+from the other contract docs (that anchor is stable: the heading text is part of the
+contract, do not rename it). Limits are code constants, not Preferences. **Owner** is the
+module that owns the constant; **Also stated in** names the docs that repeat the value
+today — those are the ones to trim on the next touch of the row.
+
+| Limit | Value | Owner | Also stated in |
+|---|---|---|---|
+| Session name / project name | ≤ 60 / ≤ 80 chars | `state.ts:84-85` | §1, §2 |
+| Tab group dwell / members / palette / name | 450 ms (`TAB_GROUP_DWELL_MS`) / ≤ 12 / 6 colors / ≤ 60 chars | `state/tab-group-state.ts`, `MAX_SESSION_NAME_LENGTH` | §1, [session lifecycle](session-lifecycle.md) |
+| Tab-strip arrow reserve / step | 52 px (`ARROW_RESERVE_PX`) / max(120 px, 60 % of strip) | `components/tab-bar/tab-arrows.ts` | §1 |
+| Paste text bound | 8 Mi chars (`PASTE_TEXT_MAX_CHARS`) | `src/main/ipc-handlers.ts:902` | §1, [performance](performance.md) |
+| Selection-copy budget | 256 Ki chars (`SELECTION_COPY_BUDGET_CHARS`) | `components/terminal-utils.ts:423` | §1, [performance](performance.md) |
+| Sidebar width | 150–500 px | `components/sidebar.ts:43-44` | §2 |
+| File preview page | 2 000 lines / 128 Ki chars (JS string length) | `file-preview.ts:1-2` | §2, [performance](performance.md) |
+| Zoom steps | 0.75–2.0, fixed set | `zoom.ts:5` | §8 |
+| Session history cap / panel rows shown | 500 / 50 | `state/session-archive.ts:4`, `components/session-history.ts:8` | §4, [session lifecycle](session-lifecycle.md) |
+| Inspector / hook-event retention | 2 000 events · 64 Ki chars per event · 2 Mi chars per session (JS string lengths) | `session-inspector-state.ts:6-8` | §1, §19, [performance](performance.md), [session lifecycle](session-lifecycle.md) |
+| Nav history ring | 50 | `state/nav-history.ts:1` | §16 |
+| Insight snapshots / readiness history / dismissed ids | 50 / 30 / 200 | `state/insights-state.ts:3-4,7` | §11 |
+| Star prompt threshold | 10 sessions | `components/star-prompt-dialog.ts:6` | §16 |
+| Big-initial-context threshold | 15 % | `insights/big-initial-context.ts:4` | §11 |
+| Default context window | 200 000 tokens | `session-context.ts:10` | §12 |
+| Board DnD drag threshold | 5 px | `components/board/board-dnd.ts:8` | §3 |
+| Board caps | 50 columns / 2 000 tasks / 100 tags per board (add paths refuse beyond) | `board-state.ts:8-10` | §3, [performance](performance.md) |
+| Board default columns / tag colors | 4 (Backlog/Ready/Running/Done) / 8 fixed | `state/persistence.ts:11`, `board-state.ts:221` | §3 |
+| Git panel files | max 100 | `components/git-panel.ts:8` | §21 |
+| Debug events | max 500 | `components/debug-panel.ts:13` | §16 |
+| GitHub member cache TTL / fetch timeout | 1 h / `AbortSignal.timeout(15 000)` on every contents + download fetch | `components/team/github-fetcher.ts:11,15` | §7 |
+| Discussions poll / concurrent fetches | 1 h / one feed fetch in flight | `discussions-badge.ts:9,18` | §7 |
+| GitHub widgets poll / backoff / visibility refresh | `max(60 s, refreshSeconds)` / gh-failure ×2, cap 30 min / ≥ 30 s apart | `widgets/github-widgets.ts:17,22` | §11 |
+| Share crypto | PBKDF2 100 000 iters, 16-B salt, 12-B IV | `sharing/share-crypto.ts:11-13` | §7, [security boundaries](security-boundaries.md) |
+| Locales | en + zh-CN, 28 namespaces each, key-for-key parity (zh-CN falls back to English on any future gap); the parity gate is `src/renderer/i18n.test.ts` (`locale parity (locales/*.json)`) — the gate IS the claim, no key count is maintained | `src/renderer/i18n.test.ts` | §9 |
+| Folder watches | 2 000 per main process, least-recently-watched evicted | `src/main/file-watcher.ts:14` | [performance](performance.md), [session lifecycle](session-lifecycle.md) |
+| Local watcher / poll cadence | 2 s (`POLL_INTERVAL_MS`); hook-status watchdog 15 s without a watcher | `src/main/file-watcher.ts:25`, `src/main/pi-compatible-session-watcher.ts:131`, `src/main/hook-status.ts:408-409` | [performance](performance.md), [session lifecycle](session-lifecycle.md) |
+| Pi/OMP listing cache | reused while dir mtime is clean; refetched past 30 s | `src/main/pi-compatible-session-watcher.ts` | [performance](performance.md), [session lifecycle](session-lifecycle.md) |
+| Launch-dir retention / prune scan cap | 30 days (`LAUNCH_SESSION_RETENTION_MS`) / 200 entries per pass (`PRUNE_SCAN_LIMIT`), oldest-dirs-first past the cap | `src/main/launch-session-dir.ts:125,132` | [performance](performance.md), [session lifecycle](session-lifecycle.md) |
+| Codex meta cache / `.zst` meta cap | 256 entries FIFO (`MAX_META_CACHE_ENTRIES`) / 8 MiB (`MAX_COMPRESSED_META_FILE_BYTES`) | `src/main/codex-session-watcher.ts:61,70` | [performance](performance.md), [session lifecycle](session-lifecycle.md) |
+| Codex scan cadence | 500 ms watch debounce, 2 s poll | `src/main/codex-session-watcher.ts` | [performance](performance.md), [session lifecycle](session-lifecycle.md) |
+| Exit-marker read | 16 KiB tail, retried once at the 4 MiB cap, ≤ 32 crash-flush appends scanned | `src/main/providers/pi-compatible-transcripts.ts` | [session lifecycle](session-lifecycle.md) |
+| State save throttle | 300 ms leading-edge (main `saveState`) / 200 ms leading-edge (renderer persist) | `src/main/store.ts:25`, `src/renderer/state/persist-engine.ts:6` | [session lifecycle](session-lifecycle.md) |
+| Title/transcript read windows | head 8 KiB (`HEADER_READ_BYTES`), tail 16 KiB (`TAIL_READ_BYTES`), seam window cap 1 MiB (`MAX_WINDOW_BYTES`) | `src/main/providers/pi-compatible-transcripts.ts:31,72`, `src/main/hosts/provider-fs.ts:23` | [performance](performance.md), [session lifecycle](session-lifecycle.md) |
+| Remote status sidecar read / host cooldown / map cap | 4 KiB tail / 30 s (`REMOTE_HOST_COOLDOWN_MS`) / 32 hosts (`REMOTE_HOST_COOLDOWN_MAX`) | `src/main/hook-status.ts:72-73` | [performance](performance.md), [hosts](hosts.md), [session lifecycle](session-lifecycle.md) |
+| Remote file watches | 5 s poll (`REMOTE_POLL_MS`) / 200 watches, FIFO-evicted (`MAX_REMOTE_WATCHES`) | `src/main/hosts/remote-watch.ts:23-24` | [performance](performance.md), [hosts](hosts.md), [session lifecycle](session-lifecycle.md) |
+| Remote listing walk | depth 5 / 2 000 entries (`MAX_REMOTE_LIST_ENTRIES`) | `src/main/hosts/remote-fs.ts:37` | [performance](performance.md), [hosts](hosts.md) |
+| Disk-health preflight | 200 MiB low-water, 60 s interval, transition-only push | `src/main/disk-health.ts` | §27 |
+| App log file | 5 MiB active + one 5 MiB `.1` backup, sink disabled on any write error; exact-repeat console throttle | `src/main/log-file.ts`, `src/main/log-throttle.ts` | [performance](performance.md) |
+| Auto-updater cadence | first check 10 s after start, then every 4 h | `src/main/auto-updater.ts` | §28, [packaging](packaging.md) |
+| Singletons | one terminal instance per session id; one shell terminal per project; one preferences modal; one alert banner; one context menu at a time | — | §1, §8, §10, §16 |
+
+The per-feature tables in Parts I/II still state the limit a feature enforces where the
+behavior is described (a reader of §1 needs the paste bound at §1). This appendix is the
+index they all resolve to, and the only place a value is *maintained*.
 
 # Appendix B — Coverage gaps (modules without direct tests)
 
@@ -467,3 +499,27 @@ What the coverage command measures: `npm run test:coverage` instruments `src/mai
 `src/main/close-state.ts`, `src/main/provider-config-utils.ts`, `src/main/frontmatter.ts` (renderer copy tested), `src/main/providers/provider.ts` (types), `src/main/providers/transcript-utils.ts` (indirect via search tests), `src/main/providers/pi-transcripts.ts`, `src/main/providers/omp-transcripts.ts` (indirect via provider tests), `src/main/chrome-import/decrypt.ts` (`main.ts`'s single-instance gate is tested by `main-single-instance.test.ts`; the `chromeImport:*` handlers are auto-stubbed in `ipc-handlers.test.ts`). P2-121 trims (verified 2026-11-03): `menu.ts` (`menu.test.ts`), `platform.ts` (`src/main/platform.test.ts`), `providers/claude-version.ts` (`claude-version.test.ts`, per Appendix B), `readiness/checkers/instruction-file-checks.ts` (`instruction-file-checks.test.ts`), `chrome-import/decrypt-win.ts` (`decrypt-win.test.ts`) all have direct tests; `prerequisites.ts` and `mcp-ipc-handlers.ts` have tests and are coverage-excluded, so they no longer appear here.
 
 Renderer modules marked `UNTESTED` appear in the Part I tables; the largest clusters (re-measured 2026-10-28): session-menu "More", flow-picker, inspect mode/send menu, `zoom.ts`, `components/project-tab/grid.ts`, the sessions/favorite-sessions/top-files/readiness/team widget files, the general/appearance/browser/shortcuts/help preference sections, `components/disk-health-banner.ts`, team-view/member-card/member-modal, and the state-ui/inspector view bodies. Join dialog, flow recording, notification sound, debug panel, update banner, quick-open, file-viewer, member-sessions modal, kanban/provider-tools/usage-stats widgets, `pane.ts` and `modal-shell.ts` gained direct tests since the 2026-10-20 sweep. (tab-list's context menu and tab groups gained direct DOM tests in `components/tab-bar/tab-list.test.ts`.)
+
+# Glossary: audit ids
+
+Docs in this repository (`FEATURES.md`, `session-lifecycle.md`, `hosts.md`,
+`packaging.md`, `performance.md`, `security-boundaries.md`, `ui-conventions.md`) carry
+short internal identifiers: `row 61`, `rows 92/70`, `P1-8`, `P2-14`, `P3`, `S3-02`,
+`UR-3`, `T2 #2`, `Phase 4c`, `§11`. They are **provenance breadcrumbs, not public
+references**:
+
+- They resolve in the maintainer's **local-only work queue** — `todos/AUDIT_STATUS.md`
+  (open findings, one row per line, hence "row 61"), `todos/features/*-plan.md` (the
+  `P*-*` / `S*-*` / phase / § numbering), and `todos/archives/` (closed phases).
+- `todos/` is **gitignored** (see `CLAUDE.md`, "Todos layout"). On a fresh clone the
+  queue does not exist, so an id has no target to resolve to. That is by design: the queue
+  is a private scratchpad, the docs under `docs/` are the published record.
+- The rule that keeps them honest: **the sentence carrying an id states the behavior
+  itself.** An id never carries the definition — a reader who cannot open the queue must
+  lose nothing. If a sentence only makes sense with the queue, it is a doc bug: fix the
+  sentence.
+- Public-facing prose (`README.md`, `docs/README.md`) cites **docs and code**, never bare
+  ids — a README reader has neither the queue nor the audit that minted the number.
+- Ids in this file that name a plan phase (`Phase 1–4c`) refer to the multi-host SSH plan
+  (`todos/features/multi-host-support-plan.md`, local-only); the shipped behavior is
+  described in [hosts.md](hosts.md), which is self-contained.
