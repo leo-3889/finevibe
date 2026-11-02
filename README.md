@@ -104,9 +104,15 @@ The complete per-feature reference — behavior, owning module, numeric limits �
 
 ## Documentation
 
-All eight contract docs (providers, hosts, session lifecycle, security boundaries,
-performance, UI conventions, packaging, feature reference) are indexed in
+All ten docs (providers, hosts, session lifecycle, security boundaries, performance, UI
+conventions, packaging, release procedure, git history, feature reference) are indexed in
 [`docs/README.md`](docs/README.md).
+
+Some docs cite internal audit ids — audit-row numbers and finding ids from the
+maintainer's work queue. They are kept as traceability breadcrumbs, not as public
+references: they resolve only in that queue (`todos/`, gitignored). What a numbered claim means is stated in the
+doc itself; the id adds nothing a reader outside the maintainer's tree can use. See the
+[Glossary in `docs/FEATURES.md`](docs/FEATURES.md#glossary-audit-ids).
 
 ## What it does *not* do
 

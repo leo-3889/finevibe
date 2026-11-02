@@ -36,6 +36,7 @@ When work is complete, propose an audit of the work done to the user (what chang
 - [Claude hook compatibility](HOOKS.md) — version-specific event payloads and status mapping.
 - [Packaging and releases](docs/packaging.md) — artifact matrix, deb build requirements and verification.
 - [Feature reference](docs/FEATURES.md) — every feature with behavior, owning module, test mapping, numeric limits and coverage gaps.
+- [Git history and remotes](docs/git-history.md) — the standing fork-rebuild constraint: rebase recipe, the never-force-push branch, which remote pushes.
 - Module-level `Map`/`Set` in `src/main` MUST be capped (exported cap constant + LRU/FIFO eviction per the `fs-utils.ts` idiom), teardown-bound, or transient — enforced by `src/main/module-map-governance.test.ts`; a new collection requires an allowlist entry naming its bound class.
 
 Use `src/main/platform.ts` for OS checks and platform path helpers. Build path expectations with `path.join` or `path.resolve` in tests, including on Windows.
@@ -44,7 +45,7 @@ After implementation, review changed code for correctness and unnecessary comple
 
 ## Git history constraint (standing)
 
-The fork `leo-3889/finevibe` MUST stay able to rebuild/rebase onto `origin` (`elirantutia/vibeyard` main). NEVER force-push or history-rewrite `feat/multi-provider-status-and-profile-scoping` (it backs open upstream PR #167 — its published history is not ours to change) and never rewrite pre-rename commits. Keep `origin` fetchable: do not prune the remote, its refs, or fetched objects the fork descends from. Rebuild recipe: temp branch off `main` → `git fetch origin && git rebase origin/main` on it → full gate at the rebased tip → fast-forward `main` (no merge commit, no force) → push. If the recipe ever needs a force-push, merge commit, or rewrite to finish, the constraint is already broken — fix the history first, never the recipe. (Full text: `todos/archives/fork-rebuildable-on-origin.md`, local-only.)
+The fork `leo-3889/finevibe` MUST stay able to rebuild/rebase onto `origin` (`elirantutia/vibeyard` main). NEVER force-push or history-rewrite `feat/multi-provider-status-and-profile-scoping` (it backs open upstream PR #167 — its published history is not ours to change) and never rewrite pre-rename commits. Keep `origin` fetchable: do not prune the remote, its refs, or fetched objects the fork descends from. Rebuild recipe: temp branch off `main` → `git fetch origin && git rebase origin/main` on it → full gate at the rebased tip → fast-forward `main` (no merge commit, no force) → push. If the recipe ever needs a force-push, merge commit, or rewrite to finish, the constraint is already broken — fix the history first, never the recipe. (Full text: [docs/git-history.md](docs/git-history.md).)
 
 ## Skills
 
