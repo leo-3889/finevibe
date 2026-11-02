@@ -10,7 +10,6 @@
 // output (the unenroll authorized_keys rewrite) reads it through execCapped
 // and refuses a truncated copy.
 
-import { app } from 'electron';
 import type { HostRecord, ProviderId } from '../../shared/types';
 import { getAllProviderMetas } from '../providers/registry';
 import { connect, exec, execCapped, MAX_EXEC_OUTPUT_BYTES } from './ssh-client';
@@ -54,15 +53,21 @@ export async function testHost(
   try {
     // A pinned key must match; an unpinned host connects and reports its
     // fingerprint for the wizard's Approve step (nothing is pinned here).
+    // Row 118: the verifier rides every connect — pinned included — because it
+    // is ssh-client's parse of the OFFERED key, and the refused branch needs
+    // exactly that value (the throw happens after this callback fires).
     const { fingerprint } = await connect(record, {
-      verifyHostKey: record.hostKeyFingerprint
-        ? (fp) => fp === record.hostKeyFingerprint
-        : undefined,
+      verifyHostKey: (fp) => {
+        captured = fp;
+        return record.hostKeyFingerprint ? fp === record.hostKeyFingerprint : true;
+      },
     });
     captured = fingerprint;
     steps.push({ step: 'connect', ok: true, detail: `SSH-${record.authKind} auth ok` });
     if (record.hostKeyFingerprint && record.hostKeyFingerprint !== captured) {
-      return { ok: false, hostKeyChanged: true, steps, fingerprint: captured };
+      // Same contract as the refused branch below: the wizard needs the key it
+      // is asking about, not just the bad news.
+      return { ok: false, hostKeyChanged: true, steps, fingerprint: captured, newFingerprint: captured };
     }
     return {
       ok: true,
@@ -75,10 +80,20 @@ export async function testHost(
     const msg = err instanceof Error ? err.message : String(err);
     if (msg === 'host-key-changed') {
       steps.push({ step: 'host-key', ok: false, detail: 'pinned fingerprint mismatch — rebuilt machine?' });
-      return { ok: false, hostKeyChanged: true, steps };
+      // Row 118: report the key the host is offering NOW, as the approval
+      // candidate — `newFingerprint` is the field the wizard's approve dialog
+      // renders, so the rotation branch rides the same first-contact UI
+      // (Approve → hosts:approveHostKey → re-pin → enroll). Nothing is
+      // pinned here; a handshake that never reached the verifier has no key
+      // to show and stays fingerprint-less.
+      return {
+        ok: false,
+        hostKeyChanged: true,
+        steps,
+        ...(captured ? { fingerprint: captured, newFingerprint: captured } : {}),
+      };
     }
     steps.push({ step: 'connect', ok: false, detail: msg });
-    void captured;
     return { ok: false, hostKeyChanged: false, steps };
   }
 }
@@ -273,8 +288,11 @@ async function installHostHooks(
 /**
  * Full enrollment (§4 steps 1-8): connect with the pinned key, env probe,
  * key deploy (managed keys), prereq probe, base dirs, persist. `opts.pin`
- * carries the fingerprint the user approved in the wizard when the host was
- * never pinned before.
+ * carries the fingerprint the user approved in the wizard: on first contact
+ * (nothing pinned yet) and on an explicit key rotation (row 118) it wins over
+ * the stored pin. An ABSENT `opts.pin` never clears the stored one, and the
+ * only producer of the option is the approve flow (`hosts:enroll`, grammar
+ * gated by HOST_KEY_PIN) — a connect is never re-trusted silently.
  */
 export async function enrollHost(
   record: HostRecord,
@@ -288,7 +306,7 @@ export async function enrollHost(
     return { ok: false, steps };
   };
 
-  const pin = record.hostKeyFingerprint ?? opts?.pin;
+  const pin = opts?.pin ?? record.hostKeyFingerprint;
   if (!pin) return fail('failed', 'host key not pinned — run Test & Approve first');
 
   // The status machine's `probing` rung is persisted, not just emitted: a
@@ -300,7 +318,8 @@ export async function enrollHost(
   try {
     await connect(record, { verifyHostKey: (fp) => fp === pin });
     steps.push({ step: 'connect', ok: true });
-    if (!record.hostKeyFingerprint) updateHost(record.id, { hostKeyFingerprint: pin });
+    // Row 118: a rotation has to reach the record, not just this connect.
+    if (pin && record.hostKeyFingerprint !== pin) updateHost(record.id, { hostKeyFingerprint: pin });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     steps.push({ step: 'connect', ok: false, detail: msg });
@@ -387,11 +406,6 @@ export async function enrollHost(
   emit({ id: record.id, status });
   const passwordUsable = record.authKind === 'password' && getHostSecret(record.id) !== null;
   return { ok: true, steps: passwordUsable ? [...steps, { step: 'forget-password', ok: true, detail: 'available' }] : steps };
-}
-
-/** userData hosts dir helper (wizard calls it before create for managed keys). */
-function managedKeyDir(hostId: string): string {
-  return `${app.getPath('userData')}/hosts/${hostId}`;
 }
 
 /** Provider ids surface for the §6 tool list (kept here: registry shape). */

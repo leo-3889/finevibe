@@ -120,6 +120,33 @@ describe('testHost', () => {
     expect(res.hostKeyChanged).toBe(true);
   });
 
+  // Row 118: a refusal that shows no key asks the user to approve a pin they
+  // cannot see. The offered fingerprint rides the refusal, in the same field
+  // the first-contact Approve dialog renders.
+  it('refused testHost reports the OFFERED fingerprint as the approval candidate', async () => {
+    connectImpl = async (_r, verify) => {
+      if (verify && !verify('SHA256:rotated')) throw new Error('host-key-changed');
+      return { fingerprint: 'SHA256:rotated' };
+    };
+    const res = await testHost(record);
+    expect(res).toMatchObject({
+      ok: false,
+      hostKeyChanged: true,
+      fingerprint: 'SHA256:rotated',
+      newFingerprint: 'SHA256:rotated',
+    });
+  });
+
+  it('refused testHost with no handshake reports nothing to approve', async () => {
+    connectImpl = async () => {
+      throw new Error('host-key-changed');
+    };
+    const res = await testHost(record);
+    expect(res).toMatchObject({ ok: false, hostKeyChanged: true });
+    expect(res.fingerprint).toBeUndefined();
+    expect(res.newFingerprint).toBeUndefined();
+  });
+
   it('reports auth failure as a failed connect step', async () => {
     connectImpl = async () => {
       throw new Error('All configured authentication methods failed');
@@ -237,6 +264,34 @@ describe('enrollHost', () => {
     const unpinned = { ...record, hostKeyFingerprint: undefined };
     await enrollHost(unpinned, () => {}, { pin: PIN });
     expect(updates[0]).toMatchObject({ hostKeyFingerprint: PIN });
+  });
+
+  // Row 118: the rotation flow. The wizard's approved pin (opts.pin) is the
+  // user's explicit answer, so it wins over a stored pin; nothing else may
+  // move the pin (never-silent-retrust).
+  it('an approved rotation pin replaces the stored pin', async () => {
+    execScript = script(fullScript);
+    connectImpl = async (_r, verify) => {
+      if (verify && !verify('SHA256:rotated')) throw new Error('host-key-changed');
+      return { fingerprint: 'SHA256:rotated' };
+    };
+    const res = await enrollHost(record, () => {}, { pin: 'SHA256:rotated' });
+    expect(res.ok).toBe(true);
+    expect(updates.some((u) => u.hostKeyFingerprint === 'SHA256:rotated')).toBe(true);
+  });
+
+  it('an enroll with no opts.pin keeps the stored pin', async () => {
+    execScript = script(fullScript);
+    const res = await enrollHost(record, () => {});
+    expect(res.ok).toBe(true);
+    expect(updates.some((u) => 'hostKeyFingerprint' in u)).toBe(false);
+  });
+
+  it('an opts.pin equal to the stored pin writes nothing', async () => {
+    execScript = script(fullScript);
+    const res = await enrollHost(record, () => {}, { pin: PIN });
+    expect(res.ok).toBe(true);
+    expect(updates.some((u) => 'hostKeyFingerprint' in u)).toBe(false);
   });
 
   it('fails without a pin when the record has none', async () => {
