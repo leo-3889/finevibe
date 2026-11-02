@@ -6,7 +6,7 @@ vi.mock('../../../state.js', () => ({
 }));
 vi.mock('../../../github-unread.js', () => ({
   ingestItems: vi.fn(), isUnread: () => false, makeItemId: vi.fn(),
-  markRead: vi.fn(), markAllReadInProject: vi.fn(),
+  markRead: vi.fn(), markAllReadInProject: vi.fn(), onChange: () => () => {},
 }));
 
 import { createGithubPRsWidget } from './github-widgets';

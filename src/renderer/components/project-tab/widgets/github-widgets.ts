@@ -1,7 +1,6 @@
 import { appState } from '../../../state.js';
 import { openExternal } from '../../../open-external.js';
-import { esc } from '../../../dom-utils.js';
-import { ingestItems, isUnread, makeItemId, markRead, markAllReadInProject } from '../../../github-unread.js';
+import { ingestItems, isUnread, makeItemId, markRead, markAllReadInProject, onChange as onUnreadChange } from '../../../github-unread.js';
 import { t } from '../../../i18n.js';
 import { GITHUB_MAX_PER_PAGE } from '../../../../shared/constants.js';
 import type { GithubItem, ProviderId } from '../../../../shared/types.js';
@@ -174,7 +173,9 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
     const meta = document.createElement('div');
     meta.className = 'widget-github-row-meta';
     const author = item.user?.login ?? 'unknown';
-    meta.innerHTML = `${esc(author)} · ${esc(timeAgo(item.updated_at))}`;
+    // Todo #44 audit: was `innerHTML` with pre-escaped parts; the row is plain
+    // text, so textContent removes the XSS surface entirely.
+    meta.textContent = `${author} · ${timeAgo(item.updated_at)}`;
     info.appendChild(meta);
 
     row.appendChild(info);
@@ -314,15 +315,17 @@ function makeGithubWidget(kind: ListKind, host: WidgetHost): WidgetInstance {
   };
   document.addEventListener('visibilitychange', onVisibility);
 
-  const unsubUnread = (() => {
-    // Re-render rows when this project's unread set changes (e.g. cross-widget mark-read).
-    const off = appState.on('github-unread-changed', (data) => {
-      const id = typeof data === 'string' ? data : undefined;
-      if (id && id !== projectId) return;
-      render();
-    });
-    return off;
-  })();
+  // Todo #44: the dots are the notification count, and this widget used to
+  // re-render off appState's 'github-unread-changed' — a persistence side
+  // channel that (a) only fires from the two `setGithubItem*Seen` mutators, and
+  // (b) fires BEFORE the store clears the set, so a mark-all-read pressed in
+  // the sibling widget re-rendered these rows from the not-yet-cleared set and
+  // the dots stayed lit. The store is the single source: every mutator
+  // (ingest/prune, markRead, markAllRead, project-removed) notifies after the
+  // set is settled.
+  const unsubUnread = onUnreadChange(() => {
+    render();
+  });
 
   // C4G-05: the repo caches lived for the widget's lifetime, so a remote added,
   // changed, or removed after the first detect left the widget on the old repo

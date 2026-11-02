@@ -418,3 +418,127 @@ describe('session-unread', () => {
     expect(cb).not.toHaveBeenCalled();
   });
 });
+
+// Todo #44: the visible unread indicator went stale. The set itself was always
+// right — the store is state-derived, so coalescing cannot lose an update — the
+// defect is in DELIVERY: the only scheduled source was requestAnimationFrame,
+// and a page that is not painting (minimized/hidden window, occluded, a
+// backgrounded Electron window) never runs rAF callbacks. Notifications land
+// exactly there, so every subscriber (tab strip, sidebar, split panes) kept
+// rendering from a set it was never told about.
+describe('unread-change delivery contract (Todo #44)', () => {
+  /**
+   * Model the hidden page. `vi.useFakeTimers()` fakes rAF and fires it on
+   * `advanceTimersByTime`, which is the opposite of the bug: a
+   * minimized/occluded Electron window queues rAF callbacks and never runs
+   * them. Re-stub rAF on top of the fake timers as a queue that only the test
+   * (via flushRaf) can drain.
+   */
+  function freezeFrame(): void {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    freezeFrame();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('delivers a transition to subscribers with no frame at all (hidden window)', () => {
+    setupProjects();
+    mockAppState.activeProjectId = 'p2';
+    init();
+    const cb = vi.fn();
+    onChange(cb);
+
+    // The frame never comes: the transition is queued in the frozen rAF.
+    simulateStatusChange('s1', 'working');
+    simulateStatusChange('s1', 'waiting');
+    expect(cb).not.toHaveBeenCalled(); // coalesced, not per-transition
+
+    vi.advanceTimersByTime(100);
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(isUnread('s1')).toBe(true);
+  });
+
+  it('runs the session-close notification with no frame at all (hidden window)', () => {
+    setupProjects();
+    mockAppState.activeProjectId = 'p2';
+    init();
+    const cb = vi.fn();
+    onChange(cb);
+
+    simulateStatusChange('s1', 'working');
+    simulateStatusChange('s1', 'waiting');
+    vi.advanceTimersByTime(100);
+    cb.mockClear();
+
+    fireAppStateEvent('session-removed', { sessionId: 's1' });
+    vi.advanceTimersByTime(100);
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(isUnread('s1')).toBe(false);
+  });
+
+  it('keeps one listener pass per burst when the frame and the timer net both land', () => {
+    setupProjects();
+    mockAppState.activeProjectId = 'p2';
+    init();
+    const cb = vi.fn();
+    onChange(cb);
+
+    for (const id of ['s1', 's2']) {
+      simulateStatusChange(id, 'working');
+    }
+    for (const id of ['s1', 's2']) {
+      simulateStatusChange(id, 'waiting');
+    }
+
+    vi.advanceTimersByTime(100); // the net delivers
+    flushRaf();                  // …then the frame the burst queued arrives too
+    expect(cb).toHaveBeenCalledTimes(1); // PA-11: one rebuild per burst, not two
+  });
+
+  it('the read path still bypasses the schedule, and absorbs the pending pass', async () => {
+    setupProjects();
+    mockAppState.activeProjectId = 'p2';
+    init();
+    const cb = vi.fn();
+    onChange(cb);
+
+    simulateStatusChange('s1', 'working');
+    simulateStatusChange('s1', 'waiting'); // schedules the frame
+
+    mockAppState.activeProjectId = 'p1';    // user switches to s1
+    fireAppStateEvent('session-changed');
+    await Promise.resolve();                // microtask: the read
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(isUnread('s1')).toBe(false);
+
+    flushRaf(); // the frame the burst queued, arriving late
+    vi.advanceTimersByTime(100);
+    expect(cb).toHaveBeenCalledTimes(1); // the absorbed pass does not re-notify
+  });
+
+  it('a subscriber that arrives mid-burst is told about the state it missed', () => {
+    setupProjects();
+    mockAppState.activeProjectId = 'p2';
+    init();
+
+    simulateStatusChange('s1', 'working');
+    simulateStatusChange('s1', 'waiting');
+
+    const cb = vi.fn();
+    onChange(cb);
+    vi.advanceTimersByTime(100);
+
+    // The pending pass is state-derived: the late subscriber (a component that
+    // mounted after the notification) sees the new set on the same pass.
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(isUnread('s1')).toBe(true);
+  });
+});

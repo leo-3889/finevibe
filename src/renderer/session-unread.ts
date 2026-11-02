@@ -11,9 +11,22 @@ let readPending = false;
 // coalescing each one rebuilt the sidebar project list AND the tab strip (2N
 // full rebuilds during terminal paint). One listener pass per frame.
 let notifyScheduled = false;
+// Todo #44: rAF is the coalescer, not the delivery guarantee. A page that is not
+// painting (minimized, hidden, occluded — exactly where notifications arrive)
+// queues rAF callbacks and never runs them, so the set changed and nobody was
+// told: the tab dots, sidebar accent and swarm dots kept rendering the last
+// frame's count. The timer is the net; `flushListeners` runs one pass per
+// schedule, so the frame path stays the common one and a burst is still one pass.
+const NOTIFY_FALLBACK_MS = 32;
+let notifyTimer: ReturnType<typeof setTimeout> | null = null;
 
 function flushListeners(): void {
+  if (!notifyScheduled) return; // the other source already ran this pass
   notifyScheduled = false;
+  if (notifyTimer !== null) {
+    clearTimeout(notifyTimer);
+    notifyTimer = null;
+  }
   for (const cb of listeners) cb();
 }
 
@@ -22,6 +35,7 @@ function notify(): void {
   if (notifyScheduled) return;
   notifyScheduled = true;
   requestAnimationFrame(flushListeners);
+  notifyTimer = setTimeout(flushListeners, NOTIFY_FALLBACK_MS);
 }
 
 /**
@@ -32,8 +46,8 @@ function notify(): void {
  * pending coalesced transition pass.
  */
 function notifyNow(): void {
-  notifyScheduled = false;
-  for (const cb of listeners) cb();
+  if (!notifyScheduled) return;
+  flushListeners();
 }
 
 /**
@@ -130,4 +144,8 @@ export function _resetForTesting(): void {
   prevStatus.clear();
   readPending = false;
   notifyScheduled = false;
+  if (notifyTimer !== null) {
+    clearTimeout(notifyTimer);
+    notifyTimer = null;
+  }
 }
