@@ -110,12 +110,18 @@ describe('preload bridge (row 22)', () => {
     await loadBridge();
     expect([...state.exposed.keys()].sort()).toEqual([
       '__FINEVIBE_CLIPBOARD_TIMING__',
+      '__FINEVIBE_RESIZE_TRACE__',
       BRIDGE_KEY,
     ]);
     // The renderer's sandboxed world has no process.env, so this global is the
     // only forwarding path for FINEVIBE_CLIPBOARD_TIMING=1.
     expect(state.exposed.get('__FINEVIBE_CLIPBOARD_TIMING__')).toBe(
       process.env.FINEVIBE_CLIPBOARD_TIMING === '1',
+    );
+    // Row 121: the resize trace's renderer probes (fit/data) need the same
+    // forwarding; their absence was found in the 2026-11-05 repro.
+    expect(state.exposed.get('__FINEVIBE_RESIZE_TRACE__')).toBe(
+      process.env.FINEVIBE_RESIZE_TRACE === '1',
     );
   });
 

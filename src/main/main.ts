@@ -257,6 +257,28 @@ function createWindow(): void {
     stopConfigWatcher();
     mainWindow = null;
   });
+
+  // Row 121 repro harness — ships dark, same env-gate idiom as the trace.
+  // FINEVIBE_RESIZE_REPRO=1 drives REAL window traffic (no xdotool needed):
+  // alternating setSize every 900 ms exercises fit → resizePty → PTY, and the
+  // minimize/restore pair probes H5 (minimized 2x1 geometry). Console lines
+  // interleave with [fv-resize] as `ev: winRepro` so every fit/resizePty can
+  // be attributed to a deliberate step.
+  if (process.env.FINEVIBE_RESIZE_REPRO === '1') {
+    const win = mainWindow;
+    const cycle = [{ width: 1100, height: 700 }, { width: 760, height: 480 }];
+    let step = 0;
+    const timer = setInterval(() => {
+      if (!win || win.isDestroyed()) { clearInterval(timer); return; }
+      if (step === 6) win.minimize();
+      if (step === 8) win.restore();
+      const s = cycle[step % 2];
+      win.setSize(s.width, s.height);
+      console.log(`[fv-resize] ${JSON.stringify({ ev: 'winRepro', step, w: s.width, h: s.height, t: Date.now() })}`);
+      step++;
+      if (step > 12) clearInterval(timer);
+    }, 900);
+  }
 }
 
 // Windows app identity. Without an explicit AppUserModelID the process
