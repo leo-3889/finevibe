@@ -13,6 +13,7 @@ import { initAutoUpdater } from './auto-updater';
 import { stopGitWatcher } from './git-watcher';
 import { stopConfigWatcher } from './config-watcher';
 import { stopAllFileWatchers } from './file-watcher';
+import { stopAllRemoteWatchers } from './hosts/remote-watch';
 import { disconnectAll } from './mcp-client';
 import { checkPythonAvailable } from './prerequisites';
 import { configureProbeCacheDir } from './providers/resolve-binary';
@@ -247,6 +248,10 @@ function createWindow(): void {
     killAllPtys();
     resetHookWatcher();
     stopAllFileWatchers();
+    // MH-1 watcher tail: a remote poll holds the same window, and a re-issued
+    // fs:watchDir for an already-watched (host, dir) early-returns without
+    // re-pointing it — release the polls so the reopened window gets fs:changed.
+    stopAllRemoteWatchers();
     // macOS close-and-reopen: the git/config watchers hold the window that
     // started them (currentWin), and a re-issued start for the SAME project
     // early-returns without re-pointing it — the reopened window would
@@ -713,6 +718,7 @@ function runQuitCleanup(): void {
   killAllPtys();
   stopGitWatcher();
   stopAllFileWatchers();
+  stopAllRemoteWatchers();
   // Close any open MCP inspector connections (the pane-close path disconnects
   // its own session; this catches connections left open at quit).
   void disconnectAll();
