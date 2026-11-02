@@ -286,18 +286,17 @@ async function installHostHooks(
 }
 
 /**
- * Full enrollment (§4 steps 1-8): connect with the pinned key, env probe,
- * key deploy (managed keys), prereq probe, base dirs, persist. `opts.pin`
- * carries the fingerprint the user approved in the wizard: on first contact
- * (nothing pinned yet) and on an explicit key rotation (row 118) it wins over
- * the stored pin. An ABSENT `opts.pin` never clears the stored one, and the
- * only producer of the option is the approve flow (`hosts:enroll`, grammar
- * gated by HOST_KEY_PIN) — a connect is never re-trusted silently.
+ * Full enrollment (S4 steps 1-8): connect with the pinned key, env probe,
+ * key deploy (managed keys), prereq probe, base dirs, persist. The pin is
+ * main-owned only: first contact pins via hosts:approveHostKey after the user
+ * confirms the wizard fingerprint, and a key rotation (row 118) re-pins the
+ * same way - enrollment then reads the FRESH stored pin from the record.
+ * Enrollment never accepts a fingerprint from the caller (the renderer must
+ * not be able to overwrite a good pin over the enroll channel).
  */
 export async function enrollHost(
   record: HostRecord,
   emit: StatusEmitter,
-  opts?: { pin?: string },
 ): Promise<{ ok: boolean; steps: EnrollStep[] }> {
   const steps: EnrollStep[] = [];
   const fail = (status: HostRecord['enrollmentStatus'], detail: string): { ok: boolean; steps: EnrollStep[] } => {
@@ -306,7 +305,7 @@ export async function enrollHost(
     return { ok: false, steps };
   };
 
-  const pin = opts?.pin ?? record.hostKeyFingerprint;
+  const pin = record.hostKeyFingerprint;
   if (!pin) return fail('failed', 'host key not pinned — run Test & Approve first');
 
   // The status machine's `probing` rung is persisted, not just emitted: a

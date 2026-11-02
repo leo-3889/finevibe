@@ -766,6 +766,7 @@
     "forgetPasswordPrompt": "密钥登录已可用，是否忘记已保存的密码？",
     "fingerprintTitle": "确认主机密钥",
     "fingerprintPrompt": "首次连接此主机。请先核对指纹再继续信任：\n{fingerprint}",
+    "fingerprintPromptChanged": "警告：此主机呈现的密钥与已固定的密钥不同。这可能是机器重建，也可能是中间人攻击。请在服务器端线下核对指纹：\n  ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\n仅在完全一致时批准：\n{fingerprint}",
     "approveKey": "信任并继续",
     "lastProbe": "最近检测：{at}",
     "lastSync": "设置已同步：{at}",

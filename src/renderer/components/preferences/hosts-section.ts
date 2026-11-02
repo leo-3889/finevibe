@@ -115,7 +115,11 @@ export function createHostsSection(ctx: PreferencesContext): SectionController {
     lastResult.set(id, steps);
     if (res.newFingerprint) {
       const fp = res.newFingerprint;
-      showConfirmDialog(t('hosts.fingerprintTitle'), t('hosts.fingerprintPrompt', { fingerprint: fp }), {
+      // Row 118 review: a ROTATION is not first contact - the copy must say so
+      // and name the out-of-band check, or it talks the user into approving a
+      // possible MITM's key with "first connection" framing.
+      const promptKey = res.hostKeyChanged ? 'hosts.fingerprintPromptChanged' : 'hosts.fingerprintPrompt';
+      showConfirmDialog(t('hosts.fingerprintTitle'), t(promptKey, { fingerprint: fp }), {
         confirmLabel: t('hosts.approveKey'),
         onConfirm: async () => {
           closeModal();

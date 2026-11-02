@@ -53,8 +53,6 @@ export interface ResizeCoalescer {
   schedule(): void;
   /** Settled geometry: run now, drop any pending trailing run, re-arm. */
   flush(): void;
-  /** Teardown: drop a pending trailing run without running it. */
-  cancel(): void;
 }
 
 export function createResizeCoalescer(run: () => void, delayMs = RESIZE_COALESCE_MS): ResizeCoalescer {
@@ -70,7 +68,11 @@ export function createResizeCoalescer(run: () => void, delayMs = RESIZE_COALESCE
       // reads geometry mid-gesture, and the trailing guarantee is what puts the
       // FINAL size on the wire. The `lastSize` memo in fitTerminal()/
       // fitActiveShell() makes the no-change case a local fit, not a resize.
-      if (timer) clearTimeout(timer);
+      // Throttle (not debounce): during a continuous burst the timer keeps
+      // its original deadline, so a long drag lands ~1 fit per window. A
+      // debounce would fire only after the pointer stops and stretch xterm
+      // across the whole gesture.
+      if (timer) return;
       timer = setTimeout(() => {
         timer = null;
         armed = true;
@@ -84,13 +86,6 @@ export function createResizeCoalescer(run: () => void, delayMs = RESIZE_COALESCE
       }
       armed = true;
       run();
-    },
-    cancel() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      armed = true;
     },
   };
 }

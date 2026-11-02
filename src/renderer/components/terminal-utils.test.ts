@@ -1537,15 +1537,4 @@ describe('createResizeCoalescer() (row 121)', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('cancel() drops the pending run without running it', () => {
-    const run = vi.fn();
-    const coalescer = createResizeCoalescer(run);
-
-    coalescer.schedule();
-    coalescer.cancel();
-
-    vi.advanceTimersByTime(RESIZE_COALESCE_MS);
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(0);
-  });
 });

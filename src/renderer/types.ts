@@ -83,7 +83,7 @@ export interface FinevibeApi {
     forgetPassword(id: string): Promise<void>;
     test(id: string): Promise<{ ok: boolean; fingerprint?: string; newFingerprint?: string; hostKeyChanged: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
     approveHostKey(id: string, fingerprint: string): Promise<HostRecord | null>;
-    enroll(id: string, opts?: { pin?: string }): Promise<{ ok: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
+    enroll(id: string): Promise<{ ok: boolean; steps: { step: string; ok: boolean; detail?: string }[] }>;
     unenroll(id: string): Promise<{ ok: boolean; detail?: string }>;
     syncSettings(id: string, providerIds: ProviderId[], confirmOverwrite?: boolean): Promise<{ ok: boolean; drift?: string[]; steps: { step: string; ok: boolean; detail?: string }[] }>;
     /** Remote open/add folder (T5, UR-6): the Add-project verbs on the host. */

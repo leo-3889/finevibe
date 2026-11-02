@@ -139,6 +139,19 @@ describe('hosts-section', () => {
     expect(api.enroll).toHaveBeenCalledWith('h1');
   });
 
+  // Row 118 review: a rotation is not first contact - the dialog must carry the
+  // rotation warning, not the "First connection" copy, on the same UI path.
+  it('test → rotated key → approve dialog warns about the changed key', async () => {
+    api.list.mockResolvedValue([host()]);
+    api.test.mockResolvedValue({ ok: false, newFingerprint: 'SHA256:rot', hostKeyChanged: true, steps: steps(true) });
+    api.enroll.mockResolvedValue({ ok: true, steps: steps(true) });
+    const { container } = await mount();
+    (container.querySelector('button[data-act="test"]') as HTMLButtonElement).click();
+    await flush();
+    expect(confirmCalls[0].message.startsWith('hosts.fingerprintPromptChanged')).toBe(true); // test i18n falls back to key+args
+    expect(confirmCalls[0].message).toContain('SHA256:rot');
+  });
+
   it('wizard: the secret field is masked and prefilled on neither add nor edit (bug #7)', async () => {
     const fieldsFor = async (act: string | null) => {
       api.list.mockResolvedValue(act ? [host({ authKind: 'password', enrollmentStatus: 'enrolled' })] : []);

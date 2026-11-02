@@ -259,40 +259,38 @@ describe('enrollHost', () => {
     expect(plane.writeProviderFile.mock.calls.map(([, p]) => p)).toEqual(['~/.pi/agent/settings.json']);
   });
 
-  it('pins the approved fingerprint when the record had none', async () => {
-    execScript = script(fullScript);
-    const unpinned = { ...record, hostKeyFingerprint: undefined };
-    await enrollHost(unpinned, () => {}, { pin: PIN });
-    expect(updates[0]).toMatchObject({ hostKeyFingerprint: PIN });
-  });
-
-  // Row 118: the rotation flow. The wizard's approved pin (opts.pin) is the
-  // user's explicit answer, so it wins over a stored pin; nothing else may
-  // move the pin (never-silent-retrust).
-  it('an approved rotation pin replaces the stored pin', async () => {
-    execScript = script(fullScript);
-    connectImpl = async (_r, verify) => {
-      if (verify && !verify('SHA256:rotated')) throw new Error('host-key-changed');
-      return { fingerprint: 'SHA256:rotated' };
-    };
-    const res = await enrollHost(record, () => {}, { pin: 'SHA256:rotated' });
-    expect(res.ok).toBe(true);
-    expect(updates.some((u) => u.hostKeyFingerprint === 'SHA256:rotated')).toBe(true);
-  });
-
-  it('an enroll with no opts.pin keeps the stored pin', async () => {
+  // Row 118 review: enrollment NEVER writes the pin. First contact pins via
+  // hosts:approveHostKey (record already carries the user-confirmed fingerprint
+  // by enroll time); a rotation re-pins the same way. These tests pin the
+  // contract that the enroll channel cannot move the pin.
+  it('enroll against a record pinned by the approve flow uses that pin and writes nothing', async () => {
     execScript = script(fullScript);
     const res = await enrollHost(record, () => {});
     expect(res.ok).toBe(true);
     expect(updates.some((u) => 'hostKeyFingerprint' in u)).toBe(false);
   });
 
-  it('an opts.pin equal to the stored pin writes nothing', async () => {
+  it('enroll on a rotated record connects with the fresh stored pin', async () => {
     execScript = script(fullScript);
-    const res = await enrollHost(record, () => {}, { pin: PIN });
+    connectImpl = async (_r, verify) => {
+      if (verify && !verify('SHA256:rotated')) throw new Error('host-key-changed');
+      return { fingerprint: 'SHA256:rotated' };
+    };
+    const rotated = { ...record, hostKeyFingerprint: 'SHA256:rotated' };
+    const res = await enrollHost(rotated, () => {});
     expect(res.ok).toBe(true);
     expect(updates.some((u) => 'hostKeyFingerprint' in u)).toBe(false);
   });
+
+  it('enroll on an unpinned record never pins (approve flow owns pinning)', async () => {
+    execScript = script(fullScript);
+    const unpinned = { ...record, hostKeyFingerprint: undefined };
+    let detail = '';
+    const res = await enrollHost(unpinned, (ev) => { detail = ev.status === 'failed' ? (ev as { detail?: string }).detail ?? '' : detail; });
+    expect(res.ok).toBe(false);
+    expect(detail).toMatch(/not pinned/);
+    expect(updates.some((u) => 'hostKeyFingerprint' in u)).toBe(false);
+});
 
   it('fails without a pin when the record has none', async () => {
     const unpinned = { ...record, hostKeyFingerprint: undefined };

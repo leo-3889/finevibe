@@ -766,6 +766,7 @@
     "forgetPasswordPrompt": "Key-based login works now. Forget the stored password?",
     "fingerprintTitle": "Confirm host key",
     "fingerprintPrompt": "First connection to this host. Verify the fingerprint before trusting it:\n{fingerprint}",
+    "fingerprintPromptChanged": "WARNING: this host presented a DIFFERENT key than the one pinned. This can mean a rebuilt machine - or a man-in-the-middle. Confirm the fingerprint out of band, on the server itself:\n  ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\nOnly approve if it matches:\n{fingerprint}",
     "approveKey": "Trust & continue",
     "lastProbe": "Last check: {at}",
     "lastSync": "Settings synced: {at}",
