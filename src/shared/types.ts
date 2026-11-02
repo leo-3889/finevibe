@@ -370,7 +370,10 @@ export interface BoardTask {
   updatedAt: number;
   /** Latest lead-review verdict for this card's session (team-lead-persona-plan M2/I2);
    * absent = never reviewed. Kept on the card, not looked up by `sessionId`, because the
-   * load path clears `sessionId` (state/persistence.ts). */
+   * load path clears `sessionId` (state/persistence.ts) — the consequence: a verdict
+   * routed after a restart must fall back to the card's `cliSessionId`
+   * (lead-review.ts setLeadReview), and re-running a card CLEARS this note
+   * (board-card.ts link sites) — a fresh run carries no inherited verdict. */
   leadReview?: LeadReviewNote;
 }
 

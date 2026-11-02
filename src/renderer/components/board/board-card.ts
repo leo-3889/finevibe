@@ -182,14 +182,14 @@ export async function runTask(task: BoardTask): Promise<void> {
     const existingSession = project.sessions.find(s => s.cliSessionId === task.cliSessionId);
     if (existingSession) {
       appState.setActiveSession(project.id, existingSession.id);
-      updateTask(task.id, { sessionId: existingSession.id });
+      updateTask(task.id, { sessionId: existingSession.id, leadReview: undefined });
       resumed = true;
     } else {
       const archived = project.sessionHistory?.find(a => a.cliSessionId === task.cliSessionId);
       if (archived) {
         const session = await appState.resumeFromHistorySafe(project.id, archived.id);
         if (session) {
-          updateTask(task.id, { sessionId: session.id });
+          updateTask(task.id, { sessionId: session.id, leadReview: undefined });
           resumed = true;
         }
       }
@@ -216,7 +216,9 @@ export async function runTask(task: BoardTask): Promise<void> {
         ? appState.addPlanSession(project.id, sessionName, true, task.providerId, task.profileId)
         : appState.addSession(project.id, sessionName, undefined, task.providerId, task.profileId));
     if (session) {
-      updateTask(task.id, { sessionId: session.id });
+      // A fresh run is a fresh verdict: drop the previous run's note (the key
+      // serializes away — zero-delta holds for the unreviewed card).
+      updateTask(task.id, { sessionId: session.id, leadReview: undefined });
       const activeCol = getColumnByBehavior('active');
       if (activeCol && task.columnId !== activeCol.id) {
         moveTask(task.id, activeCol.id, 0);

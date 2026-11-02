@@ -12,6 +12,7 @@ vi.mock('./session-context.js', () => ({ restoreContext: vi.fn() }));
 vi.mock('./provider-availability.js', () => ({ getProviderCapabilities: vi.fn() }));
 
 import { appState, _resetForTesting } from './state';
+import { ensureProjectDefaults } from './state/persistence';
 import { addTask, getTaskBySessionId, updateTask } from './board-state';
 import {
   capLeadReviewSummary,
@@ -98,7 +99,7 @@ describe('setLeadReview — board surface', () => {
     const project = makeProject();
     makeTaskWithSession('sess-1');
 
-    expect(setLeadReview(note())).toBe(true);
+    expect(setLeadReview(note(), project.id)).toBe(true);
     const stored = getTaskBySessionId('sess-1', project.id)!.leadReview;
     expect(stored).toEqual(note());
   });
@@ -106,7 +107,7 @@ describe('setLeadReview — board surface', () => {
   it('persists additively: the note survives a save round-trip', () => {
     const project = makeProject();
     makeTaskWithSession('sess-1');
-    setLeadReview(note({ verdict: 'flagged', summary: 'Missing tests.' }));
+    setLeadReview(note({ verdict: 'flagged', summary: 'Missing tests.' }), project.id);
 
     const revived = JSON.parse(JSON.stringify(project)).board.tasks[0];
     expect(revived.leadReview).toEqual({
@@ -129,8 +130,8 @@ describe('setLeadReview — board surface', () => {
   it('a newer verdict replaces the older one on the card', () => {
     const project = makeProject();
     makeTaskWithSession('sess-1');
-    setLeadReview(note({ summary: 'first' }));
-    setLeadReview(note({ verdict: 'flagged', summary: 'second', createdAt: 1700000009999 }));
+    setLeadReview(note({ summary: 'first' }), project.id);
+    setLeadReview(note({ verdict: 'flagged', summary: 'second', createdAt: 1700000009999 }), project.id);
 
     const task = getTaskBySessionId('sess-1', project.id)!;
     expect(task.leadReview).toEqual(note({ verdict: 'flagged', summary: 'second', createdAt: 1700000009999 }));
@@ -139,7 +140,7 @@ describe('setLeadReview — board surface', () => {
   it('refuses a malformed verdict without touching the card', () => {
     const project = makeProject();
     makeTaskWithSession('sess-1');
-    expect(setLeadReview({ ...note(), verdict: 'ship-it' })).toBe(false);
+    expect(setLeadReview({ ...note(), verdict: 'ship-it' }, project.id)).toBe(false);
     expect(getTaskBySessionId('sess-1', project.id)!.leadReview).toBeUndefined();
   });
 });
@@ -147,7 +148,7 @@ describe('setLeadReview — board surface', () => {
 describe('setLeadReview — inspector surface (no board card)', () => {
   it('lands on the project list when the session has no task', () => {
     const project = makeProject();
-    expect(setLeadReview(note())).toBe(true);
+    expect(setLeadReview(note(), project.id)).toBe(true);
     expect(getInspectorLeadReview(project, 'sess-1')).toEqual(note());
     expect(JSON.stringify(project).length).toBeGreaterThan(0);
   });
@@ -155,7 +156,7 @@ describe('setLeadReview — inspector surface (no board card)', () => {
   it('an empty board (no tasks) is the no-board path', () => {
     const project = makeProject();
     project.board = undefined;
-    expect(setLeadReview(note({ sessionId: 'solo' }))).toBe(true);
+    expect(setLeadReview(note({ sessionId: 'solo' }), project.id)).toBe(true);
     expect(getInspectorLeadReview(project, 'solo')!.verdict).toBe('approved');
   });
 
@@ -184,6 +185,71 @@ describe('setLeadReview — inspector surface (no board card)', () => {
 
   it('writes nothing when no project is loaded', () => {
     _resetForTesting();
-    expect(setLeadReview(note())).toBe(false);
+    expect(setLeadReview(note(), 'no-such-project')).toBe(false);
+  });
+});
+
+describe('review fixes (e609bc6a)', () => {
+  it('caps in CODE POINTS: a surrogate pair at the boundary is not split', () => {
+    const s = capLeadReviewSummary('a'.repeat(LEAD_REVIEW_SUMMARY_MAX_CHARS - 2) + '\ud83d\ude00tail');
+    const cps = Array.from(s);
+    expect(cps.length).toBe(LEAD_REVIEW_SUMMARY_MAX_CHARS);
+    expect(cps.at(-1)).toBe('\u2026');
+    // The char before the ellipsis is a COMPLETE code point, never a lone
+    // high surrogate (the UTF-16 slice bug).
+    const before = cps.at(-2)!;
+    expect(/^[\ud800-\udbff]$/.test(before)).toBe(false);
+  });
+
+  it('drops a createdAt outside the JS Date range (Invalid Date tooltip)', () => {
+    expect(normalizeLeadReview(note({ createdAt: 1e18 }))).toBeNull();
+    expect(normalizeLeadReview(note({ createdAt: -1e18 }))).toBeNull();
+    expect(normalizeLeadReview(note({ createdAt: 1700000000000 }))).not.toBeNull();
+  });
+
+  it('a re-delivered identical verdict is deduped: no persist churn', () => {
+    const project = makeProject();
+    makeTaskWithSession('sess-1');
+    expect(setLeadReview(note(), project.id)).toBe(true);
+    const savesAfterFirst = vi.mocked(window.finevibe.store.save).mock.calls.length;
+    const task = getTaskBySessionId('sess-1', project.id)!;
+    const updatedAt = task.updatedAt;
+    expect(setLeadReview(note(), project.id)).toBe(true);
+    expect(vi.mocked(window.finevibe.store.save).mock.calls.length).toBe(savesAfterFirst);
+    expect(getTaskBySessionId('sess-1', project.id)!.updatedAt).toBe(updatedAt);
+  });
+
+  it('routes to the card by cliSessionId after a restart (sessionId cleared)', () => {
+    const project = makeProject();
+    const task = makeTaskWithSession('sess-1');
+    updateTask(task.id, { cliSessionId: 'cli-9' });
+    // Load normalization: the runtime link is gone; the CLI id survives.
+    task.sessionId = undefined;
+    expect(setLeadReview(note({ sessionId: 'cli-9' }), project.id)).toBe(true);
+    expect(task.leadReview?.sessionId).toBe('cli-9');
+    expect(project.leadReviews).toBeUndefined();
+  });
+
+  it('linking a new run clears the inherited verdict (and serializes zero-delta)', () => {
+    const project = makeProject();
+    const task = makeTaskWithSession('sess-1');
+    setLeadReview(note(), project.id);
+    expect(task.leadReview).toBeDefined();
+    // The board-card link sites run exactly this write for a fresh run.
+    updateTask(task.id, { sessionId: 'sess-2', leadReview: undefined });
+    expect(task.leadReview).toBeUndefined();
+    expect(JSON.stringify(task)).not.toContain('leadReview');
+  });
+
+  it('hydrate drops hand-edited notes (projects + cards), keeps valid ones', () => {
+    const project = makeProject();
+    const task = makeTaskWithSession('sess-1');
+    project.leadReviews = [note({ sessionId: 'ok' }), { v: 1, sessionId: 'x', verdict: 'ship-it', summary: 's', createdAt: 1 } as never];
+    task.leadReview = { v: 1, sessionId: 'sess-1', verdict: 'evil-class', summary: 's'.repeat(9999), createdAt: 1e18 };
+    const state = { projects: [project] } as never;
+    ensureProjectDefaults(state);
+    expect(project.leadReviews).toHaveLength(1);
+    expect(project.leadReviews![0].sessionId).toBe('ok');
+    expect(task.leadReview).toBeUndefined();
   });
 });
