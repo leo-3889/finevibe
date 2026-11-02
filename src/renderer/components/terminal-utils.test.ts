@@ -55,7 +55,7 @@ vi.mock('@xterm/addon-webgl', () => ({
 }));
 
 import { Terminal } from '@xterm/xterm';
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, copySelection, copyText, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath, _resetClipboardCopyStateForTesting } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, copySelection, copyText, createResizeCoalescer, loadWebglWithFallback, pasteIntoTerminal, quoteShellPath, RESIZE_COALESCE_MS, _resetClipboardCopyStateForTesting } from './terminal-utils.js';
 
 const mockClipboardWrite = vi.fn().mockResolvedValue(undefined);
 // P3: clipboard writes are fire-and-forget `ipcRenderer.send` — void, no
@@ -1468,5 +1468,84 @@ describe('attachMouseForwardingGate', () => {
       delete view.matchMedia;
       vi.unstubAllGlobals();
     }
+  });
+});
+
+// Row 121: the shared resize cadence for the STORM paths (window resize, panel
+// drag). Leading edge keeps the first resize of a gesture instant; the burst
+// collapses into ONE trailing run at the settled geometry, so a TUI gets a
+// SIGWINCH every ~300 ms instead of every animation frame (the mid-write
+// resize is what paints the spaced-out-glyph + blank-band garble).
+describe('createResizeCoalescer() (row 121)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('runs the first resize immediately, with nothing left pending', () => {
+    const run = vi.fn();
+    const coalescer = createResizeCoalescer(run);
+
+    coalescer.schedule();
+
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces a burst into the leading run plus ONE trailing run at the final geometry', () => {
+    const sizes: string[] = [];
+    let size = '120x30';
+    const coalescer = createResizeCoalescer(() => sizes.push(size));
+
+    // A window drag: 30 geometries inside the window, as the frames arrive.
+    coalescer.schedule();
+    for (let i = 1; i <= 29; i++) {
+      size = `120x${30 - i}`;
+      coalescer.schedule();
+    }
+    expect(sizes).toEqual(['120x30']);
+
+    vi.advanceTimersByTime(RESIZE_COALESCE_MS);
+    expect(sizes).toEqual(['120x30', '120x1']);
+  });
+
+  it('re-arms once a burst settles, so the next gesture leads immediately again', () => {
+    const run = vi.fn();
+    const coalescer = createResizeCoalescer(run);
+
+    coalescer.schedule();
+    vi.advanceTimersByTime(RESIZE_COALESCE_MS);
+    expect(run).toHaveBeenCalledTimes(2);
+
+    // A tab switch right after a window resize must not wait 300 ms.
+    coalescer.schedule();
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+
+  it('flush() runs the settled fit once and drops the pending trailing run', () => {
+    const run = vi.fn();
+    const coalescer = createResizeCoalescer(run);
+
+    coalescer.schedule(); // leading
+    coalescer.schedule(); // mid-drag, coalesced
+    coalescer.flush(); // pointerup
+
+    vi.advanceTimersByTime(RESIZE_COALESCE_MS);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancel() drops the pending run without running it', () => {
+    const run = vi.fn();
+    const coalescer = createResizeCoalescer(run);
+
+    coalescer.schedule();
+    coalescer.cancel();
+
+    vi.advanceTimersByTime(RESIZE_COALESCE_MS);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

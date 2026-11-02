@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContextWindowInfo, CostInfo } from '../../shared/types.js';
+import { RESIZE_COALESCE_MS } from './terminal-utils.js';
 
 const providerCaps = new Map([
   ['claude', { costTracking: true, contextWindow: true, pendingPromptTrigger: 'startup-arg' }],
@@ -60,7 +61,7 @@ vi.mock('@xterm/addon-fit', () => ({
 
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class FakeWebglAddon {
-    onContextLoss = (_: () => void) => ({ dispose() {} });
+    onContextLoss = () => ({ dispose() {} });
     dispose() {}
   },
 }));
@@ -565,6 +566,56 @@ describe('pane attach, focus and fit are idempotent', () => {
 
     expect(mockResize).toHaveBeenCalledTimes(2);
     expect(mockResize).toHaveBeenLastCalledWith('fit-2', 200, 30);
+  });
+
+  it('coalesces a resize storm into one trailing resize at the settled geometry (row 121)', async () => {
+    // The owner's garble repro is a window drag: every frame used to put a
+    // SIGWINCH into each visible PTY, landing mid-write, where the TUI redraws
+    // its chrome into the grid it computed before the resize (spaced-out glyphs
+    // + a blank band). One leading + one trailing resize per gesture instead.
+    const { createTerminalPane, scheduleFitAllVisible, showPane, getTerminalInstance } = await import('./terminal-pane.js');
+    const mockResize = (window as any).finevibe.pty.resize;
+
+    createTerminalPane('storm-1', '/project', null, false, '', 'claude');
+    createTerminalPane('storm-2', '/project', null, false, '', 'claude');
+    showPane('storm-1', false);
+    showPane('storm-2', false);
+    const term1 = getTerminalInstance('storm-1')!.terminal as unknown as FakeTerminal;
+    const term2 = getTerminalInstance('storm-2')!.terminal as unknown as FakeTerminal;
+
+    // 30 frames of a window drag: every visible pane's geometry changes each frame.
+    scheduleFitAllVisible();
+    expect(mockResize).toHaveBeenCalledTimes(2); // leading edge: both panes, at once
+
+    for (let rows = 29; rows >= 1; rows--) {
+      term1.rows = rows;
+      term2.rows = rows;
+      scheduleFitAllVisible();
+    }
+    expect(mockResize).toHaveBeenCalledTimes(2); // nothing added while the gesture is live
+
+    vi.advanceTimersByTime(RESIZE_COALESCE_MS);
+    expect(mockResize).toHaveBeenCalledTimes(4);
+    expect(mockResize.mock.calls[2]).toEqual(['storm-1', 120, 1]); // FINAL geometry
+    expect(mockResize.mock.calls[3]).toEqual(['storm-2', 120, 1]);
+  });
+
+  it('keeps the show-pane / first-attach fit immediate (row 121 guardrail)', async () => {
+    // The coalescer is for storms only. renderLayout's tail fit — a tab switch,
+    // a pane becoming visible — must reach main with no 300 ms lag, or the
+    // incoming pane shows the outgoing geometry for a third of a second.
+    const { createTerminalPane, fitTerminal, showPane, getTerminalInstance } = await import('./terminal-pane.js');
+    const mockResize = (window as any).finevibe.pty.resize;
+
+    createTerminalPane('now-1', '/project', null, false, '', 'claude');
+    (getTerminalInstance('now-1')!.terminal as unknown as FakeTerminal).rows = 40;
+
+    showPane('now-1', false);
+    fitTerminal('now-1');
+
+    expect(mockResize).toHaveBeenCalledTimes(1);
+    expect(mockResize).toHaveBeenCalledWith('now-1', 120, 40);
+    expect(vi.getTimerCount()).toBe(0); // nothing pending behind the immediate fit
   });
 });
 

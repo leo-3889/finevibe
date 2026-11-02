@@ -7,7 +7,7 @@ import { TERMINAL_MAC_OPTION_IS_META, TERMINAL_SCROLLBACK } from './terminal-sha
 import { fitAllVisible } from './terminal-pane.js';
 import { destroySearchBar, hideSearchBar } from './search-bar.js';
 import { shortcutManager, displayKeys } from '../shortcuts.js';
-import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, loadWebglWithFallback } from './terminal-utils.js';
+import { attachClipboardCopyHandler, attachCopyOnSelect, attachFileDropHandler, attachImagePasteHandler, attachMouseForwardingGate, collapseArmedTextareaOnContextMenu, createResizeCoalescer, loadWebglWithFallback } from './terminal-utils.js';
 import { attachAltScreenWheelScroll } from './terminal-wheel-scroll.js';
 import { attachWin32TerminalKeys, unlatchWin32Key } from './win32-terminal-keys.js';
 import { isWin } from '../platform.js';
@@ -541,20 +541,20 @@ export function initProjectTerminal(): void {
   });
 
   // C2R-18: the height write stays synchronous (the drag must follow the
-  // pointer), the fits do not. fitActiveShell()+fitAllVisible() ran at
-  // pointermove rate: a forced layout plus an xterm reflow of every visible
-  // pane per move, on top of the ResizeObserver's own callback. One scheduled
-  // frame per burst (split-layout's resize idiom); endDrag fits the settled
-  // height and cancels a frame that has not run yet.
-  let fitFrame = 0;
-  const scheduleFits = (): void => {
-    if (fitFrame) return;
-    fitFrame = requestAnimationFrame(() => {
-      fitFrame = 0;
-      fitActiveShell();
-      fitAllVisible();
-    });
+  // pointer), the fits do not. Row 121 took the guard further: C2R-18's one
+  // rAF per burst still ran a fit + a PTY resize EVERY frame, so a panel drag
+  // put ~60 SIGWINCH/s into the shell and into every visible session pane (the
+  // panel shares the column) — mid-write, which is the resize-vs-redraw race
+  // that paints the TUI garble. Now one coalescer: leading edge on the first
+  // move, ~1 resize per 300 ms through a long drag, and endDrag flushes the
+  // settled height. The ResizeObserver shares it: during a window resize it
+  // fired per frame on top of the window `resize` listener.
+  const fitShellAndPanes = (): void => {
+    fitActiveShell();
+    fitAllVisible();
   };
+  const fitCoalescer = createResizeCoalescer(fitShellAndPanes);
+  const scheduleFits = (): void => fitCoalescer.schedule();
 
   resizeHandleEl.addEventListener('pointermove', (ev) => {
     if (!dragging) return;
@@ -575,14 +575,11 @@ export function initProjectTerminal(): void {
     resizeHandleEl.classList.remove('active');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    if (fitFrame) {
-      cancelAnimationFrame(fitFrame);
-      fitFrame = 0;
-    }
     const height = panelEl.offsetHeight;
     appState.setTerminalPanelHeight(height);
-    fitActiveShell();
-    fitAllVisible();
+    // Settled geometry: run the fit now (and drop a trailing run that has not
+    // fired), so the shell and the panes are at the final height immediately.
+    fitCoalescer.flush();
   };
   resizeHandleEl.addEventListener('pointerup', endDrag);
   resizeHandleEl.addEventListener('pointercancel', endDrag);
@@ -622,10 +619,13 @@ export function initProjectTerminal(): void {
     }
   });
 
-  // Resize terminal when window resizes
+  // Resize terminal when window resizes (row 121: coalesced — the observer
+  // fires every frame of a window drag, and split-layout's window `resize`
+  // listener is already covering the panes; an un-coalesced fit here was a
+  // second per-frame SIGWINCH for the shell PTY).
   resizeObserver = new ResizeObserver(() => {
     if (currentProjectId && !panelEl.classList.contains('hidden')) {
-      fitActiveShell();
+      fitCoalescer.schedule();
     }
   });
   resizeObserver.observe(containerEl);
