@@ -107,13 +107,53 @@ export function remoteLaunchSessionDir(providerId: LaunchSessionProvider, uiSess
  * session dir — pruned with it — and referenced by path (Windows file names
  * can never contain a quote). POSIX launches, quote-free prompts, and remote
  * (SSH-host) launches — where a local path is unreadable — stay inline.
+ *
+ * Inline values additionally carry the audit-108 path-spelling guard.
  */
 export function systemPromptArg(prompt: string, sessionDir: string, isRemote = false): string {
-  if (!isWin || isRemote || !prompt.includes('"')) return prompt;
+  if (!isWin || isRemote || !prompt.includes('"')) return guardPathSpelling(prompt);
   const file = path.join(sessionDir, 'system-prompt.md');
   fs.mkdirSync(sessionDir, { recursive: true });
   fs.writeFileSync(file, prompt, 'utf8');
   return file;
+}
+
+/**
+ * Audit 108 — silent prompt substitution. Pi, Pi-Bolt and OMP document
+ * `--append-system-prompt` as "append text OR FILE CONTENTS": a single-line
+ * value naming an existing file is REPLACED by that file's contents before it
+ * reaches the model. A charter that happens to spell a path on the controller
+ * (a persona pasted out of a repo, `docs/personas/cmo.md`) is therefore
+ * silently swapped for that file — no warning anywhere. Verified live on
+ * omp/18.15.0 and pi-bolt/1.4.0: with the file `/tmp/omp spike/quote"test.md`
+ * holding the directive "reply with exactly ZISKAPPEND9", passing that path
+ * plus `-p "say ok"` printed `ZISKAPPEND9`, the same value prefixed with a
+ * newline printed `ok`, and `strace` shows the `openat` in the first run only
+ * — the CLIs take any value containing a newline as literal text (omp's
+ * resolver: `if (value.includes("\n")) return value`).
+ *
+ * The guard: a one-line prompt that IS an existing file gets a leading
+ * newline, which flips every one of the three CLIs into text mode. Every
+ * other prompt is returned byte-identical — in particular the Windows file
+ * branch above needs no guard (file CONTENTS are appended verbatim, never
+ * re-resolved). Cost is one `statSync` per single-line prompt per launch.
+ *
+ * Ceiling (ponytail): the stat runs against this process's cwd, so a
+ * RELATIVE-path charter is matched against the app's cwd, not the launch cwd
+ * the CLI resolves it from; absolute spellings — the ones that reach outside
+ * the project — are covered, and a missed relative match restores exactly the
+ * pre-fix behavior.
+ */
+function guardPathSpelling(prompt: string): string {
+  const trimmed = prompt.trim();
+  if (trimmed.includes('\n')) return prompt;
+  try {
+    if (fs.statSync(trimmed).isFile()) return `\n${prompt}`;
+  } catch {
+    // Not a readable path (ENOENT/ENOTDIR/ENAMETOOLONG…): the CLIs read it as
+    // text themselves, so the prompt is already safe verbatim.
+  }
+  return prompt;
 }
 
 /**

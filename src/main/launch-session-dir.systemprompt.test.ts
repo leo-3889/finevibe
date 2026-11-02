@@ -57,3 +57,45 @@ describe('systemPromptArg (Windows cmd.exe quote gate)', () => {
     expect(fs.existsSync(out)).toBe(false);
   });
 });
+
+/**
+ * Audit 108 — the Pi/Pi-Bolt/OMP `--append-system-prompt` value is "text OR
+ * FILE CONTENTS": a one-line prompt that spells an existing file is replaced
+ * by that file's contents (verified live on omp/18.15.0 — see the guard's
+ * comment). The prefix flips the CLI into text mode; everything else must
+ * reach the CLI byte-identical.
+ */
+describe('systemPromptArg (audit 108 path-spelling guard)', () => {
+  it('prefixes a one-line prompt that spells an existing file', () => {
+    const file = path.join(dir, 'cmo-persona.md');
+    fs.writeFileSync(file, 'You are the CMO.', 'utf8');
+    expect(systemPromptArg(file, path.join(dir, 'guard'))).toBe(`\n${file}`);
+  });
+
+  it('leaves a prompt spelling a missing path byte-identical', () => {
+    const missing = path.join(dir, 'no-such-persona.md');
+    expect(systemPromptArg(missing, path.join(dir, 'guard'))).toBe(missing);
+  });
+
+  it('leaves a prompt spelling a directory byte-identical (files are what expand)', () => {
+    const sub = path.join(dir, 'guard-dir');
+    fs.mkdirSync(sub, { recursive: true });
+    expect(systemPromptArg(sub, path.join(dir, 'guard'))).toBe(sub);
+  });
+
+  it('leaves a multi-line prompt byte-identical (newline already means text)', () => {
+    const multi = `You are the CMO.
+Reply in 3 lines.`;
+    expect(systemPromptArg(multi, path.join(dir, 'guard'))).toBe(multi);
+  });
+
+  it('writes the Windows file branch verbatim — file contents are never re-resolved', () => {
+    const persona = path.join(dir, 'spelled-file.md');
+    fs.writeFileSync(persona, 'You are the CMO.', 'utf8');
+    const prompt = `Load ${persona} — you are the "CMO".`;
+    const out = path.join(dir, 'guard-win');
+    const written = systemPromptArg(prompt, out);
+    expect(written).toBe(path.join(out, 'system-prompt.md'));
+    expect(fs.readFileSync(written, 'utf8')).toBe(prompt);
+  });
+});
