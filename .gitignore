@@ -45,3 +45,5 @@ dev/*
 
 # Internal working docs (audit status, incident notes, work queue) — local only, never committed
 todos/
+
+.deploy-keys/
