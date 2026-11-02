@@ -1,11 +1,7 @@
-import type { ReadinessCheckProducer, TaggedCheck, AnalysisContext } from '../types';
-import { checkNotBloated } from './instruction-file-checks';
+import { makeContextProducer } from './ai-instructions';
 
-export const geminiContextProducer: ReadinessCheckProducer = {
-  providerId: 'gemini',
-
-  produce(projectPath: string, _ctx: AnalysisContext): TaggedCheck[] {
-    const check = checkNotBloated(projectPath, { fileName: 'GEMINI.md', idPrefix: 'gemini-md', displayName: 'GEMINI.md' });
-    return [{ category: 'context', check }];
-  },
-};
+export const geminiContextProducer = makeContextProducer('gemini', {
+  fileName: 'GEMINI.md',
+  idPrefix: 'gemini-md',
+  displayName: 'GEMINI.md',
+});
