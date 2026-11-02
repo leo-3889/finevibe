@@ -441,6 +441,37 @@ describe('renameProject()', () => {
   });
 });
 
+describe('setProjectLead() (team-lead-persona-plan M1)', () => {
+  it('writes the lead, persists it, and announces the change', () => {
+    const p = addProject();
+    const changedCb = vi.fn();
+    appState.on('project-changed', changedCb);
+    appState.setProjectLead(p.id, { personaId: 'tech-lead', name: 'Tech Lead', charter: 'Own the rollout', enabled: true });
+    expect(appState.projects[0].lead).toEqual({ personaId: 'tech-lead', name: 'Tech Lead', charter: 'Own the rollout', enabled: true });
+    expect(changedCb).toHaveBeenCalled();
+    appState.flushPersist();
+    expect(mockSave.mock.calls[0][0].projects[0].lead.name).toBe('Tech Lead');
+  });
+
+  it('clearing removes the key entirely, so the record serializes as it did pre-feature', () => {
+    const p = addProject();
+    appState.setProjectLead(p.id, { name: 'Tech Lead', charter: '', enabled: true });
+    appState.setProjectLead(p.id, undefined);
+    expect('lead' in appState.projects[0]).toBe(false);
+    appState.flushPersist();
+    expect(mockSave.mock.calls[0][0].projects[0]).not.toHaveProperty('lead');
+  });
+
+  it('is a no-op for an unknown project id', () => {
+    const p = addProject();
+    const changedCb = vi.fn();
+    appState.on('project-changed', changedCb);
+    appState.setProjectLead('nope', { name: 'X', charter: '', enabled: true });
+    expect(appState.projects[0].lead).toBeUndefined();
+    expect(changedCb).not.toHaveBeenCalled();
+  });
+});
+
 describe('addSession()', () => {
   it('creates a session and sets it active', () => {
     const project = addProject();
