@@ -18,18 +18,18 @@
 import type { BrowserWindow } from 'electron';
 import type { FsChange } from '../../shared/types.js';
 import { sftpListDirEntries } from './ssh-client';
-import { getHost } from './host-registry';
-import { normalizeRemotePath } from './remote-fs';
+import { gateHost, normalizeRemotePath } from './remote-fs';
 import { evictOldest } from '../bounded-map';
 import { LOCAL_HOST_ID } from '../../shared/types.js';
 
-/** Poll period per watched remote directory, and the timeout of the one sftp
- * readdir each poll issues (a poll that outlives its own interval would
- * stack, so the two numbers are deliberately the same). Remote tree updates
- * are therefore up to this stale — the local watcher is event-driven because
- * the OS gives notifications for free; over the wire polling is the only
- * option, and 5 s is the latency/bandwidth trade (a 200-watch set is 40
- * readdir/s). */
+/** Poll period per watched remote directory. NOT the poll's real ceiling:
+ * sftpOp adds a connect budget on top of the readdir timeout, so one poll can
+ * live ~16 s — hence the per-watch inFlight guard (a degraded host skips
+ * ticks instead of stacking overlapping readdirs: review e43c639d 🟡5).
+ * Remote tree updates are therefore up to REMOTE_POLL_MS stale — the local
+ * watcher is event-driven because the OS gives notifications for free; over
+ * the wire polling is the only option, and 5 s is the latency/bandwidth
+ * trade (a 200-watch set is 40 readdir/s at steady state). */
 export const REMOTE_POLL_MS = 5_000;
 
 /** Watched-path cap (module-map governance for `watches`): the renderer
@@ -48,6 +48,7 @@ export const MAX_REMOTE_WATCHES = 200;
 export const MAX_REMOTE_WATCHED_HOSTS = 8;
 
 interface RemoteWatch {
+  key: string;
   hostId: string;
   dir: string;
   timer: ReturnType<typeof setInterval>;
@@ -56,6 +57,9 @@ interface RemoteWatch {
   // a subdirectory therefore surfaces as a `change` on the subdirectory path).
   snapshot: Map<string, string>;
   errorWarned: boolean;
+  // One poll per interval, ever: the sftp ceiling (timeout + connect budget)
+  // exceeds REMOTE_POLL_MS, so ticks overlap on a slow host without this.
+  inFlight: boolean;
 }
 
 const watches = new Map<string, RemoteWatch>();
@@ -73,8 +77,10 @@ function dropWatch(key: string): void {
 
 /** Make room for one more watch: FIFO-drop the oldest polls past the path cap,
  * then evict the whole oldest host when `hostId` is new and the host set is
- * full (both are graceful degradations — an evicted watch re-arms on the next
- * `fs:watchDir`, exactly like an unwatched directory). */
+ * full. Graceful degradation — but NOT self-healing: the renderer's watched
+ * set early-returns on re-watch, so an evicted dir stays silent until it is
+ * collapsed and re-expanded (review e43c639d ℹ️8; same convention as
+ * file-watcher's eviction). */
 function makeRoom(hostId: string): void {
   evictOldest(watches, MAX_REMOTE_WATCHES - 1, (oldest) => {
     dropWatch(oldest);
@@ -103,46 +109,59 @@ export function setRemoteWatchWindow(win: BrowserWindow): void {
 }
 
 async function pollOnce(watch: RemoteWatch, emitChanges = true): Promise<void> {
-  const record = getHost(watch.hostId);
-  if (!record) return; // host forgotten mid-watch
-  let entries: Awaited<ReturnType<typeof sftpListDirEntries>>;
+  if (watch.inFlight) return; // slow host: skip this tick, never stack polls
+  watch.inFlight = true;
   try {
-    entries = await sftpListDirEntries(record, watch.dir, { timeoutMs: REMOTE_POLL_MS });
-  } catch (err) {
-    if (!watch.errorWarned) {
-      watch.errorWarned = true;
-      console.warn(`remote watch failed [${watch.hostId}] ${watch.dir}: ${err instanceof Error ? err.message : String(err)}`);
+    // Shared remote gate (docs/security-boundaries DIR-BROWSER tier): exists +
+    // enrolled|partial. A host forgotten or un-enrolled MID-WATCH drops the
+    // watch — an interval polling a dead target forever is pure churn
+    // (review e43c639d 🟡3/🟡4).
+    const gate = gateHost(watch.hostId);
+    if ('error' in gate) {
+      dropWatch(watch.key);
+      return;
     }
-    return; // transient failure: keep the last snapshot, retry next tick
-  }
-  if (entries === null) return; // dir vanished mid-watch: keep the snapshot
-  const next = new Map<string, string>();
-  for (const e of entries) next.set(e.name, `${e.isDirectory ? 'd' : 'f'}:${e.mtimeMs}`);
-  const changes: FsChange[] = [];
-  for (const [name, fingerprint] of next) {
-    const prev = watch.snapshot.get(name);
-    if (prev === undefined) {
+    let entries: Awaited<ReturnType<typeof sftpListDirEntries>>;
+    try {
+      entries = await sftpListDirEntries(gate.record, watch.dir, { timeoutMs: REMOTE_POLL_MS });
+    } catch (err) {
+      if (!watch.errorWarned) {
+        watch.errorWarned = true;
+        console.warn(`remote watch failed [${watch.hostId}] ${watch.dir}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return; // transient failure: keep the last snapshot, retry next tick
+    }
+    if (entries === null) return; // dir vanished mid-watch: keep the snapshot
+    const next = new Map<string, string>();
+    for (const e of entries) next.set(e.name, `${e.isDirectory ? 'd' : 'f'}:${e.mtimeMs}`);
+    const changes: FsChange[] = [];
+    for (const [name, fingerprint] of next) {
+      const prev = watch.snapshot.get(name);
+      if (prev === undefined) {
+        changes.push({
+          path: `${watch.dir}/${name}`,
+          dir: watch.dir,
+          type: fingerprint.startsWith('d') ? 'addDir' : 'add',
+        });
+      } else if (prev !== fingerprint) {
+        changes.push({ path: `${watch.dir}/${name}`, dir: watch.dir, type: 'change' });
+      }
+    }
+    for (const name of [...watch.snapshot.keys()]) {
+      if (next.has(name)) continue;
+      const wasDir = (watch.snapshot.get(name) as string).startsWith('d');
       changes.push({
         path: `${watch.dir}/${name}`,
         dir: watch.dir,
-        type: fingerprint.startsWith('d') ? 'addDir' : 'add',
+        type: wasDir ? 'unlinkDir' : 'unlink',
       });
-    } else if (prev !== fingerprint) {
-      changes.push({ path: `${watch.dir}/${name}`, dir: watch.dir, type: 'change' });
     }
-  }
-  for (const name of [...watch.snapshot.keys()]) {
-    if (next.has(name)) continue;
-    const wasDir = (watch.snapshot.get(name) as string).startsWith('d');
-    changes.push({
-      path: `${watch.dir}/${name}`,
-      dir: watch.dir,
-      type: wasDir ? 'unlinkDir' : 'unlink',
-    });
-  }
-  watch.snapshot = next;
-  if (changes.length > 0 && emitChanges && currentWin && !currentWin.isDestroyed()) {
-    currentWin.webContents.send('fs:changed', changes);
+    watch.snapshot = next;
+    if (changes.length > 0 && emitChanges && currentWin && !currentWin.isDestroyed()) {
+      currentWin.webContents.send('fs:changed', changes);
+    }
+  } finally {
+    watch.inFlight = false;
   }
 }
 
@@ -162,15 +181,21 @@ export function watchRemoteDir(hostId: string, dirPath: string): void {
   if (hostId === LOCAL_HOST_ID) return; // the local watcher owns local paths
   const dir = normalizeRemotePath(dirPath);
   if (dir === null) return;
+  // sftp has no tilde expansion (the row-129 rule): a `~`-anchored spelling
+  // would poll a literal `~/…` forever. Remote roots persist as absolutes
+  // (remote-dir-browser), so this is a refused misuse, not a lost feature.
+  if (dir === '~' || dir.startsWith('~/')) return;
   const key = watchKey(hostId, dir);
   if (watches.has(key)) return;
   makeRoom(hostId);
   const watch: RemoteWatch = {
+    key,
     hostId,
     dir,
     timer: setInterval(() => void pollOnce(watch), REMOTE_POLL_MS),
     snapshot: new Map(),
     errorWarned: false,
+    inFlight: false,
   };
   watches.set(key, watch);
   // Seed the snapshot immediately — the initial listing is not a change, so

@@ -159,8 +159,10 @@ function homeUnresolvedError(record: HostRecord): string {
 
 /** The gate every remote verb shares: the record exists and is enrolled
  * (partial counts — the sidebar shows its tab, so its verbs must work).
- * Returns the error string, or null when the host passes. */
-function gateHost(hostId: unknown): { record: HostRecord } | { error: string } {
+ * Returns the error string, or null when the host passes. Exported for the
+ * remote watcher, which must ride the SAME gate as the list/read verbs
+ * (docs/security-boundaries DIR-BROWSER tier; review e43c639d 🟡3). */
+export function gateHost(hostId: unknown): { record: HostRecord } | { error: string } {
   if (typeof hostId !== 'string' || hostId === '') return { error: 'No host id was given' };
   const record = getHost(hostId);
   if (!record) return { error: `Unknown host ${JSON.stringify(hostId)}` };

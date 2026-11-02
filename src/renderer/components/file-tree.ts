@@ -146,10 +146,17 @@ function flushPendingDirs(): void {
   const dirs = [...pendingDirs];
   pendingDirs.clear();
   for (const dir of dirs) {
-    entryCache.delete(dir);
-    inflight.delete(dir);
     for (const [projectId, paths] of watchedByProject) {
-      if (!paths.has(dir)) continue;
+      // The watcher's delta carries the BARE dir; remote watched-sets and the
+      // entry caches are keyed hostId\0path (treeKey), so membership and
+      // invalidation must be computed with the project's own host — a bare
+      // `dir` miss made every remote delta a no-op (review e43c639d 🔴2).
+      // Local projects have no host → treeKey collapses to the bare path, so
+      // the local behavior is byte-identical.
+      const key = treeKey(remoteHostOf(projectId), dir);
+      if (!paths.has(key)) continue;
+      entryCache.delete(key);
+      inflight.delete(key);
       const reg = activeTrees.get(projectId);
       if (!reg) continue;
       const selector = `[data-folder-path="${CSS.escape(dir)}"]`;
@@ -158,7 +165,7 @@ function flushPendingDirs(): void {
         : reg.container.querySelector(selector);
       if (target instanceof HTMLElement) {
         const depth = Number(target.dataset.depth ?? '0');
-        reconcileChildren(projectId, dir, depth, target);
+        void reconcileChildren(projectId, dir, depth, target);
       }
     }
   }

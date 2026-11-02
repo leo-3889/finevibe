@@ -14,7 +14,9 @@ vi.mock('./ssh-client', () => ({
   exec: vi.fn(),
 }));
 vi.mock('./host-registry', () => ({
-  getHost: (id: string) => (id === 'lab' ? ({ id, name: 'l', host: 'l.example' }) : undefined),
+  getHost: (id: string) => (id === 'lab' || /^h\d+$/.test(id) || id === 'newcomer'
+    ? ({ id, name: 'l', host: 'l.example', enrollmentStatus: 'enrolled' })
+    : undefined),
 }));
 
 import {
@@ -59,7 +61,7 @@ describe('watchRemoteDir', () => {
     sftp.entries.mockResolvedValue([file('a.ts')]);
     watchRemoteDir('lab', '/srv/app');
     await vi.advanceTimersByTimeAsync(0);
-    expect(sftp.entries).toHaveBeenCalledWith({ id: 'lab', name: 'l', host: 'l.example' }, '/srv/app', { timeoutMs: REMOTE_POLL_MS });
+    expect(sftp.entries).toHaveBeenCalledWith({ id: 'lab', name: 'l', host: 'l.example', enrollmentStatus: 'enrolled' }, '/srv/app', { timeoutMs: REMOTE_POLL_MS });
     expect(sent).toEqual([]);
   });
 
@@ -147,6 +149,20 @@ describe('caps (module-map governance)', () => {
     // Warned once, not once per eviction.
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it('an evicted poll interval is DEAD (bounded-map evicts with the entry live)', async () => {
+    // Review e43c639d 🔴1: evictOldest used to delete the key BEFORE the
+    // callback, so dropWatch couldn't see the watch and the setInterval kept
+    // polling forever — the cap bounded bookkeeping, not polling. After an
+    // eviction the next tick must issue EXACTLY one readdir per tracked watch.
+    for (let i = 0; i < MAX_REMOTE_WATCHES; i++) watchRemoteDir('lab', `/d${i}`);
+    watchRemoteDir('lab', '/overflow');
+    expect(remoteWatchKeys()).toHaveLength(MAX_REMOTE_WATCHES);
+    await vi.advanceTimersByTimeAsync(0); // let the seed polls settle
+    sftp.entries.mockClear();
+    await vi.advanceTimersByTimeAsync(REMOTE_POLL_MS);
+    expect(sftp.entries).toHaveBeenCalledTimes(MAX_REMOTE_WATCHES);
   });
 
   it('evicts every watch of the oldest host at MAX_REMOTE_WATCHED_HOSTS', () => {
