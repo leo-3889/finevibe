@@ -362,6 +362,19 @@
   margin-left: auto;
 }
 
+/* Lead badge on the project's overview tab (team-lead-persona-plan M1 UI):
+   accent tint only, so it reads as an identity, not a status. */
+.tab-lead-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
 /* Tab-bar badge for project-tab sessions */
 .tab-project-badge {
   display: inline-flex;

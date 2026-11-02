@@ -1,10 +1,9 @@
 import type { FinevibeApi } from './types.js';
-import type { SessionRecord, ProjectRecord, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout, SidebarViews } from '../shared/types.js';
+import type { SessionRecord, ProjectRecord, ProjectLead, Preferences, PersistedState, ArchivedSession, ProviderId, CostInfo, ContextWindowInfo, InitialContextSnapshot, ReadinessResult, TeamMember, TeamData, Profile, OverviewLayout, SidebarViews } from '../shared/types.js';
 import type { ShareMode } from '../shared/sharing-types.js';
 import { getProviderCapabilities, getProviderAvailabilitySnapshot } from './provider-availability.js';
 import { pruneGithubLastSeen } from '../shared/github-last-seen.js';
 import { basename } from '../shared/platform.js';
-import { parseSshHost } from '../shared/ssh-host.js';
 import { LOCAL_HOST_ID } from '../shared/types.js';
 import { DEFAULT_PREFERENCES as defaultPreferences } from '../shared/default-preferences.js';
 import { defaultProfileKey, keyMatchesProvider } from '../shared/profile-keys.js';
@@ -39,7 +38,7 @@ import {
 } from './state/session-factory.js';
 import { NavHistory } from './state/nav-history.js';
 import { defaultSessionName } from './state/session-naming.js';
-import { createDefaultBoard, ensureProjectDefaults, hydrateLoadedState, serializeForSave } from './state/persistence.js';
+import { createDefaultBoard, ensureProjectDefaults, hydrateLoadedState } from './state/persistence.js';
 import { PersistEngine } from './state/persist-engine.js';
 import {
   applyMemberPatch,
@@ -846,6 +845,22 @@ class AppState {
     const effectiveProvider = providerId ?? this.preferences.defaultProvider ?? 'claude';
     project.defaultProvider = providerId;
     project.defaultProfileId = this.profiles.find(p => p.id === profileId && p.providerId === effectiveProvider)?.id;
+    this.persist();
+    this.emit('project-changed');
+  }
+
+  /**
+   * Write (or clear) the project's team-lead persona (team-lead-persona-plan
+   * M1). `undefined` removes the key entirely, which is the absent feature:
+   * nothing in the app reads a project without `lead`. Persistence rides the
+   * whole-state `store:save` path, which allowlists `preferences` keys only —
+   * an additive project field flows through with no main-side change.
+   */
+  setProjectLead(projectId: string, lead: ProjectLead | undefined): void {
+    const project = this.state.projects.find(p => p.id === projectId);
+    if (!project) return;
+    if (lead) project.lead = lead;
+    else delete project.lead;
     this.persist();
     this.emit('project-changed');
   }

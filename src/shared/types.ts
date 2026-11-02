@@ -391,6 +391,29 @@ export interface BoardData {
   tags?: TagDefinition[];
 }
 
+/** UTF-8 budget for a lead charter (team-lead-persona-plan M1). The charter
+ * rides a spawn argument in the later injection increment, so the cap is a
+ * byte budget (the argv limit is bytes), not a character count. */
+export const LEAD_CHARTER_MAX_BYTES = 4 * 1024;
+
+/**
+ * Per-project team-lead persona (team-lead-persona-plan M1). Additive: an
+ * absent `lead` is the absent feature — nothing reads it, no behavior change.
+ * `name`/`charter` are snapshots, so persona curation never rewrites a
+ * project behind the user's back.
+ */
+export interface ProjectLead {
+  /** Reference into `personas/<id>.md`; optional (a lead can be name+charter only). */
+  personaId?: string;
+  /** Display name snapshot. */
+  name: string;
+  /** Charter text, capped at LEAD_CHARTER_MAX_BYTES (UTF-8). */
+  charter: string;
+  enabled: boolean;
+  /** M2 review gate; absent means 'off'. */
+  reviewMode?: 'off' | 'on-complete';
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;
@@ -423,6 +446,8 @@ export interface ProjectRecord {
   githubLastSeen?: Record<string, string>;
   /** Hover-to-group tab clusters; absent on projects that never grouped anything (no migration needed). */
   tabGroups?: TabGroupRecord[];
+  /** Team-lead persona (team-lead-persona-plan M1); absent = feature off. */
+  lead?: ProjectLead;
 }
 
 /**

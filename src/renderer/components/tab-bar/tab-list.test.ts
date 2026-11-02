@@ -157,6 +157,48 @@ describe('updateTabStatus tooltips (P3-9)', () => {
   });
 });
 
+describe('lead badge on the project tab (team-lead-persona-plan M1)', () => {
+  const overview = { id: 'pt', name: 'Overview', type: 'project-tab' };
+  function tabNameHtml() {
+    return tabListEl.querySelector('.tab-item[data-session-id="pt"] .tab-name')!.innerHTML;
+  }
+
+  it('renders no badge for a project that has no lead (the pre-feature byte-identical tab)', () => {
+    activeProject = project('p1', [overview as never]);
+    render();
+    expect(tabListEl.querySelector('.tab-lead-badge')).toBeNull();
+  });
+
+  it('renders no badge when the stored lead is disabled', () => {
+    const p = project('p1', [overview as never]);
+    (p as { lead?: unknown }).lead = { name: 'Tech Lead', charter: '', enabled: false };
+    activeProject = p;
+    render();
+    expect(tabListEl.querySelector('.tab-lead-badge')).toBeNull();
+  });
+
+  it('badges the overview tab, and only it, when the lead is enabled', () => {
+    const p = project('p1', [overview as never, cliSession('s1', 'alpha')]);
+    (p as { lead?: unknown }).lead = { name: 'Tech Lead', charter: '', enabled: true };
+    activeProject = p;
+    render();
+    const badge = tabListEl.querySelector('.tab-lead-badge')!;
+    expect(badge.textContent).toBe('LEAD');
+    expect(tabNameHtml()).toContain('Project p1 - Overview');
+    expect(tabListEl.querySelector('.tab-item[data-session-id="s1"] .tab-lead-badge')).toBeNull();
+  });
+
+  it('keeps the badge through a metadata patch (the surgical patch path)', () => {
+    const p = project('p1', [overview as never]);
+    (p as { lead?: unknown }).lead = { name: 'Tech Lead', charter: '', enabled: true };
+    activeProject = p;
+    render();
+    (p as { name: string }).name = 'Renamed';
+    handleSessionChanged({ sessionId: 'pt', kind: 'metadata' });
+    expect(tabListEl.querySelector('.tab-lead-badge')).not.toBeNull();
+  });
+});
+
 describe('shared context-menu singleton (P2-107, tab side)', () => {
   it('opening the tab menu closes the sidebar\'s project menu', () => {
     render();
