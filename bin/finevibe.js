@@ -313,14 +313,17 @@ function extract(zipPath) {
   console.log('Done.');
 }
 
-// Ubuntu 24.04 ships without libfuse2, the FUSE userspace library a bare
-// AppImage dlopens at startup — the spawn dies with 'dlopen libfuse.so.2'
-// before any window appears. /dev/fuse is the kernel-side precondition of
-// the FUSE mount path; when it is missing, launch and desktop entry set
-// APPIMAGE_EXTRACT_AND_RUN=1 so the AppImage runtime self-extracts to a
-// temp dir — works everywhere, costs a temp copy per launch.
-function fuseAvailable() {
-  return fs.existsSync('/dev/fuse');
+// DEFECT 53: /dev/fuse is NOT a mount-capability probe. Ubuntu 24.04+ ships
+// fuse3, which creates /dev/fuse, while the AppImage runtime still dlopens the
+// libfuse2 that 24.04 removed — so the probe says "mountable", the mount then
+// fails, and the user gets a dead mount with no window (runtime-confirmed on
+// this host). Extract-and-run is therefore the UNCONDITIONAL default: launch
+// sets APPIMAGE_EXTRACT_AND_RUN=1 and the installed .desktop carries the same
+// env prefix — works on every distro, costs a temp copy per launch. The FUSE
+// mount path is opt-in only: FINEVIBE_APPIMAGE_MOUNT=1 on a system that has
+// /dev/fuse (the probe survives purely as that opt-in's precondition).
+function appimageMountRequested() {
+  return process.env.FINEVIBE_APPIMAGE_MOUNT === '1' && fs.existsSync('/dev/fuse');
 }
 
 // Linux desktop integration: the launcher drops a bare AppImage into
@@ -337,7 +340,7 @@ function fuseAvailable() {
 // before any window appears. Icon is forced to the installed hicolor theme
 // name, StartupWMClass is pinned so docks match the running window. All other
 // keys (Name, Comment, Categories, MimeType, …) are preserved.
-function buildDesktopEntry(embeddedContent, appPath, fuseAvailable = true) {
+function buildDesktopEntry(embeddedContent, appPath, useFuseMount = false) {
   const lines = embeddedContent
     ? String(embeddedContent).split(/\r?\n/)
     : [
@@ -359,9 +362,9 @@ function buildDesktopEntry(embeddedContent, appPath, fuseAvailable = true) {
     .filter((token) => !token.startsWith('%') && token !== 'env')
     .filter((token) => !/AppRun$/.test(token))
     .filter((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token))
-    .filter((token) => fuseAvailable || token !== '--appimage-extract-and-run');
+    .filter((token) => useFuseMount || token !== '--appimage-extract-and-run');
   const execWords = [
-    ...(fuseAvailable ? [] : ['env', 'APPIMAGE_EXTRACT_AND_RUN=1']),
+    ...(useFuseMount ? [] : ['env', 'APPIMAGE_EXTRACT_AND_RUN=1']),
     appPath,
     ...carriedArgs,
     '%U',
@@ -413,7 +416,7 @@ function collectIconFiles(dir, rel, out) {
 // Install icons + .desktop from an --appimage-extract tree into dataDir
 // (the DE's data root). Missing icons/desktop file are tolerated: the
 // generated-base entry is still written so the app is findable.
-function installDesktopIntegration({ appPath, extractRoot, dataDir, fuseAvailable = true }) {
+function installDesktopIntegration({ appPath, extractRoot, dataDir, useFuseMount = false }) {
   const share = path.join(extractRoot, 'usr', 'share');
   const iconsDest = path.join(dataDir, 'icons', 'hicolor');
   for (const [source, relative] of collectIconFiles(path.join(share, 'icons', 'hicolor'), '', [])) {
@@ -430,7 +433,7 @@ function installDesktopIntegration({ appPath, extractRoot, dataDir, fuseAvailabl
   }
   const entryFile = path.join(dataDir, 'applications', 'finevibe.desktop');
   fs.mkdirSync(path.dirname(entryFile), { recursive: true });
-  fs.writeFileSync(entryFile, buildDesktopEntry(embedded, appPath, fuseAvailable));
+  fs.writeFileSync(entryFile, buildDesktopEntry(embedded, appPath, useFuseMount));
 }
 
 // Production wrapper: self-extract the installed AppImage into a temp dir,
@@ -447,7 +450,7 @@ function linuxDesktopIntegration() {
         appPath: APP_PATH,
         extractRoot: path.join(tmp, 'squashfs-root'),
         dataDir,
-        fuseAvailable: fuseAvailable(),
+        useFuseMount: appimageMountRequested(),
       });
       for (const [cmd, arg] of [
         ['update-desktop-database', path.join(dataDir, 'applications')],
@@ -486,8 +489,10 @@ function launch(args) {
       stdio: 'ignore',
     });
   } else {
+    // Always extract-and-run (DEFECT 53): a bare spawn dies on libfuse2 where
+    // /dev/fuse exists, so the mount path only runs on explicit opt-in.
     const options = { detached: true, stdio: 'ignore' };
-    if (!fuseAvailable()) {
+    if (!appimageMountRequested()) {
       options.env = { ...process.env, APPIMAGE_EXTRACT_AND_RUN: '1' };
     }
     child = spawn(APP_PATH, args, options);
