@@ -18,11 +18,22 @@ describe('bounded-map (row 29)', () => {
     expect([...m.entries()]).toEqual([['a', 11], ['c', 3]]);
   });
 
-  it('onEvict sees the key AFTER removal, for every entry dropped in one call', () => {
+  it('onEvict sees the entry WHILE it is still in the map, then the delete follows', () => {
+    // Contract flipped by review e43c639d 🔴1: the repo's stateful callbacks
+    // (file-watcher unwatchDir, remote-watch dropWatch) look the entry up to
+    // release its external resource; a post-delete callback no-ops and leaks
+    // the interval/watch. A self-deleting callback makes the following delete
+    // a no-op, so the map is never half-evicted.
     const m = new Map<string, number>([['a', 1], ['b', 2], ['c', 3]] as const);
     const seen: Array<[string, number | undefined]> = [];
     evictOldest(m, 1, (k) => seen.push([k, m.get(k)]));
-    expect(seen).toEqual([['a', undefined], ['b', undefined]]);
+    expect(seen).toEqual([['a', 1], ['b', 2]]);
+    expect([...m.keys()]).toEqual(['c']);
+  });
+
+  it('a callback that deletes the entry itself keeps the map consistent (no half-eviction)', () => {
+    const m = new Map<string, number>([['a', 1], ['b', 2], ['c', 3]] as const);
+    evictOldest(m, 1, (k) => { m.delete(k); });
     expect([...m.keys()]).toEqual(['c']);
   });
 

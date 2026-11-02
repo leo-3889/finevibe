@@ -1,18 +1,14 @@
-// SSH host parsing for the per-session `ssh <host>` launch wrap.
-// Pure JS (no Node APIs): the renderer validates for the UI, main re-validates
-// before putting the value into `ssh` argv — a compromised value must not aim
-// ssh at an option string (`-oProxyCommand=…`).
+// SSH host grammar for the registry: the shapes a HostRecord may carry into
+// `ssh` argv. Pure JS (no Node APIs): the renderer validates for the UI, main
+// re-validates before the value reaches argv — a compromised value must not
+// aim ssh at an option string (`-oProxyCommand=…`).
 //
-// Accepted forms: `host`, `user@host`. Rejected: whitespace, ports (`:22` —
-// the port belongs to `ssh -p`, the prefix shows the host), `ssh://` URLs,
+// Accepted forms: `host`, `user@host`, bracketed IPv6 hosts. Rejected:
+// whitespace, ports (`:22` — the port belongs to `ssh -p`), `ssh://` URLs,
 // leading `-` (option injection), characters outside the hostname/username
-// grammars, length > 253.
-
-export interface SshHostRef {
-  /** Normalized `user@host` when a user is given, else `host`. */
-  host: string;
-  user?: string;
-}
+// grammars, length > 253. (The retired free-text `sshHost` wire and its
+// parser are gone; legacy values are STRIPPED at load by the migration
+// below — the registry record is the only remote spelling.)
 
 import type { HostRecord, HostAuthKind, HostEnrollmentStatus, ProjectRecord, SessionRecord } from './types.js';
 import { isValidHostColor } from './host-colors.js';
@@ -26,32 +22,6 @@ const HOSTNAME = /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0
 const USERNAME = /^[A-Za-z0-9._-]+$/;
 
 const PORT_SUFFIX = /:\d+$/;
-
-/**
- * Parse a free-text SSH host (context-menu field, pty:create arg, detected
- * echo). Returns the normalized reference or null — never throws.
- */
-export function parseSshHost(raw: string): SshHostRef | null {
-  const trimmed = (raw ?? '').trim();
-  if (!trimmed || trimmed.length > MAX_HOST_LENGTH) return null;
-  if (/\s/.test(trimmed)) return null;
-  if (PORT_SUFFIX.test(trimmed)) return null;
-
-  const at = trimmed.lastIndexOf('@');
-  if (at === 0) return null; // `@host` has an empty user
-  let user: string | undefined;
-  let host: string;
-  if (at > 0) {
-    user = trimmed.slice(0, at);
-    host = trimmed.slice(at + 1);
-    if (!USERNAME.test(user)) return null;
-  } else {
-    host = trimmed;
-  }
-  if (!HOSTNAME.test(host)) return null;
-
-  return user ? { host: `${user}@${host}`, user } : { host };
-}
 
 /** A session as written before the sshHost wire was retired: the free-text
  * key exists on disk only, never in the in-memory `SessionRecord`. */
@@ -102,8 +72,8 @@ const IPV6_BRACKETED = /^\[[0-9A-Fa-f:.]+\]$/;
 
 /**
  * Registry-target check: the record's user/host as they reach ssh argv.
- * Broader than parseSshHost's free-text gate (which rejects brackets —
- * the registry stores the bracketed IPv6 spelling on purpose). Callers get
+ * Accepts the bracketed IPv6 spelling the registry stores on purpose (ssh
+ * argv requires it). Callers get
  * here only with a validateHostRecordShape-passed record; this is defense
  * in depth for hand-edited state (per-host providers plan audit T1 #2).
  */
@@ -121,7 +91,7 @@ const PROVIDER_IDS = new Set(['claude', 'codex', 'copilot', 'gemini', 'pi', 'omp
  * Validate one raw `PersistedState.hosts` entry (or an IPC draft) and return
  * the normalized record, or null. Pure JS, shared main+renderer: main
  * re-validates everything the renderer sends (the registry is main-owned).
- * Grammar mirrors parseSshHost: same USERNAME, HOSTNAME extended with the
+ * Strict argv-safe grammar: USERNAME, HOSTNAME extended with the
  * bracketed IPv6 form; port required 1..65535; uuid id. Zero secrets here —
  * this record never carries a password or key body.
  */

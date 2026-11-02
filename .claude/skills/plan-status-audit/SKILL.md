@@ -19,7 +19,7 @@ clone `ls todos/` is empty and there is nothing to audit — say so, and audit g
 - `todos/AUDIT_STATUS.md` — the ONLY audit result file: open bugs + open improvements,
   always consolidated. Never create a second live audit/agenda/owner file — merge into it.
   (AGENDA.md and OWNER.md were merged into it 2026-10-28; archived copies:
-  `todos/archives/AGENDA-2026-10-28.md`, `todos/archives/OWNER-2026-10-28.md`.)
+  `todos/archives/audits-2026-10-28/AGENDA-2026-10-28.md`, `todos/archives/audits-2026-10-28/OWNER-2026-10-28.md`.)
 - `todos/features/` — ALL feature plans plus their runbooks/checklists.
 - `todos/archives/` — everything closed, indexed by `todos/archives/README.md` (the index
   carries no open items). Grouped by topic once the flat count grew: `plans/` (closed
@@ -51,7 +51,7 @@ prose (`**decided: FORK identity**`, `decision`, `approval`) — the histogram o
 machine-shaped statuses, so it under-counts decisions by design. Measured 2026-10-25
 (post-merge): **12 open (9 P2 / 3 P3; 0 P1) + 4 SA rows**. Measured 2026-10-28:
 **0 open registry + 0 open SA** — every row fixed, per-row SHAs in
-`todos/archives/EXECUTION_2026-10-28.md` (the pre-consolidation ledger; the file named `AUDIT_STATUS-2026-10-28.md` is gone). Quote the
+`todos/archives/audits-2026-10-28/EXECUTION_2026-10-28.md` (the pre-consolidation ledger; the file named `AUDIT_STATUS-2026-10-28.md` is gone). Quote the
 numbers with the date.
 
 ## Recipe: truthful status snapshot
@@ -66,7 +66,7 @@ numbers with the date.
 4. Registry rows: all 172 rows are closed since 2026-10-28. The full 172-row
    history (every closed row with its `fixed (<sha>)` cell) is in
    `todos/archives/full-audit-2026-10-20-plan.md`; the pre-consolidation per-row ledger
-   (2026-10-25→28 flips) is `todos/archives/EXECUTION_2026-10-28.md`. Open bugs/improvements
+   (2026-10-25→28 flips) is `todos/archives/audits-2026-10-28/EXECUTION_2026-10-28.md`. Open bugs/improvements
    are only ever in `todos/AUDIT_STATUS.md`. Ids live in the **first table cell**,
    bolded or not — `grep -oE '\b(P[0-9]+-[0-9]+|C-[0-9]+)\b' $P | sort -u` (172 ids).
    The bold-only pattern `\*\*(P[0-9]-[0-9]+|C-[0-9]+)\*\*` matches 11 of them: it

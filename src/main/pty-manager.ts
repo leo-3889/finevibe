@@ -807,8 +807,8 @@ export function resolveLaunchSpec(params: {
     // record's user@host:port. The record fields are registry-validated.
     const record = getHost(hostId!)!;
     // Registry-validated target: isRegistryHostTarget matches the record's
-    // own gate (incl. bracketed IPv6); parseSshHost's free-text grammar
-    // would reject the bracketed spelling (audit T1 #2).
+    // own gate, incl. the bracketed IPv6 spelling the registry stores on
+    // purpose (audit T1 #2).
     if (!isRegistryHostTarget(record.user, record.host)) {
       throw new LaunchSpecError(`Host ${JSON.stringify(record.name)} has an invalid user/host — re-save it in Settings → Hosts.`);
     }

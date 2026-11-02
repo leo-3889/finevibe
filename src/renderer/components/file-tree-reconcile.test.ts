@@ -80,6 +80,24 @@ function openMenu(container: HTMLElement, entryPath: string): MenuOption[] {
 }
 
 describe('file tree reconciliation', () => {
+
+  it('a REMOTE fs:changed re-lists the host-keyed tree (watched-set keys carry the host)', async () => {
+    // Review e43c639d 🔴2: the watcher emits the BARE dir, while a remote
+    // project's watched set + entry caches are keyed `hostId\0path` (treeKey).
+    // flushPendingDirs used the bare path for membership + invalidation, so
+    // every remote delta was a silent no-op and the stale listing survived.
+    dirContents.set('/srv/app', [entry('a.ts', '/srv/app', false)]);
+    const container = document.createElement('div');
+    renderFileTree({ id: 'p9', path: '/srv/app', hostId: 'h1' } as any, container);
+    await settle();
+    expect(rows(container)).toEqual(['/srv/app/a.ts']);
+
+    dirContents.set('/srv/app', [entry('a.ts', '/srv/app', false), entry('b.ts', '/srv/app', false)]);
+    emit([{ path: '/srv/app/b.ts', dir: '/srv/app', type: 'add' }]);
+    await settle();
+    expect(rows(container)).toEqual(['/srv/app/a.ts', '/srv/app/b.ts']);
+  });
+
   it('adds a new file at the correct sorted position without rebuilding', async () => {
     dirContents.set('/proj', [entry('a.ts', '/proj', false), entry('c.ts', '/proj', false)]);
     const container = document.createElement('div');

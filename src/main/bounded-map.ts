@@ -20,8 +20,14 @@
  *    idiom the comments already document;
  *  - the cap is inclusive: after `boundedSet`/`evictOldest` the map holds at
  *    most `max` entries;
- *  - `onEvict` runs AFTER the entry is removed, so a re-entrant
- *    delete/unwatch cannot observe a half-evicted map.
+ *  - `onEvict` runs WHILE the entry is still in the map, and the delete
+ *    follows: the repo's stateful callbacks (`file-watcher`'s `unwatchDir`,
+ *    `remote-watch`'s `dropWatch`) look the entry up to release its external
+ *    resource (chokidar watch + fd, poll interval) — a post-delete callback
+ *    sees `undefined`, no-ops, and LEAKS the resource (review e43c639d 🔴1 +
+ *    ℹ️11, both copies tripped on exactly this). A callback that deletes the
+ *    entry itself makes the following delete a no-op, so the map is never
+ *    half-evicted — the original re-entrancy concern is preserved.
  *
  * Not for: byte/char budgets (`session-deep-search.ts` evicts on a character
  * budget, not an entry count) and non-LRU picks (e.g.
@@ -38,8 +44,8 @@ export function evictOldest<K>(
   while (map.size > max) {
     const oldest = map.keys().next().value;
     if (oldest === undefined) return;
-    map.delete(oldest);
     onEvict?.(oldest);
+    map.delete(oldest);
   }
 }
 
