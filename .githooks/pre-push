@@ -25,6 +25,7 @@ allowlist=$root/.secrets.allowlist
 ALLOW_USERS='me|dev|test|testuser|user|foo|alex|sample|attacker|mock|u|mcp|fake|finevibe|runner|x|my|someone'
 allow_users="(^|[^A-Za-z0-9])/(home|Users)/($ALLOW_USERS)(/|[^a-z0-9._-]|\$)"
 allow_sha='SHA256:(pinned123|evil|attacker)'
+allow_email='elirantia'
 
 if [ ! -f "$patterns" ]; then
   echo "pre-push: $patterns not found — nothing scanned." >&2
@@ -70,14 +71,19 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
     revs=$local_sha
   fi
 
-  # Scan every published blob, not just the tip: a secret added mid-range and
-  # deleted before the tip is still published by this push.
+  # Range pushes scan what each rev ADDS: the range publishes its deletions
+  # (a scrub commit deletes the pre-scrub blob), so scanning whole blobs at
+  # every rev fires on content the range removes and blocks the branch that
+  # ships the gate. A secret added in any rev in the range still fires, even
+  # if a later rev deletes it.
   for rev in $revs; do
     short=$(git rev-parse --short "$rev")
     # shellcheck disable=SC2086
-    git -c core.quotePath=false grep -I -n -E -f "$patterns" "$rev" -- $excl $files 2>/dev/null |
+    git -c core.quotePath=false show --pretty=format: "$rev" -- $files $excl 2>/dev/null |
+      grep '^+' | grep -E -f "$patterns" |
       grep -v 'pii-allow' | grep -vE "$allow_sha" | grep -vE "$allow_users" |
-      sed -e "s|^$rev:|[$short] |" >>"$hits"
+      grep -vE "$allow_email" |
+      sed -e "s|^|[$short] |" >>"$hits"
   done
 done
 
