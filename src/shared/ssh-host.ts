@@ -14,7 +14,7 @@ export interface SshHostRef {
   user?: string;
 }
 
-import type { HostRecord, HostAuthKind, HostEnrollmentStatus, ProjectRecord } from './types.js';
+import type { HostRecord, HostAuthKind, HostEnrollmentStatus, ProjectRecord, SessionRecord } from './types.js';
 import { isValidHostColor } from './host-colors.js';
 
 const MAX_HOST_LENGTH = 253;
@@ -53,16 +53,22 @@ export function parseSshHost(raw: string): SshHostRef | null {
   return user ? { host: `${user}@${host}`, user } : { host };
 }
 
+/** A session as written before the sshHost wire was retired: the free-text
+ * key exists on disk only, never in the in-memory `SessionRecord`. */
+type LegacySshHostSession = SessionRecord & { sshHost?: unknown };
+
 /**
- * Legacy free-text `sshHost` migration (parent plan §11: "migrate, then
- * retire", one release carrying both spellings). A session tagged with the
- * hostname of a registry host adopts that host's id and drops the free
- * text. An unregistered or AMBIGUOUS hostname keeps `sshHost` untouched —
- * the tag is INERT since the legacy pty-manager wrap was retired (row 113:
- * launches speak hostId only), and the hostId normalization that follows
- * this migration pins such a session to LOCAL_HOST_ID, so no launch ever
- * targets an unregistered host. Run at every load boundary (main store.ts,
- * renderer hydrate), same once-at-load rule as the hostId normalization.
+ * Retire the legacy free-text `sshHost` at load (parent plan §11: "migrate,
+ * then retire" — this is the retire tail). A session tagged with the
+ * hostname of exactly one registry host adopts that host's id; then EVERY
+ * `sshHost` key is stripped, so an old state.json loads safely and the
+ * retired spelling can never re-enter the in-memory shape or a later save.
+ * An unregistered/AMBIGUOUS value has no launch meaning (the legacy
+ * pty-manager wrap is gone — launches speak hostId only) and the hostId
+ * normalization that follows this migration pins such a session to
+ * LOCAL_HOST_ID, so no launch ever targets an unregistered host. Run at
+ * every load boundary (main store.ts, renderer hydrate), same once-at-load
+ * rule as the hostId normalization.
  */
 export function migrateLegacySessionSshHosts(
   projects: readonly ProjectRecord[],
@@ -74,13 +80,15 @@ export function migrateLegacySessionSshHosts(
   }
   for (const project of projects) {
     for (const session of project.sessions) {
-      const legacy = session.sshHost;
-      if (!legacy) continue;
-      const ids = idsByHost.get(legacy);
-      if (ids && ids.length === 1) {
-        session.hostId = ids[0];
-        delete session.sshHost;
+      const legacy = session as LegacySshHostSession;
+      const value = legacy.sshHost;
+      if (typeof value !== 'string' || value === '') {
+        delete legacy.sshHost;
+        continue;
       }
+      const ids = idsByHost.get(value);
+      if (ids && ids.length === 1) session.hostId = ids[0];
+      delete legacy.sshHost;
     }
   }
 }

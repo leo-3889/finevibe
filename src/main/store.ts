@@ -224,11 +224,12 @@ export function loadState(): LoadedState {
     // Per-host providers plan §2: pre-existing records carry no hostId —
     // normalize once at load, exactly once (mirrored in the renderer's
     // hydrateLoadedState), never at call sites.
-    // Legacy sshHost adoption runs FIRST (parent §11, one release carrying
-    // both): a session tagged with a registry hostname adopts the host id;
-    // unregistered/ambiguous targets keep the (inert) sshHost tag — the
-    // legacy wrap is retired, the hostId normalization below pins them to
-    // LOCAL_HOST_ID.
+    // Legacy sshHost adoption runs FIRST (parent §11 retire tail): a session
+    // tagged with a registry hostname adopts the host id, and every legacy
+    // sshHost key is stripped here — the field is gone from SessionRecord, so
+    // old state.json loads safely and the retired spelling never reaches the
+    // renderer or a later save. Unregistered/ambiguous targets get no hostId;
+    // the normalization below pins them to LOCAL_HOST_ID.
     migrateLegacySessionSshHosts(projects, hosts);
     for (const project of projects) {
       if (!project.hostId) project.hostId = LOCAL_HOST_ID;

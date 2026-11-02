@@ -151,8 +151,6 @@ export interface SessionRecord {
   cost?: CostInfo;
   contextWindow?: ContextWindowInfo;
   remoteHostName?: string;
-  /** Persisted: host this session launches through over SSH (`user@host` or `host`), validated by shared/ssh-host.ts. */
-  sshHost?: string;
   shareMode?: ShareMode;
   browserTabUrl?: string;
   /** When true, the browser-tab webview uses an isolated partition that doesn't see imported cookies/passwords. */

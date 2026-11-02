@@ -1340,16 +1340,14 @@ class AppState {
 
   /** Set/clear the registry host a session launches through (registry
    * picker, parent §11 sshHost retirement). Null clears to local. The
-   * free-text `sshHost` field is legacy-read-only: the picker overwriting a
-   * session drops it, and load-time migration adopts registry-matching
-   * values; unregistered ones survive for the pty-manager legacy wrap. */
+   * retired free-text `sshHost` is gone from the model: load-time migration
+   * adopts registry-matching values and strips the key from old state. */
   setSessionHost(sessionId: string, hostId: string | null): boolean {
     const session = this.findSessionById(sessionId);
     if (!session) return false;
     const next = hostId ?? LOCAL_HOST_ID;
-    if (session.hostId === next && session.sshHost === undefined) return true;
+    if (session.hostId === next) return true;
     session.hostId = next;
-    delete session.sshHost;
     this.persist();
     this.emitSessionChanged({ sessionId, kind: 'metadata' });
     return true;

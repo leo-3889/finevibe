@@ -248,23 +248,20 @@ describe('setSessionHost()', () => {
     expect(mockSave.mock.calls.at(-1)![0].projects[0].sessions[0].hostId).toBe('h1');
   });
 
-  it('null clears to local and drops a legacy sshHost', () => {
+  it('null clears to local', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
-    session.sshHost = 'lab.example.com';
     session.hostId = 'h1';
     expect(appState.setSessionHost(session.id, null)).toBe(true);
     expect(session.hostId).toBe('local');
-    expect(session.sshHost).toBeUndefined();
   });
 
-  it('picking a host overwrites a legacy sshHost (no coexisting spellings by hand)', () => {
+  it('picking a host overwrites the previous hostId', () => {
     const project = addProject();
     const session = appState.addSession(project.id, 'S1')!;
-    session.sshHost = 'lab.example.com';
+    session.hostId = 'h1';
     appState.setSessionHost(session.id, 'h2');
     expect(session.hostId).toBe('h2');
-    expect(session.sshHost).toBeUndefined();
   });
 
   it('returns false for an unknown session id', () => {
