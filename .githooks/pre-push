@@ -25,6 +25,10 @@ allowlist=$root/.secrets.allowlist
 ALLOW_USERS='me|dev|test|testuser|user|foo|alex|sample|attacker|mock|u|mcp|fake|finevibe|runner|x|my|someone'
 allow_users="(^|[^A-Za-z0-9])/(home|Users)/($ALLOW_USERS)(/|[^a-z0-9._-]|\$)"
 allow_sha='SHA256:(pinned123|evil|attacker)'
+# Synthetic test networks: TEST-NET-1/2/3 (RFC 5737) + the fixture ranges this
+# repo's hosts tests were written against (10.0.0.x, 192.168.1.x). The real
+# operator LAN range (192.168.2.0/24) is NOT here and stays hard-blocked.
+allow_testnet='(^|[^0-9])(10\.0\.0\.[0-9]+|192\.168\.1\.[0-9]+|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)([^0-9]|$)'
 
 if [ ! -f "$patterns" ]; then
   echo "pre-push: $patterns not found — nothing scanned." >&2
@@ -81,7 +85,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
     # path: a one-off `git log -p` audit, not the push path.
     # shellcheck disable=SC2086
     git -c core.quotePath=false grep -I -n -E -f "$patterns" "$local_sha" -- $excl 2>/dev/null |
-      grep -v 'pii-allow' | grep -vE "$allow_sha" | grep -vE "$allow_users" |
+      grep -v 'pii-allow' | grep -vE "$allow_sha" | grep -vE "$allow_users" | grep -vE "$allow_testnet" |
       sed -e "s|^$local_sha:|[tip] |" >>"$hits"
     continue
   fi
@@ -96,7 +100,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
     # shellcheck disable=SC2086
     git -c core.quotePath=false show --pretty=format: "$rev" -- $excl 2>/dev/null |
       grep '^+' | grep -E -f "$patterns" |
-      grep -v 'pii-allow' | grep -vE "$allow_sha" | grep -vE "$allow_users" |
+      grep -v 'pii-allow' | grep -vE "$allow_sha" | grep -vE "$allow_users" | grep -vE "$allow_testnet" |
       sed -e "s|^|[$short] |" >>"$hits"
   done
 done
