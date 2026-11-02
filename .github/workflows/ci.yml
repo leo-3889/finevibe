@@ -27,6 +27,26 @@ jobs:
           node-version: 24
           cache: npm
 
+      # Row 127: pointer-check.js resolves every `path.ts:12` pointer in docs/
+      # against the checked-out tree: unresolvable, past-EOF, ambiguous.
+      # Node builtins only (fs/path); the index skips node_modules/dist/
+      # build/coverage/dev: no npm ci, no build needed. Runs in ~0.04s.
+      # Non-blocking on purpose: the tip already has findings, so a hard step
+      # would be red on every push. Blockers to clear first:
+      #   17 unresolvable — docs/packaging.md → electron-builder internals
+      #   app-builder-lib/out/*, dmg-builder/out/dmg.js, macPackager.js,
+      #   macCodeSign.js: all under node_modules, which the index skips;
+      #   docs/performance.md → dev/ spike scripts (po06-watcher-cost.js,
+      #   f2-codex-spike.js, f3-pi-tick.js) and dist chunks (index.js,
+      #   chunk-*.js); docs/FEATURES.md → a test file not yet committed
+      #   (src/main/launch-session-dir.systemprompt.test.ts).
+      #   1 past EOF — docs/security-boundaries.md cites
+      #   `src/main/ipc-handlers.ts:2434-2441` on a 1980-line file.
+      # TODO(row-127): delete the next line once docs/ is clean → hard gate.
+      - name: Doc pointer check
+        run: node dev/audit/pointer-check.js docs
+        continue-on-error: true
+
       - name: Install dependencies
         run: npm ci
 
